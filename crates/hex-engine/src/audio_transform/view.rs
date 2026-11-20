@@ -425,6 +425,22 @@ pub(super) fn validate_copy(
     clip: &hex_project::Clip,
     occurrence: AudioViewOccurrence,
 ) -> Result<(), Invalid> {
+    validate_copy_lengths(occurrence)?;
+    if occurrence.destination_start < clip.start()
+        || occurrence.destination_end
+            > clip
+                .start()
+                .checked_add(clip.duration())
+                .ok_or(Invalid("audio placement end overflow"))?
+    {
+        return Err(Invalid(
+            "audio placement requires an unsupported processing rebase",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_copy_lengths(occurrence: AudioViewOccurrence) -> Result<(), Invalid> {
     let source = occurrence
         .root_end
         .checked_sub(occurrence.root_start)
@@ -434,14 +450,7 @@ pub(super) fn validate_copy(
         .destination_end
         .checked_sub(occurrence.destination_start)
         .ok_or(Invalid("audio placement destination is reversed"))?;
-    if source != destination
-        || occurrence.destination_start < clip.start()
-        || occurrence.destination_end
-            > clip
-                .start()
-                .checked_add(clip.duration())
-                .ok_or(Invalid("audio placement end overflow"))?
-    {
+    if source != destination {
         return Err(Invalid(
             "audio placement requires an unsupported processing rebase",
         ));

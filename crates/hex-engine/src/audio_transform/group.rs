@@ -234,7 +234,20 @@ impl AudioTransformPreparation {
             if self.cancelled() {
                 return Err(Invalid("audio preparation cancelled"));
             }
-            super::view::validate_copy(clip, projection.occurrence(index)?)?;
+            let occurrence = projection.occurrence(index)?;
+            if edit.content_view.is_some() {
+                // Directed occurrences address the retained forward base.
+                // Their destination is resolved by copy_frame_content after
+                // reflection and crop, outside this base-frame clock.
+                super::view::validate_copy_lengths(occurrence)?;
+                if occurrence.root_frame_length != edit.domain.clock.length()
+                    || occurrence.root_end > occurrence.root_frame_length
+                {
+                    return Err(Invalid("directed grouped read exceeds its root"));
+                }
+            } else {
+                super::view::validate_copy(clip, occurrence)?;
+            }
         }
         // The existing key matcher checks the anchor source. Every remaining
         // source's immutable PCM and conversion identity participates explicitly.

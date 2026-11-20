@@ -58,6 +58,8 @@ fn prepare(
 
 #[test]
 fn grouped_frame_queries_track_sparse_and_cropped_reflected_repeat_pcm() {
+    use crate::audio_transform::tests::render;
+
     let (mut editor, first, media) = fixture(1_000, false);
     let project = editor.project();
     let asset = project.clip(first).unwrap().asset();
@@ -120,7 +122,7 @@ fn grouped_frame_queries_track_sparse_and_cropped_reflected_repeat_pcm() {
 
     let context = AudioTransformPreparation::default();
     for directed in [false, true] {
-        if directed {
+        let uncropped_tail = if directed {
             for command in [
                 Command::ResizeAudioClipView {
                     clip: group,
@@ -129,15 +131,21 @@ fn grouped_frame_queries_track_sparse_and_cropped_reflected_repeat_pcm() {
                     },
                 },
                 Command::ReverseClips(vec![group]),
-                Command::TrimClipEdge {
-                    clip: group,
-                    edge: hex_project::TrimEdge::Left,
-                    frame: 73,
-                },
             ] {
                 editor.execute(command).unwrap();
             }
-        }
+            let pcm = render(&prepare(&editor, &media, &context), 73, 19_800 - 73, 127);
+            editor
+                .execute(Command::TrimClipEdge {
+                    clip: group,
+                    edge: hex_project::TrimEdge::Left,
+                    frame: 73,
+                })
+                .unwrap();
+            Some(pcm)
+        } else {
+            None
+        };
         let project = editor.project();
         let clip = project.clip(group).unwrap();
         let query = FrameFadePreview::with_grouped_sources(
@@ -152,12 +160,9 @@ fn grouped_frame_queries_track_sparse_and_cropped_reflected_repeat_pcm() {
         let view = &prepared.arrangement().audio_clip_views()[0];
         assert_eq!(view.sparse.is_some(), !directed);
         let sources = view.group_event_sources.as_ref().unwrap();
-        let mut renderer = crate::Renderer::new(prepared.arrangement());
-        renderer.seek(clip.start());
-        renderer.play();
-        let mut pcm = vec![[0.0; 2]; clip.duration() as usize];
-        for block in pcm.chunks_mut(127) {
-            renderer.render(block).unwrap();
+        let pcm = render(&prepared, clip.start(), clip.duration() as usize, 127);
+        if let Some(uncropped_tail) = uncropped_tail {
+            assert_eq!(pcm, uncropped_tail);
         }
         let mut saw_silence = false;
         let mut heard = [false; 2];
