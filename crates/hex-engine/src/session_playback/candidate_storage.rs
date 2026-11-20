@@ -7,6 +7,10 @@ use crate::{
 };
 mod modulation;
 impl SessionPlayback {
+    #[cfg(test)]
+    pub(crate) fn test_main_chain(&self) -> &hex_lattice::NativeRuntimeChain {
+        &self.main_chain
+    }
     pub(crate) fn visit_fresh_candidate_storage<'a>(
         &'a self,
         l: &mut AudioRootStorageLedger<'a>,
@@ -327,6 +331,11 @@ fn chain_storage<'a>(
                 (None, false) => {}
                 _ => return Err(AudioStorageError::UnknownStorage),
             }
+        }
+        // These allocations belong to the host, outside the provider payload.
+        // Borrowing their actual Vecs observes capacity without moving custody.
+        for frames in entry.reserved_dry_storage().into_iter().flatten() {
+            l.vec(frames)?;
         }
         l.existing_shared(
             &prepared.meter,

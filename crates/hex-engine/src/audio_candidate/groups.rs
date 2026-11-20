@@ -103,6 +103,13 @@ impl<'a> Transfer<'a> {
                 .checked_add(entry.automation().storage_bytes().ok_or(invalid)?)
                 .and_then(|bytes| bytes.checked_add(entry.modulation_storage_bytes()?))
                 .ok_or(invalid)?;
+            for frames in entry.reserved_dry_storage().into_iter().flatten() {
+                bytes = frames
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<crate::Frame>())
+                    .and_then(|reserved| bytes.checked_add(reserved))
+                    .ok_or(invalid)?;
+            }
             if let Some((a, b)) =
                 crate::native_effect_storage::pair_bytes(&entry).map_err(|_| invalid)?
             {
@@ -1136,6 +1143,88 @@ mod tests {
                 (bank.sources.as_ptr() as usize, bank.sources.capacity()),
                 (pointer, capacity)
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod reserved_dry_tests {
+    use super::super::storage::tests::{reservation, reserved_dry::limiter_candidate};
+    use super::*;
+
+    #[test]
+    fn reserved_dry_transfer_budget_refuses_the_first_uncovered_byte_without_moving_owners() {
+        let (mut candidate, _) = limiter_candidate();
+        let owner = candidate.owner_on_control().unwrap();
+        owner.seal_constructor_on_control(reservation()).unwrap();
+        let chain = owner
+            .inner
+            .runtime
+            .as_ref()
+            .unwrap()
+            .playback
+            .test_main_chain()
+            .unwrap();
+        // Lattice's independently enforced bank budget already includes the host
+        // dry pair; the Engine's move plan must reserve that same actual ownership.
+        let required = chain.accounted_storage_bytes().unwrap()
+            - std::mem::size_of::<hex_lattice::NativeRuntimeChain>();
+        let source_origin = owner
+            .inner
+            .groups
+            .iter()
+            .find(|g| g.location == Location::MainChain.tuple())
+            .unwrap()
+            .origin;
+        let [Some(a), Some(b)] = chain
+            .storage_view()
+            .entries()
+            .next()
+            .unwrap()
+            .reserved_dry_storage()
+        else {
+            panic!("reserved dry pair")
+        };
+        let pointers = [a.as_ptr(), b.as_ptr()];
+        for extra in [0, 1] {
+            let mut previous = [Group {
+                location: Location::MainChain.tuple(),
+                present: true,
+                closed: false,
+                origin: source_origin,
+            }];
+            let mut target = [Group {
+                location: Location::TailChain(0).tuple(),
+                present: false,
+                closed: false,
+                origin: None,
+            }];
+            let mut journal = Vec::with_capacity(1);
+            let journal_pointer = journal.as_ptr();
+            let mut runtime_bytes = crate::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES - required + extra;
+            let original_bytes = runtime_bytes;
+            let result = {
+                let mut plan =
+                    Transfer::new(&mut target, &mut previous, &mut journal, &mut runtime_bytes);
+                plan.plan(Location::MainChain, Location::TailChain(0), chain)
+            };
+            assert_eq!(
+                result,
+                if extra == 0 {
+                    Ok(())
+                } else {
+                    Err(crate::SessionPlaybackError::ReleaseBankFull)
+                }
+            );
+            assert_eq!(
+                runtime_bytes, original_bytes,
+                "preflight cannot commit byte ownership"
+            );
+            assert_eq!(previous[0].origin, source_origin);
+            assert!(target[0].origin.is_none());
+            assert_eq!(journal.as_ptr(), journal_pointer);
+            assert_eq!(journal.len(), usize::from(extra == 0));
+            assert_eq!([a.as_ptr(), b.as_ptr()], pointers);
         }
     }
 }
