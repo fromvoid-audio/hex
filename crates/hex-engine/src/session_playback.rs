@@ -31,6 +31,7 @@ mod device_move;
 mod device_reorder;
 mod foreign_arrangement;
 mod instrument_removal;
+mod main_pass_delay;
 mod midi_capture;
 mod mutable_checkpoint;
 mod render_work;
@@ -671,6 +672,7 @@ pub struct SessionPlayback {
     // than carry voices or detached tails the candidate already represents.
     live_restart: bool,
     native_removal: Option<device_removal::PendingNativeRemoval>,
+    main_pass_delay: Option<hex_lattice::InlineDryDelay>,
     return_fade: Option<device_removal::ReturnFade>,
     return_fade_scratch: Option<device_removal::ReturnFade>,
 }
@@ -1102,6 +1104,7 @@ impl SessionPlayback {
             foreign_continuation,
             live_restart: _,
             native_removal: _,
+            main_pass_delay: _,
             return_fade: _,
             return_fade_scratch: _,
         } = self;
@@ -2404,6 +2407,7 @@ impl SessionPlayback {
             foreign_continuation: None,
             live_restart: false,
             native_removal: None,
+            main_pass_delay: None,
             return_fade: None,
             return_fade_scratch: None,
         })
