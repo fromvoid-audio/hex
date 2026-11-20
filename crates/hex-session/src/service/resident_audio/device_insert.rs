@@ -1029,8 +1029,10 @@ impl Session {
             |session| {
                 crate::validate_command_media(&command)?;
                 let operation = if plugin.is_some() {
-                    // The hosted browser also stages replacement of an instrument.
-                    GraphEditOperation::InsertDevice
+                    match &command {
+                        Command::ReplaceTrackInstrument { .. } => GraphEditOperation::ReplaceDevice,
+                        _ => GraphEditOperation::InsertDevice,
+                    }
                 } else {
                     resident_graph_edit_operation(&command, proposal_control.is_some())
                         .ok_or(SessionError::Invalid("unsupported staged graph edit"))?
