@@ -164,6 +164,7 @@ impl Plugins {
                 && replay.identity.device_id() == device
         });
         let mut changed_state = false;
+        let mut reintroduced = false;
         if input.preparing_edit()
             && let Some(desired) = desired.filter(|source| {
                 source.context().project_generation == input.context().project_generation
@@ -182,12 +183,8 @@ impl Plugins {
                     device,
                     control.plugin_callback_quantum_on_control(),
                 );
-            changed_state |= self.catalog.is_some()
-                && !control
-                    .status
-                    .playing
-                    .load(std::sync::atomic::Ordering::Acquire)
-                && previous.plugin_device_bypassed(device).is_none();
+            reintroduced =
+                self.catalog.is_some() && previous.plugin_device_bypassed(device).is_none();
             previous.visit_plugin_devices(|old_owner, old_device, old| {
                 if old_device == device {
                     let same_processor = old_owner.owner() == owner && old.processing_eq(state);
@@ -241,8 +238,7 @@ impl Plugins {
             {
                 return Ok(Some(source.binding));
             }
-            if changed_state
-                && !retain_instrument
+            if (reintroduced || (changed_state && !retain_instrument))
                 && source.operation.edit_context() != Some(input.context())
             {
                 // A historical matching payload does not free its physical

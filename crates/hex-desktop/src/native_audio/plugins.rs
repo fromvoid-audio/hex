@@ -228,7 +228,7 @@ pub(super) struct Plugins {
     confirmed_parameters:
         std::collections::VecDeque<hex_session::service::PluginParameterObservation>,
     editor_checked: Option<AudioSourceContext>,
-    stopped_removals_checked: Option<AudioSourceContext>,
+    installed_removals_checked: Option<AudioSourceContext>,
     restore: Option<Restore>,
     reopen: Option<Reopen>,
     edit: Option<AudioSourceContext>,
@@ -849,7 +849,7 @@ impl Plugins {
             return;
         };
         if let Some(desired) = desired {
-            self.retire_stopped_removals(control, desired);
+            self.retire_installed_removals(control, desired);
         }
         self.poll_editor_close(control, context.map(|context| context.project_generation));
         self.poll_editor(control, context, desired);
@@ -1123,7 +1123,9 @@ impl Plugins {
         }
     }
 
-    fn retire_stopped_removals(
+    /// An installed canonical revision ends the device's project membership.
+    /// Root still controls return of every graph, endpoint and editor receipt.
+    fn retire_installed_removals(
         &mut self,
         control: &hex_audio::prepared::PublicationControl,
         desired: &CanonicalAudioSourceSnapshot,
@@ -1131,11 +1133,11 @@ impl Plugins {
         let context = desired.context();
         if self.catalog.is_none()
             || desired.audio_mode() != DocumentAudioMode::Resident
-            || self.stopped_removals_checked == Some(context)
+            || self.installed_removals_checked == Some(context)
             || control
                 .status
-                .paused_input_interval()
-                .is_none_or(|(installed, _)| installed.context != context)
+                .recording_source()
+                .is_none_or(|installed| installed.context != context)
         {
             return;
         }
@@ -1149,7 +1151,7 @@ impl Plugins {
                 source.retiring = true;
             }
         }
-        self.stopped_removals_checked = Some(context);
+        self.installed_removals_checked = Some(context);
     }
     pub fn compile(
         &mut self,
