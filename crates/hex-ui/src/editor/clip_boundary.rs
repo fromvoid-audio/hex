@@ -5,7 +5,11 @@
 //! outside the child layout, so adjacent intervals share one stroke without
 //! changing trim or drag coordinates. Degenerate intervals retain lane-anchored
 //! edges. Section outlines can supply an inset to match their chamfer.
-use gpui::{Div, canvas, div, prelude::*, px, relative, rgb};
+use gpui::{
+    App, Bounds, Div, Element, ElementId, GlobalElementId, Hitbox, InspectorElementId,
+    Interactivity, LayoutId, Pixels, StyleRefinement, Window, canvas, div, prelude::*, px,
+    relative, rgb,
+};
 use std::{cell::Cell, rc::Rc};
 
 // A test-only transparent element lets the scene helpers identify the actual
@@ -334,6 +338,118 @@ pub(super) struct Backdrop {
     pub notch: Notch,
 }
 
+/// Use GPUI's normal hover styling and paint the backdrop at the same resolved
+/// bounds, without a child layout node just to run a canvas.
+struct BackdropPaint {
+    interactivity: Interactivity,
+    backdrop: Backdrop,
+    visible: bool,
+    #[cfg(any(test, feature = "ui-test-support"))]
+    anchor: Rc<Cell<Option<Bounds<Pixels>>>>,
+}
+
+impl Styled for BackdropPaint {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.interactivity.base_style
+    }
+}
+
+impl InteractiveElement for BackdropPaint {
+    fn interactivity(&mut self) -> &mut Interactivity {
+        &mut self.interactivity
+    }
+}
+
+impl IntoElement for BackdropPaint {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for BackdropPaint {
+    type RequestLayoutState = ();
+    type PrepaintState = Option<Hitbox>;
+
+    fn id(&self) -> Option<ElementId> {
+        self.interactivity.element_id.clone()
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        self.interactivity.source_location()
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let layout =
+            self.interactivity
+                .request_layout(id, inspector_id, window, cx, |style, window, cx| {
+                    window.request_layout(style, [], cx)
+                });
+        (layout, ())
+    }
+
+    fn prepaint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        self.interactivity.prepaint(
+            id,
+            inspector_id,
+            bounds,
+            bounds.size,
+            window,
+            cx,
+            |style, _, hitbox, _, _| {
+                if style.display != gpui::Display::None {
+                    self.backdrop.notch.observe(bounds);
+                    #[cfg(any(test, feature = "ui-test-support"))]
+                    self.anchor.set(Some(bounds));
+                }
+                hitbox
+            },
+        )
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        hitbox: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.interactivity.paint(
+            id,
+            inspector_id,
+            bounds,
+            hitbox.as_ref(),
+            window,
+            cx,
+            |style, window, _| {
+                if self.visible && style.display != gpui::Display::None {
+                    let color = window.text_style().color;
+                    paint_backdrop(bounds, &self.backdrop, color, window);
+                    paint_resolved_trailing(bounds, &self.backdrop, color, window);
+                }
+            },
+        );
+    }
+}
+
 /// Wide canonical clips use one background owner outside their content mask.
 /// Their transparent layout borders still define the same content/hit bounds.
 /// Callers reserve `header_height` for title content and keep body/grid paint
@@ -350,53 +466,37 @@ pub(super) fn backdrop_shell(
 ) -> Div {
     // The paint-only layer inherits currentColor so GPUI owns group hover,
     // occlusion and drag suppression. Clip contents remain a separate sibling.
-    let observe = backdrop.notch.clone();
-    let paint_style = backdrop.clone();
+    let outline = backdrop.outline;
+    let hover_outline = backdrop.hover_outline;
+    let hoverable = hover_outline != outline;
     #[cfg(any(test, feature = "ui-test-support"))]
     let anchor = Rc::new(Cell::new(None));
     #[cfg(any(test, feature = "ui-test-support"))]
-    let observed_anchor = anchor.clone();
-    let paint = div()
-        .absolute()
-        .inset_0()
-        .text_color(rgb(backdrop.outline))
-        .when(backdrop.hover_outline != backdrop.outline, |paint| {
-            paint.group_hover("clip-boundary", move |style| {
-                style.text_color(rgb(backdrop.hover_outline))
-            })
+    let stroke = backdrop.stroke;
+    let paint = BackdropPaint {
+        interactivity: Interactivity::new(),
+        backdrop,
+        visible,
+        #[cfg(any(test, feature = "ui-test-support"))]
+        anchor: Rc::clone(&anchor),
+    }
+    .absolute()
+    .inset_0()
+    .text_color(rgb(outline))
+    .when(hoverable, |paint| {
+        paint.group_hover("clip-boundary", move |style| {
+            style.text_color(rgb(hover_outline))
         })
-        .child(
-            canvas(
-                move |bounds, _, _| {
-                    observe.observe(bounds);
-                    #[cfg(any(test, feature = "ui-test-support"))]
-                    observed_anchor.set(Some(bounds));
-                },
-                move |bounds, _, window, _| {
-                    if visible {
-                        let color = window.text_style().color;
-                        paint_backdrop(bounds, &paint_style, color, window);
-                        paint_resolved_trailing(bounds, &paint_style, color, window);
-                    }
-                },
-            )
-            .absolute()
-            .inset_0(),
-        );
-    let contents = div().absolute().inset_0().child(paint).child(body);
-    let framed = boundary_shell(
-        contents,
-        left,
-        width,
-        backdrop.stroke,
-        backdrop.outline,
-        backdrop.hover_outline,
-        false,
-        true,
-        0.0,
-        backdrop.notch,
-        String::new,
-    );
+    });
+    let framed = div()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left(relative(left))
+        .w(relative(width))
+        .when(hoverable, |frame| frame.group("clip-boundary"))
+        .child(paint)
+        .child(body);
     #[cfg(any(test, feature = "ui-test-support"))]
     {
         if visible {
@@ -406,7 +506,7 @@ pub(super) fn backdrop_shell(
                 .left(relative(1.0))
                 .top_0()
                 .bottom_0()
-                .w(px(backdrop.stroke));
+                .w(px(stroke));
             return framed.children([EdgeWitness {
                 child: witness.into_any_element(),
                 anchor,
