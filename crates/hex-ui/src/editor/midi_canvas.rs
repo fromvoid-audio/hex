@@ -35,7 +35,7 @@ const MIDI_TOOLBAR_HEIGHT: f32 = 28.0;
 const PANEL_TOP_BORDER: f32 = 1.0;
 const NOTE_GRID_BORDER: f32 = 1.0;
 pub(super) const NOTE_ROW_INSET: f32 = 0.5;
-const NOTE_CORNER_RADIUS: f32 = 10.0;
+const NOTE_CORNER_RADIUS: f32 = 6.0;
 
 impl EditorView {
     fn piano_panel_height(&self) -> f32 {

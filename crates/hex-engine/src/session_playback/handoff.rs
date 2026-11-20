@@ -1745,7 +1745,7 @@ impl SessionPlayback {
                 Some(
                     previous
                         .main_chain
-                        .settled_inline_main_delay(transition)
+                        .settled_main_pass_delay(transition)
                         .ok_or(SessionPlaybackError::DeviceRuntime)?,
                 )
             } else {

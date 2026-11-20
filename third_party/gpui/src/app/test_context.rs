@@ -887,6 +887,29 @@ impl VisualTestContext {
         })
     }
 
+    /// Borders of completed quads whose clipped bounds contain a point.
+    /// This reads canvas paint data without drawing or injecting input.
+    pub fn rendered_quad_borders_at(
+        &mut self,
+        point: crate::Point<Pixels>,
+    ) -> Vec<(crate::Hsla, crate::Edges<crate::ScaledPixels>)> {
+        self.update(|window, _| {
+            let point = point.scale(window.scale_factor());
+            window
+                .rendered_frame
+                .scene
+                .quads
+                .iter()
+                .filter(|quad| {
+                    quad.bounds.contains(&point)
+                        && quad.content_mask.bounds.contains(&point)
+                        && quad.border_widths != crate::Edges::default()
+                })
+                .map(|quad| (quad.border_color, quad.border_widths.clone()))
+                .collect()
+        })
+    }
+
     /// Border color, widths and ancestor mask of the last matching scene quad.
     /// Reads completed paint under test support without changing layout or input.
     pub fn rendered_border(
