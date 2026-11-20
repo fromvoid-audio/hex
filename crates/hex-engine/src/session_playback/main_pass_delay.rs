@@ -21,6 +21,15 @@ impl SessionPlayback {
         let [device] = before.main_device_chain.as_ref() else {
             return None;
         };
+        let short_native = [
+            hex_devices::overdrive::OVERDRIVE_TYPE_ID,
+            hex_devices::saturator::SATURATOR_TYPE_ID,
+            hex_devices::rattle::RATTLE_TYPE_ID,
+        ]
+        .contains(&device.device_type);
+        let fixed_short_limiter = device.device_type == hex_devices::limiter::TYPE_ID
+            && before.main_latency_frames()
+                == before.sample_rate().saturating_mul(3).div_ceil(2_000);
         if !after.main_device_chain.is_empty()
             || self.compensation.is_some()
             || !self.same_direct_pass_input(old)
@@ -33,12 +42,7 @@ impl SessionPlayback {
                 .any(|tail| tail.output_active)
             || old.tail_output_active.iter().any(|active| *active)
             || !old.releases.is_empty()
-            || ![
-                hex_devices::overdrive::OVERDRIVE_TYPE_ID,
-                hex_devices::saturator::SATURATOR_TYPE_ID,
-                hex_devices::rattle::RATTLE_TYPE_ID,
-            ]
-            .contains(&device.device_type)
+            || !(short_native || fixed_short_limiter)
             || after.main_latency_frames() != 0
         {
             return None;
@@ -46,7 +50,7 @@ impl SessionPlayback {
         if before.tracks()[0].mix != after.tracks()[0].mix {
             return None;
         }
-        self.main_chain.inline_main_removal_from(&old.main_chain)
+        self.main_chain.main_pass_removal_from(&old.main_chain)
     }
 
     /// No upstream history changes meaning when the final, short delay moves
