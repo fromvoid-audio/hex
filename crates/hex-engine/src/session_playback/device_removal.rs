@@ -683,6 +683,8 @@ impl SessionPlayback {
         }
     }
 
+    /// Admit a post-DSP fade for a flat Return whose processor can stay in the donor
+    /// until the cut, including a running zero-latency Reverb with active decay.
     fn flat_return_removal_from(&self, previous: &Self) -> Option<ReturnId> {
         if self.compensation.is_some()
             || previous.compensation.is_some()
@@ -730,9 +732,11 @@ impl SessionPlayback {
         match removed.device_chain.as_ref() {
             [] => Some(removed.id),
             [device]
-                if device.device_type == hex_devices::delay::DEFINITION.type_id()
-                    && device.foreign_processor().is_none()
-                    && device.algorithmic_latency_frames() == Some(0) =>
+                if device.foreign_processor().is_none()
+                    && device.algorithmic_latency_frames() == Some(0)
+                    && (device.device_type == hex_devices::delay::DEFINITION.type_id()
+                        || (!device.bypassed
+                            && device.device_type == hex_devices::reverb::REVERB_TYPE_ID)) =>
             {
                 Some(removed.id)
             }
