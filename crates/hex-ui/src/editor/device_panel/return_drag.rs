@@ -1,7 +1,11 @@
-//! Return-chain insertion geometry; canonical edits remain in the session worker.
+//! Main and Return device drop geometry. Session owns the canonical edit.
 use super::*;
-use drag::{NativeDeviceDrag, ReturnDeviceDropTarget};
+use drag::{EffectBusDropSlot, NativeDeviceDrag, ReturnDeviceDropTarget};
 use std::{cell::RefCell, rc::Rc};
+
+const REPLACE_PAD_WIDTH: f32 = 64.0;
+const REPLACE_PAD_HEIGHT: f32 = 22.0;
+const REPLACE_PAD_TOP: f32 = 6.0;
 
 pub(super) fn render_chain(
     view: &mut EditorView,
@@ -99,8 +103,8 @@ pub(super) fn render_chain(
                 view,
                 cx,
                 owner,
-                Some(device.id()),
-                devices.get(index + 1).map(|next| next.id()),
+                Some(device),
+                devices.get(index + 1),
                 visible_bounds.clone(),
                 rendered,
             ));
@@ -135,16 +139,37 @@ fn render_return_drop_target(
     view: &EditorView,
     cx: &mut Context<EditorView>,
     owner: EffectBusOwner,
-    before: Option<DeviceId>,
-    after: Option<DeviceId>,
+    device: Option<&hex_project::Device>,
+    next: Option<&hex_project::Device>,
     visible_bounds: Rc<RefCell<Option<Bounds<Pixels>>>>,
     rendered: Stateful<Div>,
 ) -> Stateful<Div> {
-    let left_target = ReturnDeviceDropTarget { owner, before };
+    let before = device.map(hex_project::Device::id);
+    let left_target = ReturnDeviceDropTarget {
+        owner,
+        slot: EffectBusDropSlot::Before(before),
+    };
     let right_target = ReturnDeviceDropTarget {
         owner,
-        before: after,
+        slot: EffectBusDropSlot::Before(next.map(hex_project::Device::id)),
     };
+    let replacement = device
+        .filter(|device| {
+            owner == EffectBusOwner::Main
+                && view.document_audio_mode == hex_session::DocumentAudioMode::Resident
+                && device.state().type_id() == hex_lattice_contract::VST3_DEVICE_TYPE_ID
+                && device.parent().is_none()
+                && next.is_none_or(|next| next.parent() != Some(device.id()))
+        })
+        .map(|device| ReturnDeviceDropTarget {
+            owner,
+            slot: EffectBusDropSlot::Replace(device.id()),
+        });
+    let show_replace_pad = replacement.is_some()
+        && view
+            .active_native_device_drag
+            .as_ref()
+            .is_some_and(|drag| drag.source.is_catalog_vst3_effect());
     let active = view
         .active_native_device_drag
         .as_ref()
@@ -176,7 +201,12 @@ fn render_return_drop_target(
             ) {
                 return;
             }
-            let target = if before.is_none() || event.event.position.x < event.bounds.center().x {
+            let target = if let Some(replacement) = replacement
+                && payload.source.is_catalog_vst3_effect()
+                && replace_pad_bounds(event.bounds).contains(&event.event.position)
+            {
+                replacement
+            } else if before.is_none() || event.event.position.x < event.bounds.center().x {
                 left_target
             } else {
                 right_target
@@ -189,11 +219,13 @@ fn render_return_drop_target(
         .on_drop(
             cx.listener(move |view, payload: &NativeDeviceDrag, window, cx| {
                 let Some(target) = payload.return_destination.get().filter(|target| {
-                    target.owner == owner && (*target == left_target || *target == right_target)
+                    *target == left_target
+                        || *target == right_target
+                        || Some(*target) == replacement
                 }) else {
                     return;
                 };
-                view.drop_native_device_to_effect_bus(payload, owner, target.before, window, cx);
+                view.drop_native_device_to_effect_bus(payload, target, window, cx);
             }),
         )
         .child(rendered)
@@ -205,6 +237,14 @@ fn render_return_drop_target(
         if (active == Some(expected) || (!edge && inserting)) && (!edge || before.is_some()) {
             target = target.child(
                 div()
+                    .debug_selector(move || {
+                        format!(
+                            "{}-device-insertion-{}-{}",
+                            owner.prefix(),
+                            if edge { "after" } else { "before" },
+                            before.map_or(0, DeviceId::value),
+                        )
+                    })
                     .absolute()
                     .top_0()
                     .when(edge, |style| style.right_0())
@@ -215,5 +255,49 @@ fn render_return_drop_target(
             );
         }
     }
+    if show_replace_pad && let Some(device) = before {
+        let selected = active == replacement;
+        target = target.child(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .top(px(REPLACE_PAD_TOP))
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .debug_selector(move || format!("main-vst3-replace-{}", device.value()))
+                        .w(px(REPLACE_PAD_WIDTH))
+                        .h(px(REPLACE_PAD_HEIGHT))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .border_1()
+                        .border_color(rgb(theme::color(if selected {
+                            theme::PaletteRole::Secondary
+                        } else {
+                            theme::PaletteRole::Border
+                        })))
+                        .bg(rgb(theme::color(if selected {
+                            theme::PaletteRole::Hover
+                        } else {
+                            theme::PaletteRole::Surface
+                        })))
+                        .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+                        .child(theme::text("replace")),
+                ),
+        );
+    }
     target
+}
+
+fn replace_pad_bounds(card: Bounds<Pixels>) -> Bounds<Pixels> {
+    Bounds {
+        origin: gpui::point(
+            card.center().x - px(REPLACE_PAD_WIDTH) / 2.0,
+            card.origin.y + px(REPLACE_PAD_TOP),
+        ),
+        size: gpui::size(px(REPLACE_PAD_WIDTH), px(REPLACE_PAD_HEIGHT)),
+    }
 }
