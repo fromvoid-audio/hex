@@ -1,4 +1,4 @@
-//! One direct Resident audio-track Delay move, cut with both route faders.
+//! One direct Resident audio-track effect move, cut with both route faders.
 use super::{RouteOwner, SessionPlayback};
 use hex_lattice::ProcessorInstanceIdentity;
 use hex_lattice_contract::NativeDeviceMetadata;
@@ -97,8 +97,9 @@ impl SessionPlayback {
             }
         }
         // Provider-specific trust belongs here, not in Lattice's generic proof.
-        if old.get(source)?.device_chain.first()?.device_type
-            != hex_devices::delay::DEFINITION.type_id()
+        let device_type = old.get(source)?.device_chain.first()?.device_type;
+        if device_type != hex_devices::delay::DEFINITION.type_id()
+            && device_type != hex_devices::reverb::REVERB_TYPE_ID
         {
             return None;
         }
