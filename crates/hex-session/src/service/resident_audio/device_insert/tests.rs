@@ -11,6 +11,8 @@ const INSTALLED: u8 = 1;
 const CANCELLED: u8 = 2;
 const REFUSED: u8 = 3;
 const EXPIRED: u8 = 4;
+const OUTPUT_CLOSED: u8 = 5;
+const SOURCE_CHANGED: u8 = 6;
 
 #[derive(Debug)]
 struct FixtureReceipt {
@@ -35,6 +37,10 @@ impl DeviceInsertAudioReceipt for Arc<FixtureReceipt> {
             INSTALLED => DeviceInsertAudioState::Installed,
             CANCELLED => DeviceInsertAudioState::Cancelled,
             EXPIRED => DeviceInsertAudioState::Expired,
+            OUTPUT_CLOSED => DeviceInsertAudioState::OutputClosed,
+            SOURCE_CHANGED => DeviceInsertAudioState::Refused(
+                hex_engine::PlaybackHandoffRejection::RuntimeFenceChanged,
+            ),
             REFUSED => DeviceInsertAudioState::Refused(
                 hex_engine::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation,
             ),
@@ -1114,3 +1120,5 @@ fn cancelled_or_stale_consent_leaves_audio_and_history_at_the_predecessor() {
         assert_eq!(fixture.lock().unwrap().active, predecessor);
     }
 }
+
+mod track_routes;
