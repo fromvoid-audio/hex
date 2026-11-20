@@ -112,9 +112,12 @@ fn section_focus_ignores_muted_audio_and_midi_clips(cx: &mut TestAppContext) {
         replace(&mut visual, &editor, f.model.project().clone());
         visible(&visual, expected);
     }
+    let midi = selector("midi-clip-visual", f.clips[2].value());
+    assert!(visual.debug_bounds(midi).is_none());
     visual.simulate_keystrokes("q");
     visual.run_until_parked();
     visible(&visual, &[0, 1, 2, 3, 4]);
+    assert!(visual.debug_bounds(midi).is_some());
 }
 
 #[gpui::test]

@@ -208,6 +208,19 @@ pub(in crate::editor) mod tests {
             2
         );
         assert_eq!(project.snapshot(), before);
+
+        let audio = project.tracks()[0].clips()[0].id();
+        let mut editor = Editor::new(project, 8).unwrap();
+        editor
+            .execute(Command::SetClipActive {
+                clip: audio,
+                active: false,
+            })
+            .unwrap();
+        let muted = editor.project();
+        let all = project_rows(muted, &[], None);
+        assert_eq!(all.len(), 2);
+        assert_eq!(project_rows(muted, &[(48_000, 96_000)], None), all[1..]);
     }
     #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
