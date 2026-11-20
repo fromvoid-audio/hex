@@ -18,6 +18,17 @@ impl Custody {
         binding: Binding,
         run: impl FnOnce(&mut Owner) -> Result<R, &'static str>,
     ) -> Result<R, &'static str> {
+        self.with_live_capture_guarded(binding, false, run)
+    }
+
+    // Only the exact detach request and existing controller terminals may
+    // share the worker with the uniquely claimed retiring edit reader.
+    fn with_live_capture_guarded<R>(
+        &self,
+        binding: Binding,
+        allow_guarded_controller: bool,
+        run: impl FnOnce(&mut Owner) -> Result<R, &'static str>,
+    ) -> Result<R, &'static str> {
         let mut work = self
             .work
             .try_lock()
@@ -42,6 +53,11 @@ impl Custody {
                 || cell.cause().is_some()
                 || cell.cleanup_error.is_some()
                 || cell.disposal.is_some()
+                || (cell.retiring_edits.is_some()
+                    && !(allow_guarded_controller
+                        && cell.retiring_edits.as_ref().is_some_and(|drain| {
+                            matches!(drain.stage, retiring_edits::Stage::Live(_))
+                        })))
             {
                 return Err("native capture source is not active");
             }
@@ -99,8 +115,19 @@ impl Custody {
         after_admission: impl FnOnce(),
         refused: &'static str,
     ) -> Result<R, &'static str> {
+        self.admit_live_operation_guarded(binding, run, after_admission, refused, false)
+    }
+
+    fn admit_live_operation_guarded<R>(
+        &self,
+        binding: Binding,
+        run: impl FnOnce(&mut Owner) -> Result<R, &'static str>,
+        after_admission: impl FnOnce(),
+        refused: &'static str,
+        allow_guarded_controller: bool,
+    ) -> Result<R, &'static str> {
         let mut admitted = None;
-        let result = self.with_live_capture(binding, |owner| {
+        let result = self.with_live_capture_guarded(binding, allow_guarded_controller, |owner| {
             admitted = Some(run(owner)?);
             after_admission();
             Ok(())
@@ -388,7 +415,7 @@ impl Custody {
         after_admission: impl FnOnce(),
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
         let query = query.into();
-        self.admit_live_operation(
+        self.admit_live_operation_guarded(
             binding,
             |owner| match owner {
                 Owner::Effect(owner) => owner.begin_controller_query(query),
@@ -397,6 +424,7 @@ impl Custody {
             },
             after_admission,
             "native controller query was not admitted",
+            query == hex_plugin_host::protocol::ControllerRequest::DetachEditorWhenIdle,
         )
     }
     pub(in crate::candidate_custody) fn poll_native_controller_query(
@@ -404,7 +432,7 @@ impl Custody {
         binding: Binding,
         request: &NativeWorkerControllerQuery,
     ) -> Result<NativeWorkerControllerProgress, &'static str> {
-        self.with_live_capture(binding, |owner| match owner {
+        self.with_live_capture_guarded(binding, true, |owner| match owner {
             Owner::Effect(owner) => owner.poll_controller_query(request),
             Owner::Loaned(owner) => owner.poll_controller_query(request),
             _ => Err("native controller owner differs"),

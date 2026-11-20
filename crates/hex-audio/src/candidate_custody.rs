@@ -43,6 +43,7 @@ pub(crate) use eligible::{EndpointReturnFence, NativeEndpointBank, NativeEndpoin
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use eligible::{
     NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,
+    RetiringEditLease, RetiringEditProgress, RetiringEditReceipt,
 };
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
 

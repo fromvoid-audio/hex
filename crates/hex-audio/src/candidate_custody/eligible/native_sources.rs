@@ -14,6 +14,10 @@ use hex_plugin_scan::macos::build_identity::InstanceBuild;
 use std::sync::{TryLockError, atomic::AtomicU8};
 
 mod capture;
+mod retiring_edits;
+pub use retiring_edits::{
+    Progress as RetiringEditProgress, Receipt as RetiringEditReceipt, RetiringEditLease,
+};
 mod completion;
 mod definition;
 mod effect;
@@ -184,6 +188,8 @@ struct Slot {
     phase: Phase,
     starting: bool,
     retiring: bool,
+    retiring_edit_reserved: bool,
+    retiring_edit_shutdown: Option<retiring_edits::ShutdownHandoff>,
     facts: Option<hex_plugin_host::protocol::Facts>,
     presentation: Option<(
         hex_plugin_host::protocol::Presentation,
@@ -203,6 +209,8 @@ impl Slot {
             phase: Phase::Vacant,
             starting: false,
             retiring: false,
+            retiring_edit_reserved: false,
+            retiring_edit_shutdown: None,
             facts: None,
             presentation: None,
             processor: None,
@@ -308,6 +316,7 @@ struct Execution {
     // until disposal. Explicit cancellation of a valid source is not a failure.
     constructor_refused: bool,
     disposal: Option<PreparationDisposal>,
+    retiring_edits: Option<retiring_edits::Drain>,
     pending: bool,
     first_panic: Option<Box<dyn Any + Send>>,
 }
@@ -699,13 +708,33 @@ impl Custody {
             let bank = lock(&self.bank);
             bank.sources.request_unreferenced_returns(&bank.publication);
         }
+        for index in 0..work.cells.len() {
+            self.advance_retiring_edits_on_shutdown(work, index);
+        }
         for (index, cell) in work.cells.iter_mut().enumerate() {
+            let abandoned_reservation = {
+                let bank = lock(&self.bank);
+                let slot = &bank.sources.slots[index];
+                slot.retiring_edit_reserved
+                    && slot.retiring
+                    && !self.retiring_edit_alive[index].load(Ordering::Acquire)
+            };
+            if abandoned_reservation {
+                if cell.cleanup_error.is_none() {
+                    cell.cleanup_error = Some(hex_plugin_host::Error::Protocol(
+                        "native retiring edit consumer abandoned custody",
+                    ));
+                }
+                self.fail_native_source(index);
+                continue;
+            }
             let eligible = {
                 let bank = lock(&self.bank);
                 let slot = &bank.sources.slots[index];
                 !slot.starting
                     && !bank.publication.references_native_source(index)
                     && !slot.endpoint_loaned
+                    && !slot.retiring_edit_reserved
                     && slot.retiring
                     && slot.phase != Phase::Vacant
                     && slot.phase != Phase::Complete
@@ -910,6 +939,14 @@ impl CandidateRoot {
         }
         Ok(())
     }
+    pub(crate) fn retiring_editor_shutdown_failed(&self) -> bool {
+        lock(&self.0.eligible.bank)
+            .sources
+            .slots
+            .iter()
+            .any(|slot| slot.phase == Phase::Failed && slot.retiring_edit_shutdown.is_some())
+    }
+
     pub(crate) fn configure_native_source_preparation(
         &self,
         capacity: usize,

@@ -21,7 +21,13 @@ fn pending_open_and_confirmed_lifecycle_failures_have_distinct_recovery_results(
         (|| Some(AudioLifecycleFailure::Retirement)) as fn() -> Option<AudioLifecycleFailure>,
         || Some(AudioLifecycleFailure::Cleanup),
         || Some(AudioLifecycleFailure::MismatchedOwner),
+        || Some(AudioLifecycleFailure::RetiringEditor),
     ] {
+        let expected = if status() == Some(AudioLifecycleFailure::RetiringEditor) {
+            "vst3 editor shutdown is unresolved · original source retained · audio reopen refused"
+        } else {
+            "save your project and restart hex"
+        };
         let (events, receiver) = mpsc::sync_channel(1);
         let mut sink = NativeAudioSink::new(events);
         sink.canonical_changed(source.clone());
@@ -52,7 +58,7 @@ fn pending_open_and_confirmed_lifecycle_failures_have_distinct_recovery_results(
         assert_eq!(restart_request, Some(17));
         let error = error.to_string();
         assert_eq!(error, error.to_lowercase());
-        assert!(error.contains("save your project and restart hex"));
+        assert!(error.contains(expected));
         assert!(!sink.open_pending);
         assert!(sink.opening.is_none());
         sink.poll();
@@ -71,11 +77,7 @@ fn pending_open_and_confirmed_lifecycle_failures_have_distinct_recovery_results(
             panic!("expected the latched failure again");
         };
         assert_eq!(restart_request, Some(18));
-        assert!(
-            error
-                .to_string()
-                .contains("save your project and restart hex")
-        );
+        assert!(error.to_string().contains(expected));
         assert_eq!(attempts.load(Acquire), 1);
         assert!(Arc::ptr_eq(sink.desired.as_ref().unwrap(), &source));
     }

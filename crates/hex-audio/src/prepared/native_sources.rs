@@ -105,6 +105,19 @@ fn stopped_program_frontier(
 }
 
 impl PublicationControl {
+    /// Reserve the exact source before retirement for an acknowledged editor
+    /// receipt drain. Transfer the lease to Root cleanup if the output closes
+    /// first, so the original worker stays owned until its receipts resolve.
+    pub fn reserve_native_retiring_edits_on_control(
+        &mut self,
+        binding: Binding,
+    ) -> Result<crate::RetiringEditLease, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native edit output is closing");
+        }
+        crate::RetiringEditLease::reserve(&self.candidate_root, binding)
+    }
+
     fn stopped_native_quantum_fence_matches(
         &self,
         source: AppliedAudioSource,
@@ -1390,7 +1403,24 @@ impl PublicationControl {
             return Err("native epoch output is closing");
         }
         self.candidate_root
-            .quiesce_native_source_preparation(previous, graph)
+            .quiesce_native_source_preparation(previous, graph, None)
+    }
+
+    /// Renew the exact SDK child and move its unclaimed editor receipt
+    /// reservation to the resulting binding. The caller retains the same
+    /// unique lease on refusal. Reserving the new binding does not acknowledge
+    /// any accepted edit, nor does it install the successor graph.
+    pub fn quiesce_native_source_with_editor_reservation(
+        &mut self,
+        previous: Binding,
+        graph: u64,
+        lease: &mut crate::RetiringEditLease,
+    ) -> Result<Binding, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native epoch output is closing");
+        }
+        self.candidate_root
+            .quiesce_native_source_preparation(previous, graph, Some(lease))
     }
     /// Reactivate this exact renewed reservation's stopped component and
     /// replace its facts before planning presentation and completing the epoch.

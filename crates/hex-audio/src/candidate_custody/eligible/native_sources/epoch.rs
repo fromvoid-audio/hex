@@ -8,13 +8,14 @@ impl Custody {
         previous: Binding,
         graph: u64,
     ) -> Result<Binding, &'static str> {
-        self.quiesce_native_source_between(previous, graph, || {})
+        self.quiesce_native_source_between(previous, graph, None, || {})
     }
 
     pub(super) fn quiesce_native_source_between(
         &self,
         previous: Binding,
         graph: u64,
+        editor_reservation: Option<usize>,
         after_reservation: impl FnOnce(),
     ) -> Result<Binding, &'static str> {
         let mut work = self
@@ -60,6 +61,16 @@ impl Custody {
             }
             if effect.parameter_change_pending()? {
                 return Err("native epoch requires parameter input terminal");
+            }
+            match editor_reservation {
+                None if !slot.retiring_edit_reserved => {}
+                Some(lease_index)
+                    if lease_index == index
+                        && slot.retiring_edit_reserved
+                        && slot.retiring_edit_shutdown.is_none()
+                        && self.retiring_edit_alive[index].load(Ordering::Acquire)
+                        && cell.retiring_edits.is_none() => {}
+                _ => return Err("native epoch requires its original editor receipt reservation"),
             }
             let binding = Binding {
                 graph,
@@ -134,9 +145,22 @@ impl CandidateRoot {
         &self,
         previous: Binding,
         graph: u64,
+        editor_reservation: Option<&mut RetiringEditLease>,
     ) -> Result<Binding, &'static str> {
         self.require_native_source_control_open()?;
-        let result = self.0.eligible.quiesce_native_source(previous, graph);
+        let result = if let Some(lease) = editor_reservation {
+            let index = lease.renewal_index(self, previous)?;
+            let next =
+                self.0
+                    .eligible
+                    .quiesce_native_source_between(previous, graph, Some(index), || {});
+            if let Ok(binding) = next {
+                lease.set_renewed_binding(binding);
+            }
+            next
+        } else {
+            self.0.eligible.quiesce_native_source(previous, graph)
+        };
         crate::lifecycle::request_candidate_cleanup(self);
         result
     }
