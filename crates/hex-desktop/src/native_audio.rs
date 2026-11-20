@@ -854,6 +854,8 @@ impl NativeAudioSink {
                 snapshot.canonical().effect_preparation(),
                 edit.as_ref()
                     .and_then(|edit| edit.attempt.proposal_control()),
+                edit.as_ref()
+                    .is_some_and(|edit| edit.attempt.stages_hosted_history()),
             ) {
                 Ok(bindings) => bindings,
                 Err(error) => {
@@ -1981,7 +1983,23 @@ impl WorkerAudioSink for NativeAudioSink {
         )
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<hex_engine::PreparedRevision, String> {
-        let bindings = self.plugins.verified_effect_bindings(input, proposal)?;
+        let history = self.verified_edit.as_ref().is_some_and(|edit| {
+            edit.attempt.stages_hosted_history()
+                && edit.attempt.source().context() == input.context()
+                && edit.attempt.preparing()
+        });
+        if history {
+            self.plugins.prepare_edit_sources(
+                self.output.as_mut(),
+                &input,
+                self.desired.as_deref(),
+                self.request_cancellation.as_ref(),
+                true,
+            )?;
+        }
+        let bindings = self
+            .plugins
+            .verified_effect_bindings(input, proposal, history)?;
         let control = self
             .output
             .as_mut()

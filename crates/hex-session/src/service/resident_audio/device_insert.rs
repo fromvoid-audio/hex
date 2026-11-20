@@ -78,6 +78,7 @@ impl DeviceInsertConfirmation {
 #[derive(Clone, Copy)]
 pub(in crate::service) enum Operation {
     Device(GraphEditOperation),
+    HostedHistory(GraphEditOperation),
     Tempo,
 }
 
@@ -88,20 +89,21 @@ impl Operation {
             Self::Device(GraphEditOperation::RemoveDevice) => "device removed",
             Self::Device(GraphEditOperation::MoveDevice) => "device moved",
             Self::Device(GraphEditOperation::RemoveTrack) => "track removed",
+            Self::HostedHistory(_) => "history committed",
             Self::Tempo => "tempo applied",
         }
     }
 
     pub(in crate::service) fn device(self) -> Option<GraphEditOperation> {
         match self {
-            Self::Device(operation) => Some(operation),
+            Self::Device(operation) | Self::HostedHistory(operation) => Some(operation),
             Self::Tempo => None,
         }
     }
 }
 
 pub(in crate::service) struct Pending {
-    edit: hex_project::StagedProjectEdit,
+    edit: StagedChange,
     prepared: Prepared,
     confirmation: Option<DeviceInsertConfirmation>,
     pub(in crate::service) operation: Operation,
@@ -112,6 +114,20 @@ pub(in crate::service) struct Pending {
     pub(in crate::service) plugin: Option<plugin_effect::Pending>,
     pub(in crate::service) proposal_control: Option<Arc<PluginEffectControl>>,
     pub(in crate::service) publish_created: bool,
+}
+
+enum StagedChange {
+    Command(hex_project::StagedProjectEdit),
+    History(hex_project::StagedProjectHistory),
+}
+
+impl StagedChange {
+    fn project(&self) -> &Project {
+        match self {
+            Self::Command(edit) => edit.project(),
+            Self::History(edge) => edge.project(),
+        }
+    }
 }
 
 struct Resident {
@@ -139,6 +155,7 @@ struct VerifiedAttempt {
     retiring_gain: Option<DevicePreviewIdentity>,
     confirmation: Option<ResidentGraphSubmission>,
     tempo_cut: bool,
+    hosted_history: bool,
     proposal_control: Option<Arc<PluginEffectControl>>,
     prepare_until: Instant,
     state: std::sync::Mutex<VerifiedState>,
@@ -158,6 +175,7 @@ impl VerifiedGraphEditAttempt {
         retiring_gain: Option<DevicePreviewIdentity>,
         confirmation: Option<ResidentGraphSubmission>,
         tempo_cut: bool,
+        hosted_history: bool,
         proposal_control: Option<Arc<PluginEffectControl>>,
     ) -> Self {
         Self(Arc::new(VerifiedAttempt {
@@ -166,6 +184,7 @@ impl VerifiedGraphEditAttempt {
             retiring_gain,
             confirmation,
             tempo_cut,
+            hosted_history,
             proposal_control,
             prepare_until: device_edit_preparation_deadline(),
             state: std::sync::Mutex::new(VerifiedState::Preparing),
@@ -187,6 +206,12 @@ impl VerifiedGraphEditAttempt {
     }
     pub fn needs_tempo_cut(&self) -> bool {
         self.0.tempo_cut
+    }
+
+    /// Session owns the hosted membership edge; Desktop may prepare private
+    /// source bindings for the exact candidate context until its terminal.
+    pub fn stages_hosted_history(&self) -> bool {
+        self.0.hosted_history
     }
 
     /// Borrow the caller's exact proposal identity without granting native custody.
@@ -406,6 +431,7 @@ impl Pending {
                     attempt.retiring_gain(),
                     Some(refused),
                     false,
+                    attempt.stages_hosted_history(),
                     attempt
                         .proposal_control()
                         .cloned()
@@ -445,7 +471,13 @@ impl Pending {
         session: &mut Session,
         previous: Option<&Snapshot>,
     ) -> Result<(Created, Arc<hex_engine::PreparedRevision>, Option<Snapshot>), SessionError> {
-        let created = session.editor.commit_staged_edit(self.edit)?;
+        let created = match self.edit {
+            StagedChange::Command(edit) => session.editor.commit_staged_edit(edit)?,
+            StagedChange::History(edge) => {
+                session.editor.commit_staged_history(edge)?;
+                Created::None
+            }
+        };
         match self.prepared {
             Prepared::Resident(resident) => {
                 if let Some(previous) = previous {
@@ -478,6 +510,31 @@ fn insert_receipt(
         .ok_or(SessionError::Invalid(
             "device insertion receipt unavailable",
         ))
+}
+
+fn hosted_history_operation(before: &Project, after: &Project) -> Option<GraphEditOperation> {
+    fn adds_hosted_effect(before: &Project, after: &Project) -> bool {
+        let vst3 = hex_lattice_contract::DeviceTypeId::from_static("hex.vst3");
+        after
+            .tracks()
+            .iter()
+            .flat_map(|track| track.devices())
+            .chain(
+                after
+                    .return_tracks()
+                    .iter()
+                    .flat_map(|track| track.devices()),
+            )
+            .chain(after.main_devices())
+            .any(|effect| effect.state().type_id() == vst3 && before.device(effect.id()).is_none())
+    }
+    if adds_hosted_effect(before, after) {
+        Some(GraphEditOperation::InsertDevice)
+    } else if adds_hosted_effect(after, before) {
+        Some(GraphEditOperation::RemoveDevice)
+    } else {
+        None
+    }
 }
 
 pub(in crate::service) fn is_tempo_edit(command: &Command) -> bool {
@@ -643,18 +700,10 @@ impl BrowserEdit {
 }
 
 impl Session {
-    #[allow(clippy::too_many_arguments)] // Exact source, worker, gesture and insertion intent.
-    pub(in crate::service) fn stage_verified_graph_edit(
-        &mut self,
-        command: Command,
+    fn verified_graph_predecessor(
+        &self,
         state: &ViewState,
-        previous: Option<&hex_engine::PreparedRevision>,
-        sink: &mut dyn WorkerAudioSink,
-        document_intent: u64,
-        gesture: Option<&crate::device_gesture::GestureSnapshot>,
-        proposal_control: Option<Arc<PluginEffectControl>>,
-    ) -> Result<Option<Pending>, SessionError> {
-        crate::validate_command_media(&command)?;
+    ) -> Result<hex_engine::AudioSourceContext, SessionError> {
         let predecessor = state
             .canonical_audio_source
             .as_ref()
@@ -671,6 +720,60 @@ impl Session {
                 "verified graph edit authoring revision changed",
             ));
         }
+        Ok(predecessor)
+    }
+
+    pub(in crate::service) fn has_verified_hosted_history(&self, redo: bool) -> bool {
+        self.editor
+            .inspect_history(redo, hosted_history_operation)
+            .flatten()
+            .is_some()
+    }
+
+    pub(in crate::service) fn stage_verified_hosted_history(
+        &mut self,
+        redo: bool,
+        state: &ViewState,
+        previous: Option<&PreparedRevision>,
+        sink: &mut dyn WorkerAudioSink,
+        document_intent: u64,
+    ) -> Result<Pending, SessionError> {
+        let predecessor = self.verified_graph_predecessor(state)?;
+        let edge = self
+            .editor
+            .stage_history(redo)?
+            .ok_or(SessionError::Invalid(
+                "verified device history target changed",
+            ))?;
+        let operation = hosted_history_operation(self.project(), edge.project()).ok_or(
+            SessionError::Invalid("verified device history target changed"),
+        )?;
+        self.start_verified_graph_edit(
+            StagedChange::History(edge),
+            Operation::HostedHistory(operation),
+            predecessor,
+            state.revision,
+            previous,
+            sink,
+            document_intent,
+            None,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // Exact source, worker, gesture and insertion intent.
+    pub(in crate::service) fn stage_verified_graph_edit(
+        &mut self,
+        command: Command,
+        state: &ViewState,
+        previous: Option<&hex_engine::PreparedRevision>,
+        sink: &mut dyn WorkerAudioSink,
+        document_intent: u64,
+        gesture: Option<&crate::device_gesture::GestureSnapshot>,
+        proposal_control: Option<Arc<PluginEffectControl>>,
+    ) -> Result<Option<Pending>, SessionError> {
+        crate::validate_command_media(&command)?;
+        let predecessor = self.verified_graph_predecessor(state)?;
         let operation = if is_tempo_edit(&command) {
             Operation::Tempo
         } else {
@@ -706,8 +809,34 @@ impl Session {
                 sequence: active.sequence,
                 canonical_revision: state.revision,
             });
-        let next = state
-            .revision
+        self.start_verified_graph_edit(
+            StagedChange::Command(edit),
+            operation,
+            predecessor,
+            state.revision,
+            previous,
+            sink,
+            document_intent,
+            retiring_gain,
+            proposal_control,
+        )
+        .map(Some)
+    }
+
+    #[allow(clippy::too_many_arguments)] // Exact authored target and its existing publication owners.
+    fn start_verified_graph_edit(
+        &self,
+        edit: StagedChange,
+        operation: Operation,
+        predecessor: hex_engine::AudioSourceContext,
+        editor_revision: u64,
+        previous: Option<&PreparedRevision>,
+        sink: &mut dyn WorkerAudioSink,
+        document_intent: u64,
+        retiring_gain: Option<DevicePreviewIdentity>,
+        proposal_control: Option<Arc<PluginEffectControl>>,
+    ) -> Result<Pending, SessionError> {
+        let next = editor_revision
             .checked_add(1)
             .ok_or(SessionError::Invalid("editor revision exhausted"))?;
         let source = Arc::new(CanonicalAudioSourceSnapshot::capture(
@@ -716,16 +845,20 @@ impl Session {
             next,
             self,
         ));
+        let tempo_cut = matches!(operation, Operation::Tempo);
+        let hosted_history = matches!(operation, Operation::HostedHistory(_));
+        let begin_before_projection = tempo_cut || hosted_history;
         let attempt = VerifiedGraphEditAttempt::new(
             source,
             predecessor,
             retiring_gain,
             None,
             tempo_cut,
+            hosted_history,
             proposal_control,
         );
-        if tempo_cut {
-            // Retain the exact running audio source before offline projection.
+        if begin_before_projection {
+            // Keep the exact predecessor before timing projection or private hosted preparation.
             sink.begin_verified_graph_edit(attempt.clone())
                 .map_err(SessionError::NativeAudio)?;
         }
@@ -739,17 +872,17 @@ impl Session {
         let prepared = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
-                if tempo_cut {
+                if begin_before_projection {
                     sink.finish_verified_graph_edit(&attempt, false);
                 }
                 return Err(error);
             }
         };
-        if !tempo_cut {
+        if !begin_before_projection {
             sink.begin_verified_graph_edit(attempt.clone())
                 .map_err(SessionError::NativeAudio)?;
         }
-        Ok(Some(Pending {
+        Ok(Pending {
             edit,
             prepared: Prepared::Verified {
                 attempt,
@@ -762,8 +895,8 @@ impl Session {
             document_intent,
             plugin: None,
             proposal_control: None,
-            publish_created: true,
-        }))
+            publish_created: !hosted_history,
+        })
     }
 
     pub(super) fn prepare_verified_edit_revision(
@@ -920,7 +1053,7 @@ impl Session {
             )?;
             let receipt = insert_receipt(&snapshot, sink)?;
             Ok(Some(Pending {
-                edit,
+                edit: StagedChange::Command(edit),
                 prepared: Prepared::Resident(Box::new(Resident {
                     snapshot,
                     receipt: Receipt(receipt),

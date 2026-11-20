@@ -8,6 +8,200 @@ use hex_session::device_gesture::{GestureKey, GestureRequest, ParameterValue};
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_hosted_removal_undo_installs_a_fresh_catalog_worker() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let directory = files.0.canonicalize().unwrap();
+    let mut selection = selection();
+    let module = directory.join("history.vst3");
+    super::ui::copy_original_module(&selection.module, &module);
+    selection.module = module.clone();
+    hex_ui::write_plugin_effect_test_catalog(&directory, &selection, "Fx", 0).unwrap();
+    let progress = Arc::new(Mutex::new(
+        crate::native_audio::plugins::PreparationObservation::default(),
+    ));
+    let mut h = super::super::verified_gain::native_harness_with(|sink| {
+        sink.plugins = crate::native_audio::plugins::Plugins::with_fixture(host(), None);
+        sink.plugins.catalog = Some(directory.join("plugin-catalog.json"));
+        sink.plugins.progress = Some(Arc::clone(&progress));
+    });
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
+    let track = imported.state.project.tracks()[0].id();
+    h.applied(h.context.unwrap());
+    let submit = |h: &Harness, request| h.service.as_ref().unwrap().submit(request).unwrap();
+    let mut insertion = request(&imported.state, PluginEffectDestination::Track(track));
+    insertion.selection = selection;
+    submit(&h, Request::InsertPluginEffect(insertion));
+    let inserted = loop {
+        let event = h.next_with_audio();
+        assert!(event.error.is_none(), "{:?}", event.error);
+        if let Some(terminal) = event.plugin_effect_complete.first() {
+            assert!(terminal.accepted);
+            break event;
+        }
+    };
+    let Some(Created::Device(vst)) = inserted.created else {
+        panic!("fixture VST3");
+    };
+    h.applied(h.context.unwrap());
+    wait(|| progress.lock().unwrap().source_bindings[0].is_some());
+    let original = progress.lock().unwrap().source_bindings[0].unwrap().1;
+
+    let removed = h.run_verified_device_insert(Command::RemoveDevice(vst));
+    assert!(removed.state.project.device(vst).is_none());
+    let predecessor = h.applied(h.context.unwrap());
+    let applied = |h: &Harness| {
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_audio_source()
+    };
+    let terminal = |h: &mut Harness| loop {
+        let event = h.next_with_audio();
+        if event.request_complete {
+            break event;
+        }
+    };
+    let transport = |h: &mut Harness, command| {
+        h.audio.as_mut().unwrap().control.command(command).unwrap();
+    };
+    let settle_pause = |h: &mut Harness| {
+        transport(h, PlaybackCommand::Pause);
+        wait(|| {
+            h.render();
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .paused_input_interval()
+                .is_some_and(|(source, _)| source == predecessor)
+        });
+    };
+    let check_refused = |event: &Event, h: &Harness| {
+        assert!(event.error.is_some());
+        assert_eq!(event.state.project, removed.state.project);
+        assert_eq!(event.state.revision, removed.state.revision);
+        assert_eq!(event.state.can_undo, removed.state.can_undo);
+        assert_eq!(event.state.can_redo, removed.state.can_redo);
+        assert_eq!(applied(h), Some(predecessor));
+    };
+
+    transport(&mut h, PlaybackCommand::Play);
+    wait(|| {
+        h.render();
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
+    });
+    submit(&h, Request::Undo);
+    let running = terminal(&mut h);
+    assert_eq!(
+        running.error.as_deref(),
+        Some("stop playback to undo or redo this vst3 edit")
+    );
+    check_refused(&running, &h);
+    settle_pause(&mut h);
+
+    let unavailable = directory.join("temporarily-unavailable.vst3");
+    fs::rename(&module, &unavailable).unwrap();
+    submit(&h, Request::Undo);
+    let refused = terminal(&mut h);
+    assert!(
+        refused
+            .error
+            .as_deref()
+            .is_some_and(|message| message.contains("bundle missing")),
+        "Undo refusal: {:?}",
+        refused.error,
+    );
+    check_refused(&refused, &h);
+    fs::rename(&unavailable, &module).unwrap();
+
+    submit(&h, Request::Undo);
+    let pending = h.next_with_audio();
+    assert!(pending.error.is_none(), "{:?}", pending.error);
+    assert!(!pending.request_complete);
+    assert_eq!(pending.state.project, removed.state.project);
+    assert_eq!(applied(&h), Some(predecessor));
+    transport(&mut h, PlaybackCommand::Play);
+    let interrupted = terminal(&mut h);
+    check_refused(&interrupted, &h);
+    settle_pause(&mut h);
+
+    submit(&h, Request::Undo);
+    let pending = h.next_with_audio();
+    assert!(pending.error.is_none(), "{:?}", pending.error);
+    assert!(!pending.request_complete);
+    assert_eq!(pending.state.project, removed.state.project);
+    assert_eq!(applied(&h), Some(predecessor));
+    let undone = terminal(&mut h);
+    assert!(
+        undone.error.is_none(),
+        "catalog VST3 Undo refused: {:?}",
+        undone.error
+    );
+    assert_eq!(
+        undone.state.project.device(vst),
+        inserted.state.project.device(vst)
+    );
+    let restored_source = h.applied(h.context.unwrap());
+    let receipt = undone.device_insert_complete.unwrap();
+    assert_eq!(
+        receipt.outcome,
+        hex_session::service::DeviceInsertOutcome::Installed
+    );
+    assert_eq!(
+        receipt.submission.audio_revision,
+        restored_source.audio_revision
+    );
+    assert_eq!(receipt.submission.context, restored_source.context);
+    assert_eq!(
+        receipt.submission.output_identity,
+        predecessor.output_identity
+    );
+    let (_, restored, accepted) = progress.lock().unwrap().newest_source.unwrap();
+    assert!(accepted);
+    assert_ne!(restored, original, "Undo reused the removed VST3 worker");
+
+    submit(&h, Request::Redo);
+    let pending = h.next();
+    assert!(!pending.request_complete);
+    assert_eq!(pending.state.project, undone.state.project);
+    assert_eq!(applied(&h), Some(restored_source));
+    let redone = terminal(&mut h);
+    assert!(redone.error.is_none(), "{:?}", redone.error);
+    assert_eq!(redone.state.project, removed.state.project);
+    assert_eq!(redone.state.revision, undone.state.revision + 1);
+    let removed_source = h.applied(h.context.unwrap());
+    let receipt = redone.device_insert_complete.unwrap();
+    assert_eq!(
+        receipt.outcome,
+        hex_session::service::DeviceInsertOutcome::Installed
+    );
+    assert_eq!(
+        receipt.submission.audio_revision,
+        removed_source.audio_revision
+    );
+    assert_eq!(removed_source.output_identity, predecessor.output_identity);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
 fn verified_file_track_removal_keeps_one_compensated_hosted_return_worker() {
     use hex_session::service::DeviceInsertOutcome;
 
