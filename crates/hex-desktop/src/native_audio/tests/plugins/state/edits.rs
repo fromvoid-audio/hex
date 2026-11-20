@@ -253,6 +253,12 @@ fn late_editor_replay_saves_and_reopens_on_the_same_successor() {
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
+fn late_editor_already_in_canonical_successor_releases_original_receipt() {
+    retiring_editor_replay_roundtrip(ReplayCase::AlreadyCanonical);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
 fn late_editor_replay_preserves_playing_transport() {
     retiring_editor_replay_roundtrip(ReplayCase::Playing);
 }
@@ -273,6 +279,7 @@ fn late_editor_replay_refusal_preserves_newer_editor_input() {
 enum ReplayCase {
     Conflict,
     Publish,
+    AlreadyCanonical,
     Playing,
     Refuse,
     RefuseAfterNewer,
@@ -323,7 +330,12 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
     let (applied, _) = h.applied(0);
     let original = &saved.project.main_devices()[0];
     let device = original.id();
-    let replacement = with_gain(original.state(), 1.5);
+    let replacement_gain = if case == ReplayCase::AlreadyCanonical {
+        3.0
+    } else {
+        1.5
+    };
+    let replacement = with_gain(original.state(), replacement_gain);
     let old_binding = h.plugin_progress.lock().unwrap().binding.unwrap();
     let traces_dir = PathBuf::from(std::env::var_os("HEX_ORIGINAL_NOTE_TRACE_DIR").unwrap());
     let mut traces = fs::read_dir(&traces_dir)
@@ -410,6 +422,58 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         h.pump();
         std::thread::yield_now();
     };
+
+    if case == ReplayCase::AlreadyCanonical {
+        use hex_session::service::{
+            DeviceAutomationTakeProgress as Progress, RetiringEditorCloseBlocker,
+        };
+
+        let mut request_id = 1;
+        let settled = loop {
+            h.service
+                .submit(Request::QueryDeviceAutomationCloseSafety { request_id })
+                .unwrap();
+            let event = ordinary_terminal(&mut h);
+            assert!(event.error.is_none(), "{:?}", event.error);
+            let safety = event.device_automation_take_complete.unwrap();
+            assert_eq!(safety.request_id, request_id);
+            match safety.progress {
+                Progress::CloseSafe => break event.state,
+                Progress::CloseRetiringEditor(RetiringEditorCloseBlocker::Transferring) => {}
+                other => panic!("same-value replay failed to settle: {other:?}"),
+            }
+            assert!(start.elapsed() < Duration::from_secs(2));
+            request_id += 1;
+        };
+        assert_eq!(settled.revision, accepted.state.revision);
+        assert_eq!(settled.project, accepted.state.project);
+        assert_eq!(settled.unsaved, accepted.state.unsaved);
+        assert_eq!(installed(&h), Some(successor));
+        assert_eq!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .recording_source()
+                .unwrap()
+                .audio_revision,
+            replacement_audio
+        );
+        use crate::native_audio::tests::resident_preview::EditorRecordingProbe;
+        assert!(
+            super::super::editor_recording::probe(&h, |reply| {
+                EditorRecordingProbe::RetiringBatch(old_binding, reply)
+            })
+            .is_none()
+        );
+        let saved = h.run(Request::SaveCurrent);
+        assert!(saved.save_complete);
+        assert_eq!(saved.state.revision, accepted.state.revision);
+        let disk = hex_storage::load(files.0.join("effect.hex")).unwrap();
+        assert_eq!(disk.device(device).unwrap().state(), &replacement);
+        return;
+    }
 
     if matches!(case, ReplayCase::Publish | ReplayCase::Playing) {
         let event = loop {

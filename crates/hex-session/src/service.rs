@@ -6427,8 +6427,10 @@ fn run_worker(
                             ),
                         ) {
                             Ok(Some(outcome)) => {
-                                unsaved = true;
-                                replacement_revision = Some(outcome.prepared);
+                                if let Some(prepared) = outcome.prepared {
+                                    unsaved = true;
+                                    replacement_revision = Some(prepared);
+                                }
                                 error = outcome.receipt_failure;
                             }
                             Ok(None) => {}
