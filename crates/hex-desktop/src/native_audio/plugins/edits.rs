@@ -272,12 +272,14 @@ impl Plugins {
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&RequestCancellation>,
         fresh_source: bool,
+        powering_on: bool,
     ) -> Result<(), String> {
         let context = input.context();
         let owner = destination.owner();
         let control = output.publication.control().ok_or("native output closed")?;
         self.extend_edit_targets(control, input, destination, device, state, cancellation)?;
         if !fresh_source
+            && !powering_on
             && self
                 .matching_edit_source(
                     control,
@@ -338,9 +340,10 @@ impl Plugins {
             let previous = desired
                 .filter(|source| source.context().project_generation == context.project_generation)
                 .map(CanonicalAudioSourceSnapshot::effect_preparation);
-            let reintroduced = previous
-                .as_ref()
-                .is_some_and(|old| old.plugin_device_bypassed(device).is_none());
+            let reintroduced = powering_on
+                || previous
+                    .as_ref()
+                    .is_some_and(|old| old.plugin_device_bypassed(device).is_none());
             let selected = if reintroduced {
                 self.saved_catalog_selection(state, destination)
             } else {
@@ -349,6 +352,9 @@ impl Plugins {
             catalog = match selected {
                 Ok(selected) => selected,
                 Err(reason) => {
+                    if powering_on {
+                        return Err(reason);
+                    }
                     let mut preserved = false;
                     if let Some(previous) = previous {
                         previous.visit_plugin_devices(|_, _, old| {

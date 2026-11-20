@@ -8,6 +8,7 @@ pub(super) mod edits;
 mod main_vst3_pass;
 mod power_receipt;
 mod save;
+mod saved_off_main;
 mod verified;
 
 /// Tests that hold a fresh callback before its first graph use the real
