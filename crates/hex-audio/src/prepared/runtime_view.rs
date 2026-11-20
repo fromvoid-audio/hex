@@ -143,6 +143,14 @@ impl RuntimeRef<'_> {
     pub(super) fn playing(&self) -> bool {
         self.status().is_some_and(|s| s.playing)
     }
+    /// The current graph has finished its de-click and holds the musical cut.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn device_insert_held(&self) -> bool {
+        match self {
+            Self::Legacy(playback) => playback.device_insert_held(),
+            Self::Eligible(runtime) => runtime.device_insert_held(),
+        }
+    }
     pub(super) fn metronome_enabled(&self) -> bool {
         self.status().is_some_and(|s| s.metronome_enabled)
     }

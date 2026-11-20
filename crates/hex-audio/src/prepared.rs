@@ -5602,7 +5602,7 @@ impl Callback {
             && self
                 .active
                 .as_ref()
-                .and_then(ActivePublication::legacy)
+                .and_then(ActivePublication::current)
                 .is_some_and(|active| active.playback.device_insert_held())
         {
             self.native_sources.end_staging_at_rendered_prefix(frame);
