@@ -2808,8 +2808,8 @@ impl SessionPlayback {
         let instrument_move = self
             .native_removal
             .and_then(|pending| pending.instrument_track_move());
-        let mutable_move =
-            instrument_move.filter(|movement| movement.kind == InstrumentMoveKind::MutableVector);
+        let mutable_move = instrument_move
+            .filter(|movement| matches!(movement.kind, InstrumentMoveKind::Mutable { .. }));
         if let Some(movement) = mutable_move
             && source_handoff.new_for_old.get(movement.source) != Some(&movement.destination)
         {
