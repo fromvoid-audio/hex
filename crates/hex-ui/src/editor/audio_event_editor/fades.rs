@@ -500,29 +500,20 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return Vec::new();
         };
-        let Some(bounds) = self.audio_event_editor.bounds else {
-            return Vec::new();
-        };
         let Some(geometry) = projected_fade(root, event, state.project.tempo_map()) else {
-            return Vec::new();
-        };
-        let Some((source_start, source_end)) =
-            source_window(root, event, state.project.tempo_map())
-        else {
             return Vec::new();
         };
         let visible_start = visible.start;
         let visible_end = visible.end;
-        let width = f32::from(bounds.size.width) * (visible_end - visible_start) as f32
-            / viewport_length.max(1) as f32;
-        let height = f32::from(bounds.size.height) - 28.0;
-        if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 16.0 {
-            return Vec::new();
-        }
+        let width = self.audio_event_editor.bounds.map_or(96.0, |bounds| {
+            f32::from(bounds.size.width) * (visible_end - visible_start) as f32
+                / viewport_length.max(1) as f32
+        });
         let projected = event.fade.map(|_| geometry);
         let controls = geometry.shape();
         let origin = geometry.source_start();
-        // Capture only a bounded curve for paint, never a project clone per event.
+        // Shade uses the canvas's current bounds, including the first paint.
+        // Capture only a bounded curve, without retaining the project for paint.
         let count = (width.ceil() as usize).clamp(2, 96);
         let mut gains = [1.0; 96];
         for (index, gain) in gains.iter_mut().take(count).enumerate() {
@@ -594,6 +585,18 @@ impl EditorView {
                 .right_0()
                 .into_any_element(),
         ];
+        let Some(bounds) = self.audio_event_editor.bounds else {
+            return elements;
+        };
+        let height = f32::from(bounds.size.height) - 28.0;
+        if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 16.0 {
+            return elements;
+        }
+        let Some((source_start, source_end)) =
+            source_window(root, event, state.project.tempo_map())
+        else {
+            return elements;
+        };
         // The event has a one-pixel border. Fit hit boxes to its inner width,
         // even when a short event is zoomed out.
         let inner_width = (width - 2.0).max(0.0);
