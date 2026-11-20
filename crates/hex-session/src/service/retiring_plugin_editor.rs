@@ -39,6 +39,32 @@ impl PartialEq for RetiringEditorEvent {
     }
 }
 
+/// Lifetime of a single close decision. The caller retains the strong owner
+/// until close or cancellation. Queued requests and native worker custody
+/// retain only weak references so they cannot keep a cancelled attempt alive.
+#[derive(Debug, Default)]
+pub struct PluginEditorCloseAttempt(std::sync::atomic::AtomicBool);
+
+impl PluginEditorCloseAttempt {
+    /// The native control owner invalidates the decision if any of its exact
+    /// editor sources change before close. A new decision must get new holds.
+    pub fn invalidate(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn is_valid(&self) -> bool {
+        !self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+/// Native admission alone cannot prove that any accepted edits were saved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PluginEditorCloseAdmission {
+    Pending,
+    Held { admitted_edits: bool },
+    Refused,
+}
+
 /// A sealed original receipt sequence and the successor named at transition.
 /// Validate the current source and canonical project revision before applying it.
 #[derive(Clone, Debug, PartialEq)]
@@ -58,6 +84,13 @@ pub struct RetiringEditorBatch {
 pub enum RetiringEditorReplayDisposition {
     Refused,
     Published { receipt_accepted: bool },
+}
+
+/// Why the original retiring editor source still needs the Session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetiringEditorCloseBlocker {
+    Transferring,
+    Unresolved,
 }
 
 impl RetiringEditorBatch {

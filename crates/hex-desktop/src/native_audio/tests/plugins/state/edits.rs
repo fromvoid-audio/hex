@@ -83,6 +83,164 @@ fn graph_publication_ready(h: &mut ResidentHarness, ready: &mpsc::Receiver<()>) 
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
+fn plugin_editor_close_releases_unobserved_holds_before_next_attempt() {
+    use crate::native_audio::tests::resident_preview::emit_replay_fixture_edit;
+    use hex_session::service::{
+        DeviceAutomationTakeProgress, PluginEditorCloseAdmission as Admission,
+        PluginEditorCloseAttempt,
+    };
+
+    const CHILD: &str = "HEX_8291_CLOSE_HOLD_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let files = Files::new();
+        let release = files.0.join("release");
+        let traces = files.0.join("traces");
+        fs::create_dir_all(&release).unwrap();
+        fs::create_dir_all(&traces).unwrap();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "147")
+            .env("HEX_ORIGINAL_EDITOR_RELEASE_DIR", release)
+            .env("HEX_ORIGINAL_NOTE_TRACE_DIR", traces)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+
+    let _native = native_fixture();
+    let (mut h, files, saved) = fixture(Start::Saved);
+    h.applied(0);
+    let context = saved.canonical_audio_source.as_ref().unwrap().context();
+    assert_eq!(context.editor_revision, saved.revision);
+    let binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+    let traces = PathBuf::from(std::env::var_os("HEX_ORIGINAL_NOTE_TRACE_DIR").unwrap());
+    let trace = fs::read_dir(traces)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "bin"))
+        .unwrap();
+    emit_replay_fixture_edit(&trace);
+
+    let mut request_id = 0;
+    let mut prepare = |h: &mut ResidentHarness, context, attempt| {
+        request_id += 1;
+        h.service
+            .submit(Request::PreparePluginEditorClose {
+                request_id,
+                context,
+                attempt,
+            })
+            .unwrap();
+        loop {
+            let event = h.next();
+            assert!(event.error.is_none(), "{:?}", event.error);
+            if let Some(result) = event.device_automation_take_complete
+                && result.request_id == request_id
+            {
+                let DeviceAutomationTakeProgress::ClosePluginEditor(admission) = result.progress
+                else {
+                    panic!("unexpected close response: {:?}", result.progress);
+                };
+                return admission;
+            }
+        }
+    };
+    let first = Arc::new(PluginEditorCloseAttempt::default());
+    let first_request = Arc::downgrade(&first);
+    let stale = hex_engine::AudioSourceContext {
+        project_generation: context.project_generation + 1,
+        ..context
+    };
+    assert_eq!(
+        prepare(&mut h, stale, first_request.clone()),
+        Admission::Refused
+    );
+    assert_eq!(
+        prepare(&mut h, context, first_request.clone()),
+        Admission::Pending
+    );
+    drop(first);
+    assert_eq!(prepare(&mut h, context, first_request), Admission::Refused);
+
+    // A second attempt uses another token. The same SDK will refuse it while
+    // the first hold remains installed, even when its caller never saw Held.
+    let mut acquire = || {
+        let attempt = Arc::new(PluginEditorCloseAttempt::default());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match prepare(&mut h, context, Arc::downgrade(&attempt)) {
+                Admission::Pending => {}
+                Admission::Held { admitted_edits } => {
+                    assert!(
+                        admitted_edits,
+                        "the original SDK input frontier survives release"
+                    );
+                    break;
+                }
+                Admission::Refused => panic!("the original worker refused a fresh hold"),
+            }
+            assert!(Instant::now() < deadline, "cancelled close leaked its hold");
+        }
+        assert_eq!(h.plugin_progress.lock().unwrap().binding, Some(binding));
+        attempt
+    };
+    drop(acquire());
+    let held = acquire();
+    assert!(held.is_valid());
+    h.service.submit(Request::SaveCurrent).unwrap();
+    let save = ordinary_terminal(&mut h);
+    assert!(
+        save.save_complete && save.error.is_none(),
+        "{:?}",
+        save.error
+    );
+    let stored = hex_storage::load(files.0.join("effect.hex")).unwrap();
+    let state = hex_plugin_state::decode(stored.main_devices()[0].state()).unwrap();
+    assert_eq!(
+        f32::from_le_bytes(state.component.unwrap()[8..12].try_into().unwrap()),
+        3.0,
+        "save under the admission hold captures the original SDK change"
+    );
+    assert!(held.is_valid());
+
+    // Replacing the exact native source invalidates the close decision even
+    // though its original caller keeps the grant alive through a prompt.
+    let device = &saved.project.main_devices()[0];
+    h.service
+        .submit(Request::Edit(Command::ReplaceDeviceState {
+            device: device.id(),
+            state: with_gain(device.state(), 0.75),
+        }))
+        .unwrap();
+    let event = ordinary_terminal(&mut h);
+    assert!(event.error.is_none(), "{:?}", event.error);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while held.is_valid() {
+        h.pump();
+        h.render_worker_step();
+        assert!(
+            Instant::now() < deadline,
+            "replacement left the old close decision valid"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(hex_audio::audio_lifecycle_failure(), None);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
 fn late_editor_receipts_survive_replacement_and_callback_held_shutdown() {
     retiring_editor_replay_roundtrip(ReplayCase::Conflict);
 }
@@ -403,6 +561,13 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         return;
     }
     assert_eq!(error, "vst3 replacement accepted a newer editor edit");
+    let safety = h.run(Request::QueryDeviceAutomationCloseSafety { request_id: 1 });
+    assert_eq!(
+        safety.device_automation_take_complete.unwrap().progress,
+        hex_session::service::DeviceAutomationTakeProgress::CloseRetiringEditor(
+            hex_session::service::RetiringEditorCloseBlocker::Unresolved
+        )
+    );
 
     let deadline = Instant::now() + Duration::from_secs(1);
     let needs_disposition = (

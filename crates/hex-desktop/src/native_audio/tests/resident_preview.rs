@@ -1597,10 +1597,47 @@ struct PublicationProbe {
     resume: mpsc::Receiver<()>,
     busy: SyncSender<()>,
 }
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) fn emit_replay_fixture_edit(trace: &std::path::Path) {
+    let release =
+        std::path::PathBuf::from(std::env::var_os("HEX_ORIGINAL_EDITOR_RELEASE_DIR").unwrap());
+    std::fs::write(release.join(trace.file_stem().unwrap()), b"edit").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if std::fs::read(trace)
+            .ok()
+            .is_some_and(|trace| trace.get(..4) == Some(&25_i32.to_le_bytes()))
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "original SDK did not emit its edit"
+        );
+        std::thread::yield_now();
+    }
+}
+
 impl WorkerAudioSink for ResidentSink {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn retiring_editor_replay_ready(&self) -> bool {
         self.inner.retiring_editor_replay_ready()
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn prepare_plugin_editor_close(
+        &mut self,
+        context: AudioSourceContext,
+        attempt: &std::sync::Weak<hex_session::service::PluginEditorCloseAttempt>,
+    ) -> hex_session::service::PluginEditorCloseAdmission {
+        self.inner.prepare_plugin_editor_close(context, attempt)
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn retiring_editor_close_blocker(
+        &self,
+    ) -> Option<hex_session::service::RetiringEditorCloseBlocker> {
+        self.inner.retiring_editor_close_blocker()
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -1623,13 +1660,7 @@ impl WorkerAudioSink for ResidentSink {
                 std::env::var_os("HEX_ORIGINAL_EDITOR_RELEASE_DIR").unwrap(),
             );
             if let Ok(trace) = std::fs::read_to_string(release.join("after-replay")) {
-                let trace = std::path::Path::new(&trace);
-                std::fs::write(release.join(trace.file_stem().unwrap()), b"edit").unwrap();
-                super::plugins::wait(|| {
-                    std::fs::read(trace)
-                        .ok()
-                        .is_some_and(|bytes| bytes.get(..4) == Some(&25_i32.to_le_bytes()))
-                });
+                emit_replay_fixture_edit(std::path::Path::new(&trace));
             }
             self.refuse
                 .store(true, std::sync::atomic::Ordering::Release);

@@ -1357,6 +1357,33 @@ impl WorkerAudioSink for NativeAudioSink {
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn retiring_editor_close_blocker(
+        &self,
+    ) -> Option<hex_session::service::RetiringEditorCloseBlocker> {
+        use hex_session::service::RetiringEditorCloseBlocker;
+        if hex_audio::audio_lifecycle_failure()
+            == Some(hex_audio::AudioLifecycleFailure::RetiringEditor)
+        {
+            return Some(RetiringEditorCloseBlocker::Unresolved);
+        }
+        self.plugins.retiring_editor_close_blocker()
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn prepare_plugin_editor_close(
+        &mut self,
+        context: AudioSourceContext,
+        attempt: &std::sync::Weak<hex_session::service::PluginEditorCloseAttempt>,
+    ) -> hex_session::service::PluginEditorCloseAdmission {
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control());
+        self.plugins
+            .prepare_editor_close(control, context.project_generation, attempt)
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn next_retiring_editor_replay(&mut self) -> Option<hex_session::service::RetiringEditorBatch> {
         self.plugins.next_retiring_editor_replay()
     }

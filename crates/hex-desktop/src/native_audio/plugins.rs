@@ -17,6 +17,7 @@ use hex_session::service::{
 };
 mod degraded;
 mod editor;
+mod editor_close;
 pub(super) mod editor_recording;
 mod parameter_conversion;
 mod parameter_gesture;
@@ -209,6 +210,8 @@ pub(super) struct Plugins {
     paused_monitor_sources: Vec<Binding>,
     pending: Option<Pending>,
     editor: Option<editor::EditorOperation>,
+    editor_close: Option<editor_close::EditorClose>,
+    editor_close_ordinal: u64,
     queued_editor_toggle: Option<(Binding, u64)>,
     editor_visibility_cursor: usize,
     next_editor_visibility: Option<std::time::Instant>,
@@ -331,6 +334,7 @@ impl Plugins {
     pub fn output_closed(&mut self) {
         // The relinquished output's Root retains every outstanding loan.
         self.paused_monitor_sources.clear();
+        self.editor_close_output_closed();
         self.close_editor_recording();
         if let Some(parameters) = &mut self.parameters {
             parameters.output_closed();
@@ -430,6 +434,13 @@ impl Plugins {
             .capacity()
             .checked_mul(std::mem::size_of::<Source>())
             .and_then(|n| n.checked_add(monitor_bytes))
+            .and_then(|n| {
+                n.checked_add(
+                    policy
+                        .capacity
+                        .checked_mul(std::mem::size_of::<editor_close::Worker>())?,
+                )
+            })
             .and_then(|n| n.checked_add(std::mem::size_of::<Self>()))
             .and_then(|n| n.checked_add(self.host.as_ref()?.control_data_bytes()?))
             .and_then(|n| {
@@ -776,6 +787,7 @@ impl Plugins {
             self.output_closed();
             return;
         };
+        self.poll_editor_close(control, context.map(|context| context.project_generation));
         self.poll_editor(control, context, desired);
         self.poll_parameters(control, context);
         self.poll_parameter_conversion(control, context);

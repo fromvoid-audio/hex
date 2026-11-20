@@ -15,7 +15,9 @@ pub(super) struct Restore {
 }
 enum Stage {
     Fence,
-    Return,
+    Return {
+        hold_release_deadline: std::time::Instant,
+    },
     Renew(usize),
     RefreshLatency(Binding),
     Prepare(usize),
@@ -82,6 +84,7 @@ impl Plugins {
         let fence = control
             .request_ordinary_native_epoch_fence(source)
             .map_err(str::to_owned)?;
+        self.invalidate_editor_close();
         self.restore = Some(Restore {
             context,
             source,
@@ -172,9 +175,27 @@ impl Plugins {
                         // another transport source started playback first.
                         return Err("playback started before vst3 effects were restored".into());
                     }
-                    StoppedEditFenceState::Ready => restore.stage = Stage::Return,
+                    StoppedEditFenceState::Ready => {
+                        let hold_release_deadline = std::time::Instant::now()
+                            .checked_add(PREPARATION_TIMEOUT)
+                            .ok_or("stopped vst3 editor hold deadline unavailable")?;
+                        restore.stage = Stage::Return {
+                            hold_release_deadline,
+                        };
+                    }
                 },
-                Stage::Return => match control
+                // The original controller must settle its exact release
+                // before returning the endpoint and reusing the SDK child.
+                Stage::Return {
+                    hold_release_deadline,
+                } if self.editor_close.is_some() => {
+                    if std::time::Instant::now() >= hold_release_deadline {
+                        return Err(
+                            "could not confirm release of the original vst3 editor hold".into()
+                        );
+                    }
+                }
+                Stage::Return { .. } => match control
                     .return_stopped_ordinary_native_epoch_runtime(restore.source, restore.fence)
                 {
                     Ok(()) => restore.stage = Stage::Renew(0),
