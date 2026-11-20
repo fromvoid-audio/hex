@@ -169,6 +169,106 @@ fn an_aborted_track_removal_restores_its_running_fader() {
     }
 }
 
+#[test]
+fn removing_compensated_audio_track_drains_its_faded_pcm_before_installing() {
+    use hex_devices::limiter::{DEFINITION, parameter::LOOKAHEAD};
+
+    const FRAMES: usize = 2_048;
+    const CUT: usize = 512;
+    const FADE: usize = RATE.div_ceil(200) as usize;
+    const PREFIX: usize = FADE + DELAY - 1;
+    let survivor_pcm: Vec<_> = (0..FRAMES)
+        .map(|i| [0.125 + i as f32 / 65_536.0, -0.125])
+        .collect();
+    let (mut editor, survivor, _) = resident_input(survivor_pcm.clone());
+    let original = editor.project().assets().next().unwrap().id();
+    let limiter = DEFINITION
+        .patch_parameter(
+            &DEFINITION.default_state().unwrap(),
+            LOOKAHEAD,
+            ParameterValue::Choice(0),
+        )
+        .unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track: survivor,
+            before: None,
+            state: limiter,
+        })
+        .unwrap();
+    let Created::Imported { track, asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "removed".into(),
+            path: "removed.wav".into(),
+            sample_rate: RATE,
+            frames: FRAMES as u64,
+        })
+        .unwrap()
+    else {
+        panic!("added audio track");
+    };
+    let table = Arc::new(hex_engine::SineTable::new());
+    let prepare = |project: &Project, departing: Vec<Frame>| {
+        let media = BTreeMap::from([
+            (
+                original,
+                hex_engine::Audio::new(RATE, survivor_pcm.clone()).unwrap(),
+            ),
+            (asset, hex_engine::Audio::new(RATE, departing).unwrap()),
+        ]);
+        Arc::new(
+            hex_engine::PreparedRevision::prepare(project, &media, Arc::clone(&table), None)
+                .unwrap(),
+        )
+    };
+    let old = prepare(editor.project(), vec![SIGNAL; FRAMES]);
+    assert_eq!(old.arrangement().main_latency_frames() as usize, DELAY);
+
+    // Independent timeline: write the fade into the departing clip before
+    // compensation, then keep the entire old graph to render its delay ring.
+    let mut faded = vec![SIGNAL; FRAMES];
+    for (offset, frame) in faded[CUT..].iter_mut().enumerate() {
+        let gain = FADE.saturating_sub(offset + 1) as f32 / FADE as f32;
+        *frame = [SIGNAL[0] * gain, SIGNAL[1] * gain];
+    }
+    let reference = prepare(editor.project(), faded);
+    let mut oracle = Playback::try_from_prepared_with_session(reference).unwrap();
+    oracle.apply(PlaybackCommand::Play);
+    let mut expected = [[0.0; 2]; CUT + PREFIX + BLOCK];
+    oracle.render(&mut expected).unwrap();
+    editor.execute(Command::RemoveTrack(track)).unwrap();
+    let next = prepare(editor.project(), vec![SIGNAL; FRAMES]);
+    assert_eq!(next.arrangement().main_latency_frames() as usize, DELAY);
+
+    for partition in [1, BLOCK] {
+        let (control, mut callback, source, receipt) =
+            begin_insert_with_pending_track(Arc::clone(&old), Arc::clone(&next), None, CUT);
+        let mut pcm = [[0.0; 2]; PREFIX + BLOCK];
+        // The fader can be at zero while the 72-frame alignment ring still
+        // contains the last samples of the ramp. Keep the exact predecessor.
+        for chunk in pcm[..PREFIX].chunks_mut(partition) {
+            measured_render(&mut callback, chunk);
+            assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+            assert_eq!(control.status.recording_source(), Some(source));
+        }
+        measured_render(&mut callback, &mut pcm[PREFIX..]);
+        let installed = control.status.recording_source().unwrap();
+        assert_eq!(receipt.state(), PublicationReceiptState::Installed);
+        assert_eq!(installed.audio_revision, receipt.revision());
+        assert_eq!(installed.output_identity, source.output_identity);
+        assert_eq!(
+            control.status.position.load(Acquire),
+            (CUT + pcm.len()) as u64
+        );
+        for (frame, (actual, expected)) in pcm.iter().zip(&expected[CUT..]).enumerate() {
+            assert!(
+                (actual[0] - expected[0]).abs() < 1e-6 && (actual[1] - expected[1]).abs() < 1e-6,
+                "partition {partition}, frame {frame}: {actual:?} vs {expected:?}"
+            );
+        }
+    }
+}
+
 fn measured_render(callback: &mut Callback, output: &mut [Frame]) {
     let stats = allocation_counter::measure(|| {
         callback.begin_block();
