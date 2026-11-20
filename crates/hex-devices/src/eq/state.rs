@@ -1,5 +1,7 @@
 use super::*;
 
+pub(super) const ENCODE_BUFFER_CAPACITY: usize = 4096;
+
 /// Project-allocated monotonic identity. Parameter slots never depend on order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct NodeId(u32);
@@ -389,7 +391,7 @@ impl EqState {
     }
     pub fn encode(&self) -> Result<NativeDeviceState, DeviceContractError> {
         self.validate()?;
-        let mut b = Vec::with_capacity(4096);
+        let mut b = Vec::with_capacity(ENCODE_BUFFER_CAPACITY);
         b.push(self.mode);
         b.extend(self.output_gain.to_le_bytes());
         b.push(self.nodes.len() as u8);

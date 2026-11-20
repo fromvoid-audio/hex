@@ -43,6 +43,12 @@ pub(crate) fn pair_bytes(
                 .ok_or(AudioStorageError::Overflow)?,
         )));
     }
+    if let Some((primary, scratch)) = entry.runtime_pair::<hex_devices::eq::EqRuntime>() {
+        return Ok(Some((
+            primary.private_storage_bytes(),
+            scratch.private_storage_bytes(),
+        )));
+    }
     match (entry.primary_payload_bytes(), entry.scratch_payload_bytes()) {
         (Some(a), Some(b))
             if entry
@@ -71,6 +77,7 @@ pub(crate) fn is_closed_type(id: hex_lattice_contract::DeviceTypeId) -> bool {
         || id == hex_devices::overdrive::OVERDRIVE_TYPE_ID
         || id == hex_devices::gate::GATE_TYPE_ID
         || id == hex_devices::compressor::COMPRESSOR_TYPE_ID
+        || id == hex_devices::eq::EQ_TYPE_ID
         || id == hex_devices::eq8::EQ8_TYPE_ID
         || id == hex_devices::rattle::RATTLE_TYPE_ID
         || id == hex_devices::delay::TYPE_ID
