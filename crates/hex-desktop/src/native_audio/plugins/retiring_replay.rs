@@ -50,7 +50,7 @@ impl ReplayRestore {
             })
             .ok_or("vst3 replay recovery lost its original output or transport")?;
         let token = admit(control, None, |control| {
-            control.begin_native_source_guarded_editor_restore_on_control(
+            control.begin_native_source_guarded_editor_write_after_on_control(
                 self.binding,
                 0,
                 &self.written,
@@ -273,19 +273,26 @@ impl Plugins {
             RetiringEditorReplayMode::VerifyExisting { points } => (points, None),
             RetiringEditorReplayMode::Apply {
                 verify_existing,
-                points,
+                cohorts,
                 publication,
-            } => (verify_existing, Some((publication, points))),
+            } => (verify_existing, Some((publication, cohorts))),
         };
         if !expected.is_empty()
             && recovery_values(control, binding, expected, cancellation)?.as_slice() != expected
         {
             return Err("vst3 replacement does not already contain the retiring edit".into());
         }
-        let values = apply
-            .map(|(_, points)| recovery_values(control, binding, points, cancellation))
-            .transpose()?
-            .unwrap_or_default();
+        let mut available_recovery = if let Some((_, cohorts)) = apply {
+            let mut targets: Vec<(u32, f64)> = Vec::new();
+            for &point in cohorts.iter().flatten() {
+                if !targets.iter().any(|target| target.0 == point.0) {
+                    targets.push(point);
+                }
+            }
+            recovery_values(control, binding, &targets, cancellation)?
+        } else {
+            Vec::new()
+        };
         let before = capture(control, binding, cancellation)?;
         if !expected.is_empty() {
             let bound_before = before
@@ -300,41 +307,71 @@ impl Plugins {
                 return Err("vst3 replay applied source changed".into());
             }
         }
-        let Some((publication, points)) = apply else {
+        let Some((publication, cohorts)) = apply else {
             return Ok(PluginParameterCapture {
                 before: before.clone(),
                 after: before,
             });
         };
-        let token = admit(control, cancellation, |control| {
-            // A replacement helper is fresh. Its own editor input takes
-            // precedence over any retained value from the predecessor.
-            control.begin_native_source_guarded_editor_write_on_control(binding, 0, points)
-        })?;
         use NativeWorkerGuardedEditorWriteProgress as Progress;
-        let outcome = guarded_terminal(control, binding, &token);
-        if outcome == Ok(Progress::Conflict) {
-            return Err("vst3 replacement accepted a newer editor edit".into());
-        }
-        // A confirmed write, a changed readback and an unknown terminal all
-        // retain this operation until Session settles it. Only the first two
-        // can authorize restoration on the worker.
-        let restore = self.retiring_replay_restore.insert(ReplayRestore {
-            source,
-            transport_epoch,
-            playing,
-            binding,
-            written: token,
-            values,
-            before: before.clone(),
-        });
-        match outcome? {
-            Progress::Applied => {}
-            Progress::ReadbackChanged => {
-                return Err("vst3 replacement returned a different replay value".into());
+        let deadline = Instant::now() + super::paused_monitor::PREPARATION_TIMEOUT;
+        for points in cohorts {
+            if Instant::now() >= deadline {
+                return Err("vst3 retiring editor replay reached its preparation deadline".into());
             }
-            _ => return Err("vst3 retiring editor write lost its successor".into()),
+            if control.status.native_parameter_source(playing) != Some((source, transport_epoch)) {
+                return Err("vst3 replay applied source changed".into());
+            }
+            let token = admit(control, cancellation, |control| {
+                if let Some(previous) = &self.retiring_replay_restore {
+                    control.begin_native_source_guarded_editor_write_after_on_control(
+                        binding,
+                        0,
+                        &previous.written,
+                        points,
+                    )
+                } else {
+                    control.begin_native_source_guarded_editor_write_on_control(binding, 0, points)
+                }
+            })?;
+            let outcome = guarded_terminal(control, binding, &token);
+            if outcome == Ok(Progress::Conflict) {
+                return Err("vst3 replacement accepted a newer editor edit".into());
+            }
+            // Preserve the first capture and the original values of exactly
+            // the targets we might have changed, even after an unknown terminal.
+            let mut restore = match self.retiring_replay_restore.take() {
+                Some(mut restore) => {
+                    restore.written = token;
+                    restore
+                }
+                None => ReplayRestore {
+                    source,
+                    transport_epoch,
+                    playing,
+                    binding,
+                    written: token,
+                    values: Vec::new(),
+                    before: before.clone(),
+                },
+            };
+            restore.values.extend(
+                available_recovery
+                    .extract_if(.., |value| points.iter().any(|point| point.0 == value.0)),
+            );
+            self.retiring_replay_restore = Some(restore);
+            match outcome? {
+                Progress::Applied => {}
+                Progress::ReadbackChanged => {
+                    return Err("vst3 replacement returned a different replay value".into());
+                }
+                _ => return Err("vst3 retiring editor write lost its successor".into()),
+            }
         }
+        let restore = self
+            .retiring_replay_restore
+            .as_ref()
+            .ok_or("vst3 retiring editor replay has no applied cohort")?;
         let capture = admit(control, cancellation, |control| {
             control.begin_native_capture_after_guarded_write_on_control(binding, &restore.written)
         })?;

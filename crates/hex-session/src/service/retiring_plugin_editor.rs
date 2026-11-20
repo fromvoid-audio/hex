@@ -102,7 +102,7 @@ pub enum RetiringEditorReplayMode<'a> {
     },
     Apply {
         verify_existing: &'a [(u32, f64)],
-        points: &'a [(u32, f64)],
+        cohorts: &'a [Vec<(u32, f64)>],
         publication: AudioSourceContext,
     },
 }
@@ -173,7 +173,7 @@ impl RetiringEditorBatch {
 
 struct ReplayPoints {
     earlier: Vec<(u32, f64)>,
-    later: Vec<(u32, f64)>,
+    later: Vec<Vec<(u32, f64)>>,
 }
 
 impl RetiringEditorBatch {
@@ -181,7 +181,7 @@ impl RetiringEditorBatch {
         let cut = self
             .predecessor_admitted_through
             .ok_or("vst3 editor replacement order could not be established")?;
-        use RetiringEditorEventKind::Perform;
+        use RetiringEditorEventKind::{GroupBegin, GroupEnd, Perform};
         if self
             .events()
             .iter()
@@ -193,12 +193,32 @@ impl RetiringEditorBatch {
             earlier: Vec::new(),
             later: Vec::new(),
         };
-        for event in self.events().iter().filter(|event| event.kind == Perform) {
+        let mut group = None;
+        let mut previous_value_group = None;
+        for event in self.events() {
+            match event.kind {
+                GroupBegin => {
+                    group = Some(event.gesture);
+                    continue;
+                }
+                GroupEnd => {
+                    group = None;
+                    continue;
+                }
+                Perform => {}
+                _ => continue,
+            }
             let before_cut = event.sequence <= cut;
             let points = if before_cut {
                 &mut plan.earlier
             } else {
-                &mut plan.later
+                if plan.later.is_empty() || group != previous_value_group {
+                    plan.later.push(Vec::new());
+                    previous_value_group = group;
+                }
+                plan.later
+                    .last_mut()
+                    .ok_or("vst3 replay cohort is unavailable")?
             };
             if let Some(point) = points.iter_mut().find(|point| point.0 == event.parameter) {
                 if before_cut && point.1 != event.normalized {
@@ -215,9 +235,8 @@ impl RetiringEditorBatch {
         Ok(plan)
     }
 
-    /// Earlier complete cohorts are checked in place. Later values must fit
-    /// one guarded SDK flush: ordinary values or one timestamp cohort.
-    /// Every grouped sequence must close, and no cohort can straddle the cut.
+    /// Earlier complete cohorts are checked in place. Each later cohort keeps
+    /// its own SDK flush. No cohort can straddle the cut or lack its terminal.
     fn validate_grouped_replay(&self, cut: u64) -> Result<(), &'static str> {
         use RetiringEditorEventKind::{Begin, End, GroupBegin, GroupEnd, Perform};
         const UNRESOLVED: &str = "vst3 editor group needs a separate ordered disposition";
@@ -227,8 +246,6 @@ impl RetiringEditorBatch {
             .take_while(|event| event.sequence <= cut)
             .any(|event| event.kind.is_group_marker());
         let mut cohort = None;
-        // None means no later value yet; Some(None) means ordinary input.
-        let mut later_value_cohort = None;
         let mut active = std::collections::BTreeMap::new();
         for event in self.events() {
             let earlier = event.sequence <= cut;
@@ -246,12 +263,7 @@ impl RetiringEditorBatch {
                         return Err(UNRESOLVED);
                     }
                 }
-                Perform if active.get(&event.parameter) == Some(&event.gesture) => {
-                    let current = cohort.map(|(gesture, _)| gesture);
-                    if !earlier && *later_value_cohort.get_or_insert(current) != current {
-                        return Err(UNRESOLVED);
-                    }
-                }
+                Perform if active.get(&event.parameter) == Some(&event.gesture) => {}
                 End if active.get(&event.parameter) == Some(&event.gesture) => {
                     active.remove(&event.parameter);
                 }
@@ -296,7 +308,7 @@ pub(super) fn apply(
         if points
             .earlier
             .iter()
-            .chain(&points.later)
+            .chain(points.later.iter().flatten())
             .any(|&(parameter, _)| {
                 let target = hex_lattice_contract::DeviceAutomationTarget::Vst3 { parameter };
                 original.automation_target(target).is_some()
@@ -311,7 +323,7 @@ pub(super) fn apply(
         } else {
             RetiringEditorReplayMode::Apply {
                 verify_existing: &points.earlier,
-                points: &points.later,
+                cohorts: &points.later,
                 publication: AudioSourceContext {
                     editor_revision: context
                         .editor_revision
@@ -417,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn one_complete_value_cohort_can_replay_but_ambiguous_groups_stay_in_custody() {
+    fn complete_cohorts_replay_in_order_and_ambiguous_groups_stay_in_custody() {
         use RetiringEditorEventKind::{Begin, End, GroupAborted, GroupBegin, GroupEnd, Perform};
 
         let device = 7;
@@ -440,7 +452,7 @@ mod tests {
         ];
         assert_eq!(
             project_values(complete.clone(), 0),
-            Ok((vec![], vec![(0, 0.75)]))
+            Ok((vec![], vec![vec![(0, 0.75)]]))
         );
         assert_eq!(
             project_values(complete.clone(), 5),
@@ -466,10 +478,14 @@ mod tests {
             event(9, 7, End),
             event(10, 6, GroupEnd),
         ]);
-        assert!(project_values(several_values.clone(), 0).is_err());
+        several_values[7].normalized = 0.25;
+        assert_eq!(
+            project_values(several_values.clone(), 0),
+            Ok((vec![], vec![vec![(0, 0.75)], vec![(0, 0.25)]]))
+        );
         assert_eq!(
             project_values(several_values, 5),
-            Ok((vec![(0, 0.75)], vec![(0, 0.75)]))
+            Ok((vec![(0, 0.75)], vec![vec![(0, 0.25)]]))
         );
     }
 
@@ -500,10 +516,10 @@ mod tests {
         assert!(plan(events.clone(), 4).is_err());
         let mixed = plan(events.clone(), 2).unwrap();
         assert_eq!(mixed.earlier, vec![(0, 0.5)]);
-        assert_eq!(mixed.later, vec![(0, 0.75)]);
+        assert_eq!(mixed.later, vec![vec![(0, 0.75)]]);
         let replay = plan(events, 0).unwrap();
         assert!(replay.earlier.is_empty());
-        assert_eq!(replay.later, vec![(0, 0.75)]);
+        assert_eq!(replay.later, vec![vec![(0, 0.75)]]);
     }
 
     #[test]

@@ -102,7 +102,7 @@ impl NativeWorker {
         self.begin_guarded_editor_write_after(expected_editor_admission, points, None)
     }
 
-    /// Restore values only while the exact processed write still owns the
+    /// Continue or restore values while the exact processed write owns the
     /// latest host input generation and the helper has no newer editor input.
     pub(crate) fn begin_guarded_editor_write_after(
         &mut self,

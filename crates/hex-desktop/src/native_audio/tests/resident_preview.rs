@@ -1680,6 +1680,22 @@ impl WorkerAudioSink for ResidentSink {
         batch: &hex_session::service::RetiringEditorBatch,
         mode: hex_session::service::RetiringEditorReplayMode<'_>,
     ) -> Result<hex_session::service::PluginParameterCapture, String> {
+        if std::env::var_os("HEX_EXPECT_RETIRING_ORDERED_COHORTS").is_some() {
+            use hex_session::service::RetiringEditorReplayMode::Apply;
+            let Apply {
+                verify_existing,
+                cohorts,
+                ..
+            } = mode
+            else {
+                panic!("the original SDK cohorts need their own writes");
+            };
+            assert!(verify_existing.is_empty());
+            assert_eq!(
+                cohorts,
+                [vec![(0, 0.75), (11, 0.5)], vec![(0, 0.25), (11, 0.25)]]
+            );
+        }
         let captured = self.inner.capture_retiring_editor_replay(batch, mode);
         if captured.is_ok() && std::env::var_os("HEX_REPLAY_TEST_REFUSE").is_some() {
             let release = std::path::PathBuf::from(
