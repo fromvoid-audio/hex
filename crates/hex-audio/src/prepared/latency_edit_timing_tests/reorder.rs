@@ -3,6 +3,15 @@ use super::*;
 
 #[test]
 fn native_track_reorder_fades_only_its_track_and_carries_delay_repeats_once() {
+    reorder_keeps_delay_history(false);
+}
+
+#[test]
+fn session_audio_reorder_keeps_its_launch_origin_and_delay_history() {
+    reorder_keeps_delay_history(true);
+}
+
+fn reorder_keeps_delay_history(session: bool) {
     use hex_devices::utility::{UTILITY_DEFINITION, parameter::INVERT_LEFT};
 
     const FRAMES: usize = 4096;
@@ -64,8 +73,34 @@ fn native_track_reorder_fades_only_its_track_and_carries_delay_repeats_once() {
             hex_engine::PreparedRevision::prepare(project, pcm, Arc::clone(&table), None).unwrap(),
         )
     };
-    let before = prepare(editor.project(), &media);
     let mut reference_editor = Editor::new(editor.project().clone(), 8).unwrap();
+    let session_clip = session.then(|| {
+        let clip = editor.project().track(track).unwrap().clips()[0].id();
+        editor.execute(Command::RemoveClip(clip)).unwrap();
+        let Created::Scene(scene) = editor
+            .execute(Command::AddScene {
+                name: "scene".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene");
+        };
+        let Created::SessionClip(clip) = editor
+            .execute(Command::CreateSessionAudioClip {
+                track,
+                scene,
+                name: "session".into(),
+                asset,
+                source_start: 0,
+                source_end: FRAMES as u64,
+            })
+            .unwrap()
+        else {
+            panic!("session clip");
+        };
+        clip
+    });
+    let before = prepare(editor.project(), &media);
     reference_editor
         .execute(Command::RemoveDevice(utility))
         .unwrap();
@@ -73,6 +108,10 @@ fn native_track_reorder_fades_only_its_track_and_carries_delay_repeats_once() {
         .execute(Command::RemoveTrack(unrelated))
         .unwrap();
     let mut shaped = input;
+    if session {
+        shaped.rotate_right(LAUNCH);
+        shaped[..LAUNCH].fill([0.0; 2]);
+    }
     for frame in &mut shaped[..SWITCH] {
         frame[0] = -frame[0];
     }
@@ -111,7 +150,7 @@ fn native_track_reorder_fades_only_its_track_and_carries_delay_repeats_once() {
     let after = prepare(editor.project(), &media);
     for stop in [false, true] {
         let (control, mut callback, source, receipt) =
-            begin_insert_with_pending_track(Arc::clone(&before), Arc::clone(&after), None, CUT);
+            begin_reorder(Arc::clone(&before), Arc::clone(&after), session_clip, CUT);
         render(&mut callback, &mut [[0.0; 2]; 32]);
         assert_eq!(receipt.state(), PublicationReceiptState::Pending);
         let mut resumed = [[0.0; 2]; FADE];
@@ -131,9 +170,23 @@ fn native_track_reorder_fades_only_its_track_and_carries_delay_repeats_once() {
             let mut reference =
                 Playback::try_from_prepared_with_session(Arc::clone(&before)).unwrap();
             reference.apply(PlaybackCommand::Play);
-            reference
-                .render(&mut vec![[0.0; 2]; CUT + 32 + FADE - 1])
-                .unwrap();
+            let prefix = CUT + 32 + FADE - 1;
+            if let Some(clip) = session_clip {
+                reference.render(&mut [[0.0; 2]; LAUNCH]).unwrap();
+                reference
+                    .try_apply_action(PlaybackAction::Session(
+                        SessionPlaybackCommand::LaunchClip {
+                            clip,
+                            quantization: LaunchQuantization::Immediate,
+                        },
+                    ))
+                    .unwrap();
+                reference
+                    .render(&mut vec![[0.0; 2]; prefix - LAUNCH])
+                    .unwrap();
+            } else {
+                reference.render(&mut vec![[0.0; 2]; prefix]).unwrap();
+            }
             let mut reference_pcm = [[0.0; 2]; 1];
             reference.render(&mut reference_pcm).unwrap();
             assert_eq!(resumed[FADE - 1], reference_pcm[0]);
@@ -142,7 +195,7 @@ fn native_track_reorder_fades_only_its_track_and_carries_delay_repeats_once() {
     }
     for partition in [1, BLOCK] {
         let (control, mut callback, source, receipt) =
-            begin_insert_with_pending_track(Arc::clone(&before), Arc::clone(&after), None, CUT);
+            begin_reorder(Arc::clone(&before), Arc::clone(&after), session_clip, CUT);
         let mut pcm = vec![[0.0; 2]; FRAMES - CUT];
         for chunk in pcm[..FADE].chunks_mut(partition) {
             render(&mut callback, chunk);
@@ -177,4 +230,66 @@ fn render(callback: &mut Callback, output: &mut [Frame]) {
         ),
         (0, 0, 0, 0)
     );
+}
+
+// Deliberately distinct from Arrangement time and the graph cut.
+const LAUNCH: usize = 137;
+
+fn begin_reorder(
+    old: Arc<hex_engine::PreparedRevision>,
+    next: Arc<hex_engine::PreparedRevision>,
+    session_clip: Option<hex_project::ClipId>,
+    position: usize,
+) -> (
+    Control,
+    Callback,
+    AppliedAudioSource,
+    CancellablePublicationReceipt,
+) {
+    let Some(clip) = session_clip else {
+        return begin_insert_with_pending_track(old, next, None, position);
+    };
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 5,
+        editor_revision: 7,
+    };
+    let (mut control, mut callback) = channel(RATE).unwrap();
+    control
+        .publish_unaccounted_pcm_obligation(
+            Playback::try_from_prepared_with_session(old).unwrap(),
+            PublicationPolicy::InstallFreshRuntime,
+            context.project_generation,
+            true,
+            false,
+            Some(context),
+        )
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    render(&mut callback, &mut [[0.0; 2]; LAUNCH]);
+    control
+        .action_with_ticket(PlaybackAction::Session(
+            SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            },
+        ))
+        .unwrap();
+    render(&mut callback, &mut vec![[0.0; 2]; position - LAUNCH]);
+    let predecessor = control.status.recording_source().unwrap();
+    let fence = control.capture_fresh_runtime_fence().unwrap();
+    let revision = control
+        .publish_unaccounted_pcm_obligation(
+            Playback::try_from_prepared_with_session(next).unwrap(),
+            PublicationPolicy::DeviceInsert { predecessor, fence },
+            context.project_generation,
+            true,
+            false,
+            Some(hex_engine::AudioSourceContext {
+                editor_revision: 8,
+                ..context
+            }),
+        )
+        .unwrap();
+    let receipt = control.fresh_runtime_receipt(revision).unwrap();
+    (control, callback, predecessor, receipt)
 }
