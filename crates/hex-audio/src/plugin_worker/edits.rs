@@ -98,6 +98,36 @@ impl NativeWorker {
         {
             return Err("native editor source is not sealed");
         }
+        self.read_joined_idle_edits()
+    }
+
+    /// Apply one batch on the still-owned SDK instance after its Rust
+    /// transport has returned. The caller owns the exact idle project fence.
+    pub(crate) fn poll_joined_idle_edits_on_control(
+        &mut self,
+    ) -> Result<RecoveryEdits, &'static str> {
+        if self.retirement_requested
+            || self.transport_is_live_on_control()
+            || !self.retains_original_source_on_control()
+            || self.editor_edits_sealed
+        {
+            return Err("native stopped edit source differs");
+        }
+        if self
+            .reaper
+            .join
+            .as_ref()
+            .is_some_and(|join| !join.is_finished())
+        {
+            return Err("native preparation is busy");
+        }
+        self.reaper
+            .join_on_control()
+            .map_err(|_| "native stopped edit worker failed")?;
+        self.read_joined_idle_edits()
+    }
+
+    fn read_joined_idle_edits(&mut self) -> Result<RecoveryEdits, &'static str> {
         let slot = self
             .reaper
             .completed

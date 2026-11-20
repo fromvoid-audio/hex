@@ -1593,9 +1593,15 @@ struct DeviceInsertGate {
     resume: mpsc::Receiver<()>,
 }
 struct ConfirmationProbe {
-    replay_capture: bool,
+    stage: ProbeStage,
     ready: SyncSender<()>,
     resume: mpsc::Receiver<()>,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProbeStage {
+    ParameterConfirmation,
+    ReplayCapture,
+    SaveCapture,
 }
 struct PublicationProbe {
     ready: SyncSender<()>,
@@ -1717,7 +1723,7 @@ impl WorkerAudioSink for ResidentSink {
             .confirmation_probe
             .lock()
             .unwrap()
-            .take_if(|probe| probe.replay_capture)
+            .take_if(|probe| probe.stage == ProbeStage::ReplayCapture)
         {
             self.inner.plugins.replay_capture_gate = Some((probe.ready, probe.resume));
         }
@@ -1756,6 +1762,15 @@ impl WorkerAudioSink for ResidentSink {
         &mut self,
         input: hex_session::service::PluginStateCaptureInput<'_>,
     ) -> Result<Vec<hex_session::service::PluginStateCapture>, String> {
+        let probe = self
+            .confirmation_probe
+            .lock()
+            .unwrap()
+            .take_if(|probe| probe.stage == ProbeStage::SaveCapture);
+        if let Some(probe) = probe {
+            probe.ready.send(()).unwrap();
+            probe.resume.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
         self.inner.capture_plugin_states(input)
     }
     fn begin_request(&mut self, cancellation: hex_session::service::RequestCancellation) {
@@ -1992,7 +2007,7 @@ impl WorkerAudioSink for ResidentSink {
             .confirmation_probe
             .lock()
             .unwrap()
-            .take_if(|probe| !probe.replay_capture);
+            .take_if(|probe| probe.stage == ProbeStage::ParameterConfirmation);
         if let Some(probe) = probe {
             probe.ready.send(()).unwrap();
             probe.resume.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -3178,16 +3193,20 @@ impl ResidentHarness {
     }
 
     pub(super) fn probe_next_parameter_confirmation(&self) -> (mpsc::Receiver<()>, SyncSender<()>) {
-        self.probe_next_parameter_stage(false)
+        self.probe_next_parameter_stage(ProbeStage::ParameterConfirmation)
     }
 
     pub(super) fn probe_next_replay_capture(&self) -> (mpsc::Receiver<()>, SyncSender<()>) {
-        self.probe_next_parameter_stage(true)
+        self.probe_next_parameter_stage(ProbeStage::ReplayCapture)
+    }
+
+    pub(super) fn probe_next_save_capture(&self) -> (mpsc::Receiver<()>, SyncSender<()>) {
+        self.probe_next_parameter_stage(ProbeStage::SaveCapture)
     }
 
     fn probe_next_parameter_stage(
         &self,
-        replay_capture: bool,
+        stage: ProbeStage,
     ) -> (mpsc::Receiver<()>, SyncSender<()>) {
         let (ready, entered) = mpsc::sync_channel(1);
         let (resume, resumed) = mpsc::sync_channel(1);
@@ -3196,7 +3215,7 @@ impl ResidentHarness {
                 .lock()
                 .unwrap()
                 .replace(ConfirmationProbe {
-                    replay_capture,
+                    stage,
                     ready,
                     resume: resumed
                 })

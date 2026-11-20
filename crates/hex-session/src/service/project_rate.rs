@@ -159,6 +159,7 @@ fn capture_outgoing(
         project,
         context,
         cancellation,
+        flush_idle_editor_input: false,
         device_filter: None,
     })?;
     if cancellation.is_cancelled() {
