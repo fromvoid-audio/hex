@@ -1,0 +1,195 @@
+//! Exact closed constructor for one typed Off stage, never source admission.
+use super::*;
+use crate::{Audio, AudioCandidateEffects, AudioCandidatePreparation, AudioSourceContext};
+use hex_lattice::{
+    DevicePreparationContext, NativeDeviceDefinition, NativeDeviceRegistry,
+    PreparedProcessorFactory, ProcessorInstanceIdentity, StereoMatrix,
+};
+use hex_lattice_contract::{
+    DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
+    ParameterDescriptor, ParameterId, ParameterValue,
+};
+use hex_project::{Command, Created, Editor, Project};
+
+struct Definition(bool);
+impl NativeDeviceMetadata for Definition {
+    fn type_id(&self) -> DeviceTypeId {
+        DeviceTypeId::from_static("hex.vst3")
+    }
+    fn display_name(&self) -> Option<&'static str> {
+        None
+    }
+    fn state_version(&self) -> u32 {
+        1
+    }
+    fn descriptors(&self) -> &'static [ParameterDescriptor] {
+        &[]
+    }
+    fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+        NativeDeviceState::new(DeviceTypeId::from_static("hex.vst3"), 1, vec![7, 8])
+    }
+    fn migrate_state(
+        &self,
+        state: &NativeDeviceState,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        Ok(state.clone())
+    }
+    fn read_parameter(
+        &self,
+        _: &NativeDeviceState,
+        _: ParameterId,
+    ) -> Result<ParameterValue, DeviceContractError> {
+        Err(DeviceContractError::UnknownParameter)
+    }
+    fn patch_parameter(
+        &self,
+        _: &NativeDeviceState,
+        _: ParameterId,
+        _: ParameterValue,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        Err(DeviceContractError::UnknownParameter)
+    }
+}
+impl NativeDeviceDefinition for Definition {
+    fn prepare_matrix(&self, _: &NativeDeviceState) -> Result<StereoMatrix, DeviceContractError> {
+        Ok(StereoMatrix::identity())
+    }
+    fn prepare_instance_runtime_factory(
+        &self,
+        _: ProcessorInstanceIdentity,
+        _: &NativeDeviceState,
+        _: &DevicePreparationContext<'_>,
+    ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
+        Ok(self.0.then_some(PreparedProcessorFactory::PoweredOff))
+    }
+}
+
+#[test]
+fn typed_main_off_seals_actual_data_and_reports_its_distinct_status() {
+    let definition = Definition(true);
+    let defs: [&dyn NativeDeviceDefinition; 1] = [&definition];
+    let registry = NativeDeviceRegistry::new(&defs).unwrap();
+    let effects = AudioCandidateEffects::new(&registry);
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "input".into(),
+            path: "memory/off.wav".into(),
+            sample_rate: 48_000,
+            frames: 514,
+        })
+        .unwrap()
+    else {
+        panic!("audio")
+    };
+    let state = definition.default_state().unwrap();
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: state.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("main")
+    };
+    editor
+        .execute(Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        })
+        .unwrap();
+    let quote = effects.quote(editor.project(), 1).unwrap();
+    let mut candidate = AudioCandidatePreparation::try_new_on_control(
+        1,
+        quote
+            .storage_reservation(514 * std::mem::size_of::<crate::Frame>())
+            .unwrap(),
+    )
+    .unwrap();
+    candidate
+        .copy_resident_source_on_control(asset, &Audio::new(48_000, vec![[0.125; 2]; 514]).unwrap())
+        .unwrap();
+    effects
+        .prepare(
+            &mut candidate,
+            editor.project(),
+            3,
+            AudioSourceContext {
+                project_generation: 2,
+                editor_revision: 8,
+            },
+            None,
+        )
+        .unwrap();
+    let owner = candidate.owner_on_control().unwrap();
+    let sealed = owner.seal_constructor_on_control(reservation()).unwrap();
+    assert_eq!(sealed.data.unknown_storage, 0);
+    assert!(sealed.data.data_allocations <= quote.data_rows);
+    let mut cap = reservation();
+    cap.data_rows = sealed.data.data_allocations - 1;
+    assert_eq!(
+        owner.seal_constructor_on_control(cap),
+        Err(AudioStorageError::Capacity)
+    );
+    let playback = &owner.inner.runtime.as_ref().unwrap().playback;
+    let chain = playback.test_main_chain().unwrap();
+    assert_eq!(chain.stateful_count(), 0);
+    assert_eq!(chain.declared_pair_bytes(), 0);
+    assert_eq!(playback.main_output_latency_frames(), 0);
+    assert!(
+        chain
+            .storage_view()
+            .entries()
+            .next()
+            .unwrap()
+            .is_powered_off()
+    );
+    let observation = playback.prepare_observation_on_control().unwrap();
+    assert_eq!(
+        observation.processor_status(device.value(), state.type_id()),
+        Some(crate::PreparedDeviceProcessing::PoweredOff)
+    );
+    assert_eq!(
+        observation.foreign_processor(device.value(), state.type_id()),
+        Some(false)
+    );
+    assert_eq!(
+        playback
+            .prepared_revision()
+            .unwrap()
+            .arrangement()
+            .main_device_chain[0]
+            .configuration
+            .as_deref(),
+        Some(&state)
+    );
+    // The old generic factoryless hosted path remains unsupported.
+    let missing = Definition(false);
+    let defs: [&dyn NativeDeviceDefinition; 1] = [&missing];
+    let registry = NativeDeviceRegistry::new(&defs).unwrap();
+    let effects = AudioCandidateEffects::new(&registry);
+    let mut other = AudioCandidatePreparation::try_new_on_control(
+        2,
+        quote
+            .storage_reservation(514 * std::mem::size_of::<crate::Frame>())
+            .unwrap(),
+    )
+    .unwrap();
+    other
+        .copy_resident_source_on_control(asset, &Audio::new(48_000, vec![[0.125; 2]; 514]).unwrap())
+        .unwrap();
+    assert!(
+        effects
+            .prepare(
+                &mut other,
+                editor.project(),
+                3,
+                AudioSourceContext {
+                    project_generation: 2,
+                    editor_revision: 8
+                },
+                None
+            )
+            .is_err()
+    );
+}

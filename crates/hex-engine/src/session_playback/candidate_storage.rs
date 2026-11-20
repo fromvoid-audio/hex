@@ -280,8 +280,14 @@ fn chain_storage<'a>(
             Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) => Some(*facts),
             _ => None,
         };
+        let powered_off = prepared
+            .definition
+            .as_ref()
+            .is_some_and(hex_lattice::PreparedProcessorFactory::is_powered_off);
         if (foreign.is_none()
+            && !powered_off
             && !crate::native_effect_storage::is_closed_type(prepared.device_type))
+            || entry.is_powered_off() != powered_off
             || entry.foreign_processor() != foreign
             || !entry.matches_prepared_runtime_storage(prepared)
         {
@@ -315,7 +321,7 @@ fn chain_storage<'a>(
                 crate::native_effect_storage::pair_bytes(&entry)?,
                 prepared.definition.is_some(),
             ) {
-                (None, true) if foreign.is_some() => {}
+                (None, true) if foreign.is_some() || powered_off => {}
                 (Some((primary, scratch)), true) if foreign.is_none() => {
                     l.bytes(
                         Owner::exclusive(chain),
