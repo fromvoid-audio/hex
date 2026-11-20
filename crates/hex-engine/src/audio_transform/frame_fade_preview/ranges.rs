@@ -1,5 +1,6 @@
-//! Bounded coarse range queries over the same eligible original-source law.
+//! Bounded coarse range queries over the same eligible frame-source law.
 use super::*;
+use hex_project::AudioViewMode;
 
 impl FrameFadePreview<'_> {
     /// Visit source unions for a wide Arrangement column. `remaining` is shared
@@ -22,13 +23,31 @@ impl FrameFadePreview<'_> {
             return Ok(Some(FrameFadeCoverage::default()));
         }
         let clip_end = self.clip.start() + self.clip.duration();
-        let first = range.start.max(self.clip.start());
-        let last = range.end.min(clip_end);
+        let mut first = range.start.max(self.clip.start());
+        let mut last = range.end.min(clip_end);
+        if let Some(fade) = &self.directed_legacy {
+            first = first.max(fade.destination.start);
+            last = last.min(fade.destination.end);
+        }
         let mut silence = first != range.start || last != range.end;
         let roots = if first >= last {
             [None, None]
         } else if let Some(projection) = &self.projection {
-            if projection.has_silent_repeat_gap() {
+            let roots = projection
+                .root_ranges_for_frames(first..last)
+                .map_err(|error| Invalid(error.0))?;
+            if let Some(view) = self.clip.audio_edit().and_then(|edit| edit.content_view) {
+                // Base occurrence bounds are in read order. In a finite Once
+                // window the directed root union counts exactly the audible
+                // frames. Repeat has no placement holes and can reuse frames.
+                if view
+                    .base_placement
+                    .is_none_or(|p| p.mode != AudioViewMode::Repeat)
+                {
+                    let audible = roots.iter().flatten().map(|r| r.end - r.start).sum::<u64>();
+                    silence |= audible < last - first;
+                }
+            } else if projection.has_silent_repeat_gap() {
                 let edit = self
                     .clip
                     .audio_edit()
@@ -51,16 +70,27 @@ impl FrameFadePreview<'_> {
                 silence |=
                     first < occurrence.destination_start || last > occurrence.destination_end;
             }
-            projection
-                .root_ranges_for_frames(first..last)
-                .map_err(|error| Invalid(error.0))?
+            roots
         } else {
             [
                 Some(first - self.clip.start()..last - self.clip.start()),
                 None,
             ]
         };
-        self.visit_admitted(roots, silence, remaining, visit)
+        // Root unions can collapse several occurrences. The instance envelope
+        // belongs to the column's destination midpoint, never any root phase.
+        let gain = if first < last {
+            self.timeline_gain(first + (last - first - 1) / 2)?
+        } else {
+            None
+        };
+        let mut visit = visit;
+        self.visit_admitted(roots, silence, remaining, |mut part| {
+            if let Some(gain) = gain {
+                part.sample.gains[2] = gain;
+            }
+            visit(part);
+        })
     }
 
     /// Root-destination frames before outer placement, for the event editor.
@@ -192,9 +222,24 @@ impl FrameFadePreview<'_> {
             None => root.start,
         };
         let mut length = root.end - root.start;
+        if event.is_some_and(|event| event.source != 0) {
+            let sample = self
+                .event_root_sample(root.start + (length - 1) / 2, event)?
+                .ok_or(Invalid(
+                    "grouped fade preview midpoint is outside its event",
+                ))?;
+            return Ok((
+                Some(FrameFadeRange {
+                    root,
+                    source: [Some(read..read + length), None],
+                    sample,
+                }),
+                false,
+            ));
+        }
         let mut silence = false;
-        if !self.clip.looping() {
-            let available = self.clip.source_length().saturating_sub(read);
+        if !self.source.looping {
+            let available = self.source.length.saturating_sub(read);
             silence = length > available;
             length = length.min(available);
             if length == 0 {
@@ -202,14 +247,13 @@ impl FrameFadePreview<'_> {
             }
             root.end = root.start + length;
         }
-        let offset = self.clip.source_offset();
-        let period = self.clip.source_length();
-        let source = if self.clip.looping() && length >= period {
+        let offset = self.source.offset;
+        let period = self.source.length;
+        let source = if self.source.looping && length >= period {
             [Some(offset..offset + period), None]
         } else {
-            let phase = if self.clip.looping() {
-                ((u128::from(self.clip.source_phase()) + u128::from(read)) % u128::from(period))
-                    as u64
+            let phase = if self.source.looping {
+                ((u128::from(self.source.phase) + u128::from(read)) % u128::from(period)) as u64
             } else {
                 read
             };

@@ -22,8 +22,8 @@ fn passive_note_hover_tracks_both_edges_and_clears_without_editing(cx: &mut Test
                 note.pitch(),
                 note.start(),
                 note.duration(),
-                v.piano_pitch_low,
-                v.piano_pitch_rows,
+                v.piano_pitch.first_test_pitch(),
+                v.piano_pitch.test_row_count(),
             )
         });
     let left =
@@ -125,8 +125,10 @@ fn tiny_note_hover_and_hits_follow_time_pitch_zoom_and_draw_mode(cx: &mut TestAp
             roll.origin.x + roll.size.width * (2.0 / 16.0),
             roll.origin.y
                 + roll.size.height
-                    * ((f32::from(v.piano_pitch_low + v.piano_pitch_rows - 1 - 65) + 0.5)
-                        / f32::from(v.piano_pitch_rows)),
+                    * ((f32::from(
+                        v.piano_pitch.first_test_pitch() + v.piano_pitch.test_row_count() - 1 - 65,
+                    ) + 0.5)
+                        / f32::from(v.piano_pitch.test_row_count())),
         )
     });
     visual.simulate_mouse_move(tiny, None, Modifiers::default());
@@ -145,8 +147,7 @@ fn tiny_note_hover_and_hits_follow_time_pitch_zoom_and_draw_mode(cx: &mut TestAp
     editor.update(&mut visual, |v, cx| {
         v.piano_beat_span = BeatTime::from_raw(BeatTime::ONE.raw() / 16);
         v.piano_beat_start = i128::from(2 * BeatTime::ONE.raw() - v.piano_beat_span.raw() / 4);
-        v.piano_pitch_low = 59;
-        v.piano_pitch_rows = 12;
+        v.piano_pitch = crate::editor::PitchViewport::from_rows(59, 12).unwrap();
         cx.notify();
     });
     visual.run_until_parked();

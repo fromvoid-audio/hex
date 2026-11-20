@@ -46,6 +46,7 @@ pub(crate) mod native_sources;
 pub(crate) mod nested_audio;
 pub(crate) mod note_activation;
 mod original_sources;
+pub(crate) mod outer_clip_fades;
 pub(crate) mod playable_routing;
 pub(crate) mod provenance;
 pub(crate) mod retained_receiver;

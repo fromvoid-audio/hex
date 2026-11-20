@@ -822,6 +822,154 @@ fn accepted_waveforms_share_cropped_pcm_keep_gain_outside_and_failed_edit_keeps_
 }
 
 #[test]
+fn accepted_warped_event_waveform_keeps_its_source_clock_through_fade_and_repeat() {
+    use hex_project::{
+        AudioEventEdit, AudioEventFade, AudioViewResizeOperation, BeatTime, ClipFade, Tempo,
+        WarpMode,
+    };
+    let (mut session, clip, mut revision) = fixture();
+    let project = session.project();
+    let settings = hex_project::default_audio_warp(
+        project.clip(clip).unwrap(),
+        project.tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    let half = BeatTime::from_ratio(1, 2).unwrap();
+    for command in [
+        Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        },
+        Command::SetTempoPoint {
+            beat: half,
+            tempo: Tempo::new(240_000_000).unwrap(),
+        },
+    ] {
+        (_, revision) = session
+            .command_prepared_revision(command, Some(&revision))
+            .unwrap();
+    }
+    let accepted_source = |session: &Session| {
+        let source = session.audio_clip_waveforms.borrow()[&clip]
+            .event_source
+            .clone()
+            .unwrap();
+        assert!(source.frame_waveform().is_none());
+        assert!(source.waveform.bounded_samples(0..1, 1).is_none());
+        assert_eq!(source.waveform.source_frames(), 6_000);
+        let clock = source.musical_clock.as_ref().unwrap();
+        assert_eq!(clock.frame_at(half).unwrap(), 4_000);
+        assert_eq!(clock.frame_at(BeatTime::ONE).unwrap(), 6_000);
+        source
+    };
+    let original = accepted_source(&session);
+    (_, revision) = session
+        .command_prepared_revision(
+            Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::SetFade {
+                    event: 1,
+                    fade: Some(
+                        AudioEventFade::new(
+                            0,
+                            ClipFade::new(BeatTime::ONE.raw(), 0, half.raw(), 0).unwrap(),
+                        )
+                        .unwrap(),
+                    ),
+                },
+            },
+            Some(&revision),
+        )
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        &original.waveform,
+        &accepted_source(&session).waveform
+    ));
+    let (_, revision) = session
+        .command_prepared_revision(
+            Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: 12_000,
+                },
+            },
+            Some(&revision),
+        )
+        .unwrap();
+    assert!(
+        session.audio_clip_waveforms.borrow()[&clip]
+            .preview_root
+            .is_some()
+    );
+    let repeated = accepted_source(&session);
+    assert!(Arc::ptr_eq(&original.waveform, &repeated.waveform));
+    assert_eq!(original.musical_clock, repeated.musical_clock);
+    assert!(repeated.repeat.is_none());
+    let sources = repeated.occurrences.as_ref().unwrap();
+    assert_eq!(sources.reads().len(), 3);
+    assert!(Arc::ptr_eq(
+        &repeated.waveform,
+        sources.waveform(0).unwrap()
+    ));
+    for (index, (start, end, root_frames)) in [
+        (0, 6_000, 6_000),
+        (6_000, 10_000, 4_000),
+        (10_000, 12_000, 4_000),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let read = &sources.reads()[index];
+        assert_eq!(
+            (
+                read.placement.destination_start,
+                read.placement.destination_end
+            ),
+            (start, end)
+        );
+        let waveform = sources.waveform(index).unwrap();
+        assert_eq!(waveform.source_frames(), root_frames);
+        assert!(waveform.bounded_samples(0..1, 1).is_none());
+        assert_eq!(waveform.bins()[0][0].max, read.source.bins()[0].max[0]);
+    }
+    assert!(sources.waveform(3).is_none());
+    let (_, revision) = session
+        .command_prepared_revision(
+            Command::SetAudioClipGain {
+                clip,
+                millidb: -6_000,
+            },
+            Some(&revision),
+        )
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        sources,
+        accepted_source(&session).occurrences.as_ref().unwrap()
+    ));
+    let (_, reversed) = session
+        .command_prepared_revision(Command::ReverseClips(vec![clip]), Some(&revision))
+        .unwrap();
+    let source = accepted_source(&session);
+    let reversed_sources = source.occurrences.as_ref().unwrap();
+    let maps = reversed_sources.directed().unwrap();
+    assert_eq!(maps.base(), 0..12_000);
+    let spans: Vec<_> = maps.spans().iter().map(|span| span.destination()).collect();
+    assert_eq!(spans.len(), 3);
+    assert_eq!(spans[0].start, 0);
+    assert_eq!(spans[2].end, 12_000);
+    assert!(spans.windows(2).all(|pair| pair[0].end == pair[1].start));
+    assert!(Arc::ptr_eq(
+        &reversed_sources.prepared,
+        reversed.arrangement().audio_clip_views()[0]
+            .event_source_occurrences
+            .as_ref()
+            .unwrap(),
+    ));
+    assert!(maps.position_q32(0).unwrap().unwrap() > maps.position_q32(11_999).unwrap().unwrap());
+}
+
+#[test]
 fn long_dense_clip_edge_stretch_commits_and_renders_late_attacks_through_history() {
     const RATE: u32 = 44_100;
     const SOURCE_FRAMES: u64 = RATE as u64 * 27;
@@ -947,7 +1095,7 @@ fn grouped_repeat_transaction_prepares_complete_multi_source_waveform_root() {
             Command::MoveClip {
                 clip: second,
                 track,
-                start: 8_064,
+                start: 16_200,
             },
             Some(&previous),
         )
@@ -958,12 +1106,39 @@ fn grouped_repeat_transaction_prepares_complete_multi_source_waveform_root() {
     else {
         panic!("group")
     };
+    let child = session
+        .project()
+        .clip(group)
+        .unwrap()
+        .audio_events()
+        .sources[1]
+        .id;
+    let grouped_sources = |session: &Session, revision: &hex_engine::PreparedRevision| {
+        let grouped = session.audio_clip_waveforms.borrow()[&group]
+            .group_event_sources
+            .as_ref()
+            .unwrap()
+            .clone();
+        let view = &revision.arrangement().audio_clip_views()[0];
+        assert!(Arc::ptr_eq(
+            &grouped.prepared,
+            view.group_event_sources.as_ref().unwrap()
+        ));
+        assert!(grouped.waveform(u64::MAX).is_none());
+        grouped
+    };
+    assert!(
+        previous.arrangement().audio_clip_views()[0]
+            .sparse
+            .is_some()
+    );
+    let sparse_sources = grouped_sources(&session, &previous);
     let (_, repeated) = session
         .command_prepared_revision(
             Command::ResizeAudioClipView {
                 clip: group,
                 operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd {
-                    project_frame: 10_000,
+                    project_frame: 20_000,
                 },
             },
             Some(&previous),
@@ -982,29 +1157,44 @@ fn grouped_repeat_transaction_prepares_complete_multi_source_waveform_root() {
         .unwrap();
     let views = session.audio_clip_waveforms.borrow();
     let root = views[&group].preview_root.as_ref().unwrap();
-    assert_eq!(root.waveform.source_frames(), 8_192);
+    assert_eq!(root.waveform.source_frames(), 16_328);
     assert_eq!(
         root.waveform
-            .peaks_for_frames(8_000, 8_064)
+            .peaks_for_frames(8_016, 16_184)
             .unwrap()
             .map(|peak| (peak.min, peak.max)),
         [(0.0, 0.0); 2]
     );
     assert_eq!(
         root.waveform
-            .peaks_for_frames(8_064, 8_192)
+            .peaks_for_frames(16_216, 16_328)
             .unwrap()
             .map(|peak| (peak.min, peak.max)),
         [(0.25, 0.25), (-0.5, -0.5)]
     );
-    assert_eq!(views[&group].length, 10_000);
+    assert_eq!(views[&group].length, 20_000);
     // The looped clip still exposes outer-clip peaks, built from the shared
     // root rather than a materialized repeat, and distinct from its root preview.
     assert_eq!(views[&group].offset, 0);
-    assert_eq!(views[&group].waveform.source_frames(), 10_000);
+    assert_eq!(views[&group].waveform.source_frames(), 20_000);
     assert!(!Arc::ptr_eq(&views[&group].waveform, &root.waveform));
     let root_waveform = Arc::clone(&root.waveform);
     drop(views);
+    let loop_sources = grouped_sources(&session, &cropped);
+    let waveform = loop_sources.waveform(child).unwrap();
+    assert_eq!(waveform.source_frames(), 128);
+    assert!(waveform.bounded_samples(0..1, 1).is_none());
+    assert!(Arc::ptr_eq(
+        waveform,
+        sparse_sources.waveform(child).unwrap()
+    ));
+    assert_eq!(
+        waveform
+            .peaks_for_frames(0, 128)
+            .unwrap()
+            .map(|peak| (peak.min, peak.max)),
+        [(0.25, 0.25), (-0.5, -0.5)],
+    );
     let mut renderer = hex_engine::Renderer::new(cropped.arrangement());
     renderer.play();
     let mut output = [[0.0; 2]; 257];
@@ -1042,6 +1232,35 @@ fn grouped_repeat_transaction_prepares_complete_multi_source_waveform_root() {
     renderer.play();
     renderer.render(&mut samples).unwrap();
     assert_eq!(samples, output);
+
+    let gain = hex_project::ClipGain::new(-6_000).unwrap();
+    let (_, edited) = session
+        .command_prepared_revision(
+            Command::EditAudioEvents {
+                clip: group,
+                operation: hex_project::AudioEventEdit::SetRetainedGain {
+                    sources: vec![child],
+                    event: 1,
+                    gain,
+                },
+            },
+            Some(&restored),
+        )
+        .unwrap();
+    let updated = grouped_sources(&session, &edited);
+    assert!(!Arc::ptr_eq(&loop_sources, &updated));
+    assert_eq!(
+        updated
+            .waveform(child)
+            .unwrap()
+            .peaks_for_frames(0, 128)
+            .unwrap()
+            .map(|peak| (peak.min, peak.max)),
+        [
+            (0.25 * gain.linear(), 0.25 * gain.linear()),
+            (-0.5 * gain.linear(), -0.5 * gain.linear())
+        ],
+    );
 }
 
 #[test]

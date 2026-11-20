@@ -3,7 +3,7 @@
 //! receipt, retained in the slot, then aliased to the exact graph destination.
 use super::*;
 use crate::{
-    audio_transform::{GroupSource, sparse_group_plan},
+    audio_transform::{GroupSource, materializes_musical_outer_fade, sparse_group_plan},
     compile::PreparedAudioSourceRef,
 };
 use hex_project::{AudioDomainClock, AudioViewProjection, MAX_AUDIO_DOMAIN_FRAMES};
@@ -47,7 +47,7 @@ pub(crate) fn matching_streamed_pitch(
         && raw.source_rate() == asset.source_sample_rate()
         && raw.source_frames() == asset.source_frames()
         && raw.conversion_version() == asset.conversion_version()
-        && edit.is_plain_pitch_capture(clip)
+        && edit.is_plain_pitch_source(clip)
         && clip.source_length() == asset.playback_frames()
         && raw
             .with_plain_pitch(edit.domain.pitch_cents, edit.domain.warp_resampler)
@@ -164,7 +164,7 @@ pub(super) fn pitched_source_index(
 ) -> Option<usize> {
     if !clip
         .audio_edit()
-        .is_some_and(|edit| edit.is_plain_pitch_capture(clip))
+        .is_some_and(|edit| edit.is_plain_pitch_source(clip))
     {
         return None;
     }
@@ -271,9 +271,16 @@ fn clip_quote(
             edit.domain.clock.length()
         };
         for root in clip.retained_audio_roots() {
+            let duration = root.clip.duration();
+            let source = root_work(&root.clip, &root.tempo)?;
+            let materialized = root
+                .clip
+                .audio_edit()
+                .is_some_and(materializes_musical_outer_fade);
             work = work
-                .checked_add(root_work(&root.clip, &root.tempo)?)
-                .and_then(|n| n.checked_add(root.clip.duration()))
+                .checked_add(source)
+                .and_then(|n| n.checked_add(duration))
+                .and_then(|n| n.checked_add(if materialized { duration } else { 0 }))
                 .filter(|frames| *frames <= MAX_AUDIO_DOMAIN_FRAMES)
                 .ok_or(AudioStorageError::Capacity)?;
         }
@@ -288,6 +295,7 @@ fn clip_quote(
             })
             .ok_or(AudioStorageError::Overflow)?
     };
+    let (frames, work) = quote_outer_fade_output(edit, clip.duration(), frames, work)?;
     if work > MAX_AUDIO_DOMAIN_FRAMES * 2 {
         return Err(AudioStorageError::Capacity);
     }
@@ -297,6 +305,25 @@ fn clip_quote(
         0
     };
     Ok((frames, work, layout_bytes))
+}
+
+fn quote_outer_fade_output(
+    edit: &hex_project::AudioClipEdit,
+    duration: u64,
+    frames: u64,
+    work: u64,
+) -> Result<(u64, u64), AudioStorageError> {
+    if !materializes_musical_outer_fade(edit) {
+        return Ok((frames, work));
+    }
+    if duration == 0 || duration > MAX_AUDIO_DOMAIN_FRAMES {
+        return Err(AudioStorageError::Capacity);
+    }
+    Ok((
+        duration,
+        work.checked_add(duration)
+            .ok_or(AudioStorageError::Overflow)?,
+    ))
 }
 
 pub(crate) fn prepared_pcm_frames(
@@ -556,7 +583,12 @@ fn install_compiled_origin(
         if compiled.start != slot.start
             || compiled.end != slot.end
             || metadata.is_some_and(|metadata| {
-                metadata.source_phase != 0
+                (metadata.source_phase != 0
+                    && (!compiled.looping
+                        || metadata.source_phase >= compiled.source_length as u64
+                        || metadata.sparse.is_some()
+                        || slot.reserved_phase.map(std::num::NonZeroU64::get)
+                            != Some(metadata.source_phase)))
                     || metadata.streamed.is_some()
                     || metadata.fade.is_some_and(|fade| {
                         !slot.reserve_fade || fade.validate_segment(slot.end - slot.start).is_err()

@@ -119,6 +119,13 @@ fn reverse_musical_audio_reflects_beats_across_tempo_seams_and_keeps_live_warp()
             })
             .unwrap();
     }
+    let duration = editor.project().clip(clip).unwrap().duration();
+    editor
+        .execute(Command::SetClipFadeEnvelope {
+            clip,
+            fade: ClipFade::neutral(duration).unwrap(),
+        })
+        .unwrap();
     let context = AudioTransformPreparation::default();
     let before = prepare(&editor, &media, &context);
     let c = editor.project().clip(clip).unwrap();
@@ -126,6 +133,15 @@ fn reverse_musical_audio_reflects_beats_across_tempo_seams_and_keeps_live_warp()
     let original = render(&before, c.start(), length, 127);
     editor.execute(Command::ReverseClips(vec![clip])).unwrap();
     let after = prepare(&editor, &media, &context);
+    let table = after.arrangement().audio_clip_views()[0]
+        .event_source_occurrences
+        .as_ref()
+        .expect("directed waveform needs the neutral base sources used by playback");
+    let read = table.directed().unwrap();
+    assert_eq!(read.base(), 0..12_000);
+    assert_eq!(read.read_resampler(), hex_project::WarpResampler::V2);
+    assert_eq!(table.reads()[0].source.source_frames(), 12_000);
+    assert_eq!(read.spans()[0].destination(), 0..12_000);
     let reflected = original.iter().rev().copied().collect::<Vec<_>>();
     let q = 1_i128 << 32;
     let map = hex_warp::TimeMap::new(
@@ -146,6 +162,13 @@ fn reverse_musical_audio_reflects_beats_across_tempo_seams_and_keeps_live_warp()
         length,
     )
     .unwrap();
+    for frame in [0, 1, 3_999, 4_000, 4_001, 11_999] {
+        assert_eq!(
+            read.position_q32(frame).unwrap(),
+            Some(11_999 * q - map.position_q32(i128::from(frame)).unwrap())
+        );
+    }
+    assert!(read.position_q32(12_000).unwrap().is_none());
     // A new directed view reads with the current v2 law.
     let oracle = hex_warp::render_with_resampler(
         &hex_warp::Request {
@@ -171,6 +194,75 @@ fn reverse_musical_audio_reflects_beats_across_tempo_seams_and_keeps_live_warp()
     .frames;
     assert_eq!(render(&after, 0, length, 257), oracle);
     assert_ne!(oracle, original.iter().rev().copied().collect::<Vec<_>>());
+    let mut cropped = Editor::new(editor.project().clone(), 8).unwrap();
+    cropped
+        .execute(Command::TrimClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Left,
+            frame: 1_000,
+        })
+        .unwrap();
+    let cropped_view = prepare(&cropped, &media, &context);
+    let cropped_map = cropped_view.arrangement().audio_clip_views()[0]
+        .event_source_occurrences
+        .as_ref()
+        .unwrap()
+        .directed()
+        .unwrap();
+    let row = cropped.project().clip(clip).unwrap();
+    let end = row.start() + row.duration();
+    assert_eq!(
+        render(&cropped_view, row.start(), row.duration() as usize, 79),
+        oracle[row.start() as usize..end as usize]
+    );
+    assert!(cropped_map.position_q32(row.start() - 1).unwrap().is_none());
+    for frame in [row.start(), 4_000, end - 1] {
+        assert_eq!(
+            cropped_map.position_q32(frame).unwrap(),
+            read.position_q32(frame).unwrap()
+        );
+    }
+    assert_eq!(
+        cropped_map
+            .source_ranges(999..1_003)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap(),
+        vec![(1_000..1_003, 9_995..10_000)],
+    );
+    assert_eq!(
+        cropped_map
+            .source_ranges(4_001..4_002)
+            .next()
+            .unwrap()
+            .unwrap(),
+        (4_001..4_002, 3_998..4_000),
+        "a fractional read after the tempo seam bounds both neighboring source frames",
+    );
+    let mut faded = Editor::new(editor.project().clone(), 8).unwrap();
+    faded
+        .execute(Command::SetClipFadeEnvelope {
+            clip,
+            fade: ClipFade::new(duration, 0, 741, 1_283).unwrap(),
+        })
+        .unwrap();
+    let faded_view = prepare(&faded, &media, &context);
+    assert!(Arc::ptr_eq(
+        table,
+        faded_view.arrangement().audio_clip_views()[0]
+            .event_source_occurrences
+            .as_ref()
+            .unwrap()
+    ));
+    let uncached = prepare(&faded, &media, &isolated(64 * 1024 * 1024, 0, 0));
+    assert!(
+        uncached.arrangement().audio_clip_views()[0]
+            .event_source_occurrences
+            .is_none()
+    );
+    assert_eq!(
+        render(&uncached, 0, length, 127),
+        render(&faded_view, 0, length, 127)
+    );
     let settings = editor
         .project()
         .clip(clip)
@@ -690,12 +782,8 @@ fn reverse_musical_repeat_filter_uses_neighbor_occurrences_at_internal_joins() {
     media.insert(asset, Audio::new(16_000, vec![[0.25; 2]; 8_000]).unwrap());
     editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
     editor.execute(Command::ReverseClips(vec![clip])).unwrap();
-    let actual = render(
-        &prepare(&editor, &media, &AudioTransformPreparation::default()),
-        0,
-        48_000,
-        127,
-    );
+    let context = AudioTransformPreparation::default();
+    let actual = render(&prepare(&editor, &media, &context), 0, 48_000, 127);
     // Two reflected one-beat cycles occupy the faster first two beats. Their
     // join is continuous content, not a zero-padded root boundary.
     for join in [8_000] {
@@ -706,6 +794,56 @@ fn reverse_musical_repeat_filter_uses_neighbor_occurrences_at_internal_joins() {
                 frame[0]
             );
         }
+    }
+
+    // A migrated root-clock envelope starts again at each forward cycle,
+    // even though Arrangement reads the base content in the other direction.
+    let mut snapshot = editor.project().snapshot();
+    let row = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
+    let domain = Arc::make_mut(&mut row.edit.as_mut().unwrap().domain);
+    let fade = ClipFade::new(8_000, 0, 3_000, 1_000).unwrap();
+    domain.fade = fade;
+    domain.fade_start = 0;
+    domain.fade_clock = hex_project::AudioClipFadeClock::LegacyRoot;
+    domain.fade_projection = Some(hex_project::AudioFadeProjection {
+        tempo: hex_project::TempoMap::constant(16_000, Tempo::DEFAULT).unwrap(),
+        origin_beat_raw: 0,
+        local_start_raw: 0,
+    });
+    let editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
+    let project = editor.project();
+    let clip = project.clip(clip).unwrap();
+    let prepared = prepare(&editor, &media, &context);
+    let read = &prepared.arrangement().audio_clip_views()[0]
+        .event_source_occurrences
+        .as_ref()
+        .unwrap()
+        .reads()[0];
+    let mut envelope = crate::audio_transform::DirectedMusicalDestinationFade::new(
+        clip,
+        project.tempo_map(),
+        read.source.musical_clock().unwrap(),
+    )
+    .unwrap();
+    let faded = render(&prepared, 0, 48_000, 79);
+    for frame in [
+        0_u64, 1, 2_999, 7_999, 8_000, 13_251, 15_999, 16_000, 31_999, 32_000, 47_999,
+    ] {
+        let cycle_age = if frame < 16_000 {
+            frame % 8_000
+        } else {
+            ((frame - 16_000) % 16_000).div_ceil(2)
+        };
+        let expected_gain = fade.gain_at(cycle_age);
+        assert_eq!(
+            envelope.gain_at(frame).unwrap(),
+            expected_gain,
+            "frame {frame}"
+        );
+        assert_eq!(
+            faded[frame as usize],
+            actual[frame as usize].map(|sample| sample * expected_gain)
+        );
     }
 }
 
@@ -1080,6 +1218,114 @@ fn plain_reverse_crop_of_long_stream_reads_only_bounded_pages() {
         for (offset, frame) in output.iter().enumerate() {
             let value = ((19_999_999 - start - offset as u64) % 1_024) as f32;
             assert_eq!(*frame, [value, -value]);
+        }
+    }
+}
+
+#[test]
+fn directed_frame_crop_reflects_events_with_one_forward_outer_fade() {
+    use hex_project::{AudioEventEdit, AudioEventFade, TrimEdge};
+
+    const START: u64 = 1_000;
+    const PERIOD: u64 = 2_000;
+    const PHASE: u64 = 500;
+    const LENGTH: u64 = 5_200;
+    const CROP: u64 = 650;
+
+    let (mut editor, id, media) = fixture(false);
+    let event = AudioEventFade::new(0, ClipFade::new(8_000, 0, 2_900, 1_600).unwrap()).unwrap();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: id,
+            operation: AudioEventEdit::SetFade {
+                event: 1,
+                fade: Some(event),
+            },
+        })
+        .unwrap();
+    let mut snapshot = editor.project().snapshot();
+    let row = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
+    row.duration = LENGTH;
+    row.fade = ClipFade::neutral(LENGTH).unwrap();
+    let edit = row.edit.as_mut().unwrap();
+    edit.view_start = START;
+    edit.view_end = START + PERIOD;
+    edit.placement = Some(AudioViewPlacement {
+        mode: AudioViewMode::Repeat,
+        outer_length: AudioDomainClock::Frames(LENGTH),
+        cycle_phase: PHASE,
+    });
+    let fade = ClipFade::new(LENGTH, 0, 1_600, 1_200).unwrap();
+    Arc::make_mut(&mut edit.domain).fade = ClipFade::new(8_000, 0, 1_600, 1_200)
+        .unwrap()
+        .with_shape(0, 8_000 - LENGTH, 0, 0)
+        .unwrap();
+
+    let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
+    editor.execute(Command::ReverseClips(vec![id])).unwrap();
+    editor
+        .execute(Command::TrimClipEdge {
+            clip: id,
+            edge: TrimEdge::Left,
+            frame: CROP,
+        })
+        .unwrap();
+    let project = editor.project();
+    let clip = project.clip(id).unwrap();
+    assert_eq!((clip.start(), clip.duration()), (CROP, LENGTH - CROP));
+    let audio = &media[&clip.asset()];
+    let context = AudioTransformPreparation::default();
+    let prepare = |authored: ClipFade| {
+        // Model a retained crop of the prospective Outer shape before project
+        // admission is available. The Frame slot is in the cropped clip clock.
+        let slot = authored.with_offset(CROP, clip.duration()).unwrap();
+        let mut edit = clip.audio_edit().unwrap().clone();
+        let domain = Arc::make_mut(&mut edit.domain);
+        domain.fade_clock = hex_project::AudioClipFadeClock::Outer;
+        domain.fade = slot;
+        context
+            .compile_content_with_outer_fade(
+                project.tempo_map(),
+                clip,
+                &edit,
+                project.asset(clip.asset()).unwrap(),
+                PreparedAudioSourceRef::Resident(audio),
+                Some(OuterPlaybackFade::Frame(slot)),
+            )
+            .unwrap()
+    };
+    let prepared = prepare(fade);
+    let changed = prepare(ClipFade::new(LENGTH, 0, 1_300, 2_000).unwrap());
+    assert!(
+        prepared
+            .audio
+            .as_ref()
+            .unwrap()
+            .shares_pcm_with(changed.audio.as_ref().unwrap())
+    );
+    assert_ne!(
+        prepared.metadata.as_ref().unwrap().fade,
+        changed.metadata.as_ref().unwrap().fade
+    );
+    let output = crate::Project::new(
+        project.sample_rate(),
+        vec![crate::Track::new(vec![prepared], 1.0, false).unwrap()],
+    )
+    .unwrap();
+    for block in [1, 127, 256] {
+        let mut renderer = crate::Renderer::new(&output);
+        renderer.seek(CROP);
+        renderer.play();
+        let mut pcm = vec![[0.0; 2]; (LENGTH - CROP) as usize];
+        for part in pcm.chunks_mut(block) {
+            renderer.render(part).unwrap();
+        }
+        for (local, actual) in pcm.into_iter().enumerate() {
+            let elapsed = CROP + local as u64;
+            let source = START + (PHASE + LENGTH - 1 - elapsed) % PERIOD;
+            let expected = audio.frames()[source as usize]
+                .map(|sample| (sample * event.shape().gain_at(source)) * fade.gain_at(elapsed));
+            assert_eq!(actual, expected, "frame {elapsed}, block {block}");
         }
     }
 }

@@ -1,10 +1,10 @@
 //! Current musical/frozen audio metadata adapter; no DSP or PCM persistence.
 use crate::StorageError;
 use hex_project::{
-    AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioFadeProjection,
-    AudioProcessingProjection, AudioViewMode, AudioViewPlacement, BeatTime, BeatsPreserve,
-    BeatsTail, ClipFade, SourceGainPoint, Tempo, TempoMap, TempoPoint, WarpMarker, WarpMode,
-    WarpResampler, WarpSettings,
+    AudioClipDomain, AudioClipEdit, AudioClipFadeClock, AudioClipTiming, AudioDomainClock,
+    AudioFadeProjection, AudioProcessingProjection, AudioViewMode, AudioViewPlacement, BeatTime,
+    BeatsPreserve, BeatsTail, ClipFade, SourceGainPoint, Tempo, TempoMap, TempoPoint, WarpMarker,
+    WarpMode, WarpResampler, WarpSettings,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -170,12 +170,64 @@ struct Fade {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Projection {
+pub(crate) struct Projection {
     sample_rate: u32,
+    #[serde(deserialize_with = "bounded_tempo_points")]
     tempo_points: Vec<Point>,
     origin_beat_raw: String,
     local_start_raw: u64,
 }
+impl From<&AudioFadeProjection> for Projection {
+    fn from(projection: &AudioFadeProjection) -> Self {
+        Self {
+            sample_rate: projection.tempo.sample_rate(),
+            tempo_points: projection
+                .tempo
+                .points()
+                .iter()
+                .map(|point| Point {
+                    beat_raw: point.beat().raw(),
+                    micro_bpm: point.tempo().micro_bpm(),
+                })
+                .collect(),
+            origin_beat_raw: projection.origin_beat_raw.to_string(),
+            local_start_raw: projection.local_start_raw,
+        }
+    }
+}
+
+impl TryFrom<Projection> for AudioFadeProjection {
+    type Error = StorageError;
+
+    fn try_from(p: Projection) -> Result<Self, StorageError> {
+        let points = p
+            .tempo_points
+            .into_iter()
+            .map(|point| {
+                Tempo::new(point.micro_bpm)
+                    .map(|tempo| TempoPoint::new(BeatTime::from_raw(point.beat_raw), tempo))
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| StorageError::Invalid(e.0))?;
+        let tempo = TempoMap::new(p.sample_rate, points).map_err(|e| StorageError::Invalid(e.0))?;
+        let origin = p
+            .origin_beat_raw
+            .parse::<i128>()
+            .map_err(|_| StorageError::Invalid("invalid audio fade projection origin"))?;
+        // Match audio_projection_frame: consumed Once phase plus root offset.
+        if !(-2 * i128::from(u64::MAX)..=i128::from(u64::MAX)).contains(&origin) {
+            return Err(StorageError::Invalid(
+                "audio fade projection origin exceeds bounded range",
+            ));
+        }
+        Ok(AudioFadeProjection {
+            tempo,
+            origin_beat_raw: origin,
+            local_start_raw: p.local_start_raw,
+        })
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Point {
@@ -225,10 +277,14 @@ enum Tail {
     Alternating,
 }
 
-impl From<AudioClipEdit> for AudioEditDto {
-    fn from(edit: AudioClipEdit) -> Self {
+impl TryFrom<AudioClipEdit> for AudioEditDto {
+    type Error = StorageError;
+    fn try_from(edit: AudioClipEdit) -> Result<Self, Self::Error> {
         let d = &edit.domain;
-        Self {
+        d.fade_clock
+            .require_supported()
+            .map_err(|error| StorageError::Invalid(error.0))?;
+        Ok(Self {
             placement_start_offset: edit.placement_start_offset,
             placement_end_offset: edit.placement_end_offset,
             processing_projection: edit.processing_projection.as_ref().map(|p| {
@@ -321,20 +377,7 @@ impl From<AudioClipEdit> for AudioEditDto {
                     fade_out: d.fade.fade_out(),
                 },
                 fade_start: d.fade_start,
-                fade_projection: d.fade_projection.as_ref().map(|p| Projection {
-                    sample_rate: p.tempo.sample_rate(),
-                    tempo_points: p
-                        .tempo
-                        .points()
-                        .iter()
-                        .map(|point| Point {
-                            beat_raw: point.beat().raw(),
-                            micro_bpm: point.tempo().micro_bpm(),
-                        })
-                        .collect(),
-                    origin_beat_raw: p.origin_beat_raw.to_string(),
-                    local_start_raw: p.local_start_raw,
-                }),
+                fade_projection: d.fade_projection.as_ref().map(Projection::from),
             },
             view_start: edit.view_start,
             view_end: edit.view_end,
@@ -373,7 +416,7 @@ impl From<AudioClipEdit> for AudioEditDto {
                 },
                 cycle_phase: p.cycle_phase,
             }),
-        }
+        })
     }
 }
 impl TryFrom<AudioEditDto> for AudioClipEdit {
@@ -400,34 +443,7 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
         }
         let fade_projection = d
             .fade_projection
-            .map(|p| -> Result<_, StorageError> {
-                let points = p
-                    .tempo_points
-                    .into_iter()
-                    .map(|point| {
-                        Tempo::new(point.micro_bpm)
-                            .map(|tempo| TempoPoint::new(BeatTime::from_raw(point.beat_raw), tempo))
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| StorageError::Invalid(e.0))?;
-                let tempo =
-                    TempoMap::new(p.sample_rate, points).map_err(|e| StorageError::Invalid(e.0))?;
-                let origin = p
-                    .origin_beat_raw
-                    .parse::<i128>()
-                    .map_err(|_| StorageError::Invalid("invalid audio fade projection origin"))?;
-                // Match audio_projection_frame: consumed Once phase plus root offset.
-                if !(-2 * i128::from(u64::MAX)..=i128::from(u64::MAX)).contains(&origin) {
-                    return Err(StorageError::Invalid(
-                        "audio fade projection origin exceeds bounded range",
-                    ));
-                }
-                Ok(AudioFadeProjection {
-                    tempo,
-                    origin_beat_raw: origin,
-                    local_start_raw: p.local_start_raw,
-                })
-            })
+            .map(AudioFadeProjection::try_from)
             .transpose()?;
         let warp = d.warp.map(|warp| WarpSettings {
             mode: match warp.mode {
@@ -533,6 +549,7 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
                 source_phase: d.source_phase,
                 looping: d.looping,
                 fade,
+                fade_clock: AudioClipFadeClock::LegacyRoot,
                 fade_start: d.fade_start,
                 fade_projection,
             }),
@@ -586,3 +603,6 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
         })
     }
 }
+
+#[cfg(test)]
+mod fade_clock_tests;

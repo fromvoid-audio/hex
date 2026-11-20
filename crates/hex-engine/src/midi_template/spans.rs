@@ -16,6 +16,7 @@ pub(crate) use gates::PreparedMidiGateTemplate;
 use hex_devices::SineTable;
 use hex_lattice::{PreparedAnalyticNote, PreparedNativeInstrument};
 use hex_project::{BeatTime, TempoMap};
+use std::num::NonZeroU32;
 
 /// Maximum sounding note spans returned for one 256-frame window.
 pub const MIDI_SPAN_BUFFER_CAPACITY: usize = 192;
@@ -286,6 +287,14 @@ pub struct MidiReleaseVoice {
     gate_end_frame: u64,
     end_frame: u64,
     voice: crate::midi_note_bank::PreparedMidiNote,
+    power_fade: Option<AnalyticPowerFade>,
+}
+
+/// The host fade has its own deadline so loop clipping cannot change its slope.
+#[derive(Clone, Copy, Debug)]
+struct AnalyticPowerFade {
+    end_frame: u64,
+    frames: NonZeroU32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -313,6 +322,7 @@ impl MidiRenderSpan {
                 gate_end_frame: cut_frame,
                 end_frame,
                 voice,
+                power_fade: None,
             }))
         } else {
             Ok(Some(MidiReleaseVoice {
@@ -320,6 +330,7 @@ impl MidiRenderSpan {
                 gate_end_frame: self.gate_end_frame,
                 end_frame: self.end_frame,
                 voice,
+                power_fade: None,
             }))
         }
     }
@@ -349,6 +360,7 @@ impl MidiRenderSpan {
             gate_end_frame,
             end_frame,
             voice,
+            power_fade: None,
         }))
     }
 }
@@ -410,7 +422,37 @@ impl MidiReleaseVoice {
                 frame - self.start_frame,
                 self.gate_end_frame - self.start_frame,
             )
-            .map(Some)
+            .map(|sample| Some(self.apply_power_fade(frame, sample)))
+    }
+
+    fn apply_power_fade(&self, frame: u64, sample: [f32; 2]) -> [f32; 2] {
+        let Some(fade) = self.power_fade else {
+            return sample;
+        };
+        let remaining = fade
+            .end_frame
+            .saturating_sub(frame)
+            .min(u64::from(fade.frames.get()));
+        let gain = remaining as f32 / fade.frames.get() as f32;
+        sample.map(|channel| channel * gain)
+    }
+
+    /// Fade the already audible voice on the source clock without extending its
+    /// natural release or restarting an in-progress Power Off fade.
+    pub(crate) fn power_off_at(&mut self, frame: u64, sample_rate: u32) {
+        if self.power_fade.is_some() {
+            return;
+        }
+        let limit = sample_rate.div_ceil(200).max(1);
+        let remaining = self.end_frame.saturating_sub(frame).min(u64::from(limit));
+        let Some(frames) = NonZeroU32::new(remaining as u32) else {
+            return;
+        };
+        self.end_frame = frame + u64::from(frames.get());
+        self.power_fade = Some(AnalyticPowerFade {
+            end_frame: self.end_frame,
+            frames,
+        });
     }
 
     pub(crate) fn end_frame(&self) -> u64 {
@@ -429,7 +471,7 @@ impl MidiReleaseVoice {
         if cut_frame >= self.end_frame {
             return Ok(None);
         }
-        if cut_frame >= self.gate_end_frame {
+        if self.power_fade.is_some() || cut_frame >= self.gate_end_frame {
             return Ok(Some(self));
         }
         let Some(gate_end_frame) = remapped_gate_end.filter(|frame| *frame > cut_frame) else {
@@ -439,7 +481,7 @@ impl MidiReleaseVoice {
                 end_frame: cut_frame
                     .checked_add(self.voice.release_frames())
                     .ok_or(ReleaseVoiceError::ArithmeticOverflow)?,
-                voice: self.voice,
+                ..self
             }));
         };
         let end_frame = gate_end_frame
@@ -449,7 +491,7 @@ impl MidiReleaseVoice {
             start_frame: self.start_frame,
             gate_end_frame,
             end_frame,
-            voice: self.voice,
+            ..self
         }))
     }
 
@@ -483,6 +525,7 @@ impl MidiReleaseVoice {
                     .checked_add(voice.release_frames())
                     .ok_or(ReleaseVoiceError::ArithmeticOverflow)?,
                 voice,
+                power_fade: None,
             }
         } else {
             Self {
@@ -490,6 +533,7 @@ impl MidiReleaseVoice {
                 gate_end_frame,
                 end_frame,
                 voice,
+                power_fade: None,
             }
         };
         released.rebase(source_cut, performance_cut).map(Some)
@@ -511,16 +555,13 @@ impl MidiReleaseVoice {
             gate_end_frame,
             end_frame,
             voice,
+            power_fade: None,
         }
         .rebase(source_cut, performance_cut)
         .map(Some)
     }
 
-    pub(crate) fn rebase(
-        self,
-        source_cut: u64,
-        performance_cut: u64,
-    ) -> Result<Self, ReleaseVoiceError> {
+    fn rebase(self, source_cut: u64, performance_cut: u64) -> Result<Self, ReleaseVoiceError> {
         let elapsed = source_cut
             .checked_sub(self.start_frame)
             .ok_or(ReleaseVoiceError::ArithmeticOverflow)?;
@@ -548,7 +589,7 @@ impl MidiReleaseVoice {
             start_frame,
             gate_end_frame,
             end_frame,
-            voice: self.voice,
+            ..self
         })
     }
 
@@ -562,12 +603,14 @@ impl MidiReleaseVoice {
         if frame < self.start_frame || frame >= self.end_frame {
             return None;
         }
-        self.voice.sample(
-            contexts,
-            retained,
-            frame - self.start_frame,
-            self.gate_end_frame - self.start_frame,
-        )
+        self.voice
+            .sample(
+                contexts,
+                retained,
+                frame - self.start_frame,
+                self.gate_end_frame - self.start_frame,
+            )
+            .map(|sample| self.apply_power_fade(frame, sample))
     }
 }
 

@@ -108,6 +108,7 @@ impl SeekKind {
 
 #[derive(Clone)]
 pub(super) struct SeekIntent {
+    pub note_chase: hex_engine::NoteChase,
     pub kind: SeekKind,
     pub recovery_generation: Option<u64>,
     pub destination_frame: u64,
@@ -126,6 +127,7 @@ pub(super) enum SeekStage {
 }
 
 pub(super) struct PendingSeek {
+    pub note_chase: hex_engine::NoteChase,
     pub kind: SeekKind,
     pub native_output_identity: Option<u64>,
     pub recovery_generation: Option<u64>,
@@ -147,6 +149,7 @@ pub(super) struct PendingSeek {
 impl PendingSeek {
     fn intent(&self) -> SeekIntent {
         SeekIntent {
+            note_chase: self.note_chase,
             kind: self.kind,
             recovery_generation: self.recovery_generation,
             destination_frame: self.destination_frame,
@@ -170,6 +173,7 @@ impl PendingSeek {
             && result.destination_frame == self.destination_frame
             && result.work_budget_frames == self.work_budget_frames
             && result.start_playing == self.start_playing
+            && result.note_chase == self.note_chase
     }
 
     pub fn defers_replacement(&self) -> bool {
@@ -206,6 +210,7 @@ impl SeekIntent {
         // Only explicit history replay spends the ordinary work ceiling.
         // Fresh/section laws retain their existing destination semantics.
         Some(ArrangementSeekSpec {
+            note_chase: self.note_chase,
             mode: self.kind.mode(),
             generation: self.project_generation,
             revision: self.project_revision,
@@ -220,6 +225,7 @@ impl SeekIntent {
 impl PendingSeek {
     pub fn from_intent(request_id: u64, intent: &SeekIntent, fence: FreshRuntimeFence) -> Self {
         Self {
+            note_chase: intent.note_chase,
             kind: intent.kind,
             request_id,
             native_output_identity: None,
@@ -595,6 +601,7 @@ impl EditorView {
             return;
         }
         let intent = SeekIntent {
+            note_chase: hex_engine::NoteChase::On,
             kind: SeekKind::CommittedLocator {
                 source,
                 quantization,
@@ -609,16 +616,23 @@ impl EditorView {
         };
         self.wake_poll();
         self.latency_rebuild = None;
-        self.admit_prepared_seek(intent, source.audio_revision);
+        self.queue_normal_start(super::playback_settings::Start::Prepared {
+            intent,
+            audio_revision: source.audio_revision,
+        });
     }
 
     pub(super) fn request_history_playback(&mut self, frame: u64) {
+        self.playback_settings.pending = None;
         self.request_prepared_seek_with_kind(frame, true, SeekKind::History);
     }
 
-    pub(super) fn request_section_launch(
+    /// The section/loop owner already captured the gesture's policy before its loop edit.
+    /// Keep the existing adjacent-refused-loop admission proof; do not re-gate this receipt.
+    pub(super) fn request_section_launch_with_note_chase(
         &mut self,
         section: hex_session::arrangement_seek::SectionLaunch,
+        note_chase: hex_engine::NoteChase,
     ) {
         if !section.matches_loop(
             self.state
@@ -628,10 +642,26 @@ impl EditorView {
             self.error = Some("section launch requires its arrangement loop state".into());
             return;
         }
-        self.request_prepared_seek_with_kind(
-            section.region.start(),
-            true,
-            SeekKind::Section(section),
+        let Some((prepared_revision, audio_revision, project_revision)) =
+            self.current_prepared_seek_source()
+        else {
+            self.error = Some("section playback source is unavailable".into());
+            return;
+        };
+        self.wake_poll();
+        self.submit_prepared_seek_intent(
+            SeekIntent {
+                note_chase,
+                kind: SeekKind::Section(section),
+                recovery_generation: None,
+                destination_frame: section.region.start(),
+                start_playing: true,
+                project_generation: self.project_generation,
+                project_revision,
+                prepared_revision,
+                device_preview_identity: self.active_seek_preview(),
+            },
+            audio_revision,
         );
     }
 
@@ -688,6 +718,7 @@ impl EditorView {
             return;
         };
         let intent = super::arrangement_seek::SeekIntent {
+            note_chase: hex_engine::NoteChase::On,
             kind,
             recovery_generation: None,
             destination_frame,
@@ -697,6 +728,19 @@ impl EditorView {
             prepared_revision,
             device_preview_identity: self.active_seek_preview(),
         };
+        if matches!(kind, SeekKind::Section(_) | SeekKind::Locator(_))
+            || (matches!(kind, SeekKind::Fresh) && start_playing)
+        {
+            self.queue_normal_start(super::playback_settings::Start::Prepared {
+                intent,
+                audio_revision,
+            });
+            return;
+        }
+        self.submit_prepared_seek_intent(intent, audio_revision);
+    }
+
+    pub(super) fn submit_prepared_seek_intent(&mut self, intent: SeekIntent, audio_revision: u64) {
         if intent.kind.quantization().is_some() && self.prepared_seek.is_some() {
             self.invalidate_prepared_seek();
         }
@@ -750,6 +794,7 @@ impl EditorView {
         let (prepared_revision, audio_revision, project_revision) =
             self.current_preroll_source()?;
         let intent = SeekIntent {
+            note_chase: hex_engine::NoteChase::On,
             kind: SeekKind::Fresh,
             recovery_generation: Some(generation),
             destination_frame: position,
@@ -787,7 +832,7 @@ impl EditorView {
         )
     }
 
-    fn admit_prepared_seek(
+    pub(super) fn admit_prepared_seek(
         &mut self,
         mut intent: super::arrangement_seek::SeekIntent,
         mut audio_revision: u64,
@@ -907,6 +952,7 @@ impl EditorView {
         let mut pending = PendingSeek::from_intent(request_id, &intent, fence);
         pending.native_output_identity = Some(output_identity);
         let request = hex_session::service::ResidentArrangementSeekIntent {
+            note_chase: intent.note_chase,
             history: if matches!(intent.kind, SeekKind::History) {
                 hex_session::service::ResidentSeekHistory::Preserve
             } else {
@@ -963,6 +1009,7 @@ impl EditorView {
                 && pending.request_id == result.request_id
                 && pending.project_generation == result.project_generation
                 && pending.project_revision == result.project_revision
+                && pending.note_chase == result.note_chase
         }) else {
             return true;
         };
@@ -1162,6 +1209,7 @@ impl EditorView {
             return true;
         };
         let ArrangementSeekResult {
+            note_chase,
             request_id,
             mode,
             generation,
@@ -1176,6 +1224,7 @@ impl EditorView {
             Ok(playback) => {
                 let Some(pending) = self.prepared_seek.as_mut() else {
                     self.retire_seek_result(ArrangementSeekResult {
+                        note_chase,
                         request_id,
                         mode,
                         generation,
@@ -1378,6 +1427,7 @@ impl EditorView {
                     && let Some(playback) = self.pending_playback.take()
                 {
                     self.retire_seek_result(ArrangementSeekResult {
+                        note_chase: pending.note_chase,
                         request_id: pending.request_id,
                         mode: pending.kind.mode(),
                         generation: pending.project_generation,

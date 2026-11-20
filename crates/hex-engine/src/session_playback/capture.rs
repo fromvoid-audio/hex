@@ -472,9 +472,7 @@ impl SessionPlayback {
                                             .tail_mutable_instruments
                                             .get(index)
                                             .and_then(Option::as_ref)
-                                            .is_some_and(|tail| {
-                                                !tail.runtime.committed_is_quiescent()
-                                            })
+                                            .is_some_and(|tail| !tail.committed_is_quiescent())
                                 })
                         })
             }

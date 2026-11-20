@@ -26,8 +26,8 @@ fn marquee_selects_on_contact_and_escape_restores_its_owned_baseline(cx: &mut Te
             state.project.snapshot(),
             state.project.midi_source(clip).unwrap().notes()[0].id(),
             v.midi_selection.primary().unwrap(),
-            v.piano_pitch_low,
-            v.piano_pitch_rows,
+            v.piano_pitch.first_test_pitch(),
+            v.piano_pitch.test_row_count(),
         )
     });
     let roll = visual.debug_bounds("midi-note-roll").unwrap();
@@ -144,7 +144,8 @@ fn marquee_selects_on_contact_and_escape_restores_its_owned_baseline(cx: &mut Te
     visual.simulate_mouse_move(end, Some(MouseButton::Left), shift);
     visual.run_until_parked();
     editor.update(&mut visual, |v, cx| {
-        v.piano_pitch_rows = 12;
+        v.piano_pitch =
+            crate::editor::PitchViewport::from_rows(v.piano_pitch.first_test_pitch(), 12).unwrap();
         cx.notify();
     });
     visual.run_until_parked();
@@ -189,8 +190,8 @@ fn empty_grid_drag_selects_notes_without_a_modifier(cx: &mut TestAppContext) {
         (
             notes[0].id(),
             notes[1].id(),
-            view.piano_pitch_low,
-            view.piano_pitch_rows,
+            view.piano_pitch.first_test_pitch(),
+            view.piano_pitch.test_row_count(),
         )
     });
     editor.update(&mut visual, |view, cx| {

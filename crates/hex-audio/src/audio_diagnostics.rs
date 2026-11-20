@@ -75,6 +75,7 @@ impl std::str::FromStr for AudioDiagnosticsFlags {
 /// The callback prerequisite that kept an admitted graph pending.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PublicationWaitReason {
+    NativeRemovalFade,
     PredecessorWindow,
     StreamPages,
     StreamPageCapacity,
@@ -108,6 +109,9 @@ pub enum AudioDiagnosticKind {
     CallbackTiming {
         elapsed_ns: u64,
         deadline_ns: u64,
+        /// Gap from the preceding callback start on this output. Absent on
+        /// the first opted-in callback or after timing was disabled.
+        start_interval_ns: Option<u64>,
     },
 }
 impl AudioDiagnosticKind {

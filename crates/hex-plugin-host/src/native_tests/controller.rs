@@ -84,7 +84,8 @@ fn held_controller_query_keeps_pcm_running_and_cancels_without_sdk_teardown() {
                     ParameterPageProgress::Changed { .. } => panic!("unversioned first query"),
                     ParameterPageProgress::Conversion(_)
                     | ParameterPageProgress::Editor(_)
-                    | ParameterPageProgress::EditorSeal(_) => {
+                    | ParameterPageProgress::EditorSeal(_)
+                    | ParameterPageProgress::EditorFrontier(_) => {
                         panic!("expected metadata page")
                     }
                 }
@@ -314,7 +315,8 @@ fn page(instance: &mut Prepared, query: ParameterPageQuery) -> Box<ParameterPage
             ParameterPageProgress::Changed { .. } => panic!("unchanged fixture metadata"),
             ParameterPageProgress::Conversion(_)
             | ParameterPageProgress::Editor(_)
-            | ParameterPageProgress::EditorSeal(_) => {
+            | ParameterPageProgress::EditorSeal(_)
+            | ParameterPageProgress::EditorFrontier(_) => {
                 panic!("expected metadata page")
             }
         }
@@ -511,7 +513,8 @@ fn actual_controller_pages_use_sdk_conversions_without_processing_or_replacing_s
                 ParameterPageProgress::Page(_)
                 | ParameterPageProgress::Conversion(_)
                 | ParameterPageProgress::Editor(_)
-                | ParameterPageProgress::EditorSeal(_) => {
+                | ParameterPageProgress::EditorSeal(_)
+                | ParameterPageProgress::EditorFrontier(_) => {
                     panic!("stale metadata must invalidate enumeration")
                 }
             }
@@ -528,7 +531,8 @@ fn actual_controller_pages_use_sdk_conversions_without_processing_or_replacing_s
                 ParameterPageProgress::Changed { .. } => panic!("same stopped metadata"),
                 ParameterPageProgress::Conversion(_)
                 | ParameterPageProgress::Editor(_)
-                | ParameterPageProgress::EditorSeal(_) => {
+                | ParameterPageProgress::EditorSeal(_)
+                | ParameterPageProgress::EditorFrontier(_) => {
                     panic!("expected stopped metadata page")
                 }
             }
@@ -1047,6 +1051,25 @@ fn editor_seal_preserves_burst_and_refuses_an_active_sdk_gesture() {
             thread::yield_now();
         }
     }
+    fn frontier(instance: &mut Prepared) -> u64 {
+        instance
+            .begin_controller_request_on_worker(ControllerRequest::ReadEditorFrontier)
+            .unwrap();
+        let until = Instant::now() + Duration::from_millis(750);
+        loop {
+            match instance.poll_parameter_page_on_worker().unwrap() {
+                ParameterPageProgress::EditorFrontier(result) => return result,
+                ParameterPageProgress::Pending => {}
+                other => panic!("unexpected editor admission terminal: {other:?}"),
+            }
+            assert!(
+                Instant::now() < until,
+                "original helper must report admission"
+            );
+            thread::yield_now();
+        }
+    }
+
     for (variant, count) in [(116, 14), (147, 3)] {
         let case = Case::new();
         let setup = case.setup_restore(variant);
@@ -1066,6 +1089,7 @@ fn editor_seal_preserves_burst_and_refuses_an_active_sdk_gesture() {
         )
         .unwrap();
         let child = instance.child_id_on_control();
+        assert_eq!(frontier(&mut instance), 0);
         fs::write(case.release(), b"emit actual SDK editor callbacks").unwrap();
         let until = Instant::now() + Duration::from_millis(750);
         while case.observation().is_none_or(|trace| trace[0] != 25) {
@@ -1076,6 +1100,7 @@ fn editor_seal_preserves_burst_and_refuses_an_active_sdk_gesture() {
             thread::yield_now();
         }
         if variant == 147 {
+            assert_eq!(frontier(&mut instance), 2);
             assert_eq!(seal(&mut instance), EditorSealState::NotSealed);
             fs::write(end, b"finish actual SDK gesture").unwrap();
             while seal(&mut instance) != EditorSealState::Sealed {
@@ -1088,6 +1113,8 @@ fn editor_seal_preserves_burst_and_refuses_an_active_sdk_gesture() {
         } else {
             assert_eq!(seal(&mut instance), EditorSealState::Sealed);
         }
+        let admitted = frontier(&mut instance);
+        assert_eq!(admitted, count as u64);
         let mut edits = Vec::new();
         while edits.len() < count {
             let batch = instance.service_idle_editor_edits_on_worker().unwrap();
@@ -1099,6 +1126,7 @@ fn editor_seal_preserves_burst_and_refuses_an_active_sdk_gesture() {
             thread::yield_now();
         }
         assert_eq!(edits.len(), count);
+        assert_eq!(frontier(&mut instance), admitted);
         for (index, edit) in edits.iter().enumerate() {
             assert_eq!(
                 (edit.sequence, edit.gesture, edit.id),

@@ -99,6 +99,32 @@ fn drag_to_header(
     feedback
 }
 
+fn hover_arrangement_lane(
+    visual: &mut VisualTestContext,
+    track: TrackId,
+    modifiers: Modifiers,
+) -> gpui::Point<gpui::Pixels> {
+    let landing = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", track.value()).into_boxed_str(),
+        ))
+        .expect("target lane")
+        .center();
+    visual.simulate_mouse_move(landing, MouseButton::Left, modifiers);
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("arrangement-device-drop-preview")
+            .is_some()
+    );
+    landing
+}
+
+fn drop_on_arrangement_lane(visual: &mut VisualTestContext, track: TrackId, modifiers: Modifiers) {
+    let landing = hover_arrangement_lane(visual, track, modifiers);
+    visual.simulate_mouse_up(landing, MouseButton::Left, modifiers);
+}
+
 #[gpui::test]
 fn header_effect_drop_appends_to_unselected_track_once_and_keeps_history(cx: &mut TestAppContext) {
     cx.update(crate::editor::bind_editor_keys);
@@ -609,9 +635,13 @@ fn plain_drag_moves_a_device_to_the_end_of_another_track_header(cx: &mut TestApp
 }
 
 #[gpui::test]
-fn header_drag_moves_noncontiguous_selected_devices_in_chain_order(cx: &mut TestAppContext) {
+fn track_drag_moves_noncontiguous_selected_devices_in_chain_order(cx: &mut TestAppContext) {
     cx.update(crate::editor::bind_editor_keys);
-    for mode in [EditorMode::Arrangement, EditorMode::Session] {
+    for (mode, lane) in [
+        (EditorMode::Arrangement, false),
+        (EditorMode::Session, false),
+        (EditorMode::Arrangement, true),
+    ] {
         let (service, _, source, first, _, _) = actor_utility_fixture();
         let add_effect = |track| {
             service
@@ -663,7 +693,12 @@ fn header_drag_moves_noncontiguous_selected_devices_in_chain_order(cx: &mut Test
             assert!(view.device_panel.is_selected(first) && view.device_panel.is_selected(last));
             assert!(!view.device_panel.is_selected(middle));
         });
-        drag_to_header(&mut visual, target, mode, title(last));
+        if lane {
+            begin_device_drag(&mut visual, title(last));
+            drop_on_arrangement_lane(&mut visual, target, Modifiers::default());
+        } else {
+            drag_to_header(&mut visual, target, mode, title(last));
+        }
         pump_until(&editor, cx, idle);
         let moved = editor.read_with(cx, |view, _| {
             assert!(view.error.is_none(), "{:?}", view.error);
@@ -696,6 +731,86 @@ fn header_drag_moves_noncontiguous_selected_devices_in_chain_order(cx: &mut Test
 
 #[gpui::test]
 fn option_drag_copies_device_to_another_track_header(cx: &mut TestAppContext) {
+    option_drag_copies_device_to_another_track(cx, EditorMode::Session);
+}
+
+#[gpui::test]
+fn option_drag_copies_device_to_arrangement_lane(cx: &mut TestAppContext) {
+    option_drag_copies_device_to_another_track(cx, EditorMode::Arrangement);
+}
+
+#[gpui::test]
+fn arrangement_device_lane_refuses_an_incompatible_instrument_and_a_stale_effect(
+    cx: &mut TestAppContext,
+) {
+    let (service, initial, source, effect, _, _) = actor_utility_fixture();
+    let instrument = initial.project.track(source).unwrap().instrument().unwrap();
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "destination".into(),
+        }))
+        .unwrap();
+    let Created::Track(target) = receive_service_event(&service).created.unwrap() else {
+        panic!("destination");
+    };
+    service
+        .submit(Request::AddNativeDevice {
+            track: target,
+            class: NativeDeviceClass::Instrument,
+            type_id: Box::new(instrument.state().type_id()),
+            before: None,
+        })
+        .unwrap();
+    let state = receive_service_event(&service).state;
+    let original = state.project.clone();
+    let revision = state.revision;
+    let (handle, editor) = header_window(cx, service, state, source, EditorMode::Arrangement);
+    editor.update(cx, |view, cx| {
+        view.device_panel_active = true;
+        view.clip_view_open = true;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.), px(800.)));
+    visual.run_until_parked();
+    for (device, stale, expected) in [
+        (
+            instrument.id(),
+            false,
+            "destination cannot accept another instrument",
+        ),
+        (
+            effect,
+            true,
+            "device drop canceled · target or project changed, or editing is busy",
+        ),
+    ] {
+        begin_device_drag(
+            &mut visual,
+            Box::leak(format!("device-drag-title-{}", device.value()).into_boxed_str()),
+        );
+        let landing = hover_arrangement_lane(&mut visual, target, Modifiers::default());
+        if stale {
+            editor.update(cx, |view, cx| {
+                view.project_generation += 1;
+                cx.notify();
+            });
+            visual.run_until_parked();
+        }
+        visual.simulate_mouse_up(landing, MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.error.as_deref(), Some(expected));
+            assert!(idle(view));
+            assert!(view.active_native_device_drag.is_none());
+            assert!(view.arrangement_device_preview.is_none());
+            assert_eq!(view.state.as_ref().unwrap().revision, revision);
+            assert_eq!(view.state.as_ref().unwrap().project, original);
+            assert_eq!(view.selected_track, Some(source));
+        });
+    }
+}
+
+fn option_drag_copies_device_to_another_track(cx: &mut TestAppContext, mode: EditorMode) {
     let (service, _, source, device, _, _) = actor_utility_fixture();
     service
         .submit(Request::Edit(Command::AddTrack {
@@ -707,18 +822,16 @@ fn option_drag_copies_device_to_another_track_header(cx: &mut TestAppContext) {
         panic!("target");
     };
     let (handle, editor) = actor_editor_window(cx, service, event.state, source);
+    editor.update(cx, |view, cx| {
+        view.mode = mode;
+        cx.notify();
+    });
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1600.0), px(800.0)));
     visual.run_until_parked();
     let title = visual
         .debug_bounds(Box::leak(
             format!("device-drag-title-{}", device.value()).into_boxed_str(),
-        ))
-        .unwrap()
-        .center();
-    let header = visual
-        .debug_bounds(Box::leak(
-            format!("session-track-{}", target.value()).into_boxed_str(),
         ))
         .unwrap()
         .center();
@@ -732,9 +845,19 @@ fn option_drag_copies_device_to_another_track_header(cx: &mut TestAppContext) {
         MouseButton::Left,
         option,
     );
-    visual.simulate_mouse_move(header, MouseButton::Left, option);
-    visual.run_until_parked();
-    visual.simulate_mouse_up(header, MouseButton::Left, option);
+    if mode == EditorMode::Arrangement {
+        drop_on_arrangement_lane(&mut visual, target, option);
+    } else {
+        let landing = visual
+            .debug_bounds(Box::leak(
+                format!("session-track-{}", target.value()).into_boxed_str(),
+            ))
+            .unwrap()
+            .center();
+        visual.simulate_mouse_move(landing, MouseButton::Left, option);
+        visual.run_until_parked();
+        visual.simulate_mouse_up(landing, MouseButton::Left, option);
+    }
     pump_until(&editor, cx, |view| {
         view.state
             .as_ref()

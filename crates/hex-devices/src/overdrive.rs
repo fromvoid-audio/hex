@@ -404,10 +404,12 @@ impl PreparedNativeProcessor for PreparedOverdrive {
             .map(|binding| binding.semantics)
     }
 
-    // Keep the exact 11-frame dry delay and ordinary wet processing (including
-    // automation, noise/filter/envelope state and finite-tail guards) warm.
-    // The host owns the bounded dry history and transactional bypass ramp.
+    // The host keeps the exact 11-frame dry delay through settled Off.
     fn supports_latency_aligned_bypass(&self) -> bool {
+        true
+    }
+
+    fn supports_power_off(&self) -> bool {
         true
     }
 

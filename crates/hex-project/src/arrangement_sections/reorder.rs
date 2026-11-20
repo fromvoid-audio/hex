@@ -391,7 +391,7 @@ pub(super) fn reorder(
     before: SectionId,
 ) -> Result<Created, Invalid> {
     let preview = project.preview_section_reorder(section, before)?;
-    reorder_preview(project, preview)
+    reorder_preview(project, preview, false)
 }
 pub(super) fn reorder_after(
     project: &mut Project,
@@ -399,7 +399,7 @@ pub(super) fn reorder_after(
     after: SectionId,
 ) -> Result<Created, Invalid> {
     let preview = project.preview_section_reorder_after(section, after)?;
-    reorder_preview(project, preview)
+    reorder_preview(project, preview, false)
 }
 /// Control-side composition for a validated absolute append destination.
 pub(super) fn reorder_at(
@@ -407,20 +407,41 @@ pub(super) fn reorder_at(
     section: SectionId,
     insertion: BeatTime,
 ) -> Result<Created, Invalid> {
+    reorder_at_with_automation(project, section, insertion, false)
+}
+
+/// Place an intermediate copy. The copy owner inserts device envelopes at the
+/// final destination afterwards.
+pub(super) fn place_duplicate_at(
+    project: &mut Project,
+    section: SectionId,
+    insertion: BeatTime,
+) -> Result<Created, Invalid> {
+    reorder_at_with_automation(project, section, insertion, true)
+}
+
+fn reorder_at_with_automation(
+    project: &mut Project,
+    section: SectionId,
+    insertion: BeatTime,
+    placing_copy: bool,
+) -> Result<Created, Invalid> {
     let source = project
         .arrangement_section(section)
         .ok_or(Invalid("arrangement section no longer exists"))?;
     let preview = project.preview_section_reorder_at(source, insertion)?;
-    reorder_preview(project, preview)
+    reorder_preview(project, preview, placing_copy)
 }
+
 fn reorder_preview(
     project: &mut Project,
     preview: SectionReorderPreview,
+    placing_copy: bool,
 ) -> Result<Created, Invalid> {
     if preview.is_noop() {
         return Ok(Created::None);
     }
-    if project.has_device_automation() {
+    if !placing_copy && project.has_device_automation() {
         return Err(Invalid(crate::AUTOMATION_EDIT_UNSUPPORTED));
     }
     let old_tempo = std::sync::Arc::new(project.tempo_map.clone());

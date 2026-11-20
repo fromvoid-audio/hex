@@ -34,10 +34,13 @@ pub use capture::{
     CAPTURE_REFUSAL_MAGIC, StateCaptureRefusal, capture_refusal, capture_request, captured_state,
     live_capture_reply, live_capture_request, live_captured_state,
 };
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) use flush::valid_editor_flush_extent;
 pub use flush::{
     FlushDisposition, FlushedParameter, FlushedParameters, MAX_FLUSHED_PARAMETERS, flush_request,
     flushed_parameters,
 };
+pub use flush::{MAX_EDITOR_FLUSH_PARAMETERS, guarded_flush_request, guarded_flushed_parameters};
 
 pub const CONFIG_LIMIT: usize = 8448;
 pub const CONTROL_LIMIT: usize = 8192;

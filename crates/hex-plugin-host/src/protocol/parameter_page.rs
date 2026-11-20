@@ -180,6 +180,9 @@ pub enum ParameterPageProgress {
     /// The exact original controller sealed editor admission, or did not
     /// seal and remains responsible for its input. Neither result drains receipts.
     EditorSeal(EditorSealState),
+    /// Latest editor callback admitted on this binding. Zero means none.
+    /// This observes admission order before any DSP or project disposition.
+    EditorFrontier(u64),
     /// One bounded control-side allocation; never decoded on the callback.
     Page(Box<ParameterPage>),
     Conversion(Box<ParameterConversionResult>),
@@ -208,6 +211,9 @@ pub enum ControllerRequest {
     /// Seal editor callback admission on the stopped original worker. Accepted
     /// callbacks and their receipts remain owned until separately drained.
     SealEditorEdits,
+    /// Read the original helper’s global editor admission sequence without
+    /// consuming receipts or changing whether the helper accepts input.
+    ReadEditorFrontier,
     /// Detach the predecessor and capture the latest AppKit placement.
     DetachEditor,
     /// Detach on the original live source only when no editor gesture is active.
@@ -240,6 +246,7 @@ impl ControllerRequest {
             | Self::CloseEditor
             | Self::EditorVisibility
             | Self::SealEditorEdits
+            | Self::ReadEditorFrontier
             | Self::DetachEditor
             | Self::DetachEditorWhenIdle
             | Self::ReopenEditor(_) => Ok(()),
@@ -305,6 +312,7 @@ pub fn parameter_page_request(
         ControllerRequest::CloseEditor => out[82] = 7,
         ControllerRequest::EditorVisibility => out[82] = 15,
         ControllerRequest::SealEditorEdits => out[82] = 13,
+        ControllerRequest::ReadEditorFrontier => out[82] = 16,
         // New kinds prevent a pre-placement helper from closing the old
         // window and returning a positionless legacy acknowledgement.
         ControllerRequest::DetachEditor => out[82] = 11,
@@ -364,6 +372,14 @@ pub fn parameter_page(
         reader.end()?;
         return Ok(ParameterPageProgress::EditorSeal(result));
     }
+    if request == ControllerRequest::ReadEditorFrontier {
+        if status != 6 {
+            return Err(Error::Protocol("missing editor admission sequence"));
+        }
+        let frontier = u64::from_le_bytes(reader.array()?);
+        reader.end()?;
+        return Ok(ParameterPageProgress::EditorFrontier(frontier));
+    }
     let query = match request {
         ControllerRequest::Parameters(query) => Some(query),
         ControllerRequest::SelectedParameters { first } => Some(ParameterPageQuery {
@@ -375,6 +391,7 @@ pub fn parameter_page(
         | ControllerRequest::CloseEditor
         | ControllerRequest::EditorVisibility
         | ControllerRequest::SealEditorEdits
+        | ControllerRequest::ReadEditorFrontier
         | ControllerRequest::DetachEditor
         | ControllerRequest::DetachEditorWhenIdle
         | ControllerRequest::ReopenEditor(_) => None,

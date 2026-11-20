@@ -60,7 +60,6 @@ fn session_clip_backdrop(clip: ClipId, fill: u32, stroke: f32) -> Div {
                 outline,
                 hover_outline: outline,
                 stroke,
-                bottom_radius: 0.0,
                 header_height: SCENE_ROW_HEIGHT,
                 header_gradient: None,
                 notch: super::clip_boundary::Notch::new(true),

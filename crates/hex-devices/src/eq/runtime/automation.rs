@@ -474,6 +474,40 @@ mod clock_tests {
         }
     }
     #[test]
+    fn reset_returns_historical_lane_coefficients_to_authored_settings() {
+        let mut state = EqState::default();
+        let id = NodeId::new(7).unwrap();
+        state.add(Node::new(id, 1_000.0, 12.0, 0).unwrap()).unwrap();
+        let mut authored = PreparedEq::new(state.clone(), 48_000)
+            .unwrap()
+            .create_runtime();
+        state
+            .set_lane(AutomationLane {
+                node: id,
+                parameter: NodeParameter::Frequency,
+                points: vec![AutomationPoint {
+                    beat: 0,
+                    normalized: 0.8,
+                }],
+            })
+            .unwrap();
+        let mut warmed = PreparedEq::new(state, 48_000).unwrap().create_runtime();
+        let input = [[0.25, -0.25]; 64];
+        let mut expected = input;
+        authored.process_block(&mut expected, &R);
+        let mut running = input;
+        warmed.process_block_with_clock(&mut running, Some(&Clock(0)), &R);
+        assert_ne!(running, expected, "historical lane must affect the filter");
+
+        warmed.reset();
+        let mut actual = input;
+        warmed.process_block(&mut actual, &R);
+        assert_eq!(
+            actual, expected,
+            "reset retained old automated coefficients"
+        );
+    }
+    #[test]
     fn shared_gain_preserves_historical_lane_clock_offsets_and_discontinuities() {
         let mut s = EqState::default();
         let id = NodeId::new(7).unwrap();

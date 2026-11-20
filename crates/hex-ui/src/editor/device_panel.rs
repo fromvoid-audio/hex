@@ -24,6 +24,7 @@ use std::{
 };
 
 mod auto_pan_panel;
+mod automation_tint;
 mod bindings;
 mod bypass;
 mod delay_panel;

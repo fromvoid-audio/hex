@@ -59,17 +59,73 @@ impl Callback {
                 .session_route_status(index)
                 .is_some_and(|route| route.pending.is_some())
         });
-        if rendering_revoked || pending_action || !source_free(active) || !source_free(next) {
+        if rendering_revoked || pending_action {
             return if next.playback.native_removal_pending() {
                 Err(PlaybackHandoffRejection::RuntimeFenceChanged)
             } else {
                 Ok(true)
             };
         }
+        if !source_free(active) || !source_free(next) {
+            if active.streams.is_some() && next.streams.is_some() {
+                next.playback
+                    .plan_native_removal_from(&active.playback)
+                    .map_err(PlaybackHandoffRejection::from_error)?;
+            }
+            return Ok(true);
+        }
         next.playback
             .advance_native_removal_from(&mut active.playback)
             .map(|progress| progress != NativeRemovalProgress::Fading)
             .map_err(PlaybackHandoffRejection::from_error)
+    }
+
+    /// The stream planner proved the candidate window and the current render
+    /// window. Arm the stage only now so a cold request keeps all old DSP.
+    pub(super) fn advance_paged_native_removal(
+        &mut self,
+        next: &mut Publication,
+    ) -> Result<bool, PlaybackHandoffRejection> {
+        if !next.playback.native_removal_pending() {
+            return Ok(true);
+        }
+        if next
+            .fresh_runtime_cancellation
+            .as_ref()
+            .is_some_and(PublicationReceiptOwner::fenced_before_admission)
+        {
+            return Err(PlaybackHandoffRejection::FreshRuntimeCancelled);
+        }
+        if !self.device_insert_cut_ready(next)? {
+            return Err(PlaybackHandoffRejection::RuntimeFenceChanged);
+        }
+        let active = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::legacy_mut)
+            .ok_or(PlaybackHandoffRejection::RuntimeFenceChanged)?;
+        next.playback
+            .advance_planned_native_removal_from(&mut active.playback)
+            .map(|progress| progress != hex_engine::session_playback::NativeRemovalProgress::Fading)
+            .map_err(PlaybackHandoffRejection::from_error)
+    }
+
+    /// A page miss after start cannot leave the predecessor with a faded
+    /// stage while waiting on an unbounded candidate. Return it for restoration.
+    pub(super) fn defer_for_stream_pages(&mut self, mut next: Publication) {
+        if !next.playback.native_removal_started() {
+            self.deferred = Some(next);
+            return;
+        }
+        if let Some(streams) = next.streams.as_mut() {
+            streams.cancel_install(&mut self.domain_pages);
+        }
+        self.reject_publication(
+            next.revision,
+            PlaybackHandoffRejection::StreamedPagesNotReady,
+        );
+        self.return_graph(next);
+        self.status.publication_pending.store(false, Release);
     }
 
     /// The rejected candidate may restore only the exact active predecessor.

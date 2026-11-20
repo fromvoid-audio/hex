@@ -154,8 +154,29 @@ pub(super) fn delete(project: &mut Project, section: SectionId) -> Result<Create
 }
 
 pub(super) fn duplicate(project: &mut Project, section: SectionId) -> Result<Created, Invalid> {
+    copy_section(project, section, |_, _| Ok(()))
+}
+
+/// Lay out the copy on the private candidate, then transform device automation
+/// once at the final insertion beat.
+pub(super) fn copy_section(
+    project: &mut Project,
+    section: SectionId,
+    place: impl FnOnce(&mut Project, SectionId) -> Result<(), Invalid>,
+) -> Result<Created, Invalid> {
+    let source = &project.arrangement_sections[section_index(project, section)?];
+    let (start, end) = (source.start, source.end);
     let color = super::color::duplicate_color(project, section);
-    duplicate_colored(project, section, color)
+    let Created::ArrangementSection(copy) = duplicate_colored(project, section, color)? else {
+        return Err(Invalid("section duplication produced no identity"));
+    };
+    place(project, copy)?;
+    let insertion = project
+        .arrangement_section(copy)
+        .ok_or(Invalid("section copy is missing"))?
+        .start;
+    crate::device_automation::arrangement::copy_section(project, start, end, insertion)?;
+    Ok(Created::ArrangementSection(copy))
 }
 
 /// Replacement carries source appearance; ordinary copies keep their normal draw.
@@ -201,15 +222,12 @@ pub(super) fn duplicate_at(
     after: bool,
 ) -> Result<Created, Invalid> {
     section_index(project, target)?;
-    let Created::ArrangementSection(copy) = duplicate(project, section)? else {
-        return Err(Invalid("section duplication produced no identity"));
-    };
-    if after {
-        super::reorder::reorder_after(project, copy, target)?;
-    } else {
-        super::reorder::reorder(project, copy, target)?;
-    }
-    Ok(Created::ArrangementSection(copy))
+    copy_section(project, section, |project, copy| {
+        let target = &project.arrangement_sections[section_index(project, target)?];
+        let insertion = if after { target.end } else { target.start };
+        super::reorder::place_duplicate_at(project, copy, insertion)?;
+        Ok(())
+    })
 }
 
 pub(super) fn preview_duplicate_at(
@@ -481,7 +499,7 @@ fn apply_transform(
     transform: Transform,
     purpose: TransformPurpose,
 ) -> Result<(), Invalid> {
-    if project.has_device_automation() {
+    if !matches!(transform, Transform::Duplicate { .. }) && project.has_device_automation() {
         return Err(Invalid(crate::AUTOMATION_EDIT_UNSUPPORTED));
     }
     let mut next_id = project.next_id;
