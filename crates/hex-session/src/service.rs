@@ -4965,10 +4965,29 @@ fn run_worker(
                 {
                     Err("finish or cancel the active gesture before reordering tracks".into())
                 } else {
-                    Ok(Command::MoveTracksBefore {
-                        tracks: tracks.clone(),
-                        before: *before,
-                    })
+                    let project = session.project();
+                    project
+                        .track_destination_before(*before)
+                        .map(|destination| {
+                            // A gap can change routing as well as row order. Use
+                            // the same destination and receipt as a Group drop.
+                            if let [id] = tracks.ids()
+                                && project.track(*id).is_some_and(|track| {
+                                    track.parent_group() != destination.parent_group
+                                })
+                            {
+                                Command::ReparentTracks {
+                                    tracks: tracks.clone(),
+                                    destination,
+                                }
+                            } else {
+                                Command::MoveTracksBefore {
+                                    tracks: tracks.clone(),
+                                    before: *before,
+                                }
+                            }
+                        })
+                        .map_err(|error| error.to_string())
                 },
             ),
             Request::ReparentTracks {
