@@ -5,6 +5,14 @@ use crate::{
     audio_storage::{Location, Owner},
 };
 impl Playback {
+    #[cfg(test)]
+    pub(crate) fn test_main_reserved_dry_storage(&self) -> [Option<&Vec<Frame>>; 2] {
+        self.session_runtime
+            .as_ref()
+            .map_or([None, None], |runtime| {
+                runtime.test_main_reserved_dry_storage()
+            })
+    }
     pub(crate) fn candidate_constructor_is_fresh(&self) -> bool {
         self.session_runtime
             .as_ref()

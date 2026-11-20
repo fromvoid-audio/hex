@@ -214,6 +214,7 @@ impl CandidateState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod reserved_dry;
     fn reservation() -> AudioStorageLedgerReservation {
         AudioStorageLedgerReservation {
             data_rows: 4096,

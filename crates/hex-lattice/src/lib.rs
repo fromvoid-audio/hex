@@ -1235,6 +1235,20 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
             _ => None,
         }
     }
+    /// Borrow actual reserved host histories. This grants no constructor,
+    /// source, publication or retirement authority; the chain retains custody.
+    pub fn reserved_dry_storage(&self) -> [Option<&'a Vec<StereoFrame>>; 2] {
+        [
+            self.entry
+                .committed_aligned_dry
+                .as_ref()
+                .and_then(bypass_ramp::AlignedDry::reserved_storage),
+            self.entry
+                .scratch_aligned_dry
+                .as_ref()
+                .and_then(bypass_ramp::AlignedDry::reserved_storage),
+        ]
+    }
     pub fn primary_payload_bytes(&self) -> Option<usize> {
         self.entry
             .runtime

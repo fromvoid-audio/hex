@@ -7,6 +7,14 @@ use crate::{
 };
 mod modulation;
 impl SessionPlayback {
+    #[cfg(test)]
+    pub(crate) fn test_main_reserved_dry_storage(&self) -> [Option<&Vec<Frame>>; 2] {
+        self.main_chain
+            .storage_view()
+            .entries()
+            .next()
+            .map_or([None, None], |entry| entry.reserved_dry_storage())
+    }
     pub(crate) fn visit_fresh_candidate_storage<'a>(
         &'a self,
         l: &mut AudioRootStorageLedger<'a>,
