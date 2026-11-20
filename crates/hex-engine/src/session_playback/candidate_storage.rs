@@ -100,6 +100,8 @@ impl SessionPlayback {
             native_removal,
             foreign_continuation,
             require_continuous_insert: _,
+            return_fade: _,
+            return_fade_scratch: _,
         } = self;
         // The closed owner has no source effect lease or backing quote yet.
         if native_removal.is_some()

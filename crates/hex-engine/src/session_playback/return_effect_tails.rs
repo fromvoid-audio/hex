@@ -325,6 +325,7 @@ pub(super) enum DeviceEditTailPolicy {
     RequireConfirmation,
     Cut,
     FadedNative(hex_lattice::ProcessorInstanceIdentity),
+    FadedReturn(ReturnId),
 }
 
 impl DeviceEditTailPolicy {
@@ -335,17 +336,19 @@ impl DeviceEditTailPolicy {
         old: &[PreparedRuntimeInstance],
         new: &[PreparedRuntimeInstance],
     ) -> Self {
-        let policy = if let Self::FadedNative(identity) = self {
-            let matches = |entry: &PreparedRuntimeInstance| {
-                entry.owner == identity.owner() && entry.device_id == identity.device_id()
-            };
-            if old.iter().any(matches) && !new.iter().any(matches) {
-                Self::Cut
-            } else {
-                Self::RequireConfirmation
+        let policy = match self {
+            Self::FadedNative(identity) => {
+                let matches = |entry: &PreparedRuntimeInstance| {
+                    entry.owner == identity.owner() && entry.device_id == identity.device_id()
+                };
+                if old.iter().any(matches) && !new.iter().any(matches) {
+                    Self::Cut
+                } else {
+                    Self::RequireConfirmation
+                }
             }
-        } else {
-            self
+            Self::FadedReturn(_) => Self::RequireConfirmation,
+            _ => self,
         };
         if policy != Self::Preserve
             && old
@@ -362,7 +365,7 @@ impl DeviceEditTailPolicy {
     pub(super) fn cut_obsolete_tail(self) -> Result<bool, SessionPlaybackError> {
         match self {
             Self::Preserve => Ok(false),
-            Self::RequireConfirmation | Self::FadedNative(_) => {
+            Self::RequireConfirmation | Self::FadedNative(_) | Self::FadedReturn(_) => {
                 Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
             }
             Self::Cut => Ok(true),
@@ -531,6 +534,11 @@ impl ReturnEffectTailPlan {
                 .get(old_index)
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
             let new_index = new_buses.iter().position(|bus| bus.id == old_bus.id);
+            if new_index.is_none() && tail_policy == DeviceEditTailPolicy::FadedReturn(old_bus.id) {
+                // The old post-DSP output is already inaudible at the cut.
+                // Leave the original chain with the returned donor.
+                continue;
+            }
             let inherits_current_bus = if let Some(new_index) = new_index {
                 let new_chain = new_chains
                     .get(new_index)
