@@ -24,7 +24,9 @@ impl VerifiedDeviceParameterSource {
             return Ok(None);
         };
         if let Some(active) = event.active_device_gesture
-            && let GestureTarget::DeviceParameter { device, parameter } = active.target
+            && let GestureTarget::DeviceParameter { device, .. }
+            | GestureTarget::DeviceParameterPair { device, .. }
+            | GestureTarget::DeviceParameterSnapshot { device } = active.target
         {
             let Some(preview) = event.device_preview.as_ref() else {
                 return Ok(None);
@@ -53,17 +55,18 @@ impl VerifiedDeviceParameterSource {
                     "live parameter preview is unavailable for this device",
                 ));
             }
-            let command = crate::device_gesture::device_parameter_command(
-                original,
-                device,
-                parameter,
-                active.value,
-                active.manual_edit,
-            )?;
-            let project = original.preview_device_edit(&command)?;
             let before = original
                 .device(device)
                 .ok_or(SessionError::Invalid("device no longer exists"))?;
+            if !matches!(active.target, GestureTarget::DeviceParameter { .. })
+                && before.state().type_id() != hex_engine::eq::EQ_TYPE_ID
+            {
+                return Err(SessionError::Invalid(
+                    "live preview is unavailable for this control in streaming documents",
+                ));
+            }
+            let command = crate::device_gesture::existing_device_command(original, active)?;
+            let project = original.preview_device_edit(&command)?;
             let after = project
                 .device(device)
                 .ok_or(SessionError::Invalid("device no longer exists"))?;
@@ -108,14 +111,9 @@ impl VerifiedDeviceParameterSource {
             return Ok(Some(source));
         }
         if event.device_preview.is_some()
-            && event.active_device_gesture.is_some_and(|active| {
-                matches!(
-                    active.target,
-                    GestureTarget::DeviceParameterPair { .. }
-                        | GestureTarget::DeviceParameterSnapshot { .. }
-                        | GestureTarget::EqNodeCreation { .. }
-                )
-            })
+            && event
+                .active_device_gesture
+                .is_some_and(|active| matches!(active.target, GestureTarget::EqNodeCreation { .. }))
         {
             return Err(SessionError::Invalid(
                 "live preview is unavailable for this control in streaming documents",
