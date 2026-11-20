@@ -712,8 +712,8 @@ pub trait WorkerAudioSink: Send {
     fn retiring_editor_replay_ready(&self) -> bool {
         false
     }
-    /// An orderly close must preserve the Session while this source still
-    /// needs replay or an explicit disposition.
+    /// Close or document replacement must preserve the Session while this
+    /// source still needs replay or an explicit disposition.
     fn retiring_editor_close_blocker(&self) -> Option<super::RetiringEditorCloseBlocker> {
         None
     }
