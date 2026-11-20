@@ -4,6 +4,7 @@
 use super::{RouteOwner, SessionPlayback, SessionPlaybackError};
 use crate::signal_graph::FreshHistory;
 use hex_lattice::{NativeRemovalTransition, NativeRuntimeChain, ProcessorChainOwner};
+use hex_lattice_contract::NativeDeviceMetadata;
 
 /// Progress of a staged native removal at a render boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,6 +128,7 @@ enum RemovalTransition {
     Device(NativeRemovalTransition),
     Track(usize),
     Reorder(usize),
+    Move(super::device_move::NativeTrackMove),
 }
 
 impl PendingNativeRemoval {
@@ -137,8 +139,37 @@ impl PendingNativeRemoval {
     pub(super) fn device_transition(self) -> Option<NativeRemovalTransition> {
         match self.transition {
             RemovalTransition::Device(transition) => Some(transition),
-            RemovalTransition::Track(_) | RemovalTransition::Reorder(_) => None,
+            RemovalTransition::Track(_)
+            | RemovalTransition::Reorder(_)
+            | RemovalTransition::Move(_) => None,
         }
+    }
+
+    pub(super) fn track_move(self) -> Option<super::device_move::NativeTrackMove> {
+        match self.transition {
+            RemovalTransition::Move(movement) => Some(movement),
+            _ => None,
+        }
+    }
+
+    pub(super) fn faded_native_identity(self) -> Option<hex_lattice::ProcessorInstanceIdentity> {
+        self.device_transition()
+            .map(|transition| transition.identity())
+            .or_else(|| self.track_move().map(|movement| movement.identity))
+    }
+
+    pub(super) fn faded_track(self, previous: &SessionPlayback, id: hex_project::TrackId) -> bool {
+        self.reordered_track(previous) == Some(id)
+            || self.track_move().is_some_and(|movement| {
+                [movement.source, movement.destination]
+                    .into_iter()
+                    .any(|index| {
+                        previous
+                            .routes
+                            .get(index)
+                            .is_some_and(|route| route.id == id)
+                    })
+            })
     }
 
     pub(super) fn reordered_track(
@@ -157,12 +188,22 @@ impl PendingNativeRemoval {
     ) -> Option<hex_project::TrackId> {
         match self.transition {
             RemovalTransition::Track(index) => previous.routes.get(index).map(|route| route.id),
-            RemovalTransition::Device(_) | RemovalTransition::Reorder(_) => None,
+            RemovalTransition::Device(_)
+            | RemovalTransition::Reorder(_)
+            | RemovalTransition::Move(_) => None,
         }
     }
 
     pub(super) fn ready_on(self, previous: &SessionPlayback) -> bool {
         match self.transition {
+            RemovalTransition::Move(movement) => [movement.source, movement.destination]
+                .into_iter()
+                .all(|index| {
+                    previous
+                        .track_faders
+                        .get(index)
+                        .is_some_and(|fader| fader.removal_ready())
+                }),
             RemovalTransition::Device(transition) => previous.native_removal_ready(transition),
             RemovalTransition::Track(index) | RemovalTransition::Reorder(index) => {
                 previous
@@ -254,6 +295,10 @@ impl SessionPlayback {
                 self.direct_audio_track_reorder_from(previous)
                     .map(RemovalTransition::Reorder)
             })
+            .or_else(|| {
+                self.direct_audio_track_move_from(previous)
+                    .map(RemovalTransition::Move)
+            })
         else {
             return Ok(false);
         };
@@ -278,6 +323,21 @@ impl SessionPlayback {
         }
         if !pending.started {
             let started = match pending.transition {
+                RemovalTransition::Move(movement) => {
+                    let indices = [movement.source, movement.destination];
+                    let valid = indices
+                        .into_iter()
+                        .all(|index| previous.track_faders.get(index).is_some());
+                    if valid {
+                        let rate = previous.revision.arrangement().sample_rate();
+                        for index in indices {
+                            if let Some(fader) = previous.track_faders.get_mut(index) {
+                                fader.begin_removal(rate);
+                            }
+                        }
+                    }
+                    valid
+                }
                 RemovalTransition::Device(transition) => previous
                     .native_removal_chain_mut(transition.identity().owner())
                     .is_some_and(|chain| chain.begin_native_removal(transition)),
@@ -318,6 +378,19 @@ impl SessionPlayback {
             && pending.runtime == previous.capture_runtime
         {
             match pending.transition {
+                RemovalTransition::Move(movement) => {
+                    let arrangement = previous.revision.arrangement();
+                    for index in [movement.source, movement.destination] {
+                        if let Some(track) = arrangement.tracks().get(index)
+                            && let Some(fader) = previous.track_faders.get_mut(index)
+                        {
+                            fader.cancel_removal(
+                                track.mix().channel_gain(),
+                                arrangement.sample_rate(),
+                            );
+                        }
+                    }
+                }
                 RemovalTransition::Device(transition) => {
                     if let Some(chain) =
                         previous.native_removal_chain_mut(transition.identity().owner())
@@ -395,9 +468,9 @@ impl SessionPlayback {
             })
     }
 
-    /// A direct audio track has no DSP or independent clock to detach. Its
-    /// existing post-fader output already feeds both Main and ordinary sends,
-    /// whether Arrangement or Session owns the active audio source.
+    /// A direct audio track's post-fader output feeds Main and ordinary sends.
+    /// One native zero-latency Delay can keep processing through that fade
+    /// and retire with the donor without attaching a separate tail owner.
     fn direct_audio_track_removal_from(&self, previous: &Self) -> Option<usize> {
         let old = previous.revision.arrangement().tracks();
         let new = self.revision.arrangement().tracks();
@@ -429,9 +502,25 @@ impl SessionPlayback {
                 .is_some_and(|clip| clip.track == id),
             RouteOwner::Session { .. } | RouteOwner::Silence => false,
         };
+        let can_retire_chain = match track.device_chain.as_ref() {
+            [] => true,
+            [device] => {
+                matches!(route.owner, RouteOwner::Arrangement)
+                    && route.pending.is_none()
+                    && route.audio_release.is_none()
+                    && self.compensation.is_none()
+                    && previous.compensation.is_none()
+                    && !self.revision.contains_streamed_sources()
+                    && !previous.revision.contains_streamed_sources()
+                    && device.device_type == hex_devices::delay::DEFINITION.type_id()
+                    && device.foreign_processor().is_none()
+                    && device.algorithmic_latency_frames() == Some(0)
+            }
+            _ => false,
+        };
         (route.id == id
             && direct_audio
-            && track.device_chain.is_empty()
+            && can_retire_chain
             && track.instrument_id.is_none()
             && track.source_id.is_none()
             && track.midi_source_index.is_none()

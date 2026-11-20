@@ -3,25 +3,30 @@ use super::*;
 
 #[test]
 fn removing_plain_arrangement_track_fades_the_feed_and_keeps_shared_return_history() {
-    shared_return_survives_track_removal(false, false);
+    shared_return_survives_track_removal(false, false, false);
 }
 
 #[test]
 fn removing_compensated_arrangement_track_drains_the_feed_into_the_shared_return() {
-    shared_return_survives_track_removal(true, false);
+    shared_return_survives_track_removal(true, false, false);
 }
 
 #[test]
 fn removing_session_audio_track_fades_the_feed_and_keeps_shared_return_history() {
-    shared_return_survives_track_removal(false, true);
+    shared_return_survives_track_removal(false, true, false);
 }
 
 #[test]
 fn removing_compensated_session_audio_track_drains_the_feed_into_the_shared_return() {
-    shared_return_survives_track_removal(true, true);
+    shared_return_survives_track_removal(true, true, false);
 }
 
-fn shared_return_survives_track_removal(compensated: bool, session: bool) {
+#[test]
+fn removing_track_with_delay_cuts_its_feedback_and_keeps_the_shared_return() {
+    shared_return_survives_track_removal(false, false, true);
+}
+
+fn shared_return_survives_track_removal(compensated: bool, session: bool, track_delay: bool) {
     use hex_devices::delay::{
         DEFINITION, DRY_WET, FEEDBACK, FILTER, HIGH_QUALITY, LEFT_SYNC, TIME,
     };
@@ -86,6 +91,26 @@ fn shared_return_survives_track_removal(compensated: bool, session: bool) {
     };
     let (removed, asset) = import("removed", feeds[0]);
     let (kept, _) = import("kept", feeds[1]);
+    let mut departing_pcm = vec![feeds[0]; FRAMES];
+    let removed_delay = track_delay.then(|| {
+        // Input stops at the cut. The departing Delay still has a live echo.
+        departing_pcm[CUT..].fill([0.0; 2]);
+        media.insert(
+            asset,
+            hex_engine::Audio::new(RATE, departing_pcm.clone()).unwrap(),
+        );
+        let Created::Device(device) = editor
+            .execute(Command::InsertDevice {
+                track: removed,
+                before: None,
+                state: feedback_delay(10.0),
+            })
+            .unwrap()
+        else {
+            panic!("departing delay");
+        };
+        device
+    });
     let session_clip = session.then(|| {
         let clip = editor.project().track(removed).unwrap().clips()[0].id();
         editor.execute(Command::RemoveClip(clip)).unwrap();
@@ -146,16 +171,39 @@ fn shared_return_survives_track_removal(compensated: bool, session: bool) {
     let before = prepare(editor.project(), &media);
     assert_eq!(before.arrangement().main_latency_frames() as usize, latency);
 
-    // Independently shape the source PCM. Both feeds share the Delay's
-    // original history, including the removed track's pre-cut contribution.
-    let mut filtered = vec![feeds[0]; FRAMES];
+    // Bake the departing track's post-device PCM independently, then shape
+    // its fader. The shared Return remains a real processor in the oracle.
+    let mut reference_editor = Editor::new(editor.project().clone(), 8).unwrap();
+    let mut filtered = departing_pcm.clone();
+    if let Some(delay) = removed_delay {
+        let (mut isolated, track, prepare) = resident_input(departing_pcm);
+        isolated
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: feedback_delay(10.0),
+            })
+            .unwrap();
+        let mut playback =
+            Playback::try_from_prepared_with_session(prepare(isolated.project())).unwrap();
+        playback.apply(PlaybackCommand::Play);
+        playback.render(&mut filtered).unwrap();
+        assert!(
+            filtered[CUT + FADE..CUT + FADE + BLOCK]
+                .iter()
+                .any(|frame| { frame[0].abs() > 0.01 })
+        );
+        reference_editor
+            .execute(Command::RemoveDevice(delay))
+            .unwrap();
+    }
     for (position, frame) in filtered[CUT..].iter_mut().enumerate() {
         let gain = FADE.saturating_sub(position + 1) as f32 / FADE as f32;
         frame.iter_mut().for_each(|sample| *sample *= gain);
     }
     let mut reference_media = media.clone();
     reference_media.insert(asset, hex_engine::Audio::new(RATE, filtered).unwrap());
-    let reference = prepare(editor.project(), &reference_media);
+    let reference = prepare(reference_editor.project(), &reference_media);
     editor.execute(Command::RemoveTrack(removed)).unwrap();
     let after = prepare(editor.project(), &media);
     assert_eq!(after.arrangement().main_latency_frames() as usize, latency);
