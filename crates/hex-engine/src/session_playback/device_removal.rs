@@ -2,6 +2,7 @@
 //! previews the existing handoff before changing the donor. Publication owns
 //! the outer source fence and restores the donor when it returns a candidate.
 use super::{RouteOwner, SessionPlayback, SessionPlaybackError};
+use crate::signal_graph::FreshHistory;
 use hex_lattice::{NativeRemovalTransition, NativeRuntimeChain, ProcessorChainOwner};
 
 /// Progress of a staged native removal at a render boundary.
@@ -41,10 +42,20 @@ impl PendingNativeRemoval {
     pub(super) fn ready_on(self, previous: &SessionPlayback) -> bool {
         match self.transition {
             RemovalTransition::Device(transition) => previous.native_removal_ready(transition),
-            RemovalTransition::Track(index) => previous
-                .track_faders
-                .get(index)
-                .is_some_and(|fader| fader.removal_ready()),
+            RemovalTransition::Track(index) => {
+                previous
+                    .track_faders
+                    .get(index)
+                    .is_some_and(|fader| fader.removal_ready())
+                    && previous.compensation.as_ref().is_none_or(|compensation| {
+                        // A zero fader can still have its last audible samples
+                        // waiting in the old route's alignment ring.
+                        previous.routes.get(index).is_some_and(|route| {
+                            compensation
+                                .owner_history_is_silent(FreshHistory::RemovedTrack(route.id))
+                        })
+                    })
+            }
         }
     }
 }
@@ -261,10 +272,7 @@ impl SessionPlayback {
     fn direct_audio_track_removal_from(&self, previous: &Self) -> Option<usize> {
         let old = previous.revision.arrangement().tracks();
         let new = self.revision.arrangement().tracks();
-        if self.compensation.is_some()
-            || previous.compensation.is_some()
-            || old.len().checked_sub(1) != Some(new.len())
-        {
+        if old.len().checked_sub(1) != Some(new.len()) {
             return None;
         }
         let remaining = new.iter().map(|track| track.canonical_track_id());
@@ -291,8 +299,21 @@ impl SessionPlayback {
             && track.source_id.is_none()
             && track.midi_source_index.is_none()
             && !track.has_gain_automation()
-            && previous.revision.gain_recording_track() != Some(id))
+            && previous.revision.gain_recording_track() != Some(id)
+            && self.direct_track_removal_keeps_timing(previous, id))
         .then_some(index)
+    }
+
+    fn direct_track_removal_keeps_timing(&self, previous: &Self, id: hex_project::TrackId) -> bool {
+        match (&self.compensation, &previous.compensation) {
+            (None, None) => true,
+            (Some(next), Some(old)) => {
+                !self.revision.contains_streamed_sources()
+                    && !previous.revision.contains_streamed_sources()
+                    && next.can_copy_from(old, Some(FreshHistory::RemovedTrack(id)))
+            }
+            _ => false,
+        }
     }
 
     fn native_removal_transition_from(&self, previous: &Self) -> Option<NativeRemovalTransition> {

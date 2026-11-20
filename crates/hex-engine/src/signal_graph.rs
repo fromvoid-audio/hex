@@ -2055,26 +2055,30 @@ impl SignalRuntime {
     pub(crate) fn horizon(&self) -> u32 {
         self.delays.history_horizon()
     }
+    /// Whether the bounded edge table holds any PCM for the departing owner.
+    /// Delay pairs report their committed nonzero count without scanning PCM.
+    pub(crate) fn owner_history_is_silent(&self, owner: FreshHistory) -> bool {
+        self.delay_graph
+            .pre_main_edges
+            .iter()
+            .enumerate()
+            .all(|(position, &edge)| {
+                !self
+                    .delay_graph
+                    .pre_main_edge_touches_owner(position, owner)
+                    || self.delays.edge_history_is_silent(edge)
+            })
+    }
+
     pub(crate) fn can_copy_from(&self, other: &Self, fresh: Option<FreshHistory>) -> bool {
         let compatible = if let Some(owner) = fresh {
-            let silent_owner =
-                |runtime: &Self| {
-                    runtime.delay_graph.pre_main_edges.iter().enumerate().all(
-                        |(position, &edge)| {
-                            !runtime
-                                .delay_graph
-                                .pre_main_edge_touches_owner(position, owner)
-                                || runtime.delays.edge_history_is_silent(edge)
-                        },
-                    )
-                };
             self.graph
                 .retained_pre_main_history_maps_from(&other.graph, Some(owner))
                 && self.delays.is_closed()
                 && other.delays.is_closed()
                 && self.delay_graph.history_compatible(&self.graph)
                 && other.delay_graph.history_compatible(&other.graph)
-                && silent_owner(self)
+                && self.owner_history_is_silent(owner)
                 && (matches!(
                     owner,
                     FreshHistory::RemovedTrack(_)
@@ -2082,7 +2086,7 @@ impl SignalRuntime {
                             cut_predecessor_pcm: true,
                             ..
                         }
-                ) || silent_owner(other))
+                ) || other.owner_history_is_silent(owner))
         } else {
             self.can_continue_pre_main(other)
         };

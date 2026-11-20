@@ -267,6 +267,35 @@ fn removing_compensated_audio_track_drains_its_faded_pcm_before_installing() {
             );
         }
     }
+
+    let mut unchanged = Playback::try_from_prepared_with_session(Arc::clone(&old)).unwrap();
+    unchanged.apply(PlaybackCommand::Play);
+    let mut original_pcm = [[0.0; 2]; CUT + FADE + PREFIX + 2];
+    unchanged.render(&mut original_pcm).unwrap();
+    let (control, mut callback, source, receipt) =
+        begin_insert_with_pending_track(old, next, None, CUT);
+    measured_render(&mut callback, &mut [[0.0; 2]; FADE]);
+    assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+    assert_eq!(receipt.cancel(), FreshRuntimeCancellationResult::Cancelled);
+    let mut resumed = [[0.0; 2]; PREFIX + 2];
+    measured_render(&mut callback, &mut resumed);
+    assert_eq!(receipt.state(), PublicationReceiptState::Cancelled);
+    assert_eq!(control.status.recording_source(), Some(source));
+    assert_eq!(
+        control.status.position.load(Acquire),
+        (CUT + FADE + resumed.len()) as u64
+    );
+    for (frame, (actual, expected)) in resumed[..DELAY]
+        .iter()
+        .zip(&expected[CUT + FADE..])
+        .enumerate()
+    {
+        assert!(
+            (actual[0] - expected[0]).abs() < 1e-6 && (actual[1] - expected[1]).abs() < 1e-6,
+            "cancelled alignment ring at frame {frame}: {actual:?} vs {expected:?}"
+        );
+    }
+    assert_eq!(resumed.last(), original_pcm.last());
 }
 
 fn measured_render(callback: &mut Callback, output: &mut [Frame]) {
