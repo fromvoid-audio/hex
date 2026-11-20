@@ -2272,7 +2272,7 @@ mod tests {
         else {
             panic!("instrument");
         };
-        let playback_bypass = |project| {
+        let playback_bypass = |project: &Project| {
             ResidentEffectPreparation {
                 project,
                 context: hex_engine::AudioSourceContext {
