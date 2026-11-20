@@ -414,9 +414,18 @@ impl Pending {
             rebased_at: None,
         })
     }
-    pub(super) fn waiting_for_rebased_publication(&self) -> bool {
-        self.rebased_at
-            .is_some_and(|at| at.elapsed() < super::publication_wait::DEADLINE)
+    pub(super) fn rebased_predecessor_ready(
+        &self,
+        sink: &mut dyn WorkerAudioSink,
+    ) -> Result<bool, &'static str> {
+        let Some(rebased_at) = self.rebased_at else {
+            return Ok(true);
+        };
+        let ready = sink.verified_hosted_predecessor_ready(self.canonical_context)?;
+        if !ready && rebased_at.elapsed() >= super::publication_wait::DEADLINE {
+            return Err("vst3 insertion cancelled · accepted audio publication timed out");
+        }
+        Ok(ready)
     }
 
     pub fn matches_context(&self, context: hex_engine::AudioSourceContext) -> bool {
@@ -512,6 +521,9 @@ impl Pending {
                 PluginEffectDestination::NewTrack { .. }
             )))
             .ok_or("project id space exhausted")?;
+        if !self.rebased_predecessor_ready(sink)? {
+            return Ok(PluginEffectPreparationState::Preparing);
+        }
         self.native_started = true;
         sink.prepare_plugin_effect(PluginEffectPreparation {
             insertion: &self.insertion,

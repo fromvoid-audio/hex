@@ -1,5 +1,6 @@
 //! Verified publication with a separate native source building or retiring.
 use super::*;
+use hex_session::device_gesture::{GestureKey, GestureRequest, GestureTarget, ParameterValue};
 
 fn next_snapshot(service: &Service) -> Arc<CanonicalAudioSourceSnapshot> {
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -247,14 +248,47 @@ fn retiring_unsealed_source_keeps_built_verified_candidate_for_retry() {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn independent_verified_eq_preview_installs_while_native_facts_are_held() {
-    use hex_session::device_gesture::{GestureKey, GestureRequest, GestureTarget, ParameterValue};
-
     let _native = native_fixture();
     let files = Files::new();
+    let HeldVerifiedEq {
+        mut h,
+        operation,
+        project,
+        key,
+        resume_facts: _hold,
+        ..
+    } = hold_verified_eq_preview(&files);
+    assert!(operation.cancel());
+    loop {
+        let event = h.next_with_audio();
+        if let Some(terminal) = event.plugin_effect_complete.first() {
+            assert!(Arc::ptr_eq(&terminal.control, &operation) && !terminal.accepted);
+            assert_eq!(event.state.project, project);
+            assert_eq!(event.active_device_gesture.unwrap().key, key);
+            break;
+        }
+    }
+}
+
+pub(super) struct HeldVerifiedEq {
+    pub(super) h: Harness,
+    pub(super) operation: Arc<hex_session::service::PluginEffectControl>,
+    pub(super) project: Arc<hex_project::Project>,
+    pub(super) device: hex_project::DeviceId,
+    pub(super) key: GestureKey,
+    pub(super) resume_facts: mpsc::SyncSender<()>,
+    pub(super) progress: Arc<Mutex<crate::native_audio::plugins::PreparationObservation>>,
+}
+
+pub(super) fn hold_verified_eq_preview(files: &Files) -> HeldVerifiedEq {
+    let progress = Arc::new(Mutex::new(
+        crate::native_audio::plugins::PreparationObservation::default(),
+    ));
     let (reached, facts) = mpsc::sync_channel(1);
-    let (_hold, resumed) = mpsc::sync_channel(1);
+    let (resume_facts, resumed) = mpsc::sync_channel(1);
     let mut h = super::super::verified_gain::native_harness_with(|sink| {
         sink.plugins = crate::native_audio::plugins::Plugins::with_fixture(host(), None);
+        sink.plugins.progress = Some(Arc::clone(&progress));
         sink.plugins.facts_gate = Some(crate::native_audio::plugins::FactsGate::new(
             reached, resumed,
         ));
@@ -279,38 +313,13 @@ fn independent_verified_eq_preview_installs_while_native_facts_are_held() {
         panic!("fixture EQ")
     };
     let predecessor = h.applied(h.context.unwrap());
-    let expect_sample = |h: &Harness, expected: f32| {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let mut observation = None;
-        loop {
-            let pcm = h.render();
-            for event in h.events.try_iter() {
-                if let EditorAudioEvent::Publication { context, state, .. } = event {
-                    observation = Some((context, state));
-                }
-            }
-            if (pcm[63][0] - expected).abs() < 1e-5 {
-                break;
-            }
-            if Instant::now() >= deadline {
-                let status = h.audio.as_ref().unwrap().status().unwrap();
-                panic!(
-                    "expected {expected}, rendered {:?}, applied {:?}, rejected {:?}, observation {observation:?}",
-                    pcm[63],
-                    status.applied_audio_source(),
-                    status.rejected_revision()
-                );
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-    };
     h.audio
         .as_mut()
         .unwrap()
         .control
         .command(PlaybackCommand::Play)
         .unwrap();
-    expect_sample(&h, 0.25);
+    expect_verified_sample(&h, 0.25);
     let input = request(&inserted.state, PluginEffectDestination::Track(track));
     let operation = Arc::clone(&input.control);
     assert!(
@@ -326,22 +335,7 @@ fn independent_verified_eq_preview_installs_while_native_facts_are_held() {
         generation: predecessor.context.project_generation,
         token: 1,
     };
-    let gesture = |h: &mut Harness, request| {
-        h.service
-            .as_ref()
-            .unwrap()
-            .submit(Request::DeviceGesture(request))
-            .unwrap();
-        loop {
-            let event = h.next();
-            assert!(event.error.is_none(), "{:?}", event.error);
-            if event.gesture_ack.is_some() {
-                break event;
-            }
-            assert!(event.plugin_effect_complete.is_empty());
-        }
-    };
-    let begun = gesture(
+    let begun = eq_gesture(
         &mut h,
         GestureRequest::Begin {
             key,
@@ -349,7 +343,7 @@ fn independent_verified_eq_preview_installs_while_native_facts_are_held() {
         },
     );
     assert!(begun.gesture_ack.unwrap().accepted);
-    let changed = gesture(
+    let changed = eq_gesture(
         &mut h,
         GestureRequest::Change {
             key,
@@ -367,15 +361,56 @@ fn independent_verified_eq_preview_installs_while_native_facts_are_held() {
             .received_verified_device
             .is_some()
     );
-    expect_sample(&h, 0.125);
-    assert!(operation.cancel());
+    expect_verified_sample(&h, 0.125);
+    HeldVerifiedEq {
+        h,
+        operation,
+        project: Arc::clone(&inserted.state.project),
+        device,
+        key,
+        resume_facts,
+        progress,
+    }
+}
+
+pub(super) fn eq_gesture(h: &mut Harness, request: GestureRequest) -> Event {
+    h.service
+        .as_ref()
+        .unwrap()
+        .submit(Request::DeviceGesture(request))
+        .unwrap();
     loop {
-        let event = h.next_with_audio();
-        if let Some(terminal) = event.plugin_effect_complete.first() {
-            assert!(Arc::ptr_eq(&terminal.control, &operation) && !terminal.accepted);
-            assert_eq!(event.state.project, inserted.state.project);
-            assert_eq!(event.active_device_gesture.unwrap().key, key);
+        let event = h.next();
+        assert!(event.error.is_none(), "{:?}", event.error);
+        if event.gesture_ack.is_some() {
+            break event;
+        }
+        assert!(event.plugin_effect_complete.is_empty());
+    }
+}
+
+pub(super) fn expect_verified_sample(h: &Harness, expected: f32) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut observation = None;
+    loop {
+        let pcm = h.render();
+        for event in h.events.try_iter() {
+            if let EditorAudioEvent::Publication { context, state, .. } = event {
+                observation = Some((context, state));
+            }
+        }
+        if (pcm[63][0] - expected).abs() < 1e-5 {
             break;
         }
+        if Instant::now() >= deadline {
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            panic!(
+                "expected {expected}, rendered {:?}, applied {:?}, rejected {:?}, observation {observation:?}",
+                pcm[63],
+                status.applied_audio_source(),
+                status.rejected_revision()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(1));
     }
 }

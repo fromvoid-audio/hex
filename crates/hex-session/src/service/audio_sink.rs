@@ -671,13 +671,14 @@ pub trait WorkerAudioSink: Send {
         false
     }
 
-    /// An accepted Verified EQ successor still needs its exact canonical install.
-    /// This is a wait hint only; graph admission rechecks the installed receipt.
-    fn verified_hosted_predecessor_pending(
+    /// Poll the exact Verified canonical install after an independent EQ edit.
+    /// A pending receipt waits, and a failed output terminates that insertion.
+    /// Graph admission rechecks the installed receipt.
+    fn verified_hosted_predecessor_ready(
         &mut self,
         _context: hex_engine::AudioSourceContext,
-    ) -> bool {
-        false
+    ) -> Result<bool, &'static str> {
+        Ok(true)
     }
 
     /// Whether the verified transport is running. The stage request
@@ -2169,9 +2170,10 @@ impl WorkerEvents {
                     || pending.insertion.control.is_cancelled()
                     || (!device_gesture_active
                         && self.audio.as_mut().is_some_and(|audio| {
-                            audio.plugin_effect_ready()
-                                && (!pending.waiting_for_rebased_publication()
-                                    || !audio.verified_hosted_predecessor_pending(context))
+                            match pending.rebased_predecessor_ready(audio.as_mut()) {
+                                Ok(ready) => ready && audio.plugin_effect_ready(),
+                                Err(_) => true,
+                            }
                         }))
             }) {
                 return Some(QueuedRequest::continuation(

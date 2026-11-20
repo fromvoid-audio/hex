@@ -98,28 +98,48 @@ fn installed_predecessor(
 }
 
 impl NativeAudioSink {
-    pub(super) fn waiting_for_verified_hosted_predecessor(
+    pub(super) fn verified_edit_predecessor_ready(
         &mut self,
         context: AudioSourceContext,
-    ) -> bool {
-        let Some(canonical) = self.desired.as_ref().filter(|source| {
-            source.context() == context
-                && source.audio_mode() == DocumentAudioMode::VerifiedStreaming
-        }) else {
-            return false;
-        };
-        let Some(control) = self
+    ) -> Result<bool, &'static str> {
+        let canonical = self
+            .desired
+            .as_ref()
+            .ok_or("vst3 insertion source unavailable")?;
+        if canonical.audio_mode() != DocumentAudioMode::VerifiedStreaming {
+            return Ok(true);
+        }
+        if canonical.context() != context {
+            return Err("vst3 insertion cancelled · source changed");
+        }
+        let control = self
             .output
             .as_mut()
             .and_then(|output| output.publication.control())
-        else {
-            return false;
-        };
-        self.verified_blocked != Some(VerifiedKey::canonical(context))
-            && !control.status.device_fault.load(Acquire)
-            && !control.status.render_fault.load(Acquire)
-            && (self.verified_preview.is_some()
-                || installed_predecessor(&self.submitted, control, canonical, None).is_none())
+            .ok_or("vst3 insertion cancelled · audio output changed")?;
+        if control.output_identity().is_none()
+            || control.status.device_fault.load(Acquire)
+            || control.status.render_fault.load(Acquire)
+        {
+            return Err("vst3 insertion cancelled · audio output fault");
+        }
+        let key = VerifiedKey::canonical(context);
+        if self.verified_blocked == Some(key)
+            || control
+                .status
+                .rejected_revision()
+                .is_some_and(|(revision, _)| {
+                    self.submitted.iter().flatten().any(|submission| {
+                        submission.key == key
+                            && submission.source.audio_revision == revision
+                            && control.output_identity() == Some(submission.source.output_identity)
+                    })
+                })
+        {
+            return Err("vst3 insertion cancelled · accepted audio publication refused");
+        }
+        Ok(self.verified_preview.is_none()
+            && installed_predecessor(&self.submitted, control, canonical, None).is_some())
     }
 
     pub(super) fn begin_verified_edit(

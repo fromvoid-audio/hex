@@ -178,6 +178,7 @@ pub(super) struct PreparationObservation {
     pub(super) native: Option<Progress>,
     pub(super) attempts: u64,
     pub(super) facts_attempt_from_session: bool,
+    pub(super) facts_ready_for_session: bool,
     pub(super) restore_refused: bool,
     pub(super) observed_latency_receipt: bool,
     pub(super) editor_receipts: [Option<hex_audio::plugin_worker::ParameterEdit>; 16],
@@ -1086,6 +1087,10 @@ impl Plugins {
                         .pending
                         .as_ref()
                         .is_some_and(|p| p.facts_attempt_from_session),
+                    facts_ready_for_session: self
+                        .pending
+                        .as_ref()
+                        .is_some_and(|p| p.facts_ready_for_session),
                     native: source.and_then(|source| {
                         control.native_source_preparation_progress(source.binding)
                     }),

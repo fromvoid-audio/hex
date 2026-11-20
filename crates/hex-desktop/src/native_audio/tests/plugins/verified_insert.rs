@@ -1,160 +1,56 @@
 //! Signed hosted insertion on the production verified-file publication path.
+use super::unsealed_admission::{
+    HeldVerifiedEq, eq_gesture, expect_verified_sample, hold_verified_eq_preview,
+};
 use super::*;
 use hex_audio::audio_diagnostics::{AudioDiagnosticKind, AudioDiagnosticsFlags};
-use hex_session::device_gesture::{GestureKey, GestureRequest, GestureTarget, ParameterValue};
+use hex_session::device_gesture::{GestureKey, GestureRequest, ParameterValue};
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn verified_hosted_insert_keeps_the_eq_gesture_commit() {
     let _native = native_fixture();
     let files = Files::new();
-    let (reached, facts) = mpsc::sync_channel(1);
-    let (resume, resumed) = mpsc::sync_channel(1);
-    let mut h = super::super::verified_gain::native_harness_with(|sink| {
-        sink.plugins = crate::native_audio::plugins::Plugins::with_fixture(host(), None);
-        sink.plugins.facts_gate = Some(crate::native_audio::plugins::FactsGate::new(
-            reached, resumed,
-        ));
-    });
-    h.next();
-    h.open();
-    h.run(Request::NewWithAudioMode {
-        mode: DocumentAudioMode::VerifiedStreaming,
-        reservation: Some(AudioPolicy::source_reservation()),
-    });
-    h.open();
-    h.applied(h.context.unwrap());
-    let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
-    let track = imported.state.project.tracks()[0].id();
-    h.applied(h.context.unwrap());
-    let inserted = h.run_verified_device_insert(Command::InsertDevice {
-        track,
-        before: None,
-        state: hex_engine::eq::EqState::default().encode().unwrap(),
-    });
-    let Some(Created::Device(device)) = inserted.created else {
-        panic!("fixture EQ")
-    };
-    let predecessor = h.applied(h.context.unwrap());
-    let expect_sample = |h: &Harness, expected: f32| {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let mut observation = None;
-        loop {
-            let pcm = h.render();
-            for event in h.events.try_iter() {
-                if let EditorAudioEvent::Publication { context, state, .. } = event {
-                    observation = Some((context, state));
-                }
-            }
-            if (pcm[63][0] - expected).abs() < 1e-5 {
-                break;
-            }
-            if Instant::now() >= deadline {
-                let status = h.audio.as_ref().unwrap().status().unwrap();
-                panic!(
-                    "expected {expected}, rendered {:?}, applied {:?}, rejected {:?}, observation {observation:?}",
-                    pcm[63],
-                    status.applied_audio_source(),
-                    status.rejected_revision()
-                );
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-    };
-    h.audio
-        .as_mut()
-        .unwrap()
-        .control
-        .command(PlaybackCommand::Play)
-        .unwrap();
-    expect_sample(&h, 0.25);
-    let input = request(&inserted.state, PluginEffectDestination::Track(track));
-    let operation = Arc::clone(&input.control);
-    assert!(
-        h.run(Request::InsertPluginEffect(input))
-            .plugin_effect_complete
-            .is_empty()
-    );
-    facts.recv_timeout(Duration::from_secs(3)).unwrap();
-
-    let parameter = hex_engine::eq::OUTPUT_GAIN;
-    let value = ParameterValue::Float(0.5);
-    let key = GestureKey {
-        generation: predecessor.context.project_generation,
-        token: 1,
-    };
-    let gesture = |h: &mut Harness, request| {
-        h.service
-            .as_ref()
-            .unwrap()
-            .submit(Request::DeviceGesture(request))
-            .unwrap();
-        loop {
-            let event = h.next();
-            assert!(event.error.is_none(), "{:?}", event.error);
-            if event.gesture_ack.is_some() {
-                break event;
-            }
-            assert!(event.plugin_effect_complete.is_empty());
-        }
-    };
-    let begun = gesture(
-        &mut h,
-        GestureRequest::Begin {
-            key,
-            target: GestureTarget::DeviceParameter { device, parameter },
-        },
-    );
-    assert!(begun.gesture_ack.unwrap().accepted);
-    let changed = gesture(
-        &mut h,
-        GestureRequest::Change {
-            key,
-            sequence: 1,
-            value,
-        },
-    );
-    assert!(changed.gesture_ack.unwrap().accepted);
-    assert_eq!(changed.state.project, inserted.state.project);
-    assert!(changed.device_preview.is_some());
-    assert!(
-        h.observation
-            .lock()
-            .unwrap()
-            .received_verified_device
-            .is_some()
-    );
-    expect_sample(&h, 0.125);
-    let committed = gesture(
-        &mut h,
-        GestureRequest::Commit {
-            key,
-            sequence: 2,
-            manual_edit: true,
-            value,
-        },
-    );
-    assert!(committed.gesture_ack.unwrap().accepted);
-    assert!(
-        committed.plugin_effect_complete.is_empty(),
-        "the accepted EQ commit must leave the insertion pending"
-    );
+    let HeldVerifiedEq {
+        mut h,
+        operation,
+        device,
+        key,
+        resume_facts,
+        progress,
+        ..
+    } = hold_verified_eq_preview(&files);
+    let committed = commit_held_eq(&mut h, key, device);
     let chosen = h.context.unwrap();
-    assert_ne!(
-        h.audio
-            .as_ref()
-            .unwrap()
-            .status()
-            .unwrap()
-            .applied_audio_source()
-            .unwrap()
-            .context,
-        chosen
+    resume_facts.send(()).unwrap();
+    wait(|| {
+        let observed = progress.lock().unwrap();
+        observed.facts_ready_for_session || observed.facts_attempt_from_session
+    });
+    h.run(Request::QueryDeviceAutomationCloseSafety { request_id: 27 });
+    assert!(
+        !progress.lock().unwrap().facts_attempt_from_session,
+        "native facts must wait for the exact canonical EQ receipt"
     );
-    resume.send(()).unwrap();
-    let applied = h.applied(chosen);
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let applied = loop {
+        render_hosted_quantum(&h);
+        if let Some(source) = status.applied_audio_source()
+            && source.context == chosen
+        {
+            break source;
+        }
+        assert!(Instant::now() < deadline, "canonical EQ was not applied");
+        std::thread::sleep(Duration::from_millis(1));
+    };
     loop {
-        let mut event = h.next_with_audio();
+        let Ok(mut event) = h.service.as_ref().unwrap().try_event() else {
+            render_hosted_quantum(&h);
+            assert!(Instant::now() < deadline, "VST3 insertion did not finish");
+            std::thread::sleep(Duration::from_millis(1));
+            continue;
+        };
         assert!(event.error.is_none(), "{:?}", event.error);
         if let Some(offer) = event.device_insert_confirmation.take() {
             assert!(offer.proceed());
@@ -166,9 +62,127 @@ fn verified_hosted_insert_keeps_the_eq_gesture_commit() {
                 event.state.project.device(device),
                 committed.state.project.device(device)
             );
-            assert!(h.applied(h.context.unwrap()).audio_revision > applied.audio_revision);
+            let installed = status.applied_audio_source().unwrap();
+            assert_eq!(
+                installed.context,
+                event
+                    .state
+                    .canonical_audio_source
+                    .as_ref()
+                    .unwrap()
+                    .context()
+            );
+            assert!(installed.audio_revision > applied.audio_revision);
             break;
         }
+    }
+}
+
+fn commit_held_eq(h: &mut Harness, key: GestureKey, device: hex_project::DeviceId) -> Event {
+    let committed = eq_gesture(
+        h,
+        GestureRequest::Commit {
+            key,
+            sequence: 2,
+            manual_edit: true,
+            value: ParameterValue::Float(0.5),
+        },
+    );
+    assert!(committed.gesture_ack.as_ref().unwrap().accepted);
+    assert!(committed.plugin_effect_complete.is_empty());
+    assert_eq!(
+        hex_engine::native_device_parameter(
+            committed.state.project.device(device).unwrap().state(),
+            hex_engine::eq::OUTPUT_GAIN,
+        )
+        .unwrap(),
+        ParameterValue::Float(0.5),
+    );
+    assert_ne!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_audio_source()
+            .unwrap()
+            .context,
+        h.context.unwrap(),
+        "the canonical EQ callback has not run",
+    );
+    committed
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_hosted_insert_cancel_and_fault_preserve_the_accepted_eq() {
+    let _native = native_fixture();
+    for fault in [false, true] {
+        let files = Files::new();
+        let HeldVerifiedEq {
+            mut h,
+            operation,
+            device,
+            key,
+            resume_facts: _hold,
+            ..
+        } = hold_verified_eq_preview(&files);
+        let committed = commit_held_eq(&mut h, key, device);
+        let context = h.context.unwrap();
+        let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+        if fault {
+            h.backend
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .report_device_error()
+                .unwrap();
+        } else {
+            assert!(operation.cancel());
+        }
+        loop {
+            let event = h.next();
+            assert_eq!(event.state.project, committed.state.project);
+            assert_eq!(event.state.revision, committed.state.revision);
+            if let Some(terminal) = event.plugin_effect_complete.first() {
+                assert!(Arc::ptr_eq(&terminal.control, &operation) && !terminal.accepted);
+                if fault {
+                    assert!(
+                        event
+                            .error
+                            .as_deref()
+                            .unwrap()
+                            .contains("audio output fault")
+                    );
+                }
+                break;
+            }
+        }
+        if fault {
+            h.audio.take().unwrap().control.close();
+            h.backend.lock().unwrap().take();
+            let restarted = h.run(Request::RestartAudio {
+                project_generation: context.project_generation,
+                request_id: 19,
+            });
+            assert_eq!(restarted.state.project, committed.state.project);
+            h.open();
+            assert_ne!(
+                h.audio.as_ref().unwrap().control.output_identity(),
+                Some(output)
+            );
+            h.applied(context);
+            h.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(PlaybackCommand::Play)
+                .unwrap();
+        } else {
+            assert_eq!(h.applied(context).output_identity, output);
+        }
+        expect_verified_sample(&h, 0.125);
     }
 }
 
