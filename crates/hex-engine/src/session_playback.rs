@@ -36,6 +36,7 @@ mod midi_capture;
 mod mutable_checkpoint;
 mod render_work;
 mod track_fader;
+mod track_route;
 mod transport_loop_admission;
 pub use mutable_checkpoint::{
     MAX_MUTABLE_RUNTIME_CHECKPOINT_STORE_BYTES, MAX_MUTABLE_RUNTIME_CHECKPOINTS,

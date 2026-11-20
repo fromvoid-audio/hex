@@ -1740,15 +1740,17 @@ impl SessionPlayback {
                 None
             }
         } else if let Some(delay) = previous.main_pass_delay {
-            if force_restart
-                || !mapped_main_clock
-                || self.compensation.is_some()
-                || !self.main_chain.is_empty()
-                || !self.same_direct_pass_input(previous)
-            {
-                return Err(SessionPlaybackError::LatencyLayoutChanged);
+            if confirmed_insert {
+                None
+            } else if !force_restart && mapped_main_clock && self.compensation.is_none() {
+                Some(delay)
+            } else {
+                return Err(if continuous_insert {
+                    SessionPlaybackError::DeviceInsertNeedsConfirmation
+                } else {
+                    SessionPlaybackError::LatencyLayoutChanged
+                });
             }
-            Some(delay)
         } else {
             None
         };
