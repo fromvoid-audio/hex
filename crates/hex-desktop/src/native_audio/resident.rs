@@ -1119,7 +1119,8 @@ impl NativeAudioSink {
             .prepared_revision()
             .and_then(|revision| revision.sole_powered_off_main_device_on_control())
             .filter(|device| {
-                observation.processor_status(*device, hex_plugin_state::TYPE_ID)
+                observation
+                    .processor_status(*device, hex_engine::DeviceTypeId::from_static("hex.vst3"))
                     == Some(hex_engine::PreparedDeviceProcessing::PoweredOff)
             });
         self.reap_resident_control_owners();
