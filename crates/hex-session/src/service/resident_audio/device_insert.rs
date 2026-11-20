@@ -231,7 +231,7 @@ impl VerifiedGraphEditAttempt {
     }
 
     /// Unsupported hosted history still requires its exact settled interval.
-    /// A single Main restoration uses ordinary fenced insertion and consent.
+    /// A single Main restore or removal uses an ordinary fenced install.
     pub fn stages_hosted_history(&self) -> bool {
         self.0.hosted_sources == HostedSources::PausedHistory
     }
@@ -892,6 +892,11 @@ impl Session {
         let hosted_sources = match operation {
             Operation::HostedHistory(GraphEditOperation::InsertDevice)
                 if main_history::restores_one_main(self.project(), edit.project()) =>
+            {
+                HostedSources::MainHistory
+            }
+            Operation::HostedHistory(GraphEditOperation::RemoveDevice)
+                if main_history::restores_one_main(edit.project(), self.project()) =>
             {
                 HostedSources::MainHistory
             }
