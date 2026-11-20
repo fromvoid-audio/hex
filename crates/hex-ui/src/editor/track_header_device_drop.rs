@@ -55,35 +55,9 @@ impl EditorView {
                 }
                 Ok(None)
             }
-            NativeDeviceDragSource::Existing { .. } => {
-                self.check_device_append_target(track, cx)?;
-                if copy {
-                    return self
-                        .duplicate_device_drag_request(drag, DeviceChainOwner::Track(track), None)
-                        .map(Some);
-                }
-                let (owner, selected) = self
-                    .device_drag_selection(drag)
-                    .ok_or("device move canceled · selection changed")?;
-                let DevicePanelOwner::Track(source) = owner else {
-                    return Err("move from a track device chain");
-                };
-                let project = &self
-                    .state
-                    .as_ref()
-                    .ok_or("device move canceled · project changed")?
-                    .project;
-                project
-                    .validate_track_device_move(source, selected, track)
-                    .map_err(|error| error.0)?;
-                Ok(Some(Request::MoveTrackDevices {
-                    project_generation: generation,
-                    revision: drag.revision,
-                    source,
-                    selected: selected.clone(),
-                    destination: track,
-                }))
-            }
+            NativeDeviceDragSource::Existing { .. } => self
+                .existing_track_device_append_request(drag, track, copy, cx)
+                .map(Some),
             NativeDeviceDragSource::Browser {
                 class: NativeDeviceClass::Instrument,
                 type_id,
@@ -106,6 +80,42 @@ impl EditorView {
                 .browser_device_append_request(track, class, type_id, cx)
                 .map(Some),
         }
+    }
+
+    /// Resolve the held device selection against the same append contract for
+    /// headers and Arrangement lanes. Callers validate their own painted target.
+    pub(super) fn existing_track_device_append_request(
+        &self,
+        drag: &NativeDeviceDrag,
+        track: TrackId,
+        copy: bool,
+        cx: &App,
+    ) -> Result<Request, &'static str> {
+        self.check_device_append_target(track, cx)?;
+        if copy {
+            return self.duplicate_device_drag_request(drag, DeviceChainOwner::Track(track), None);
+        }
+        let (owner, selected) = self
+            .device_drag_selection(drag)
+            .ok_or("device move canceled · selection changed")?;
+        let DevicePanelOwner::Track(source) = owner else {
+            return Err("move from a track device chain");
+        };
+        let project = &self
+            .state
+            .as_ref()
+            .ok_or("device move canceled · project changed")?
+            .project;
+        project
+            .validate_track_device_move(source, selected, track)
+            .map_err(|error| error.0)?;
+        Ok(Request::MoveTrackDevices {
+            project_generation: drag.project_generation,
+            revision: drag.revision,
+            source,
+            selected: selected.clone(),
+            destination: track,
+        })
     }
 
     pub(super) fn check_device_append_target(

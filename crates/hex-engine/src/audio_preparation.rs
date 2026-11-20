@@ -351,6 +351,8 @@ struct SourceSlot {
     // Semantic compilation may keep a nonneutral canonical envelope in final
     // metadata. Reserve its existing box before constructing transformed PCM.
     reserve_fade: bool,
+    // Only this projected source phase may be installed late by compilation.
+    reserved_phase: Option<std::num::NonZeroU64>,
     owner: Option<OwnedAudioSource>,
     // Fresh constructor root stays here after its distinct graph alias moves.
     prepared_origin: Option<OwnedAudioSource>,
@@ -1739,6 +1741,12 @@ impl AudioPreparationCustody {
                 clip.fade()
                     .validate_segment(clip.duration())
                     .map_err(|_| AudioStorageError::SourceMismatch)?;
+                let direct_fade = if transformed {
+                    None
+                } else {
+                    crate::audio_transform::checked_frame_outer_fade(clip, project.tempo_map())
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?
+                };
                 slots.push(SourceSlot {
                     active: clip.active(),
                     track: track.id(),
@@ -1771,7 +1779,9 @@ impl AudioPreparationCustody {
                     gain: clip.gain().linear(),
                     looping: !transformed && stream_view.is_none() && clip.looping(),
                     reversed: reverse_view.is_some(),
-                    fade: if pitch_source.is_some() {
+                    fade: if let Some(fade) = direct_fade {
+                        fade
+                    } else if pitch_source.is_some() {
                         clip.audio_edit()
                             .ok_or(AudioStorageError::SourceMismatch)?
                             .domain
@@ -1783,6 +1793,15 @@ impl AudioPreparationCustody {
                         clip.fade()
                     },
                     reserve_fade: transformed && !clip.retained_fade().is_neutral(),
+                    reserved_phase: if transformed {
+                        crate::audio_transform::prepared_frame_repeat_phase(
+                            clip,
+                            project.tempo_map(),
+                        )
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?
+                    } else {
+                        None
+                    },
                     owner: None,
                     prepared_origin: None,
                     sparse_frames: crate::audio_transform::sparse_group_plan(clip)

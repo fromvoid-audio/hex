@@ -51,6 +51,10 @@ fn clamped_position(
 type Select<T, A> = fn(&mut T, A, &mut Window, &mut Context<T>);
 type Dismiss<T> = fn(&mut T, &mut Window, &mut Context<T>);
 type Navigate<T> = fn(&mut T, bool, &mut Context<T>);
+type ItemPresentation<A> = (
+    fn(&MenuItem<A>) -> gpui::SharedString,
+    fn(&MenuItem<A>) -> bool,
+);
 
 pub(crate) fn popup<T: 'static, A: Clone + 'static>(
     menu: &PopupMenu<A>,
@@ -75,6 +79,28 @@ pub(crate) fn popup_with_labels<T: 'static, A: Clone + 'static>(
     navigate: Navigate<T>,
     label_for: fn(&MenuItem<A>) -> gpui::SharedString,
 ) -> Div {
+    popup_with_item_state(
+        menu,
+        window,
+        cx,
+        select,
+        dismiss,
+        navigate,
+        (label_for, |_| true),
+    )
+}
+
+/// Owners may disable unavailable actions without changing legacy menu items.
+pub(crate) fn popup_with_item_state<T: 'static, A: Clone + 'static>(
+    menu: &PopupMenu<A>,
+    window: &Window,
+    cx: &mut Context<T>,
+    select: Select<T, A>,
+    dismiss: Dismiss<T>,
+    navigate: Navigate<T>,
+    presentation: ItemPresentation<A>,
+) -> Div {
+    let (label_for, enabled_for) = presentation;
     let grid = menu.icon_grid.as_ref();
     let (width, height) = if grid.is_some() {
         (
@@ -91,6 +117,7 @@ pub(crate) fn popup_with_labels<T: 'static, A: Clone + 'static>(
     let selected_action = menu
         .items
         .get(menu.selected)
+        .filter(|item| enabled_for(item))
         .map(|item| item.action.clone());
     let mut panel = div()
         .id("context-menu-panel")
@@ -121,6 +148,7 @@ pub(crate) fn popup_with_labels<T: 'static, A: Clone + 'static>(
     let mut cells = Vec::new();
     let mut trailing = Vec::new();
     for (index, item) in menu.items.iter().enumerate() {
+        let enabled = enabled_for(item);
         let action = item.action.clone();
         let label = label_for(item);
         let tooltip_label = label.clone();
@@ -137,7 +165,9 @@ pub(crate) fn popup_with_labels<T: 'static, A: Clone + 'static>(
         .justify_start()
         .id(("context-menu-item", index))
         .debug_selector(move || {
-            if is_icon_menu {
+            if !enabled {
+                format!("context-menu-disabled-{index}")
+            } else if is_icon_menu {
                 format!("context-menu-choice-{index}")
             } else {
                 "context-menu-item".into()
@@ -168,7 +198,8 @@ pub(crate) fn popup_with_labels<T: 'static, A: Clone + 'static>(
         })
         .flex()
         .items_center()
-        .cursor_pointer()
+        .when(enabled, |row| row.cursor_pointer())
+        .when(!enabled, |row| row.opacity(0.45))
         .bg(rgb(if menu.selected == index {
             theme::color(theme::PaletteRole::Hover)
         } else {
@@ -203,9 +234,11 @@ pub(crate) fn popup_with_labels<T: 'static, A: Clone + 'static>(
                     marker.ml_auto().child(theme::text("✓"))
                 })
         }))
-        .on_click(
-            cx.listener(move |owner, _, window, cx| select(owner, action.clone(), window, cx)),
-        );
+        .when(enabled, |row| {
+            row.on_click(
+                cx.listener(move |owner, _, window, cx| select(owner, action.clone(), window, cx)),
+            )
+        });
         if glyph.is_some() {
             cells.push(row);
         } else if index > 0 && grid.is_some() {

@@ -6,6 +6,7 @@
 //! preserves finite range, integer output uses the native conversion law, and extra channels
 //! receive silence. Stream setup, reopen and final teardown stay on the lifecycle/control lane,
 //! not the callback.
+use crate::audio_diagnostics::AudioDiagnosticsFlags;
 use crate::open_outcome::{BACKEND_CONVERTS_OUTPUT_RATE, OutputOpenError, negotiate_stream_rate};
 use crate::spectrum_worker::{
     SpectrumReader, SpectrumStamp, SpectrumTargetId, spawn_spectrum_worker,
@@ -434,6 +435,7 @@ where
     let rate = config.sample_rate;
     let bounded_bridge =
         bridge.and_then(|plan| Some((plan.converting_device_rate?, plan.project_quantum)));
+    let mut previous_callback_start = None;
     let data_callback = move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
         let Some(owner) = data_guard.owner_mut() else {
             data.fill(T::from_sample(0.0));
@@ -441,6 +443,11 @@ where
         };
         owner.run(|callback, status| {
             let start = Instant::now();
+            let timing = status
+                .audio_diagnostics_flags()
+                .contains(AudioDiagnosticsFlags::TIMING);
+            let start_interval_ns =
+                callback_start_interval(&mut previous_callback_start, timing.then_some(start));
             callback.begin_block();
             if status.device_fault.load(Acquire) {
                 callback.fence_device_fault();
@@ -509,7 +516,14 @@ where
             if elapsed > deadline {
                 status.deadline_misses.fetch_add(1, Relaxed);
             }
-            callback.trace_callback_timing(elapsed, deadline, data.len() / channels);
+            if timing {
+                callback.trace_callback_timing(
+                    elapsed,
+                    deadline,
+                    data.len() / channels,
+                    start_interval_ns,
+                );
+            }
         });
     };
     let error_callback = move |_| {
@@ -535,6 +549,15 @@ where
         }
     }
     device.build_output_stream(config, data_callback, error_callback, None)
+}
+
+fn callback_start_interval(
+    previous: &mut Option<Instant>,
+    observed: Option<Instant>,
+) -> Option<u64> {
+    let before = std::mem::replace(previous, observed);
+    let elapsed = observed?.checked_duration_since(before?)?;
+    u64::try_from(elapsed.as_nanos()).ok()
 }
 
 fn sample_output_clock(
@@ -820,7 +843,7 @@ pub(crate) fn headless_worker_output_with_outcomes(
 
 #[cfg(test)]
 mod tests {
-    use super::{copy_host_chunk, finish_host_chunk, mono_mean};
+    use super::{callback_start_interval, copy_host_chunk, finish_host_chunk, mono_mean};
     use crate::gain_recording::{AbortReason, Receipt, Target};
     use crate::prepared;
     use cpal::{FromSample, SizedSample};
@@ -830,6 +853,22 @@ mod tests {
         sync::{Arc, atomic::Ordering::Acquire},
         time::Instant,
     };
+
+    #[test]
+    fn callback_timing_reports_start_intervals_and_resets_when_disabled() {
+        use std::time::Duration;
+
+        let start = Instant::now();
+        let later = start + Duration::from_micros(5_805);
+        let mut previous = None;
+        assert_eq!(callback_start_interval(&mut previous, Some(start)), None);
+        assert_eq!(
+            callback_start_interval(&mut previous, Some(later)),
+            Some(5_805_000)
+        );
+        assert_eq!(callback_start_interval(&mut previous, None), None);
+        assert_eq!(callback_start_interval(&mut previous, Some(later)), None);
+    }
 
     #[test]
     fn finite_mono_extrema_have_representable_symmetric_means() {

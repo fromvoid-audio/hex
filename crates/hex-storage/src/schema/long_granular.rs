@@ -168,7 +168,7 @@ pub(crate) fn encode(project: &Project, schema: LongWarpSchema) -> Result<Vec<u8
                         clip.edit
                             .take()
                             .ok_or(StorageError::Invalid("long warp edit missing"))?
-                            .into(),
+                            .try_into()?,
                     )
                 } else {
                     None

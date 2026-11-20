@@ -107,10 +107,7 @@ impl EditorView {
                 clip: context.scene.clip,
                 beat_start: context.scene.start,
                 beat_span: context.scene.span,
-                pitch: super::PitchViewport::from_rows(
-                    self.piano_pitch_low,
-                    self.piano_pitch_rows,
-                )?,
+                pitch: self.piano_pitch,
             },
             bounds,
             selection_epoch: context.selection_epoch,

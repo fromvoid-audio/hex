@@ -467,9 +467,9 @@ fn folder_batch_publishes_known_failures_and_actual_types_then_preserves_restart
     let next_scan = Cancellation::default();
     let second = worker::scan_folders(&f.catalog(), &app(), &[root], next_scan.token());
     assert!(
-        second
-            .status
-            .contains("2 discovered · 0 failed · 1 unchanged failures skipped"),
+        second.status.contains(
+            "0 discovered · 0 failed · 1 unchanged failures skipped · 2 unchanged plug-ins reused"
+        ),
         "{}",
         second.status
     );

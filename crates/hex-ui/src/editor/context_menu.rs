@@ -47,6 +47,7 @@ pub(super) enum EditorContextAction {
     SourcePicker(device_panel::SourcePickerChoice),
     SourceManager(device_panel::SourceManagerAction),
     HistoryPlayback(super::history_playback::MenuAction),
+    NoteChase(super::history_playback::NoteChaseAction),
     Tags(super::track_tags::Action),
     Automation(super::device_automation::Action),
     ClipAlias(ClipAliasAction),
@@ -626,6 +627,7 @@ impl EditorView {
             EditorContextAction::HistoryPlayback(action) => {
                 self.history_playback_menu_action(action, cx)
             }
+            EditorContextAction::NoteChase(action) => self.note_chase_menu_action(action, cx),
             EditorContextAction::Tags(action) => self.perform_tag_action(action, window, cx),
             EditorContextAction::Automation(action) => {
                 self.automation_menu_action(action, window, cx)
@@ -920,11 +922,16 @@ impl EditorView {
         if let Some(menu) = &mut self.context_menu {
             let count = menu.items.len();
             if count > 0 {
-                menu.selected = if forward {
-                    (menu.selected + 1) % count
-                } else {
-                    (menu.selected + count - 1) % count
-                };
+                for _ in 0..count {
+                    menu.selected = if forward {
+                        (menu.selected + 1) % count
+                    } else {
+                        (menu.selected + count - 1) % count
+                    };
+                    if context_item_enabled(&menu.items[menu.selected]) {
+                        break;
+                    }
+                }
                 if menu.icon_grid.is_none() {
                     menu.scroll.scroll_to_item(menu.selected);
                 }
@@ -956,6 +963,7 @@ impl EditorView {
                 EditorContextAction::HistoryPlayback(action) => {
                     !self.history_playback_menu_current(action)
                 }
+                EditorContextAction::NoteChase(action) => !self.note_chase_menu_current(action),
                 EditorContextAction::Tags(action) => action.stale(self),
                 EditorContextAction::Automation(action) => self.automation_action_stale(action),
                 EditorContextAction::ClipAlias(target) => !self.clip_alias_menu_current(target),
@@ -1077,7 +1085,8 @@ impl EditorView {
             if !menu.items.iter().any(|item| {
                 matches!(
                     item.action,
-                    EditorContextAction::Automation(_)
+                    EditorContextAction::NoteChase(_)
+                        | EditorContextAction::Automation(_)
                         | EditorContextAction::AudioInput { .. }
                         | EditorContextAction::SourcePicker(_)
                         | EditorContextAction::SourceManager(_)
@@ -1092,16 +1101,23 @@ impl EditorView {
                     Self::navigate_context_menu,
                 );
             }
-            crate::context_menu::popup_with_labels(
+            crate::context_menu::popup_with_item_state(
                 menu,
                 window,
                 cx,
                 Self::select_context_item,
                 Self::dismiss_context_menu,
                 Self::navigate_context_menu,
-                context_item_label,
+                (context_item_label, context_item_enabled),
             )
         })
+    }
+}
+
+fn context_item_enabled(item: &MenuItem<EditorContextAction>) -> bool {
+    match &item.action {
+        EditorContextAction::NoteChase(action) => action.enabled(),
+        _ => true,
     }
 }
 

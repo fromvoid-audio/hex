@@ -1,12 +1,14 @@
 //! Silent output before a retained frame source; source reads and fades stay at song time.
-//! A prefix shifts destination events and the container fade, never their raw
-//! source reads. Repeated extension reuses this sequence without nested roots.
+//! A prefix shifts destination events and the legacy root fade, never their raw
+//! source reads. The retained trim owner transfers the Outer context after
+//! geometry is final. Repeated extension reuses this sequence without nested roots.
 //! Unwarped pitch and source gain read a fixed frame map before event composition:
 //! increasing its output length leaves its original prefix unchanged. A frame
 //! Once placement also retains its finite gate and trailing silence. Musical,
 //! directed and repeating roots retain their existing trim policy.
 use super::{
-    AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioViewMode, MAX_AUDIO_DOMAIN_FRAMES,
+    AudioClipEdit, AudioClipFadeClock, AudioClipTiming, AudioDomainClock, AudioViewMode,
+    MAX_AUDIO_DOMAIN_FRAMES,
 };
 use crate::{AudioEvent, AudioEvents, Clip, ClipFade, ClipGain, Invalid, MAX_AUDIO_EVENTS};
 use std::sync::Arc;
@@ -141,14 +143,14 @@ pub(crate) fn extend_frame_left(clip: &Clip, frame: u64) -> Result<Option<Clip>,
         .audio_edit()
         .cloned()
         .unwrap_or_else(|| AudioClipEdit::capture(clip));
-    let fade_start = edit
-        .domain
-        .fade_start
-        .checked_add(lead)
-        .ok_or(Invalid("audio fade prefix overflow"))?;
     let domain = Arc::make_mut(&mut edit.domain);
+    if domain.fade_clock == AudioClipFadeClock::LegacyRoot {
+        domain.fade_start = domain
+            .fade_start
+            .checked_add(lead)
+            .ok_or(Invalid("audio fade prefix overflow"))?;
+    }
     domain.clock = AudioDomainClock::Frames(length);
-    domain.fade_start = fade_start;
     domain.events = Some(Arc::new(events));
     edit.view_start = 0;
     edit.view_end = end;

@@ -64,15 +64,13 @@ fn render(chain: &mut NativeRuntimeChain, count: usize, block: usize) -> Vec<[f3
     frames
 }
 
-fn check(definition: &'static dyn NativeDeviceDefinition) {
-    check_rate(definition, 48_000);
-}
-
-fn check_rate(definition: &'static dyn NativeDeviceDefinition, rate: u32) {
+fn check_power_transition(definition: &'static dyn NativeDeviceDefinition, rate: u32) {
     let ramp_frames = rate.div_ceil(200) as usize;
     for old_bypassed in [false, true] {
         let mut wet_reference = chain(definition, false, rate);
-        render(&mut wet_reference, 1024, 64);
+        if !old_bypassed {
+            render(&mut wet_reference, 1024, 64);
+        }
         let wet = render(&mut wet_reference, ramp_frames + 60, 1);
         for block in [1, 7, 64, 256] {
             let mut old = chain(definition, old_bypassed, rate);
@@ -103,22 +101,120 @@ fn check_rate(definition: &'static dyn NativeDeviceDefinition, rate: u32) {
 }
 
 #[test]
-fn auto_pan_bypass_transition_preserves_real_modulator_history() {
-    check(&crate::auto_pan::AUTO_PAN_DEFINITION);
+fn auto_pan_power_transition_uses_its_history_until_off_and_restarts_fresh() {
+    check_power_transition(&crate::auto_pan::AUTO_PAN_DEFINITION, 48_000);
 }
 #[test]
-fn gate_bypass_transition_preserves_real_detector_history() {
-    check(&crate::gate::GATE_DEFINITION);
-}
-#[test]
-fn compressor_bypass_transition_preserves_real_detector_history() {
-    check(&crate::compressor::COMPRESSOR_DEFINITION);
+fn gate_power_transition_uses_its_detector_until_off_and_reopens_fresh() {
+    check_power_transition(&crate::gate::GATE_DEFINITION, 48_000);
 }
 
 #[test]
-fn reverb_bypass_transition_preserves_real_room_history_at_supported_rates() {
+fn gate_power_reversal_preserves_the_open_detector() {
+    const QUIET: [f32; 2] = [0.001, -0.001];
+    let definition = &crate::gate::GATE_DEFINITION;
+    let mut on = chain(definition, false, 48_000);
+    let mut off = chain(definition, true, 48_000);
+    let mut back_on = chain(definition, false, 48_000);
+    render(&mut on, 1024, 64);
+    off.transfer_history_from(&mut on);
+    let mut partial_fade = [QUIET; 64];
+    off.begin_block();
+    off.process_block(&mut partial_fade).unwrap();
+    off.commit_block();
+    back_on.transfer_history_from(&mut off);
+    let mut reversed = [QUIET; 241];
+    back_on.begin_block();
+    back_on.process_block(&mut reversed).unwrap();
+    back_on.commit_block();
+    let open_gain = 10.0_f32.powf(6.0 / 20.0);
+    assert!((reversed[240][0] - QUIET[0] * open_gain).abs() < 1.0e-8);
+}
+
+#[test]
+fn compressor_power_transition_uses_its_detector_until_off_and_restarts_fresh() {
+    check_power_transition(&crate::compressor::COMPRESSOR_DEFINITION, 48_000);
+}
+
+#[test]
+fn compressor_power_reversals_and_settled_off_follow_the_external_key() {
+    use hex_lattice::StereoAuxiliaryBlock;
+    use hex_lattice_contract::NativeDeviceMetadata;
+
+    const DRY: [f32; 2] = [0.0625, -0.03125];
+    const KEY: [f32; 2] = [0.0, 0.75];
+    const QUIET_KEY: [f32; 2] = [0.0; 2];
+    const BLOCK: usize = 256;
+    const WARMUP: usize = 16 * BLOCK;
+    const FADE: usize = 240;
+
+    let definition = &crate::compressor::COMPRESSOR_DEFINITION;
+    let make_chain = |bypassed| {
+        chain_state(
+            definition,
+            definition.default_state().unwrap(),
+            bypassed,
+            48_000,
+        )
+    };
+    let render_keyed = |chain: &mut NativeRuntimeChain, key: [f32; 2], frames| {
+        let key = [key; BLOCK];
+        let mut output = vec![DRY; frames];
+        for chunk in output.chunks_mut(BLOCK) {
+            let length = chunk.len();
+            let block =
+                StereoAuxiliaryBlock::new(chunk, Some(&key[..length]), &mut [], BLOCK).unwrap();
+            chain.begin_block();
+            chain
+                .process_auxiliary_stage(
+                    0,
+                    block,
+                    0,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &mut |_, _, _, _, _, _| {},
+                )
+                .unwrap();
+            chain.commit_block();
+        }
+        output
+    };
+
+    for off_frames in [64, 2 * BLOCK] {
+        let mut on = make_chain(false);
+        let warmed = render_keyed(&mut on, KEY, WARMUP);
+        assert!(warmed[WARMUP - 1][0] < DRY[0] * 0.75);
+
+        let mut off = make_chain(true);
+        off.transfer_history_from(&mut on);
+        let off_output = render_keyed(&mut off, KEY, off_frames);
+        assert!(off_output[0][0] < DRY[0]);
+        if off_frames > FADE {
+            assert!(off_output[FADE..].iter().all(|frame| *frame == DRY));
+        }
+
+        let mut reference = make_chain(false);
+        if off_frames < FADE {
+            render_keyed(&mut reference, KEY, WARMUP + off_frames);
+        }
+        let expected = render_keyed(&mut reference, QUIET_KEY, BLOCK);
+        let mut resumed = make_chain(false);
+        resumed.transfer_history_from(&mut off);
+        let actual = render_keyed(&mut resumed, QUIET_KEY, BLOCK);
+        assert_eq!(
+            actual[FADE..],
+            expected[FADE..],
+            "incorrect external-key detector after {off_frames} off frames",
+        );
+    }
+}
+
+#[test]
+fn reverb_power_transition_restarts_a_fresh_room_at_supported_rates() {
     for rate in [8_000, 44_100, 48_000, 192_000] {
-        check_rate(&crate::reverb::REVERB_DEFINITION, rate);
+        check_power_transition(&crate::reverb::REVERB_DEFINITION, rate);
     }
 }
 
@@ -219,4 +315,35 @@ fn reverb_bypass_hot_path_profile() {
         times[times.len() * 99 / 100],
         times[times.len() - 1]
     );
+}
+
+#[test]
+#[ignore = "manual release hot-path profile; no physical deadline acceptance"]
+fn reverb_settled_power_profile() {
+    use std::{hint::black_box, time::Instant};
+
+    assert!(!black_box(cfg!(debug_assertions)), "run with --release");
+    let definition = &crate::reverb::REVERB_DEFINITION;
+    for bypassed in [false, true] {
+        let mut runtime = chain(definition, bypassed, 48_000);
+        let mut times = Vec::with_capacity(4096);
+        for block in 0..4608 {
+            let mut input = [[0.25, -0.25]; 128];
+            let start = Instant::now();
+            runtime.begin_block();
+            runtime.process_block(black_box(&mut input)).unwrap();
+            runtime.commit_block();
+            let elapsed = start.elapsed().as_nanos();
+            black_box(input);
+            if block >= 512 {
+                times.push(elapsed);
+            }
+        }
+        times.sort_unstable();
+        println!(
+            "reverb 48k/128, 512 warmup +4096 measured blocks, off={bypassed}: p50={}ns p99={}ns",
+            times[times.len() / 2],
+            times[times.len() * 99 / 100],
+        );
+    }
 }

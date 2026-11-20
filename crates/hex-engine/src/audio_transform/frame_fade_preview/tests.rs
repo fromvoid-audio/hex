@@ -1,8 +1,8 @@
 use super::*;
 use crate::{Audio, audio_transform::AudioTransformPreparation};
 use hex_project::{
-    AudioEventEdit, AudioEventFade, AudioViewResizeOperation, ClipFade, ClipGain, Command, Created,
-    Editor, FadeCurveLaw, Project,
+    AudioClipFadeClock, AudioEventEdit, AudioEventFade, AudioViewResizeOperation, ClipFade,
+    ClipGain, Command, Created, Editor, FadeCurveLaw, Project,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -54,6 +54,346 @@ fn prepare(
         context,
     )
     .unwrap()
+}
+
+#[test]
+fn grouped_frame_queries_track_sparse_and_cropped_reflected_repeat_pcm() {
+    use crate::audio_transform::tests::render;
+
+    let (mut editor, first, media) = fixture(1_000, false);
+    let project = editor.project();
+    let asset = project.clip(first).unwrap().asset();
+    let track = project.tracks()[0].id();
+    let Created::Clip(second) = editor
+        .execute(Command::PlaceClip {
+            track,
+            asset,
+            start: 9_400,
+            duration: 500,
+            source_offset: 450,
+            source_length: 500,
+            looping: false,
+        })
+        .unwrap()
+    else {
+        panic!("second child");
+    };
+    editor
+        .execute(Command::SetClipFades {
+            clip: second,
+            fade_in: 37,
+            fade_out: 53,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipGain {
+            clip: second,
+            millidb: -4_000,
+        })
+        .unwrap();
+    let Created::Clip(group) = editor
+        .execute(Command::GroupClips(vec![first, second]))
+        .unwrap()
+    else {
+        panic!("group");
+    };
+    let second_event = editor.project().clip(group).unwrap().audio_events().events[1];
+    let fade =
+        AudioEventFade::new(0, ClipFade::new(second_event.length(), 0, 121, 0).unwrap()).unwrap();
+    for command in [
+        Command::EditAudioEvents {
+            clip: group,
+            operation: AudioEventEdit::SetFade {
+                event: second_event.id,
+                fade: Some(fade),
+            },
+        },
+        Command::SetClipFadeEnvelope {
+            clip: group,
+            fade: ClipFade::new(9_900, 0, 461, 191).unwrap(),
+        },
+        Command::SetAudioClipGain {
+            clip: group,
+            millidb: -1_000,
+        },
+    ] {
+        editor.execute(command).unwrap();
+    }
+
+    let context = AudioTransformPreparation::default();
+    for directed in [false, true] {
+        let uncropped_tail = if directed {
+            for command in [
+                Command::ResizeAudioClipView {
+                    clip: group,
+                    operation: AudioViewResizeOperation::RepeatOuterEnd {
+                        project_frame: 19_800,
+                    },
+                },
+                Command::ReverseClips(vec![group]),
+            ] {
+                editor.execute(command).unwrap();
+            }
+            let pcm = render(&prepare(&editor, &media, &context), 73, 19_800 - 73, 127);
+            editor
+                .execute(Command::TrimClipEdge {
+                    clip: group,
+                    edge: hex_project::TrimEdge::Left,
+                    frame: 73,
+                })
+                .unwrap();
+            Some(pcm)
+        } else {
+            None
+        };
+        let project = editor.project();
+        let clip = project.clip(group).unwrap();
+        let query = FrameFadePreview::with_grouped_sources(
+            clip,
+            project.tempo_map(),
+            project.asset(asset).unwrap(),
+            FrameFadeOverrides::default(),
+        )
+        .unwrap()
+        .unwrap();
+        let prepared = prepare(&editor, &media, &context);
+        let view = &prepared.arrangement().audio_clip_views()[0];
+        assert_eq!(view.sparse.is_some(), !directed);
+        let sources = view.group_event_sources.as_ref().unwrap();
+        let pcm = render(&prepared, clip.start(), clip.duration() as usize, 127);
+        if let Some(uncropped_tail) = uncropped_tail {
+            assert_eq!(pcm, uncropped_tail);
+        }
+        let mut saw_silence = false;
+        let mut heard = [false; 2];
+        for (index, expected) in pcm.into_iter().enumerate() {
+            let frame = clip.start() + index as u64;
+            let point = query.timeline_sample(frame).unwrap();
+            let coverage = query
+                .visit_timeline_ranges(frame..frame + 1, &mut 1, |part| {
+                    assert_eq!(Some(part.sample), point);
+                    assert_eq!(
+                        part.source[0],
+                        Some(part.sample.source_frame()..part.sample.source_frame() + 1)
+                    );
+                })
+                .unwrap()
+                .unwrap();
+            assert_eq!(coverage.has_silence, point.is_none());
+            let actual = point.map_or([0.0; 2], |sample| {
+                let index = sources.index_of(sample.source_id()).unwrap();
+                heard[index] = true;
+                let bins = sources.sources()[index].1.bins();
+                sample.apply_to(bins[sample.source_frame() as usize].min)
+            });
+            saw_silence |= coverage.has_silence;
+            assert_eq!(actual, expected, "frame {frame}, reflected {directed}");
+        }
+        assert_eq!(heard, [true, true]);
+        assert!(saw_silence);
+        let retained = query
+            .event(second_event.id)
+            .unwrap()
+            .sample(120)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (retained.source_id(), retained.source_frame()),
+            (second_event.source, 120)
+        );
+    }
+}
+
+#[test]
+fn processed_frame_event_reads_apply_after_pitch_and_before_repeat_placement() {
+    processed_frame_repeat_reads(false);
+}
+
+#[test]
+fn reversed_processed_frame_event_reads_match_repeat_playback() {
+    processed_frame_repeat_reads(true);
+}
+
+fn processed_frame_repeat_reads(reversed: bool) {
+    let (mut editor, clip, media) = fixture(1_024, true);
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+        .unwrap();
+    let context = AudioTransformPreparation::default();
+    let neutral = prepare(&editor, &media, &context);
+    let source = &neutral.arrangement().audio_clip_views()[0].audio;
+    assert_eq!(source.frames().len(), 1_024);
+
+    for operation in [
+        AudioEventEdit::Trim {
+            event: 1,
+            start: 128,
+            end: 900,
+        },
+        AudioEventEdit::Move {
+            event: 1,
+            start: 64,
+        },
+        AudioEventEdit::SetFade {
+            event: 1,
+            fade: Some(AudioEventFade::new(128, ClipFade::new(772, 0, 79, 157).unwrap()).unwrap()),
+        },
+        AudioEventEdit::SetGain {
+            event: 1,
+            gain: ClipGain::new(3_200).unwrap(),
+        },
+    ] {
+        editor
+            .execute(Command::EditAudioEvents { clip, operation })
+            .unwrap();
+    }
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::RepeatOuterEnd {
+                project_frame: 2_417,
+            },
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetClipFadeEnvelope {
+            clip,
+            fade: ClipFade::new(2_417, 0, 123, 203).unwrap(),
+        })
+        .unwrap();
+    if reversed {
+        editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+    }
+    let project = editor.project();
+    let row = project.clip(clip).unwrap();
+    let asset = project.asset(row.asset()).unwrap();
+    let request = |size| {
+        FrameFadePreview::with_prepared_source(
+            row,
+            project.tempo_map(),
+            asset,
+            FrameFadeOverrides::default(),
+            size,
+        )
+        .unwrap()
+    };
+    assert!(request(1_023).is_none());
+    let query = request(source.frames().len() as u64).unwrap();
+    let event = query.event(1).unwrap();
+    assert_eq!(event.sample(139).unwrap().unwrap().source_frame(), 139);
+    let mut remaining = 1;
+    let coverage = event
+        .visit_ranges(139..155, &mut remaining, |part| {
+            assert_eq!(part.root, 75..91);
+            assert_eq!(part.source, [Some(139..155), None]);
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(remaining, 0);
+    assert!(!coverage.has_silence);
+    let actual = crate::audio_transform::tests::render(
+        &prepare(&editor, &media, &context),
+        row.start(),
+        row.duration() as usize,
+        79,
+    );
+    for (index, actual) in actual.into_iter().enumerate() {
+        let sample = query.timeline_sample(row.start() + index as u64).unwrap();
+        let expected = sample.map_or([0.0; 2], |sample| {
+            sample.apply_to(source.frames()[sample.source_frame() as usize])
+        });
+        assert_eq!(
+            actual, expected,
+            "processed Repeat destination sample {index}"
+        );
+    }
+}
+
+#[test]
+fn reversed_once_cropped_columns_keep_genuine_leading_silence() {
+    reversed_once_columns(false);
+}
+
+#[test]
+fn directed_legacy_once_envelope_intersects_both_silence_gates() {
+    reversed_once_columns(true);
+}
+
+fn reversed_once_columns(legacy_fade: bool) {
+    let (mut editor, clip, media) = fixture(1_024, false);
+    if legacy_fade {
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 491,
+                fade_out: 93,
+            })
+            .unwrap();
+    }
+    for command in [
+        Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::RepeatOuterEnd {
+                project_frame: 1_424,
+            },
+        },
+        Command::SetClipLooping {
+            clip,
+            looping: false,
+        },
+        Command::ReverseClips(vec![clip]),
+        Command::TrimClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Left,
+            frame: 200,
+        },
+    ] {
+        editor.execute(command).unwrap();
+    }
+    if legacy_fade {
+        let edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
+        assert_eq!(edit.domain.fade_clock, AudioClipFadeClock::LegacyRoot);
+        assert!(!edit.domain.fade.is_neutral());
+    }
+    assert_matches(&editor, clip, &media, &AudioTransformPreparation::default());
+    let project = editor.project();
+    let row = project.clip(clip).unwrap();
+    let query = FrameFadePreview::new(
+        row,
+        project.tempo_map(),
+        project.asset(row.asset()).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let common_columns = [
+        (360..400, None, true),
+        (360..440, Some(984..1_024), true),
+        (420..460, Some(964..1_004), false),
+    ];
+    let trailing_columns = if legacy_fade {
+        [
+            (984..1_064, Some(400..440), true),
+            (1_100..1_200, None, true),
+        ]
+    } else {
+        [
+            (984..1_064, Some(360..440), false),
+            (1_100..1_200, Some(224..324), false),
+        ]
+    };
+    for (range, expected, silence) in common_columns.into_iter().chain(trailing_columns) {
+        let mut source = None;
+        let coverage = query
+            .visit_timeline_ranges(range, &mut 2, |part| {
+                assert!(source.is_none());
+                source = part.source[0].clone();
+                assert!(part.source[1].is_none());
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(source, expected);
+        assert_eq!(coverage.has_silence, silence);
+    }
 }
 fn assert_matches(
     editor: &Editor,
@@ -245,14 +585,61 @@ fn reported_four_repeat_window_keeps_original_source_and_fade_clocks() {
             },
         })
         .unwrap();
+    let context = AudioTransformPreparation::default();
+    let raw = prepare(&editor, &media, &context);
+    let fade = ClipFade::new(76_696, 0, 13_184, 23_254).unwrap();
     editor
-        .execute(Command::SetClipFades {
-            clip,
-            fade_in: 13_184,
-            fade_out: 23_254,
-        })
+        .execute(Command::SetClipFadeEnvelope { clip, fade })
         .unwrap();
-    assert_matches(&editor, clip, &media, &AudioTransformPreparation::default());
+    let row = editor.project().clip(clip).unwrap();
+    assert!(
+        row.projected_outer_fade(editor.project().tempo_map())
+            .unwrap()
+            .is_some()
+    );
+    let mut raw_renderer = crate::Renderer::new(raw.arrangement());
+    raw_renderer.play();
+    let mut expected = vec![[0.0; 2]; 76_696];
+    for block in expected.chunks_mut(317) {
+        raw_renderer.render(block).unwrap();
+    }
+    for (frame, sample) in expected.iter_mut().enumerate() {
+        *sample = sample.map(|value| value * fade.gain_at(frame as u64));
+    }
+    let actual = prepare(&editor, &media, &context);
+    for size in [31, 256] {
+        let mut renderer = crate::Renderer::new(actual.arrangement());
+        renderer.play();
+        let mut pcm = vec![[0.0; 2]; expected.len()];
+        for block in pcm.chunks_mut(size) {
+            renderer.render(block).unwrap();
+        }
+        assert_eq!(pcm, expected);
+    }
+    assert_matches(&editor, clip, &media, &context);
+    let project = editor.project();
+    let mapping = FrameFadePreview::new(
+        row,
+        project.tempo_map(),
+        project.asset(row.asset()).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let root = mapping.root_sample(1_049).unwrap().unwrap();
+    let first = mapping.timeline_sample(1_049).unwrap().unwrap();
+    let repeated = mapping.timeline_sample(19_174 + 1_049).unwrap().unwrap();
+    assert_eq!(first.source_frame(), repeated.source_frame());
+    assert_eq!(&root.gains()[..2], &repeated.gains()[..2]);
+    assert_eq!(root.gains()[2], 1.0);
+    assert_eq!(first.gains()[2], fade.gain_at(1_049));
+    assert_eq!(repeated.gains()[2], 1.0);
+    let mut ranges = Vec::new();
+    mapping
+        .visit_timeline_ranges(1_000..1_100, &mut 8, |part| ranges.push(part))
+        .unwrap()
+        .unwrap();
+    assert_eq!(ranges.len(), 1);
+    assert_eq!(ranges[0].sample.gains()[2], first.gains()[2]);
 }
 
 #[test]
@@ -307,7 +694,6 @@ fn unsupported_processing_is_separate_from_supported_silence() {
                 gain_q16: 65_536,
             }],
         },
-        Command::ReverseClips(vec![clip]),
         Command::EditAudioEvents {
             clip,
             operation: AudioEventEdit::Place {
@@ -333,9 +719,49 @@ fn unsupported_processing_is_separate_from_supported_silence() {
 }
 
 #[test]
+fn directed_legacy_repeat_keeps_forward_phase_and_reflects_the_event() {
+    let (mut editor, clip, media) = fixture(1_024, false);
+    for command in [
+        Command::SetClipFades {
+            clip,
+            fade_in: 157,
+            fade_out: 205,
+        },
+        Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::SetFade {
+                event: 1,
+                fade: Some(
+                    AudioEventFade::new(0, ClipFade::new(1_024, 0, 387, 49).unwrap()).unwrap(),
+                ),
+            },
+        },
+        Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::RepeatOuterEnd {
+                project_frame: 2_317,
+            },
+        },
+        Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::PlayStart { position: 139 },
+        },
+        Command::ReverseClips(vec![clip]),
+    ] {
+        editor.execute(command).unwrap();
+    }
+    let edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
+    assert_eq!(edit.domain.fade_clock, AudioClipFadeClock::LegacyRoot);
+    assert!(!edit.domain.fade.is_neutral());
+    assert_eq!(edit.placement.unwrap().cycle_phase, 139);
+    assert_matches(&editor, clip, &media, &AudioTransformPreparation::default());
+}
+
+#[test]
 fn ordered_gains_preserve_the_full_scale_boundary() {
     let sample = FrameFadeSample {
         source_frame: 0,
+        source_id: 0,
         event: Some(1),
         gains: [
             0.196_145_68,
@@ -397,6 +823,7 @@ fn borrowed_fade_events_and_gain_match_first_fade_and_repeated_view_ack() {
             project.asset(row.asset()).unwrap(),
             FrameFadeOverrides {
                 fade: Some(fade),
+                legacy_root_fade: false,
                 events: Some(&events),
                 gain: Some(gain),
             },

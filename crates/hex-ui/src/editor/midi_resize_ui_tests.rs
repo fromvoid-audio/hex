@@ -148,11 +148,7 @@ fn explicitly_selected_tiny_note_edges_resize_with_matching_hover_and_stable_id(
                     clip,
                     beat_start: v.piano_beat_start,
                     beat_span: v.piano_beat_span.raw(),
-                    pitch: crate::editor::PitchViewport::from_rows(
-                        v.piano_pitch_low,
-                        v.piano_pitch_rows,
-                    )
-                    .unwrap(),
+                    pitch: v.piano_pitch,
                 },
                 source.notes(),
             );
@@ -168,7 +164,7 @@ fn explicitly_selected_tiny_note_edges_resize_with_matching_hover_and_stable_id(
                 note.id(),
                 left,
                 right,
-                (geometry.y + 0.5 / f32::from(v.piano_pitch_rows))
+                (geometry.y + 0.5 / f32::from(v.piano_pitch.test_row_count()))
                     * (f32::from(roll.size.height) - 2.0),
                 state.project.snapshot(),
             )

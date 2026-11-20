@@ -295,6 +295,7 @@ pub(crate) struct MutableInstrumentTrackRuntime {
     scratch: Vec<MutableOccurrence>,
     next_id: u64,
     next_id_scratch: u64,
+    retained_at_latency_cut: Option<u64>,
     live: Option<Box<live::LiveLedger>>,
 }
 
@@ -304,6 +305,143 @@ pub(crate) struct MutableInstrumentTail {
     pub(crate) track_id: TrackId,
     pub(crate) runtime: MutableInstrumentTrackRuntime,
     pub(crate) sends: DetachedSourceSends,
+    power_off: Option<PowerOffFade>,
+}
+
+struct PowerOffFade {
+    frames: u32,
+    remaining: u32,
+    scratch: u32,
+    receiver_gain: Option<f32>,
+}
+
+impl MutableInstrumentTail {
+    pub(crate) fn new(
+        track_id: TrackId,
+        mut runtime: MutableInstrumentTrackRuntime,
+        sends: DetachedSourceSends,
+        power_off_rate: Option<u32>,
+    ) -> Self {
+        let power_off = power_off_rate.map(|rate| {
+            // Keep already-applied expression inside the kernel. This tail
+            // no longer accepts new controller events.
+            runtime.expression = None;
+            let frames = rate.div_ceil(200).max(1);
+            PowerOffFade {
+                frames,
+                remaining: frames,
+                scratch: frames,
+                receiver_gain: None,
+            }
+        });
+        Self {
+            track_id,
+            runtime,
+            sends,
+            power_off,
+        }
+    }
+
+    pub(crate) fn with_power_off_receiver(mut self, gain: f32) -> Self {
+        if let Some(fade) = &mut self.power_off {
+            fade.receiver_gain = Some(gain);
+        }
+        self
+    }
+
+    pub(crate) fn powers_off_through_receiver(&self) -> bool {
+        self.power_off
+            .as_ref()
+            .is_some_and(|fade| fade.receiver_gain.is_some())
+    }
+
+    pub(crate) fn is_powering_off(&self) -> bool {
+        self.power_off.is_some()
+    }
+
+    pub(crate) fn committed_is_quiescent(&self) -> bool {
+        self.power_expired() || self.runtime.committed_is_quiescent()
+    }
+
+    pub(crate) fn speculative_is_quiescent(&self) -> bool {
+        self.power_off
+            .as_ref()
+            .is_some_and(|fade| fade.scratch == 0)
+            || self.runtime.speculative_is_quiescent()
+    }
+
+    fn power_expired(&self) -> bool {
+        self.power_off
+            .as_ref()
+            .is_some_and(|fade| fade.remaining == 0)
+    }
+
+    pub(crate) fn begin_block(&mut self) {
+        if self.power_expired() {
+            return;
+        }
+        self.runtime.begin_block();
+        if let Some(fade) = &mut self.power_off {
+            fade.scratch = fade.remaining;
+        }
+    }
+
+    pub(crate) fn commit_block(&mut self) {
+        if self.power_expired() {
+            return;
+        }
+        self.runtime.commit_block();
+        if let Some(fade) = &mut self.power_off {
+            fade.remaining = fade.scratch;
+        }
+    }
+
+    pub(crate) fn rollback_block(&mut self) {
+        if self.power_expired() {
+            return;
+        }
+        self.runtime.rollback_block();
+        if let Some(fade) = &mut self.power_off {
+            fade.scratch = fade.remaining;
+        }
+    }
+
+    pub(crate) fn cancel(&mut self) {
+        if let Some(fade) = &mut self.power_off {
+            fade.remaining = 0;
+            fade.scratch = 0;
+        } else {
+            self.runtime.reset();
+        }
+    }
+
+    /// Render only the departing instrument's contribution. A block that
+    /// straddles the deadline processes no samples beyond it.
+    pub(crate) fn render_source<E>(
+        &mut self,
+        output: &mut [[f32; 2]],
+        over_budget: E,
+        render: impl FnOnce(&mut MutableInstrumentTrackRuntime, &mut [[f32; 2]]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let Some(fade) = &mut self.power_off else {
+            return render(&mut self.runtime, output);
+        };
+        let width = output.len().min(fade.scratch as usize);
+        if width == 0 {
+            return Ok(());
+        }
+        output_trim::render_contribution(
+            &mut output[..width],
+            |offset| {
+                let fade_gain = (fade.scratch - offset as u32) as f32 / fade.frames as f32;
+                fade_gain * fade.receiver_gain.unwrap_or(1.0)
+            },
+            over_budget,
+            |contribution| render(&mut self.runtime, contribution),
+        )?;
+        fade.scratch -= width as u32;
+        Ok(())
+    }
 }
 
 /// Post-fader Return destinations for one detached source release. Stable
@@ -407,6 +545,7 @@ impl MutableInstrumentTrackRuntime {
             scratch,
             next_id: _,
             next_id_scratch: _,
+            retained_at_latency_cut: _,
             live,
         } = self;
         if live.is_some() {
@@ -520,6 +659,7 @@ impl MutableInstrumentTrackRuntime {
             scratch,
             next_id: 0,
             next_id_scratch: 0,
+            retained_at_latency_cut: None,
             live: None,
         })
     }
@@ -691,6 +831,7 @@ impl MutableInstrumentTrackRuntime {
         self.expression = previous
             .expression
             .filter(|_| self.supports_live_expression());
+        self.retained_at_latency_cut = previous.retained_at_latency_cut;
         self.next_id = previous.next_id;
         self.next_id_scratch = previous.next_id;
         if let Some((next, old)) = self.live.as_mut().zip(previous.live.as_ref()) {
@@ -703,6 +844,22 @@ impl MutableInstrumentTrackRuntime {
             next.pending_len = 0;
         }
         Ok(())
+    }
+
+    /// Copy a continuously clocked generator, including its gate deadlines.
+    /// It has already processed the prefix that a fresh runtime would chase.
+    pub(crate) fn inherit_at_latency_cut(
+        &mut self,
+        previous: &Self,
+        frame: u64,
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        self.inherit_from(previous)?;
+        self.retained_at_latency_cut = Some(frame);
+        Ok(())
+    }
+
+    pub(crate) fn retained_at_latency_cut(&self, frame: u64) -> bool {
+        self.retained_at_latency_cut == Some(frame)
     }
 
     /// Runtime history may carry only the same physical original-source bindings.
@@ -1395,6 +1552,7 @@ impl MutableInstrumentTrackRuntime {
         self.scratch.clear();
         self.next_id = 0;
         self.next_id_scratch = 0;
+        self.retained_at_latency_cut = None;
         if let Some(live) = &mut self.live {
             **live = Default::default();
         }

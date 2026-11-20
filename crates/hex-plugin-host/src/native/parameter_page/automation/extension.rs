@@ -211,7 +211,8 @@ impl Prepared {
             }
             ParameterPageProgress::Conversion(_)
             | ParameterPageProgress::Editor(_)
-            | ParameterPageProgress::EditorSeal(_) => Ok(Progress::Refused(
+            | ParameterPageProgress::EditorSeal(_)
+            | ParameterPageProgress::EditorFrontier(_) => Ok(Progress::Refused(
                 "expected authored parameter metadata page",
             )),
         }

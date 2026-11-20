@@ -836,7 +836,7 @@ impl SessionPlayback {
                     .tail_mutable_instruments
                     .iter()
                     .flatten()
-                    .all(|tail| tail.runtime.committed_is_quiescent()))
+                    .all(|tail| tail.committed_is_quiescent()))
         {
             if let Some(capture) = capture.as_mut() {
                 capture.commit(output.len());
@@ -883,6 +883,9 @@ impl SessionPlayback {
             }
         }
         for tail in self.tail_mutable_instruments.iter_mut().flatten() {
+            if tail.is_powering_off() {
+                continue;
+            }
             tail.runtime.expression = match if tail.runtime.is_source_owner() {
                 source_selected
             } else {
@@ -990,7 +993,7 @@ impl SessionPlayback {
                 runtime.rollback_block();
             }
             for tail in self.tail_mutable_instruments.iter_mut().flatten() {
-                tail.runtime.rollback_block();
+                tail.rollback_block();
             }
             self.return_effect_tails.rollback_block();
             if let Some(capture) = capture.as_mut() {
@@ -1117,7 +1120,7 @@ impl SessionPlayback {
             runtime.begin_block();
         }
         for tail in self.tail_mutable_instruments.iter_mut().flatten() {
-            tail.runtime.begin_block();
+            tail.begin_block();
         }
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.begin_block();
@@ -1616,7 +1619,7 @@ impl SessionPlayback {
             runtime.commit_block();
         }
         for tail in self.tail_mutable_instruments.iter_mut().flatten() {
-            tail.runtime.commit_block();
+            tail.commit_block();
         }
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.commit_block();
@@ -1765,7 +1768,12 @@ impl SessionPlayback {
             self.route_scratch[index].owner = if let Some(plan) = current_plan {
                 plan.owner
             } else {
-                self.owner_for_target(pending.target, target_beat, performance_frame)?
+                self.owner_for_target(
+                    pending.target,
+                    target_beat,
+                    performance_frame,
+                    pending.note_chase,
+                )?
             };
             self.route_scratch[index].pending = None;
             let fade = self.audio_release_fade();
@@ -1866,7 +1874,15 @@ impl SessionPlayback {
                 && !track.has_gain_automation()
                 && recording_override.is_none();
             let has_source_effects = self.source_effects.has_chain(index);
+            let power_off_slot = self.receiver_power_off_slots[index]
+                .map(usize::from)
+                .filter(|&slot| {
+                    self.tail_mutable_instruments[slot]
+                        .as_ref()
+                        .is_some_and(|tail| !tail.speculative_is_quiescent())
+                });
             let buffered = has_source_effects
+                || power_off_slot.is_some()
                 || shared_source
                 || live_target
                 || stateful_effects
@@ -1876,6 +1892,7 @@ impl SessionPlayback {
                 || smoothing
                 || self.device_metering;
             let ordered = has_source_effects
+                || power_off_slot.is_some()
                 || shared_source
                 || live_target
                 || smoothing
@@ -1907,21 +1924,22 @@ impl SessionPlayback {
             let has_current_route = (shared_source
                 && shared_source_has_route(&self.revision, &self.route_scratch, index)?)
                 || mutable_active
+                || power_off_slot.is_some()
                 || live_target
                 || !matches!(self.route_scratch[index].owner, RouteOwner::Silence)
                 || self.route_scratch[index].audio_release.is_some()
                 || !matches!(midi_route.owner, RouteOwner::Silence);
-            let has_current_effect_tail = !has_current_route
+            let has_current_effect_work = !has_current_route
                 && !has_current_release
-                && (self.source_effects.has_tail(index)
+                && (self.source_effects.needs_zero_input_render(index)
                     || self
                         .device_chains
                         .get(index)
-                        .is_some_and(|chain| !chain.committed_range_is_quiescent(0..chain.len())));
+                        .is_some_and(|chain| chain.needs_zero_input_render()));
             if (buffered || ordered)
                 && (has_current_route
                     || has_current_release
-                    || has_current_effect_tail
+                    || has_current_effect_work
                     || live_target)
             {
                 let mut track_buffer = [[0.0; 2]; 256];
@@ -2128,6 +2146,19 @@ impl SessionPlayback {
                         keyboard
                             .render_with_resources(generator, None, &resources)
                             .map_err(|e| SessionPlaybackError::Arrangement(e.0))?;
+                    }
+                    if let Some(slot) = power_off_slot
+                        && let Some(tail) = self.tail_mutable_instruments[slot].as_mut()
+                    {
+                        process_mutable_tail(
+                            tail,
+                            &mut self.mutable_onsets,
+                            &mut self.mutable_events,
+                            performance_frame,
+                            generator,
+                            &timing,
+                            true,
+                        )?;
                     }
                     if let Some(generated) = isolated {
                         self.source_effects
@@ -2740,7 +2771,7 @@ impl SessionPlayback {
                     .get_mut(group_index)
                     .ok_or(SessionPlaybackError::DeviceRuntime)?;
                 *rendered = true;
-                if !tail.runtime.speculative_is_quiescent() {
+                if !tail.speculative_is_quiescent() {
                     process_mutable_tail(
                         tail,
                         &mut self.mutable_onsets,
@@ -2828,7 +2859,7 @@ impl SessionPlayback {
             else {
                 continue;
             };
-            if tail.runtime.speculative_is_quiescent() {
+            if tail.powers_off_through_receiver() || tail.speculative_is_quiescent() {
                 continue;
             }
             let mut tail_buffer = [[0.0; 2]; 256];
@@ -3067,51 +3098,58 @@ fn process_mutable_tail<T: MidiTiming + ?Sized>(
     timing: &T,
     playing: bool,
 ) -> Result<(), SessionPlaybackError> {
-    onsets.clear();
-    tail.runtime
-        .with_frozen_parameters(|runtime, values| {
-            if !playing && runtime.is_source_owner() {
-                let clock = runtime
-                    .source_monitor_clock(
-                        timing
-                            .frame_to_beat(performance_frame)
-                            .map_err(|_| SessionPlaybackError::TempoConversion)?
-                            .raw(),
-                        timing
-                            .tempo_micro_bpm_at_frame(performance_frame)
-                            .ok_or(SessionPlaybackError::TempoConversion)?,
-                        timing.sample_rate(),
-                    )
-                    .map_err(|error| error.render_error())?;
-                runtime
-                    .process_frozen_tail_segment(
-                        None,
-                        performance_frame,
-                        output,
-                        onsets,
-                        events,
-                        Some(&clock),
-                        values,
-                    )
-                    .map_err(|error| error.render_error())
-            } else {
-                runtime
-                    .process_frozen_tail_segment(
-                        Some(tail.track_id),
-                        performance_frame,
-                        output,
-                        onsets,
-                        events,
-                        Some(&InstrumentClock {
-                            timing,
-                            start: performance_frame,
-                        }),
-                        values,
-                    )
-                    .map_err(|error| error.render_error())
-            }
-        })
-        .map_err(|error| error.render_error())?
+    let track = tail.track_id;
+    tail.render_source(
+        output,
+        SessionPlaybackError::DeviceRuntime,
+        |runtime, output| {
+            onsets.clear();
+            runtime
+                .with_frozen_parameters(|runtime, values| {
+                    if !playing && runtime.is_source_owner() {
+                        let clock = runtime
+                            .source_monitor_clock(
+                                timing
+                                    .frame_to_beat(performance_frame)
+                                    .map_err(|_| SessionPlaybackError::TempoConversion)?
+                                    .raw(),
+                                timing
+                                    .tempo_micro_bpm_at_frame(performance_frame)
+                                    .ok_or(SessionPlaybackError::TempoConversion)?,
+                                timing.sample_rate(),
+                            )
+                            .map_err(|error| error.render_error())?;
+                        runtime
+                            .process_frozen_tail_segment(
+                                None,
+                                performance_frame,
+                                output,
+                                onsets,
+                                events,
+                                Some(&clock),
+                                values,
+                            )
+                            .map_err(|error| error.render_error())
+                    } else {
+                        runtime
+                            .process_frozen_tail_segment(
+                                Some(track),
+                                performance_frame,
+                                output,
+                                onsets,
+                                events,
+                                Some(&InstrumentClock {
+                                    timing,
+                                    start: performance_frame,
+                                }),
+                                values,
+                            )
+                            .map_err(|error| error.render_error())
+                    }
+                })
+                .map_err(|error| error.render_error())?
+        },
+    )
 }
 
 struct MutableInstrumentChunkContext<'a, T: ?Sized> {
@@ -3146,7 +3184,7 @@ pub(super) fn collect_console_midi_onsets<T: MidiTiming + ?Sized>(
     spans: &mut MidiSpanBuffer,
     onsets: &mut MutableOnsetBuffer,
 ) -> Result<(), SessionPlaybackError> {
-    let RouteOwner::Session { clip, origin } = route.owner else {
+    let RouteOwner::Session { clip, origin, .. } = route.owner else {
         return Err(SessionPlaybackError::InvalidCommand);
     };
     let prepared = midi
@@ -3160,7 +3198,13 @@ pub(super) fn collect_console_midi_onsets<T: MidiTiming + ?Sized>(
     }
     prepared
         .instrument_template()
-        .query_with_origin(origin, timing, start, end, spans)
+        .query_with_origin_and_note_chase(
+            origin,
+            timing,
+            (start, end),
+            spans,
+            route.owner.note_chase(),
+        )
         .map_err(SessionPlaybackError::Midi)?;
     for span in spans.spans() {
         onsets
@@ -3249,9 +3293,10 @@ fn render_mutable_instrument_inner<T: crate::prepared_tempo::MidiTempoBreaks + ?
         loop_region,
         timing,
     } = context;
-    if runtimes.get(index).and_then(Option::as_ref).is_none() {
+    let Some(runtime) = runtimes.get_mut(index).and_then(Option::as_mut) else {
         return Ok(());
-    }
+    };
+    let chase_at_start = chase_at_start && !runtime.retained_at_latency_cut(performance_frame);
     let track = revision
         .arrangement()
         .tracks()
@@ -3348,10 +3393,6 @@ fn render_mutable_instrument_inner<T: crate::prepared_tempo::MidiTempoBreaks + ?
         }
         RouteOwner::SessionAudio { .. } | RouteOwner::Silence => {}
     }
-    let runtime = runtimes
-        .get_mut(index)
-        .and_then(Option::as_mut)
-        .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?;
     let scoped = sources
         .filter(|s| s.has_track(track_id))
         .map(|s| s.resources(track_id))
@@ -3370,7 +3411,7 @@ fn render_mutable_instrument_inner<T: crate::prepared_tempo::MidiTempoBreaks + ?
         _ => performance_frame,
     };
     let arrangement_volumes = track.instrument.as_ref().and_then(|i| i.volumes.as_ref());
-    let console = if let RouteOwner::Session { clip, origin } = midi_route.owner {
+    let console = if let RouteOwner::Session { clip, origin, .. } = midi_route.owner {
         midi.midi_clip_for_track(clip, track_id)
             .map(|prepared| (clip, origin, prepared))
     } else {
@@ -3526,7 +3567,7 @@ fn render_mutable_instrument_inner<T: crate::prepared_tempo::MidiTempoBreaks + ?
                     },
                 )
             }
-            RouteOwner::Session { clip, origin } => {
+            RouteOwner::Session { clip, origin, .. } => {
                 if key.clip != clip || key.loop_pass != routes[index].current_incarnation {
                     return Ok(None);
                 }
@@ -3909,7 +3950,7 @@ fn render_route_owner_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::Mi
             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
         }
         RouteOwner::Silence => {}
-        RouteOwner::Session { clip, origin } => {
+        RouteOwner::Session { clip, origin, .. } => {
             if stage.is_audio() {
                 return Ok(());
             }
@@ -3921,7 +3962,8 @@ fn render_route_owner_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::Mi
             }
             if prepared.instrument_enabled() && !prepared.instrument_template().is_event_source() {
                 let context =
-                    crate::MidiInstrumentRenderContext::with_origin(origin, timing, table);
+                    crate::MidiInstrumentRenderContext::with_origin(origin, timing, table)
+                        .with_note_chase(route.owner.note_chase());
                 let context = historical_floor.map_or(context, |floor| context.after_onset(floor));
                 let context = context
                     .with_suppressions(suppressions)

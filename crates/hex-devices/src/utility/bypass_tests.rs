@@ -1,4 +1,4 @@
-//! The real Utility filter owner keeps one history through reversible host bypass.
+//! The real Utility filters keep history through a reversal and reset at settled Off.
 use super::*;
 use hex_lattice::{
     DevicePreparationContext, EMPTY_DEVICE_RESOURCES, NativeRuntimeChain, PreparedRuntimeInstance,
@@ -67,7 +67,7 @@ fn render(chain: &mut NativeRuntimeChain, count: usize, block: usize) -> Vec<Ste
 }
 
 #[test]
-fn utility_filter_bypass_pcm_history_reversal_and_rollback_match_uninterrupted_reference() {
+fn utility_power_reverses_warm_rolls_back_and_restarts_from_a_fresh_filter() {
     for (dc, bass, muted) in [
         (true, false, false),
         (false, true, false),
@@ -105,6 +105,9 @@ fn utility_filter_bypass_pcm_history_reversal_and_rollback_match_uninterrupted_r
                         next.rollback_block();
                     }
                     let actual = render(&mut next, count, block);
+                    if phase == 4 {
+                        wet_reference = chain(&state, false, rate);
+                    }
                     let wet = render(&mut wet_reference, count, 127);
                     for (i, (actual, wet)) in actual.iter().zip(wet).enumerate() {
                         let progress = (i + 1).min(ramp) as f32 / ramp as f32;

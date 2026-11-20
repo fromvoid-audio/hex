@@ -53,7 +53,7 @@ static void check_modal_file_picker_cancellation() {
         }
         assert(app->cancelled==before+3);
     }
-    for(auto kind:{REOPEN_EDITOR,SEAL_EDITOR_EDITS,DETACH_EDITOR_WHEN_IDLE,EDITOR_VISIBILITY,SELECTED_PARAMETERS})
+    for(auto kind:{REOPEN_EDITOR,SEAL_EDITOR_EDITS,DETACH_EDITOR_WHEN_IDLE,EDITOR_VISIBILITY,READ_EDITOR_FRONTIER,SELECTED_PARAMETERS})
         assert(!closes_open_editor(kind));
     auto* other=[[NSPanel alloc] initWithContentRect:NSMakeRect(0,0,200,150)
         styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];

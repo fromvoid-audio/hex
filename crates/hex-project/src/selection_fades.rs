@@ -70,7 +70,24 @@ fn edge(
     tempo: &TempoMap,
 ) -> Result<Clip, Invalid> {
     let mut next = clip.clone();
-    if let Some(edit) = clip.audio_edit() {
+    if let Some(projection) = clip.projected_outer_fade(tempo)? {
+        let at = |local: u64| -> Result<u64, Invalid> {
+            projection
+                .domain_position_at_frame(
+                    clip.start()
+                        .checked_add(local)
+                        .ok_or(Invalid("fade frame overflow"))?,
+                )?
+                .ok_or(Invalid(
+                    "fade selection precedes its retained reference domain",
+                ))
+        };
+        let shape = fitted(clip.retained_fade(), at(first)?, at(end)?, incoming)?;
+        let edit = next
+            .audio_edit_mut()
+            .ok_or(Invalid("audio domain missing"))?;
+        Arc::make_mut(&mut edit.domain).fade = shape;
+    } else if let Some(edit) = clip.audio_edit() {
         if edit.placement.is_some() || edit.content_view.is_some() {
             return Err(Invalid(
                 "selection fades for directed outer audio views are not supported yet",

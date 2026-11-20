@@ -539,7 +539,12 @@ impl SessionPlayback {
                 .filter(|pending| pending.frame <= performance_frame)
             {
                 let next = self
-                    .owner_for_target(pending.target, pending.beat, performance_frame)
+                    .owner_for_target(
+                        pending.target,
+                        pending.beat,
+                        performance_frame,
+                        pending.note_chase,
+                    )
                     .map_err(|error| Invalid(error.diagnostic_message()))?;
                 // The owner left at this frame fades out over the window.
                 if let RouteOwner::SessionAudio { clip, launch_frame } = route.owner

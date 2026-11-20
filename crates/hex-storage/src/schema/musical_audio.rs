@@ -128,11 +128,13 @@ impl DocumentV25 {
             let TrackContentSnapshot::Hybrid { audio_clips, .. } = track.content else {
                 continue;
             };
-            audio_clip_state.extend(audio_clips.into_iter().map(|clip| AudioState {
-                clip: clip.id,
-                gain_millidb: clip.gain.millidb(),
-                audio_edit: clip.edit.map(Into::into),
-            }));
+            for clip in audio_clips {
+                audio_clip_state.push(AudioState {
+                    clip: clip.id,
+                    gain_millidb: clip.gain.millidb(),
+                    audio_edit: clip.edit.map(TryInto::try_into).transpose()?,
+                });
+            }
         }
         audio_clip_state.extend(snapshot.session.cells.into_iter().filter_map(|cell| {
             if let SessionCellContentSnapshot::Audio(clip) = cell.content {

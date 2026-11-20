@@ -398,6 +398,33 @@ impl Project {
         }
         Ok(())
     }
+    /// Edit each automated retained definition once and refresh all of its
+    /// immutable track bindings through the ordinary registry transaction.
+    pub(crate) fn edit_automated_source_devices(
+        &mut self,
+        mut edit: impl FnMut(&mut Device) -> Result<(), Invalid>,
+    ) -> Result<(), Invalid> {
+        for index in 0..self.native_sources.len() {
+            let source = &self.native_sources[index];
+            if source
+                .devices()
+                .all(|device| device.automation().is_empty())
+            {
+                continue;
+            }
+            self.edit_native_source(source.id(), |definition| {
+                for device in std::iter::once(&mut definition.instrument)
+                    .chain(&mut definition.effects)
+                    .filter(|device| !device.automation().is_empty())
+                {
+                    edit(device)?;
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn edit_source_device(
         &mut self,
         source: SourceId,

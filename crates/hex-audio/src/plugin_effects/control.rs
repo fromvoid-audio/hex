@@ -3,7 +3,8 @@
 use super::*;
 use crate::plugin_worker::{
     NativeParameterHold, NativeWorkerCapture, NativeWorkerCaptureProgress,
-    NativeWorkerControllerProgress, NativeWorkerControllerQuery, NativeWorkerParameterChange,
+    NativeWorkerControllerProgress, NativeWorkerControllerQuery,
+    NativeWorkerGuardedEditorWriteProgress, NativeWorkerParameterChange,
 };
 
 fn arm_editor(
@@ -138,6 +139,23 @@ impl NativeEffect {
     }
     pub(crate) fn parameter_change_pending(&self) -> Result<bool, &'static str> {
         self.worker.parameter_change_pending_on_control()
+    }
+    pub(crate) fn begin_guarded_editor_write(
+        &mut self,
+        expected_editor_admission: u64,
+        points: &[(u32, f64)],
+    ) -> Result<NativeWorkerControllerQuery, &'static str> {
+        for &(id, _) in points {
+            self.callback.configuration.admit_parameter_input(id)?;
+        }
+        self.worker
+            .begin_guarded_editor_write_on_control(expected_editor_admission, points)
+    }
+    pub(crate) fn poll_guarded_editor_write(
+        &mut self,
+        token: &NativeWorkerControllerQuery,
+    ) -> Result<NativeWorkerGuardedEditorWriteProgress, &'static str> {
+        self.worker.poll_guarded_editor_write_on_control(token)
     }
     pub(crate) fn begin_controller_query(
         &mut self,
@@ -310,6 +328,23 @@ impl NativeEffectControl {
     ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
         self.worker
             .drain_stopped_parameter_change_on_control(request)
+    }
+    pub(crate) fn begin_guarded_editor_write(
+        &mut self,
+        expected_editor_admission: u64,
+        points: &[(u32, f64)],
+    ) -> Result<NativeWorkerControllerQuery, &'static str> {
+        for &(id, _) in points {
+            self.configuration.admit_parameter_input(id)?;
+        }
+        self.worker
+            .begin_guarded_editor_write_on_control(expected_editor_admission, points)
+    }
+    pub(crate) fn poll_guarded_editor_write(
+        &mut self,
+        token: &NativeWorkerControllerQuery,
+    ) -> Result<NativeWorkerGuardedEditorWriteProgress, &'static str> {
+        self.worker.poll_guarded_editor_write_on_control(token)
     }
     pub(crate) fn begin_controller_query(
         &mut self,

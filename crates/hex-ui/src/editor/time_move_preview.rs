@@ -3,7 +3,6 @@
 //! rows skip body construction; other rows use cached waveform/note summaries.
 //! Inputs remain prepared display data, never edits.
 use super::tracks::aligned_clip_grid_layer;
-use super::trim::loop_handles;
 use super::viewport::Viewport;
 use crate::theme;
 use gpui::{Div, div, prelude::*, px, rgb};
@@ -89,7 +88,6 @@ pub(super) fn passive_audio_fragment(
     let pixel_width = super::trim::rendered_clip_width(lane_width, width);
     let has_border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
     let stroke = 1.0 / scale.max(1.0);
-    let looping = loop_handles::audio_repeats(clip);
     let color = theme::clip_activity_outline(clip.active(), theme::PaletteRole::ClipOutline);
     let detail_opacity = theme::clip_detail_opacity(clip.active());
     let header_selector = format!("{selector}-name");
@@ -109,7 +107,7 @@ pub(super) fn passive_audio_fragment(
     if !header_only {
         content = content.children(
             aligned_clip_grid_layer(grid, start, stop, stroke, has_border)
-                .map(|grid| loop_handles::body(grid.opacity(detail_opacity), looping)),
+                .map(|grid| grid.opacity(detail_opacity)),
         );
         let body = if let Some(waveform) = waveform {
             super::waveform::waveform_view_cached(
@@ -131,10 +129,7 @@ pub(super) fn passive_audio_fragment(
                 .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                 .child(theme::text("missing media"))
         };
-        content = content.child(loop_handles::body(
-            super::tracks::clip_waveform_body(body),
-            looping,
-        ));
+        content = content.child(super::tracks::clip_waveform_body(body));
     }
     content = content.child(
         super::clip_name::passive_name_header(clip.name(), fill, has_border)
@@ -151,11 +146,6 @@ pub(super) fn passive_audio_fragment(
                 outline: color,
                 hover_outline: color,
                 stroke,
-                bottom_radius: if looping {
-                    loop_handles::BOTTOM_RADIUS
-                } else {
-                    0.0
-                },
                 header_height: super::clip_name::CLIP_NAME_HEIGHT,
                 header_gradient: None,
                 notch: super::clip_boundary::Notch::new(stop == end),
@@ -190,7 +180,6 @@ pub(super) fn passive_midi_fragment(
     fill: u32,
     clip_id: hex_project::ClipId,
     name: &str,
-    looping: bool,
     active: bool,
     notes: impl FnOnce(u64, u64, u64) -> (Vec<(f32, f32, u8)>, super::midi_thumbnail::PitchFit),
     source_interval: (u64, u64),
@@ -231,7 +220,7 @@ pub(super) fn passive_midi_fragment(
     if !header_only {
         content = content.children(
             aligned_clip_grid_layer(grid, visible_start, visible_end, stroke, has_border)
-                .map(|grid| loop_handles::body(grid.opacity(detail_opacity), looping)),
+                .map(|grid| grid.opacity(detail_opacity)),
         );
         // The visible destination maps frame-for-frame onto canonical source
         // frames; shapes are fractions of that window, so they land unchanged.
@@ -251,9 +240,8 @@ pub(super) fn passive_midi_fragment(
             );
             let (notes, _) =
                 super::tracks::midi_note_canvas(move || notes_selector.clone(), shapes, fit);
-            content = content.child(loop_handles::body(
-                super::tracks::clip_waveform_body(notes.opacity(detail_opacity)),
-                looping,
+            content = content.child(super::tracks::clip_waveform_body(
+                notes.opacity(detail_opacity),
             ));
         }
     }
@@ -272,11 +260,6 @@ pub(super) fn passive_midi_fragment(
                 outline: color,
                 hover_outline: color,
                 stroke,
-                bottom_radius: if looping {
-                    loop_handles::BOTTOM_RADIUS
-                } else {
-                    0.0
-                },
                 header_height: super::clip_name::CLIP_NAME_HEIGHT,
                 header_gradient: None,
                 notch: super::clip_boundary::Notch::new(visible_end == timeline_interval.1),
@@ -356,7 +339,6 @@ mod visual_tests {
                             0x856050,
                             self.midi,
                             &self.name,
-                            false,
                             true,
                             move |start, end, _| {
                                 mapped.set(Some((start, end)));

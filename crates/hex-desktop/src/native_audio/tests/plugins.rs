@@ -2272,3 +2272,177 @@ fn confirmed_vst3_insert_keeps_the_prepared_worker_and_output() {
     wait(|| h.plugin_completed.load(Acquire) >= 2);
     assert_eq!(h.render_plugin_block(), [[0.125; 2]; 256]);
 }
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn resident_vst3_insertion_keeps_an_eq_write_accepted_while_native_facts_wait() {
+    held_vst3_preparation_accepts_eq_change(false);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn resident_vst3_insertion_waits_for_the_eq_gesture_and_keeps_its_endpoint() {
+    held_vst3_preparation_accepts_eq_change(true);
+}
+
+fn held_vst3_preparation_accepts_eq_change(through_gesture: bool) {
+    use hex_session::device_gesture::{
+        GestureKey, GestureRequest, GestureTarget, ParameterId, ParameterValue,
+    };
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let (reached, facts) = mpsc::sync_channel(1);
+    let (resume, resumed) = mpsc::sync_channel(1);
+    let mut h = ResidentHarness::with_plugins_paused_at_facts(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        crate::native_audio::plugins::FactsGate::new(reached, resumed),
+        None,
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    h.run(Request::Import(files.wav(48_000, 8192)));
+    let (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::SetLoopRegion {
+        start: 0,
+        end: 8192,
+        enabled: true,
+    }));
+    let (applied, _) = h.applied(applied);
+    let eq = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_engine::DeviceTypeId::from_static("hex.eq"),
+    )
+    .unwrap();
+    let before = h.run(Request::Edit(Command::InsertMainDevice {
+        before: None,
+        state: eq,
+    }));
+    let (applied, _) = h.applied(applied);
+    let device = before.state.project.main_devices()[0].id();
+    h.enable_confirmed_device_inserts();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+
+    let request = request(&before.state, PluginEffectDestination::Main);
+    h.run(Request::InsertPluginEffect(request.clone()));
+    facts.recv_timeout(Duration::from_secs(2)).unwrap();
+    let binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+    let parameter = ParameterId::from_static(202);
+    let value = ParameterValue::Float(0.5);
+    let mut applied = applied;
+    let edited = if through_gesture {
+        let key = GestureKey {
+            generation: request.context.project_generation,
+            token: 1,
+        };
+        let begin = h.run(Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target: GestureTarget::DeviceParameter { device, parameter },
+        }));
+        assert!(begin.gesture_ack.unwrap().accepted);
+        let change = h.run(Request::DeviceGesture(GestureRequest::Change {
+            key,
+            sequence: 1,
+            value,
+        }));
+        assert!(change.gesture_ack.unwrap().accepted);
+        assert_eq!(change.state.project, before.state.project);
+        assert!(change.plugin_effect_complete.is_empty());
+        (applied, _) = h.applied(applied);
+
+        resume.send(()).unwrap();
+        let during = h.run(Request::QueryDeviceAutomationCloseSafety { request_id: 7 });
+        assert_eq!(during.active_device_gesture.unwrap().key, key);
+        assert!(during.plugin_effect_complete.is_empty());
+        assert!(!h.plugin_progress.lock().unwrap().facts_attempt_from_session);
+        let terminal = h.run(Request::DeviceGesture(GestureRequest::Commit {
+            key,
+            sequence: 2,
+            manual_edit: true,
+            value,
+        }));
+        assert!(terminal.gesture_ack.as_ref().unwrap().accepted);
+        assert!(terminal.active_device_gesture.is_none());
+        terminal
+    } else {
+        h.run(Request::SetDeviceParameter {
+            device,
+            parameter,
+            value,
+        })
+    };
+    assert!(edited.plugin_effect_complete.is_empty());
+    assert_eq!(edited.state.revision, before.state.revision + 1);
+    let (_, metadata) = h.applied(applied);
+    assert_eq!(metadata.context.editor_revision, edited.state.revision);
+    for _ in 0..16 {
+        h.render();
+    }
+    let settled = h.render();
+    assert!(
+        settled
+            .into_iter()
+            .flatten()
+            .all(|sample| (sample - 0.125).abs() < 1e-5),
+        "accepted EQ output gain did not settle: first={:?}, last={:?}",
+        settled[0],
+        settled[63],
+    );
+
+    if !through_gesture {
+        resume.send(()).unwrap();
+    }
+    let mut installed = None;
+    wait(|| {
+        h.pump();
+        h.render();
+        if let Ok(event) = h.service.try_event() {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            if let Some(offer) = &event.device_insert_confirmation {
+                assert!(offer.proceed());
+            }
+            if !event.plugin_effect_complete.is_empty() {
+                installed = Some(event);
+            }
+        }
+        installed.is_some()
+    });
+    let installed = installed.unwrap();
+    assert!(installed.plugin_effect_complete[0].accepted);
+    assert!(Arc::ptr_eq(
+        &installed.plugin_effect_complete[0].control,
+        &request.control
+    ));
+    assert_eq!(installed.state.revision, edited.state.revision + 1);
+    assert_eq!(installed.state.project.main_devices().len(), 2);
+    assert_eq!(
+        installed.state.project.device(device),
+        edited.state.project.device(device)
+    );
+    assert_eq!(h.plugin_progress.lock().unwrap().binding, Some(binding));
+    let terminal = installed.device_insert_complete.unwrap();
+    assert_eq!(
+        terminal.outcome,
+        hex_session::service::DeviceInsertOutcome::Installed
+    );
+    let source = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .recording_source()
+        .unwrap();
+    assert_eq!(source.context, terminal.submission.context);
+    assert_eq!(source.audio_revision, terminal.submission.audio_revision);
+}

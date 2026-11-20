@@ -86,8 +86,7 @@ fn decoder_and_computer_chord_paint_matches_right_arrow_after_real_ack(cx: &mut 
         view.controller_input.channel = 2;
         view.controller_input.held_notes = Some(Arc::clone(&input));
         view.controller_input.target = view.controller_target();
-        view.piano_pitch_low = 48;
-        view.piano_pitch_rows = 36;
+        view.piano_pitch = crate::editor::PitchViewport::from_rows(48, 36).unwrap();
         cx.notify();
     });
     visual.run_until_parked();
@@ -123,8 +122,7 @@ fn decoder_and_computer_chord_paint_matches_right_arrow_after_real_ack(cx: &mut 
             view.midi_marker = Some(cursor);
             view.piano_beat_start = i128::from(start);
             view.piano_beat_span = BeatTime::from_raw(span);
-            view.piano_pitch_low = low;
-            view.piano_pitch_rows = rows;
+            view.piano_pitch = crate::editor::PitchViewport::from_rows(low, rows).unwrap();
             cx.notify();
         });
         visual.run_until_parked();

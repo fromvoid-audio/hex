@@ -111,6 +111,50 @@ fn editor_seal_receipt_is_bound_to_its_operation_and_discriminant() {
     assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
 }
 #[test]
+fn editor_frontier_requires_exact_source_clock_operation_and_payload() {
+    let config = config();
+    let request = ControllerRequest::ReadEditorFrontier;
+    for poll in [false, true] {
+        let wire = parameter_page_request(&config, 1, 7, request, poll).unwrap();
+        assert_eq!(wire[82], 16);
+        assert!(
+            wire[72..82]
+                .iter()
+                .chain(&wire[83..])
+                .all(|byte| *byte == 0)
+        );
+    }
+
+    let mut reply = Vec::new();
+    stamp(&mut reply, config.binding);
+    let binding = reply.len();
+    for value in [1_u64, u64::from(config.quantum), 7] {
+        reply.extend(value.to_le_bytes());
+    }
+    reply.push(6);
+    let payload = reply.len();
+    for frontier in [0_u64, 42] {
+        reply.truncate(payload);
+        reply.extend(frontier.to_le_bytes());
+        assert_eq!(
+            parameter_page(&reply, &config, 1, 7, request).unwrap(),
+            ParameterPageProgress::EditorFrontier(frontier)
+        );
+    }
+    for offset in [0, binding, binding + 8, binding + 16, payload - 1] {
+        reply[offset] ^= 1;
+        assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
+        reply[offset] ^= 1;
+    }
+    assert!(parameter_page(&reply, &config, 1, 7, ControllerRequest::EditorVisibility).is_err());
+    assert!(parameter_page(&reply, &config, 1, 7, ParameterPageQuery::default()).is_err());
+    reply.push(0);
+    assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
+    reply.truncate(payload + 7);
+    assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
+}
+
+#[test]
 fn editor_detach_placement_is_bounded_and_reopen_copies_its_exact_coordinates() {
     let config = config();
     let x = -342.25_f64;
@@ -953,6 +997,63 @@ fn stopped_flush_request_and_ack_bind_source_prefix_operation_and_complete_value
     })
     .unwrap();
     assert!(flush_request(&config, 0, 1, &late).is_err());
+}
+
+#[test]
+fn guarded_flush_conflict_is_empty_bound_and_distinct_from_success() {
+    use crate::transport::{ParameterPoint, Parameters};
+    let config = config();
+    let mut points = Parameters::default();
+    assert!(guarded_flush_request(&config, 3, 2, &points, 4).is_err());
+    points
+        .push(ParameterPoint {
+            frame: 0,
+            id: 7,
+            normalized: 0.75,
+        })
+        .unwrap();
+    let mut oversized = points;
+    for id in 8..8 + MAX_EDITOR_FLUSH_PARAMETERS as u32 {
+        oversized
+            .push(ParameterPoint {
+                frame: 0,
+                id,
+                normalized: 0.5,
+            })
+            .unwrap();
+    }
+    assert!(guarded_flush_request(&config, 3, 2, &oversized, 4).is_err());
+    let ordinary = flush_request(&config, 3, 2, &points).unwrap();
+    let guarded = guarded_flush_request(&config, 3, 2, &points, 4).unwrap();
+    assert_eq!(&guarded[4..6], &3_u16.to_le_bytes());
+    assert_eq!(&guarded[6..72], &ordinary[6..72]);
+    assert_eq!(&guarded[72..80], &4_u64.to_le_bytes());
+    assert_eq!(&guarded[80..], &ordinary[72..]);
+
+    let mut reply = Vec::new();
+    stamp(&mut reply, config.binding);
+    for word in [3_u64, 24, 2] {
+        reply.extend(word.to_le_bytes());
+    }
+    reply.extend([2, 0, 0]);
+    let conflict = guarded_flushed_parameters(&reply, &config, 3, 2, &points).unwrap();
+    assert_eq!(conflict.disposition, FlushDisposition::EditorConflict);
+    assert!(conflict.as_slice().is_empty());
+    assert!(flushed_parameters(&reply, &config, 3, 2, &points).is_err());
+    assert!(guarded_flushed_parameters(&reply, &config, 3, 3, &points).is_err());
+    assert!(guarded_flushed_parameters(&reply, &config, 2, 2, &points).is_err());
+    let mut other_source = config.clone();
+    other_source.binding.instance += 1;
+    assert!(guarded_flushed_parameters(&reply, &other_source, 3, 2, &points).is_err());
+    let extent = reply.len() - 2;
+    reply[extent] = 1;
+    reply.extend(7_u32.to_le_bytes());
+    reply.extend(0.75_f64.to_le_bytes());
+    assert!(guarded_flushed_parameters(&reply, &config, 3, 2, &points).is_err());
+    reply[extent - 1] = 1;
+    let success = guarded_flushed_parameters(&reply, &config, 3, 2, &points).unwrap();
+    assert_eq!(success.disposition, FlushDisposition::Applied);
+    assert_eq!(success.as_slice()[0].normalized, 0.75);
 }
 
 #[test]

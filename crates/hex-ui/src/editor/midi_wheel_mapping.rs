@@ -33,7 +33,9 @@ pub(super) fn resolve(
         return Some(if modifiers.platform {
             WheelNav::ZoomTime(zoom)
         } else {
-            WheelNav::ZoomPitch(zoom)
+            // The pitch viewport takes positive displacement for larger rows.
+            // Retain the existing physical direction of Option-wheel.
+            WheelNav::ZoomPitch(-zoom)
         });
     }
     let scroll = delta.pixel_delta(px(SCROLL_LINE_PX));
@@ -137,7 +139,7 @@ mod tests {
         );
         assert_eq!(
             resolve(mods(false, true, false), delta, physical),
-            Some(WheelNav::ZoomPitch(20.0))
+            Some(WheelNav::ZoomPitch(-20.0))
         );
         // A horizontal-only swipe does not zoom.
         assert_eq!(

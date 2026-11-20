@@ -204,8 +204,7 @@ pub(super) struct GroupContext {
     pub(super) selection_epoch: u64,
     pub(super) beat_start: i128,
     pub(super) beat_span: u64,
-    pub(super) pitch_low: u8,
-    pub(super) pitch_rows: u8,
+    pub(super) pitch: super::PitchViewport,
     pub(super) grid: MidiGrid,
     pub(super) bounds: [f32; 4],
     pub(super) pending: bool,
@@ -223,8 +222,7 @@ pub(super) struct GroupStart {
     pub(super) bounds: [f32; 4],
     pub(super) beat_start: i128,
     pub(super) beat_span: u64,
-    pub(super) pitch_low: u8,
-    pub(super) pitch_rows: u8,
+    pub(super) pitch: super::PitchViewport,
     pub(super) clip_length: u64,
     pub(super) grid: MidiGrid,
 }
@@ -243,8 +241,7 @@ pub(super) struct GroupGesture {
     bounds: [f32; 4],
     beat_start: i128,
     beat_span: u64,
-    pitch_low: u8,
-    pitch_rows: u8,
+    pitch: super::PitchViewport,
     clip_length: u64,
     grid: MidiGrid,
     delta: i128,
@@ -287,12 +284,7 @@ impl GroupGesture {
             start.beat_start,
             start.beat_span,
         )?;
-        let pointer_pitch = midi_drag::pitch_at_point(
-            start.pointer[1],
-            start.bounds,
-            start.pitch_low,
-            start.pitch_rows,
-        )?;
+        let pointer_pitch = midi_drag::pitch_at_point(start.pointer[1], start.bounds, start.pitch)?;
         Some(Self {
             copy: start.copy,
             kind: if start.copy {
@@ -310,8 +302,7 @@ impl GroupGesture {
             bounds: start.bounds,
             beat_start: start.beat_start,
             beat_span: start.beat_span,
-            pitch_low: start.pitch_low,
-            pitch_rows: start.pitch_rows,
+            pitch: start.pitch,
             clip_length: start.clip_length,
             grid: start.grid,
             delta: 0,
@@ -327,8 +318,7 @@ impl GroupGesture {
             && self.selection_epoch == context.selection_epoch
             && self.beat_start == context.beat_start
             && self.beat_span == context.beat_span
-            && self.pitch_low == context.pitch_low
-            && self.pitch_rows == context.pitch_rows
+            && self.pitch == context.pitch
             && self.grid == context.grid
             && self.bounds == context.bounds
             && !context.pending
@@ -340,8 +330,7 @@ impl GroupGesture {
         else {
             return false;
         };
-        let Some(pointer_pitch) =
-            midi_drag::pitch_at_point(point[1], self.bounds, self.pitch_low, self.pitch_rows)
+        let Some(pointer_pitch) = midi_drag::pitch_at_point(point[1], self.bounds, self.pitch)
         else {
             return false;
         };
@@ -456,8 +445,7 @@ impl GroupGesture {
             bounds: note.bounds,
             beat_start: note.beat_start,
             beat_span: note.beat_span,
-            pitch_low: note.pitch_low,
-            pitch_rows: note.pitch_rows,
+            pitch: note.pitch,
             clip_length: note.clip_length,
             grid: note.grid,
             delta: i128::from(note.preview.start) - i128::from(note.original.start),
@@ -503,8 +491,7 @@ impl GroupGesture {
             selection_epoch: self.selection_epoch,
             beat_start: self.beat_start,
             beat_span: self.beat_span,
-            pitch_low: self.pitch_low,
-            pitch_rows: self.pitch_rows,
+            pitch: self.pitch,
             grid: self.grid,
             bounds: self.bounds,
             pending: false,
@@ -804,8 +791,7 @@ mod tests {
             bounds: BOUNDS,
             beat_start: 0,
             beat_span: CLIP,
-            pitch_low,
-            pitch_rows: 24,
+            pitch: crate::editor::PitchViewport::from_rows(pitch_low, 24).unwrap(),
             clip_length: CLIP,
             grid,
         })
@@ -942,8 +928,7 @@ mod tests {
             selection_epoch: 5,
             beat_start: 0,
             beat_span: CLIP,
-            pitch_low: 104,
-            pitch_rows: 24,
+            pitch: crate::editor::PitchViewport::from_rows(104, 24).unwrap(),
             grid: MidiGrid::Off,
             bounds: BOUNDS,
             pending: false,
