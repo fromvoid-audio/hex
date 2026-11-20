@@ -329,10 +329,6 @@ impl Plugins {
             return Err("vst3 replay successor owner differs".into());
         }
         let authored = native.authored.is_some();
-        let modulated = native
-            .authored
-            .as_ref()
-            .and_then(AuthoredSelection::dense_parameter);
         let identity = NativeProcessorIdentity::new(owner, batch.device)
             .map_err(|_| "vst3 replay target identity differs")?;
         let playing = control
@@ -356,9 +352,6 @@ impl Plugins {
             } => (verify_existing, Some((publication, cohorts)), manual_base),
         };
         if isolate {
-            if playing && modulated.is_some() {
-                return Err("vst3 replay requires stopped playback for a modulated source".into());
-            }
             self.hold_editor_for_replay(control, binding, cancellation)?;
             let host = self
                 .host

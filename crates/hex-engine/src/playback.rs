@@ -740,7 +740,8 @@ impl Playback {
                 && node.foreign_processor().is_some_and(|prepared| {
                     prepared.binding() == Some(states.binding)
                         && (!prepared.is_instrument_profile() || !node.bypassed)
-                        && node.modulation.is_none()
+                        && (node.modulation.is_none()
+                            || (isolated && !prepared.is_instrument_profile()))
                         && (node.automation.is_empty() || isolated)
                 })
                 && node.configuration.as_deref().is_some_and(|state| {
