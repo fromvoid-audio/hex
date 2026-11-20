@@ -1171,6 +1171,14 @@ fn running_main_vst3_replacement_keeps_original_until_the_exact_slot_install() {
     assert_eq!(cancelled.state.can_redo, original.state.can_redo);
     assert_eq!(source(&h), old_source);
     assert_eq!(binding(&h), old_binding);
+    // Let the cancelled constructor return its native resources before
+    // exercising approval independently of that teardown.
+    wait(|| {
+        h.pump();
+        instruments::render_completed_block(&h);
+        h.plugin_records.load(Acquire) == 1
+    });
+    assert_eq!(source(&h), old_source);
 
     h.run(Request::InsertPluginEffect(replacement()));
     let mut terminal = None;
