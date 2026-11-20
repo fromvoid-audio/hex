@@ -1,7 +1,7 @@
-//! Fresh catalog Main history uses the exact existing Verified insert receipt.
+//! Catalog Main history uses the existing exact Verified install receipts.
 use super::verified_insert::{await_verified_retirement, render_hosted_quantum};
 use super::*;
-use hex_session::service::DeviceInsertOutcome;
+use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
 
 fn status(h: &Harness) -> &hex_audio::prepared::Status {
     h.audio.as_ref().unwrap().status().unwrap()
@@ -9,7 +9,7 @@ fn status(h: &Harness) -> &hex_audio::prepared::Status {
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
-fn running_verified_main_history_restores_a_fresh_worker_only_after_exact_consent() {
+fn running_verified_main_history_restores_and_retires_the_exact_worker() {
     let _native = native_fixture();
     let files = Files::new();
     let directory = files.0.canonicalize().unwrap();
@@ -274,21 +274,71 @@ fn running_verified_main_history_restores_a_fresh_worker_only_after_exact_consen
     assert_eq!(device, vst.value());
     assert!(accepted);
     assert_ne!(restored, original, "history resurrected a deleted worker");
-    // Removing it again is outside the running insert-only history proof.
-    // Preserve the explicitly settled fallback rather than broadening history.
-    submit(&h, Request::Redo);
-    let unsupported = loop {
-        let event = next_event(&h);
-        if event.request_complete {
-            break event;
+    let authored_before_redo = &installed.state;
+    for proceed in [false, true] {
+        phase.set("redo preparation");
+        submit(&h, Request::Redo);
+        let offer = loop {
+            let event = next_event(&h);
+            assert!(
+                event.error.is_none(),
+                "running Main removal history refused: {:?}",
+                event.error
+            );
+            assert!(!event.request_complete);
+            assert_eq!(event.state.project, authored_before_redo.project);
+            assert_eq!(event.state.revision, authored_before_redo.revision);
+            if let Some(offer) = event.device_insert_confirmation {
+                break offer;
+            }
+        };
+        assert_eq!(offer.operation(), GraphEditOperation::RemoveDevice);
+        assert_eq!(offer.submission().output_identity, actual.output_identity);
+        assert_eq!(status(&h).applied_audio_source(), Some(actual));
+        wait(|| {
+            let before = status(&h).performance_frame.load(Acquire);
+            let sample = render_hosted_quantum(&h);
+            assert_eq!(status(&h).applied_audio_source(), Some(actual));
+            let trial = progress.lock().unwrap().newest_source.unwrap();
+            assert_eq!(trial, (vst.value(), restored, true));
+            status(&h).performance_frame.load(Acquire) == before + 256
+                && sample.is_finite()
+                && sample > 0.0
+        });
+        phase.set("redo completion");
+        assert!(if proceed {
+            offer.proceed()
+        } else {
+            offer.cancel()
+        });
+        let result = loop {
+            let event = next_event(&h);
+            assert!(event.error.is_none(), "{:?}", event.error);
+            if event.request_complete {
+                break event;
+            }
+            assert_eq!(event.state.project, authored_before_redo.project);
+        };
+        let receipt = result.device_insert_complete.unwrap();
+        if !proceed {
+            assert_eq!(receipt.outcome, DeviceInsertOutcome::Cancelled);
+            assert_eq!(result.state.project, authored_before_redo.project);
+            assert_eq!(result.state.revision, authored_before_redo.revision);
+            assert_eq!(result.state.can_undo, authored_before_redo.can_undo);
+            assert_eq!(result.state.can_redo, authored_before_redo.can_redo);
+            assert_eq!(status(&h).applied_audio_source(), Some(actual));
+            continue;
         }
-    };
-    assert_eq!(
-        unsupported.error.as_deref(),
-        Some("stop playback to undo or redo this vst3 edit")
-    );
-    assert_eq!(unsupported.state.project, installed.state.project);
-    assert_eq!(unsupported.state.revision, installed.state.revision);
-    assert_eq!(status(&h).applied_audio_source(), Some(actual));
-    assert!(status(&h).playing.load(Acquire));
+        assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+        assert!(result.created.is_none());
+        assert_eq!(result.state.project, removed.state.project);
+        assert_eq!(result.state.revision, authored_before_redo.revision + 1);
+        let installed = status(&h).applied_audio_source().unwrap();
+        assert_ne!(installed, actual);
+        assert_eq!(installed.output_identity, actual.output_identity);
+        assert_eq!(installed.context, receipt.submission.context);
+        assert_eq!(installed.audio_revision, receipt.submission.audio_revision);
+        await_verified_retirement(&h, &progress);
+        assert!(status(&h).playing.load(Acquire));
+    }
 }
