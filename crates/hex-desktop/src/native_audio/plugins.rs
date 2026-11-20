@@ -182,6 +182,8 @@ pub(super) struct PreparationObservation {
     pub(super) observed_latency_receipt: bool,
     pub(super) editor_receipts: [Option<hex_audio::plugin_worker::ParameterEdit>; 16],
     pub(super) editor_receipt_count: usize,
+    pub(super) hold_pending_read: Option<Binding>,
+    pub(super) held_pending_read: Option<Binding>,
 }
 #[cfg(all(test, feature = "allocation-probe"))]
 impl std::fmt::Debug for PreparationObservation {
@@ -469,6 +471,10 @@ impl Plugins {
     /// waiting for a worker poll (#4574). Accepted sources stay warm, but
     /// queued editor receipts need the busy cadence even with transport stopped.
     pub fn idle(&self) -> bool {
+        self.quiescent(false)
+    }
+
+    fn quiescent(&self, handoff_admitted_reads: bool) -> bool {
         self.pending.is_none()
             && self.editor.is_none()
             && self.queued_editor_toggle.is_none()
@@ -486,7 +492,8 @@ impl Plugins {
                 }
                 source.retiring
                     || source.edit_backlog
-                    || source.edit_recovery.is_some()
+                    || (source.edit_recovery.is_some()
+                        && !(handoff_admitted_reads && source.editor_retirement.lease.is_some()))
                     || source.pending_touch.is_some()
                     || source.editor_open
                     || source.editor_open_on_insert
@@ -499,7 +506,9 @@ impl Plugins {
         outgoing: u64,
         incoming: ResidentEffectPreparation<'_>,
     ) -> bool {
-        if !self.idle()
+        // The exact successor install retires the outgoing sources. Their
+        // reserved leases take over any admitted read on the original worker.
+        if !self.quiescent(true)
             || !self
                 .sources
                 .iter()
@@ -1085,6 +1094,8 @@ impl Plugins {
                         .is_some_and(|source| source.observed_latency_receipt),
                     editor_receipts,
                     editor_receipt_count,
+                    hold_pending_read: observed.hold_pending_read,
+                    held_pending_read: observed.held_pending_read,
                 };
             }
             if let Some(queued) = &self.queued {

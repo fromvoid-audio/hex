@@ -220,6 +220,16 @@ impl Plugins {
     ) -> ReceiptProgress {
         let source = &mut self.sources[index];
         let pending_read = source.edit_recovery;
+        #[cfg(all(test, feature = "allocation-probe"))]
+        if pending_read.is_some()
+            && let Some(progress) = &self.progress
+            && let Ok(mut progress) = progress.try_lock()
+            && progress.hold_pending_read == Some(source.binding)
+        {
+            // Keep an admitted read for the actual retirement reader to take.
+            progress.held_pending_read = Some(source.binding);
+            return ReceiptProgress::Waiting;
+        }
         let requested_recovery = pending_read.map(|read| read.recovery).unwrap_or(recovery);
         let receipt_source = pending_read.map_or(active, |read| read.source);
         source.observes_latency |= requested_recovery;
