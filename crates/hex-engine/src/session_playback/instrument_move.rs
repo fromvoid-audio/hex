@@ -1,5 +1,5 @@
 //! Classify one unchanged native Sine move between direct Resident MIDI routes.
-use super::SessionPlayback;
+use super::{SessionPlayback, device_move::same_clip};
 use crate::Track;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -31,6 +31,17 @@ impl SessionPlayback {
         let mut source = None;
         let mut destination = None;
         for (index, (before, after)) in old.tracks().iter().zip(new.tracks()).enumerate() {
+            // Only the two instrument routes fade. An independently prepared
+            // candidate must not use that receipt to replace unrelated PCM.
+            if before.clips.len() != after.clips.len()
+                || !before
+                    .clips
+                    .iter()
+                    .zip(&after.clips)
+                    .all(|(a, b)| same_clip(a, b))
+            {
+                return None;
+            }
             if before.instrument_config_matches(after) && before.source_id == after.source_id {
                 continue;
             }
@@ -136,6 +147,21 @@ mod tests {
         };
         let source = track("source");
         let destination = track("destination");
+        let Created::Imported {
+            track: unrelated,
+            asset,
+            clip,
+        } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "dry".into(),
+                path: "memory/dry.wav".into(),
+                sample_rate: 48_000,
+                frames: 1_024,
+            })
+            .unwrap()
+        else {
+            panic!("audio track");
+        };
         editor
             .execute(Command::InsertInstrument {
                 track: source,
@@ -150,11 +176,12 @@ mod tests {
             .unwrap()
             .id();
         let table = Arc::new(crate::SineTable::new());
+        let media = BTreeMap::from([(
+            asset,
+            crate::Audio::new(48_000, vec![[0.125; 2]; 1_024]).unwrap(),
+        )]);
         let prepare = |project: &Project| {
-            Arc::new(
-                PreparedRevision::prepare(project, &BTreeMap::new(), Arc::clone(&table), None)
-                    .unwrap(),
-            )
+            Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
         };
         let mut before = SessionPlayback::new(prepare(editor.project())).unwrap();
         before.apply(SessionPlaybackCommand::Play).unwrap();
@@ -172,6 +199,28 @@ mod tests {
             .direct_analytic_instrument_move_from(&before)
             .expect("paired classification");
         assert_eq!((movement.source, movement.destination), (0, 1));
+        let mut independent_mix = Editor::new(editor.project().clone(), 8).unwrap();
+        independent_mix
+            .execute(Command::Gain {
+                track: unrelated,
+                gain: 0.5,
+            })
+            .unwrap();
+        let compatible = SessionPlayback::new(prepare(independent_mix.project())).unwrap();
+        assert!(
+            compatible
+                .direct_analytic_instrument_move_from(&before)
+                .is_some()
+        );
+
+        let mut compound = Editor::new(editor.project().clone(), 8).unwrap();
+        compound.execute(Command::RemoveClip(clip)).unwrap();
+        let changed = SessionPlayback::new(prepare(compound.project())).unwrap();
+        assert!(
+            changed
+                .direct_analytic_instrument_move_from(&before)
+                .is_none()
+        );
         let mut grouped = Editor::new(editor.project().clone(), 8).unwrap();
         grouped
             .execute(Command::GroupTracks {
