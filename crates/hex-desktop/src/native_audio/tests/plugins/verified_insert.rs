@@ -10,14 +10,17 @@ use hex_session::device_gesture::{GestureKey, GestureRequest, ParameterValue};
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn verified_running_main_vst3_replacement_installs_at_its_exact_receipt() {
     use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
+    use std::sync::atomic::AtomicUsize;
 
     let _native = native_fixture();
     let progress = Arc::new(Mutex::new(
         crate::native_audio::plugins::PreparationObservation::default(),
     ));
+    let records = Arc::new(AtomicUsize::new(0));
     let mut h = super::super::verified_gain::native_harness_with(|sink| {
         sink.plugins = crate::native_audio::plugins::Plugins::with_fixture(host(), None);
         sink.plugins.progress = Some(Arc::clone(&progress));
+        sink.plugins.records = Some(Arc::clone(&records));
     });
     let files = Files::new();
     h.next();
@@ -80,55 +83,98 @@ fn verified_running_main_vst3_replacement_installs_at_its_exact_receipt() {
     }
     assert!(status.playing.load(Acquire));
     assert_eq!(status.applied_audio_source(), Some(predecessor));
-    let replacement = request(
-        &original.state,
-        PluginEffectDestination::ReplaceMainEffect { replacing: old },
-    );
-    let operation = Arc::clone(&replacement.control);
-    submit(&h, replacement);
-    let mut approved = false;
-    let installed = loop {
+    let replacement = || {
+        request(
+            &original.state,
+            PluginEffectDestination::ReplaceMainEffect { replacing: old },
+        )
+    };
+    let approved = std::cell::Cell::new(None);
+    let pump = || {
+        let frame = status.performance_frame.load(Acquire);
+        let pcm = render_hosted_quantum(&h);
+        if approved.get().is_none()
+            && status.applied_audio_source() == Some(predecessor)
+            && status.performance_frame.load(Acquire) == frame + 256
+        {
+            assert_eq!(binding().unwrap().1, old_binding);
+            assert_eq!(pcm, 0.125 + (frame / 256 - 2) as f32 * 0.03125);
+        }
+        wait(|| {
+            h.backend
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .native_workers_idle_on_control()
+                == Some(true)
+        });
+    };
+    let next = || {
         let mut next = None;
         wait(|| {
             if let Ok(event) = h.service.as_ref().unwrap().try_event() {
                 next = Some(event);
                 return true;
             }
-            let frame = status.performance_frame.load(Acquire);
-            let pcm = render_hosted_quantum(&h);
-            if !approved && status.performance_frame.load(Acquire) == frame + 256 {
-                assert_eq!(status.applied_audio_source(), Some(predecessor));
-                assert_eq!(binding().unwrap().1, old_binding);
-                assert_eq!(pcm, 0.125 + (frame / 256 - 2) as f32 * 0.03125);
-            }
-            wait(|| {
-                h.backend
-                    .lock()
-                    .unwrap()
-                    .as_mut()
-                    .unwrap()
-                    .native_workers_idle_on_control()
-                    == Some(true)
-            });
+            pump();
             false
         });
-        let event = next.unwrap();
+        next.unwrap()
+    };
+    let assert_predecessor = |event: &Event| {
+        assert_eq!(event.state.project, original.state.project);
+        assert_eq!(event.state.revision, original.state.revision);
+        assert_eq!(event.state.can_undo, original.state.can_undo);
+        assert_eq!(event.state.can_redo, original.state.can_redo);
+        assert_eq!(status.applied_audio_source(), Some(predecessor));
+        assert_eq!(binding().unwrap().1, old_binding);
+        assert!(status.playing.load(Acquire));
+    };
+    let cancelled = replacement();
+    let cancellation = Arc::clone(&cancelled.control);
+    submit(&h, cancelled);
+    wait(|| {
+        pump();
+        assert_eq!(status.applied_audio_source(), Some(predecessor));
+        progress
+            .lock()
+            .unwrap()
+            .newest_source
+            .is_some_and(|(id, pending, accepted)| {
+                id == original.state.project.next_identity() && pending != old_binding && !accepted
+            })
+    });
+    assert!(cancellation.cancel());
+    loop {
+        let event = next();
+        assert_predecessor(&event);
+        if let Some(terminal) = event.plugin_effect_complete.first() {
+            assert!(Arc::ptr_eq(&terminal.control, &cancellation));
+            assert!(!terminal.accepted);
+            break;
+        }
+    }
+    wait(|| {
+        pump();
+        records.load(Acquire) == 1
+    });
+
+    let candidate = replacement();
+    let operation = Arc::clone(&candidate.control);
+    submit(&h, candidate);
+    let installed = loop {
+        let event = next();
         if let Some(offer) = &event.device_insert_confirmation {
             assert_eq!(offer.operation(), GraphEditOperation::ReplaceDevice);
-            assert_eq!(status.applied_audio_source(), Some(predecessor));
+            assert_predecessor(&event);
+            assert!(approved.replace(Some(offer.submission())).is_none());
             assert!(offer.proceed());
-            approved = true;
         }
         if let Some(terminal) = event.plugin_effect_complete.first() {
             assert!(Arc::ptr_eq(&terminal.control, &operation));
             if !terminal.accepted {
-                assert_eq!(event.state.project, original.state.project);
-                assert_eq!(event.state.revision, original.state.revision);
-                assert_eq!(event.state.can_undo, original.state.can_undo);
-                assert_eq!(event.state.can_redo, original.state.can_redo);
-                assert_eq!(status.applied_audio_source(), Some(predecessor));
-                assert_eq!(binding().unwrap().1, old_binding);
-                assert!(status.playing.load(Acquire));
+                assert_predecessor(&event);
             }
             assert!(
                 terminal.accepted,
@@ -149,12 +195,27 @@ fn verified_running_main_vst3_replacement_installs_at_its_exact_receipt() {
         receipt.submission.output_identity,
         predecessor.output_identity
     );
+    if let Some(consented) = approved.get() {
+        assert_eq!(receipt.submission.context, consented.context);
+        assert_eq!(
+            receipt.submission.output_identity,
+            consented.output_identity
+        );
+        assert_ne!(receipt.submission.audio_revision, consented.audio_revision);
+    }
     assert_eq!(installed.state.revision, original.state.revision + 1);
     let [fresh] = installed.state.project.main_devices() else {
         panic!("fresh effect in the original Main slot");
     };
     assert_eq!(fresh.id().value(), original.state.project.next_identity());
     assert!(installed.state.project.device(old).is_none());
+    wait(|| {
+        pump();
+        records.load(Acquire) == 1
+            && binding().is_some_and(|(device, binding, _)| {
+                device == fresh.id().value() && binding != old_binding
+            })
+    });
 }
 
 #[test]

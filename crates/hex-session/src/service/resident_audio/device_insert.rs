@@ -831,6 +831,10 @@ impl Session {
             Operation::Tempo
         } else if clipboard {
             Operation::Device(GraphEditOperation::InsertDevice)
+        } else if proposal_control.is_some()
+            && matches!(&command, Command::ReplaceMainDevice { .. })
+        {
+            Operation::Device(GraphEditOperation::ReplaceDevice)
         } else {
             Operation::Device(
                 catalog_graph_edit_operation(&command, proposal_control.is_some())
