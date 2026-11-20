@@ -594,6 +594,12 @@ pub enum Command {
         before: Option<DeviceId>,
         state: hex_lattice_contract::NativeDeviceState,
     },
+    /// Replace one exact top-level Return effect with a fresh authored identity.
+    ReplaceReturnDevice {
+        return_track: ReturnId,
+        replacing: DeviceId,
+        state: hex_lattice_contract::NativeDeviceState,
+    },
     MoveReturnDevice {
         device: DeviceId,
         before: Option<DeviceId>,
@@ -2325,6 +2331,7 @@ impl Project {
             | Command::ReturnMute { .. }
             | Command::SetReturnSend { .. }
             | Command::InsertReturnDevice { .. }
+            | Command::ReplaceReturnDevice { .. }
             | Command::MoveReturnDevice { .. }) => crate::returns::apply(self, return_command),
             Command::DeleteTimeRange { range } => crate::time_range::clear(self, &range),
             Command::PasteTimeRange {
