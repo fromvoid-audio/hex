@@ -1,6 +1,10 @@
 //! Keep a validated graph edit private until the callback installs its exact graph.
 use super::*;
 
+fn device_edit_preparation_deadline() -> Instant {
+    Instant::now() + Duration::from_secs(10)
+}
+
 /// The user operation associated with an audio-confirmed graph edit.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GraphEditOperation {
@@ -163,7 +167,7 @@ impl VerifiedGraphEditAttempt {
             confirmation,
             tempo_cut,
             proposal_control,
-            prepare_until: Instant::now() + std::time::Duration::from_secs(10),
+            prepare_until: device_edit_preparation_deadline(),
             state: std::sync::Mutex::new(VerifiedState::Preparing),
         }))
     }
@@ -389,6 +393,7 @@ impl Pending {
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
     ) -> Result<(), SessionError> {
+        let preparation_deadline = device_edit_preparation_deadline();
         let refused = self
             .submission()
             .ok_or(SessionError::Invalid("device insert was not submitted"))?;
@@ -427,6 +432,7 @@ impl Pending {
                 predecessor: resident.predecessor,
                 hosted: self.plugin.is_some(),
                 confirmation: Some(refused),
+                preparation_deadline,
             },
         )?;
         resident.receipt = Receipt(insert_receipt(&resident.snapshot, sink)?);
@@ -810,6 +816,7 @@ impl Session {
         proposal_control: Option<&PluginEffectControl>,
         document_intent: u64,
     ) -> Result<Option<Pending>, SessionError> {
+        let preparation_deadline = device_edit_preparation_deadline();
         let staged = (|| {
             crate::validate_command_media(&command)?;
             let operation = if plugin.is_some() {
@@ -882,6 +889,7 @@ impl Session {
                     predecessor: installed,
                     hosted: plugin.is_some(),
                     confirmation: None,
+                    preparation_deadline,
                 },
             )?;
             let receipt = insert_receipt(&snapshot, sink)?;

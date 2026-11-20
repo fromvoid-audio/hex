@@ -974,6 +974,7 @@ fn verify_silent_track_latency_edit(
             .publish_confirmed_device_insert_with_receipt_on_control(
                 Playback::try_from_prepared_with_session(successor)?,
                 consent,
+                std::time::Instant::now() + std::time::Duration::from_secs(10),
                 |value| receipt = Some(value.clone()),
                 |_| Ok::<_, ()>(()),
             )
