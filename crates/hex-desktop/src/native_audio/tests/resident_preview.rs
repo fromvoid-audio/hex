@@ -5088,17 +5088,46 @@ fn install_running_device_move_for_history(
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
 fn undo_and_redo_a_held_sine_move_waits_for_the_callback_receipt() {
+    assert_held_instrument_move_history(false);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn undo_and_redo_a_held_vector_move_waits_for_the_callback_receipt() {
+    assert_held_instrument_move_history(true);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn assert_held_instrument_move_history(filtered_vector: bool) {
     use hex_project::{BeatTime, Command, Created, DeviceSelectionIds, TrackDeviceSlot};
+    use hex_session::device_gesture::{ParameterId, ParameterValue};
 
     let _native = native_fixture();
     let mut h = ResidentHarness::with_frame_limit(262_144);
     assert!(h.next().error.is_none());
     let (mut applied, _) = h.applied(0);
+    let state = if filtered_vector {
+        let class = hex_engine::NativeDeviceClass::Instrument;
+        let state = hex_engine::default_native_device_state_for_class(
+            class,
+            hex_engine::DeviceTypeId::from_static("hex.instrument.operator"),
+        )
+        .unwrap();
+        hex_engine::patch_native_device_parameter_for_class(
+            class,
+            &state,
+            ParameterId::from_static(20_001),
+            ParameterValue::Bool(true),
+        )
+        .unwrap()
+    } else {
+        hex_project::default_instrument_state().unwrap()
+    };
     let added = h.run(Request::Edit(Command::InsertTrackWithDevice {
         name: "source".into(),
         before_track: None,
         slot: TrackDeviceSlot::Instrument,
-        state: hex_project::default_instrument_state().unwrap(),
+        state,
     }));
     let Some(Created::Track(source)) = added.created else {
         panic!("source track");
