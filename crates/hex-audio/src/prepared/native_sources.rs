@@ -1496,8 +1496,8 @@ impl PublicationControl {
             .with_native_effect_definition(bindings, prepare)
     }
     /// Borrow selected actual Root source definitions while preparing inside
-    /// this same Root's reserved cell. One Work guard covers both sides; no
-    /// nested acquisition, source extraction or independent lifecycle exists.
+    /// this same Root's reserved cell, alongside the built-in effect registry.
+    /// One Work guard covers both the source borrow and candidate preparation.
     pub fn prepare_audio_candidate_with_native_sources_on_control(
         &mut self,
         token: crate::AudioCandidatePreparationToken,

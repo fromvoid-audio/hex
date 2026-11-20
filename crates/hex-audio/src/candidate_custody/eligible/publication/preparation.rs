@@ -63,13 +63,14 @@ impl Custody {
             .definition(&work.sources, bindings)
             .map_err(|_| "native effect source selection refused")?;
         drop(bank);
-        let definitions: [&dyn hex_lattice::NativeDeviceDefinition; 1] = [&definition];
-        let registry = hex_lattice::NativeDeviceRegistry::new(&definitions)
-            .map_err(|_| "native effect registry refused")?;
-        let effects = hex_engine::AudioCandidateEffects::new(&registry);
-        self.with_runtime_preparation_locked(&mut work.publication, token, |cell| {
-            prepare(cell, &effects)
+        hex_engine::AudioCandidateEffects::with_host_definitions(&[&definition], |effects| {
+            Ok(
+                self.with_runtime_preparation_locked(&mut work.publication, token, |cell| {
+                    prepare(cell, effects)
+                }),
+            )
         })
+        .map_err(|_| "native effect registry refused")?
     }
 }
 
