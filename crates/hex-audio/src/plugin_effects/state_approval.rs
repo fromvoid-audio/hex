@@ -49,6 +49,20 @@ fn approve_processing(
 }
 
 impl NativeEffect {
+    pub(crate) fn approve_guarded_capture_on_control(
+        &self,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterGuardedWrite,
+    ) -> Result<NativeDeviceState, &'static str> {
+        if self.observe_guarded_capture_input(fact).is_none() {
+            return Err("native guarded capture is not current");
+        }
+        approve(
+            &self.state_authority,
+            &self.callback.configuration,
+            fact.state(),
+        )
+    }
+
     pub(crate) fn approve_sequenced_capture_on_control(
         &self,
         fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
@@ -77,6 +91,16 @@ impl NativeEffect {
 }
 
 impl NativeEffectControl {
+    pub(crate) fn approve_guarded_capture_on_control(
+        &self,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterGuardedWrite,
+    ) -> Result<NativeDeviceState, &'static str> {
+        if self.observe_guarded_capture_input(fact).is_none() {
+            return Err("native guarded capture is not current");
+        }
+        approve(&self.state_authority, &self.configuration, fact.state())
+    }
+
     pub(crate) fn approve_sequenced_capture_on_control(
         &self,
         fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,

@@ -814,7 +814,10 @@ fn actual_ordinary_track_return_main_controller_queries_preserve_installed_pcm_a
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn guarded_editor_write_on_installed_source_preserves_conflicts_and_captures_applied_value() {
-    use crate::plugin_worker::NativeWorkerGuardedEditorWriteProgress as Progress;
+    use crate::plugin_worker::{
+        NativeWorkerGuardedCaptureProgress as Capture,
+        NativeWorkerGuardedEditorWriteProgress as Progress,
+    };
 
     if std::env::var_os("HEX_ORDINARY_GUARDED_WRITE_DRIVER").is_none() {
         let name = std::thread::current().name().unwrap().to_owned();
@@ -869,6 +872,7 @@ fn guarded_editor_write_on_installed_source_preserves_conflicts_and_captures_app
             .is_err()
     );
 
+    let mut applied = None;
     for (expected, terminal) in [(1, Progress::Conflict), (0, Progress::Applied)] {
         let until = Instant::now() + Duration::from_secs(2);
         let token = loop {
@@ -932,24 +936,57 @@ fn guarded_editor_write_on_installed_source_preserves_conflicts_and_captures_app
                 .poll_native_source_guarded_editor_write_on_control(f.binding, &token)
                 .is_err()
         );
-        let capture = begin(&mut f);
-        let state = captured(&mut f, &capture);
+        let capture = loop {
+            match f
+                .control
+                .begin_native_capture_after_guarded_write_on_control(f.binding, &token)
+            {
+                Err("native preparation is busy" | "native capture mailbox is busy") => {}
+                result => break result,
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        };
         if terminal == Progress::Conflict {
-            assert_eq!(state, initial_live);
+            assert!(capture.is_err());
+            let read = begin(&mut f);
+            assert_eq!(captured(&mut f, &read), initial_live);
         } else {
-            assert_ne!(state, initial_live);
-            let component = hex_plugin_state::decode(&state).unwrap().component.unwrap();
+            let capture = capture.expect("capture after applied write");
+            assert!(
+                f.control
+                    .poll_native_source_state_capture_on_control(f.binding, &capture)
+                    .is_err()
+            );
+            let fact = loop {
+                match f
+                    .control
+                    .poll_native_capture_after_guarded_write_on_control(f.binding, &capture)
+                {
+                    Ok(Capture::Captured(fact)) => break fact,
+                    Ok(Capture::Pending) | Err("native preparation is busy") => {}
+                    _ => panic!("exact guarded capture terminal"),
+                }
+                assert!(Instant::now() < until);
+                std::thread::yield_now();
+            };
+            assert_ne!(fact.state(), &initial_live);
+            let component = hex_plugin_state::decode(fact.state())
+                .unwrap()
+                .component
+                .unwrap();
             assert_eq!(
                 f32::from_le_bytes(component[8..12].try_into().unwrap()),
                 3.0
             );
+            applied = Some(fact);
         }
     }
 
     assert_eq!(f.control.native_source_completed_blocks(f.binding), Some(0));
     assert_eq!(
         f.control.native_source_prepared_state(f.binding),
-        Some(initial)
+        Some(initial.clone())
     );
     assert_eq!(f.editor.project(), &canonical);
     f.control.command(PlaybackCommand::Play).unwrap();
@@ -958,6 +995,11 @@ fn guarded_editor_write_on_installed_source_preserves_conflicts_and_captures_app
     assert_eq!(
         f.control.native_source_endpoint_status(f.binding),
         Some((true, true))
+    );
+    super::parameter_publication::assert_guarded_continuation(
+        &mut f,
+        &initial,
+        &applied.expect("applied guarded capture"),
     );
     dispose(f);
 }

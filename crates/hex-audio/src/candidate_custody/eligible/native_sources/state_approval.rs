@@ -31,6 +31,24 @@ impl CandidateRoot {
         Ok(state)
     }
 
+    pub(crate) fn approve_native_guarded_capture(
+        &self,
+        binding: Binding,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterGuardedWrite,
+    ) -> Result<NativeDeviceState, &'static str> {
+        self.require_native_source_control_open()?;
+        let state = self
+            .0
+            .eligible
+            .with_live_capture(binding, |owner| match owner {
+                Owner::Effect(owner) => owner.approve_guarded_capture_on_control(fact),
+                Owner::Loaned(owner) => owner.approve_guarded_capture_on_control(fact),
+                _ => Err("native guarded capture owner differs"),
+            })?;
+        self.require_native_source_control_open()?;
+        Ok(state)
+    }
+
     pub(crate) fn approve_native_canonical_processing(
         &self,
         facts: &crate::plugin_effects::CapturedCanonicalBases,
