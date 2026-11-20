@@ -103,28 +103,13 @@ fn removing_a_held_vector_fades_its_original_pcm_and_keeps_the_bed() {
             REQUEST,
             LaunchQuantization::ThirtySecond,
         );
-        let mut render = |output: &mut [Frame]| {
-            let measured = allocation_counter::measure(|| {
-                callback.begin_block();
-                callback.render(output).unwrap();
-            });
-            assert_eq!(
-                (
-                    measured.count_total,
-                    measured.bytes_total,
-                    measured.count_current,
-                    measured.bytes_current,
-                ),
-                (0, 0, 0, 0)
-            );
-        };
         let mut actual = [[0.0; 2]; FADE + 64];
         for output in actual[..FADE].chunks_mut(partition) {
-            render(output);
+            render(&mut callback, output);
             assert_eq!(receipt.state(), PublicationReceiptState::Pending);
             assert_eq!(control.status.recording_source(), Some(predecessor));
         }
-        render(&mut actual[FADE..]);
+        render(&mut callback, &mut actual[FADE..]);
         assert_eq!(receipt.state(), PublicationReceiptState::Installed);
         let installed = control.status.recording_source().unwrap();
         assert_eq!(installed.audio_revision, receipt.revision());
@@ -138,4 +123,50 @@ fn removing_a_held_vector_fades_its_original_pcm_and_keeps_the_bed() {
             }
         }
     }
+
+    let (control, mut callback, predecessor, receipt) = begin_quantized_playback_insert(
+        prepare(&original),
+        prepare(removed),
+        None,
+        REQUEST,
+        LaunchQuantization::ThirtySecond,
+    );
+    let mut reference = prepare(&original);
+    reference.apply(PlaybackCommand::Play);
+    reference.render(&mut [[0.0; 2]; REQUEST]).unwrap();
+    let mut prefix = [[0.0; 2]; 64];
+    reference.render(&mut prefix).unwrap();
+    render(&mut callback, &mut prefix);
+    assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+    assert_eq!(receipt.cancel(), FreshRuntimeCancellationResult::Cancelled);
+    let mut recovered = [[0.0; 2]; FADE];
+    let mut expected = [[0.0; 2]; FADE];
+    reference.render(&mut expected).unwrap();
+    render(&mut callback, &mut recovered);
+    assert_eq!(receipt.state(), PublicationReceiptState::Cancelled);
+    assert_eq!(control.status.recording_source(), Some(predecessor));
+    let starting_gain = 1.0 - prefix.len() as f32 / FADE as f32;
+    for (index, (actual, source)) in recovered.iter().zip(expected).enumerate() {
+        let gain = starting_gain + (1.0 - starting_gain) * (index + 1) as f32 / FADE as f32;
+        for lane in 0..2 {
+            let expected = BED[lane] + (source[lane] - BED[lane]) * gain;
+            assert!((actual[lane] - expected).abs() < 2e-6);
+        }
+    }
+}
+
+fn render(callback: &mut Callback, output: &mut [Frame]) {
+    let measured = allocation_counter::measure(|| {
+        callback.begin_block();
+        callback.render(output).unwrap();
+    });
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.bytes_total,
+            measured.count_current,
+            measured.bytes_current,
+        ),
+        (0, 0, 0, 0)
+    );
 }
