@@ -78,6 +78,7 @@ impl DeviceInsertConfirmation {
 #[derive(Clone, Copy)]
 pub(in crate::service) enum Operation {
     Device(GraphEditOperation),
+    NativeReplacement,
     HostedHistory(GraphEditOperation),
     Tempo,
 }
@@ -89,6 +90,7 @@ impl Operation {
             Self::Device(GraphEditOperation::RemoveDevice) => "device removed",
             Self::Device(GraphEditOperation::MoveDevice) => "device moved",
             Self::Device(GraphEditOperation::RemoveTrack) => "track removed",
+            Self::NativeReplacement => "device replaced",
             Self::HostedHistory(_) => "history committed",
             Self::Tempo => "tempo applied",
         }
@@ -97,6 +99,7 @@ impl Operation {
     pub(in crate::service) fn device(self) -> Option<GraphEditOperation> {
         match self {
             Self::Device(operation) | Self::HostedHistory(operation) => Some(operation),
+            Self::NativeReplacement => Some(GraphEditOperation::InsertDevice),
             Self::Tempo => None,
         }
     }
