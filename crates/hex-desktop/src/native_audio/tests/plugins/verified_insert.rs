@@ -8,6 +8,157 @@ use hex_session::device_gesture::{GestureKey, GestureRequest, ParameterValue};
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_running_main_vst3_replacement_installs_at_its_exact_receipt() {
+    use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
+
+    let _native = native_fixture();
+    let progress = Arc::new(Mutex::new(
+        crate::native_audio::plugins::PreparationObservation::default(),
+    ));
+    let mut h = super::super::verified_gain::native_harness_with(|sink| {
+        sink.plugins = crate::native_audio::plugins::Plugins::with_fixture(host(), None);
+        sink.plugins.progress = Some(Arc::clone(&progress));
+    });
+    let files = Files::new();
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
+    h.applied(h.context.unwrap());
+    let submit = |h: &Harness, input| {
+        h.service
+            .as_ref()
+            .unwrap()
+            .submit(Request::InsertPluginEffect(input))
+            .unwrap();
+    };
+    submit(&h, request(&imported.state, PluginEffectDestination::Main));
+    let original = loop {
+        let event = h.next_with_audio();
+        assert!(event.error.is_none(), "{:?}", event.error);
+        if let Some(terminal) = event.plugin_effect_complete.first() {
+            assert!(terminal.accepted);
+            break event;
+        }
+    };
+    let predecessor = h.applied(h.context.unwrap());
+    let old = original.state.project.main_devices()[0].id();
+    let binding = || progress.lock().unwrap().source_bindings[0];
+    wait(|| binding().is_some());
+    let (_, old_binding, _) = binding().unwrap();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    for block in 0..4 {
+        let mut sample = 0.0;
+        wait(|| {
+            sample = render_hosted_quantum(&h);
+            status.performance_frame.load(Acquire) == (block + 1) * 256
+        });
+        wait(|| {
+            binding()
+                .and_then(|(_, _, completed)| completed)
+                .is_some_and(|completed| completed > block)
+        });
+        assert_eq!(
+            sample,
+            if block < 2 {
+                0.0
+            } else {
+                0.125 + (block - 2) as f32 * 0.03125
+            }
+        );
+    }
+    assert!(status.playing.load(Acquire));
+    assert_eq!(status.applied_audio_source(), Some(predecessor));
+    let replacement = request(
+        &original.state,
+        PluginEffectDestination::ReplaceMainEffect { replacing: old },
+    );
+    let operation = Arc::clone(&replacement.control);
+    submit(&h, replacement);
+    let mut approved = false;
+    let installed = loop {
+        let mut next = None;
+        wait(|| {
+            if let Ok(event) = h.service.as_ref().unwrap().try_event() {
+                next = Some(event);
+                return true;
+            }
+            let frame = status.performance_frame.load(Acquire);
+            let pcm = render_hosted_quantum(&h);
+            if !approved && status.performance_frame.load(Acquire) == frame + 256 {
+                assert_eq!(status.applied_audio_source(), Some(predecessor));
+                assert_eq!(binding().unwrap().1, old_binding);
+                assert_eq!(pcm, 0.125 + (frame / 256 - 2) as f32 * 0.03125);
+            }
+            wait(|| {
+                h.backend
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .native_workers_idle_on_control()
+                    == Some(true)
+            });
+            false
+        });
+        let event = next.unwrap();
+        if let Some(offer) = &event.device_insert_confirmation {
+            assert_eq!(offer.operation(), GraphEditOperation::ReplaceDevice);
+            assert_eq!(status.applied_audio_source(), Some(predecessor));
+            assert!(offer.proceed());
+            approved = true;
+        }
+        if let Some(terminal) = event.plugin_effect_complete.first() {
+            assert!(Arc::ptr_eq(&terminal.control, &operation));
+            if !terminal.accepted {
+                assert_eq!(event.state.project, original.state.project);
+                assert_eq!(event.state.revision, original.state.revision);
+                assert_eq!(event.state.can_undo, original.state.can_undo);
+                assert_eq!(event.state.can_redo, original.state.can_redo);
+                assert_eq!(status.applied_audio_source(), Some(predecessor));
+                assert_eq!(binding().unwrap().1, old_binding);
+                assert!(status.playing.load(Acquire));
+            }
+            assert!(
+                terminal.accepted,
+                "running Verified Main replacement refused: {:?}",
+                event.error
+            );
+            break event;
+        }
+        assert!(event.error.is_none(), "{:?}", event.error);
+        assert_eq!(event.state.project, original.state.project);
+    };
+    let receipt = installed.device_insert_complete.unwrap();
+    let applied = status.applied_audio_source().unwrap();
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+    assert_eq!(receipt.submission.context, applied.context);
+    assert_eq!(receipt.submission.audio_revision, applied.audio_revision);
+    assert_eq!(
+        receipt.submission.output_identity,
+        predecessor.output_identity
+    );
+    assert_eq!(installed.state.revision, original.state.revision + 1);
+    let [fresh] = installed.state.project.main_devices() else {
+        panic!("fresh effect in the original Main slot");
+    };
+    assert_eq!(fresh.id().value(), original.state.project.next_identity());
+    assert!(installed.state.project.device(old).is_none());
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
 fn verified_running_vst3_copy_keeps_the_original_until_exact_install() {
     use hex_project::{DeviceChainOwner, DeviceSelectionIds};
     use hex_session::service::{DeviceClipboardAction, DeviceInsertOutcome};
