@@ -49,7 +49,7 @@ fn move_command(before: &Project, after: &Project) -> Option<Command> {
         || device.bypassed()
         || !matches!(
             device.state().type_id().as_str(),
-            "hex.delay" | "hex.reverb"
+            Ok("hex.delay" | "hex.reverb")
         )
     {
         return None;
