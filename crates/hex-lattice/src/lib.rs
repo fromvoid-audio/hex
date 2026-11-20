@@ -33,6 +33,7 @@ mod modulation_runtime;
 mod modulation_source_routes;
 mod modulation_sources;
 mod modulation_steps;
+mod native_reorder;
 mod owned_processor;
 mod parameter_automation;
 mod prepared_modulation;

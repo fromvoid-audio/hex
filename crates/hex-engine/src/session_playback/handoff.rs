@@ -5315,6 +5315,11 @@ impl SessionPlayback {
                     return true;
                 };
                 let candidate_suffix_start = candidate_track.instrument_position();
+                let staged_reorder = self
+                    .native_removal
+                    .and_then(|pending| pending.reordered_track(previous))
+                    == Some(old_route.id)
+                    && candidate_chain.is_exact_native_reorder_from(old_chain);
                 let exact_chain_configuration = old_chain.len() == candidate_chain.len()
                     && configuration_matches_continuation(
                         old_chain,
@@ -5364,7 +5369,8 @@ impl SessionPlayback {
                     *slot = transition;
                 }
                 !same_instrument_placement
-                    || !(exact_chain_configuration
+                    || !(staged_reorder
+                        || exact_chain_configuration
                         || retargetable_effect_configuration
                         || retained_prefix_extension
                         || transition.is_some())
@@ -6589,10 +6595,17 @@ impl SessionPlayback {
                 self.track_faders[index] = previous.track_faders[old_index];
                 let track = &self.revision.arrangement().tracks()[index];
                 if !track.has_gain_automation() {
-                    self.track_faders[index].retarget(
-                        track.mix().channel_gain(),
-                        self.revision.arrangement().sample_rate(),
-                    );
+                    let gain = track.mix().channel_gain();
+                    let rate = self.revision.arrangement().sample_rate();
+                    if self
+                        .native_removal
+                        .and_then(|pending| pending.reordered_track(previous))
+                        == Some(route.id)
+                    {
+                        self.track_faders[index].cancel_removal(gain, rate);
+                    } else {
+                        self.track_faders[index].retarget(gain, rate);
+                    }
                 }
             }
         }
