@@ -173,6 +173,11 @@ class Host final : public IHostApplication, public IComponentHandler, public ICo
     // dispatch and the worker drains the exact ordered receipt prefix.
     bool editor_edits_sealed=false;
     bool editor_detaching=false;
+    uint64 editor_hold_ordinal=0;
+    bool editor_admission_held=false;
+    bool editor_admission_closed() const {
+        return editor_edits_sealed || editor_detaching || editor_admission_held;
+    }
     std::atomic<pthread_t> processing_thread{nullptr};
     bool dispatching=false, recursive=false, applying_feedback=false, applying_saved_state=false;
     ParameterSnapshot metadata{};
@@ -239,6 +244,25 @@ public:
         if(![NSThread isMainThread] || !accepting || dispatching || applying_saved_state ||
             active_count || cohort || editor_detaching) return false;
         editor_edits_sealed=true;
+        return true;
+    }
+    // A temporary hold preserves already admitted edits and the live
+    // processor. Only its exact owner can release it, even across retries.
+    bool hold_editor_admission_on_control(uint64 ordinal) {
+        if(![NSThread isMainThread] || !ordinal || !accepting || dispatching ||
+            applying_saved_state || active_count || cohort || editor_edits_sealed || editor_detaching)
+            return false;
+        if(editor_admission_held) return ordinal==editor_hold_ordinal;
+        if(ordinal<=editor_hold_ordinal) return false;
+        editor_hold_ordinal=ordinal;
+        editor_admission_held=true;
+        return true;
+    }
+    bool release_editor_admission_on_control(uint64 ordinal) {
+        if(![NSThread isMainThread] || !accepting || dispatching || applying_saved_state ||
+            editor_edits_sealed || editor_detaching ||
+            !editor_admission_held || ordinal!=editor_hold_ordinal) return false;
+        editor_admission_held=false;
         return true;
     }
     // A live processor may still own an audible tail. Fence editor callbacks
@@ -335,7 +359,7 @@ public:
         if(!advertises_editor_groups) return kNotImplemented;
         if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
         if(!accepting) {refuse(Retiring);return kResultFalse;}
-        if((editor_edits_sealed || editor_detaching) && !applying_saved_state) return kResultFalse;
+        if(editor_admission_closed() && !applying_saved_state) return kResultFalse;
         if(dispatching) {recursive=true;refuse(RecursiveRestart);return kResultFalse;}
         if(applying_saved_state) return kResultOk;
         if(cohort) {poison_cohort();return kResultFalse;}
@@ -352,7 +376,7 @@ public:
         if(!advertises_editor_groups) return kNotImplemented;
         if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
         if(!accepting) {refuse(Retiring);return kResultFalse;}
-        if((editor_edits_sealed || editor_detaching) && !applying_saved_state) return kResultFalse;
+        if(editor_admission_closed() && !applying_saved_state) return kResultFalse;
         if(dispatching) {recursive=true;refuse(RecursiveRestart);return kResultFalse;}
         if(applying_saved_state) return kResultOk;
         if(!cohort) {refuse(InvalidEdit);return kResultFalse;}
@@ -514,11 +538,11 @@ private:
     tresult admit_edit(ParamID id,uint32 kind,ParamValue value) {
         if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
         if(!accepting) {refuse(Retiring);return kResultFalse;}
-        if((editor_edits_sealed || editor_detaching) && !applying_saved_state) return kResultFalse;
+        if(editor_admission_closed() && !applying_saved_state) return kResultFalse;
         if(dispatching) {recursive=true;refuse(RecursiveRestart);return kResultFalse;}
         const bool valid_value=kind!=Perform || (std::isfinite(value) && value>=0 && value<=1);
         if(applying_saved_state && id<=0x7FFFFFFFu && valid_value) return kResultOk;
-        if(editor_edits_sealed || editor_detaching) return kResultFalse;
+        if(editor_admission_closed()) return kResultFalse;
         ParameterSnapshot::Parameter* info=nullptr;
         for(uint32 n=0;n<metadata.count;++n) if(metadata.parameters[n].info.id==id) info=&metadata.parameters[n];
         if(!info) {refuse_editor_edit(InvalidEdit|UnknownEditParameter);return kInvalidArgument;}

@@ -5,8 +5,8 @@ use super::*;
 use hex_plugin_host::{
     Error,
     protocol::{
-        ControllerRequest, EditorSealState, ParameterConversionResult, ParameterPage,
-        ParameterPageProgress, PluginEditorState,
+        ControllerRequest, EditorAdmissionState, EditorSealState, ParameterConversionResult,
+        ParameterPage, ParameterPageProgress, PluginEditorState,
     },
 };
 use std::{
@@ -28,6 +28,7 @@ struct Reply {
     editor: Option<PluginEditorState>,
     editor_seal: Option<EditorSealState>,
     editor_frontier: Option<u64>,
+    editor_admission: Option<EditorAdmissionState>,
     extension: Option<NativeWorkerAuthoredParameterProgress>,
     guarded_write: Option<NativeWorkerGuardedEditorWriteProgress>,
 }
@@ -90,6 +91,8 @@ pub enum NativeWorkerControllerProgress {
     EditorSeal(EditorSealState),
     /// The last editor callback admitted on this query’s original binding.
     EditorFrontier(u64),
+    /// Exact producer result for a temporary editor admission hold or release.
+    EditorAdmission(EditorAdmissionState),
     Page(Box<ParameterPage>),
     Conversion(Box<ParameterConversionResult>),
     Changed {
@@ -252,6 +255,8 @@ impl NativeWorker {
             NativeWorkerControllerProgress::EditorSeal(seal)
         } else if let Some(frontier) = reply.editor_frontier {
             NativeWorkerControllerProgress::EditorFrontier(frontier)
+        } else if let Some(admission) = reply.editor_admission {
+            NativeWorkerControllerProgress::EditorAdmission(admission)
         } else if let Some(conversion) = reply.conversion {
             NativeWorkerControllerProgress::Conversion(Box::new(conversion))
         } else if reply.changed {
@@ -448,6 +453,10 @@ impl State {
                     }),
                     ParameterPageProgress::EditorFrontier(frontier) => Some(Reply {
                         editor_frontier: Some(frontier),
+                        ..Reply::default()
+                    }),
+                    ParameterPageProgress::EditorAdmission(admission) => Some(Reply {
+                        editor_admission: Some(admission),
                         ..Reply::default()
                     }),
                     ParameterPageProgress::Page(page) => Some(Reply {

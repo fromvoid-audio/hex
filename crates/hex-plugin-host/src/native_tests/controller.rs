@@ -85,7 +85,8 @@ fn held_controller_query_keeps_pcm_running_and_cancels_without_sdk_teardown() {
                     ParameterPageProgress::Conversion(_)
                     | ParameterPageProgress::Editor(_)
                     | ParameterPageProgress::EditorSeal(_)
-                    | ParameterPageProgress::EditorFrontier(_) => {
+                    | ParameterPageProgress::EditorFrontier(_)
+                    | ParameterPageProgress::EditorAdmission(_) => {
                         panic!("expected metadata page")
                     }
                 }
@@ -316,7 +317,8 @@ fn page(instance: &mut Prepared, query: ParameterPageQuery) -> Box<ParameterPage
             ParameterPageProgress::Conversion(_)
             | ParameterPageProgress::Editor(_)
             | ParameterPageProgress::EditorSeal(_)
-            | ParameterPageProgress::EditorFrontier(_) => {
+            | ParameterPageProgress::EditorFrontier(_)
+            | ParameterPageProgress::EditorAdmission(_) => {
                 panic!("expected metadata page")
             }
         }
@@ -514,7 +516,8 @@ fn actual_controller_pages_use_sdk_conversions_without_processing_or_replacing_s
                 | ParameterPageProgress::Conversion(_)
                 | ParameterPageProgress::Editor(_)
                 | ParameterPageProgress::EditorSeal(_)
-                | ParameterPageProgress::EditorFrontier(_) => {
+                | ParameterPageProgress::EditorFrontier(_)
+                | ParameterPageProgress::EditorAdmission(_) => {
                     panic!("stale metadata must invalidate enumeration")
                 }
             }
@@ -532,7 +535,8 @@ fn actual_controller_pages_use_sdk_conversions_without_processing_or_replacing_s
                 ParameterPageProgress::Conversion(_)
                 | ParameterPageProgress::Editor(_)
                 | ParameterPageProgress::EditorSeal(_)
-                | ParameterPageProgress::EditorFrontier(_) => {
+                | ParameterPageProgress::EditorFrontier(_)
+                | ParameterPageProgress::EditorAdmission(_) => {
                     panic!("expected stopped metadata page")
                 }
             }
@@ -1143,6 +1147,137 @@ fn editor_seal_preserves_burst_and_refuses_an_active_sdk_gesture() {
         }
         assert_eq!(instance.child_id_on_control(), child);
         assert_eq!(instance.completed_blocks_on_control(), 0);
+        assert!(
+            instance
+                .stop_and_reap_on_control()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn temporary_editor_hold_preserves_accepted_input_and_live_pcm() {
+    use crate::protocol::{ControllerRequest, EditorAdmissionState, ParameterEditKind};
+    use std::num::NonZeroU64;
+
+    fn observe(instance: &mut Prepared, request: ControllerRequest) -> ParameterPageProgress {
+        instance
+            .begin_controller_request_on_worker(request)
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            match instance.poll_parameter_page_on_worker().unwrap() {
+                ParameterPageProgress::Pending => {}
+                terminal => return terminal,
+            }
+            assert!(Instant::now() < deadline);
+            thread::yield_now();
+        }
+    }
+
+    use EditorAdmissionState::{Held, Refused, Released};
+    use ParameterPageProgress::{EditorAdmission, EditorFrontier};
+    let token = NonZeroU64::new(11).unwrap();
+    let newer = NonZeroU64::new(12).unwrap();
+    let hold = ControllerRequest::HoldEditorAdmission(token);
+    let release = ControllerRequest::ReleaseEditorAdmission(token);
+    let frontier = ControllerRequest::ReadEditorFrontier;
+    for variant in [116, 147] {
+        let case = Case::new();
+        let setup = case.setup_restore(variant);
+        let end = case.root.join("end");
+        let end_gate = end.clone();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            move |command| {
+                setup(command);
+                command.env("HEX_ORIGINAL_EDITOR_END_RELEASE", end_gate);
+            },
+        )
+        .unwrap();
+        let child = instance.child_id_on_control();
+        if variant == 116 {
+            assert_eq!(
+                observe(&mut instance, hold),
+                EditorAdmission(Held {
+                    admitted_through: 0
+                })
+            );
+            assert_eq!(
+                observe(
+                    &mut instance,
+                    ControllerRequest::ReleaseEditorAdmission(newer)
+                ),
+                EditorAdmission(Refused),
+            );
+        }
+        fs::write(case.release(), b"emit actual SDK edit").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while case.observation().is_none_or(|trace| trace[0] != 25) {
+            assert!(
+                Instant::now() < deadline,
+                "actual SDK callbacks did not run"
+            );
+            thread::yield_now();
+        }
+        if variant == 116 {
+            assert_eq!(observe(&mut instance, frontier), EditorFrontier(0));
+            assert!(
+                instance
+                    .service_idle_editor_edits_on_worker()
+                    .unwrap()
+                    .edits
+                    .as_slice()
+                    .is_empty()
+            );
+        } else {
+            assert_eq!(observe(&mut instance, frontier), EditorFrontier(2));
+            assert_eq!(observe(&mut instance, hold), EditorAdmission(Refused));
+            fs::write(end, b"finish actual SDK gesture").unwrap();
+            while observe(&mut instance, hold)
+                != EditorAdmission(Held {
+                    admitted_through: 3,
+                })
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "the real End did not permit holding admission"
+                );
+            }
+            let mut edits = Vec::new();
+            while edits.len() < 3 {
+                let page = instance.service_idle_editor_edits_on_worker().unwrap();
+                edits.extend_from_slice(page.edits.as_slice());
+                assert!(Instant::now() < deadline);
+            }
+            assert_eq!(
+                edits.iter().map(|edit| edit.kind).collect::<Vec<_>>(),
+                [
+                    ParameterEditKind::Begin,
+                    ParameterEditKind::Perform,
+                    ParameterEditKind::End,
+                ]
+            );
+        }
+        let input = request(instance.configuration(), 0);
+        instance.exchange_on_worker(input).unwrap();
+        assert_eq!(instance.child_id_on_control(), child);
+        assert_eq!(instance.completed_blocks_on_control(), 1);
+        assert_eq!(observe(&mut instance, release), EditorAdmission(Released));
+        assert_eq!(observe(&mut instance, hold), EditorAdmission(Refused));
+        assert_eq!(
+            observe(
+                &mut instance,
+                ControllerRequest::ReleaseEditorAdmission(newer)
+            ),
+            EditorAdmission(Refused)
+        );
         assert!(
             instance
                 .stop_and_reap_on_control()
