@@ -441,13 +441,15 @@ impl ForeignArrangement {
                     .flatten();
                 if hosted_cut != HostedReplacementCut::Unsupported
                     && replacement.is_some_and(|track| track.foreign_instrument.is_some())
+                    && let Some(next_binding) = candidate.processor.binding()
                     && let Some((index, binding)) =
                         old.generators.iter().enumerate().find_map(|(index, old)| {
                             let old = old.as_ref()?;
                             let binding = old.processor.binding()?;
                             let ledger = &old.committed;
                             (old.track == candidate.track
-                                && candidate.processor.binding() != Some(binding)
+                                && next_binding.root == binding.root
+                                && next_binding.instance != binding.instance
                                 && ledger.route == Some(RouteOwner::Arrangement)
                                 && ledger.has_held_notes()
                                 && !ledger.live.held()
