@@ -1,9 +1,9 @@
 //! Keep a validated graph edit private until the callback installs its exact graph.
 use super::*;
 mod detached_history;
+mod hosted_effect_history;
 mod main_history;
 mod stopped_power;
-mod track_effect_history;
 
 mod move_history;
 
@@ -1135,7 +1135,7 @@ impl Session {
             |session| {
                 let hosted = match detached_history::stage(&mut session.editor, redo)? {
                     Some(edge) => Some(edge),
-                    None => track_effect_history::stage(&mut session.editor, redo)?,
+                    None => hosted_effect_history::stage(&mut session.editor, redo)?,
                 };
                 if let Some((edge, operation)) = hosted {
                     return Ok(Some((
