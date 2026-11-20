@@ -16,6 +16,7 @@ pub(super) struct PendingBatch {
     receipt: RetiringEditReceipt,
     pub(super) replay_attempted: bool,
     pub(super) renewal_attempted: bool,
+    pub(super) stopped_retry_attempted: bool,
     pub(super) successor_unconfirmed: bool,
 }
 
@@ -267,6 +268,7 @@ impl Plugins {
                             receipt,
                             replay_attempted: false,
                             renewal_attempted: false,
+                            stopped_retry_attempted: false,
                             successor_unconfirmed: false,
                         })
                     }

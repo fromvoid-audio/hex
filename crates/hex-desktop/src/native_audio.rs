@@ -1557,7 +1557,7 @@ impl WorkerAudioSink for NativeAudioSink {
         &mut self,
         batch: &hex_session::service::RetiringEditorBatch,
         disposition: hex_session::service::RetiringEditorReplayDisposition,
-    ) -> Result<(), String> {
+    ) -> Result<hex_session::service::RetiringEditorReplayCompletion, String> {
         self.plugins.finish_retiring_editor_replay(
             self.output
                 .as_mut()
@@ -1710,6 +1710,20 @@ impl WorkerAudioSink for NativeAudioSink {
             if let Some((revision, reason)) = status.rejected_revision()
                 && revision == audio_revision
             {
+                if reason == hex_engine::playback::PlaybackHandoffRejection::RuntimeFenceChanged
+                    && self.resident.current_submission.is_some_and(|candidate| {
+                        candidate.output_identity == output_identity
+                            && candidate.audio_revision == audio_revision
+                            && candidate.source_context == Some(context)
+                    })
+                    && let Some(previous) = self.resident.applied_loop
+                    && self
+                        .plugins
+                        .observe_retiring_replay_stop_rejection(control, context, previous)
+                {
+                    // Readmission uses the exact source still installed by the callback.
+                    self.resident.current_submission = Some(previous);
+                }
                 return Err(Error::Refused(format!(
                     "vst3 edit playback refused · {}",
                     reason.message()
