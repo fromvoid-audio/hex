@@ -1,4 +1,4 @@
-//! Signed hosted insertion on the production verified-file publication path.
+//! Signed hosted graph edits on the production verified-file publication path.
 use super::unsealed_admission::{
     HeldVerifiedEq, eq_gesture, expect_verified_sample, hold_verified_eq_preview,
 };
@@ -9,7 +9,10 @@ use hex_session::device_gesture::{GestureKey, GestureRequest, ParameterValue};
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn verified_hosted_removal_fades_and_resumes_on_the_same_output() {
-    use hex_session::service::DeviceInsertOutcome;
+    use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
+
+    const FADE: usize = 128;
+    const QUANTUM: u64 = 256;
 
     let _native = native_fixture();
     let progress = Arc::new(Mutex::new(
@@ -68,6 +71,12 @@ fn verified_hosted_removal_fades_and_resumes_on_the_same_output() {
         .control
         .command(PlaybackCommand::Play)
         .unwrap();
+    let original_sample = |frame: u64| {
+        // The signed effect steps its gain per quantum and has a two-quantum bridge.
+        (frame / QUANTUM)
+            .checked_sub(2)
+            .map_or(0.0, |input| 0.25 * (0.5 + input as f32 * 0.125))
+    };
     let play_original = |h: &Harness| {
         let status = status(h);
         let start = status.performance_frame.load(Acquire);
@@ -80,12 +89,9 @@ fn verified_hosted_removal_fades_and_resumes_on_the_same_output() {
             }
             current > start
         });
-        assert_eq!(status.performance_frame.load(Acquire), start + 256);
-        let block = start / 256;
-        wait(|| observe() > block);
-        let sample = block
-            .checked_sub(2)
-            .map_or(0.0, |input| 0.25 * (0.5 + input as f32 * 0.125));
+        assert_eq!(status.performance_frame.load(Acquire), start + QUANTUM);
+        wait(|| observe() > start / QUANTUM);
+        let sample = original_sample(start);
         assert!(pcm.iter().all(|value| (*value - sample).abs() < 1e-5));
     };
     for _ in 0..4 {
@@ -101,6 +107,11 @@ fn verified_hosted_removal_fades_and_resumes_on_the_same_output() {
         let offer = proposed
             .device_insert_confirmation
             .expect("exact removal offer");
+        assert_eq!(offer.operation(), GraphEditOperation::RemoveDevice);
+        assert_eq!(
+            offer.submission().output_identity,
+            predecessor.output_identity
+        );
         assert_eq!(proposed.state.project, inserted.state.project);
         assert_eq!(status(&h).applied_audio_source(), Some(predecessor));
         play_original(&h);
@@ -122,33 +133,44 @@ fn verified_hosted_removal_fades_and_resumes_on_the_same_output() {
             let start = status(&h).position.load(Acquire);
             let faded = render_hosted_pcm(&h);
             let position = status(&h).position.load(Acquire);
-            if position == start + 128 {
+            if position == start + FADE as u64 {
                 break (start, faded);
             }
-            assert_eq!(position, start + 256, "waiting for cut: {faded:?}");
+            assert_eq!(
+                position,
+                start + QUANTUM,
+                "while waiting for the approved cut"
+            );
             assert_eq!(status(&h).applied_audio_source(), Some(predecessor));
-            assert!(faded.iter().all(|value| *value > 0.0));
-            wait(|| observe() > start / 256);
+            let sample = original_sample(start);
+            assert!(faded.iter().all(|value| (*value - sample).abs() < 1e-5));
+            wait(|| observe() > start / QUANTUM);
             assert!(Instant::now() < deadline, "approved cut did not start");
         };
         assert_eq!(status(&h).applied_audio_source(), Some(predecessor));
-        assert_eq!(status(&h).position.load(Acquire), cut_start + 128);
-        assert!(faded[0] > 0.0);
-        assert!(faded[254..].iter().all(|value| *value == 0.0));
+        let sample = original_sample(cut_start);
+        for (index, frame) in faded.chunks_exact(2).enumerate() {
+            let expected = sample * FADE.saturating_sub(index + 1) as f32 / FADE as f32;
+            assert!(frame.iter().all(|value| (*value - expected).abs() < 1e-5));
+        }
         let resumed = render_hosted_pcm(&h);
-        assert_eq!(status(&h).position.load(Acquire), cut_start + 128 + 256);
-        assert!(resumed[0] > 0.0 && resumed[0] < 0.25);
-        assert_eq!(resumed[510..], [0.25; 2]);
+        assert_eq!(
+            status(&h).position.load(Acquire),
+            cut_start + FADE as u64 + QUANTUM
+        );
+        for (index, frame) in resumed.chunks_exact(2).enumerate() {
+            let expected = 0.25 * (index + 1).min(FADE) as f32 / FADE as f32;
+            assert!(frame.iter().all(|value| (*value - expected).abs() < 1e-5));
+        }
         let removed = h.next();
         assert!(removed.error.is_none(), "{:?}", removed.error);
-        assert_eq!(
-            removed.device_insert_complete.unwrap().outcome,
-            DeviceInsertOutcome::Installed
-        );
+        let receipt = removed.device_insert_complete.unwrap();
+        assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
         assert!(removed.state.project.device(vst).is_none());
         assert_eq!(removed.state.revision, inserted.state.revision + 1);
         let active = status(&h).applied_audio_source().unwrap();
         assert_eq!(active.context, h.context.unwrap());
+        assert_eq!(active.audio_revision, receipt.submission.audio_revision);
         assert_eq!(active.output_identity, predecessor.output_identity);
     }
 }
