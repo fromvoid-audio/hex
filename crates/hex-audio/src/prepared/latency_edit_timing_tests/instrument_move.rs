@@ -209,6 +209,183 @@ fn direct_sine_move_carries_the_donor_gate_and_never_chases_the_receiver() {
     assert_eq!(restored[FADE..], old_pcm[settled..settled + 64]);
 }
 
+#[test]
+fn reversing_a_sine_move_carries_the_already_banked_held_gate() {
+    const REQUEST: usize = 512;
+    const FADE: usize = 240;
+    const SETTLE: usize = 304;
+    const INVERSE: usize = REQUEST + FADE + SETTLE;
+    const FRAMES: usize = 5_120;
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
+    let Created::Track(source) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "original".into(),
+            before_track: None,
+            slot: TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("original instrument");
+    };
+    let device = editor
+        .project()
+        .track(source)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let Created::Track(destination) = editor
+        .execute(Command::AddMidiTrack {
+            name: "receiver".into(),
+        })
+        .unwrap()
+    else {
+        panic!("receiver");
+    };
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track: source,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("source clip");
+    };
+    let duration = editor.project().tempo_map().frame_to_beat(1800).unwrap();
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetTrackGains {
+            gains: vec![(source, 0.25), (destination, 0.75)],
+        })
+        .unwrap();
+    let table = Arc::new(hex_engine::SineTable::new());
+    let prepare = |project: &Project| {
+        Arc::new(
+            hex_engine::PreparedRevision::prepare(
+                project,
+                &BTreeMap::new(),
+                Arc::clone(&table),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let original = prepare(editor.project());
+    editor
+        .execute(Command::MoveTrackDevices {
+            source,
+            destination,
+            selected: DeviceSelectionIds::new(&[device]).unwrap(),
+        })
+        .unwrap();
+    let moved = prepare(editor.project());
+    let mut reference = Playback::try_from_prepared_with_session(Arc::clone(&original)).unwrap();
+    reference.apply(PlaybackCommand::Play);
+    let mut expected = vec![[0.0; 2]; FRAMES];
+    reference.render(&mut expected).unwrap();
+
+    for partition in [1, BLOCK] {
+        let (mut control, mut callback, _, forward) = begin_insert_with_pending_track(
+            Arc::clone(&original),
+            Arc::clone(&moved),
+            None,
+            REQUEST,
+        );
+        for block in [[0.0; 2]; FADE].chunks_mut(partition) {
+            render(&mut callback, block);
+        }
+        let mut settled = [[0.0; 2]; SETTLE];
+        for block in settled.chunks_mut(partition) {
+            render(&mut callback, block);
+        }
+        assert_eq!(forward.state(), PublicationReceiptState::Installed);
+        assert!(
+            settled[FADE..]
+                .iter()
+                .zip(&expected[INVERSE - (SETTLE - FADE)..])
+                .all(|(actual, original)| (actual[0] - 3.0 * original[0]).abs() < 2e-6)
+        );
+        let predecessor = control.status.recording_source().unwrap();
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        control.reclaim();
+        let inverse_revision = control
+            .publish_unaccounted_pcm_obligation(
+                Playback::try_from_prepared_with_session(Arc::clone(&original)).unwrap(),
+                PublicationPolicy::DeviceInsert { predecessor, fence },
+                predecessor.context.project_generation,
+                true,
+                false,
+                Some(hex_engine::AudioSourceContext {
+                    editor_revision: predecessor.context.editor_revision + 1,
+                    ..predecessor.context
+                }),
+            )
+            .unwrap();
+        let inverse = control.fresh_runtime_receipt(inverse_revision).unwrap();
+        let mut fade = [[0.0; 2]; FADE];
+        for block in fade.chunks_mut(partition) {
+            render(&mut callback, block);
+            assert_eq!(
+                inverse.state(),
+                PublicationReceiptState::Pending,
+                "the inverse must fade the still-held receiver"
+            );
+            assert_eq!(control.status.recording_source(), Some(predecessor));
+        }
+        for (offset, (actual, expected)) in fade.iter().zip(&expected[INVERSE..]).enumerate() {
+            let gain = 3.0 * (1.0 - (offset + 1) as f32 / FADE as f32);
+            for (actual, expected) in actual.iter().zip(expected) {
+                assert!((actual - gain * expected).abs() < 2e-6);
+            }
+        }
+        let mut actual = vec![[0.0; 2]; FRAMES - INVERSE - FADE];
+        let (first, rest) = actual.split_at_mut(BLOCK);
+        for block in first.chunks_mut(partition) {
+            render(&mut callback, block);
+        }
+        assert_eq!(inverse.state(), PublicationReceiptState::Installed);
+        assert_eq!(
+            control.status.recording_source().unwrap().audio_revision,
+            inverse_revision
+        );
+        let republished = (partition == BLOCK).then(|| {
+            // The receiver is again the original MIDI track, but the running
+            // gate still comes from the transferred release bank.
+            control.reclaim();
+            control
+                .publish(Playback::try_from_prepared_with_session(Arc::clone(&original)).unwrap())
+                .unwrap()
+        });
+        for block in rest.chunks_mut(partition) {
+            render(&mut callback, block);
+        }
+        if let Some(revision) = republished {
+            assert_eq!(control.status.applied_revision.load(Acquire), revision);
+        }
+        for (offset, frame) in actual.iter().enumerate() {
+            let fade = (offset + 1).min(FADE) as f32 / FADE as f32;
+            for lane in 0..2 {
+                let expected = expected[INVERSE + FADE + offset][lane] * fade;
+                assert!(
+                    (frame[lane] - expected).abs() < 2e-6,
+                    "partition {partition} frame {offset} lane {lane}"
+                );
+            }
+        }
+    }
+}
+
 fn render(callback: &mut Callback, block: &mut [Frame]) {
     let counts = allocation_counter::measure(|| {
         callback.begin_block();

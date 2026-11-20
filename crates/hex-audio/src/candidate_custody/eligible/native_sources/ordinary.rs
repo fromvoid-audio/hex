@@ -36,7 +36,7 @@ impl OrdinaryNativeReferences {
     /// The returned playback marks an instrument displaced by an approved cut.
     /// Retain the exact source until every graph, endpoint and editor claim
     /// returns. Only the original worker may release that instrument's gates.
-    pub(crate) fn retire_replaced_instrument_on_control(&self, binding: Binding) {
+    pub(crate) fn retire_displaced_instrument_on_control(&self, binding: Binding) {
         let mut bank = lock(&self.root.0.eligible.bank);
         if let Some(index) = bank.sources.index(binding)
             && self.references.contains(index)

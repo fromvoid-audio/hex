@@ -155,8 +155,7 @@ fn render_return_drop_target(
     };
     let replacement = device
         .filter(|device| {
-            owner == EffectBusOwner::Main
-                && view.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            view.document_audio_mode == hex_session::DocumentAudioMode::Resident
                 && device.state().type_id() == hex_lattice_contract::VST3_DEVICE_TYPE_ID
                 && device.parent().is_none()
                 && next.is_none_or(|next| next.parent() != Some(device.id()))
@@ -267,7 +266,9 @@ fn render_return_drop_target(
                 .justify_center()
                 .child(
                     div()
-                        .debug_selector(move || format!("main-vst3-replace-{}", device.value()))
+                        .debug_selector(move || {
+                            format!("{}-vst3-replace-{}", owner.prefix(), device.value())
+                        })
                         .w(px(REPLACE_PAD_WIDTH))
                         .h(px(REPLACE_PAD_HEIGHT))
                         .flex()

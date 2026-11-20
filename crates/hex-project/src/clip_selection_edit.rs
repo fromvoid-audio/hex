@@ -644,6 +644,7 @@ impl Command {
             | Self::ReturnMute { .. }
             | Self::SetReturnSend { .. }
             | Self::InsertReturnDevice { .. }
+            | Self::ReplaceReturnDevice { .. }
             | Self::MoveReturnDevice { .. }
             | Self::GroupTracks { .. }
             | Self::UngroupTrack(..)

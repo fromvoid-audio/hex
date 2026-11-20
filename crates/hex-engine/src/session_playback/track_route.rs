@@ -1,20 +1,27 @@
-//! One Resident Arrangement leaf moves between Main and an existing root Group.
+//! One Resident Arrangement leaf moves between Main and an existing Group.
 //! Classification borrows bounded prepared inventories only. Full handoff preview
 //! still fences runtime/tails before the child's existing post-device fader moves.
 //! The Group and Main faders never participate, and compensation copy rules stay
 //! unchanged: zero-delay graphs consume the current transport stamp at the cut.
 use super::{RouteOwner, SessionPlayback};
-use crate::signal_graph::TrackOutput;
+use crate::signal_graph::{SignalGraph, TrackOutput};
 
 impl SessionPlayback {
     // Entry and exit have the same immutable identity checks. Classifying the
     // inverse changes no runtime: only the actual donor's child fader is staged.
     pub(super) fn resident_group_reroute_from(&self, previous: &Self) -> Option<usize> {
         self.exact_resident_group_entry_from(previous)
-            .or_else(|| previous.exact_resident_group_entry_from(self))
+            .map(|(flat_index, _)| flat_index)
+            .or_else(|| {
+                previous
+                    .exact_resident_group_entry_from(self)
+                    .map(|(_, grouped_index)| grouped_index)
+            })
     }
 
-    fn exact_resident_group_entry_from(&self, previous: &Self) -> Option<usize> {
+    // The moving leaf can occupy different rows. The fader always belongs to
+    // the predecessor, which is grouped on exit and flat on entry.
+    fn exact_resident_group_entry_from(&self, previous: &Self) -> Option<(usize, usize)> {
         for playback in [self, previous] {
             if playback.revision.contains_streamed_sources()
                 || playback.foreign_runtime_bindings().next().is_some()
@@ -29,14 +36,9 @@ impl SessionPlayback {
             {
                 return None;
             }
-            let graph = &playback.compensation.as_ref()?.graph;
-            if !graph.supports_closed_group_stream()
-                || !graph.supports_closed_compensated_audio_groups()
-                || playback.revision.arrangement().main_latency_frames() != 0
-            {
-                return None;
-            }
         }
+        let old_graph = previous.resident_group_cut_graph()?;
+        let new_graph = self.resident_group_cut_graph()?;
         let old = previous.revision.arrangement();
         let new = self.revision.arrangement();
         if old.sample_rate != new.sample_rate
@@ -56,13 +58,14 @@ impl SessionPlayback {
         {
             return None;
         }
-        let old_graph = &previous.compensation.as_ref()?.graph;
-        let new_graph = &self.compensation.as_ref()?.graph;
         let mut changed = None;
-        for (index, (old, new)) in old.tracks().iter().zip(new.tracks()).enumerate() {
-            let old_chain = previous.device_chains.get(index)?;
-            let new_chain = self.device_chains.get(index)?;
-            if old.canonical_track_id() != new.canonical_track_id()
+        for (old_index, old) in old.tracks().iter().enumerate() {
+            let id = old.canonical_track_id()?;
+            let new_index = new_graph.track_index(id)?;
+            let new = new.tracks().get(new_index)?;
+            let old_chain = previous.device_chains.get(old_index)?;
+            let new_chain = self.device_chains.get(new_index)?;
+            if new.canonical_track_id() != Some(id)
                 || old.mix != new.mix
                 || old.source_mix != new.source_mix
                 || old.source_input_enabled != new.source_input_enabled
@@ -91,23 +94,21 @@ impl SessionPlayback {
                     return None;
                 }
             }
-            let a = old_graph.tracks.get(index)?;
-            let b = new_graph.tracks.get(index)?;
-            if a.id != b.id || a.id != old.canonical_track_id() {
+            let a = old_graph.tracks.get(old_index)?;
+            let b = new_graph.tracks.get(new_index)?;
+            if a.id != Some(id) || b.id != Some(id) {
                 return None;
             }
             match (a.output, b.output) {
                 (TrackOutput::Main { .. }, TrackOutput::Main { .. }) => {}
                 (TrackOutput::Group { target: a, .. }, TrackOutput::Group { target: b, .. })
-                    if a == b => {}
-                (TrackOutput::Main { .. }, TrackOutput::Group { target, .. }) => {
-                    // The compiled Group edge names the target in the same
-                    // stable inventory. Its input may have no other child.
-                    if changed.replace(index).is_some()
+                    if old_graph.tracks.get(a)?.id? == new_graph.tracks.get(b)?.id? => {}
+                (TrackOutput::Main { .. }, TrackOutput::Group { .. }) => {
+                    // Every other edge stays fixed, including the destination's
+                    // route through any ancestors. Only a leaf can move.
+                    if changed.replace((old_index, new_index)).is_some()
                         || old.clips.is_empty()
-                        || !matches!(old_graph.tracks.get(target)?.output, TrackOutput::Main { .. })
-                        || !matches!(new_graph.tracks.get(target)?.output, TrackOutput::Main { .. })
-                        || old_graph.tracks.iter().any(|track| matches!(track.output, TrackOutput::Group { target, .. } if target == index))
+                        || old_graph.tracks.iter().any(|track| matches!(track.output, TrackOutput::Group { target, .. } if target == old_index))
                     {
                         return None;
                     }
@@ -115,7 +116,43 @@ impl SessionPlayback {
                 _ => return None,
             }
         }
-        changed
+        let (from, to) = changed?;
+        // The one row shift may move other indices without reordering the
+        // other tracks. Reject a compound edit before staging any fader.
+        let other_old_ids = old
+            .tracks()
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != from)
+            .map(|(_, track)| track.canonical_track_id());
+        let other_new_ids = new
+            .tracks()
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != to)
+            .map(|(_, track)| track.canonical_track_id());
+        other_old_ids.eq(other_new_ids).then_some((from, to))
+    }
+
+    fn resident_group_cut_graph(&self) -> Option<&SignalGraph> {
+        let arrangement = self.revision.arrangement();
+        let graph = arrangement.signal_graph.as_deref()?;
+        if arrangement.main_latency_frames() != 0 || !arrangement.return_buses().is_empty() {
+            return None;
+        }
+        // Before the first child joins (or after the last leaves), the flat
+        // graph has no routing runtime. The zero-delay grouped side reads
+        // only current-frame stamps, so there is no clock history to transfer.
+        let supported = match &self.compensation {
+            None => !graph.needs_runtime(),
+            Some(runtime) => {
+                runtime.horizon() == 0
+                    && std::ptr::eq(graph, runtime.graph.as_ref())
+                    && graph.supports_closed_group_stream()
+                    && graph.supports_closed_compensated_audio_groups()
+            }
+        };
+        supported.then_some(graph)
     }
 }
 

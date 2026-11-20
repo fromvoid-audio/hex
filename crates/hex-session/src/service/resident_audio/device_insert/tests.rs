@@ -855,11 +855,22 @@ fn native_moves_wait_for_the_exact_audio_receipt_and_preserve_noops() {
 
 #[test]
 fn native_move_history_waits_for_each_exact_install_and_can_retry_after_cancel() {
-    assert_native_move_history(false);
-    assert_native_move_history(true);
+    for layout in [
+        NativeMoveLayout::Delay,
+        NativeMoveLayout::UtilityDelay,
+        NativeMoveLayout::Sine,
+    ] {
+        assert_native_move_history(layout);
+    }
 }
 
-fn assert_native_move_history(with_utility_prefix: bool) {
+enum NativeMoveLayout {
+    Delay,
+    UtilityDelay,
+    Sine,
+}
+
+fn assert_native_move_history(layout: NativeMoveLayout) {
     let (service, fixture, _) = service();
     let run = |request| {
         service.submit(request).unwrap();
@@ -876,7 +887,7 @@ fn assert_native_move_history(with_utility_prefix: bool) {
     };
     let source = add_track("source");
     let destination = add_track("destination");
-    if with_utility_prefix {
+    if matches!(layout, NativeMoveLayout::UtilityDelay) {
         assert!(
             !run(Request::AddNativeDevice {
                 track: destination,
@@ -890,17 +901,33 @@ fn assert_native_move_history(with_utility_prefix: bool) {
         );
         install_candidate(&service, &fixture);
     }
+    let (class, type_id) = if matches!(layout, NativeMoveLayout::Sine) {
+        (
+            hex_engine::NativeDeviceClass::Instrument,
+            "hex.instrument.sine",
+        )
+    } else {
+        (hex_engine::NativeDeviceClass::Effect, "hex.delay")
+    };
     assert!(
         !run(Request::AddNativeDevice {
             track: source,
-            class: hex_engine::NativeDeviceClass::Effect,
-            type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static("hex.delay")),
+            class,
+            type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(type_id)),
             before: None,
         })
         .request_complete
     );
     let original = install_candidate(&service, &fixture).state;
-    let device = original.project.track(source).unwrap().devices()[0].id();
+    let moved_device = |project: &hex_project::Project, track| {
+        let track = project.track(track).unwrap();
+        if matches!(layout, NativeMoveLayout::Sine) {
+            track.instrument().unwrap().id()
+        } else {
+            track.devices().last().unwrap().id()
+        }
+    };
+    let device = moved_device(&original.project, source);
     assert!(
         !run(Request::MoveTrackDevices {
             project_generation: 0,
@@ -912,17 +939,7 @@ fn assert_native_move_history(with_utility_prefix: bool) {
         .request_complete
     );
     let moved = install_candidate(&service, &fixture).state;
-    assert_eq!(
-        moved
-            .project
-            .track(destination)
-            .unwrap()
-            .devices()
-            .last()
-            .unwrap()
-            .id(),
-        device
-    );
+    assert_eq!(moved_device(&moved.project, destination), device);
 
     let pending = run(Request::Undo);
     assert!(!pending.request_complete);

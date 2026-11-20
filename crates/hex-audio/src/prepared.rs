@@ -2664,9 +2664,9 @@ impl PublicationControl {
                     if let Some((references, binding)) = publication
                         .native_references
                         .as_ref()
-                        .zip(publication.playback.replaced_foreign_instrument())
+                        .zip(publication.playback.retired_foreign_instrument())
                     {
-                        references.retire_replaced_instrument_on_control(binding);
+                        references.retire_displaced_instrument_on_control(binding);
                     }
                     let frames = publication.pcm_frames;
                     let forwarded = publication.forwarded_pcm;
