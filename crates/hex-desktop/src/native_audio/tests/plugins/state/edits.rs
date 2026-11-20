@@ -883,6 +883,12 @@ fn late_editor_replay_retries_after_stop_refuses_queued_modulated_candidate() {
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
+fn late_editor_replay_retries_after_stop_interrupts_isolated_capture() {
+    retiring_editor_replay_roundtrip(ReplayCase::ModulatedStopAtCapture);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
 fn late_editor_replay_refusal_restores_confirmed_successor() {
     retiring_editor_replay_roundtrip(ReplayCase::Refuse);
 }
@@ -916,6 +922,7 @@ enum ReplayCase {
     ModulatedPlaying,
     ModulatedAfterStop,
     ModulatedStopAtConfirmation,
+    ModulatedStopAtCapture,
     Refuse,
     RefuseAfterNewer,
 }
@@ -968,6 +975,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             | ReplayCase::ModulatedPlaying
             | ReplayCase::ModulatedAfterStop
             | ReplayCase::ModulatedStopAtConfirmation
+            | ReplayCase::ModulatedStopAtCapture
     );
     let manual_base = authored || modulated;
     let mixed = matches!(case, ReplayCase::Mixed | ReplayCase::MixedConflict);
@@ -1294,7 +1302,9 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         std::thread::yield_now();
     };
     let stop_during_confirmation = case == ReplayCase::ModulatedStopAtConfirmation;
-    let stopped_during_replay = case == ReplayCase::ModulatedAfterStop || stop_during_confirmation;
+    let stop_during_capture = case == ReplayCase::ModulatedStopAtCapture;
+    let stopped_during_replay =
+        case == ReplayCase::ModulatedAfterStop || stop_during_confirmation || stop_during_capture;
     if (playing && manual_base) || stopped_during_replay {
         h.audio
             .as_mut()
@@ -1334,6 +1344,12 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         );
         confirm
     });
+    let deferred_capture = stop_during_capture.then(|| {
+        let (admitted, resume) = h.probe_next_replay_capture();
+        finish_group();
+        graph_publication_ready(&mut h, &admitted);
+        resume
+    });
     if stopped_during_replay {
         h.audio
             .as_mut()
@@ -1371,6 +1387,13 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         );
         confirm.send(()).unwrap();
         queued
+    } else if let Some(resume) = deferred_capture {
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        let (installed, _) = status.native_parameter_source(false).unwrap();
+        assert_eq!(installed.audio_revision, replacement_audio);
+        assert!(status.rejected_revision().is_none());
+        resume.send(()).unwrap();
+        replacement_audio
     } else {
         if manual_base {
             finish_group();
@@ -1449,6 +1472,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             | ReplayCase::ModulatedPlaying
             | ReplayCase::ModulatedAfterStop
             | ReplayCase::ModulatedStopAtConfirmation
+            | ReplayCase::ModulatedStopAtCapture
             | ReplayCase::Grouped
             | ReplayCase::Mixed
             | ReplayCase::SeveralGroups
@@ -1636,6 +1660,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
                 | ReplayCase::ModulatedStopped
                 | ReplayCase::ModulatedAfterStop
                 | ReplayCase::ModulatedStopAtConfirmation
+                | ReplayCase::ModulatedStopAtCapture
         ) {
             h.audio
                 .as_mut()

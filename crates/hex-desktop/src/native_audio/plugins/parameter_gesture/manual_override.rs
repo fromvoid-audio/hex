@@ -321,14 +321,16 @@ impl Gesture {
                 && let Some(terminal) = scratch.poll_on_control(control, &mut cancelled)
             {
                 live.scratch = None;
-                return terminal.map_err(refused).map(|base| {
-                    Prepared::OverrideCaptured(Box::new(PluginParameterOverride {
-                        source: live.source.context,
-                        class: live.class,
-                        parameter: self.origin.parameter,
-                        base,
-                    }))
-                });
+                return terminal
+                    .map_err(|error| refused(error.to_string()))
+                    .map(|base| {
+                        Prepared::OverrideCaptured(Box::new(PluginParameterOverride {
+                            source: live.source.context,
+                            class: live.class,
+                            parameter: self.origin.parameter,
+                            base,
+                        }))
+                    });
             }
             if Instant::now() >= deadline {
                 return Err(refused("vst3 manual base capture is still settling"));

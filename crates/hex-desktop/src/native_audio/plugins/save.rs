@@ -281,7 +281,7 @@ impl Plugins {
                     let mut cancelled =
                         || cancellation.is_cancelled() || std::time::Instant::now() >= deadline;
                     if let Some(terminal) = scratch.poll_on_control(control, &mut cancelled) {
-                        entry.captured = Some(terminal?);
+                        entry.captured = Some(terminal.map_err(|error| error.to_string())?);
                         break;
                     }
                     edits::poll_control(control);
