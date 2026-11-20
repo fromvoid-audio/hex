@@ -74,11 +74,21 @@ impl SessionPlayback {
         let (source, donor) = source?;
         let (destination, receiver) = destination?;
         let source_id = donor.source_id?;
-        // Current authored voices carry their own gate. Deferred voices from
-        // earlier edits need a separate ownership proof before they can move.
+        let donor_track = donor.canonical_track_id()?;
+        // An earlier cut may still own a held gate. Only transfer releases
+        // already carried by this exact generator on its current output.
         if previous.releases.iter().any(|release| {
-            release.location.tail_group().is_none()
-                && [source, destination].contains(&release.location.track_index())
+            let output = release.location.track_index();
+            release.end_frame() > previous.performance_frame
+                && release.location.tail_group().is_none()
+                && [source, destination].contains(&output)
+                && !(output == source
+                    && release.source_origin.is_some_and(|origin| {
+                        origin.source == source_id
+                            && origin.receiver == donor_track
+                            && origin.moved_sine
+                            && origin.follows_current_configuration
+                    }))
         }) {
             return None;
         }
