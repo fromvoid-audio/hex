@@ -179,7 +179,14 @@ fn shutdown_retains_every_pending_page_and_honors_only_exact_disposition() {
     let mode = match std::env::var(CHILD) {
         Ok(mode) => mode,
         Err(_) => {
-            for mode in ["empty", "backlog", "unclaimed", "acknowledged", "stale_ack"] {
+            for mode in [
+                "empty",
+                "backlog",
+                "unclaimed",
+                "acknowledged",
+                "stale_ack",
+                "active",
+            ] {
                 let path = std::env::temp_dir()
                     .join(format!("hex-editor-shutdown-{}-{mode}", std::process::id()));
                 std::fs::create_dir(&path).unwrap();
@@ -191,9 +198,13 @@ fn shutdown_retains_every_pending_page_and_honors_only_exact_disposition() {
                         "--nocapture",
                     ])
                     .env(CHILD, mode)
-                    .env("HEX_ORIGINAL_INSTANCE_VARIANT", "116")
+                    .env(
+                        "HEX_ORIGINAL_INSTANCE_VARIANT",
+                        if mode == "active" { "147" } else { "116" },
+                    )
                     .env("HEX_ORIGINAL_INSTANCE_RELEASE", path.join("release"))
                     .env("HEX_ORIGINAL_INSTANCE_TRACE", path.join("trace"))
+                    .env("HEX_ORIGINAL_EDITOR_END_RELEASE", path.join("end"))
                     .output()
                     .unwrap();
                 std::fs::remove_dir_all(path).unwrap();
@@ -259,8 +270,27 @@ fn shutdown_retains_every_pending_page_and_honors_only_exact_disposition() {
     }
 
     root.close();
+    if mode == "active" {
+        let lease = lease.as_mut().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            match lease.poll() {
+                Ok(Progress::Batch(_, batch)) => {
+                    assert_active_gesture_begin(batch.edits.as_slice());
+                    // The live read delivered Begin. The unprocessed Perform
+                    // still belongs to this worker. Leave the page unacknowledged.
+                    break;
+                }
+                Ok(Progress::Pending)
+                | Err("native preparation is busy" | "native edit observation is busy") => {}
+                _ => panic!("original worker did not deliver the active gesture prefix"),
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+    }
     let has_project_disposition = matches!(mode.as_str(), "acknowledged" | "stale_ack");
-    if !has_project_disposition {
+    if !has_project_disposition && mode != "active" {
         lease.take().unwrap().handoff_on_shutdown(true, None, None);
     }
     root.advance_on_control(false);
@@ -292,6 +322,12 @@ fn shutdown_retains_every_pending_page_and_honors_only_exact_disposition() {
     };
     assert!(root.ingest_native_endpoint(returned.unwrap()).is_ok());
 
+    if mode == "active" {
+        // Reclaim the returned endpoint before handing off the live reader.
+        root.advance_on_control(false);
+        assert!(!lock(&root.bank).sources.slots[0].endpoint_loaned);
+        lease.take().unwrap().handoff_on_shutdown(true, None, None);
+    }
     if has_project_disposition {
         let mut lease = lease.take().unwrap();
         let deadline = Instant::now() + Duration::from_secs(1);
@@ -348,19 +384,37 @@ fn shutdown_retains_every_pending_page_and_honors_only_exact_disposition() {
         let work = lock(&root.work);
         let cell = &work.sources.cells[0];
         let drain = cell.retiring_edits.as_ref().unwrap();
-        assert_ordered_shutdown_receipts(&drain.retained);
-        assert!(matches!(drain.stage, Stage::Disposition));
-        assert!(drain.ordinal > 2 && drain.delivery.is_none());
-        let expected = if mode == "stale_ack" {
-            "native retiring edit disposition differs"
+        assert!(drain.delivery.is_none());
+        let expected = if mode == "active" {
+            assert_active_gesture_begin(&drain.retained);
+            assert!(matches!(drain.stage, Stage::Seal(None)));
+            assert!(
+                matches!(cell.owner.as_ref(), Some(Owner::Effect(owner)) if owner.binding() == binding)
+            );
+            "native editor gesture remains active"
         } else {
-            "vst3 editor receipts need project disposition after shutdown"
+            assert_ordered_shutdown_receipts(&drain.retained);
+            assert!(matches!(drain.stage, Stage::Disposition));
+            assert!(drain.ordinal > 2);
+            if mode == "stale_ack" {
+                "native retiring edit disposition differs"
+            } else {
+                "vst3 editor receipts need project disposition after shutdown"
+            }
         };
         assert!(matches!(
             cell.cleanup_error, Some(hex_plugin_host::Error::Protocol(reason)) if reason == expected
         ));
         assert!(root.cleanup_failed());
     }
+}
+
+fn assert_active_gesture_begin(edits: &[ParameterEdit]) {
+    let [begin] = edits else {
+        panic!("expected the active gesture's Begin, got {edits:?}");
+    };
+    assert_eq!((begin.sequence, begin.gesture, begin.id), (1, 1, 7));
+    assert_eq!(begin.kind, ParameterEditKind::Begin);
 }
 
 fn assert_ordered_shutdown_receipts(edits: &[ParameterEdit]) {
