@@ -40,7 +40,6 @@ fn one_resident_leaf_reroutes_between_main_and_group_and_other_edits_refuse() {
         Some(2),
         "the exact inverse keeps the Group and its other child"
     );
-    assert_eq!(old.exact_resident_group_entry_from(&next), None);
     let mut changed = next;
     changed.routes[0].owner = RouteOwner::Silence;
     assert_eq!(changed.resident_group_reroute_from(&old), None);

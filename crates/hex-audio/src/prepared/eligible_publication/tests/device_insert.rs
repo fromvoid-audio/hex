@@ -4,6 +4,8 @@ use hex_engine::{AudioCandidateEffects, AudioSourceContext, Frame};
 use hex_project::{Command, Editor};
 use std::time::{Duration, Instant};
 
+mod position;
+
 #[test]
 fn verified_device_insert_preserves_audio_before_approval_and_commits_at_the_held_cut() {
     check_insert(Insert::Confirmed);
