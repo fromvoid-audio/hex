@@ -1112,6 +1112,16 @@ fn confirmed_return_vst_removal_cuts_latency_without_running_the_old_endpoint() 
 }
 
 #[test]
+fn confirmed_track_vst_removal_cuts_latency_without_running_the_old_endpoint() {
+    verify_effect_removal(0, true, false);
+}
+
+#[test]
+fn confirmed_main_vst_removal_cuts_latency_without_running_the_old_endpoint() {
+    verify_effect_removal(2, true, false);
+}
+
+#[test]
 fn confirmed_return_latency_removal_retains_only_an_unshifted_worker() {
     verify_latency_edit_worker_clock(1, false);
 }

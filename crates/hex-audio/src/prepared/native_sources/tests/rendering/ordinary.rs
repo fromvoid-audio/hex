@@ -413,6 +413,168 @@ fn approved_track_latency_reorder_refuses_to_shift_the_original_native_endpoint(
     verify_effect_cut_with_hosted_successor(0, EffectChange::ReorderLimiter);
 }
 
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn approved_hosted_effect_removal_reaps_the_worker_during_playback() {
+    const QUANTUM: usize = 128;
+    let _serial = serial();
+    for owner in [0, 1, 2] {
+        let mut f = fixture_with_quantum("infinite", owner, QUANTUM as u16);
+        let binding = f.binding;
+        let root = f.control.native_candidate_root();
+        let track = &f.editor.project().tracks()[0];
+        let (track, asset) = (track.id(), *f.media.keys().next().unwrap());
+        f.editor
+            .execute(Command::PlaceClip {
+                track,
+                asset,
+                start: 32,
+                duration: 480_000,
+                source_offset: 0,
+                source_length: 32,
+                looping: true,
+            })
+            .unwrap();
+        let predecessor_playback = compile(&f, true);
+        assert!(predecessor_playback.foreign_nodes_on_control().any(|node| {
+            node.foreign_processor().is_some_and(|processor| {
+                processor.binding() == Some(binding)
+                    && processor.output_tail() == hex_lattice::OutputTail::Unbounded
+            })
+        }));
+        publish(
+            &mut f.control,
+            predecessor_playback,
+            PublicationPolicy::InheritRuntime,
+        );
+        f.control.command(PlaybackCommand::Play).unwrap();
+        let mut completed = 0;
+        let mut render_old = |f: &mut OrdinaryFixture| {
+            let pcm = physical_block::<QUANTUM>(f);
+            completed += 1;
+            replacement::wait_for_blocks(&root, binding, completed);
+            pcm
+        };
+        for _ in 0..4 {
+            render_old(&mut f);
+        }
+        let predecessor = f.control.status.recording_source().unwrap();
+        let removed = f
+            .editor
+            .project()
+            .devices()
+            .find(|device| device.id().value() == binding.instance)
+            .unwrap()
+            .id();
+        f.editor.execute(Command::RemoveDevice(removed)).unwrap();
+        let successor = compile(&f, false);
+        let fence = f.control.capture_fresh_runtime_fence().unwrap();
+        let revision = publish_in_context(
+            &mut f.control,
+            successor,
+            PublicationPolicy::DeviceInsert { predecessor, fence },
+            hex_engine::AudioSourceContext {
+                editor_revision: context().editor_revision + 1,
+                ..context()
+            },
+        );
+        let refused = f.control.fresh_runtime_receipt(revision).unwrap();
+        let waiting = render_old(&mut f);
+        assert!(waiting.iter().all(|frame| *frame != [0.0; 2]));
+        assert_eq!(f.control.status.recording_source(), Some(predecessor));
+        assert_eq!(
+            refused.state(),
+            PublicationReceiptState::Refused(
+                PlaybackHandoffRejection::DeviceInsertNeedsConfirmation
+            )
+        );
+        let consent = f.control.offer_device_insert_consent(&refused).unwrap();
+        f.control.reclaim();
+        let successor = compile(&f, false);
+        let mut confirmed = None;
+        let revision = f
+            .control
+            .publish_confirmed_device_insert_with_receipt_on_control(
+                successor,
+                consent,
+                |receipt| confirmed = Some(receipt.clone()),
+                |_| Ok::<_, ()>(()),
+            )
+            .unwrap();
+        let confirmed = confirmed.unwrap();
+        let position = f.control.status.position.load(Acquire);
+        let fade_out = render_old(&mut f);
+        assert_eq!(fade_out[QUANTUM - 1], [0.0; 2]);
+        assert_eq!(f.control.status.recording_source(), Some(predecessor));
+        physical_block::<QUANTUM>(&mut f);
+        assert_eq!(
+            confirmed.state(),
+            PublicationReceiptState::Installed,
+            "owner {owner}"
+        );
+        let installed = AppliedAudioSource {
+            context: consent.candidate_context(),
+            audio_revision: revision,
+            ..predecessor
+        };
+        assert_eq!(f.control.status.recording_source(), Some(installed));
+        assert_eq!(
+            f.control.status.position.load(Acquire),
+            position + 2 * QUANTUM as u64
+        );
+        assert_eq!(
+            crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(
+                &root, binding,
+            ),
+            Some(completed),
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !f.control.retire_native_source_preparation(binding) {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let returned = loop {
+            f.control.reclaim();
+            if let Some(returned) = f.control.recover_native_source_preparation(binding) {
+                break returned;
+            }
+            physical_block::<QUANTUM>(&mut f);
+            assert!(
+                Instant::now() < deadline,
+                "removed worker must return during play"
+            );
+            std::thread::yield_now();
+        };
+        assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+        assert!(
+            matches!(returned.disposal, native::PreparationDisposal::Reaped(retired) if retired.status.success())
+        );
+        for _ in 0..3 {
+            physical_block::<QUANTUM>(&mut f);
+        }
+        let steady = physical_block::<QUANTUM>(&mut f);
+        let dry = if owner == 1 {
+            [0.5, -1.0]
+        } else {
+            [0.25, -0.5]
+        };
+        assert_eq!(steady, [dry; QUANTUM]);
+        assert!(f.control.status.playing.load(Acquire));
+        assert_eq!(f.control.status.recording_source(), Some(installed));
+        let OrdinaryFixture {
+            control,
+            data,
+            errors,
+            retirement,
+            ..
+        } = f;
+        let mut retirement = close_backend(data, errors, retirement);
+        drop(control);
+        finish(&mut retirement);
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum EffectChange {
     RemoveEq,
