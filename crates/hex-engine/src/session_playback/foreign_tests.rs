@@ -1113,19 +1113,37 @@ fn confirmed_return_vst_removal_cuts_latency_without_running_the_old_endpoint() 
 
 #[test]
 fn confirmed_return_latency_removal_retains_only_an_unshifted_worker() {
-    verify_latency_removal_retains_only_an_unshifted_worker(false);
+    verify_latency_edit_worker_clock(1, false);
 }
 
 #[test]
 fn confirmed_main_latency_removal_retains_only_an_unshifted_worker() {
-    verify_latency_removal_retains_only_an_unshifted_worker(true);
+    verify_latency_edit_worker_clock(2, false);
 }
 
-fn verify_latency_removal_retains_only_an_unshifted_worker(main: bool) {
+#[test]
+fn confirmed_track_latency_removal_retains_only_an_unshifted_worker() {
+    verify_latency_edit_worker_clock(0, false);
+}
+
+#[test]
+fn confirmed_track_latency_reorder_refuses_to_shift_the_worker() {
+    verify_latency_edit_worker_clock(0, true);
+}
+
+#[test]
+fn confirmed_return_latency_reorder_refuses_to_shift_the_worker() {
+    verify_latency_edit_worker_clock(1, true);
+}
+
+fn verify_latency_edit_worker_clock(location: usize, reorder: bool) {
     use hex_devices::limiter::DEFINITION as LIMITER;
 
     const CUT: usize = 128;
     for trailing in [true, false] {
+        if trailing && reorder {
+            continue;
+        }
         let mut f = fixture(&[&[]], 512);
         for media in f.media.values_mut() {
             *media = crate::Audio::new(
@@ -1136,7 +1154,8 @@ fn verify_latency_removal_retains_only_an_unshifted_worker(main: bool) {
             )
             .unwrap();
         }
-        let bus = if main {
+        let track = f.tracks[0];
+        let bus = if location != 1 {
             None
         } else {
             let Created::ReturnTrack(bus) = f
@@ -1150,7 +1169,7 @@ fn verify_latency_removal_retains_only_an_unshifted_worker(main: bool) {
             };
             f.editor
                 .execute(Command::SetReturnSend {
-                    track: f.tracks[0],
+                    track,
                     return_track: bus,
                     gain: 0.5,
                 })
@@ -1158,13 +1177,18 @@ fn verify_latency_removal_retains_only_an_unshifted_worker(main: bool) {
             Some(bus)
         };
         let mut insert = |state| {
-            let command = match bus {
-                Some(bus) => Command::InsertReturnDevice {
+            let command = match (location, bus) {
+                (0, _) => Command::InsertDevice {
+                    track,
+                    before: None,
+                    state,
+                },
+                (_, Some(bus)) => Command::InsertReturnDevice {
                     return_track: bus,
                     before: None,
                     state,
                 },
-                None => Command::InsertMainDevice {
+                (_, None) => Command::InsertMainDevice {
                     before: None,
                     state,
                 },
@@ -1181,14 +1205,16 @@ fn verify_latency_removal_retains_only_an_unshifted_worker(main: bool) {
             let removed = insert(limiter);
             (insert(state(19).unwrap()), removed)
         };
-        let owner = bus.map_or(ProcessorChainOwner::Main, |bus| {
-            ProcessorChainOwner::Return(bus.value())
-        });
+        let owner = match (location, bus) {
+            (0, _) => ProcessorChainOwner::Track(track.value()),
+            (_, Some(bus)) => ProcessorChainOwner::Return(bus.value()),
+            (_, None) => ProcessorChainOwner::Main,
+        };
         let binding = |playback: &SessionPlayback| {
-            let chain = if main {
-                &playback.main_chain
-            } else {
-                &playback.return_chains[0]
+            let chain = match location {
+                0 => &playback.device_chains[0],
+                1 => &playback.return_chains[0],
+                _ => &playback.main_chain,
             };
             chain.foreign_bindings().flatten().next().unwrap()
         };
@@ -1215,10 +1241,25 @@ fn verify_latency_removal_retains_only_an_unshifted_worker(main: bool) {
             )
         };
         let before = prepare(f.editor.project());
-        f.editor.execute(Command::RemoveDevice(removed)).unwrap();
+        let edit = if reorder {
+            Command::ReorderDevices {
+                owner: bus.map_or(
+                    hex_project::DeviceChainOwner::Track(track),
+                    hex_project::DeviceChainOwner::Return,
+                ),
+                selected: hex_project::DeviceSelectionIds::new(&[removed]).unwrap(),
+                before: None,
+            }
+        } else {
+            Command::RemoveDevice(removed)
+        };
+        f.editor.execute(edit).unwrap();
         let after = prepare(f.editor.project());
         assert_eq!(before.arrangement().main_latency_frames(), 91);
-        assert_eq!(after.arrangement().main_latency_frames(), 19);
+        assert_eq!(
+            after.arrangement().main_latency_frames(),
+            if reorder { 91 } else { 19 }
+        );
         let render = |runtime: &mut SessionPlayback, worker: &mut Borrowed, pcm: &mut [Frame]| {
             worker.next_offset = 0;
             runtime
@@ -1234,17 +1275,21 @@ fn verify_latency_removal_retains_only_an_unshifted_worker(main: bool) {
         let original_binding = binding(&donor);
         let mut unapproved = SessionPlayback::new(Arc::clone(&after)).unwrap();
         unapproved.require_continuous_insert = true;
-        assert!(matches!(
-            unapproved.try_inherit_state_live_from(&mut donor),
-            Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
-        ));
+        let offer = unapproved.try_inherit_state_live_from(&mut donor);
+        assert!(
+            matches!(
+                offer,
+                Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+            ),
+            "location {location}, trailing {trailing}, reorder {reorder}, offer {offer:?}"
+        );
         donor.set_playing_at_device_insert_cut(false);
         let mut candidate = SessionPlayback::new(Arc::clone(&after)).unwrap();
         let approval = candidate.try_inherit_state_at_device_insert_cut(&mut donor);
         if !trailing {
             assert!(
                 matches!(approval, Err(SessionPlaybackError::LatencyLayoutChanged)),
-                "retained worker with a changed input clock: {approval:?}"
+                "location {location}, reorder {reorder}, cut {approval:?}"
             );
             assert_eq!(donor.performance_frame, CUT as u64);
             donor.set_playing_at_device_insert_cut(true);
@@ -1258,7 +1303,7 @@ fn verify_latency_removal_retains_only_an_unshifted_worker(main: bool) {
             render(&mut donor, &mut worker, &mut actual);
             render(&mut reference, &mut oracle, &mut expected);
             assert_eq!(actual, expected);
-            if main {
+            if location == 2 {
                 // Stop starts a new processing epoch, so the same hardware
                 // can take the shorter input clock after the reset.
                 donor.apply(SessionPlaybackCommand::Stop).unwrap();
@@ -1270,7 +1315,7 @@ fn verify_latency_removal_retains_only_an_unshifted_worker(main: bool) {
             }
             continue;
         }
-        approval.unwrap();
+        approval.unwrap_or_else(|error| panic!("location {location}: {error:?}"));
         assert_eq!(candidate.arrangement_frame, CUT as u64);
         assert_eq!(candidate.performance_frame, CUT as u64);
         assert_eq!(binding(&candidate), original_binding);
@@ -1281,7 +1326,7 @@ fn verify_latency_removal_retains_only_an_unshifted_worker(main: bool) {
         let mut oracle = Borrowed::new(owner, hosted.value());
         prefix.apply(SessionPlaybackCommand::Play).unwrap();
         render(&mut prefix, &mut oracle, &mut [[0.0; 2]; CUT]);
-        let mut reference = if main {
+        let mut reference = if location == 2 {
             // A Main-only edit leaves the pre-Main compensation map intact.
             prefix
         } else {
@@ -1295,7 +1340,10 @@ fn verify_latency_removal_retains_only_an_unshifted_worker(main: bool) {
         render(&mut candidate, &mut worker, &mut actual);
         assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
         for (index, (actual, expected)) in actual.into_iter().zip(expected).enumerate() {
-            assert_eq!(actual, expected, "post-cut sample {index}, main={main}");
+            assert_eq!(
+                actual, expected,
+                "post-cut sample {index}, location {location}"
+            );
         }
         assert_eq!(worker.processed, CUT + 64);
     }

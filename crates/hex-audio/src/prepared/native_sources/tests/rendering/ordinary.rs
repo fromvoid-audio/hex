@@ -368,47 +368,60 @@ fn block(f: &mut OrdinaryFixture) -> [Frame; 8] {
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn fitting_track_effect_removal_keeps_one_native_endpoint_through_the_stage_fade() {
-    verify_effect_removal_with_hosted_successor(0, RemovedEffect::Eq);
+    verify_effect_cut_with_hosted_successor(0, EffectChange::RemoveEq);
 }
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn fitting_main_effect_removal_keeps_one_native_endpoint_through_the_stage_fade() {
-    verify_effect_removal_with_hosted_successor(2, RemovedEffect::Eq);
+    verify_effect_cut_with_hosted_successor(2, EffectChange::RemoveEq);
 }
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn fitting_return_effect_removal_keeps_one_native_endpoint_through_the_stage_fade() {
-    verify_effect_removal_with_hosted_successor(1, RemovedEffect::Eq);
+    verify_effect_cut_with_hosted_successor(1, EffectChange::RemoveEq);
 }
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn approved_return_latency_reduction_keeps_the_original_native_endpoint() {
-    verify_effect_removal_with_hosted_successor(1, RemovedEffect::TrailingLimiter);
+    verify_effect_cut_with_hosted_successor(1, EffectChange::RemoveTrailingLimiter);
 }
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn approved_main_latency_reduction_keeps_the_original_native_endpoint() {
-    verify_effect_removal_with_hosted_successor(2, RemovedEffect::TrailingLimiter);
+    verify_effect_cut_with_hosted_successor(2, EffectChange::RemoveTrailingLimiter);
 }
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn approved_main_latency_reduction_refuses_to_shift_the_original_native_endpoint() {
-    verify_effect_removal_with_hosted_successor(2, RemovedEffect::LeadingLimiter);
+    verify_effect_cut_with_hosted_successor(2, EffectChange::RemoveLeadingLimiter);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn approved_track_latency_reduction_keeps_the_original_native_endpoint() {
+    verify_effect_cut_with_hosted_successor(0, EffectChange::RemoveTrailingLimiter);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn approved_track_latency_reorder_refuses_to_shift_the_original_native_endpoint() {
+    verify_effect_cut_with_hosted_successor(0, EffectChange::ReorderLimiter);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum RemovedEffect {
-    Eq,
-    LeadingLimiter,
-    TrailingLimiter,
+enum EffectChange {
+    RemoveEq,
+    RemoveLeadingLimiter,
+    RemoveTrailingLimiter,
+    ReorderLimiter,
 }
 
-fn verify_effect_removal_with_hosted_successor(location: usize, removed_effect: RemovedEffect) {
+fn verify_effect_cut_with_hosted_successor(location: usize, change: EffectChange) {
     use hex_lattice_contract::NativeDeviceMetadata;
 
     const QUANTUM: usize = 128;
@@ -416,8 +429,8 @@ fn verify_effect_removal_with_hosted_successor(location: usize, removed_effect: 
     let mut f = fixture_with_quantum("processing", location, QUANTUM as u16);
     let track = &f.editor.project().tracks()[0];
     let track = track.id();
-    let latency_cut = removed_effect != RemovedEffect::Eq;
-    let insert_before_host = removed_effect != RemovedEffect::TrailingLimiter;
+    let latency_cut = change != EffectChange::RemoveEq;
+    let insert_before_host = change != EffectChange::RemoveTrailingLimiter;
     let state = if latency_cut {
         hex_devices::limiter::DEFINITION.default_state().unwrap()
     } else {
@@ -442,8 +455,8 @@ fn verify_effect_removal_with_hosted_successor(location: usize, removed_effect: 
             state,
         },
     };
-    let Created::Device(removed) = f.editor.execute(insert).unwrap() else {
-        panic!("device to remove");
+    let Created::Device(edited) = f.editor.execute(insert).unwrap() else {
+        panic!("device to edit");
     };
     f.editor
         .execute(Command::PlaceClip {
@@ -494,7 +507,16 @@ fn verify_effect_removal_with_hosted_successor(location: usize, removed_effect: 
         check_block(running_pcm, 1);
     }
     let predecessor = f.control.status.recording_source().unwrap();
-    f.editor.execute(Command::RemoveDevice(removed)).unwrap();
+    let edit = if change == EffectChange::ReorderLimiter {
+        Command::ReorderDevices {
+            owner: hex_project::DeviceChainOwner::Track(track),
+            selected: hex_project::DeviceSelectionIds::new(&[edited]).unwrap(),
+            before: None,
+        }
+    } else {
+        Command::RemoveDevice(edited)
+    };
+    f.editor.execute(edit).unwrap();
     let replacement = compile(&f, true);
     let fence = f.control.capture_fresh_runtime_fence().unwrap();
     let revision = publish_in_context(
@@ -541,7 +563,11 @@ fn verify_effect_removal_with_hosted_successor(location: usize, removed_effect: 
         );
         assert_eq!(f.control.status.recording_source(), Some(predecessor));
         render(&mut f);
-        let (state, source) = if removed_effect == RemovedEffect::LeadingLimiter {
+        let shifted = matches!(
+            change,
+            EffectChange::RemoveLeadingLimiter | EffectChange::ReorderLimiter
+        );
+        let (state, source) = if shifted {
             (
                 PublicationReceiptState::Refused(PlaybackHandoffRejection::LatencyLayoutChanged),
                 predecessor,
@@ -568,7 +594,7 @@ fn verify_effect_removal_with_hosted_successor(location: usize, removed_effect: 
             render(&mut f);
         }
         let steady = render(&mut f);
-        if removed_effect == RemovedEffect::LeadingLimiter {
+        if shifted {
             assert!(steady.iter().all(|frame| *frame != [0.0; 2]));
             assert!(f.control.status.playing.load(Acquire));
             assert_eq!(f.control.status.recording_source(), Some(predecessor));
