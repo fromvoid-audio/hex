@@ -13,16 +13,19 @@ fn verified_running_main_vst3_replacement_installs_at_its_exact_receipt() {
     use std::sync::atomic::AtomicUsize;
 
     let _native = native_fixture();
+    let files = Files::new();
+    let directory = files.0.canonicalize().unwrap();
+    hex_ui::write_plugin_effect_test_catalog(&directory, &selection(), "Fx", 0).unwrap();
     let progress = Arc::new(Mutex::new(
         crate::native_audio::plugins::PreparationObservation::default(),
     ));
     let records = Arc::new(AtomicUsize::new(0));
     let mut h = super::super::verified_gain::native_harness_with(|sink| {
         sink.plugins = crate::native_audio::plugins::Plugins::with_fixture(host(), None);
+        sink.plugins.catalog = Some(directory.join("plugin-catalog.json"));
         sink.plugins.progress = Some(Arc::clone(&progress));
         sink.plugins.records = Some(Arc::clone(&records));
     });
-    let files = Files::new();
     h.next();
     h.open();
     h.run(Request::NewWithAudioMode {
