@@ -290,6 +290,21 @@ impl BrowserFixture {
 #[gpui::test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn rendered_eq_drag_keeps_its_release_paint_while_vst3_prepares(cx: &mut TestAppContext) {
+    rendered_pending_eq_case(cx, PendingEqFinish::Cancel);
+}
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn rendered_pending_vst3_save_and_undo_preserve_acknowledged_eq(cx: &mut TestAppContext) {
+    rendered_pending_eq_case(cx, PendingEqFinish::SaveInstallUndo);
+}
+
+enum PendingEqFinish {
+    Cancel,
+    SaveInstallUndo,
+}
+
+fn rendered_pending_eq_case(cx: &mut TestAppContext, finish: PendingEqFinish) {
     use hex_engine::eq::{EqState, Node, NodeId};
 
     let _native = native_fixture();
@@ -406,11 +421,18 @@ fn rendered_eq_drag_keeps_its_release_paint_while_vst3_prepares(cx: &mut TestApp
             .is_some_and(|(_, playing)| playing)
     );
 
-    click(&mut fixture.visual, "device-chain-loading-cancel");
-    until("cancelled insertion retires from the UI", || {
-        fixture.step(cx);
-        !fixture.view(cx).pending && fixture.records.load(Acquire) == 0
-    });
+    match finish {
+        PendingEqFinish::Cancel => {
+            click(&mut fixture.visual, "device-chain-loading-cancel");
+            until("cancelled insertion retires from the UI", || {
+                fixture.step(cx);
+                !fixture.view(cx).pending && fixture.records.load(Acquire) == 0
+            });
+        }
+        PendingEqFinish::SaveInstallUndo => {
+            save_and_install_with_pending_eq(cx, &mut fixture, device, &edited);
+        }
+    }
     assert_eq!(current(&fixture, cx), edited);
     assert_eq!(
         fixture
@@ -426,6 +448,93 @@ fn rendered_eq_drag_keeps_its_release_paint_while_vst3_prepares(cx: &mut TestApp
     );
     fixture.visual.update(|window, _| window.remove_window());
     fixture.visual.run_until_parked();
+}
+
+fn save_and_install_with_pending_eq(
+    cx: &mut TestAppContext,
+    fixture: &mut BrowserFixture,
+    device: hex_project::DeviceId,
+    edited: &hex_engine::eq::EqState,
+) {
+    let selected = fixture.files.0.join("pending-eq.hex");
+    let path = fixture.files.0.join("pending-eq/pending-eq.hex");
+    let baseline = fixture.view(cx).state.unwrap();
+    fixture.visual.simulate_keystrokes("cmd-s");
+    until("Save As picker while hosted Facts remain pending", || {
+        fixture.step(cx);
+        assert!(fixture.view(cx).pending);
+        cx.did_prompt_for_new_path()
+    });
+    cx.simulate_new_path_selection(|_| Some(selected.clone()));
+    until(
+        "saved only the installed EQ while Facts remain pending",
+        || {
+            fixture.step(cx);
+            let view = fixture.view(cx);
+            assert!(view.error.is_none() && view.pending, "{:?}", view.error);
+            view.state.is_some_and(|state| {
+                assert_eq!(state.revision, baseline.revision);
+                !state.unsaved && state.document_path.as_deref() == Some(path.as_path())
+            })
+        },
+    );
+    let saved = hex_storage::load(path).unwrap();
+    assert_eq!(
+        saved.track(fixture.track).unwrap().devices(),
+        baseline.project.track(fixture.track).unwrap().devices()
+    );
+    assert_eq!(saved.track(fixture.track).unwrap().devices().len(), 1);
+    assert_eq!(
+        &hex_engine::eq::EqState::decode(saved.device(device).unwrap().state()).unwrap(),
+        edited
+    );
+
+    fixture.resume.send(()).unwrap();
+    until("the exact rebased hosted insertion installs", || {
+        fixture.step(cx);
+        if let Some((title, _)) = cx.pending_prompt() {
+            assert_eq!(title, "interrupt playback to insert this device?");
+            cx.simulate_prompt_answer("proceed");
+        }
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        !view.pending
+            && view.state.is_some_and(|state| {
+                state.revision == baseline.revision + 1
+                    && state.project.track(fixture.track).unwrap().devices().len() == 2
+                    && view
+                        .applied
+                        .is_some_and(|applied| applied.context.editor_revision == state.revision)
+            })
+    });
+    let installed = fixture.view(cx).state.unwrap();
+    assert_eq!(
+        installed.project.device(device),
+        baseline.project.device(device)
+    );
+    fixture.visual.simulate_keystrokes("space");
+    until(
+        "transport paused before undoing the installed effect",
+        || {
+            fixture.step(cx);
+            fixture
+                .view(cx)
+                .transport
+                .is_some_and(|(_, playing)| !playing)
+        },
+    );
+    click(&mut fixture.visual, "undo · cmd+z");
+    until("one Undo removes only the installed hosted effect", || {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        view.state.is_some_and(|state| {
+            state.revision == installed.revision + 1
+                && state.can_redo
+                && state.project.track(fixture.track).unwrap().devices()
+                    == saved.track(fixture.track).unwrap().devices()
+        })
+    });
 }
 
 #[gpui::test]
