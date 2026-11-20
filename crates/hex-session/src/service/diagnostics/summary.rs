@@ -509,6 +509,9 @@ pub(super) fn command(value: &Command) -> Description {
         Command::InsertMainDevice { before, state } => {
             describe!("insert_main_device"; ["before" => before.map(|id| id.value()), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
         }
+        Command::ReplaceMainDevice { replacing, state } => {
+            describe!("replace_main_device"; ["replacing" => replacing.value(), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
+        }
         Command::MoveMainDevice { device, before } => {
             describe!("move_main_device"; ["device" => device.value(), "before" => before.map(|id| id.value())]; omitted="")
         }
