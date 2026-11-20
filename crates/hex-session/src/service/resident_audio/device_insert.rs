@@ -11,6 +11,8 @@ pub enum GraphEditOperation {
     InsertDevice,
     RemoveDevice,
     MoveDevice,
+    /// A single Resident track reparent, confirmed by its exact graph receipt.
+    MoveTrack,
     RemoveTrack,
 }
 
@@ -88,6 +90,7 @@ impl Operation {
             Self::Device(GraphEditOperation::InsertDevice) => "device inserted",
             Self::Device(GraphEditOperation::RemoveDevice) => "device removed",
             Self::Device(GraphEditOperation::MoveDevice) => "device moved",
+            Self::Device(GraphEditOperation::MoveTrack) => "track moved",
             Self::Device(GraphEditOperation::RemoveTrack) => "track removed",
             Self::HostedHistory(_) => "history committed",
             Self::Tempo => "tempo applied",
@@ -507,9 +510,7 @@ fn insert_receipt(
         .submission
         .and_then(|submission| sink.device_insert_receipt(submission))
         .filter(|receipt| Some(receipt.submission()) == snapshot.submission)
-        .ok_or(SessionError::Invalid(
-            "device insertion receipt unavailable",
-        ))
+        .ok_or(SessionError::Invalid("audio edit receipt unavailable"))
 }
 
 fn hosted_history_operation(before: &Project, after: &Project) -> Option<GraphEditOperation> {
@@ -571,6 +572,11 @@ fn resident_graph_edit_operation(
     match command {
         Command::RemoveReturnTrack(_) => Some(GraphEditOperation::RemoveTrack),
         Command::PasteDevices { .. } => Some(GraphEditOperation::InsertDevice),
+        // Resident route edits share exact receipt custody; the catalog/Verified
+        // dispatcher keeps its existing route publication path.
+        Command::ReparentTracks { tracks, .. } if tracks.ids().len() == 1 => {
+            Some(GraphEditOperation::MoveTrack)
+        }
         _ => catalog_graph_edit_operation(command, controlled),
     }
 }
@@ -987,7 +993,10 @@ impl Session {
                     .ok_or(SessionError::Invalid("unsupported staged graph edit"))?
             };
             let edit = self.editor.stage_edit(command)?;
-            if (operation == GraphEditOperation::MoveDevice || proposal_control.is_some())
+            if (matches!(
+                operation,
+                GraphEditOperation::MoveDevice | GraphEditOperation::MoveTrack
+            ) || proposal_control.is_some())
                 && edit.project() == self.project()
             {
                 return Ok(None);
@@ -1010,7 +1019,11 @@ impl Session {
                     })
                 })
                 .ok_or(SessionError::Invalid(
-                    "device edit needs the current installed audio graph",
+                    if operation == GraphEditOperation::MoveTrack {
+                        "track move needs the current installed audio graph"
+                    } else {
+                        "device edit needs the current installed audio graph"
+                    },
                 ))?;
             let context = hex_engine::AudioSourceContext {
                 editor_revision: context.editor_revision.saturating_add(1),
