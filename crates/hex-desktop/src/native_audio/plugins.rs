@@ -1149,17 +1149,27 @@ impl Plugins {
         {
             return;
         }
-        let resident = desired.effect_preparation();
+        self.retire_absent_catalog_sources(desired);
+        self.installed_removals_checked = Some(context);
+    }
+
+    /// Called only after the exact canonical graph installs. Source absence
+    /// ends editor admission while Root retains actual runtime custody.
+    pub(super) fn retire_absent_catalog_sources(&mut self, desired: &CanonicalAudioSourceSnapshot) {
+        if self.catalog.is_none() {
+            return;
+        }
+        let context = desired.context();
+        let preparation = desired.effect_preparation();
         for source in &mut self.sources {
             if source.accepted
                 && source.project_generation == context.project_generation
-                && resident.plugin_device_bypassed(source.device).is_none()
+                && preparation.plugin_device_bypassed(source.device).is_none()
             {
                 source.accepted = false;
                 source.retiring = true;
             }
         }
-        self.installed_removals_checked = Some(context);
     }
     pub(super) fn prepare_edit_sources(
         &mut self,
