@@ -199,17 +199,15 @@ pub(in crate::editor) fn view(
     let source = state.waveforms.get(&clip.asset());
     // Structural edits retain their existing prepared/placement previews. The
     // amplitude path consumes this pane's same resolved events and receipt.
-    let event_source = state
-        .audio_clip_waveforms
-        .get(&clip_id)
-        .and_then(|view| view.event_source.as_ref());
+    let prepared = state.audio_clip_waveforms.get(&clip_id);
+    let event_source = prepared.and_then(|view| view.event_source.as_ref());
     let live_amplitude = placement.is_none() && operation.is_none_or(is_event_amplitude_edit);
     let frame_source = if live_amplitude {
         waveform_frame::Projection::for_display(
             &state.project,
             &clip,
             source,
-            event_source.and_then(|source| source.frame_waveform()),
+            prepared,
             None,
             Some(preview.clone()),
             gain_preview,
@@ -349,7 +347,6 @@ pub(in crate::editor) fn view(
                 .checked_add(source_root.saturating_sub(first))?
                 .checked_add(visible_start - start)?;
             let end_frame = source_frame.checked_add(visible_end - visible_start)?;
-            let prepared = state.audio_clip_waveforms.get(&clip_id);
             let fallback = if let Some(prepared) = prepared {
                 // The prepared peaks include canonical event gain. Scale only
                 // the held or pending difference on this fallback path.

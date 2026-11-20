@@ -13,7 +13,10 @@ use hex_project::{
     Asset, AudioClipEdit, AudioClipFadeClock, AudioEvent, AudioEvents, Clip, ClipFade, ClipGain,
     Project, Tempo, TempoMap,
 };
-use hex_session::{CachedOverrange, CachedPeak, CachedWaveform};
+use hex_session::{
+    CachedOverrange, CachedPeak, CachedWaveform,
+    service::{AudioClipWaveform, AudioGroupEventWaveforms},
+};
 use std::{ops::Range, sync::Arc};
 
 pub(super) const RANGE_BUDGET: usize = 16_384;
@@ -27,8 +30,27 @@ pub(super) struct Key {
     duration: u64,
     root: AudioClipEdit,
     prepared_frames: Option<u64>,
+    grouped: Option<GroupSources>,
     gain: ClipGain,
 }
+
+struct GroupSources(Arc<AudioGroupEventWaveforms>);
+
+impl std::fmt::Debug for GroupSources {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("GroupSources")
+            .field(&Arc::as_ptr(&self.0))
+            .finish()
+    }
+}
+
+impl PartialEq for GroupSources {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for GroupSources {}
 
 pub(super) struct Projection {
     clip: Clip,
@@ -47,12 +69,30 @@ impl Projection {
         project: &Project,
         clip: &Clip,
         original: Option<&Arc<CachedWaveform>>,
-        prepared: Option<&Arc<CachedWaveform>>,
+        prepared: Option<&AudioClipWaveform>,
         fade: Option<ClipFade>,
         events: Option<AudioEvents>,
         gain: Option<ClipGain>,
     ) -> Option<(Arc<CachedWaveform>, Arc<Self>)> {
-        let (waveform, projection) = if let Some(waveform) = prepared {
+        if let Some(view) = prepared
+            && let Some(grouped) = &view.group_event_sources
+        {
+            if project.clip(clip.id())? != clip {
+                return None;
+            }
+            let projection = Self::with_source(
+                project,
+                clip,
+                fade,
+                events,
+                gain,
+                None,
+                Some(GroupSources(Arc::clone(grouped))),
+            )?;
+            return Some((Arc::clone(&view.waveform), Arc::new(projection)));
+        }
+        let transformed = prepared.and_then(|view| view.event_source.as_ref()?.frame_waveform());
+        let (waveform, projection) = if let Some(waveform) = transformed {
             // The prepared sidecar belongs to the accepted clip, not an
             // unacknowledged structural preview with different source geometry.
             if project.clip(clip.id())? != clip {
@@ -61,7 +101,7 @@ impl Projection {
             let frames = u64::try_from(waveform.source_frames()).ok()?;
             (
                 waveform,
-                Self::with_source(project, clip, fade, events, gain, Some(frames))?,
+                Self::with_source(project, clip, fade, events, gain, Some(frames), None)?,
             )
         } else {
             let waveform = original?;
@@ -87,7 +127,7 @@ impl Projection {
         {
             return None;
         }
-        Self::with_source(project, clip, fade, events, gain, None)
+        Self::with_source(project, clip, fade, events, gain, None, None)
     }
 
     fn with_source(
@@ -97,6 +137,7 @@ impl Projection {
         events: Option<AudioEvents>,
         gain: Option<ClipGain>,
         prepared_frames: Option<u64>,
+        grouped: Option<GroupSources>,
     ) -> Option<Self> {
         let asset = project.asset(clip.asset())?;
         // Only frame edits reach this projection. The project rate matters
@@ -134,6 +175,7 @@ impl Projection {
                 duration: clip.duration(),
                 root,
                 prepared_frames,
+                grouped,
                 gain: gain.unwrap_or_else(|| clip.gain()),
             }),
         };
@@ -142,7 +184,11 @@ impl Projection {
     }
 
     pub(super) fn has_exact_pcm(&self) -> bool {
-        self.prepared_frames.is_none()
+        self.prepared_frames.is_none() && self.key.grouped.is_none()
+    }
+
+    pub(super) fn grouped_sources(&self) -> Option<&AudioGroupEventWaveforms> {
+        self.key.grouped.as_ref().map(|grouped| grouped.0.as_ref())
     }
 
     pub(super) fn query(&self) -> Option<FrameFadePreview<'_>> {
@@ -152,7 +198,9 @@ impl Projection {
             events: self.events.as_deref(),
             gain: self.gain,
         };
-        if let Some(frames) = self.prepared_frames {
+        if self.key.grouped.is_some() {
+            FrameFadePreview::with_grouped_sources(&self.clip, &self.tempo, &self.asset, overrides)
+        } else if let Some(frames) = self.prepared_frames {
             FrameFadePreview::with_prepared_source(
                 &self.clip,
                 &self.tempo,
@@ -261,12 +309,20 @@ pub(super) fn detail(
 pub(super) fn coarse(
     query: &Read<'_, '_>,
     waveform: &CachedWaveform,
+    grouped: Option<&AudioGroupEventWaveforms>,
     range: Range<u64>,
     remaining: &mut usize,
 ) -> Option<[CachedPeak; 2]> {
-    coarse_peaks(waveform, |visit| {
-        query.visit_ranges(range, remaining, visit)
-    })
+    coarse_peaks_from(
+        |source_id| {
+            if let Some(grouped) = grouped {
+                grouped.waveform(source_id).map(Arc::as_ref)
+            } else {
+                Some(waveform)
+            }
+        },
+        |visit| query.visit_ranges(range, remaining, visit),
+    )
 }
 
 pub(super) fn coarse_peaks(
@@ -275,9 +331,22 @@ pub(super) fn coarse_peaks(
         &mut dyn FnMut(FrameFadeRange),
     ) -> Result<Option<FrameFadeCoverage>, Invalid>,
 ) -> Option<[CachedPeak; 2]> {
+    coarse_peaks_from(|_| Some(waveform), visit_ranges)
+}
+
+fn coarse_peaks_from<'a>(
+    source: impl Fn(u64) -> Option<&'a CachedWaveform>,
+    visit_ranges: impl FnOnce(
+        &mut dyn FnMut(FrameFadeRange),
+    ) -> Result<Option<FrameFadeCoverage>, Invalid>,
+) -> Option<[CachedPeak; 2]> {
     let mut peaks = None;
     let mut available = true;
     let coverage = visit_ranges(&mut |part| {
+        let Some(waveform) = source(part.sample.source_id()) else {
+            available = false;
+            return;
+        };
         for range in part.source.into_iter().flatten() {
             let Some(mut pair) = usize::try_from(range.start).ok().and_then(|start| {
                 aggregate_peaks(waveform, start, usize::try_from(range.end).ok()?)
@@ -382,7 +451,7 @@ mod tests {
         );
         assert_eq!(exact[1].min, -exact[0].max);
         let mut remaining = RANGE_BUDGET;
-        let coarse = coarse(&event_read, &waveform, visible, &mut remaining).unwrap();
+        let coarse = coarse(&event_read, &waveform, None, visible, &mut remaining).unwrap();
         assert_eq!(coarse[0].max, 9.0 * gain.linear());
         assert!(remaining < RANGE_BUDGET);
         assert!(Clock::Event(event.id + 1).resolve(&query).is_none());
@@ -475,6 +544,7 @@ mod tests {
             coarse(
                 &Read::Arrangement(&installed.query().unwrap()),
                 &waveform,
+                None,
                 12..24,
                 &mut remaining
             )
@@ -486,6 +556,7 @@ mod tests {
             coarse(
                 &Read::Arrangement(&installed.query().unwrap()),
                 &waveform,
+                None,
                 0..24,
                 &mut 0
             )

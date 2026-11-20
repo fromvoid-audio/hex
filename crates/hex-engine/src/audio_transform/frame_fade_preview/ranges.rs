@@ -222,6 +222,21 @@ impl FrameFadePreview<'_> {
             None => root.start,
         };
         let mut length = root.end - root.start;
+        if event.is_some_and(|event| event.source != 0) {
+            let sample = self
+                .event_root_sample(root.start + (length - 1) / 2, event)?
+                .ok_or(Invalid(
+                    "grouped fade preview midpoint is outside its event",
+                ))?;
+            return Ok((
+                Some(FrameFadeRange {
+                    root,
+                    source: [Some(read..read + length), None],
+                    sample,
+                }),
+                false,
+            ));
+        }
         let mut silence = false;
         if !self.source.looping {
             let available = self.source.length.saturating_sub(read);
