@@ -1074,16 +1074,19 @@ fn native_effect_coordinator_keeps_registered_sampler_and_file_pcm_across_stop()
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_coordinator_live_bypass_and_removal_keep_original_clock_and_tail_pcm() {
     let _native = native_fixture();
-    let mut h = ResidentHarness::with_plugins(
+    let files = Files::new();
+    let directory = files.0.canonicalize().unwrap();
+    hex_ui::write_plugin_effect_test_catalog(&directory, &selection(), "Fx", 0).unwrap();
+    let mut h = ResidentHarness::with_plugins_and_catalog(
         host(),
         Some(EffectPresentation {
             input_frames: 0,
             output_frames: 512,
         }),
+        directory.join("plugin-catalog.json"),
     );
     assert!(h.next().error.is_none());
     let (mut applied, _) = h.applied(0);
-    let files = Files::new();
     let original = h.run(Request::Import(files.wav(48_000, 4096))).state;
     (applied, _) = h.applied(applied);
     h.service
@@ -1164,14 +1167,16 @@ fn native_effect_coordinator_live_bypass_and_removal_keep_original_clock_and_tai
         .unwrap()
         .performance_frame
         .load(Acquire);
+    let original_binding = h.plugin_progress.lock().unwrap().newest_source.unwrap().1;
     let removed = same_source_edit(&mut h, Request::Edit(Command::RemoveDevice(device)));
+    assert_eq!(h.plugin_records.load(Acquire), 1);
     assert!(removed.state.project.main_devices().is_empty());
     assert_eq!(removed.state.project.tracks(), original.project.tracks());
     assert_eq!(
         removed.state.project.assets().collect::<Vec<_>>(),
         original.project.assets().collect::<Vec<_>>()
     );
-    h.applied(applied);
+    let (applied, _) = h.applied(applied);
     let start = h
         .audio
         .as_ref()
@@ -1181,18 +1186,8 @@ fn native_effect_coordinator_live_bypass_and_removal_keep_original_clock_and_tai
         .performance_frame
         .load(Acquire);
     for block in 0..4 {
-        let before = h.plugin_completed.load(Acquire);
         let output = h.render_plugin_block();
-        if h.audio
-            .as_ref()
-            .unwrap()
-            .status()
-            .unwrap()
-            .native_effect_source()
-            .is_some()
-        {
-            wait(|| h.plugin_completed.load(Acquire) > before);
-        }
+        state::edits::workers_idle(&h);
         for (offset, frame) in output.into_iter().enumerate() {
             let absolute = start + block * 256 + offset as u64;
             let tail = if absolute >= 512 && absolute < cut + 512 {
@@ -1216,11 +1211,36 @@ fn native_effect_coordinator_live_bypass_and_removal_keep_original_clock_and_tai
             .native_effect_source()
             .is_none()
     );
-    assert_eq!(
-        h.plugin_records.load(Acquire),
-        1,
-        "original source must remain available for actual Undo"
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h.plugin_records.load(Acquire) != 0 {
+        h.render_plugin_block();
+        h.pump();
+        assert!(
+            Instant::now() < deadline,
+            "deleted playing worker stayed warm for history"
+        );
+        std::thread::yield_now();
+    }
+    h.service.submit(Request::Undo).unwrap();
+    let restored = state::edits::ordinary_terminal(&mut h);
+    assert!(restored.error.is_none(), "{:?}", restored.error);
+    assert_eq!(restored.state.project, inserted.state.project);
+    h.applied(applied);
+    let (restored_device, binding, installed) =
+        h.plugin_progress.lock().unwrap().newest_source.unwrap();
+    assert_eq!(restored_device, device.value());
+    assert!(installed);
+    assert_ne!(binding, original_binding);
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
     );
+    assert_eq!(hex_audio::audio_lifecycle_failure(), None);
 }
 
 #[test]
