@@ -907,7 +907,15 @@ fn native_move_history_waits_for_each_exact_install_and_can_retry_after_cancel()
         let receipt = fixture.candidate.as_ref().unwrap();
         assert_eq!(receipt.state.swap(CANCELLED, Ordering::AcqRel), PENDING);
     }
-    let cancelled = receive(&service);
+    let cancelled = service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap();
+    assert!(cancelled.request_complete);
+    assert_eq!(
+        cancelled.error.as_deref(),
+        Some("device edit cancelled before installation")
+    );
     assert_eq!(
         cancelled.device_insert_complete.unwrap().outcome,
         DeviceInsertOutcome::Cancelled
