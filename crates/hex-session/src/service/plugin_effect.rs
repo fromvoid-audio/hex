@@ -399,6 +399,7 @@ pub(super) struct Pending {
     canonical_context: hex_engine::AudioSourceContext,
     next_identity: u64,
     native_started: bool,
+    rebased_at: Option<std::time::Instant>,
 }
 impl Pending {
     pub fn new(insertion: PluginEffectInsertion, project: &Project) -> Result<Self, String> {
@@ -410,8 +411,14 @@ impl Pending {
             insertion,
             next_identity: project.next_identity(),
             native_started: false,
+            rebased_at: None,
         })
     }
+    pub(super) fn waiting_for_rebased_publication(&self) -> bool {
+        self.rebased_at
+            .is_some_and(|at| at.elapsed() < super::publication_wait::DEADLINE)
+    }
+
     pub fn matches_context(&self, context: hex_engine::AudioSourceContext) -> bool {
         self.canonical_context == context
     }
@@ -472,6 +479,7 @@ impl Pending {
                 editor_revision,
                 ..predecessor
             };
+            self.rebased_at = Some(std::time::Instant::now());
         }
     }
 

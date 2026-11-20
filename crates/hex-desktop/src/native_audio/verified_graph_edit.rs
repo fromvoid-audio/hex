@@ -78,7 +78,50 @@ impl Edit {
     }
 }
 
+/// A preview can share the editor context. Only the exact callback receipt
+/// and its submitted candidate establish which graph is installed.
+fn installed_predecessor(
+    submitted: &[Option<Submitted>],
+    control: &PublicationControl,
+    canonical: &Arc<CanonicalAudioSourceSnapshot>,
+    retiring_key: Option<VerifiedKey>,
+) -> Option<AppliedAudioSource> {
+    let canonical_key = VerifiedKey::canonical(canonical.context());
+    control.status.applied_audio_source().filter(|applied| {
+        control.output_identity() == Some(applied.output_identity)
+            && submitted.iter().flatten().any(|submission| {
+                submission.source == *applied
+                    && std::ptr::eq(submission.canonical.as_ptr(), Arc::as_ptr(canonical))
+                    && (submission.key == canonical_key || Some(submission.key) == retiring_key)
+            })
+    })
+}
+
 impl NativeAudioSink {
+    pub(super) fn waiting_for_verified_hosted_predecessor(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> bool {
+        let Some(canonical) = self.desired.as_ref().filter(|source| {
+            source.context() == context
+                && source.audio_mode() == DocumentAudioMode::VerifiedStreaming
+        }) else {
+            return false;
+        };
+        let Some(control) = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+        else {
+            return false;
+        };
+        self.verified_blocked != Some(VerifiedKey::canonical(context))
+            && !control.status.device_fault.load(Acquire)
+            && !control.status.render_fault.load(Acquire)
+            && (self.verified_preview.is_some()
+                || installed_predecessor(&self.submitted, control, canonical, None).is_none())
+    }
+
     pub(super) fn begin_verified_edit(
         &mut self,
         attempt: VerifiedGraphEditAttempt,
@@ -115,22 +158,7 @@ impl NativeAudioSink {
             .as_mut()
             .and_then(|output| output.publication.control())
             .ok_or("audio output is unavailable")?;
-        let canonical_key = VerifiedKey::canonical(attempt.predecessor());
-        // A preview and the canonical project can share the editor context.
-        // Only the exact output ACK and its submitted candidate can establish
-        // which is installed. The audio owner still revalidates at callback.
-        let predecessor = control
-            .status
-            .applied_audio_source()
-            .filter(|source| {
-                control.output_identity() == Some(source.output_identity)
-                    && self.submitted.iter().flatten().any(|submission| {
-                        submission.source == *source
-                            && std::ptr::eq(submission.canonical.as_ptr(), Arc::as_ptr(canonical))
-                            && (submission.key == canonical_key
-                                || Some(submission.key) == retiring_key)
-                    })
-            })
+        let predecessor = installed_predecessor(&self.submitted, control, canonical, retiring_key)
             .ok_or("verified graph edit needs the installed canonical source")?;
         let transition = match (attempt.confirmation(), self.verified_edit.as_ref()) {
             (None, None) if attempt.needs_tempo_cut() => {

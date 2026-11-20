@@ -6119,7 +6119,7 @@ fn run_worker(
                             crate::device_gesture::GesturePhase::Commit
                                 | crate::device_gesture::GesturePhase::Cancel
                         );
-                    if native_terminal_accepted
+                    if outcome.ack.accepted
                         && outcome.canonical_changed
                         && let Some(device) = independent_plugin_eq
                         && let Some(pending) = pending_plugin_effect.as_mut()

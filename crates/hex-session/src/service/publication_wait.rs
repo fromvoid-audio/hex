@@ -5,7 +5,7 @@
 use super::{QueuedRequest, ResidentPublicationReadiness, ResidentRuntimeLoop};
 use std::time::{Duration, Instant};
 
-const DEADLINE: Duration = Duration::from_millis(500);
+pub(super) const DEADLINE: Duration = Duration::from_millis(500);
 pub(super) const POLL: Duration = Duration::from_millis(2);
 
 pub(super) struct Wait {
