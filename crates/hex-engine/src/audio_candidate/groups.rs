@@ -12,7 +12,7 @@ pub(crate) enum Location {
     Compensation,
 }
 impl Location {
-    fn tuple(self) -> (u8, usize) {
+    pub(super) fn tuple(self) -> (u8, usize) {
         match self {
             Self::TrackChain(i) => (0, i),
             Self::TailChain(i) => (1, i),
@@ -103,6 +103,13 @@ impl<'a> Transfer<'a> {
                 .checked_add(entry.automation().storage_bytes().ok_or(invalid)?)
                 .and_then(|bytes| bytes.checked_add(entry.modulation_storage_bytes()?))
                 .ok_or(invalid)?;
+            for frames in entry.reserved_dry_storage().into_iter().flatten() {
+                bytes = frames
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<crate::Frame>())
+                    .and_then(|reserved| bytes.checked_add(reserved))
+                    .ok_or(invalid)?;
+            }
             if let Some((a, b)) =
                 crate::native_effect_storage::pair_bytes(&entry).map_err(|_| invalid)?
             {

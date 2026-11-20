@@ -6,12 +6,10 @@ use crate::{
 };
 impl Playback {
     #[cfg(test)]
-    pub(crate) fn test_main_reserved_dry_storage(&self) -> [Option<&Vec<Frame>>; 2] {
+    pub(crate) fn test_main_chain(&self) -> Option<&hex_lattice::NativeRuntimeChain> {
         self.session_runtime
             .as_ref()
-            .map_or([None, None], |runtime| {
-                runtime.test_main_reserved_dry_storage()
-            })
+            .map(|runtime| runtime.test_main_chain())
     }
     pub(crate) fn candidate_constructor_is_fresh(&self) -> bool {
         self.session_runtime
