@@ -437,6 +437,7 @@ impl Plugins {
             provider: None,
             edit_backlog: false,
             edit_recovery: None,
+            open_editor_group: None,
             editor_retirement: Default::default(),
             pending_touch: None,
             #[cfg(all(test, feature = "allocation-probe"))]

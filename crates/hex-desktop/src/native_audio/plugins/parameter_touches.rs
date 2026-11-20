@@ -308,6 +308,17 @@ impl Plugins {
         };
         if let Some(batch) = batch {
             source.edit_backlog = batch.edits.pending != 0;
+            for edit in batch.edits.as_slice() {
+                match edit.kind {
+                    ParameterEditKind::GroupBegin => source.open_editor_group = Some(edit.gesture),
+                    ParameterEditKind::GroupEnd | ParameterEditKind::GroupAborted
+                        if source.open_editor_group == Some(edit.gesture) =>
+                    {
+                        source.open_editor_group = None;
+                    }
+                    _ => {}
+                }
+            }
             if let Some(touch) = touch_for_read(active, receipt_source, batch.edits.as_slice()) {
                 source.pending_touch = Some(touch);
             }
@@ -375,6 +386,9 @@ impl Plugins {
             Instant::now(),
         );
         match progress {
+            ReceiptProgress::QueueDrained if self.sources[index].open_editor_group.is_some() => {
+                Err("vst3 editor group is still open · finish editing, then try save again")
+            }
             ReceiptProgress::QueueDrained => Ok(true),
             ReceiptProgress::Waiting | ReceiptProgress::ReadyBacklog => Ok(false),
             ReceiptProgress::Recover(_) => {
@@ -427,6 +441,7 @@ mod tests {
             editor_open_on_insert: false,
             edit_backlog: false,
             edit_recovery: None,
+            open_editor_group: None,
             provider: None,
             editor_retirement: Default::default(),
             pending_touch: Some(Touch {

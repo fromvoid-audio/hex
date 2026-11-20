@@ -108,6 +108,9 @@ struct Source {
     editor_open_on_insert: bool,
     edit_backlog: bool,
     edit_recovery: Option<parameter_touches::PendingRead>,
+    // The SDK can drain the currently queued prefix before the group's
+    // terminal arrives. Save needs both facts before capturing.
+    open_editor_group: Option<u64>,
     editor_retirement: retiring_editor::Retirement,
     pending_touch: Option<parameter_touches::Touch>,
     #[cfg(all(test, feature = "allocation-probe"))]
@@ -700,6 +703,7 @@ impl Plugins {
                 editor_open_on_insert: false,
                 edit_backlog: false,
                 edit_recovery: None,
+                open_editor_group: None,
                 provider: None,
                 editor_retirement: Default::default(),
                 pending_touch: None,
@@ -1524,6 +1528,7 @@ mod idle_tests {
             editor_open_on_insert: false,
             edit_backlog: false,
             edit_recovery: None,
+            open_editor_group: None,
             provider: None,
             editor_retirement: Default::default(),
             pending_touch: None,
@@ -1581,6 +1586,7 @@ mod idle_tests {
             editor_open_on_insert: false,
             edit_backlog: false,
             edit_recovery: None,
+            open_editor_group: None,
             provider: None,
             editor_retirement: Default::default(),
             pending_touch: None,
