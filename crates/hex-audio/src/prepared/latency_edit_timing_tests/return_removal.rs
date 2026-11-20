@@ -61,6 +61,103 @@ fn removing_a_flat_return_fades_a_mixed_native_chain_after_all_effects() {
     );
 }
 
+#[test]
+fn flat_return_fade_excludes_native_latency() {
+    use hex_devices::limiter::{DEFINITION, parameter::LOOKAHEAD};
+
+    let (mut editor, track, prepare) = resident_input(vec![SIGNAL; 2048]);
+    let bus = add_return(&mut editor, track, "latency return");
+    let state = DEFINITION
+        .patch_parameter(
+            &DEFINITION.default_state().unwrap(),
+            LOOKAHEAD,
+            ParameterValue::Choice(0),
+        )
+        .unwrap();
+    editor
+        .execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state,
+        })
+        .unwrap();
+    let old = prepare(editor.project());
+    assert!(old.arrangement().main_latency_frames() > 0);
+    assert_return_removal_skips_fade(&mut editor, bus, old, prepare);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn flat_return_fade_excludes_an_unavailable_hosted_stage_at_zero_latency() {
+    use crate::plugin_effects::{Hosting, UnavailableEffect};
+    use hex_lattice::ProcessorChainOwner;
+
+    let (mut editor, track, prepare) = resident_input(vec![SIGNAL; 2048]);
+    let asset = editor.project().track(track).unwrap().clips()[0].asset();
+    let bus = add_return(&mut editor, track, "unavailable return");
+    let state = hex_plugin_state::encode(hex_plugin_state::State {
+        identity: hex_plugin_state::Identity {
+            class: hex_plugin_state::ClassId::new([1; 16]).unwrap(),
+            binary: hex_plugin_state::BinaryIdentity {
+                executable_sha256: [2; 32],
+                info_sha256: [3; 32],
+            },
+        },
+        component: Some(&[4, 5]),
+        controller: None,
+    })
+    .unwrap();
+    let Created::Device(device) = editor
+        .execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state: state.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("hosted return effect");
+    };
+    let media = BTreeMap::from([(
+        asset,
+        hex_engine::Audio::new(RATE, vec![SIGNAL; 2048]).unwrap(),
+    )]);
+    let old = Hosting::prepare_unavailable_on_control(
+        &[UnavailableEffect {
+            owner: ProcessorChainOwner::Return(bus.value()),
+            device_id: device.value(),
+            state: &state,
+        }],
+        &mut |effects| {
+            effects.prepare_semantic_revision(
+                editor.project(),
+                &media,
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+                &Default::default(),
+            )
+        },
+    )
+    .unwrap();
+    assert_eq!(old.arrangement().main_latency_frames(), 0);
+    assert_return_removal_skips_fade(&mut editor, bus, Arc::new(old), prepare);
+}
+
+fn assert_return_removal_skips_fade(
+    editor: &mut Editor,
+    bus: hex_project::ReturnId,
+    before: Arc<hex_engine::PreparedRevision>,
+    prepare: impl Fn(&Project) -> Arc<hex_engine::PreparedRevision>,
+) {
+    editor.execute(Command::RemoveReturnTrack(bus)).unwrap();
+    let mut old = Playback::try_from_prepared_with_session(before).unwrap();
+    old.apply(PlaybackCommand::Play);
+    assert!(old.playing());
+    let mut candidate =
+        Playback::try_from_prepared_with_session(prepare(editor.project())).unwrap();
+    candidate.require_continuous_device_insert();
+    assert!(!candidate.plan_native_removal_from(&old).unwrap());
+}
+
 fn full_wet_reverb() -> NativeDeviceState {
     REVERB_DEFINITION
         .patch_parameter(
@@ -77,6 +174,27 @@ fn reverb_input() -> Vec<Frame> {
     pcm
 }
 
+fn add_return(
+    editor: &mut Editor,
+    track: hex_project::TrackId,
+    name: &str,
+) -> hex_project::ReturnId {
+    let Created::ReturnTrack(bus) = editor
+        .execute(Command::AddReturnTrack { name: name.into() })
+        .unwrap()
+    else {
+        panic!("return");
+    };
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 0.5,
+        })
+        .unwrap();
+    bus
+}
+
 fn assert_flat_return_removal(
     departing: impl IntoIterator<Item = NativeDeviceState>,
     surviving: Option<NativeDeviceState>,
@@ -86,24 +204,8 @@ fn assert_flat_return_removal(
 ) {
     const FADE: usize = RATE.div_ceil(200) as usize;
     let (mut editor, track, prepare) = resident_input(dry_pcm.clone());
-    let mut add_return = |name: &str| {
-        let Created::ReturnTrack(bus) = editor
-            .execute(Command::AddReturnTrack { name: name.into() })
-            .unwrap()
-        else {
-            panic!("return")
-        };
-        editor
-            .execute(Command::SetReturnSend {
-                track,
-                return_track: bus,
-                gain: 0.5,
-            })
-            .unwrap();
-        bus
-    };
-    let removed = add_return("departing return");
-    let survivor = add_return("surviving return");
+    let removed = add_return(&mut editor, track, "departing return");
+    let survivor = add_return(&mut editor, track, "surviving return");
     if let Some(state) = surviving {
         editor
             .execute(Command::InsertReturnDevice {
