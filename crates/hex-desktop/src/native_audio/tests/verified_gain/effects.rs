@@ -111,7 +111,7 @@ fn verified_builtin_proposal_cancels(use_picker: bool) {
 #[test]
 fn verified_native_replacement_installs_in_the_existing_slot() {
     use hex_engine::{DeviceTypeId, NativeDeviceClass, default_native_device_state_for_class};
-    use hex_session::service::DeviceInsertOutcome;
+    use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
 
     let _native = native_fixture();
     let files = Files::new();
@@ -156,6 +156,7 @@ fn verified_native_replacement_installs_in_the_existing_slot() {
     let offered = h.next_with_audio();
     assert_eq!(offered.state.project, before.state.project);
     let offer = offered.device_insert_confirmation.unwrap();
+    assert_eq!(offer.operation(), GraphEditOperation::ReplaceDevice);
     assert_eq!(
         offer.submission().output_identity,
         predecessor.output_identity
@@ -164,6 +165,7 @@ fn verified_native_replacement_installs_in_the_existing_slot() {
     assert!(offer.proceed());
     let installed = h.next_with_audio();
     assert!(installed.error.is_none(), "{:?}", installed.error);
+    assert_eq!(installed.status.as_deref(), Some("device replaced"));
     let receipt = installed.device_insert_complete.unwrap();
     assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
     let active = h.applied(h.context.unwrap());

@@ -9,6 +9,7 @@ fn device_edit_preparation_deadline() -> Instant {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GraphEditOperation {
     InsertDevice,
+    ReplaceDevice,
     RemoveDevice,
     MoveDevice,
     RemoveTrack,
@@ -78,7 +79,6 @@ impl DeviceInsertConfirmation {
 #[derive(Clone, Copy)]
 pub(in crate::service) enum Operation {
     Device(GraphEditOperation),
-    NativeReplacement,
     HostedHistory(GraphEditOperation),
     Tempo,
 }
@@ -87,10 +87,10 @@ impl Operation {
     pub(in crate::service) fn installed_status(self) -> &'static str {
         match self {
             Self::Device(GraphEditOperation::InsertDevice) => "device inserted",
+            Self::Device(GraphEditOperation::ReplaceDevice) => "device replaced",
             Self::Device(GraphEditOperation::RemoveDevice) => "device removed",
             Self::Device(GraphEditOperation::MoveDevice) => "device moved",
             Self::Device(GraphEditOperation::RemoveTrack) => "track removed",
-            Self::NativeReplacement => "device replaced",
             Self::HostedHistory(_) => "history committed",
             Self::Tempo => "tempo applied",
         }
@@ -99,7 +99,6 @@ impl Operation {
     pub(in crate::service) fn device(self) -> Option<GraphEditOperation> {
         match self {
             Self::Device(operation) | Self::HostedHistory(operation) => Some(operation),
-            Self::NativeReplacement => Some(GraphEditOperation::InsertDevice),
             Self::Tempo => None,
         }
     }

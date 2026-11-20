@@ -4868,7 +4868,7 @@ fn staged_native_insert_is_refused_on_real_output_fault_without_a_late_commit() 
 fn running_native_replacement_keeps_the_installed_device_until_exact_receipt() {
     use hex_engine::{DeviceTypeId, NativeDeviceClass, default_native_device_state_for_class};
     use hex_project::Command;
-    use hex_session::service::DeviceInsertOutcome;
+    use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
 
     fn status(h: &ResidentHarness) -> &hex_audio::prepared::Status {
         h.audio.as_ref().unwrap().status().unwrap()
@@ -4924,6 +4924,7 @@ fn running_native_replacement_keeps_the_installed_device_until_exact_receipt() {
         assert_eq!(h.render(), [[0.25; 2]; 64]);
         let offered = h.next();
         let offer = offered.device_insert_confirmation.unwrap();
+        assert_eq!(offer.operation(), GraphEditOperation::ReplaceDevice);
         assert_eq!(offered.state.project, before.state.project);
         assert_eq!(status(&h).recording_source(), Some(predecessor));
         if !proceed {
@@ -4949,6 +4950,7 @@ fn running_native_replacement_keeps_the_installed_device_until_exact_receipt() {
         assert_eq!(status(&h).recording_source(), Some(predecessor));
         h.render();
         let installed = h.next();
+        assert_eq!(installed.status.as_deref(), Some("device replaced"));
         let receipt = installed.device_insert_complete.unwrap();
         assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
         assert_eq!(receipt.submission, confirmed);

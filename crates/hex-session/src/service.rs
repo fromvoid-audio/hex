@@ -6633,6 +6633,7 @@ fn run_worker(
                                 if reason == hex_engine::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation {
                                     error = Some(match operation.device() {
                                         Some(GraphEditOperation::InsertDevice) => "stop playback to insert this device",
+                                        Some(GraphEditOperation::ReplaceDevice) => "stop playback to replace this device",
                                         Some(GraphEditOperation::RemoveDevice) => "stop playback to remove this device",
                                         Some(GraphEditOperation::MoveDevice) => "stop playback to move devices",
                                         Some(GraphEditOperation::RemoveTrack) => "stop playback to remove this track",
@@ -8693,7 +8694,9 @@ fn run_worker(
                                 proposal.as_ref(),
                             ) {
                                 Ok(BrowserEdit::Pending(mut staged)) => {
-                                    staged.operation = resident_audio::device_insert::Operation::NativeReplacement;
+                                    staged.operation = resident_audio::device_insert::Operation::Device(
+                                        GraphEditOperation::ReplaceDevice,
+                                    );
                                     staged.publish_created = false;
                                     staged.proposal_control = proposal;
                                     pending_device_insert = Some(*staged);
