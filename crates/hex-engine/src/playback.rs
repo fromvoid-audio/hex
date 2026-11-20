@@ -708,6 +708,8 @@ impl Playback {
     /// Compare the retained predecessor against the named immutable graph node.
     /// This is bounded, allocation-free comparison data, not source or
     /// publication authority; the audio owner validates the actual source.
+    /// A guarded instrument continuation still uses the normal same-worker
+    /// instrument ledger and clock preflight during runtime handoff.
     pub fn foreign_continuation_matches_predecessor_on_callback(&self, previous: &Self) -> bool {
         let Some(states) = self
             .session_runtime
@@ -728,7 +730,13 @@ impl Playback {
                 return false;
             };
             nodes.next().is_none()
-                && matches!(&node.definition, Some(hex_lattice::PreparedProcessorFactory::Foreign(prepared)) if prepared.binding() == Some(states.binding) && !prepared.is_instrument_profile())
+                && node.foreign_processor().is_some_and(|prepared| {
+                    prepared.binding() == Some(states.binding)
+                        && (!prepared.is_instrument_profile()
+                            || (!node.bypassed
+                                && node.automation.is_empty()
+                                && node.modulation.is_none()))
+                })
                 && node.configuration.as_deref().is_some_and(|state| {
                     state.shares_payload_storage_with(&states.previous) && *state == states.previous
                 })
@@ -746,7 +754,15 @@ impl Playback {
                         .canonical_track_id()
                         .is_some_and(|id| id.value() == owner)
                 })
-                .is_some_and(|track| matches(track.device_chain.iter(), states)),
+                .is_some_and(|track| {
+                    matches(
+                        track
+                            .device_chain
+                            .iter()
+                            .chain(track.foreign_instrument.iter()),
+                        states,
+                    )
+                }),
             hex_lattice::ProcessorChainOwner::Return(owner) => previous
                 .project
                 .return_buses
