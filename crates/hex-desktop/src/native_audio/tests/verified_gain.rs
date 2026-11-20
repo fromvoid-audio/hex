@@ -9,7 +9,7 @@ pub(in crate::native_audio) fn actual_native_harness() -> Harness {
     native_harness_with(|_| {})
 }
 
-fn native_harness_with(configure: impl FnOnce(&mut NativeAudioSink)) -> Harness {
+pub(super) fn native_harness_with(configure: impl FnOnce(&mut NativeAudioSink)) -> Harness {
     let backend = Arc::new(Mutex::new(None));
     let factory_backend = Arc::clone(&backend);
     let (events, receiver) = mpsc::sync_channel(1);

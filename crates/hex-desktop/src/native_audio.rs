@@ -90,6 +90,8 @@ struct Submitted {
 struct Preparation {
     resident_copy_frames: u64,
     builtin_effects: bool,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    hosted_effects: Vec<hex_audio::plugin_effects::EffectBinding>,
     token: AudioCandidatePreparationToken,
     snapshot: VerifiedSource,
     catalog: u64,
@@ -531,12 +533,17 @@ impl NativeAudioSink {
                 .as_ref()
                 .map_err(Clone::clone)
                 .and_then(|policy| {
-                    policy.configure(
-                        output
-                            .publication
-                            .control()
-                            .ok_or("audio publication endpoint is closed")?,
-                    )
+                    let control = output
+                        .publication
+                        .control()
+                        .ok_or("audio publication endpoint is closed")?;
+                    policy.configure(control)?;
+                    if self.bridge_rate_mismatch.is_none()
+                        && let Err(error) = self.plugins.configure(control, policy.plugins)
+                    {
+                        self.plugins.refuse_profile(error);
+                    }
+                    Ok(())
                 })
         } else {
             Ok(())
@@ -834,13 +841,49 @@ impl NativeAudioSink {
                 self.observe(context, "busy", EditorPublicationState::Busy);
                 return;
             }
-            let (quote, builtin_effects) = match snapshot.candidate_reservation_quote() {
-                Ok(quote) => quote,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            let hosted_effects = match self.plugins.verified_effect_bindings(
+                snapshot.canonical().effect_preparation(),
+                edit.as_ref()
+                    .and_then(|edit| edit.attempt.proposal_control()),
+            ) {
+                Ok(bindings) => bindings,
                 Err(error) => {
-                    self.refuse_verified_source(
-                        &snapshot,
-                        format!("this audio revision is unsupported: {error:?}"),
-                    );
+                    self.refuse_verified_source(&snapshot, error);
+                    return;
+                }
+            };
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            let hosted_quote = (!hosted_effects.is_empty()).then(|| {
+                control.with_native_effect_definition(&hosted_effects, |definition| {
+                    hex_engine::AudioCandidateEffects::with_host_definitions(
+                        &[definition],
+                        |effects| Ok(snapshot.quote_with_effects(effects)),
+                    )
+                    .map_err(|error| error.to_string())?
+                    .map(|quote| (quote, true))
+                    .map_err(|error| format!("this audio revision is unsupported: {error:?}"))
+                })
+            });
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            let hosted_quote = None;
+            let (quote, builtin_effects) = match hosted_quote.unwrap_or_else(|| {
+                snapshot
+                    .candidate_reservation_quote()
+                    .map_err(|error| format!("this audio revision is unsupported: {error:?}"))
+            }) {
+                Ok(quote) => quote,
+                Err(error)
+                    if matches!(
+                        error.as_str(),
+                        "native effect preparation is busy" | "native effect selection is busy"
+                    ) =>
+                {
+                    self.observe(context, "busy", EditorPublicationState::Busy);
+                    return;
+                }
+                Err(error) => {
+                    self.refuse_verified_source(&snapshot, error);
                     return;
                 }
             };
@@ -914,6 +957,8 @@ impl NativeAudioSink {
                     self.preparation = Some(Preparation {
                         resident_copy_frames: copied_frames,
                         builtin_effects,
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        hosted_effects,
                         token,
                         snapshot: snapshot.clone(),
                         catalog,
@@ -1081,63 +1126,85 @@ impl NativeAudioSink {
             let record = pending
                 .domain
                 .and_then(|token| self.domains.iter().flatten().find(|d| d.token == token));
-            let prepared = control.prepare_audio_candidate_on_control(pending.token, |cell| {
-                for (asset, source) in pending.snapshot.canonical().required_sources() {
-                    match source {
-                        AudioSourceBinding::Resident(audio) => {
-                            cell.copy_resident_source_on_control(asset, audio)?
-                        }
-                        AudioSourceBinding::VerifiedFile(_) => {
-                            let metadata = record
-                                .and_then(|d| {
-                                    d.sources.metadata_for(hex_engine::StreamSourceKey::new(
-                                        pending.catalog,
-                                        asset,
-                                    ))
-                                })
-                                .ok_or(hex_engine::AudioStorageError::SourceMismatch)?;
-                            cell.add_streamed_source_on_control(metadata.clone())?;
+            let prepare =
+                |cell: &mut hex_engine::AudioCandidatePreparation,
+                 effects: Option<&hex_engine::AudioCandidateEffects<'_, '_>>| {
+                    for (asset, source) in pending.snapshot.canonical().required_sources() {
+                        match source {
+                            AudioSourceBinding::Resident(audio) => {
+                                cell.copy_resident_source_on_control(asset, audio)?
+                            }
+                            AudioSourceBinding::VerifiedFile(_) => {
+                                let metadata = record
+                                    .and_then(|d| {
+                                        d.sources.metadata_for(hex_engine::StreamSourceKey::new(
+                                            pending.catalog,
+                                            asset,
+                                        ))
+                                    })
+                                    .ok_or(hex_engine::AudioStorageError::SourceMismatch)?;
+                                cell.add_streamed_source_on_control(metadata.clone())?;
+                            }
                         }
                     }
-                }
-                if let Some(domain) = record {
-                    domain
-                        .sources
-                        .add_required_derived(pending.snapshot.canonical(), cell)?;
-                } else if pending
-                    .snapshot
-                    .canonical()
-                    .required_plain_pitch_sources()
-                    .next()
-                    .is_some()
-                    || pending
+                    if let Some(domain) = record {
+                        domain
+                            .sources
+                            .add_required_derived(pending.snapshot.canonical(), cell)?;
+                    } else if pending
                         .snapshot
                         .canonical()
-                        .required_repitch_sources()
+                        .required_plain_pitch_sources()
                         .next()
                         .is_some()
-                    || pending
-                        .snapshot
-                        .canonical()
-                        .required_granular_roots(pending.catalog)
-                        .next()
-                        .is_some()
-                {
-                    return Err(hex_engine::AudioStorageError::SourceMismatch);
-                }
-                pending.snapshot.prepare_candidate_on_control(
-                    pending.catalog,
-                    cell,
-                    pending.builtin_effects,
-                )?;
-                if cell.resident_pcm_capacity_frames()? > pending.resident_copy_frames {
-                    return Err(hex_engine::AudioStorageError::ReservationExceeded);
-                }
-                Ok(())
-            });
+                        || pending
+                            .snapshot
+                            .canonical()
+                            .required_repitch_sources()
+                            .next()
+                            .is_some()
+                        || pending
+                            .snapshot
+                            .canonical()
+                            .required_granular_roots(pending.catalog)
+                            .next()
+                            .is_some()
+                    {
+                        return Err(hex_engine::AudioStorageError::SourceMismatch);
+                    }
+                    if let Some(effects) = effects {
+                        pending
+                            .snapshot
+                            .prepare_with_effects(pending.catalog, cell, effects)?;
+                    } else {
+                        pending.snapshot.prepare_candidate_on_control(
+                            pending.catalog,
+                            cell,
+                            pending.builtin_effects,
+                        )?;
+                    }
+                    if cell.resident_pcm_capacity_frames()? > pending.resident_copy_frames {
+                        return Err(hex_engine::AudioStorageError::ReservationExceeded);
+                    }
+                    Ok(())
+                };
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            let prepared = if pending.hosted_effects.is_empty() {
+                control
+                    .prepare_audio_candidate_on_control(pending.token, |cell| prepare(cell, None))
+            } else {
+                control.prepare_audio_candidate_with_native_sources_on_control(
+                    pending.token,
+                    &pending.hosted_effects,
+                    |cell, effects| prepare(cell, Some(effects)),
+                )
+            };
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            let prepared = control
+                .prepare_audio_candidate_on_control(pending.token, |cell| prepare(cell, None));
             match prepared {
                 Ok(hex_audio::AudioCandidatePreparationProgress::Ready) => pending.built = true,
-                Err("candidate preparation is busy") => {
+                Err("candidate preparation is busy" | "native effect selection is busy") => {
                     self.preparation = Some(pending);
                     self.observe(context, "busy", EditorPublicationState::Busy);
                     return;
@@ -1716,6 +1783,27 @@ impl WorkerAudioSink for NativeAudioSink {
             self.request_cancellation.as_ref(),
             prepare,
         )
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn prepare_verified_effects(
+        &mut self,
+        input: hex_session::service::ResidentEffectPreparation<'_>,
+        proposal: Option<&Arc<hex_session::service::PluginEffectControl>>,
+        prepare: &mut dyn FnMut(
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<hex_engine::PreparedRevision, String> {
+        let bindings = self.plugins.verified_effect_bindings(input, proposal)?;
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .ok_or("verified audio output is unavailable")?;
+        control.with_native_effect_definition(&bindings, |definition| {
+            hex_engine::AudioCandidateEffects::with_host_definitions(&[definition], prepare)
+                .map_err(|error| error.to_string())
+        })
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn begin_stopped_foreign_history(

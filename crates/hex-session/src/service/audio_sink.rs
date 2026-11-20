@@ -933,6 +933,20 @@ pub trait WorkerAudioSink: Send {
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
         Ok(None)
     }
+    /// Compile editor-facing Verified Streaming metadata against exact hosted
+    /// definitions for one synchronous borrow. The prepared graph and its
+    /// callback receipt still belong to the verified publication pipeline.
+    fn prepare_verified_effects(
+        &mut self,
+        _input: ResidentEffectPreparation<'_>,
+        _proposal: Option<&Arc<PluginEffectControl>>,
+        _prepare: &mut dyn FnMut(
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<hex_engine::PreparedRevision, String> {
+        Err("verified vst3 effects are unavailable".into())
+    }
     /// Optionally hold the exact stopped predecessor while a saturated history
     /// is prepared. False preserves the ordinary conservative history path.
     /// A successful lease must remain held through its publication terminal.

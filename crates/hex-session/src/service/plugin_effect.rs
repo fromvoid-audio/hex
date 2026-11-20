@@ -483,11 +483,18 @@ impl Pending {
         sink: &mut dyn WorkerAudioSink,
     ) -> Result<PluginEffectPreparationState, String> {
         self.validate(context, session.project())?;
-        if session.audio_mode() != DocumentAudioMode::Resident
-            || session.project().next_identity() != self.next_identity
-            || !sink.resident_publication_enabled()
-        {
-            return Err("vst3 insertion requires its original resident audio context".into());
+        let supported = match session.audio_mode() {
+            DocumentAudioMode::Resident => sink.resident_publication_enabled(),
+            DocumentAudioMode::VerifiedStreaming => {
+                self.insertion
+                    .destination
+                    .devices(session.project())
+                    .is_ok()
+                    && sink.confirms_verified_device_inserts()
+            }
+        };
+        if !supported || session.project().next_identity() != self.next_identity {
+            return Err("vst3 insertion requires its original supported audio context".into());
         }
         // The new-track command allocates the track before its device.
         let device_id = self

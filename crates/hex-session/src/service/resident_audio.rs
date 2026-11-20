@@ -1254,6 +1254,21 @@ pub(super) fn execute_command_timed(
         let prepared = Arc::clone(&snapshot.prepared);
         *resident = Some(snapshot);
         Ok((created, prepared))
+    } else if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+        && audio_sink::requires_plugin_profile(session.project())
+        && let Some(sink) = events.resident_audio()
+    {
+        session.validate_prepared_command(&command)?;
+        let edit = session.editor.stage_edit(command)?;
+        let prepared = session.prepare_verified_edit_revision(
+            edit.project(),
+            previous,
+            context,
+            None,
+            sink,
+        )?;
+        let created = session.editor.commit_staged_edit(edit)?;
+        Ok((created, Arc::new(prepared)))
     } else {
         session.command_prepared_revision(command, previous)
     }

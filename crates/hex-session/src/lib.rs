@@ -916,12 +916,7 @@ impl Session {
             &Arc<hex_engine::PreparedRevision>,
         ) -> Result<T, SessionError>,
     ) -> Result<(Created, (Arc<hex_engine::PreparedRevision>, T)), SessionError> {
-        validate_command_media(&command)?;
-        if let Command::PlaceClip { asset, .. } = &command
-            && self.native_assets.contains(*asset)
-        {
-            return Err(SessionError::DeviceAssetClipUnsupported(*asset));
-        }
+        self.validate_prepared_command(&command)?;
         let media = self.media_bank();
         let sine_table = self.sine_table();
         self.editor
@@ -942,6 +937,16 @@ impl Session {
                 let completed = finish(source, candidate, &prepared)?;
                 Ok((prepared, completed))
             })
+    }
+
+    fn validate_prepared_command(&self, command: &Command) -> Result<(), SessionError> {
+        validate_command_media(command)?;
+        if let Command::PlaceClip { asset, .. } = command
+            && self.native_assets.contains(*asset)
+        {
+            return Err(SessionError::DeviceAssetClipUnsupported(*asset));
+        }
+        Ok(())
     }
 
     /// Prepare a project-tuning overlay without changing canonical project

@@ -6383,7 +6383,11 @@ fn run_worker(
                                 {
                                     sink.finish_verified_graph_edit(attempt, false);
                                 }
-                                request_complete = true;
+                                request_complete = pending.plugin.is_none();
+                                if let Some(plugin) = pending.plugin.take() {
+                                    plugin_effect_complete
+                                        .push(plugin.finish(events.sampler_edit_audio(), false));
+                                }
                                 break 'device_insert;
                             }
                             Progress::Proceed => {
@@ -6450,7 +6454,11 @@ fn run_worker(
                                 sink.finish_verified_graph_edit(attempt, false);
                             }
                             status = Some(format!("{edit_name} cancelled"));
-                            request_complete = true;
+                            request_complete = pending.plugin.is_none();
+                            if let Some(plugin) = pending.plugin.take() {
+                                plugin_effect_complete
+                                    .push(plugin.finish(events.sampler_edit_audio(), false));
+                            }
                             break 'device_insert;
                         };
                         let verified = pending.verified_attempt().cloned();
@@ -6611,17 +6619,34 @@ fn run_worker(
                                         resident_seek.as_ref(), resident_preview.as_ref(),
                                     );
                                     let mut staged_insert = None;
-                                    let committed = result.and_then(|state| {
-                                        let PluginEffectPreparationState::Ready(state) = state
+                                    let committed = result.and_then(|preparation| {
+                                        let PluginEffectPreparationState::Ready(hosted_state) =
+                                            preparation
                                         else {
                                             return Err("vst3 preparation did not finish".into());
                                         };
                                         // Recheck the captured target before preparing the canonical transaction.
                                         pending.validate(context, session.project())?;
-                                        let command = pending.insertion.command(state)?;
+                                        let command = pending.insertion.command(hosted_state)?;
                                         let sink = events
                                             .resident_audio()
                                             .ok_or("native worker unavailable")?;
+                                        if session.audio_mode()
+                                            == DocumentAudioMode::VerifiedStreaming
+                                        {
+                                            staged_insert = session
+                                                .stage_verified_graph_edit(
+                                                    command,
+                                                    &state,
+                                                    compiled.as_ref().map(|(_, p)| p.as_ref()),
+                                                    sink,
+                                                    request_document_intent,
+                                                    None,
+                                                    Some(Arc::clone(&pending.insertion.control)),
+                                                )
+                                                .map_err(|error| error.to_string())?;
+                                            return Ok(None);
+                                        }
                                         if sink.confirms_device_inserts() {
                                             staged_insert = session
                                                 .stage_resident_device_insert(
