@@ -1586,6 +1586,7 @@ impl SessionPlayback {
                 interactive_onset_floor: previous.interactive_note_onset_floor(),
             },
             fresh,
+            continuous_insert,
             [old_loop_region, new_loop_region],
             tempo_cut,
             continuation,

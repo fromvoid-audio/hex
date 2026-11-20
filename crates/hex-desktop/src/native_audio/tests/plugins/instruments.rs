@@ -123,6 +123,8 @@ fn hosted_instrument_replacement_keeps_the_sounding_predecessor_during_preparati
     let pending = h.run(Request::InsertPluginEffect(first));
     assert_eq!(pending.state.project, before.state.project);
     facts.recv_timeout(Duration::from_secs(2)).unwrap();
+    wait(|| h.plugin_progress.lock().unwrap().binding.is_some());
+    let cancelled_binding = h.plugin_progress.lock().unwrap().binding.unwrap();
     audible(&h);
     assert_eq!(source(&h), predecessor);
     assert!(operation.cancel());
@@ -130,6 +132,8 @@ fn hosted_instrument_replacement_keeps_the_sounding_predecessor_during_preparati
     assert!(!cancelled.plugin_effect_complete[0].accepted);
     assert_eq!(cancelled.state.project, before.state.project);
     assert_eq!(cancelled.state.revision, before.state.revision);
+    assert_eq!(cancelled.state.can_undo, before.state.can_undo);
+    assert_eq!(cancelled.state.can_redo, before.state.can_redo);
     assert_eq!(source(&h), predecessor);
     audible(&h);
 
@@ -152,7 +156,9 @@ fn hosted_instrument_replacement_keeps_the_sounding_predecessor_during_preparati
             if let Some(offer) = event.device_insert_confirmation.as_ref() {
                 consent_offered = true;
                 assert_eq!(event.state.project, before.state.project);
+                assert_eq!(event.state.revision, before.state.revision);
                 assert_eq!(source(&h), predecessor);
+                audible(&h);
                 assert!(offer.proceed());
             }
             if !event.plugin_effect_complete.is_empty() {
@@ -165,6 +171,7 @@ fn hosted_instrument_replacement_keeps_the_sounding_predecessor_during_preparati
         false
     });
     let installed = installed.unwrap();
+    assert!(consent_offered, "a rolling replacement needs consent");
     assert!(installed.plugin_effect_complete[0].accepted);
     let receipt = installed.device_insert_complete.unwrap();
     assert_eq!(
@@ -172,7 +179,9 @@ fn hosted_instrument_replacement_keeps_the_sounding_predecessor_during_preparati
         hex_session::service::DeviceInsertOutcome::Installed
     );
     assert_eq!(source(&h).audio_revision, receipt.submission.audio_revision);
+    assert_eq!(source(&h).context, receipt.submission.context);
     assert_eq!(source(&h).output_identity, predecessor.output_identity);
+    assert_eq!(installed.state.revision, before.state.revision + 1);
     let active = installed
         .state
         .project
@@ -185,6 +194,13 @@ fn hosted_instrument_replacement_keeps_the_sounding_predecessor_during_preparati
         active.state().type_id(),
         hex_engine::DeviceTypeId::from_static("hex.vst3")
     );
+    wait(|| {
+        h.plugin_progress.lock().unwrap().newest_source.is_some_and(
+            |(device, binding, accepted)| {
+                device == active.id().value() && accepted && binding != cancelled_binding
+            },
+        )
+    });
 }
 
 #[test]

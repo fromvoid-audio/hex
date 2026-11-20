@@ -196,6 +196,24 @@ fn has_generator(track: &Track) -> bool {
         .is_some_and(|node| !node.bypassed)
 }
 
+fn replaces_native_sine(old: &Track, next: &Track) -> bool {
+    old.instrument_enabled()
+        && !old.has_mutable_instrument()
+        && old.foreign_instrument.is_none()
+        && old.instrument_state.as_ref().is_some_and(|state| {
+            state.type_id()
+                == hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sine")
+        })
+        && next.instrument_id.is_some()
+        && next.instrument_id != old.instrument_id
+        && old.midi_source_index.is_none()
+        && next.midi_source_index.is_none()
+        && old.source_id().is_some()
+        && next.source_id() == old.source_id()
+        && old.receives_source_audio()
+        && next.receives_source_audio()
+}
+
 impl ForeignArrangement {
     pub(super) fn prepare(revision: &PreparedRevision) -> Result<Self, SessionPlaybackError> {
         let tracks = revision.arrangement().tracks();
@@ -361,6 +379,7 @@ impl ForeignArrangement {
         tracks: [&[Track]; 2],
         cut: FrameContext,
         fresh: Option<TrackId>,
+        may_offer_device_cut: bool,
         loops: [Option<hex_project::LoopRegion>; 2],
         tempo_cut: Option<(u64, u64)>,
         parameter_continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
@@ -375,6 +394,7 @@ impl ForeignArrangement {
             keeps_unautomated_loop_clock: true,
         };
         let mut retained = [false; MAX_TRACKS];
+        let mut replacement_needs_cut = false;
         for (index, candidate) in self.generators.iter_mut().enumerate() {
             let Some(candidate) = candidate else { continue };
             let matched = old.generators.iter().enumerate().find_map(|(index, old)| {
@@ -384,7 +404,22 @@ impl ForeignArrangement {
             });
             let Some((old_index, donor)) = matched else {
                 if cut.playing && (tempo_cut.is_some() || fresh != Some(candidate.track)) {
-                    return Err(INCOMPATIBLE_HANDOFF);
+                    if !may_offer_device_cut
+                        || replacement_needs_cut
+                        || fresh.is_some()
+                        || tempo_cut.is_some()
+                        || !tracks.get(index).is_some_and(|next| {
+                            old_tracks
+                                .iter()
+                                .find(|track| track.canonical_track_id() == Some(candidate.track))
+                                .is_some_and(|old| replaces_native_sine(old, next))
+                        })
+                    {
+                        return Err(INCOMPATIBLE_HANDOFF);
+                    }
+                    // No generator or ledger transfers here. The audio owner
+                    // can offer a cut and repeat the proof at its silent hold.
+                    replacement_needs_cut = true;
                 }
                 continue;
             };
@@ -504,6 +539,9 @@ impl ForeignArrangement {
             {
                 return Err(INCOMPATIBLE_HANDOFF);
             }
+        }
+        if replacement_needs_cut {
+            return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
         }
         Ok(plan)
     }
