@@ -270,7 +270,8 @@ move or copy to the snapped pointer beat; a new section marks the intervening ga
 a move closes the old interval and preserves music in the gap. move/copy and the
 gap marker share one undo step. command toggles snapping for a move; use control
 while option-copying, since option-command edits only markers. changing option
-during the drag switches between moving and copying. the source stays in place when copying, and
+during the drag switches between moving and copying. the source stays in place when copying.
+section copies carry device automation and recorded touches with the music.
 one undo restores the entire operation.
 
 while dragging a section, the cyan bar marks insertion at an edge or in a gap.
