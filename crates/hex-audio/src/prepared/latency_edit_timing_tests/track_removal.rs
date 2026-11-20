@@ -3,6 +3,15 @@ use super::*;
 
 #[test]
 fn removing_plain_arrangement_track_fades_the_feed_and_keeps_shared_return_history() {
+    shared_return_survives_track_removal(false);
+}
+
+#[test]
+fn removing_compensated_arrangement_track_drains_the_feed_into_the_shared_return() {
+    shared_return_survives_track_removal(true);
+}
+
+fn shared_return_survives_track_removal(compensated: bool) {
     use hex_devices::delay::{
         DEFINITION, DRY_WET, FEEDBACK, FILTER, HIGH_QUALITY, LEFT_SYNC, TIME,
     };
@@ -10,7 +19,6 @@ fn removing_plain_arrangement_track_fades_the_feed_and_keeps_shared_return_histo
     const FRAMES: usize = 2_048;
     const CUT: usize = 512;
     const FADE: usize = RATE.div_ceil(200) as usize;
-    const PREFIX: usize = 1 + 31 + 257;
     let feeds = [[0.25, -0.125], [0.125, -0.25]];
     let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
     let Created::ReturnTrack(bus) = editor
@@ -66,7 +74,29 @@ fn removing_plain_arrangement_track_fades_the_feed_and_keeps_shared_return_histo
         (track, asset)
     };
     let (removed, asset) = import("removed", feeds[0]);
-    import("kept", feeds[1]);
+    let (kept, _) = import("kept", feeds[1]);
+    let latency = if compensated {
+        use hex_devices::limiter::{DEFINITION, parameter::LOOKAHEAD};
+
+        let limiter = DEFINITION
+            .patch_parameter(
+                &DEFINITION.default_state().unwrap(),
+                LOOKAHEAD,
+                ParameterValue::Choice(0),
+            )
+            .unwrap();
+        editor
+            .execute(Command::InsertDevice {
+                track: kept,
+                before: None,
+                state: limiter,
+            })
+            .unwrap();
+        DELAY
+    } else {
+        0
+    };
+    let prefix = FADE + latency - 1;
     let table = Arc::new(hex_engine::SineTable::new());
     let prepare = |project: &Project, media: &BTreeMap<_, _>| {
         Arc::new(
@@ -75,7 +105,7 @@ fn removing_plain_arrangement_track_fades_the_feed_and_keeps_shared_return_histo
         )
     };
     let before = prepare(editor.project(), &media);
-    assert_eq!(before.arrangement().main_latency_frames(), 0);
+    assert_eq!(before.arrangement().main_latency_frames() as usize, latency);
 
     // Independently shape the source PCM. Both feeds share the Delay's
     // original history, including the removed track's pre-cut contribution.
@@ -89,6 +119,7 @@ fn removing_plain_arrangement_track_fades_the_feed_and_keeps_shared_return_histo
     let reference = prepare(editor.project(), &reference_media);
     editor.execute(Command::RemoveTrack(removed)).unwrap();
     let after = prepare(editor.project(), &media);
+    assert_eq!(after.arrangement().main_latency_frames() as usize, latency);
     let oracle = |revision| {
         let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
         playback.apply(PlaybackCommand::Play);
@@ -99,37 +130,36 @@ fn removing_plain_arrangement_track_fades_the_feed_and_keeps_shared_return_histo
     let expected = oracle(reference);
     let without_old_feed = oracle(Arc::clone(&after));
     assert!(
-        expected[CUT + PREFIX..CUT + PREFIX + 256]
+        expected[CUT + prefix..CUT + prefix + BLOCK]
             .iter()
-            .zip(&without_old_feed[CUT + PREFIX..])
+            .zip(&without_old_feed[CUT + prefix..])
             .any(|(kept, fresh)| (kept[0] - fresh[0]).abs() > 0.01)
     );
 
-    let (control, mut callback, source, receipt) =
-        begin_insert_with_pending_track(before, after, None, CUT);
-    let mut pcm = [[0.0; 2]; PREFIX + 256];
-    let mut offset = 0;
-    for count in [1, 31, 257, 256] {
-        measured_render(&mut callback, &mut pcm[offset..offset + count]);
-        offset += count;
-        if offset <= PREFIX {
+    for partition in [1, BLOCK] {
+        let (control, mut callback, source, receipt) =
+            begin_insert_with_pending_track(Arc::clone(&before), Arc::clone(&after), None, CUT);
+        let mut pcm = vec![[0.0; 2]; prefix + BLOCK];
+        for chunk in pcm[..prefix].chunks_mut(partition) {
+            measured_render(&mut callback, chunk);
             assert_eq!(receipt.state(), PublicationReceiptState::Pending);
             assert_eq!(control.status.recording_source(), Some(source));
         }
-    }
-    assert_eq!(receipt.state(), PublicationReceiptState::Installed);
-    let active = control.status.recording_source().unwrap();
-    assert_eq!(active.audio_revision, receipt.revision());
-    assert_eq!(active.output_identity, source.output_identity);
-    assert_eq!(
-        control.status.position.load(Acquire),
-        (CUT + pcm.len()) as u64
-    );
-    for (frame, (actual, expected)) in pcm.iter().zip(&expected[CUT..]).enumerate() {
-        assert!(
-            (actual[0] - expected[0]).abs() < 1e-6 && (actual[1] - expected[1]).abs() < 1e-6,
-            "frame {frame}: {actual:?} vs {expected:?}"
+        measured_render(&mut callback, &mut pcm[prefix..]);
+        assert_eq!(receipt.state(), PublicationReceiptState::Installed);
+        let active = control.status.recording_source().unwrap();
+        assert_eq!(active.audio_revision, receipt.revision());
+        assert_eq!(active.output_identity, source.output_identity);
+        assert_eq!(
+            control.status.position.load(Acquire),
+            (CUT + pcm.len()) as u64
         );
+        for (frame, (actual, expected)) in pcm.iter().zip(&expected[CUT..]).enumerate() {
+            assert!(
+                (actual[0] - expected[0]).abs() < 1e-6 && (actual[1] - expected[1]).abs() < 1e-6,
+                "partition {partition}, frame {frame}: {actual:?} vs {expected:?}"
+            );
+        }
     }
 }
 
