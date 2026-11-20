@@ -2006,6 +2006,7 @@ impl WorkerAudioSink for NativeAudioSink {
                 self.desired.as_deref(),
                 Some(&cancellation),
                 true,
+                None,
             )?;
             Some(cancellation)
         } else {

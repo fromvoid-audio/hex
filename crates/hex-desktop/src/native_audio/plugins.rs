@@ -1202,10 +1202,10 @@ impl Plugins {
         input.visit_plugin_devices(|destination, device, state| {
             // History may carry the identity and state of a deleted device.
             // The predecessor's membership decides whether DSP can survive.
-            let fresh_source = powered_off == Some(device)
-                || previous
-                    .as_ref()
-                    .is_some_and(|source| source.plugin_device_bypassed(device).is_none());
+            let powering_on = powered_off == Some(device);
+            let fresh_source = previous
+                .as_ref()
+                .is_some_and(|source| source.plugin_device_bypassed(device).is_none());
             self.prepare_edit_source(
                 output.as_deref_mut().ok_or("native output closed")?,
                 input,
@@ -1215,6 +1215,7 @@ impl Plugins {
                 desired,
                 cancellation,
                 fresh_source,
+                powering_on,
             )
             .map_err(bounded_error)
         })
