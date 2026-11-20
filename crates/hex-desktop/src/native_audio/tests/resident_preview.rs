@@ -5388,8 +5388,16 @@ fn confirmed_limiter_keeps_the_same_output(frame_limit: u64, streamed: bool, edi
                     .control
                     .command(PlaybackCommand::Stop)
                     .unwrap();
-                h.render();
-                let pasted = h.run(Request::DeviceClipboard {
+                let stop_deadline = Instant::now() + Duration::from_secs(1);
+                while status(&h).paused_input_interval().is_none() {
+                    assert!(
+                        Instant::now() < stop_deadline,
+                        "paste requires a settled Stop"
+                    );
+                    h.render();
+                    std::thread::yield_now();
+                }
+                let queued = h.run(Request::DeviceClipboard {
                     project_generation: predecessor.context.project_generation,
                     revision: terminal.state.revision,
                     action: DeviceClipboardAction::Paste {
@@ -5397,6 +5405,14 @@ fn confirmed_limiter_keeps_the_same_output(frame_limit: u64, streamed: bool, edi
                         before: None,
                     },
                 });
+                assert!(!queued.request_complete);
+                assert_eq!(queued.state.project, terminal.state.project);
+                h.applied(confirmed.audio_revision);
+                let pasted = h.next();
+                assert_eq!(
+                    pasted.device_insert_complete.unwrap().outcome,
+                    DeviceInsertOutcome::Installed
+                );
                 assert_eq!(pasted.state.project.main_devices()[0].state(), &limiter());
             }
         }

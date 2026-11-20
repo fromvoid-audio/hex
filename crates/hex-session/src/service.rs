@@ -7666,15 +7666,9 @@ fn run_worker(
                         .resident_audio()
                         .ok_or(SessionError::Invalid("native worker unavailable"))
                         .and_then(|sink| {
-                            if let Some(operation) =
-                                resident_audio::device_insert::graph_edit_operation(&command)
-                                && sink.confirms_device_inserts()
-                                && (operation == GraphEditOperation::InsertDevice
-                                    || !matches!(
-                                        sink.resident_publication_readiness(),
-                                        ResidentPublicationReadiness::NoOutput
-                                    ))
-                            {
+                            if resident_audio::device_insert::should_stage_resident_graph_edit(
+                                &command, sink,
+                            ) {
                                 let staged = session.stage_resident_device_insert(
                                     command,
                                     hex_engine::AudioSourceContext {
