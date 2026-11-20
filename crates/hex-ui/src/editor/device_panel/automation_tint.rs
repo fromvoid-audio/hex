@@ -1,6 +1,6 @@
 //! Red accents for canonical device automation with authored points.
 use super::{DeviceId, EditorView, NativeDeviceClass, theme};
-use gpui::{Div, div, prelude::*, px, rgb};
+use gpui::{div, prelude::*, px, rgb};
 use hex_lattice_contract::{DeviceAutomationTarget, ParameterId};
 use hex_project::{Device, DeviceAutomation, ElementColor};
 use hex_widgets::ControlStyle;
@@ -46,7 +46,7 @@ pub(super) fn style(mut style: ControlStyle, automated: bool) -> ControlStyle {
     style
 }
 
-pub(super) fn mark(control: Div) -> Div {
+pub(super) fn mark<T: Styled + ParentElement>(control: T) -> T {
     control.relative().child(
         div()
             .debug_selector(|| "device-automation-indicator".to_string())

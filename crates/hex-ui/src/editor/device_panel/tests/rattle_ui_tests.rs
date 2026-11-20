@@ -213,7 +213,13 @@ fn rattle_display_reads_authored_automation_and_manual_draft_precedence(cx: &mut
     });
     idle(&editor, cx);
     visual.run_until_parked();
-    assert!(visual.debug_bounds("device-automation-indicator").is_some());
+    let red = gpui::solid_background(gpui::rgb(
+        theme::element_colors(hex_project::ElementColor::Red).accent,
+    ));
+    assert_eq!(
+        visual.rendered_background("device-automation-indicator"),
+        Some(red),
+    );
     let automated = editor.read_with(cx, |v, _| rattle_panel::displayed(v, device).unwrap());
     assert_eq!(automated.0, 0.8);
     assert_ne!(automated.1, base.1);
@@ -246,7 +252,10 @@ fn rattle_display_reads_authored_automation_and_manual_draft_precedence(cx: &mut
     editor.read_with(cx, |v, _| {
         assert_eq!(rattle_panel::displayed(v, device).unwrap(), base)
     });
-    assert!(visual.debug_bounds("device-automation-indicator").is_some());
+    assert_eq!(
+        visual.rendered_background("device-automation-indicator"),
+        Some(red),
+    );
     editor.update(cx, |v, _| {
         assert!(v.enqueue(Request::Edit(Command::ReplaceDeviceAutomation {
             device,
