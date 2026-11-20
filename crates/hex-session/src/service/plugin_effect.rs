@@ -67,6 +67,9 @@ pub enum PluginEffectDestination {
     },
     Return(hex_project::ReturnId),
     Main,
+    ReplaceMainEffect {
+        replacing: hex_project::DeviceId,
+    },
 }
 impl PluginEffectDestination {
     fn devices(self, project: &Project) -> Result<&[hex_project::Device], String> {
@@ -81,7 +84,7 @@ impl PluginEffectDestination {
                 .find(|track| track.id() == id)
                 .map(|track| track.devices())
                 .ok_or_else(|| "effect destination no longer exists".into()),
-            Self::Main => Ok(project.main_devices()),
+            Self::Main | Self::ReplaceMainEffect { .. } => Ok(project.main_devices()),
             Self::Instrument(_) | Self::ReplaceInstrument { .. } | Self::NewTrack { .. } => {
                 Err("effect destination requires an existing chain".into())
             }
@@ -107,7 +110,7 @@ impl PluginEffectDestination {
                 hex_engine::ProcessorChainOwner::Track(track_identity)
             }
             Self::Return(id) => hex_engine::ProcessorChainOwner::Return(id.value()),
-            Self::Main => hex_engine::ProcessorChainOwner::Main,
+            Self::Main | Self::ReplaceMainEffect { .. } => hex_engine::ProcessorChainOwner::Main,
         }
     }
 }
@@ -296,6 +299,16 @@ impl PluginEffectInsertion {
             return Ok(());
         }
         let devices = self.destination.devices(project)?;
+        if let PluginEffectDestination::ReplaceMainEffect { replacing } = self.destination
+            && (self.before.is_some()
+                || !devices.iter().any(|device| {
+                    device.id() == replacing
+                        && device.parent().is_none()
+                        && device.state().type_id() == hex_lattice_contract::VST3_DEVICE_TYPE_ID
+                }))
+        {
+            return Err("main vst3 effect replacement target changed".into());
+        }
         if self
             .before
             .is_some_and(|id| !devices.iter().any(|device| device.id() == id))
@@ -350,6 +363,9 @@ impl PluginEffectInsertion {
                 before: self.before,
                 state,
             },
+            PluginEffectDestination::ReplaceMainEffect { replacing } => {
+                Command::ReplaceMainDevice { replacing, state }
+            }
         })
     }
 }
@@ -500,13 +516,22 @@ impl Pending {
         sink: &mut dyn WorkerAudioSink,
     ) -> Result<PluginEffectPreparationState, String> {
         self.validate(context, session.project())?;
+        let replaces_main = matches!(
+            self.insertion.destination,
+            PluginEffectDestination::ReplaceMainEffect { .. }
+        );
         let supported = match session.audio_mode() {
-            DocumentAudioMode::Resident => sink.resident_publication_enabled(),
+            DocumentAudioMode::Resident => {
+                sink.resident_publication_enabled()
+                    && (!replaces_main || sink.confirms_device_inserts())
+            }
             DocumentAudioMode::VerifiedStreaming => {
-                self.insertion
-                    .destination
-                    .devices(session.project())
-                    .is_ok()
+                !replaces_main
+                    && self
+                        .insertion
+                        .destination
+                        .devices(session.project())
+                        .is_ok()
                     && sink.confirms_verified_device_inserts()
             }
         };
@@ -544,5 +569,54 @@ impl Pending {
             sink.finish_plugin_effect(&self.insertion.control, accepted);
         }
         PluginEffectCompletion::finish(self.insertion.control, accepted)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hex_lattice_contract::VST3_DEVICE_TYPE_ID;
+
+    #[test]
+    fn main_effect_replacement_validates_the_old_slot_and_builds_a_fresh_edit() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let state = NativeDeviceState::new(VST3_DEVICE_TYPE_ID, 1, vec![1]).unwrap();
+        let hex_project::Created::Device(replacing) = editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: state.clone(),
+            })
+            .unwrap()
+        else {
+            panic!("main effect");
+        };
+        let context = hex_engine::AudioSourceContext {
+            project_generation: 3,
+            editor_revision: 2,
+        };
+        let mut request = PluginEffectInsertion {
+            context,
+            selection: PluginEffectSelection {
+                module: PathBuf::from("/fixtures/effect.vst3"),
+                executable: "Contents/MacOS/effect".into(),
+                cid: [1; 16],
+                executable_sha256: "a".repeat(64),
+                info_sha256: "b".repeat(64),
+            },
+            destination: PluginEffectDestination::ReplaceMainEffect { replacing },
+            before: None,
+            track_device_name: None,
+            control: Arc::default(),
+        };
+        request.validate(context, editor.project()).unwrap();
+        let command = request.command(state.clone()).unwrap();
+        assert!(
+            matches!(command, Command::ReplaceMainDevice { replacing: id, .. } if id == replacing)
+        );
+        request.before = Some(replacing);
+        assert!(request.validate(context, editor.project()).is_err());
+        request.before = None;
+        editor.execute(command).unwrap();
+        assert!(request.validate(context, editor.project()).is_err());
     }
 }
