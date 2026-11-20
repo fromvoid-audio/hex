@@ -1493,19 +1493,27 @@ fn rendered_return_vst3_drop_replaces_only_after_its_exact_receipt(cx: &mut Test
     assert_rendered_vst3_effect_replacement(cx, 1);
 }
 
+#[gpui::test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn rendered_track_vst3_drop_replaces_only_after_its_exact_receipt(cx: &mut TestAppContext) {
+    assert_rendered_vst3_effect_replacement(cx, 0);
+}
+
 fn assert_rendered_vst3_effect_replacement(cx: &mut TestAppContext, location: u8) {
     fn effect_chain(
         project: &hex_project::Project,
-        return_track: Option<hex_project::ReturnId>,
+        owner: PluginEffectDestination,
     ) -> &[hex_project::Device] {
-        match return_track {
-            Some(id) => project
+        match owner {
+            PluginEffectDestination::Track(id) => project.track(id).unwrap().devices(),
+            PluginEffectDestination::Return(id) => project
                 .return_tracks()
                 .iter()
                 .find(|track| track.id() == id)
                 .unwrap()
                 .devices(),
-            None => project.main_devices(),
+            PluginEffectDestination::Main => project.main_devices(),
+            _ => panic!("expected an effect chain"),
         }
     }
 
@@ -1528,10 +1536,12 @@ fn assert_rendered_vst3_effect_replacement(cx: &mut TestAppContext, location: u8
         }),
     );
     fixture.activate_to_facts(cx, false);
-    let (prefix, return_track) = match fixture.expected_owner {
-        PluginEffectDestination::Main => ("main", None),
-        PluginEffectDestination::Return(id) => ("return", Some(id)),
-        _ => panic!("expected an effect bus"),
+    let owner = fixture.expected_owner;
+    let prefix = match owner {
+        PluginEffectDestination::Main => "main-",
+        PluginEffectDestination::Return(_) => "return-",
+        PluginEffectDestination::Track(_) => "",
+        _ => panic!("expected an effect chain"),
     };
     fixture.resume.send(()).unwrap();
     until("original VST3 effect installs", || {
@@ -1544,9 +1554,7 @@ fn assert_rendered_vst3_effect_replacement(cx: &mut TestAppContext, location: u8
                 .is_some_and(|source| source.context.editor_revision == fixture.state.revision + 1)
     });
     let original = fixture.view(cx).state.unwrap();
-    let old = effect_chain(&original.project, return_track)[0]
-        .id()
-        .value();
+    let old = effect_chain(&original.project, owner)[0].id().value();
     let new = original.project.next_identity();
     let selector = |name: &str, device| -> &'static str {
         Box::leak(format!("{name}-{device}").into_boxed_str())
@@ -1555,11 +1563,11 @@ fn assert_rendered_vst3_effect_replacement(cx: &mut TestAppContext, location: u8
     let new_shell = selector("device-shell", new);
     let original_active = selector("device-vst3-active", old);
     let new_active = selector("device-vst3-active", new);
-    let replace_pad = selector(&format!("{prefix}-vst3-replace"), old);
+    let replace_pad = selector(&format!("{prefix}vst3-replace"), old);
     assert!(fixture.visual.debug_bounds(replace_pad).is_none());
     let card = fixture
         .visual
-        .debug_bounds(selector(&format!("{prefix}-device-drop-card"), old))
+        .debug_bounds(selector(&format!("{prefix}device-drop-card"), old))
         .unwrap();
     let row = fixture
         .visual
@@ -1588,7 +1596,7 @@ fn assert_rendered_vst3_effect_replacement(cx: &mut TestAppContext, location: u8
         assert!(
             fixture
                 .visual
-                .debug_bounds(selector(&format!("{prefix}-device-insertion-{edge}"), old))
+                .debug_bounds(selector(&format!("{prefix}device-insertion-{edge}"), old))
                 .is_some(),
             "catalog drag still offers adjacent {edge} insertion"
         );
@@ -1603,7 +1611,7 @@ fn assert_rendered_vst3_effect_replacement(cx: &mut TestAppContext, location: u8
         assert!(
             fixture
                 .visual
-                .debug_bounds(selector(&format!("{prefix}-device-insertion-{edge}"), old))
+                .debug_bounds(selector(&format!("{prefix}device-insertion-{edge}"), old))
                 .is_none(),
             "the replace target has its own captured intent"
         );
@@ -1656,8 +1664,8 @@ fn assert_rendered_vst3_effect_replacement(cx: &mut TestAppContext, location: u8
     assert_eq!(applied.selected_owner, Some(fixture.expected_owner));
     let accepted = applied.state.unwrap();
     assert_eq!(accepted.revision, original.revision + 1);
-    let [device] = effect_chain(&accepted.project, return_track) else {
-        panic!("the exact replacement must keep one effect in the occupied bus");
+    let [device] = effect_chain(&accepted.project, owner) else {
+        panic!("the exact replacement must keep one effect in the occupied chain");
     };
     assert_eq!(device.id().value(), new);
     assert!(fixture.visual.debug_bounds(original_shell).is_none());
