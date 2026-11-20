@@ -10,6 +10,8 @@ use std::{collections::BTreeMap, sync::Arc};
 mod aligned_power;
 mod analytic_power;
 mod reverb_power;
+#[cfg(feature = "allocation-probe")]
+mod track_removal;
 
 const RATE: u32 = 48_000;
 const DELAY: usize = 72;
