@@ -3,10 +3,6 @@ use super::*;
 use drag::{EffectBusDropSlot, NativeDeviceDrag, ReturnDeviceDropTarget};
 use std::{cell::RefCell, rc::Rc};
 
-const REPLACE_PAD_WIDTH: f32 = 64.0;
-const REPLACE_PAD_HEIGHT: f32 = 22.0;
-const REPLACE_PAD_TOP: f32 = 6.0;
-
 pub(super) fn render_chain(
     view: &mut EditorView,
     window: Option<&Window>,
@@ -255,50 +251,11 @@ fn render_return_drop_target(
         }
     }
     if show_replace_pad && let Some(device) = before {
-        let selected = active == replacement;
-        target = target.child(
-            div()
-                .absolute()
-                .left_0()
-                .right_0()
-                .top(px(REPLACE_PAD_TOP))
-                .flex()
-                .justify_center()
-                .child(
-                    div()
-                        .debug_selector(move || {
-                            format!("{}-vst3-replace-{}", owner.prefix(), device.value())
-                        })
-                        .w(px(REPLACE_PAD_WIDTH))
-                        .h(px(REPLACE_PAD_HEIGHT))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .border_1()
-                        .border_color(rgb(theme::color(if selected {
-                            theme::PaletteRole::Secondary
-                        } else {
-                            theme::PaletteRole::Border
-                        })))
-                        .bg(rgb(theme::color(if selected {
-                            theme::PaletteRole::Hover
-                        } else {
-                            theme::PaletteRole::Surface
-                        })))
-                        .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                        .child(theme::text("replace")),
-                ),
+        target = with_replace_pad(
+            target,
+            move || format!("{}-vst3-replace-{}", owner.prefix(), device.value()),
+            active == replacement,
         );
     }
     target
-}
-
-fn replace_pad_bounds(card: Bounds<Pixels>) -> Bounds<Pixels> {
-    Bounds {
-        origin: gpui::point(
-            card.center().x - px(REPLACE_PAD_WIDTH) / 2.0,
-            card.origin.y + px(REPLACE_PAD_TOP),
-        ),
-        size: gpui::size(px(REPLACE_PAD_WIDTH), px(REPLACE_PAD_HEIGHT)),
-    }
 }
