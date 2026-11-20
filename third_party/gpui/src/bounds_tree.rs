@@ -1,6 +1,5 @@
 use crate::{Bounds, Half, Point};
 use std::{
-    cmp,
     fmt::Debug,
     ops::{Add, Sub},
 };
@@ -305,6 +304,7 @@ pub(crate) fn verify_ordering() -> Result<(), String> {
 mod ordering_verification {
     use super::*;
     use crate::Size;
+    use std::cmp;
 
     fn require(value: bool, message: &str) -> Result<(), String> {
         if value {
