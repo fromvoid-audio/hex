@@ -62,7 +62,7 @@ fn await_terminal(
     loop {
         h.pump();
         while let Ok(event) = h.service.try_event() {
-            if let Some(offer) = event.device_insert_confirmation {
+            if let Some(offer) = event.device_insert_confirmation.as_ref() {
                 assert_eq!(offer.operation(), GraphEditOperation::RemoveTrack);
                 assert_eq!(offer.submission(), exact);
                 assert_eq!(event.state.revision, original.revision);
