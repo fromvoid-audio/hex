@@ -5,6 +5,20 @@ use hex_session::service::DeviceInsertOutcome;
 
 #[test]
 fn verified_group_entry_waits_for_the_exact_callback_receipt() {
+    check_verified_group_entry(FollowUp::Reorder);
+}
+
+#[test]
+fn verified_group_route_history_waits_for_each_exact_callback_receipt() {
+    check_verified_group_entry(FollowUp::History);
+}
+
+enum FollowUp {
+    Reorder,
+    History,
+}
+
+fn check_verified_group_entry(follow_up: FollowUp) {
     let _native = native_fixture();
     let files = Files::new();
     let mut h = actual_native_harness();
@@ -115,6 +129,43 @@ fn verified_group_entry_waits_for_the_exact_callback_receipt() {
         Some(group)
     );
     assert_eq!(rows(&installed), [group, child, leaf]);
+    if matches!(follow_up, FollowUp::History) {
+        let before = Arc::clone(&original.state.project);
+        let after = Arc::clone(&installed.state.project);
+        let mut current = installed;
+        let mut source = applied;
+        for (request, expected, label) in [
+            (Request::Undo, before, "Undo"),
+            (Request::Redo, after, "Redo"),
+        ] {
+            let pending = h.run(request);
+            assert!(!pending.request_complete, "{label} completed before audio");
+            assert_eq!(
+                pending.status.as_deref(),
+                Some("history pending · waiting for audio")
+            );
+            assert_eq!(pending.state.project, current.state.project);
+            assert_eq!(pending.state.revision, current.state.revision);
+            assert_eq!(applied_source(&h), Some(source));
+            h.render();
+            assert_eq!(applied_source(&h), Some(source));
+            let committed = h.next_with_audio();
+            assert!(committed.error.is_none(), "{:?}", committed.error);
+            assert!(committed.request_complete);
+            assert_eq!(committed.status.as_deref(), Some("history committed"));
+            assert_eq!(committed.state.project, expected);
+            assert_eq!(committed.state.revision, current.state.revision + 1);
+            let receipt = committed.device_insert_complete.as_ref().unwrap();
+            assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+            source = applied_source(&h).unwrap();
+            assert_eq!(source.context, receipt.submission.context);
+            assert_eq!(source.audio_revision, receipt.submission.audio_revision);
+            assert_eq!(source.output_identity, predecessor.output_identity);
+            assert_eq!(source.output_identity, receipt.submission.output_identity);
+            current = committed;
+        }
+        return;
+    }
     let reordered = h.run(Request::ReorderTracks {
         project_generation: generation,
         revision: installed.state.revision,
@@ -129,4 +180,10 @@ fn verified_group_entry_waits_for_the_exact_callback_receipt() {
         Some(group)
     );
     assert_eq!(rows(&reordered), [group, leaf, child]);
+    h.applied(h.context.unwrap());
+    let undo_reorder = h.run(Request::Undo);
+    assert!(undo_reorder.error.is_none(), "{:?}", undo_reorder.error);
+    assert!(undo_reorder.request_complete);
+    assert!(undo_reorder.device_insert_complete.is_none());
+    assert_eq!(undo_reorder.state.project, installed.state.project);
 }

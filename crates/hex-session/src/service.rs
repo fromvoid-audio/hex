@@ -9885,80 +9885,85 @@ fn run_worker(
                         Err(reason) => error = Some(reason.to_string()),
                     }
                 }
-                Request::Undo => match session.comparison_history(
-                    false,
-                    compiled
-                        .as_ref()
-                        .filter(|_| comparison_binding.is_some())
-                        .map(|(_, artifact)| artifact),
-                    |source, target, prepared| {
-                        prepare_tuning_input_publication(
-                            source,
-                            target,
-                            prepared,
-                            project_generation,
-                            revision,
-                            keyboard_activation.as_ref(),
-                            keyboard_tuning_hint.as_ref(),
-                            audition_activation.as_ref(),
-                            false,
+                request @ (Request::Undo | Request::Redo) => {
+                    let redo = matches!(request, Request::Redo);
+                    let group_history = if session.audio_mode()
+                        == DocumentAudioMode::VerifiedStreaming
+                        && let Some(sink) = events.resident_audio()
+                        && sink.confirms_verified_device_inserts()
+                    {
+                        session.stage_verified_group_history(
+                            redo,
+                            &state,
+                            compiled.as_ref().map(|(_, prepared)| prepared.as_ref()),
+                            sink,
+                            request_document_intent,
                         )
-                    },
-                ) {
-                    Ok(Some(outcome)) => {
-                        unsaved = true;
-                        if outcome.metadata_only {
-                            comparison_changed = true;
-                        } else {
-                            replacement_revision = Some(outcome.prepared);
+                    } else {
+                        Ok(None)
+                    };
+                    match group_history {
+                        Ok(Some(staged)) => {
+                            pending_device_insert = Some(staged);
+                            request_complete = false;
+                            status = Some("history pending · waiting for audio".into());
                         }
-                        tuning_input_publication = outcome.completed.flatten();
-                        status = Some("undo committed".into());
+                        Err(reason) => error = Some(reason.to_string()),
+                        Ok(None) => match session.comparison_history(
+                            redo,
+                            compiled
+                                .as_ref()
+                                .filter(|_| comparison_binding.is_some())
+                                .map(|(_, artifact)| artifact),
+                            |source, target, prepared| {
+                                prepare_tuning_input_publication(
+                                    source,
+                                    target,
+                                    prepared,
+                                    project_generation,
+                                    revision,
+                                    keyboard_activation.as_ref(),
+                                    keyboard_tuning_hint.as_ref(),
+                                    audition_activation.as_ref(),
+                                    false,
+                                )
+                            },
+                        ) {
+                            Ok(Some(outcome)) => {
+                                unsaved = true;
+                                if outcome.metadata_only {
+                                    comparison_changed = true;
+                                } else {
+                                    replacement_revision = Some(outcome.prepared);
+                                }
+                                tuning_input_publication = outcome.completed.flatten();
+                                status = Some(
+                                    if redo {
+                                        "redo committed"
+                                    } else {
+                                        "undo committed"
+                                    }
+                                    .into(),
+                                );
+                            }
+                            Ok(None) => {
+                                status = Some(
+                                    if redo {
+                                        "nothing to redo"
+                                    } else {
+                                        "nothing to undo"
+                                    }
+                                    .into(),
+                                )
+                            }
+                            Err(reason) => {
+                                error = Some(hex_storage::text::lowercase_outside_verbatim(
+                                    &reason.to_string(),
+                                ))
+                            }
+                        },
                     }
-                    Ok(None) => status = Some("nothing to undo".into()),
-                    Err(reason) => {
-                        error = Some(hex_storage::text::lowercase_outside_verbatim(
-                            &reason.to_string(),
-                        ))
-                    }
-                },
-                Request::Redo => match session.comparison_history(
-                    true,
-                    compiled
-                        .as_ref()
-                        .filter(|_| comparison_binding.is_some())
-                        .map(|(_, artifact)| artifact),
-                    |source, target, prepared| {
-                        prepare_tuning_input_publication(
-                            source,
-                            target,
-                            prepared,
-                            project_generation,
-                            revision,
-                            keyboard_activation.as_ref(),
-                            keyboard_tuning_hint.as_ref(),
-                            audition_activation.as_ref(),
-                            false,
-                        )
-                    },
-                ) {
-                    Ok(Some(outcome)) => {
-                        unsaved = true;
-                        if outcome.metadata_only {
-                            comparison_changed = true;
-                        } else {
-                            replacement_revision = Some(outcome.prepared);
-                        }
-                        tuning_input_publication = outcome.completed.flatten();
-                        status = Some("redo committed".into());
-                    }
-                    Ok(None) => status = Some("nothing to redo".into()),
-                    Err(reason) => {
-                        error = Some(hex_storage::text::lowercase_outside_verbatim(
-                            &reason.to_string(),
-                        ))
-                    }
-                },
+                }
                 request @ (Request::SaveNew(_) | Request::SaveProjectAs { .. }) => {
                     save_complete = true;
                     let (path, folder_layout) = match request {

@@ -82,6 +82,11 @@ The scene records the outermost layer boundaries for both live and bulk-replayed
 paint operations. Replay tests for an enclosing layer at the requested start
 with a binary search. An unmatched earlier end still forces per-operation replay.
 
+Cached replay accumulates the exact minimum and maximum corners of its clipped
+envelope. If the final origin-and-size conversion rounds an outer edge inward,
+the scene uses per-operation replay before reserving any order. The mixed-kind
+oracle checks a later visible overlap that the rounded envelope would hide.
+
 No whole-row layer shortcut, native calls, unsafe code or new dependency is added.
 
 The implementation is confined to `src/scene.rs` and `src/bounds_tree.rs`;
