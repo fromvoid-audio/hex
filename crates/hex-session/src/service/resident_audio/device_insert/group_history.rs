@@ -5,27 +5,17 @@ use hex_project::{
 };
 use std::ops::Range;
 
-pub(super) enum EntryShape {
-    Populated,
-    FirstChild,
-}
-
 /// Appending the next root audio leaf preserves every canonical row. The
 /// first child of an empty root Group requires a flat predecessor.
-pub(super) fn fixed_entry(project: &Project, leaf: TrackId, group: TrackId) -> Option<EntryShape> {
-    let (leaf, group) = fixed_rows(project, leaf, group, None)?;
-    if group.end != leaf.start {
-        return None;
-    }
-    if group.len() > 1 {
-        Some(EntryShape::Populated)
-    } else {
-        project
-            .tracks()
-            .iter()
-            .all(|track| track.parent_group().is_none())
-            .then_some(EntryShape::FirstChild)
-    }
+pub(super) fn fixed_entry(project: &Project, leaf: TrackId, group: TrackId) -> bool {
+    fixed_rows(project, leaf, group, None).is_some_and(|(leaf, group)| {
+        group.end == leaf.start
+            && (group.len() > 1
+                || project
+                    .tracks()
+                    .iter()
+                    .all(|track| track.parent_group().is_none()))
+    })
 }
 
 /// Moving the final direct leaf immediately outside its Group preserves its row
@@ -97,10 +87,7 @@ pub(super) fn command(current: &Project, target: &Project) -> Option<Command> {
         ),
         _ => return None,
     };
-    if !matches!(
-        fixed_entry(direct, old.id(), group),
-        Some(EntryShape::Populated)
-    ) {
+    if !fixed_entry(direct, old.id(), group) {
         return None;
     }
     Some(Command::ReparentTracks {
@@ -287,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn first_child_entry_requires_flat_rows_and_keeps_inverse_history_outside() {
+    fn first_child_history_stages_exact_flat_and_grouped_snapshots() {
         let (mut editor, leaf, group) = fixture();
         let sibling = editor.project().tracks()[1].id();
         editor
@@ -299,10 +286,7 @@ mod tests {
                 },
             })
             .unwrap();
-        assert!(matches!(
-            fixed_entry(editor.project(), leaf, group),
-            Some(EntryShape::FirstChild)
-        ));
+        assert!(fixed_entry(editor.project(), leaf, group));
 
         let mut routed = Editor::new(editor.project().clone(), 8).unwrap();
         routed
@@ -311,18 +295,25 @@ mod tests {
                 name: "other group".into(),
             })
             .unwrap();
-        assert!(fixed_entry(routed.project(), leaf, group).is_none());
+        assert!(!fixed_entry(routed.project(), leaf, group));
         routed.execute(entry(leaf, group)).unwrap();
         let following = routed.project().tracks().last().unwrap().id();
         assert!(!fixed_exit(routed.project(), leaf, Some(following)));
+        assert!(routed.inspect_history(false, command).flatten().is_none());
 
         let following = editor.project().tracks().last().unwrap().id();
+        let flat = editor.project().clone();
         editor.execute(entry(leaf, group)).unwrap();
+        let grouped = editor.project().clone();
         assert!(fixed_exit(editor.project(), leaf, Some(following)));
         assert!(!fixed_exit(editor.project(), leaf, None));
         assert!(!fixed_exit(editor.project(), leaf, Some(sibling)));
-        assert!(editor.inspect_history(false, command).flatten().is_none());
+        let undo = editor.inspect_history(false, command).flatten().unwrap();
+        let target = stage(&mut editor, false, undo).unwrap().unwrap();
+        assert_eq!(target.project(), &flat);
         assert!(editor.undo());
-        assert!(editor.inspect_history(true, command).flatten().is_none());
+        let redo = editor.inspect_history(true, command).flatten().unwrap();
+        let target = stage(&mut editor, true, redo).unwrap().unwrap();
+        assert_eq!(target.project(), &grouped);
     }
 }
