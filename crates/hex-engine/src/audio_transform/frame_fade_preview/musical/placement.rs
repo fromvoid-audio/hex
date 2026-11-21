@@ -154,6 +154,11 @@ mod tests {
         assert_eq!(render(&moved, start, length, 83), expected);
 
         editor.execute(scope(destination + beat / 4)).unwrap();
+        let resized_scope = editor.project().clip(clip).unwrap();
+        assert_eq!(
+            (resized_scope.start(), resized_scope.duration()),
+            (start, length as u64)
+        );
         let revealed = prepare(&editor, &media, &context);
         let samples = &full_pcm[..full as usize / 4];
         assert!(samples.iter().any(|sample| *sample != [0.0; 2]));
