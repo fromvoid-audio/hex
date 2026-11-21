@@ -46,18 +46,27 @@ inline bool audio_bus_info(IComponent* component,BusDirection direction,int32 in
 inline bool audio_bus_info(IComponent* component,BusDirection direction,int32 index,BusType type,BusInfo& info) {
     return audio_bus_info(component,direction,index,info) && info.busType==type;
 }
-// Effects accept one inactive trailing auxiliary input. A single silent
+inline constexpr int32 max_audio_inputs=16;
+using AudioInputLayout=std::array<SpeakerArrangement,max_audio_inputs>;
+inline constexpr int32 max_instrument_outputs=16;
+using InstrumentOutputLayout=std::array<SpeakerArrangement,max_instrument_outputs>;
+
+// Effects accept bounded inactive trailing auxiliary inputs. A single silent
 // instrument input can itself be auxiliary. Neither becomes a graph route.
 inline bool audio_buses(IComponent* component,BusDirection direction,int32 count,int32 channels,
                         bool exact,BusType first_type=kMain) {
-    if (count!=(channels?1:0) && !(direction==kInput && channels && count==2)) return false;
+    const bool trailing_aux=direction==kInput && channels && count>1 && count<=max_audio_inputs;
+    if (count!=(channels?1:0) && !trailing_aux) return false;
     if (!count) return true;
-    BusInfo first{},aux{};
-    return audio_bus_info(component,direction,0,first_type,first) && (!exact || first.channelCount==channels) &&
-        (count==1 || audio_bus_info(component,direction,1,kAux,aux));
+    BusInfo first{};
+    if (!audio_bus_info(component,direction,0,first_type,first) || (exact && first.channelCount!=channels))
+        return false;
+    for (int32 i=1;i<count;++i) {
+        BusInfo aux{};
+        if (!audio_bus_info(component,direction,i,kAux,aux)) return false;
+    }
+    return true;
 }
-inline constexpr int32 max_instrument_outputs=16;
-using InstrumentOutputLayout=std::array<SpeakerArrangement,max_instrument_outputs>;
 
 // Preserve the SDK slots of disabled instrument outputs. Only bus zero has
 // PCM custody. The remaining slots have stable arrays of null sample pointers.

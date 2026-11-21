@@ -232,11 +232,16 @@ public:
              SpeakerArr::getChannelCount(main_input)!=sdk.input_channels))
             return ConfigurationResult::ArrangementMismatch;
         const auto main_output=arrangement(request.output_channels);
-        SpeakerArrangement aux_input{};
-        if (input_count==2 &&
-            (processor->getBusArrangement(kInput,1,aux_input)!=kResultOk || !aux_input))
-            return ConfigurationResult::ArrangementMismatch;
-        SpeakerArrangement inputs[]{main_input,aux_input};
+        AudioInputLayout inputs{};
+        if (input_count) inputs[0]=main_input;
+        const auto auxiliary_input_matches=[&](int32 index,SpeakerArrangement& actual) {
+            BusInfo info{};
+            return audio_bus_info(component,kInput,index,kAux,info) &&
+                processor->getBusArrangement(kInput,index,actual)==kResultOk &&
+                actual && SpeakerArr::getChannelCount(actual)==info.channelCount;
+        };
+        for (int32 i=1;i<input_count;++i)
+            if (!auxiliary_input_matches(i,inputs[i])) return ConfigurationResult::ArrangementMismatch;
         InstrumentOutputLayout outputs{};
         outputs[0]=main_output;
         const auto additional_output_matches=[&](int32 index,SpeakerArrangement& actual) {
@@ -252,9 +257,11 @@ public:
         // Some instruments refuse a redundant setBusArrangements call.
         const bool reuse_layout=(silent_input || multiple_outputs) &&
             processor->getBusArrangement(kOutput,0,observed)==kResultOk && observed==main_output;
+        auto requested_inputs=inputs;
         auto requested_outputs=outputs;
         if (!reuse_layout &&
-            processor->setBusArrangements(input_count?inputs:nullptr,input_count,requested_outputs.data(),output_count)!=kResultOk)
+            processor->setBusArrangements(input_count?requested_inputs.data():nullptr,input_count,
+                                          requested_outputs.data(),output_count)!=kResultOk)
             return ConfigurationResult::ArrangementRefused;
         if (component->getBusCount(kAudio,kInput)!=input_count ||
             component->getBusCount(kAudio,kOutput)!=output_count ||
@@ -262,9 +269,11 @@ public:
             !audio_bus_info(component,kOutput,0,kMain,first_output) ||
             first_output.channelCount!=request.output_channels ||
             processor->getBusArrangement(kOutput,0,observed)!=kResultOk || observed!=main_output ||
-            (input_count && (processor->getBusArrangement(kInput,0,observed)!=kResultOk || observed!=main_input)) ||
-            (input_count==2 && (processor->getBusArrangement(kInput,1,observed)!=kResultOk || observed!=aux_input)))
+            (input_count && (processor->getBusArrangement(kInput,0,observed)!=kResultOk || observed!=main_input)))
             return ConfigurationResult::ArrangementMismatch;
+        for (int32 i=1;i<input_count;++i)
+            if (!auxiliary_input_matches(i,observed) || observed!=inputs[i])
+                return ConfigurationResult::ArrangementMismatch;
         for (int32 i=1;i<output_count;++i)
             if (!additional_output_matches(i,observed) || observed!=outputs[i])
                 return ConfigurationResult::ArrangementMismatch;
@@ -272,9 +281,10 @@ public:
         setup.processMode = request.process_mode; setup.symbolicSampleSize = kSample32;
         setup.maxSamplesPerBlock = request.maximum_frames; setup.sampleRate = request.sample_rate;
         if (processor->setupProcessing(setup) != kResultOk) return ConfigurationResult::SetupRefused;
-        // An inactive trailing bus needs no PCM buffer, even if default active.
-        if (input_count==2 && component->activateBus(kAudio,kInput,1,false)!=kResultOk)
-            return ConfigurationResult::ActivationRefused;
+        // Inactive trailing buses need no PCM buffer, even if default active.
+        for (int32 i=1;i<input_count;++i)
+            if (component->activateBus(kAudio,kInput,i,false)!=kResultOk)
+                return ConfigurationResult::ActivationRefused;
         for (int32 i=1;i<output_count;++i)
             if (component->activateBus(kAudio,kOutput,i,false)!=kResultOk)
                 return ConfigurationResult::ActivationRefused;
