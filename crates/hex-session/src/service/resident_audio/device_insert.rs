@@ -778,9 +778,9 @@ impl BrowserEdit {
 }
 
 impl Session {
-    /// Select the Verified Group entry whose leaf fade the audio owner supports.
+    /// Select the exact Verified Group reparent whose leaf fade Audio supports.
     /// The active source, page windows, and final candidate stay audio-owned.
-    pub(in crate::service) fn should_stage_verified_group_entry(
+    pub(in crate::service) fn should_stage_verified_group_route(
         &self,
         command: &Command,
         previous: Option<&PreparedRevision>,
@@ -792,12 +792,17 @@ impl Session {
         else {
             return false;
         };
-        let ([leaf], Some(group)) = (tracks.ids(), destination.parent_group) else {
+        let [leaf] = tracks.ids() else {
             return false;
         };
-        destination.before.is_none()
-            && group_history::fixed_entry(self.project(), *leaf, group)
-            && self.verified_group_route_inputs(previous)
+        let project = self.project();
+        let fixed_row = match destination.parent_group {
+            Some(group) => {
+                destination.before.is_none() && group_history::fixed_entry(project, *leaf, group)
+            }
+            None => group_history::fixed_exit(project, *leaf, destination.before),
+        };
+        fixed_row && self.verified_group_route_inputs(previous)
     }
 
     fn verified_group_route_inputs(&self, previous: Option<&PreparedRevision>) -> bool {
@@ -972,7 +977,7 @@ impl Session {
             )
         {
             Operation::Device(GraphEditOperation::ReplaceDevice)
-        } else if self.should_stage_verified_group_entry(&command, previous) {
+        } else if self.should_stage_verified_group_route(&command, previous) {
             Operation::Device(GraphEditOperation::MoveTrack)
         } else {
             Operation::Device(

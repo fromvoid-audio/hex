@@ -7645,7 +7645,7 @@ fn run_worker(
                         && (matches!(&command, Command::PasteDevices { .. })
                             || resident_audio::device_insert::graph_edit_operation(&command)
                                 .is_some()
-                            || session.should_stage_verified_group_entry(
+                            || session.should_stage_verified_group_route(
                                 &command,
                                 compiled.as_ref().map(|(_, prepared)| prepared.as_ref()),
                             ))

@@ -3,6 +3,7 @@ use super::*;
 mod arrangement;
 mod effects;
 mod group;
+mod group_exit;
 mod group_route;
 mod tempo_deadline;
 
