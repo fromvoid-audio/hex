@@ -22,6 +22,10 @@
 #include <os/log.h>
 #include <thread>
 
+#if defined(HEX_ORIGINAL_SLICE_CLOCK_OBSERVATION)
+#include "macos_slice_clock_observation.hpp"
+#endif
+
 namespace wire=hex_instance_wire;
 using namespace Steinberg;using namespace Steinberg::Vst;
 namespace {
@@ -380,6 +384,9 @@ int main(int argc,char** argv) {
     std::optional<wire::Config> config;
     uint32_t failure=Configuration;bool accepted=false,normal_stop=false;
     uint64_t blocks=0,frames=0;
+#if defined(HEX_ORIGINAL_SLICE_CLOCK_OBSERVATION)
+    OriginalSliceClockObservation slice_clock; // prepared on the main control lane
+#endif
     using CloseResult=hex_instance::Instance::CloseResult;
     auto closing=CloseResult::Refused;
     // SDK startup and teardown may autorelease objects with methods in the
@@ -1184,7 +1191,13 @@ int main(int argc,char** argv) {
                             window.processContext=slice?&packet.timing_changes[slice-1].context:(packet.context?&*packet.context:nullptr);
                             window.numSamples=width;phase.store(2,std::memory_order_release);
                             const auto host_frontier=instance.editor_frontier_on_worker();
+#if defined(HEX_ORIGINAL_SLICE_CLOCK_OBSERVATION)
+                            const bool observed_slice=slice_clock.begin(*config,blocks,frames,slice,first,static_cast<size_t>(width));
+#endif
                             const bool processed=instance.process(window,packet.observe_sdk_timing?&packet.sdk_process_ns:nullptr);
+#if defined(HEX_ORIGINAL_SLICE_CLOCK_OBSERVATION)
+                            slice_clock.end(observed_slice,processed);
+#endif
                             // No SDK stop/unload beneath a retained borrowed queue.
                             const bool input_returned=parameter_input.end_sdk(),output_returned=parameter_output.end_sdk();
                             const bool notes_returned=!event_channels || input_notes.end();
@@ -1246,6 +1259,9 @@ int main(int argc,char** argv) {
                         instance.publish_parameter_feedback(parameter_feedback);
                         if(!packet.write(channel)) { worker_failure.store(Cancelled);break; }
                         deadline.pcm_replied();
+#if defined(HEX_ORIGINAL_SLICE_CLOCK_OBSERVATION)
+                        slice_clock.replied(blocks);
+#endif
                         ++blocks;frames+=packet.frames;
                         pcm_since_main_pump.store(true,std::memory_order_relaxed);
                         if(trace_messages) {
@@ -1587,6 +1603,9 @@ int main(int argc,char** argv) {
                 } catch(...) { control_failure(Unexpected); }
             }
             worker.join();failure=worker_failure.load()&0xFF;
+#if defined(HEX_ORIGINAL_SLICE_CLOCK_OBSERVATION)
+            if(normal_stop && !failure) slice_clock.publish_after_join();
+#endif
             if(!failure && (!instance.publish_parameter_feedback(parameter_feedback) ||
                 !instance.synchronize_parameter_feedback_on_control() || instance.host_refusals())) failure=HostControl;
         } catch(const Refusal&) {

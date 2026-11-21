@@ -161,6 +161,10 @@ fn native_source() -> String {
             "macos_instance_worker.mm",
             include_bytes!("../../native/macos_instance_worker.mm"),
         ),
+        (
+            "macos_slice_clock_observation.hpp",
+            include_bytes!("../../native/macos_slice_clock_observation.hpp"),
+        ),
     ];
     let mut h = Sha256::new();
     for (name, bytes) in inputs {
@@ -173,6 +177,24 @@ fn native_source() -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+fn validate_packaged_profile(data: &serde_json::Value) -> Result<(), String> {
+    let observation = data["build_commands"].as_array().is_some_and(|commands| {
+        commands
+            .iter()
+            .filter_map(serde_json::Value::as_array)
+            .flatten()
+            .any(|argument| {
+                argument.as_str().is_some_and(|value| {
+                    value.starts_with("-DHEX_ORIGINAL_SLICE_CLOCK_OBSERVATION")
+                })
+            })
+    });
+    if !data["package_layout"].is_null() && observation {
+        return Err("diagnostic slice clock helper cannot be packaged".into());
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -205,6 +227,7 @@ impl Build {
             ("cmake", "054c9143cbb8d47fc4694e473f2ee3b4d951a8f5"),
             ("pluginterfaces", "4f547e8e102b47de4a8b8aaf343c73b700786372"),
         ];
+        validate_packaged_profile(&data)?;
         let valid_scope = data["scope"] == role.scope()
             || matches!(role, HelperRole::Factory) && data["scope"] == "original-macos-bootstrap";
         let valid_helper = match role {
@@ -372,5 +395,29 @@ impl InstanceBuild {
     /// source/publication witness or a bound on initial JSON inspection.
     pub fn revalidation_storage_bound(&self) -> Option<RevalidationStorageBound> {
         instance_inventory::storage_bound(&self.0.root)
+    }
+}
+
+#[cfg(test)]
+mod slice_clock_tests {
+    use super::*;
+
+    #[test]
+    fn diagnostic_profile_is_refused_before_packaged_inventory_admission() {
+        let mut data = serde_json::json!({"package_layout": "hex-app-instance-v1",
+            "build_commands": [["clang++", "-O2"]]});
+        assert_eq!(validate_packaged_profile(&data), Ok(()));
+        data["build_commands"][0]
+            .as_array_mut()
+            .unwrap()
+            .push("-DHEX_ORIGINAL_SLICE_CLOCK_OBSERVATION=1".into());
+        assert_eq!(
+            validate_packaged_profile(&data).unwrap_err(),
+            "diagnostic slice clock helper cannot be packaged"
+        );
+        // The unbundled signed owner fixture still uses InstanceBuild::inspect;
+        // packaged admission explicitly refuses this closure above.
+        data["package_layout"] = serde_json::Value::Null;
+        assert_eq!(validate_packaged_profile(&data), Ok(()));
     }
 }

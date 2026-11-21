@@ -550,6 +550,132 @@ fn sdk_timing_follows_the_original_sliced_instrument_reply() {
             .success()
     );
 }
+#[test]
+#[ignore = "explicit signed original slice-clock observation instance profile required"]
+fn original_instrument_slice_clock_is_exact_and_published_only_after_join() {
+    use crate::transport::{MidiEvent, ProcessTiming, SegmentTiming, channel};
+    for (name, target) in [
+        ("matched", Some("1,2,3,4,0,1")),
+        ("missing", None),
+        ("wrong", Some("9,2,3,4,0,1")),
+    ] {
+        let case = Case::new();
+        let path = case.root.join("slice-clock");
+        let observation_path = path.clone();
+        let setup = case.setup_restore(127);
+        let mut options = options();
+        options.preparation.input_channels = 0;
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options,
+            PreparationCancellation::new_on_control().unwrap(),
+            move |command| {
+                setup(command);
+                command.env("HEX_ORIGINAL_SLICE_CLOCK_PATH", observation_path);
+                command.env_remove("HEX_ORIGINAL_SDK_TIMING_GATE");
+                command.env_remove("HEX_ORIGINAL_INSTRUMENT_LIVE_PRESET");
+                command.env_remove("HEX_ORIGINAL_SLICE_CLOCK_TARGET");
+                if let Some(target) = target {
+                    command.env("HEX_ORIGINAL_SLICE_CLOCK_TARGET", target);
+                }
+            },
+        )
+        .unwrap();
+        let child = u64::from(instance.child_id_on_control().unwrap());
+        let component = decode(&instance.ready().initial_state)
+            .unwrap()
+            .component
+            .unwrap();
+        assert_eq!((component[20], component[21]), (0, 2));
+        let binding = instance.configuration().binding;
+        let (_control, mut callback, mut worker) = channel(binding, 8).unwrap();
+        let notes = [
+            MidiEvent {
+                frame: 1,
+                bytes: [0x90, 60, 127],
+                len: 3,
+                note_id: None,
+            },
+            MidiEvent {
+                frame: 3,
+                bytes: [0x80, 60, 0],
+                len: 3,
+                note_id: None,
+            },
+        ];
+        callback.begin_physical_callback(8).unwrap();
+        for (offset, origin, playing) in [(0, 0, true), (4, 40, false)] {
+            callback
+                .stage_segment_with_timing(
+                    offset,
+                    &[[0.0; 2]; 4],
+                    if offset == 4 { &notes } else { &[] },
+                    &[],
+                    &mut [[0.0; 2]; 4],
+                    SegmentTiming {
+                        playing: Some(playing),
+                        at: |i| {
+                            Some(ProcessTiming {
+                                arrangement_frame: origin + i as i64,
+                                playing,
+                                ..Default::default()
+                            })
+                        },
+                    },
+                )
+                .unwrap();
+        }
+        callback.finish(true).unwrap();
+        let request = worker.receive_request().unwrap().unwrap().block;
+        let reply = instance.exchange_on_worker(request).unwrap();
+        assert_eq!(
+            (reply.binding, reply.sequence, reply.first_frame),
+            (binding, 0, 0)
+        );
+        assert_eq!(
+            &reply.pcm[..8],
+            &[
+                [0.0; 2], [0.0; 2], [0.0; 2], [0.0; 2], [0.0; 2], [1.0; 2], [1.0; 2], [0.0; 2],
+            ]
+        );
+        assert!(!path.exists(), "worker must not publish the observation");
+        assert!(
+            instance
+                .stop_and_reap_on_control()
+                .unwrap()
+                .status
+                .success()
+        );
+        assert_eq!(case.observation().unwrap()[10], 2);
+        assert_eq!(case.restore_observation().len(), 15);
+        if name != "matched" {
+            assert!(!path.exists(), "{name} target must not publish a record");
+            continue;
+        }
+        let bytes = fs::read(path).expect("signed observation profile must publish after join");
+        assert_eq!(bytes.len(), 144);
+        assert_eq!(&bytes[..8], b"HXMC0001");
+        let fields: Vec<_> = bytes[8..]
+            .chunks_exact(8)
+            .map(|field| u64::from_le_bytes(field.try_into().unwrap()))
+            .collect();
+        assert_eq!(&fields[..9], &[1, 2, 3, 4, 0, 0, 1, 4, 4]);
+        assert!(fields[9] > 0 && fields[10] >= fields[9]);
+        assert!(fields[11] > 0 && fields[11] <= u64::from(u32::MAX));
+        assert!(fields[12] > 0 && fields[12] <= u64::from(u32::MAX));
+        assert_eq!(&fields[13..], &[child, 1, 1, 1]);
+        // Same widened floor conversion as CPAL's HostTimebase. No output
+        // clock or physical presentation claim belongs to this owner test.
+        let nanos = |ticks| u128::from(ticks) * u128::from(fields[11]) / u128::from(fields[12]);
+        assert!(nanos(fields[10]) >= nanos(fields[9]));
+        println!(
+            "original_slice_clock,fields={fields:?},start_ns={},end_ns={}",
+            nanos(fields[9]),
+            nanos(fields[10])
+        );
+    }
+}
 fn cancelled_preparation<T>(result: Result<T>) {
     match result {
         Err(Error::Preparation {

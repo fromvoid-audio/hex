@@ -82,6 +82,18 @@ class EditorFrameTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
 
 
+class ObservationProfileTests(unittest.TestCase):
+    def test_observation_profile_requires_the_instance_role_before_building(self):
+        with self.assertRaisesRegex(ValueError, "instance-only role"):
+            BOOT.build(Path("unused-sdk"), Path("unused-output"), original_slice_clock_observation=True)
+
+    def test_compiler_closure_distinguishes_normal_and_observation_profiles(self):
+        ordinary = {"build_commands": [["clang++", "-O2", "macos_instance_worker.mm"]]}
+        self.assertFalse(BOOT.is_observation_build(ordinary))
+        ordinary["build_commands"][0].append(BOOT.OBSERVATION_DEFINE)
+        self.assertTrue(BOOT.is_observation_build(ordinary))
+
+
 class MachHeaderTests(unittest.TestCase):
     def test_wrong_role_and_architecture_refuse(self):
         # Parser component evidence only; not an executable native fixture.
