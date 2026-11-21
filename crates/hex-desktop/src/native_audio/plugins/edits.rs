@@ -4,11 +4,143 @@
 //! intent or shutdown cancels preparation without consuming another request.
 use super::*;
 use hex_audio::prepared::{AppliedAudioSource, PublicationControl};
-use hex_engine::playback::{HostedInstrumentMove, HostedMoveRequest, HostedTrackEffectMove};
+use hex_engine::playback::{
+    HostedInstrumentMove, HostedMoveRequest, HostedTrackEffectMove, HostedTrackEffectReorder,
+};
 use hex_session::service::RequestCancellation;
 mod authored;
 
 impl Plugins {
+    pub(super) fn prepare_hosted_effect_reorder(
+        &mut self,
+        output: &mut WorkerPreparedOutput,
+        input: &ResidentEffectPreparation<'_>,
+        desired: Option<&CanonicalAudioSourceSnapshot>,
+        cancellation: Option<&RequestCancellation>,
+    ) -> Result<Option<(hosted_move::MoveRoute, Binding)>, String> {
+        let Some(route) = input.hosted_track_effect_reorder() else {
+            return Ok(None);
+        };
+        let control = output.publication.control().ok_or("native output closed")?;
+        if !control
+            .status
+            .playing
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Ok(None);
+        }
+        let predecessor = retained_move_predecessor(control, route.predecessor, input, desired)?;
+        if control.status.native_effect_source() != Some(predecessor) {
+            return Ok(None);
+        }
+        let device = route.device.value();
+        let owner = ProcessorChainOwner::Track(route.track.value());
+        let mut originals = self.sources.iter().filter(|source| {
+            source.owner == owner
+                && source.device == device
+                && source.accepted
+                && !source.retiring
+                && source.project_generation == predecessor.context.project_generation
+                && source.binding.root == predecessor.output_identity
+        });
+        let Some(original) = originals.next() else {
+            return Ok(None);
+        };
+        if originals.next().is_some() {
+            return Err("original vst3 reorder worker is ambiguous".into());
+        }
+        if original.editor_open
+            || original.open_editor_group.is_some()
+            || original.edit_backlog
+            || original.pending_touch.is_some()
+            || original
+                .edit_recovery
+                .is_some_and(|read| read.recovery && read.source != predecessor)
+            || self
+                .latency_notice
+                .is_some_and(|(installed, _)| installed == predecessor)
+        {
+            return Ok(None);
+        }
+        let previous_binding = original.binding;
+        let destination = PluginEffectDestination::Track(route.track);
+        let mut state = None;
+        input.visit_plugin_devices(|target, id, authored| {
+            if target == destination && id == device {
+                state = Some(authored);
+            }
+            Ok(())
+        })?;
+        let state = state.ok_or("staged vst3 reorder device changed")?;
+        let identity =
+            NativeProcessorIdentity::new(owner, device).map_err(|error| error.to_string())?;
+        if !matches_direct_effect_profile(
+            control,
+            identity,
+            previous_binding,
+            state,
+            input.sample_rate(),
+            cancellation,
+        )? {
+            return Ok(None);
+        }
+        self.prepare_edit_source(
+            output,
+            input,
+            destination,
+            device,
+            state,
+            desired,
+            cancellation,
+            true,
+            false,
+        )?;
+        let mut prepared = self.sources.iter().filter(|source| {
+            source.owner == owner
+                && source.device == device
+                && !source.accepted
+                && !source.retiring
+                && source.project_generation == input.context().project_generation
+                && source.operation.edit_context() == Some(input.context())
+                && source.binding.root == predecessor.output_identity
+                && source.binding != previous_binding
+        });
+        let fresh = prepared
+            .next()
+            .ok_or("fresh vst3 reorder worker is unavailable")?
+            .binding;
+        if prepared.next().is_some() {
+            return Err("fresh vst3 reorder worker is ambiguous".into());
+        }
+        let control = output.publication.control().ok_or("native output closed")?;
+        if control.status.native_effect_source() != Some(predecessor)
+            || !matches_direct_effect_profile(
+                control,
+                identity,
+                fresh,
+                state,
+                input.sample_rate(),
+                cancellation,
+            )?
+        {
+            return Err("fresh vst3 reorder worker or playback source changed".into());
+        }
+        Ok(Some((
+            hosted_move::MoveRoute::prepare(
+                input.context(),
+                route.predecessor,
+                HostedMoveRequest::Reorder(HostedTrackEffectReorder {
+                    track: route.track,
+                    device: route.device,
+                    previous_binding,
+                    binding: fresh,
+                }),
+                predecessor,
+            ),
+            fresh,
+        )))
+    }
+
     pub(super) fn fresh_instrument_move(
         &self,
         control: &PublicationControl,
@@ -174,28 +306,14 @@ impl Plugins {
             Ok(())
         })?;
         let state = state.ok_or("fresh vst3 effect receiver changed")?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
-        let supported = loop {
-            check_cancel(cancellation)?;
-            match control.with_native_effect_definition(&[binding], |definition| {
-                Ok(definition.matches_track_effect_move_on_control(
-                    identity,
-                    binding,
-                    state,
-                    input.sample_rate(),
-                ))
-            }) {
-                Err(reason)
-                    if matches!(
-                        reason.as_str(),
-                        "native effect preparation is busy" | "native effect selection is busy"
-                    ) && std::time::Instant::now() < deadline =>
-                {
-                    poll_control(control)
-                }
-                result => break result?,
-            }
-        };
+        let supported = matches_direct_effect_profile(
+            control,
+            identity,
+            binding,
+            state,
+            input.sample_rate(),
+            cancellation,
+        )?;
         Ok(supported.then(|| {
             hosted_move::MoveRoute::prepare(
                 input.context(),
@@ -741,6 +859,38 @@ impl Plugins {
         Ok(cut)
     }
 }
+fn matches_direct_effect_profile(
+    control: &mut PublicationControl,
+    identity: NativeProcessorIdentity,
+    binding: Binding,
+    state: &NativeDeviceState,
+    sample_rate: u32,
+    cancellation: Option<&RequestCancellation>,
+) -> Result<bool, String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
+    loop {
+        check_cancel(cancellation)?;
+        match control.with_native_effect_definition(&[binding], |definition| {
+            Ok(definition.matches_track_effect_move_on_control(
+                identity,
+                binding,
+                state,
+                sample_rate,
+            ))
+        }) {
+            Err(reason)
+                if matches!(
+                    reason.as_str(),
+                    "native effect preparation is busy" | "native effect selection is busy"
+                ) && std::time::Instant::now() < deadline =>
+            {
+                poll_control(control);
+            }
+            result => return result,
+        }
+    }
+}
+
 fn retained_move_predecessor(
     control: &PublicationControl,
     predecessor: hex_session::service::ResidentRuntimeLoop,

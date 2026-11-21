@@ -1639,6 +1639,25 @@ impl SessionPlayback {
         } else {
             None
         };
+        let hosted_reorder = if let Some(HostedMoveRequest::Reorder(request)) = self.hosted_move {
+            if !continuous_insert
+                || restart != Restart::None
+                || groups.is_some()
+                || demand.as_ref().is_some_and(|demand| !demand.ordinary)
+                || self
+                    .native_removal
+                    .and_then(|pending| pending.reordered_track(previous))
+                    != Some(request.track)
+            {
+                return Err(SessionPlaybackError::LatencyLayoutChanged);
+            }
+            Some(
+                self.direct_hosted_effect_reorder_from(previous)
+                    .ok_or(SessionPlaybackError::LatencyLayoutChanged)?,
+            )
+        } else {
+            None
+        };
         let foreign_handoff = self.foreign_arrangement.plan_handoff(
             &previous.foreign_arrangement,
             [&self.revision, &previous.revision],
@@ -2015,6 +2034,9 @@ impl SessionPlayback {
             }
         }
         let fresh_history = compensation_pair.and_then(|(candidate, old)| {
+            if let Some((_, history)) = hosted_reorder {
+                return Some(history);
+            }
             let staged_track = self
                 .native_removal
                 .and_then(|removal| removal.staged_track_id(previous));
@@ -2089,6 +2111,7 @@ impl SessionPlayback {
                     .map(|(track, device)| FreshHistory::ChangedTrack {
                         track,
                         device,
+                        second_device: None,
                         cut_predecessor_pcm: approved_cut,
                     })
                 })
@@ -5479,7 +5502,7 @@ impl SessionPlayback {
             release.location = ReleaseLocation::new(usize::MAX, Some(group))?;
         }
 
-        let mut native_reorder_cut = None;
+        let mut reorder_cut = hosted_reorder.map(|(index, _)| index);
         // A source can be silent while its committed effect suffix still has
         // delayed or recursive output. Retain a detached old suffix even when
         // no MIDI release owner is available to carry it. Track gain, balance,
@@ -5490,6 +5513,7 @@ impl SessionPlayback {
             // The donor's fade already ended its contribution. The fresh
             // receiver must never inherit or render a detached donor tail.
             if hosted_effect_move.is_some_and(|movement| old_index == movement.source)
+                || reorder_cut == Some(old_index)
                 || ends_verified_group_history(old_index)
             {
                 continue;
@@ -5542,7 +5566,7 @@ impl SessionPlayback {
                     == Some(old_route.id)
                     && candidate_chain.is_exact_native_reorder_from(old_chain);
                 if staged_reorder {
-                    native_reorder_cut = Some(old_index);
+                    reorder_cut = Some(old_index);
                 }
                 let exact_chain_configuration = old_chain.len() == candidate_chain.len()
                     && configuration_matches_continuation(
@@ -5915,6 +5939,11 @@ impl SessionPlayback {
         // Check every candidate history copy against the final tail-retention
         // plan before any runtime owner is moved or mutated.
         for (old_index, _) in previous.routes.iter().enumerate() {
+            // The proved hosted reorder starts both stages fresh. Its dry
+            // sibling still goes through the ordinary inheritance check.
+            if hosted_reorder.is_some_and(|(index, _)| index == old_index) {
+                continue;
+            }
             let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
             let Some(new_index) = self
                 .routes
@@ -6578,7 +6607,7 @@ impl SessionPlayback {
         for (old_index, _) in previous.routes.iter().enumerate() {
             // These staged cuts end the predecessor DSP. Keep its history
             // with the old graph for control-side retirement.
-            if ends_verified_group_history(old_index) || native_reorder_cut == Some(old_index) {
+            if ends_verified_group_history(old_index) || reorder_cut == Some(old_index) {
                 continue;
             }
             let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;

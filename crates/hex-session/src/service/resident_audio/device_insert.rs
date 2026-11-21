@@ -3,6 +3,7 @@ use super::*;
 mod detached_history;
 mod group_history;
 mod hosted_effect_history;
+mod hosted_effect_reorder;
 mod hosted_instrument_move;
 mod hosted_replacement_history;
 mod main_history;
@@ -152,6 +153,7 @@ struct StagedResidentChange {
     edit: StagedChange,
     operation: Operation,
     hosted_instrument_move: Option<hosted_instrument_move::Intent>,
+    reorder_track: Option<hex_project::TrackId>,
 }
 
 enum ResidentEditFence {
@@ -1378,6 +1380,13 @@ impl Session {
         } else {
             None
         };
+        let reorder_track = match &command {
+            Command::ReorderDevices {
+                owner: hex_project::DeviceChainOwner::Track(track),
+                ..
+            } if self.audio_mode() == DocumentAudioMode::Resident => Some(*track),
+            _ => None,
+        };
         self.stage_resident_graph_change(
             context,
             sink,
@@ -1423,6 +1432,7 @@ impl Session {
                     edit: StagedChange::Command(edit),
                     operation: Operation::Device(operation),
                     hosted_instrument_move,
+                    reorder_track,
                 }))
             },
         )
@@ -1528,6 +1538,7 @@ impl Session {
                         edit: StagedChange::History(edge),
                         operation: Operation::HostedHistory(GraphEditOperation::ReplaceDevice),
                         hosted_instrument_move: None,
+                        reorder_track: None,
                     }));
                 }
                 let hosted = match detached_history::stage(&mut session.editor, redo)? {
@@ -1539,6 +1550,7 @@ impl Session {
                         edit: StagedChange::History(edge),
                         operation: Operation::HostedHistory(operation),
                         hosted_instrument_move: None,
+                        reorder_track: None,
                     }));
                 }
                 Ok(
@@ -1547,6 +1559,7 @@ impl Session {
                             edit: StagedChange::History(staged.edge),
                             operation: Operation::ResidentMoveHistory,
                             hosted_instrument_move: staged.hosted_instrument_move,
+                            reorder_track: None,
                         },
                     ),
                 )
@@ -1575,6 +1588,7 @@ impl Session {
                 edit,
                 operation,
                 hosted_instrument_move,
+                reorder_track,
             }) = stage(self)?
             else {
                 return Ok(None);
@@ -1640,20 +1654,38 @@ impl Session {
                 preparing_edit: plugin.is_none(),
                 power_on,
                 running_power_off,
-                hosted_move: hosted_instrument_move.and_then(|intent| {
-                    use audio_sink::ResidentHostedMove;
-                    intent
-                        .preparation(self.project(), edit.project(), installed)
-                        .map(ResidentHostedMove::Instrument)
-                        .or_else(|| {
-                            if !sink.resident_playing() {
-                                return None;
-                            }
-                            intent
-                                .track_effect_preparation(self.project(), edit.project(), installed)
-                                .map(ResidentHostedMove::TrackEffect)
-                        })
-                }),
+                hosted_move: hosted_instrument_move
+                    .and_then(|intent| {
+                        use audio_sink::ResidentHostedMove;
+                        intent
+                            .preparation(self.project(), edit.project(), installed)
+                            .map(ResidentHostedMove::Instrument)
+                            .or_else(|| {
+                                if !sink.resident_playing() {
+                                    return None;
+                                }
+                                intent
+                                    .track_effect_preparation(
+                                        self.project(),
+                                        edit.project(),
+                                        installed,
+                                    )
+                                    .map(ResidentHostedMove::TrackEffect)
+                            })
+                    })
+                    .or_else(|| {
+                        let track = reorder_track?;
+                        if !sink.resident_playing() {
+                            return None;
+                        }
+                        hosted_effect_reorder::preparation(
+                            self.project(),
+                            edit.project(),
+                            track,
+                            installed,
+                        )
+                        .map(audio_sink::ResidentHostedMove::Reorder)
+                    }),
                 device_insert_control: proposal_control,
                 ..self.resident_seek_inputs(admission, current, None)?
             };

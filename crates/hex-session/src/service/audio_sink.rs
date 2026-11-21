@@ -56,10 +56,19 @@ pub struct ResidentHostedTrackEffectMove {
     pub predecessor: ResidentRuntimeLoop,
 }
 
+/// The authored endpoint of an exact direct reorder and its running predecessor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidentHostedTrackEffectReorder {
+    pub track: hex_project::TrackId,
+    pub device: hex_project::DeviceId,
+    pub predecessor: ResidentRuntimeLoop,
+}
+
 #[derive(Clone, Copy)]
 pub(in crate::service) enum ResidentHostedMove {
     Instrument(ResidentHostedInstrumentMove),
     TrackEffect(ResidentHostedTrackEffectMove),
+    Reorder(ResidentHostedTrackEffectReorder),
 }
 
 /// The explicit PowerDevice command's nonowning Off predecessor.
@@ -319,13 +328,19 @@ impl<'a> ResidentEffectPreparation<'a> {
     pub fn hosted_instrument_move(&self) -> Option<&ResidentHostedInstrumentMove> {
         match self.hosted_move.as_ref()? {
             ResidentHostedMove::Instrument(route) => Some(route),
-            ResidentHostedMove::TrackEffect(_) => None,
+            ResidentHostedMove::TrackEffect(_) | ResidentHostedMove::Reorder(_) => None,
         }
     }
     pub fn hosted_track_effect_move(&self) -> Option<&ResidentHostedTrackEffectMove> {
         match self.hosted_move.as_ref()? {
-            ResidentHostedMove::Instrument(_) => None,
+            ResidentHostedMove::Instrument(_) | ResidentHostedMove::Reorder(_) => None,
             ResidentHostedMove::TrackEffect(route) => Some(route),
+        }
+    }
+    pub fn hosted_track_effect_reorder(&self) -> Option<&ResidentHostedTrackEffectReorder> {
+        match self.hosted_move.as_ref()? {
+            ResidentHostedMove::Reorder(route) => Some(route),
+            ResidentHostedMove::Instrument(_) | ResidentHostedMove::TrackEffect(_) => None,
         }
     }
     pub fn sample_rate(&self) -> u32 {

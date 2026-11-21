@@ -13,6 +13,7 @@ use hex_lattice_contract::{
 };
 use hex_project::{Command, Created};
 
+mod hosted_reorder;
 mod paused_monitor;
 mod streamed_effects;
 
