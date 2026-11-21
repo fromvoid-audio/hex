@@ -402,7 +402,7 @@ impl Session {
         let result = (|| {
             let mut prepared = Vec::new();
             let mut files = Vec::new();
-            for (item, path) in plan.iter().zip(&paths) {
+            for (index, (item, path)) in plan.iter().zip(&paths).enumerate() {
                 if control.is_cancelled() || self.shutdown.load(Ordering::Acquire) {
                     return Err("bounce cancelled".into());
                 }
@@ -443,7 +443,10 @@ impl Session {
                         .checked_add(retained)
                         .ok_or("bounce allowance overflows")?,
                 )?;
-                let frames = render(path, revision, &source, item, tails, control)?;
+                let item_control = control
+                    .for_bounce_item(index, plan.len())
+                    .map_err(|e| e.to_string())?;
+                let frames = render(path, revision, &source, item, tails, &item_control)?;
                 published.push(path.clone());
                 let decoded = hex_media::decode_wav_file(
                     path,
@@ -454,6 +457,7 @@ impl Session {
                 )
                 .map_err(|e| e.to_string())?;
                 prepared.push(PreparedImport::new(decoded).map_err(|e| e.to_string())?);
+                item_control.finish_bounce_item();
                 files.push(BounceFile {
                     source: item.source,
                     track: item.track,

@@ -1357,6 +1357,7 @@ impl EditorView {
         visible_change |= self.submit_queued_section();
         visible_change |= self.poll_editor_audio_events(cx);
         visible_change |= self.poll_export(cx);
+        visible_change |= self.poll_bounce_progress();
         visible_change |= self.pump_tuning_gesture();
         if !self.tuning.client.has_pending_requests() && !self.tuning.client.is_recovery_pending() {
             while self.pending_requests.front().is_some_and(|request| {

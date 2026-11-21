@@ -12,6 +12,16 @@ pub struct ExportControl {
     claimed: Arc<AtomicBool>,
     processed: Arc<AtomicU64>,
     total: Arc<AtomicU64>,
+    bounce_units: Arc<AtomicU64>,
+    bounce_item: Option<BounceItem>,
+}
+
+const BOUNCE_PROGRESS_UNITS: u64 = 10_000;
+
+#[derive(Clone, Copy, Debug)]
+struct BounceItem {
+    first_unit: u64,
+    end_unit: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,6 +60,42 @@ impl ExportControl {
         }
     }
 
+    /// Overall Arrangement bounce progress. Each output gets an equal share
+    /// of the bar, filled by its rendered frames (including required preroll).
+    /// An output's final step is reserved for staging and preparing its media.
+    pub fn bounce_fraction(&self) -> f32 {
+        self.bounce_units.load(Ordering::Acquire) as f32 / BOUNCE_PROGRESS_UNITS as f32
+    }
+
+    /// Scope the frame counters to one output within a serial bounce job. The
+    /// stop/adoption fence and overall progress stay shared with the parent.
+    pub fn for_bounce_item(&self, index: usize, count: usize) -> Result<Self, ExportError> {
+        if index >= count || count > BOUNCE_PROGRESS_UNITS as usize {
+            return Err(ExportError::Invalid("invalid bounce progress item"));
+        }
+        let unit = |i: usize| i as u64 * BOUNCE_PROGRESS_UNITS / count as u64;
+        Ok(Self {
+            state: Arc::clone(&self.state),
+            claimed: Arc::clone(&self.claimed),
+            bounce_units: Arc::clone(&self.bounce_units),
+            bounce_item: Some(BounceItem {
+                first_unit: unit(index),
+                end_unit: unit(index + 1),
+            }),
+            processed: Arc::new(AtomicU64::new(0)),
+            total: Arc::new(AtomicU64::new(0)),
+        })
+    }
+
+    /// Fill the rest of this output's share once staging and media preparation
+    /// succeed. The exact job terminal still owns final success or failure.
+    pub fn finish_bounce_item(&self) {
+        if let Some(item) = self.bounce_item {
+            self.bounce_units
+                .fetch_max(item.end_unit, Ordering::Release);
+        }
+    }
+
     pub(super) fn check(&self) -> Result<(), ExportError> {
         if self.state.load(Ordering::Acquire) == 1 {
             Err(ExportError::Cancelled)
@@ -69,7 +115,16 @@ impl ExportControl {
     }
 
     pub(super) fn advance(&self, count: usize) {
-        self.processed.fetch_add(count as u64, Ordering::Release);
+        let processed = self.processed.fetch_add(count as u64, Ordering::Release) + count as u64;
+        if let Some(item) = self.bounce_item {
+            let total = self.total.load(Ordering::Relaxed);
+            let units = (item.end_unit - item.first_unit - 1)
+                .saturating_mul(processed.min(total))
+                .checked_div(total)
+                .unwrap_or(0);
+            self.bounce_units
+                .fetch_max(item.first_unit + units, Ordering::Release);
+        }
     }
 
     /// Seal a prepared generated-media transaction immediately before its
@@ -115,10 +170,10 @@ pub fn control_storage_allowance(signal: Option<&ExportSignal>) -> Result<usize,
             std::mem::size_of::<ControlledRenderer>() - std::mem::size_of::<SessionPlayback>(),
         )
         .ok_or_else(overflow)?;
-    // Four shared scalar controls; conservative Arc headers/alignment, never source payloads.
+    // Five shared scalar controls; conservative Arc headers/alignment, never source payloads.
     bytes = bytes
         .checked_add(
-            4 * (2 * std::mem::size_of::<usize>()
+            5 * (2 * std::mem::size_of::<usize>()
                 + std::mem::size_of::<AtomicU64>()
                 + std::mem::align_of::<AtomicU64>()
                 - 1),
@@ -985,6 +1040,28 @@ mod tests {
     use super::*;
     use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
     use hex_project::{Command, Created, Editor};
+
+    #[test]
+    fn bounce_progress_includes_frame_work_and_never_resets_between_outputs() {
+        let job = ExportControl::default();
+        let first = job.for_bounce_item(0, 2).unwrap();
+        first.total.store(400, Ordering::Relaxed);
+        first.advance(100);
+        assert!((job.bounce_fraction() - 0.125).abs() < 0.0002);
+        first.advance(300);
+        assert!(job.bounce_fraction() < 0.5);
+        first.finish_bounce_item();
+        assert_eq!(job.bounce_fraction(), 0.5);
+
+        let second = job.for_bounce_item(1, 2).unwrap();
+        second.total.store(800, Ordering::Relaxed);
+        assert_eq!(job.bounce_fraction(), 0.5);
+        second.advance(400);
+        assert!((job.bounce_fraction() - 0.75).abs() < 0.0002);
+        assert!(job.cancel());
+        assert!(second.is_cancelled());
+        assert!(job.bounce_fraction() < 1.0);
+    }
 
     #[test]
     fn control_storage_quote_counts_owned_capacity_and_rejects_unbounded_selection() {
