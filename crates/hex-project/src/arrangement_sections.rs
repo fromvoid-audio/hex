@@ -420,6 +420,12 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             target,
             copy,
         } => replace::apply(project, source, target, copy),
+        Command::PasteArrangementSection {
+            clipboard,
+            at,
+            gap_name,
+            gap_color,
+        } => clipboard::paste(project, &clipboard, at, gap_name, gap_color),
         Command::SplitArrangementSection { section, at } => {
             let (right, mut sections) = project.preview_section_split(section, at)?;
             let id = SectionId(project.allocate_id()?);
@@ -471,6 +477,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
     }
 }
 mod append;
+mod clipboard;
 mod color;
 mod meter;
 mod move_beyond_end;
@@ -478,6 +485,7 @@ mod reorder;
 mod replace;
 #[cfg(test)]
 mod test_support;
+pub use clipboard::SectionClipboard;
 use reorder::{reorder, reorder_after};
 
 mod marker_move;
@@ -542,6 +550,12 @@ impl Project {
                 target,
                 copy,
             } => replace::preview(self, *source, *target, *copy),
+            Command::PasteArrangementSection {
+                clipboard,
+                at,
+                gap_name,
+                gap_color,
+            } => clipboard::preview(self, clipboard, *at, gap_name, *gap_color),
             Command::SplitArrangementSection { section, at } => {
                 let (_, sections) = self.preview_section_split(*section, *at)?;
                 Ok(SectionSplicePreview {

@@ -43,7 +43,7 @@ pub use arrangement_locators::{
 };
 mod arrangement_sections;
 pub use arrangement_sections::{
-    ArrangementSection, ArrangementSectionSnapshot, MAX_ARRANGEMENT_SECTIONS,
+    ArrangementSection, ArrangementSectionSnapshot, MAX_ARRANGEMENT_SECTIONS, SectionClipboard,
     SectionReorderPreview, SectionSplicePreview,
 };
 mod audio_event_fade;

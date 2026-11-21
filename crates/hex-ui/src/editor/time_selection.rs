@@ -46,6 +46,9 @@ pub(super) struct TimeSelectionGesture {
     // The tail keeps its own timeline projection. An unmoved press leaves
     // the existing point-click path and selection in charge.
     pub(super) tail_press: Option<(f32, f32)>,
+    // Plain lower-body Main clicks place the section cursor on release without
+    // interfering with all-track range drags started on the same press.
+    pub(super) main_lane_click_beat: Option<hex_project::BeatTime>,
     pub(super) pointer_x: f32,
     pub(super) pointer_y: f32,
     pub(super) free_modifier: bool,
@@ -310,6 +313,9 @@ impl EditorView {
                     && cursor.generation == self.project_generation
             })
         });
+        let main_lane_click_beat = (!extend && !self.time_selection_key_held)
+            .then(|| self.section_pointer(x, y, free))
+            .flatten();
         let generation = self.project_generation;
         let revision = state.revision;
         self.clear_automation_range();
@@ -335,6 +341,7 @@ impl EditorView {
             revision,
             moved: anchor.is_some(),
             tail_press: None,
+            main_lane_click_beat,
             pointer_x: x,
             pointer_y: y,
             free_modifier: free,
@@ -387,6 +394,7 @@ impl EditorView {
             revision: state.revision,
             moved: false,
             tail_press: Some((x, y)),
+            main_lane_click_beat: None,
             pointer_x: x,
             pointer_y: y,
             free_modifier: free,
@@ -556,6 +564,7 @@ impl EditorView {
             revision,
             moved: anchor.is_some(),
             tail_press: None,
+            main_lane_click_beat: None,
             pointer_x: x,
             pointer_y: y,
             free_modifier: free,
@@ -1544,6 +1553,10 @@ impl EditorView {
         }
         gesture.selection = next;
         gesture.moved = true;
+        gesture.main_lane_click_beat = None;
+        if next.anchor_frame != next.end_frame {
+            self.retire_section_pointer_context_for_range();
+        }
         self.time_selection = Some(next);
         self.time_selection_gesture = Some(gesture);
         if !self.time_selection_project_scope
@@ -1569,7 +1582,18 @@ impl EditorView {
             self.time_selection = None;
             self.time_selection_project_scope = false;
             self.edit_cursor = None;
+            if !gesture.moved
+                && let Some(beat) = gesture.main_lane_click_beat
+            {
+                self.place_section_cursor_at_main_point(beat);
+            }
             return true;
+        }
+        if !gesture.moved
+            && gesture.selection.anchor_frame == gesture.selection.end_frame
+            && let Some(beat) = gesture.main_lane_click_beat
+        {
+            self.place_section_cursor_at_main_point(beat);
         }
         if gesture.moved {
             self.fit_clip_editor_to_time_selection();

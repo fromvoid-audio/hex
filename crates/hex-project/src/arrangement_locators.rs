@@ -266,3 +266,59 @@ pub(crate) fn remap(
     validate(&locators, tempo)?;
     Ok(Arc::new(locators))
 }
+
+/// Shift locators at or after `start_frame` right by `frame_length` and insert
+/// captured locators at `start_frame + offset`, allocating fresh global IDs.
+pub(crate) fn splice_captured(
+    project: &Project,
+    tempo: &TempoMap,
+    next_id: &mut u64,
+    start_frame: u64,
+    frame_length: u64,
+    captured: &[(u64, Option<String>)],
+) -> Result<Arc<Vec<ArrangementLocator>>, Invalid> {
+    if project.arrangement_locators().is_empty() && captured.is_empty() {
+        return Ok(Arc::clone(&project.arrangement_locators));
+    }
+    let total = project
+        .arrangement_locators()
+        .len()
+        .checked_add(captured.len())
+        .filter(|&count| count <= MAX_ARRANGEMENT_LOCATORS)
+        .ok_or(Invalid("arrangement locator limit reached"))?;
+    let mut locators = Vec::new();
+    locators
+        .try_reserve_exact(total)
+        .map_err(|_| Invalid("could not reserve arrangement locators"))?;
+    for locator in project.arrangement_locators() {
+        let frame = if locator.frame >= start_frame {
+            locator
+                .frame
+                .checked_add(frame_length)
+                .ok_or(Invalid("arrangement locator shift overflow"))?
+        } else {
+            locator.frame
+        };
+        locators.push(ArrangementLocator {
+            frame,
+            ..locator.clone()
+        });
+    }
+    for (offset, name) in captured {
+        let frame = start_frame
+            .checked_add(*offset)
+            .ok_or(Invalid("pasted arrangement locator frame overflow"))?;
+        let id = LocatorId(*next_id);
+        *next_id = next_id
+            .checked_add(1)
+            .ok_or(Invalid("project identity space exhausted"))?;
+        locators.push(ArrangementLocator {
+            id,
+            frame,
+            name: name.clone(),
+        });
+    }
+    locators.sort_by_key(|locator| locator.frame);
+    validate(&locators, tempo)?;
+    Ok(Arc::new(locators))
+}

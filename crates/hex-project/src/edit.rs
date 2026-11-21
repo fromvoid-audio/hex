@@ -253,10 +253,21 @@ pub enum Command {
     /// allocate a new result ID. Both carry source name/color and retire target.
     /// All non-replaced music ripples intact. Self replacement is a no-op;
     /// one private candidate owns preparation, refusal and Undo/Redo.
+    /// Move or copy a complete song section to replace a target section.
+    /// Moves retain source identity; copies receive a fresh ID.
     ReplaceArrangementSection {
         source: crate::SectionId,
         target: crate::SectionId,
         copy: bool,
+    },
+    /// Insert a captured song section at `at`, rippling later music, markers,
+    /// tempo, meter, locators and device automation right. Splits an enclosing
+    /// section at `at`, or marks an intervening gap past the final section.
+    PasteArrangementSection {
+        clipboard: std::sync::Arc<crate::SectionClipboard>,
+        at: crate::BeatTime,
+        gap_name: String,
+        gap_color: crate::ElementColor,
     },
     /// Split marker metadata at a strict interior beat, preserving all music.
     /// The left marker retains its ID; the right gets a fresh ID and the same
@@ -2146,6 +2157,7 @@ impl Project {
             | Command::AppendArrangementSectionCopy { .. }
             | Command::MoveArrangementSectionBeyondEnd { .. }
             | Command::ReplaceArrangementSection { .. }
+            | Command::PasteArrangementSection { .. }
             | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_)) => {
                 crate::arrangement_sections::apply(self, command)
@@ -3571,6 +3583,7 @@ impl Command {
                 | Self::AppendArrangementSectionCopy { .. }
                 | Self::MoveArrangementSectionBeyondEnd { .. }
                 | Self::ReplaceArrangementSection { .. }
+                | Self::PasteArrangementSection { .. }
         )
     }
 }
