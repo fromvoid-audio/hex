@@ -27,6 +27,21 @@ fn focused_audio_clip_cursor_replaces_the_arrangement_play_start_marker(cx: &mut
     visual.run_until_parked();
     assert!(visual.debug_bounds("clip-editor-play-start-top").is_none());
     assert_eq!(visual.debug_bounds("time-marker-top-start"), Some(initial));
+
+    visual.simulate_click(ruler.center(), Modifiers::default());
+    visual.run_until_parked();
+    let marker = visual.debug_bounds("clip-editor-play-start-top").unwrap();
+    visual.simulate_click(marker.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual
+            .debug_bounds("locked-play-start-top")
+            .unwrap()
+            .center()
+            .x,
+        marker.center().x,
+        "locking the visible marker pins the local cursor's projected frame",
+    );
 }
 
 #[gpui::test]
