@@ -1536,7 +1536,7 @@ fn paint_timeline_grid_canvas(
                             rgb(theme::time_grid_band_color(band.alternate)),
                         ));
                     }
-                    #[cfg(any(test, feature = "ui-test-support"))]
+                    #[cfg(feature = "ui-test-support")]
                     window.record_debug_bounds(
                         format!("arrangement-grid-band-{}", band.start_frame),
                         rect,
@@ -1565,7 +1565,7 @@ fn paint_timeline_grid_canvas(
                         border.opacity(0.65)
                     };
                     window.paint_quad(gpui::fill(rect, color));
-                    #[cfg(any(test, feature = "ui-test-support"))]
+                    #[cfg(feature = "ui-test-support")]
                     window
                         .record_debug_bounds(format!("arrangement-grid-line-{}", line.frame), rect);
                 }
