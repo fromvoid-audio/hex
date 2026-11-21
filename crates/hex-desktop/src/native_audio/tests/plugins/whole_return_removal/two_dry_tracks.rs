@@ -220,6 +220,7 @@ fn running_resident_whole_vst3_return_removal_keeps_two_dry_tracks_aligned() {
         harness: mut h,
         original,
         bus,
+        device,
         predecessor,
         original_worker,
         ..
