@@ -2024,8 +2024,15 @@ impl WorkerAudioSink for NativeAudioSink {
                     self.stopped_resident_return_power_on_fence(context, owner, intent.device())?
                         != Some(fence)
                 }
-                ResidentPowerOnInterval::Running(source) => {
+                ResidentPowerOnInterval::Running {
+                    owner: ProcessorChainOwner::Main,
+                    source,
+                } => {
                     self.running_resident_main_power_on(source.context, intent.device())
+                        != Some(source)
+                }
+                ResidentPowerOnInterval::Running { owner, source } => {
+                    self.running_resident_return_power_on(source.context, owner, intent.device())
                         != Some(source)
                 }
             };
@@ -2413,6 +2420,47 @@ impl WorkerAudioSink for NativeAudioSink {
             || fence.expected_active_revision() != actual.audio_revision
             || fence.consumed_stop_generation() != stop_generation
             || self.resident.powered_off_main(actual) != Some(device)
+            || !control
+                .status
+                .playing
+                .load(std::sync::atomic::Ordering::Acquire)
+            || control.status.native_effect_source().is_some()
+        {
+            return None;
+        }
+        Some(hex_session::service::ResidentGraphSubmission {
+            context,
+            audio_revision: actual.audio_revision,
+            output_identity: actual.output_identity,
+        })
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn running_resident_return_power_on(
+        &mut self,
+        context: AudioSourceContext,
+        owner: hex_engine::ProcessorChainOwner,
+        device: u64,
+    ) -> Option<hex_session::service::ResidentGraphSubmission> {
+        if !matches!(owner, hex_engine::ProcessorChainOwner::Return(_))
+            || self.resident.running_powered_off.is_some()
+            || self
+                .plugins
+                .has_accepted_effect_source(context, owner, device)
+        {
+            return None;
+        }
+        let expected = hex_audio::prepared::NativeProcessorIdentity::new(owner, device).ok()?;
+        if !self
+            .plugins
+            .is_saved_off_document(context.project_generation, expected)
+            || self.applied_powered_off(context) != Some(expected)
+        {
+            return None;
+        }
+        let control = self.output.as_mut()?.publication.control()?;
+        let actual = control.status.recording_source()?;
+        if actual.context != context
             || !control
                 .status
                 .playing

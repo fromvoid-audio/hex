@@ -603,6 +603,14 @@ impl Plugins {
         self.has_accepted_effect_source(context, ProcessorChainOwner::Main, device)
     }
 
+    pub(super) fn is_saved_off_document(
+        &self,
+        generation: u64,
+        expected: NativeProcessorIdentity,
+    ) -> bool {
+        self.saved_off_document == Some((generation, expected))
+    }
+
     pub(super) fn has_accepted_effect_source(
         &self,
         context: AudioSourceContext,

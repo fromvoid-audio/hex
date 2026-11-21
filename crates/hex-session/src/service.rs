@@ -7814,6 +7814,16 @@ fn run_worker(
                                     sink,
                                 )
                                 .is_some()
+                                || resident_audio::device_insert::running_return_power_on(
+                                    session.project(),
+                                    &command,
+                                    hex_engine::AudioSourceContext {
+                                        project_generation,
+                                        editor_revision: revision,
+                                    },
+                                    sink,
+                                )
+                                .is_some()
                                 || resident_audio::device_insert::stopped_hosted_power(
                                     session.project(),
                                     &command,

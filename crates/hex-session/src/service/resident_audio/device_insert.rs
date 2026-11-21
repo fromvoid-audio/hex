@@ -667,7 +667,28 @@ pub(in crate::service) fn running_main_power_on(
     let source = sink.running_resident_main_power_on(context, device)?;
     (source.context == context).then_some(ResidentPowerOn {
         device,
-        interval: ResidentPowerOnInterval::Running(source),
+        interval: ResidentPowerOnInterval::Running {
+            owner: hex_engine::ProcessorChainOwner::Main,
+            source,
+        },
+    })
+}
+
+pub(in crate::service) fn running_return_power_on(
+    project: &Project,
+    command: &Command,
+    context: hex_engine::AudioSourceContext,
+    sink: &mut dyn WorkerAudioSink,
+) -> Option<ResidentPowerOn> {
+    if !sink.confirms_device_inserts() {
+        return None;
+    }
+    let (owner, device) = stopped_power::running_return_power_on_target(project, command)?;
+    let device = device.id().value();
+    let source = sink.running_resident_return_power_on(context, owner, device)?;
+    (source.context == context).then_some(ResidentPowerOn {
+        device,
+        interval: ResidentPowerOnInterval::Running { owner, source },
     })
 }
 
@@ -1321,7 +1342,8 @@ impl Session {
         proposal_control: Option<&PluginEffectControl>,
         document_intent: u64,
     ) -> Result<Option<Pending>, SessionError> {
-        let running_power_on = running_main_power_on(self.project(), &command, context, sink);
+        let running_power_on = running_main_power_on(self.project(), &command, context, sink)
+            .or_else(|| running_return_power_on(self.project(), &command, context, sink));
         let stopped_power = if running_power_on.is_none() {
             stopped_hosted_power(self.project(), &command, context, sink)?
         } else {
@@ -1597,13 +1619,17 @@ impl Session {
                 None => None,
             };
             if let Some(power) = power_on
-                && let ResidentPowerOnInterval::Running(source) = power.interval()
+                && let ResidentPowerOnInterval::Running { owner, source } = power.interval()
                 && (installed.output_identity != source.output_identity
                     || installed.audio_revision != source.audio_revision
                     || installed.source_context != Some(source.context))
             {
                 return Err(SessionError::Invalid(
-                    "running main power on source changed",
+                    if owner == hex_engine::ProcessorChainOwner::Main {
+                        "running main power on source changed"
+                    } else {
+                        "running return power on source changed"
+                    },
                 ));
             }
             let context = hex_engine::AudioSourceContext {

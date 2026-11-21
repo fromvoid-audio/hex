@@ -77,7 +77,10 @@ pub enum ResidentPowerOnInterval {
         context: hex_engine::AudioSourceContext,
         fence: ResidentFreshRuntimeFence,
     },
-    Running(ResidentGraphSubmission),
+    Running {
+        owner: hex_engine::ProcessorChainOwner,
+        source: ResidentGraphSubmission,
+    },
 }
 impl ResidentPowerOn {
     pub fn device(&self) -> u64 {
@@ -85,14 +88,14 @@ impl ResidentPowerOn {
     }
     pub fn owner(&self) -> hex_engine::ProcessorChainOwner {
         match self.interval {
-            ResidentPowerOnInterval::Stopped { owner, .. } => owner,
-            ResidentPowerOnInterval::Running(_) => hex_engine::ProcessorChainOwner::Main,
+            ResidentPowerOnInterval::Stopped { owner, .. }
+            | ResidentPowerOnInterval::Running { owner, .. } => owner,
         }
     }
     pub fn source_context(&self) -> hex_engine::AudioSourceContext {
         match self.interval {
             ResidentPowerOnInterval::Stopped { context, .. } => context,
-            ResidentPowerOnInterval::Running(source) => source.context,
+            ResidentPowerOnInterval::Running { source, .. } => source.context,
         }
     }
     pub fn interval(&self) -> ResidentPowerOnInterval {
@@ -1381,6 +1384,16 @@ pub trait WorkerAudioSink: Send {
         None
     }
 
+    /// Observe the exact reopened workerless saved-Off Return of a playing Resident output.
+    fn running_resident_return_power_on(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _owner: hex_engine::ProcessorChainOwner,
+        _device: u64,
+    ) -> Option<ResidentGraphSubmission> {
+        None
+    }
+
     /// Shape-only Return eligibility never stages a running power command
     /// while the sink's ordinary playback transport is stopped.
     fn resident_playing(&mut self) -> bool {
@@ -2651,11 +2664,14 @@ mod tests {
             Some(intent)
         );
         let running = ResidentPowerOn {
-            interval: ResidentPowerOnInterval::Running(ResidentGraphSubmission {
-                context: source_context,
-                audio_revision: 2,
-                output_identity: 1,
-            }),
+            interval: ResidentPowerOnInterval::Running {
+                owner: hex_engine::ProcessorChainOwner::Main,
+                source: ResidentGraphSubmission {
+                    context: source_context,
+                    audio_revision: 2,
+                    output_identity: 1,
+                },
+            },
             ..intent
         };
         assert_eq!(
