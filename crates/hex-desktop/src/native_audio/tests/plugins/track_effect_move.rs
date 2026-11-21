@@ -1,7 +1,10 @@
 //! Signed direct Resident track-effect move with the original SDK worker.
 use super::*;
+use hex_audio::plugin_effects::EffectBinding;
 use hex_project::DeviceSelectionIds;
-use hex_session::service::{DeviceInsertOutcome, GraphEditOperation, ViewState};
+use hex_session::service::{
+    DeviceInsertConfirmation, DeviceInsertOutcome, GraphEditOperation, ViewState,
+};
 
 const BLOCK: u64 = 256;
 const BRIDGE: u64 = 2 * BLOCK;
@@ -47,6 +50,16 @@ fn assert_track_pcm(h: &ResidentHarness, moved: bool) {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn running_resident_track_vst3_effect_move_keeps_the_original_worker() {
+    run_track_effect_move(false);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn confirmed_resident_track_vst3_effect_move_installs_the_prepared_worker() {
+    run_track_effect_move(true);
+}
+
+fn run_track_effect_move(approve_interruption: bool) {
     let _native = native_fixture();
     let files = Files::new();
     let directory = files.0.canonicalize().unwrap();
@@ -218,6 +231,18 @@ fn running_resident_track_vst3_effect_move_keeps_the_original_worker() {
             if let Some(offer) = event.device_insert_confirmation {
                 assert_eq!(offer.operation(), GraphEditOperation::MoveDevice);
                 assert_eq!(offer.submission(), exact);
+                if approve_interruption {
+                    verify_confirmed_move(
+                        &mut h,
+                        before,
+                        target.project(),
+                        offer,
+                        device,
+                        original,
+                        candidate,
+                    );
+                    return;
+                }
                 assert!(offer.cancel());
             }
         }
@@ -225,6 +250,11 @@ fn running_resident_track_vst3_effect_move_keeps_the_original_worker() {
         instruments::render_replay_block(&h);
         std::thread::sleep(Duration::from_millis(2));
     };
+    assert!(
+        !approve_interruption,
+        "move ended before offering confirmation: {:?}, {:?}",
+        terminal.device_insert_complete, terminal.error,
+    );
     let completion = terminal
         .device_insert_complete
         .expect("exact move completion");
@@ -273,4 +303,126 @@ fn running_resident_track_vst3_effect_move_keeps_the_original_worker() {
     assert_eq!(applied.context, exact.context);
     assert_eq!(live_worker(&h), original);
     assert_track_pcm(&h, true);
+}
+
+fn verify_confirmed_move(
+    h: &mut ResidentHarness,
+    before: &ViewState,
+    target: &hex_project::Project,
+    offer: DeviceInsertConfirmation,
+    device: hex_project::DeviceId,
+    original: EffectBinding,
+    prepared: Option<(hex_engine::ProcessorChainOwner, EffectBinding)>,
+) {
+    let predecessor = status(h).recording_source().unwrap();
+    let refused = offer.submission();
+    assert_eq!(predecessor.context.editor_revision, before.revision);
+    assert_eq!(predecessor.output_identity, refused.output_identity);
+    let (_, fresh) = prepared.expect("initial offer's prepared receiver worker");
+    assert_ne!(fresh, original);
+    let retry_worker = h
+        .device_insert_probe()
+        .observe_next_foreign_effect_binding(device);
+    let (submitted, resume) = h.probe_next_submitted_device_insert();
+    assert!(offer.proceed());
+
+    let mut retry = None;
+    let deadline = Instant::now() + Duration::from_millis(800);
+    let terminal = 'receipt: loop {
+        h.pump();
+        if retry.is_none()
+            && let Ok(submission) = submitted.try_recv()
+        {
+            assert_eq!(submission.output_identity, refused.output_identity);
+            assert_eq!(submission.context, refused.context);
+            assert!(submission.audio_revision > refused.audio_revision);
+            assert_eq!(status(h).recording_source(), Some(predecessor));
+            assert_eq!(
+                retry_worker.try_recv().expect("confirmed prepared worker"),
+                prepared
+            );
+            retry = Some(submission);
+            resume.send(()).unwrap();
+        }
+        while let Ok(event) = h.service.try_event() {
+            if event.request_complete {
+                break 'receipt event;
+            }
+            assert_project_retained(&event, before);
+            assert!(event.device_insert_confirmation.is_none());
+        }
+        assert!(Instant::now() < deadline, "no confirmed Move terminal");
+        // The confirmed preparation republishes the same snapshot. Hold
+        // the real callback until observing the exact retry submission.
+        if retry.is_some() {
+            instruments::render_replay_block(h);
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    let completion = terminal.device_insert_complete;
+    if !completion.is_some_and(|receipt| receipt.outcome == DeviceInsertOutcome::Installed) {
+        eprintln!(
+            "confirmed Move refused: retry={retry:?}, completion={completion:?}, error={:?}",
+            terminal.error,
+        );
+        assert_project_retained(&terminal, before);
+        assert_eq!(status(h).recording_source(), Some(predecessor));
+        for _ in 0..4 {
+            instruments::render_replay_block(h);
+        }
+        assert_track_pcm(h, false);
+        assert!(
+            h.plugin_progress.lock().unwrap().source_bindings[0]
+                .is_some_and(|(id, binding, _)| id == device.value() && binding == original)
+        );
+        panic!("confirmed Move refused; original {original:?} and donor PCM survived");
+    }
+    let installed = completion.unwrap();
+    assert_eq!(Some(installed.submission), retry);
+    assert!(terminal.error.is_none(), "{:?}", terminal.error);
+    assert_eq!(terminal.state.project.as_ref(), target);
+    assert_eq!(
+        terminal.state.revision,
+        installed.submission.context.editor_revision
+    );
+    let applied = status(h).recording_source().unwrap();
+    assert_eq!(
+        applied.output_identity,
+        installed.submission.output_identity
+    );
+    assert_eq!(applied.audio_revision, installed.submission.audio_revision);
+    assert_eq!(applied.context, installed.submission.context);
+    assert!(status(h).playing.load(Acquire));
+
+    let terminal_poll = h.control_polls.load(Acquire);
+    for _ in 0..4 {
+        instruments::render_replay_block(h);
+    }
+    let deadline = Instant::now() + Duration::from_millis(800);
+    loop {
+        h.pump();
+        if h.control_polls.load(Acquire) > terminal_poll
+            && h.plugin_records.load(Acquire) == 1
+            && h.plugin_progress.lock().unwrap().source_bindings[0]
+                .is_some_and(|(id, binding, _)| id == device.value() && binding == fresh)
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "original worker did not return");
+        instruments::render_replay_block(h);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    // An approved interruption starts the fresh instance at its own block
+    // zero, so use its exact next-block gain increment at the receiver.
+    let first = instruments::render_replay_block(h);
+    let second = instruments::render_replay_block(h);
+    let donor = f32::from(DONOR_INPUT) / 32768.0 * DONOR_GAIN;
+    let receiver = f32::from(RECEIVER_INPUT) / 32768.0 * RECEIVER_GAIN;
+    assert!(first[0][0] > donor);
+    assert!(first.iter().all(|sample| *sample == [first[0][0]; 2]));
+    assert!(
+        second
+            .iter()
+            .all(|sample| *sample == [first[0][0] + receiver * 0.125; 2])
+    );
 }
