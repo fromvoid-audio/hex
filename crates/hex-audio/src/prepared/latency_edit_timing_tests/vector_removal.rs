@@ -1,8 +1,13 @@
 //! Direct authored-instrument removal must stop its actual DSP at the cut.
 use super::*;
-use hex_engine::NativeDeviceClass;
-use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
-use hex_lattice_contract::{NativeDeviceState, ParameterId};
+use hex_devices::sampler::{Envelope, state::SamplerState};
+use hex_engine::native_device_resources::{
+    PreparedDeviceResources, ResidentDeviceAssets, ResourcePreparationError,
+};
+use hex_engine::{AudioStorageLedgerReservation, NativeDeviceClass, OwnedAudioSource};
+use hex_lattice_contract::{
+    DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, NativeDeviceState, ParameterId,
+};
 use hex_project::{BeatTime, TrackDeviceSlot};
 use std::sync::atomic::AtomicBool;
 
@@ -21,7 +26,7 @@ fn removing_a_held_vector_fades_its_original_pcm_and_keeps_the_bed() {
         ParameterValue::Bool(true),
     )
     .unwrap();
-    assert_held_instrument_removal(state);
+    assert_held_instrument_removal(|_| (state, ResidentDeviceAssets::default()));
 }
 
 #[test]
@@ -31,10 +36,71 @@ fn removing_a_held_fm4_fades_its_original_pcm_and_keeps_the_bed() {
         hex_devices::fm4::device::FM4_TYPE_ID,
     )
     .unwrap();
-    assert_held_instrument_removal(state);
+    assert_held_instrument_removal(|_| (state, ResidentDeviceAssets::default()));
 }
 
-fn assert_held_instrument_removal(state: NativeDeviceState) {
+#[test]
+fn removing_a_held_resident_sampler_fades_its_pcm_and_keeps_the_bed() {
+    const SOURCE_FRAMES: usize = 4096;
+    assert_held_instrument_removal(|editor| {
+        let Created::Asset(asset) = editor
+            .execute(Command::ImportDeviceAsset {
+                path: "memory/sampler-removal.wav".into(),
+                sample_rate: RATE,
+                frames: SOURCE_FRAMES as u64,
+            })
+            .unwrap()
+        else {
+            panic!("sampler source asset");
+        };
+        let mut sampler = SamplerState::for_source_frames(SOURCE_FRAMES).unwrap();
+        sampler.envelope = Envelope {
+            attack_seconds: 0.0,
+            decay_seconds: 0.0,
+            sustain: 1.0,
+            release_seconds: 0.04,
+        };
+        let state = sampler
+            .to_native()
+            .unwrap()
+            .with_asset_references(vec![DeviceAssetReference {
+                slot: DeviceAssetSlot::new(hex_devices::sampler::state::SOURCE_SLOT).unwrap(),
+                asset: DeviceAssetKey::new(asset.value()).unwrap(),
+            }])
+            .unwrap();
+        let pcm = (0..SOURCE_FRAMES)
+            .map(|frame| {
+                let sample = ((frame % 509) as f32 - 254.0) / 1024.0;
+                [sample, -sample * 0.37]
+            })
+            .collect();
+        let mut assets = ResidentDeviceAssets::default();
+        assets
+            .insert_on_control(
+                (
+                    asset,
+                    OwnedAudioSource::try_resident(RATE, pcm).ok().unwrap(),
+                ),
+                0,
+                AudioStorageLedgerReservation {
+                    data_rows: 512,
+                    handle_rows: 256,
+                    root_rows: 128,
+                    max_retained_bytes: 20_000_000,
+                    max_construction_peak_bytes: 20_000_000,
+                },
+                SOURCE_FRAMES as u64,
+                &AtomicBool::new(false),
+                || Ok::<_, ResourcePreparationError>(()),
+            )
+            .unwrap();
+        (state, assets)
+    });
+}
+
+fn assert_held_instrument_removal(
+    instrument: impl FnOnce(&mut Editor) -> (NativeDeviceState, ResidentDeviceAssets),
+) {
     const REQUEST: usize = 512;
     const FADE: usize = 240;
     const BED: Frame = [0.125, -0.0625];
@@ -44,6 +110,7 @@ fn assert_held_instrument_removal(state: NativeDeviceState) {
         asset,
         hex_engine::Audio::new(RATE, vec![BED; 2048]).unwrap(),
     )]);
+    let (state, assets) = instrument(&mut editor);
     let Created::Track(track) = editor
         .execute(Command::InsertTrackWithDevice {
             name: "held instrument".into(),
@@ -78,12 +145,12 @@ fn assert_held_instrument_removal(state: NativeDeviceState) {
     let original = editor.project().clone();
     editor.execute(Command::RemoveInstrument { track }).unwrap();
     let removed = editor.project();
-    let assets = ResidentDeviceAssets::default();
     let sine = Arc::new(hex_engine::SineTable::new());
     let cancel = AtomicBool::new(false);
     let prepare = |project: &Project| {
         let resources =
-            PreparedDeviceResources::prepare_on_control(&assets, project, 4096, &cancel).unwrap();
+            PreparedDeviceResources::prepare_on_control(&assets, project, 1_000_000, &cancel)
+                .unwrap();
         let revision = Arc::new(
             hex_engine::PreparedRevision::prepare_with_device_resources(
                 project,
@@ -92,7 +159,7 @@ fn assert_held_instrument_removal(state: NativeDeviceState) {
                 None,
                 &hex_engine::audio_transform::AudioTransformPreparation::default(),
                 &resources,
-                0,
+                1_000_000,
                 &cancel,
             )
             .unwrap(),
