@@ -10,6 +10,8 @@
 //! cases. project-fit-pan and project-fit-zoom fit all Arrangement rows and run
 //! one action per invocation to bound the time spent in dense projects. These
 //! scopes retain eight warmups and forty measured events per case.
+//! project-fit-pan-sweep keeps the same bounded dense scenario,
+//! with varied pointer positions through the fitted pan.
 //! HEX_NAVIGATION_COMPARE_LAYOUTS=1 runs reference/current/current/reference in
 //! one persistent fixture, retaining every warmup/event. Trial switches invalidate
 //! retained content and geometry; layout identity also participates in cache keys.
@@ -598,6 +600,7 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                         px(body.top + body.height.min(40.0) * 0.5),
                     );
                     let mut pointer = origin;
+                    let pan_sweep = selection == Selection::ProjectFitPanSweep;
                     if action == "pan" {
                         visual.update(|window, cx| {
                             window.dispatch_input(
@@ -631,12 +634,17 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                         });
                         let builds_before = observe(&editor, &visual).builds;
                         if action == "pan" {
-                            let left = if fit_rows {
-                                iteration % 2 == 0
+                            if pan_sweep {
+                                pointer.x =
+                                    origin.x + px(selection::fitted_pan_sweep_offset(iteration));
                             } else {
-                                iteration % 20 < 10
-                            };
-                            pointer.x += px(if left { -4.0 } else { 4.0 });
+                                let left = if fit_rows {
+                                    iteration % 2 == 0
+                                } else {
+                                    iteration % 20 < 10
+                                };
+                                pointer.x += px(if left { -4.0 } else { 4.0 });
+                            }
                         }
                         navigation_metrics::reset(stage_timing);
                         let (event, draw, clear, total) = visual.update(|window, cx| {
@@ -724,6 +732,15 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                             warm_stages,
                         ));
                     }
+                    if pan_sweep {
+                        let distinct = rows
+                            .iter()
+                            .map(|(_, _, _, _, _, _, viewport, ..)| viewport.start)
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .len();
+                        assert_eq!(distinct, rows.len(), "fitted pan sweep repeats a viewport");
+                        println!("NAV_SWEEP,distinct_starts={distinct}");
+                    }
                     if action == "pan" {
                         visual.update(|window, cx| {
                             window.dispatch_input(
@@ -734,8 +751,19 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                                     click_count: 1,
                                 }),
                                 cx,
-                            )
+                            );
+                            if pan_sweep {
+                                assert!(
+                                    !window.is_pointer_dragging(),
+                                    "middle capture must release"
+                                );
+                            }
                         });
+                        if pan_sweep {
+                            editor.read_with(cx, |view, _| {
+                                assert!(view.arrangement_pan.is_none(), "held pan must retire");
+                            });
+                        }
                     }
                     for (
                         iteration,

@@ -105,41 +105,9 @@ fn one_resident_leaf_reroutes_between_main_and_group_and_other_edits_refuse() {
         None
     );
 
-    let streamed = |project: &Project, fingerprint| {
-        let sources = media
-            .keys()
-            .map(|&asset| {
-                (
-                    asset,
-                    crate::compile::PreparedAudioSource::Streamed(Arc::new(
-                        crate::StreamedSourceMetadata::new(
-                            crate::StreamSourceKey::new(9, asset),
-                            48_000,
-                            48_000,
-                            2048,
-                            2048,
-                            hex_project::IDENTITY_CONVERSION,
-                            fingerprint,
-                        )
-                        .unwrap(),
-                    )),
-                )
-            })
-            .collect();
-        Arc::new(
-            PreparedRevision::prepare_with_prepared_audio_sources(
-                project,
-                &sources,
-                9,
-                Arc::new(crate::SineTable::new()),
-                None,
-            )
-            .unwrap(),
-        )
-    };
-    let streamed_before = streamed(editor.project(), [19; 32]);
-    let streamed_after = streamed(next_editor.project(), [19; 32]);
-    let changed_stream = streamed(next_editor.project(), [31; 32]);
+    let streamed_before = streamed(editor.project(), &media, [19; 32]);
+    let streamed_after = streamed(next_editor.project(), &media, [19; 32]);
+    let changed_stream = streamed(next_editor.project(), &media, [31; 32]);
     let mut old = SessionPlayback::new(Arc::clone(&streamed_before)).unwrap();
     old.playing = true;
     let mut next = SessionPlayback::new(Arc::clone(&streamed_after)).unwrap();
@@ -164,6 +132,92 @@ fn one_resident_leaf_reroutes_between_main_and_group_and_other_edits_refuse() {
         assert!(old.track_faders.iter().all(|fader| !fader.active()));
     }
 }
+fn streamed(
+    project: &Project,
+    media: &BTreeMap<hex_project::AssetId, Audio>,
+    fingerprint: [u8; 32],
+) -> Arc<PreparedRevision> {
+    let sources = media
+        .keys()
+        .map(|&asset| {
+            (
+                asset,
+                crate::compile::PreparedAudioSource::Streamed(Arc::new(
+                    crate::StreamedSourceMetadata::new(
+                        crate::StreamSourceKey::new(9, asset),
+                        48_000,
+                        48_000,
+                        2048,
+                        2048,
+                        hex_project::IDENTITY_CONVERSION,
+                        fingerprint,
+                    )
+                    .unwrap(),
+                )),
+            )
+        })
+        .collect();
+    Arc::new(
+        PreparedRevision::prepare_with_prepared_audio_sources(
+            project,
+            &sources,
+            9,
+            Arc::new(crate::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    )
+}
+
+#[test]
+fn verified_first_child_requires_exact_rows_and_source_across_the_flat_boundary() {
+    let (mut editor, media, leaf, group) = fixture();
+    let sibling = editor
+        .project()
+        .tracks()
+        .iter()
+        .find(|track| track.parent_group() == Some(group))
+        .unwrap()
+        .id();
+    editor
+        .execute(Command::ReparentTracks {
+            tracks: TrackSelectionIds::new(&[sibling]).unwrap(),
+            destination: TrackDestination {
+                parent_group: None,
+                before: Some(group),
+            },
+        })
+        .unwrap();
+    let flat = SessionPlayback::new(streamed(editor.project(), &media, [19; 32])).unwrap();
+    assert!(flat.compensation.is_none());
+    let selection = TrackSelectionIds::new(&[leaf]).unwrap();
+    let mut shifted = Editor::new(editor.project().clone(), 8).unwrap();
+    shifted
+        .execute(Command::MoveTracksBefore {
+            tracks: selection.clone(),
+            before: Some(group),
+        })
+        .unwrap();
+    let shifted = SessionPlayback::new(streamed(shifted.project(), &media, [19; 32])).unwrap();
+    editor
+        .execute(Command::ReparentTracks {
+            tracks: selection,
+            destination: TrackDestination {
+                parent_group: Some(group),
+                before: None,
+            },
+        })
+        .unwrap();
+    let grouped = SessionPlayback::new(streamed(editor.project(), &media, [19; 32])).unwrap();
+    assert!(grouped.compensation.is_some());
+    assert_eq!(grouped.group_reroute_from(&flat), Some(2));
+    assert_eq!(grouped.group_reroute_from(&shifted), None);
+    assert_eq!(flat.group_reroute_from(&grouped), None);
+    let different_source =
+        SessionPlayback::new(streamed(editor.project(), &media, [31; 32])).unwrap();
+    assert_eq!(different_source.group_reroute_from(&flat), None);
+}
+
 #[test]
 fn route_only_device_proof_refuses_foreign_metadata_without_a_binding() {
     let (editor, media, _, _) = fixture();

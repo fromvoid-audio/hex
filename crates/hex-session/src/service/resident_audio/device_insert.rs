@@ -149,6 +149,12 @@ enum StagedChange {
     History(hex_project::StagedProjectHistory),
 }
 
+struct StagedResidentChange {
+    edit: StagedChange,
+    operation: Operation,
+    hosted_instrument_move: Option<hosted_instrument_move::Intent>,
+}
+
 impl StagedChange {
     fn project(&self) -> &Project {
         match self {
@@ -1286,7 +1292,6 @@ impl Session {
             plugin,
             proposal_control,
             document_intent,
-            hosted_instrument_move,
             |session| {
                 crate::validate_command_media(&command)?;
                 let operation = if stopped_fence.is_some()
@@ -1317,10 +1322,11 @@ impl Session {
                 {
                     return Ok(None);
                 }
-                Ok(Some((
-                    StagedChange::Command(edit),
-                    Operation::Device(operation),
-                )))
+                Ok(Some(StagedResidentChange {
+                    edit: StagedChange::Command(edit),
+                    operation: Operation::Device(operation),
+                    hosted_instrument_move,
+                }))
             },
         )
     }
@@ -1379,26 +1385,34 @@ impl Session {
             None,
             None,
             document_intent,
-            None,
             |session| {
                 if let Some(edge) = replacement {
-                    return Ok(Some((
-                        StagedChange::History(edge),
-                        Operation::HostedHistory(GraphEditOperation::ReplaceDevice),
-                    )));
+                    return Ok(Some(StagedResidentChange {
+                        edit: StagedChange::History(edge),
+                        operation: Operation::HostedHistory(GraphEditOperation::ReplaceDevice),
+                        hosted_instrument_move: None,
+                    }));
                 }
                 let hosted = match detached_history::stage(&mut session.editor, redo)? {
                     Some(edge) => Some(edge),
                     None => hosted_effect_history::stage(&mut session.editor, redo)?,
                 };
                 if let Some((edge, operation)) = hosted {
-                    return Ok(Some((
-                        StagedChange::History(edge),
-                        Operation::HostedHistory(operation),
-                    )));
+                    return Ok(Some(StagedResidentChange {
+                        edit: StagedChange::History(edge),
+                        operation: Operation::HostedHistory(operation),
+                        hosted_instrument_move: None,
+                    }));
                 }
-                Ok(move_history::stage(&mut session.editor, redo)?
-                    .map(|edge| (StagedChange::History(edge), Operation::ResidentMoveHistory)))
+                Ok(
+                    move_history::stage(&mut session.editor, redo)?.map(|staged| {
+                        StagedResidentChange {
+                            edit: StagedChange::History(staged.edge),
+                            operation: Operation::ResidentMoveHistory,
+                            hosted_instrument_move: staged.hosted_instrument_move,
+                        }
+                    }),
+                )
             },
         )
     }
@@ -1416,12 +1430,16 @@ impl Session {
         plugin: Option<&PluginEffectControl>,
         proposal_control: Option<&PluginEffectControl>,
         document_intent: u64,
-        hosted_instrument_move: Option<hosted_instrument_move::Intent>,
-        stage: impl FnOnce(&mut Self) -> Result<Option<(StagedChange, Operation)>, SessionError>,
+        stage: impl FnOnce(&mut Self) -> Result<Option<StagedResidentChange>, SessionError>,
     ) -> Result<Option<Pending>, SessionError> {
         let preparation_deadline = device_edit_preparation_deadline();
         let staged = (|| {
-            let Some((edit, operation)) = stage(self)? else {
+            let Some(StagedResidentChange {
+                edit,
+                operation,
+                hosted_instrument_move,
+            }) = stage(self)?
+            else {
                 return Ok(None);
             };
             let installed = sink

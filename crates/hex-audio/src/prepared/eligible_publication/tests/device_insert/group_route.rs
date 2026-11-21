@@ -10,6 +10,7 @@ const FADE: usize = 240;
 enum RouteDirection {
     Enter,
     Exit,
+    EnterEmpty,
 }
 
 #[derive(Clone, Copy)]
@@ -22,16 +23,15 @@ fn sample(frame: u32) -> i16 {
     i16::try_from(1024 + (frame * 13) % 4096).unwrap()
 }
 
-fn assert_frame(frame: u64, actual: Frame, gain: f32, grouped: bool) {
-    // Both leaves use the same verified asset. The existing child stays at
-    // quarter gain through the Group inverter, independently of the edit.
+fn assert_frame(frame: u64, actual: Frame, gain: f32, leaf_grouped: bool, sibling_grouped: bool) {
+    // Both leaves use the same verified asset. The unaffected quarter-gain
+    // sibling keeps its own route for the full edit.
     let source = f32::from(sample(u32::try_from(frame).unwrap())) / 32768.0;
     let sibling = source * 0.25;
     let leaf = source * gain;
-    let expected = [
-        -sibling + if grouped { -leaf } else { leaf },
-        sibling + leaf,
-    ];
+    let sibling_left = if sibling_grouped { -sibling } else { sibling };
+    let leaf_left = if leaf_grouped { -leaf } else { leaf };
+    let expected = [sibling_left + leaf_left, sibling + leaf];
     assert!(
         actual
             .into_iter()
@@ -69,8 +69,23 @@ fn cancelling_a_verified_group_exit_restores_its_original_route() {
     check_group_route(257, RouteDirection::Exit, RouteEnd::Cancel);
 }
 
+#[test]
+fn verified_first_child_entry_fades_across_warm_file_pages() {
+    let _serial = serial();
+    for partition in [1, 257] {
+        check_group_route(partition, RouteDirection::EnterEmpty, RouteEnd::Install);
+    }
+}
+
+#[test]
+fn cancelling_a_verified_first_child_entry_preserves_the_flat_source() {
+    let _serial = serial();
+    check_group_route(257, RouteDirection::EnterEmpty, RouteEnd::Cancel);
+}
+
 fn check_group_route(partition: usize, direction: RouteDirection, end: RouteEnd) {
     let predecessor_grouped = matches!(direction, RouteDirection::Exit);
+    let sibling_grouped = !matches!(direction, RouteDirection::EnterEmpty);
     let (mut control, mut data, errors, mut retirement) = anchored();
     let page = hex_engine::STREAM_PAGE_FRAMES as u64;
     let frames = u32::try_from(3 * page).unwrap();
@@ -101,6 +116,19 @@ fn check_group_route(partition: usize, direction: RouteDirection, end: RouteEnd)
     else {
         panic!("group");
     };
+    if !sibling_grouped {
+        // Keep the populated fixture's other WAV audible as an unrelated root.
+        // The empty Group still owns its Utility before receiving the leaf.
+        editor
+            .execute(Command::ReparentTracks {
+                tracks: TrackSelectionIds::new(&[sibling]).unwrap(),
+                destination: TrackDestination {
+                    parent_group: None,
+                    before: Some(group),
+                },
+            })
+            .unwrap();
+    }
     editor
         .execute(Command::Gain {
             track: sibling,
@@ -146,15 +174,33 @@ fn check_group_route(partition: usize, direction: RouteDirection, end: RouteEnd)
             .map(|track| track.id())
             .collect::<Vec<_>>()
     };
-    assert_eq!(rows(&editor), [group, sibling, leaf]);
+    let expected_rows = if sibling_grouped {
+        [group, sibling, leaf]
+    } else {
+        [sibling, group, leaf]
+    };
+    assert_eq!(rows(&editor), expected_rows);
+    assert_eq!(
+        editor.project().track(leaf).unwrap().parent_group(),
+        predecessor_grouped.then_some(group)
+    );
+    let expected_sibling_parent = sibling_grouped.then_some(group);
+    assert_eq!(
+        editor.project().track(sibling).unwrap().parent_group(),
+        expected_sibling_parent
+    );
     let mut first =
         stream_fixture::owner_with_effects(editor.project(), metadata.clone(), Some(context));
     let next_parent = (!predecessor_grouped).then_some(group);
     reparent(&mut editor, next_parent);
-    assert_eq!(rows(&editor), [group, sibling, leaf]);
+    assert_eq!(rows(&editor), expected_rows);
     assert_eq!(
         editor.project().track(leaf).unwrap().parent_group(),
         next_parent
+    );
+    assert_eq!(
+        editor.project().track(sibling).unwrap().parent_group(),
+        expected_sibling_parent
     );
     let quote = AudioCandidateEffects::with_host_definitions(&[], |effects| {
         Ok(effects.quote(editor.project(), 1).unwrap())
@@ -240,7 +286,13 @@ fn check_group_route(partition: usize, direction: RouteDirection, end: RouteEnd)
         if status.position.load(Acquire) != start {
             assert_eq!(status.position.load(Acquire), start + count as u64);
             for (offset, frame) in pcm[..count].iter().copied().enumerate() {
-                assert_frame(start + offset as u64, frame, 1.0, predecessor_grouped);
+                assert_frame(
+                    start + offset as u64,
+                    frame,
+                    1.0,
+                    predecessor_grouped,
+                    sibling_grouped,
+                );
             }
         }
         assert!(Instant::now() < deadline, "predecessor did not play");
@@ -283,6 +335,7 @@ fn check_group_route(partition: usize, direction: RouteDirection, end: RouteEnd)
                 frame,
                 (FADE - elapsed - 1) as f32 / FADE as f32,
                 predecessor_grouped,
+                sibling_grouped,
             );
         }
     }
@@ -318,7 +371,13 @@ fn check_group_route(partition: usize, direction: RouteDirection, end: RouteEnd)
             let elapsed = start + offset;
             let ramp = ((elapsed + 1) as f32 / FADE as f32).min(1.0);
             let gain = starting_gain + (1.0 - starting_gain) * ramp;
-            assert_frame(cut + (faded + elapsed) as u64, frame, gain, grouped);
+            assert_frame(
+                cut + (faded + elapsed) as u64,
+                frame,
+                gain,
+                grouped,
+                sibling_grouped,
+            );
         }
     }
     assert_eq!(
