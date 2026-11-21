@@ -764,6 +764,72 @@ fn grouped_warped_sources_keep_captured_tempo_and_resident_source_requirement() 
 }
 
 #[test]
+fn grouped_event_marker_move_changes_only_the_selected_retained_read() {
+    use hex_project::AudioEventEdit;
+
+    let (mut editor, ids, media) = group_fixture();
+    let first = ids[0];
+    let mut settings = default_audio_warp(
+        editor.project().clip(first).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    assert!(settings.insert_marker(3_000).unwrap());
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip: first,
+            settings: Some(settings.clone()),
+        })
+        .unwrap();
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group");
+    };
+    let split = 4_000usize;
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: group,
+            operation: AudioEventEdit::Split { at: split as u64 },
+        })
+        .unwrap();
+    let events = editor.project().clip(group).unwrap().audio_events();
+    assert_eq!(events.events[0].source, events.events[1].source);
+    let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);
+    let original = render(&prepare(&editor, &media, &context), 0, 16_000, 257);
+
+    let beat = settings.markers[1].beat.raw();
+    assert!(
+        settings
+            .move_marker(3_000, BeatTime::from_raw(beat + BeatTime::ONE.raw() / 32))
+            .unwrap()
+    );
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: group,
+            operation: AudioEventEdit::SetRetainedWarp {
+                event: events.events[0].id,
+                settings,
+            },
+        })
+        .unwrap();
+    let revision = prepare(&editor, &media, &context);
+    let changed = render(&revision, 0, 16_000, 127);
+    assert_ne!(changed[..split], original[..split]);
+    assert_eq!(changed[split..], original[split..]);
+    assert_children_match_rendered_pcm(&revision, editor.project().clip(group).unwrap(), &changed);
+    assert!(editor.undo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16_000, 311),
+        original
+    );
+    assert!(editor.redo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16_000, 311),
+        changed
+    );
+}
+
+#[test]
 fn grouped_aggregate_source_work_is_admitted_before_pcm_allocation() {
     let (mut editor, ids, media) = group_fixture();
     // Retain a finite looping source longer than the group reads. This requires
