@@ -31,7 +31,9 @@ impl SessionPlayback {
         let fixed_short_limiter = device.device_type == hex_devices::limiter::TYPE_ID
             && before.main_latency_frames()
                 == before.sample_rate().saturating_mul(3).div_ceil(2_000);
-        if !after.main_device_chain.is_empty()
+        let explicit_off = matches!(after.main_device_chain.as_ref(), [off]
+            if off.bypassed && off.definition.as_ref().is_some_and(|factory| factory.is_powered_off()));
+        if !(after.main_device_chain.is_empty() || explicit_off)
             || self.compensation.is_some()
             || !self.same_direct_pass_input(old)
             || old.main_pass_delay.is_some()
