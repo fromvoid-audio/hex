@@ -1620,9 +1620,7 @@ impl SessionPlayback {
             );
         }
         self.main_chain.commit_block();
-        if let Some(delay) = self.main_pass_delay.as_mut() {
-            delay.process(output);
-        }
+        self.apply_main_pass(output);
         self.revision.arrangement().master_mix().apply(output);
         for chain in &mut self.device_chains {
             chain.commit_block();

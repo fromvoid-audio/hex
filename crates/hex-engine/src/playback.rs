@@ -305,6 +305,14 @@ pub struct HostedInstrumentMove {
     pub binding: hex_lattice_contract::ForeignProcessorBinding,
 }
 
+/// A provider-only request to replace the committed running Return Off pass
+/// with this exact fresh worker. The output owner authenticates the source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostedReturnPowerOn {
+    pub identity: hex_lattice::ProcessorInstanceIdentity,
+    pub binding: hex_lattice_contract::ForeignProcessorBinding,
+}
+
 /// Compact truthful category for asynchronous callback handoff refusals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
@@ -2488,6 +2496,24 @@ impl Playback {
         if let Some(runtime) = self.session_runtime.as_mut() {
             runtime.require_continuous_insert = true;
         }
+    }
+
+    /// Opt a private ordinary candidate into the exact running Return On cut.
+    pub fn require_hosted_return_power_on(
+        &mut self,
+        request: HostedReturnPowerOn,
+    ) -> Result<(), Invalid> {
+        self.session_runtime
+            .as_mut()
+            .ok_or(Invalid(
+                "hosted return on requires ordinary session playback",
+            ))?
+            .request_hosted_return_power_on(request)
+    }
+
+    /// The requested provider cut, before its fenced callback install.
+    pub fn hosted_return_power_on(&self) -> Option<HostedReturnPowerOn> {
+        self.session_runtime.as_ref()?.hosted_return_power_on()
     }
 
     /// Mark an unpublished ordinary candidate for its exact hosted move proof.

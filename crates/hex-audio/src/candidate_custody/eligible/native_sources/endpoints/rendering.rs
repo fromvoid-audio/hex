@@ -74,6 +74,16 @@ impl NativeEndpointBank {
             .settled_return_pass(identity, frame)
     }
 
+    /// The exact candidate Return must have accepted no old input, including
+    /// a partial worker quantum that has not yet produced a request.
+    pub(crate) fn has_fresh_return(
+        &self,
+        request: hex_engine::playback::HostedReturnPowerOn,
+    ) -> bool {
+        self.pass_endpoint(request.binding)
+            .is_ok_and(|entry| entry.is_fresh_return(request.identity))
+    }
+
     fn pass_endpoint(&self, binding: Binding) -> Result<&NativeEffectEntry, DeviceContractError> {
         if self.cycle.revoked() {
             return Err(DeviceContractError::ForeignProcessingUnavailable);

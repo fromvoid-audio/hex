@@ -3,6 +3,8 @@ use super::*;
 
 const QUANTUM: usize = 256;
 const BRIDGE: usize = 2 * QUANTUM;
+const SECOND_WET: usize = BRIDGE + QUANTUM;
+const PARTITION: usize = 200;
 const FRAMES: usize = 131_072;
 
 #[test]
@@ -118,7 +120,12 @@ fn running_return_power_on_preserves_the_pass_through_the_fresh_worker_prefix() 
 
     // The previous On source is the wrong predecessor even with a fresh
     // fence from this output. Refusal leaves the rolling Off PCM intact.
-    let candidate = compile(&f, true);
+    let request = hex_engine::playback::HostedReturnPowerOn {
+        identity,
+        binding: fresh,
+    };
+    let mut candidate = compile(&f, true);
+    candidate.require_hosted_return_power_on(request).unwrap();
     let fence = f.control.capture_fresh_runtime_fence().unwrap();
     match f.control.publish_with_admission_and_source_on_control(
         candidate,
@@ -141,9 +148,51 @@ fn running_return_power_on_preserves_the_pass_through_the_fresh_worker_prefix() 
         Some(0)
     );
 
-    let candidate = compile(&f, true);
+    let mut candidate = compile(&f, true);
+    candidate.require_hosted_return_power_on(request).unwrap();
+    let cancelled = submit(&mut f, candidate, off_source);
+    assert_eq!(
+        cancelled.cancel(),
+        FreshRuntimeCancellationResult::Cancelled
+    );
+    assert_off_block(&mut f);
+    assert_eq!(cancelled.state(), PublicationReceiptState::Cancelled);
+    assert_eq!(f.control.status.recording_source(), Some(off_source));
+    assert_worker_input(&mut f, &root, fresh, 0);
+    f.control.reclaim();
+
+    f.editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 0.25,
+        })
+        .unwrap();
+    let mut candidate = compile(&f, true);
+    candidate.require_hosted_return_power_on(request).unwrap();
+    let changed_send = submit(&mut f, candidate, off_source);
+    assert_off_block(&mut f);
+    assert_eq!(
+        changed_send.state(),
+        PublicationReceiptState::Refused(
+            hex_engine::playback::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation,
+        )
+    );
+    assert_eq!(f.control.status.recording_source(), Some(off_source));
+    assert_worker_input(&mut f, &root, fresh, 0);
+    f.control.reclaim();
+    f.editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 0.5,
+        })
+        .unwrap();
+
+    let mut candidate = compile(&f, true);
+    candidate.require_hosted_return_power_on(request).unwrap();
     let on_receipt = submit(&mut f, candidate, off_source);
-    let (start, pcm) = render_with_clock(&mut f);
+    let (start, pcm) = render_with_clock::<PARTITION>(&mut f);
     assert_eq!(
         pcm,
         std::array::from_fn(|offset| dry_and_return(start + offset - BRIDGE, 1.0))
@@ -161,27 +210,63 @@ fn running_return_power_on_preserves_the_pass_through_the_fresh_worker_prefix() 
     let on_source = f.control.status.recording_source().unwrap();
     assert_eq!(on_source.audio_revision, on_receipt.revision());
     assert_eq!(on_source.output_identity, off_source.output_identity);
-    replacement::wait_for_blocks(&root, fresh, 1);
-    // Retain the original Off mix for the full 512-frame causal prefix. The
-    // next two quanta must come from the fresh worker's actual request 0/1.
-    for (block, processor_gain) in [(1, 1.0), (2, 0.5), (3, 0.625)] {
-        let (position, pcm) = render_with_clock(&mut f);
-        assert_eq!(position, start + block * QUANTUM);
-        assert_eq!(
-            pcm,
-            std::array::from_fn(|offset| dry_and_return(
-                position + offset - BRIDGE,
-                processor_gain
-            )),
-            "fresh Return onset, block {block}"
-        );
-        replacement::wait_for_blocks(&root, fresh, block as u64 + 1);
+    assert_worker_input(&mut f, &root, fresh, PARTITION);
+    // The third hardware-sized partition straddles frame 512. Check every
+    // sample before and after it, including both initial signed wet replies.
+    for partition in 1..5 {
+        let (position, pcm) = render_with_clock::<PARTITION>(&mut f);
+        assert_eq!(position, start + partition * PARTITION);
+        assert_fresh_pcm(start, position, pcm);
+        assert_worker_input(&mut f, &root, fresh, (partition + 1) * PARTITION);
     }
+    let (position, pcm) = render_with_clock::<{ 4 * QUANTUM - 5 * PARTITION }>(&mut f);
+    assert_eq!(position, start + 5 * PARTITION);
+    assert_fresh_pcm(start, position, pcm);
+    assert_worker_input(&mut f, &root, fresh, 4 * QUANTUM);
     assert_eq!(f.control.status.native_effect_source(), Some(on_source));
     let returned = dispose(f);
-    assert!(
-        matches!(returned.disposal, native::PreparationDisposal::Reaped(retired)
-        if retired.status.success())
+    let native::PreparationDisposal::Reaped(retired) = returned.disposal else {
+        panic!("return the fresh worker")
+    };
+    assert!(retired.status.success());
+    let terminal = retired.terminal.unwrap();
+    assert_eq!((terminal.blocks, terminal.frames), (4, 4 * QUANTUM as u64));
+}
+
+fn assert_worker_input(
+    f: &mut OrdinaryFixture,
+    root: &crate::candidate_custody::CandidateRoot,
+    fresh: Binding,
+    frames: usize,
+) {
+    f.data.owner_mut().unwrap().run(|callback, _| {
+        assert_eq!(
+            callback.native_sources.test_committed_frames(fresh),
+            Some(frames as u64)
+        );
+    });
+    let blocks = (frames / QUANTUM) as u64;
+    replacement::wait_for_blocks(root, fresh, blocks);
+    assert_eq!(
+        crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(
+            root, fresh
+        ),
+        Some(blocks)
+    );
+}
+
+fn assert_fresh_pcm<const FRAMES: usize>(start: usize, position: usize, pcm: [Frame; FRAMES]) {
+    assert_eq!(
+        pcm,
+        std::array::from_fn(|offset| {
+            let frame = position + offset;
+            let gain = match frame - start {
+                0..BRIDGE => 1.0,
+                BRIDGE..SECOND_WET => 0.5,
+                _ => 0.625,
+            };
+            dry_and_return(frame - BRIDGE, gain)
+        })
     );
 }
 
@@ -262,17 +347,17 @@ fn return_original_worker(f: &mut OrdinaryFixture, binding: Binding) {
     );
 }
 
-fn render_with_clock(f: &mut OrdinaryFixture) -> (usize, [Frame; QUANTUM]) {
+fn render_with_clock<const FRAMES: usize>(f: &mut OrdinaryFixture) -> (usize, [Frame; FRAMES]) {
     let timeline = f.control.status.position.load(Acquire);
     let performance = f.control.status.performance_frame.load(Acquire);
-    let pcm = physical_block::<QUANTUM>(f);
+    let pcm = physical_block::<FRAMES>(f);
     assert_eq!(
         f.control.status.position.load(Acquire),
-        timeline + QUANTUM as u64
+        timeline + FRAMES as u64
     );
     assert_eq!(
         f.control.status.performance_frame.load(Acquire),
-        performance + QUANTUM as u64
+        performance + FRAMES as u64
     );
     f.data.owner_mut().unwrap().run(|callback, _| {
         assert_eq!(
@@ -288,7 +373,7 @@ fn render_with_clock(f: &mut OrdinaryFixture) -> (usize, [Frame; QUANTUM]) {
 }
 
 fn assert_off_block(f: &mut OrdinaryFixture) {
-    let (start, pcm) = render_with_clock(f);
+    let (start, pcm) = render_with_clock::<QUANTUM>(f);
     assert_eq!(
         pcm,
         std::array::from_fn(|offset| dry_and_return(start + offset - BRIDGE, 1.0))

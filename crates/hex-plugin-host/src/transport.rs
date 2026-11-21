@@ -1065,6 +1065,12 @@ fn channel_with_policy(
 }
 
 impl Callback {
+    /// An untouched exchange may start with a new graph's first input frame.
+    /// Partial physical callbacks and revoked or prewarmed workers fail this.
+    pub fn is_unstarted(&self) -> bool {
+        self.state.position == 0 && self.staged.is_none() && !self.is_revoked()
+    }
+
     /// Committed request prefix for an exclusively owned offline endpoint.
     /// No observation or borrow of the device callback is permitted.
     pub fn dispatched_blocks_on_control(&self) -> u64 {

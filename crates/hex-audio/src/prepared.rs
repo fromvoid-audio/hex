@@ -2403,6 +2403,12 @@ impl PublicationControl {
             Some("playback is shutting down")
         } else if playback.sample_rate() != self.rate {
             Some("playback rate differs from device")
+        } else if playback.hosted_return_power_on().is_some()
+            && (!cfg!(all(target_os = "macos", target_arch = "aarch64"))
+                || !matches!(policy, PublicationPolicy::DeviceInsert { .. })
+                || playback.contains_streamed_sources())
+        {
+            Some("running return on requires a fenced ordinary resident insert")
         } else if playback.contains_streamed_sources()
             && (!self.candidate_root.ordinary_streams_configured() || source_context.is_none())
         {

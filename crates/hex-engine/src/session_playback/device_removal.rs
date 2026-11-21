@@ -564,7 +564,7 @@ impl SessionPlayback {
         if self.pending_foreign_main_pass() != Some((binding, delay.latency_frames())) {
             return false;
         }
-        self.main_pass_delay = Some(delay);
+        self.main_pass_delay = Some(super::main_pass_delay::MainPass::Delay(delay));
         true
     }
 
@@ -597,7 +597,11 @@ impl SessionPlayback {
         let Some(delay) = previous.committed_return_off_main_pass(identity.owner()) else {
             return false;
         };
-        self.main_pass_delay = Some(delay);
+        self.main_pass_delay = Some(super::main_pass_delay::MainPass::ReturnOff {
+            ring: delay,
+            identity,
+            binding,
+        });
         true
     }
 

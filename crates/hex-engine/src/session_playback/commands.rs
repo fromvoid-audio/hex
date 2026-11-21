@@ -110,6 +110,7 @@ impl SessionPlayback {
                     // cut below and rendered while paused. Only sampler-only
                     // offline export lacks one, and it refuses Pause.
                     self.pause_analytic_sources()?;
+                    self.end_return_power_interval();
                     self.pending_shared_chase = None;
                     self.pending_shared_live = None;
                     self.foreign_arrangement.cut();
@@ -467,9 +468,7 @@ impl SessionPlayback {
     /// compensation epoch start empty. A confirmed publication can keep
     /// already-staged generators at the same clock. Allocation-free.
     pub(super) fn restart_audio_history(&mut self, retained_instruments: &[bool; MAX_TRACKS]) {
-        if let Some(delay) = self.main_pass_delay.as_mut() {
-            delay.reset();
-        }
+        self.restart_main_pass_history();
         self.foreign_arrangement.cut();
         for route in &mut self.routes {
             route.audio_release = None;

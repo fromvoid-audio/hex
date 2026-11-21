@@ -1518,7 +1518,24 @@ impl SessionPlayback {
         let return_pass_latency = self
             .native_removal
             .and_then(|pending| pending.return_pass_latency());
-        let keeps_pass_clock = main_pass_cut.is_some() || return_pass_latency.is_some();
+        let return_on_prefix = if let Some(request) = self.hosted_return_power_on() {
+            if !continuous_insert
+                || restart != Restart::None
+                || groups.is_some()
+                || demand.is_some()
+                || self.native_removal.is_some()
+            {
+                return Err(SessionPlaybackError::InvalidCommand);
+            }
+            Some(
+                self.running_return_on_prefix_from(previous, request)
+                    .ok_or(SessionPlaybackError::DeviceInsertNeedsConfirmation)?,
+            )
+        } else {
+            None
+        };
+        let keeps_pass_clock =
+            main_pass_cut.is_some() || return_pass_latency.is_some() || return_on_prefix.is_some();
         let tail_policy = if let Some(removal) = self.native_removal {
             if !continuous_insert || !removal.matches(previous) {
                 return Err(SessionPlaybackError::InvalidCommand);
@@ -1765,17 +1782,23 @@ impl SessionPlayback {
         if continuous_insert
             && (force_restart
                 || !mapped_main_clock
+                || (return_on_prefix.is_some()
+                    && previous.periodic_tempo()
+                        != self.periodic_tempo_at(previous.arrangement_frame))
                 || (!keeps_pass_clock
                     && self.revision.arrangement().main_latency_frames()
                         != previous.revision.arrangement().main_latency_frames()))
         {
             return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
         }
-        let main_pass_delay = if let Some(latency) = return_pass_latency {
+        let main_pass_delay = if return_on_prefix.is_some() {
+            return_on_prefix
+        } else if let Some(latency) = return_pass_latency {
             if demand.is_none() {
                 Some(
                     previous
                         .committed_return_main_pass(latency)
+                        .map(super::main_pass_delay::MainPass::Delay)
                         .ok_or(SessionPlaybackError::DeviceRuntime)?,
                 )
             } else {
@@ -1789,9 +1812,12 @@ impl SessionPlayback {
                     .or_else(|| transition.foreign_return_pass().map(|_| 512));
                 let settled = if let Some(frames) = foreign_frames {
                     self.main_pass_delay
-                        .filter(|delay| delay.latency_frames() == frames)
+                        .filter(|delay| delay.added_latency() == frames)
                 } else {
-                    previous.main_chain.settled_main_pass_delay(transition)
+                    previous
+                        .main_chain
+                        .settled_main_pass_delay(transition)
+                        .map(super::main_pass_delay::MainPass::Delay)
                 };
                 Some(settled.ok_or(SessionPlaybackError::DeviceRuntime)?)
             } else {
@@ -1801,7 +1827,7 @@ impl SessionPlayback {
             if confirmed_insert {
                 None
             } else if !force_restart && mapped_main_clock && self.compensation.is_none() {
-                Some(delay)
+                Some(delay.without_return_off_witness())
             } else {
                 return Err(if continuous_insert {
                     SessionPlaybackError::DeviceInsertNeedsConfirmation
@@ -2116,6 +2142,7 @@ impl SessionPlayback {
             });
         let planned_transfer = match (&self.compensation, &previous.compensation) {
             (None, Some(_)) if keeps_pass_clock => Some(0),
+            (Some(_), None) if return_on_prefix.is_some() => Some(0),
             (Some(_), Some(_)) if hosted_move.is_some() => Some(HOSTED_MOVE_HISTORY_TRANSFER),
             (Some(_), Some(_)) if group_route_track.is_some() => Some(GROUP_ROUTE_HISTORY_TRANSFER),
             (Some(_), Some(_)) if removed_send_clock => Some(3_u8),

@@ -59,6 +59,20 @@ impl Callback {
                 .session_route_status(index)
                 .is_some_and(|route| route.pending.is_some())
         });
+        if let Some(request) = next.playback.hosted_return_power_on() {
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            let fresh = self.native_sources.has_fresh_return(request);
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            let fresh = {
+                let _ = request;
+                false
+            };
+            return if fresh && !pending_action && source_free(active) && source_free(next) {
+                Ok(true)
+            } else {
+                Err(PlaybackHandoffRejection::RuntimeFenceChanged)
+            };
+        }
         if rendering_revoked || pending_action {
             return if next.playback.native_removal_pending() {
                 Err(PlaybackHandoffRejection::RuntimeFenceChanged)

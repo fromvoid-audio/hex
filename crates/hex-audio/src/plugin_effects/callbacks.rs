@@ -16,6 +16,12 @@ impl NativeEffectEntry {
         !self.callback.transport.is_revoked()
     }
 
+    pub(crate) fn is_fresh_return(&self, identity: ProcessorInstanceIdentity) -> bool {
+        !self.staged
+            && self.callback.identity() == identity
+            && self.callback.transport.is_unstarted()
+    }
+
     /// The next physical callback may be open before this endpoint stages any
     /// PCM. Its dry cursor still represents the last accepted block until then.
     pub(crate) fn settled_main_pass_delay(

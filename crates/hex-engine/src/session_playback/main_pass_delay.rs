@@ -1,17 +1,194 @@
 //! A short PCM delay can keep the Main clock without retaining an old DSP.
 use super::{RouteOwner, SessionPlayback};
 use crate::Track;
-use hex_lattice::NativeRemovalTransition;
+use crate::playback::HostedReturnPowerOn;
+use hex_lattice::{MainPassDelay, NativeRemovalTransition, ProcessorInstanceIdentity};
+use hex_lattice_contract::ForeignProcessorBinding;
 use hex_project::ReturnId;
 
+const HOSTED_RETURN_BRIDGE_FRAMES: u32 = 512;
+
+#[derive(Clone, Copy, Debug)]
+pub(super) enum MainPass {
+    RequestedReturnOn(HostedReturnPowerOn),
+    Delay(MainPassDelay),
+    ReturnOff {
+        ring: MainPassDelay,
+        identity: ProcessorInstanceIdentity,
+        binding: ForeignProcessorBinding,
+    },
+    ReturnOnPrefix {
+        ring: MainPassDelay,
+        remaining: usize,
+    },
+}
+
+impl MainPass {
+    pub(super) fn added_latency(&self) -> u32 {
+        match self {
+            Self::Delay(ring) | Self::ReturnOff { ring, .. } => ring.latency_frames(),
+            Self::RequestedReturnOn(_) | Self::ReturnOnPrefix { .. } => 0,
+        }
+    }
+
+    pub(super) fn without_return_off_witness(self) -> Self {
+        match self {
+            Self::ReturnOff { ring, .. } => Self::Delay(ring),
+            other => other,
+        }
+    }
+}
+
 impl SessionPlayback {
+    pub(crate) fn request_hosted_return_power_on(
+        &mut self,
+        request: HostedReturnPowerOn,
+    ) -> Result<(), crate::Invalid> {
+        if self.main_pass_delay.is_some() || self.require_fresh_candidate().is_err() {
+            return Err(crate::Invalid(
+                "hosted return on requires an unused ordinary candidate",
+            ));
+        }
+        self.main_pass_delay = Some(MainPass::RequestedReturnOn(request));
+        Ok(())
+    }
+
+    pub(crate) fn hosted_return_power_on(&self) -> Option<HostedReturnPowerOn> {
+        match self.main_pass_delay.as_ref()? {
+            MainPass::RequestedReturnOn(request) => Some(*request),
+            _ => None,
+        }
+    }
+
     pub(crate) fn main_output_latency_frames(&self) -> u32 {
         self.revision.arrangement().main_latency_frames()
             + self
                 .main_pass_delay
                 .as_ref()
                 .filter(|_| self.native_removal.is_none())
-                .map_or(0, |delay| delay.latency_frames())
+                .map_or(0, MainPass::added_latency)
+    }
+
+    /// Replace only the retained, already mixed output prefix. The active
+    /// candidate has rendered the same input interval into its own histories.
+    pub(super) fn apply_main_pass(&mut self, output: &mut [super::Frame]) {
+        match self.main_pass_delay.as_mut() {
+            Some(MainPass::Delay(ring) | MainPass::ReturnOff { ring, .. }) => ring.process(output),
+            Some(MainPass::ReturnOnPrefix { ring, remaining }) => {
+                let frames = output.len().min(*remaining);
+                ring.process(&mut output[..frames]);
+                *remaining -= frames;
+                if *remaining == 0 {
+                    self.main_pass_delay = None;
+                }
+            }
+            Some(MainPass::RequestedReturnOn(_)) | None => {}
+        }
+    }
+
+    pub(super) fn end_return_power_interval(&mut self) {
+        self.main_pass_delay = self.main_pass_delay.and_then(|pass| match pass {
+            MainPass::RequestedReturnOn(_) | MainPass::ReturnOnPrefix { .. } => None,
+            delay => Some(delay.without_return_off_witness()),
+        });
+    }
+
+    pub(super) fn restart_main_pass_history(&mut self) {
+        self.end_return_power_interval();
+        if let Some(MainPass::Delay(ring)) = &mut self.main_pass_delay {
+            ring.reset();
+        }
+    }
+
+    /// Admit only the inverse of a running workerless Off cut, with an
+    /// entirely fresh 512-frame compensated graph and the same direct feed.
+    pub(super) fn running_return_on_prefix_from(
+        &self,
+        old: &Self,
+        request: HostedReturnPowerOn,
+    ) -> Option<MainPass> {
+        let MainPass::ReturnOff {
+            ring,
+            identity,
+            binding,
+        } = old.main_pass_delay.as_ref()?
+        else {
+            return None;
+        };
+        let before = old.revision.arrangement();
+        let after = self.revision.arrangement();
+        let ([old_track], [track]) = (before.tracks(), after.tracks()) else {
+            return None;
+        };
+        let ([old_bus], [bus]) = (before.return_buses(), after.return_buses()) else {
+            return None;
+        };
+        let ([old_send], [send]) = (old_track.sends(), track.sends()) else {
+            return None;
+        };
+        let ([off], [on]) = (old.return_chains.as_slice(), self.return_chains.as_slice()) else {
+            return None;
+        };
+        let old_graph = before.signal_graph.as_ref()?;
+        let new_signal = self.compensation.as_ref()?;
+        let new_graph = &new_signal.graph;
+        let transition = off.return_power_off_from(on, bus.id.value())?;
+        if request.identity != *identity
+            || request.identity != transition.identity()
+            || request.binding == *binding
+            || transition.foreign_return_pass()? != request.binding
+            || ring.latency_frames() != HOSTED_RETURN_BRIDGE_FRAMES
+            || !old.playing
+            || old.loop_region().is_some_and(|region| region.enabled())
+            || old.compensation.is_some()
+            || old.native_removal.is_some()
+            || old.stopped_input.is_some()
+            || self.stopped_input.is_some()
+            || old.return_fade.is_some()
+            || old.live_gain.audible().is_some()
+            || old.track_faders.first().is_none_or(|fader| fader.active())
+            || old
+                .return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .any(|tail| tail.output_active)
+            || old.tail_output_active.iter().any(|active| *active)
+            || !old.releases.is_empty()
+            || before.main_latency_frames() != 0
+            || after.main_latency_frames() != HOSTED_RETURN_BRIDGE_FRAMES
+            || !before.main_device_chain.is_empty()
+            || !after.main_device_chain.is_empty()
+            || before.master_mix() != after.master_mix()
+            || old_bus.id != bus.id
+            || old_bus.muted
+            || bus.muted
+            || bus.gain <= 0.0
+            || old_bus.gain != bus.gain
+            || old_bus.matrix.is_some()
+            || bus.matrix.is_some()
+            || old_send.gain != send.gain
+            || send.gain <= 0.0
+            || old_graph.needs_runtime()
+            || !old_graph.direct_return_send(old_bus.id, old_send.gain)
+            || !new_graph.direct_return_send(bus.id, send.gain)
+            || new_graph.main_input_arrival() != HOSTED_RETURN_BRIDGE_FRAMES
+            || new_graph.track_latency(0, 0)?.default_route_delay_frames
+                != HOSTED_RETURN_BRIDGE_FRAMES
+            || new_graph.return_latency(0)?.default_route_delay_frames != 0
+            || old_track.canonical_track_id().is_none()
+            || old_track.canonical_track_id() != track.canonical_track_id()
+            || old_track.mix != track.mix
+            || !same_arrangement_pass_source(old, old_track)
+            || !same_arrangement_pass_source(self, track)
+            || !super::device_move::same_clip(&old_track.clips[0], &track.clips[0])
+        {
+            return None;
+        }
+        Some(MainPass::ReturnOnPrefix {
+            ring: *ring,
+            remaining: HOSTED_RETURN_BRIDGE_FRAMES as usize,
+        })
     }
 
     pub(super) fn short_main_pass_removal_from(
