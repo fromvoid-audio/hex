@@ -13,6 +13,7 @@ mod performance_profile;
 mod resident_replacement_history;
 mod state;
 mod tempo;
+mod track_effect_move;
 mod ui;
 mod unlaned_effect_commit;
 mod unsealed_admission;

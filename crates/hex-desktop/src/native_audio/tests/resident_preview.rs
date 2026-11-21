@@ -1614,14 +1614,29 @@ impl DeviceInsertProbe {
         &self,
         track: hex_project::TrackId,
         device: hex_project::DeviceId,
-    ) -> mpsc::Receiver<Option<PreparedInstrumentSource>> {
+    ) -> mpsc::Receiver<Option<PreparedForeignSource>> {
+        self.observe_foreign_binding(Some(track), device)
+    }
+
+    pub(super) fn observe_next_foreign_effect_binding(
+        &self,
+        device: hex_project::DeviceId,
+    ) -> mpsc::Receiver<Option<PreparedForeignSource>> {
+        self.observe_foreign_binding(None, device)
+    }
+
+    fn observe_foreign_binding(
+        &self,
+        instrument_track: Option<hex_project::TrackId>,
+        device: hex_project::DeviceId,
+    ) -> mpsc::Receiver<Option<PreparedForeignSource>> {
         let (ready, binding) = mpsc::sync_channel(1);
         let previous = self
             .foreign_binding
             .lock()
             .unwrap()
             .replace(ForeignDeviceInsertProbe {
-                track,
+                instrument_track,
                 device,
                 ready,
             });
@@ -1635,12 +1650,12 @@ struct DeviceInsertGate {
 }
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 struct ForeignDeviceInsertProbe {
-    track: hex_project::TrackId,
+    instrument_track: Option<hex_project::TrackId>,
     device: hex_project::DeviceId,
-    ready: SyncSender<Option<PreparedInstrumentSource>>,
+    ready: SyncSender<Option<PreparedForeignSource>>,
 }
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-type PreparedInstrumentSource = (
+type PreparedForeignSource = (
     hex_engine::ProcessorChainOwner,
     hex_audio::plugin_effects::EffectBinding,
 );
@@ -2215,10 +2230,19 @@ impl WorkerAudioSink for ResidentSink {
                 .unwrap()
                 .take()
         {
-            probe
-                .ready
-                .try_send(playback.foreign_instrument_binding_on_control(probe.track, probe.device))
-                .unwrap();
+            let binding = if let Some(track) = probe.instrument_track {
+                playback.foreign_instrument_binding_on_control(track, probe.device)
+            } else {
+                let mut nodes = playback
+                    .foreign_nodes_on_control()
+                    .filter(|node| node.device_id == probe.device.value());
+                let observed = nodes
+                    .next()
+                    .and_then(|node| Some((node.owner, node.foreign_processor()?.binding()?)));
+                assert!(nodes.next().is_none(), "duplicate prepared foreign device");
+                observed
+            };
+            probe.ready.try_send(binding).unwrap();
         }
         let refuse = self.refuse.load(Acquire);
         if let Some(probe) = self.publication_probe.lock().unwrap().take() {
