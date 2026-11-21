@@ -7,8 +7,7 @@ use hex_audio::{
     NativeSourcePreparationProgress as Progress,
     plugin_effects::{
         AuthoredSelection, EffectPresentation, EffectPresentationPlan, EffectSelection,
-        EffectStartupTimings, Hosting, PluginProfile, RetainedHostedSource,
-        RetainedInstrumentSource,
+        EffectStartupTimings, Hosting, PluginProfile,
     },
 };
 use hex_engine::{PreparedRevision, ProcessorChainOwner};
@@ -252,7 +251,6 @@ pub(super) struct Plugins {
         Option<u64>,
     )>,
     hosted_move: Option<hosted_move::MoveRoute>,
-    adopted_hosted_move: Option<hosted_move::AdoptedRoute>,
     edit: Option<AudioSourceContext>,
     pub(super) catalog: Option<std::path::PathBuf>,
     degraded: degraded::DegradedReport<Binding>,
@@ -1244,18 +1242,11 @@ impl Plugins {
         cancellation: Option<&hex_session::service::RequestCancellation>,
         fresh_hosted_sources: bool,
         power_on: Option<NativeProcessorIdentity>,
-        retained: Option<hosted_move::MoveRoute>,
     ) -> Result<(), String> {
         let previous = desired
             .filter(|_| fresh_hosted_sources)
             .map(CanonicalAudioSourceSnapshot::effect_preparation);
         input.visit_plugin_devices(|destination, device, state| {
-            if retained
-                .and_then(|route| route.binding_for(destination, device))
-                .is_some()
-            {
-                return Ok(());
-            }
             // History may carry the identity and state of a deleted device.
             // The predecessor's membership decides whether DSP can survive.
             let powering_on = power_on.is_some_and(|identity| {
@@ -1361,7 +1352,6 @@ impl Plugins {
             })
         });
         let mut output = output;
-        let retained = self.retained_instrument_move(output.as_deref_mut(), &input, desired)?;
         if input.preparing_edit() {
             self.prepare_edit_sources(
                 output.as_deref_mut(),
@@ -1370,7 +1360,6 @@ impl Plugins {
                 cancellation,
                 false,
                 powering_on,
-                retained,
             )?;
         }
         let mut bindings = Vec::new();
@@ -1380,11 +1369,6 @@ impl Plugins {
         let context = input.context();
         let mut unavailable = Vec::new();
         input.visit_plugin_devices(|destination, device, state| {
-            if let Some(binding) = retained.and_then(|route| route.binding_for(destination, device))
-            {
-                bindings.push(binding);
-                return Ok(());
-            }
             let owner = destination.owner();
             let source = match output
                 .as_deref_mut()
@@ -1447,16 +1431,10 @@ impl Plugins {
         let control = output
             .and_then(|output| output.publication.control())
             .ok_or("native output closed")?;
-        let movement = match retained {
+        let movement = match self.fresh_instrument_move(control, &input, desired, &bindings)? {
             Some(route) => Some(route),
             None => {
                 self.fresh_track_effect_move(control, &input, desired, &bindings, cancellation)?
-            }
-        };
-        let compiler_alias = match retained {
-            Some(route) => route.compiler_alias()?,
-            None => {
-                self.adopted_hosted_route(context, &bindings, control.status.recording_source())?
             }
         };
         let mut canonical = Vec::new();
@@ -1525,7 +1503,7 @@ impl Plugins {
                 &bindings,
                 &unavailable,
                 &canonical,
-                compiler_alias,
+                None,
                 prepare,
             ) {
                 Err(error)

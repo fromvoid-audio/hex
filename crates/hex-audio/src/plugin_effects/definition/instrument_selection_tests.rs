@@ -1,9 +1,8 @@
 use super::*;
-use crate::prepared::AppliedAudioSource;
 use hex_lattice::{ProcessorChainOwner, TuningTable};
 
 #[test]
-fn picks_only_the_witnessed_receiver_with_the_original_physical_identity() {
+fn instrument_factory_rejects_other_owners_and_changed_state_or_rate() {
     let identity =
         |owner| ProcessorInstanceIdentity::new(ProcessorChainOwner::Track(owner), 7).unwrap();
     let saved_state = |component| {
@@ -42,72 +41,37 @@ fn picks_only_the_witnessed_receiver_with_the_original_physical_identity() {
         program_revision: std::num::NonZeroU64::new(1).unwrap(),
         state_verifier: None,
     };
-    let predecessor = AppliedAudioSource {
-        context: hex_engine::AudioSourceContext {
-            project_generation: 10,
-            editor_revision: 5,
-        },
-        output_identity: binding.root,
-        audio_revision: 9,
-    };
-    let route = RetainedInstrumentSource::for_track_move(predecessor, 10, 11, 7, binding).unwrap();
-    assert!(RetainedInstrumentSource::for_track_move(predecessor, 10, 10, 7, binding).is_err());
-    assert!(RetainedInstrumentSource::for_track_move(predecessor, 10, 11, 8, binding).is_err());
-    let definition = || NativeEffectDefinition::from_selected([(&configuration, true)]).unwrap();
-    let with_route = definition().including_retained_instrument(route).unwrap();
+    let definition = NativeEffectDefinition::from_selected([(&configuration, true)]).unwrap();
     let tuning = TuningTable::default();
     let context = DevicePreparationContext {
         sample_rate: configuration.sample_rate,
         tuning: &tuning,
         resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
     };
-    let physical = with_route
-        .retained_foreign_instrument_identity(route.receiver, &state, &context)
-        .unwrap();
-    assert_eq!(physical, route.original);
     assert!(matches!(
-        with_route.prepare_instance_runtime_factory(physical, &state, &context).unwrap(),
+        definition.prepare_instance_runtime_factory(identity(10), &state, &context).unwrap(),
         Some(PreparedProcessorFactory::Foreign(selected)) if selected.binding() == Some(binding)
     ));
-    let wrong_receiver = with_route
-        .retained_foreign_instrument_identity(identity(12), &state, &context)
-        .unwrap();
     assert!(
-        with_route
-            .prepare_instance_runtime_factory(wrong_receiver, &state, &context)
+        definition
+            .prepare_instance_runtime_factory(identity(11), &state, &context)
             .is_err()
     );
     assert!(
-        with_route
-            .retained_foreign_instrument_identity(
-                route.receiver,
-                &saved_state(b"changed"),
-                &context
-            )
+        definition
+            .prepare_instance_runtime_factory(identity(10), &saved_state(b"changed"), &context)
             .is_err()
     );
     assert!(
-        with_route
-            .retained_foreign_instrument_identity(
-                route.receiver,
+        definition
+            .prepare_instance_runtime_factory(
+                identity(10),
                 &state,
                 &DevicePreparationContext {
                     sample_rate: 96_000,
                     ..context
                 }
             )
-            .is_err()
-    );
-    let wrong_binding = RetainedInstrumentSource {
-        binding: Binding {
-            epoch: 5,
-            ..binding
-        },
-        ..route
-    };
-    assert!(
-        definition()
-            .including_retained_instrument(wrong_binding)
             .is_err()
     );
     assert!(

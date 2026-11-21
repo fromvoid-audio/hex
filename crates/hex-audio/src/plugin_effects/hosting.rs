@@ -392,14 +392,14 @@ impl Hosting {
         bindings: &[Binding],
         unavailable: &[super::UnavailableEffect<'_>],
         canonical: &[CapturedCanonicalBases],
-        retained: Option<RetainedHostedSource>,
+        retained: Option<RetainedTrackEffectSource>,
         prepare: &mut dyn FnMut(
             &AudioCandidateEffects<'_, '_>,
         )
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<hex_engine::PreparedRevision, String> {
         if let Some(retained) = retained
-            && output.status.recording_source() != Some(retained.predecessor())
+            && output.status.recording_source() != Some(retained.predecessor)
         {
             return Err("original vst3 move source is no longer installed".into());
         }
@@ -408,18 +408,13 @@ impl Hosting {
                 .including_unavailable(unavailable)
                 .and_then(|definition| definition.including_canonical_bases(canonical))
                 .and_then(|definition| match retained {
-                    Some(RetainedHostedSource::Instrument(route)) => {
-                        definition.including_retained_instrument(route)
-                    }
-                    Some(RetainedHostedSource::TrackEffect(route)) => {
-                        definition.including_retained_effect_source(route)
-                    }
+                    Some(route) => definition.including_retained_effect_source(route),
                     None => Ok(definition),
                 })
                 .map_err(|error| error.to_string())?;
             let candidate = AudioCandidateEffects::with_host_definitions(&[&definition], prepare)
                 .map_err(|error| error.to_string())?;
-            if let Some(RetainedHostedSource::TrackEffect(route)) = retained
+            if let Some(route) = retained
                 && output.status.recording_source() != Some(route.predecessor)
             {
                 return Err("original vst3 effect move source is no longer installed".into());

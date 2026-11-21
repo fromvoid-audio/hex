@@ -182,20 +182,6 @@ fn prepare_foreign_instrument(
     let owner = hex_lattice::ProcessorChainOwner::Track(track.id().value());
     let identity = hex_lattice::ProcessorInstanceIdentity::new(owner, device.id().value())
         .map_err(|_| Invalid("invalid vst3 instrument identity"))?;
-    let identity = registry
-        .retained_foreign_instrument_identity(identity, device.state(), context)
-        .map_err(|_| Invalid("vst3 instrument route could not retain its original source"))?;
-    if identity.device_id() != device.id().value()
-        || !matches!(identity.owner(), hex_lattice::ProcessorChainOwner::Track(_))
-        || (identity.owner() != owner
-            && (device.bypassed()
-                || !device.automation().is_empty()
-                || !device.modulation().is_empty()))
-    {
-        return Err(Invalid(
-            "foreign instrument route differs from its prepared source",
-        ));
-    }
     let migrated = registry
         .prepare_instance_state(identity, device.state(), context)
         .map_err(|_| Invalid("vst3 instrument state is unsupported or malformed"))?;
