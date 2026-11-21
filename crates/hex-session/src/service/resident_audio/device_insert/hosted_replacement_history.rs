@@ -2,7 +2,7 @@
 use hex_lattice_contract::VST3_DEVICE_TYPE_ID;
 use hex_project::{
     Command, Device, DeviceId, Editor, Invalid, Project, ReturnId, ReturnTrack,
-    StagedProjectHistory,
+    StagedProjectHistory, Track, TrackId,
 };
 
 /// Stage one exact substitution between two enabled workers on the same
@@ -49,25 +49,54 @@ fn return_replacement_chains<'a>(
         .filter(|(old, new)| old.id() == new.id())
 }
 
+/// Stage one exact substitution between enabled workers on the same direct
+/// Track. Obtaining the stopped audio witness remains the caller's job.
+pub(super) fn stage_enabled_track_replacement(
+    editor: &mut Editor,
+    redo: bool,
+) -> Result<Option<(StagedProjectHistory, TrackId, DeviceId)>, Invalid> {
+    let Some((track, device)) = editor
+        .inspect_history(redo, |before, after| {
+            let (old_track, new_track) = track_replacement_chains(before, after)?;
+            let (old, new) = replacement_leaves(old_track.devices(), new_track.devices())?;
+            (!old.bypassed() && !new.bypassed()).then_some((old_track.id(), old.id()))
+        })
+        .flatten()
+    else {
+        return Ok(None);
+    };
+    Ok(editor
+        .stage_history(redo)?
+        .filter(|edge| replaces_one_track(editor.project(), edge.project()))
+        .map(|edge| (edge, track, device)))
+}
+
+pub(super) fn replaces_one_track(before: &Project, after: &Project) -> bool {
+    track_replacement_chains(before, after)
+        .is_some_and(|(old, new)| replaces_chain_leaf(before, after, old.devices(), new.devices()))
+}
+
 /// A direct Track effect swap keeps the separately authored instrument gap.
 /// Removing the swapped leaf alone can collapse two different gaps.
-pub(super) fn replaces_one_track(before: &Project, after: &Project) -> bool {
+fn track_replacement_chains<'a>(
+    before: &'a Project,
+    after: &'a Project,
+) -> Option<(&'a Track, &'a Track)> {
     if before.tracks().len() != after.tracks().len() {
-        return false;
+        return None;
     }
     before
         .tracks()
         .iter()
         .zip(after.tracks())
         .find(|(old, new)| effect_ids_differ(old.devices(), new.devices()))
-        .is_some_and(|(old, new)| {
+        .filter(|(old, new)| {
             old.id() == new.id()
                 && !old.is_group()
                 && !new.is_group()
                 && old.parent_group().is_none()
                 && new.parent_group().is_none()
                 && old.instrument_position() == new.instrument_position()
-                && replaces_chain_leaf(before, after, old.devices(), new.devices())
         })
 }
 
@@ -289,7 +318,10 @@ mod tests {
             panic!("replacement");
         };
         let replaced = editor.project().clone();
-        let undo = editor.stage_history(false).unwrap().unwrap();
+        let (undo, track_id, leaving) = stage_enabled_track_replacement(&mut editor, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!((track_id, leaving), (track, fresh));
         assert!(replaces_one_track(&replaced, undo.project()));
 
         let mut wrong_slot = Editor::new(replaced.clone(), 1).unwrap();
@@ -315,7 +347,10 @@ mod tests {
         assert!(!replaces_one_track(undo.project(), wrong_gap.project()));
 
         editor.commit_staged_history(undo).unwrap();
-        let redo = editor.stage_history(true).unwrap().unwrap();
+        let (redo, track_id, leaving) = stage_enabled_track_replacement(&mut editor, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!((track_id, leaving), (track, original));
         assert!(replaces_one_track(editor.project(), redo.project()));
 
         editor
