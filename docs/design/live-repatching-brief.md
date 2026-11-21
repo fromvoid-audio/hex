@@ -42,13 +42,14 @@ This policy needs no new long-term settings or configurable tail modes.
 4. **reorder within a track without restarting devices.** Keep running device
    state and switch routing. Moving distortion after a delay makes the delay's
    existing repeats pass through the distortion.
-5. **move the running device across tracks.** Preserve the current preset and
-   authored device settings, including parameter values. Smooth both paths with
-   a short fade and switch to the destination route at a clean boundary. A fresh
-   native or hosted instance restored to those settings can take over. Sounding
-   voices, tails and buffered audio can end at the cut. Release affected voices
-   and retire any outgoing instance safely. The destination uses its normal
-   playback and monitoring rules.
+5. **move the running device across tracks.** Prepare a fresh device for the
+   destination with the current preset and authored settings, including
+   parameter values, while the source keeps playing. At the routing cut, use a
+   short de-click fade and switch to the prepared device. Sounding voices,
+   tails and buffered audio end with the outgoing instance. Release affected
+   voices and retire the original safely. Failure or cancellation leaves the
+   source in place. The destination uses its normal playback and monitoring
+   rules.
 6. **preserve sound through visual track reorder.** Routing edits, including
    moving into a group, retain running track and group processor states and
    switch to the new route with a short fade.
@@ -79,7 +80,7 @@ This policy needs no new long-term settings or configurable tail modes.
     do not resurrect audio buffers or voices. Release deleted plug-ins after
     safe retirement instead of retaining warm workers for history. Undo and
     redo of a cross-track device move follow rule 5. Restore placement and
-    authored settings, using a fresh instance if needed. Undoing a move within
+    authored settings in a fresh instance. Undoing a move within
     a track retains running state under rule 4. Apply the same latency rules to
     undo/redo.
 12. **show a cancelable pending insertion.** A loading slot needs cancel, not

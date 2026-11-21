@@ -182,11 +182,12 @@ full disks with a useful error and a defined recovery path.
   in that graph when practical. Use a short fade where safe to soften an
   interruption. Never run the old chain alongside its replacement to preserve
   residual audio from the edit, or let tail preservation block the switch.
-  Any device moved across tracks, including through Undo/Redo, may switch to a
-  fresh instance restored to its applicable preset and authored settings,
-  including parameter values. Use the same clean switch and de-click policy.
-  Sounding voices, tails and buffered audio can end at the cut. Release affected
-  voices and retire outgoing instances safely.
+  For any cross-track device move, including Undo/Redo, prepare a fresh device
+  with the applicable preset and authored settings, including parameter values.
+  Switch at a clean boundary with a short de-click fade. Sounding voices, tails
+  and buffered audio end with the original device. Release affected voices and
+  retire that instance safely. Cancellation or failed preparation keeps the
+  source device in place.
   An admitted edit becomes active in the editor only after the audio owner
   confirms installation of its exact graph.
   The [live track and device editing brief](docs/design/live-repatching-brief.md)
