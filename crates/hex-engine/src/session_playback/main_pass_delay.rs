@@ -34,9 +34,12 @@ impl SessionPlayback {
                 == before.sample_rate().saturating_mul(3).div_ceil(2_000);
         let explicit_off = matches!(after.main_device_chain.as_ref(), [off]
             if off.bypassed && off.definition.as_ref().is_some_and(|factory| factory.is_powered_off()));
+        // Removal can keep the already-summed input from two dry tracks.
+        // The separate hosted power contract still admits one live dry track.
+        let track_limit = if explicit_off { 1 } else { 2 };
         if !(after.main_device_chain.is_empty() || explicit_off)
             || self.compensation.is_some()
-            || !self.same_direct_pass_input(old)
+            || !self.same_direct_pass_input(old, track_limit)
             || old.main_pass_delay.is_some()
             || old
                 .return_effect_tails
@@ -49,9 +52,6 @@ impl SessionPlayback {
             || !(short_native || fixed_short_limiter || device.foreign_processor().is_some())
             || after.main_latency_frames() != 0
         {
-            return None;
-        }
-        if before.tracks()[0].mix != after.tracks()[0].mix {
             return None;
         }
         self.main_chain.main_pass_removal_from(&old.main_chain)
@@ -279,30 +279,49 @@ impl SessionPlayback {
 
     /// No upstream history changes meaning when the final, short delay moves
     /// from the outgoing Main stage to the passive output of the same graph.
-    pub(super) fn same_direct_pass_input(&self, old: &Self) -> bool {
-        let one_track = |playback: &Self| {
+    fn same_direct_pass_input(&self, old: &Self, track_limit: usize) -> bool {
+        let direct_input = |playback: &Self| {
             let arrangement = playback.revision.arrangement();
-            let [track] = arrangement.tracks() else {
-                return false;
-            };
-            arrangement.return_buses().is_empty()
+            let count = arrangement.tracks().len();
+            (1..=track_limit).contains(&count)
+                && playback.routes.len() == count
+                && arrangement.return_buses().is_empty()
                 && arrangement.signal_graph.as_ref().is_some_and(|graph| {
                     graph.main_input_arrival() == 0
                         && graph.independent_main_routes()
-                        && graph
-                            .resident_main_alignment(0)
-                            .is_some_and(|(_, arrival)| arrival == 0)
+                        && (0..count).all(|index| {
+                            graph
+                                .resident_main_alignment(index)
+                                .is_some_and(|(_, arrival)| arrival == 0)
+                        })
                 })
-                && track.sends().is_empty()
-                && same_arrangement_pass_source(playback, track)
         };
-        if !one_track(self) || !one_track(old) {
+        let before = old.revision.arrangement();
+        let after = self.revision.arrangement();
+        if !direct_input(self)
+            || !direct_input(old)
+            || before.tracks().len() != after.tracks().len()
+            || before.master_mix() != after.master_mix()
+        {
             return false;
         }
-        let left = &self.revision.arrangement().tracks()[0];
-        let right = &old.revision.arrangement().tracks()[0];
-        left.canonical_track_id() == right.canonical_track_id()
-            && super::device_move::same_clip(&left.clips[0], &right.clips[0])
+        before
+            .tracks()
+            .iter()
+            .zip(after.tracks())
+            .enumerate()
+            .all(|(index, (left, right))| {
+                left.canonical_track_id() == right.canonical_track_id()
+                    && left.mix == right.mix
+                    && left.source_mix == right.source_mix
+                    && left.source_input_enabled() == right.source_input_enabled()
+                    && left.audio_content_enabled() == right.audio_content_enabled()
+                    && left.sends().is_empty()
+                    && right.sends().is_empty()
+                    && arrangement_pass_source_at(old, left, index)
+                    && arrangement_pass_source_at(self, right, index)
+                    && super::device_move::same_clip(&left.clips[0], &right.clips[0])
+            })
     }
 }
 
