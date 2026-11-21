@@ -33,9 +33,6 @@ pub(super) fn section(view: &EditorView, start: u64, end: u64, chamfer: f32) -> 
     )
 }
 
-#[cfg(test)]
-const ROW_BATCH_CAPACITY: usize = 16;
-
 /// Paint one row's miniature marks inside the enclosing paint layer so every
 /// miniature quad shares a single BoundsTree draw order and GPU batch.
 fn paint_row(
@@ -202,6 +199,8 @@ mod tests {
     use super::*;
     use hex_project::{BeatTime, Command, Editor};
 
+    const LONG_ROW_SPAN_COUNT: usize = 19;
+
     struct SectionCoverageOracle {
         left: f32,
         opacity: f32,
@@ -325,7 +324,7 @@ mod tests {
                                     (15.625, 3.125),
                                     (38.625, 5.75),
                                 ];
-                                let long: [(f32, f32); ROW_BATCH_CAPACITY + 3] =
+                                let long: [(f32, f32); LONG_ROW_SPAN_COUNT] =
                                     std::array::from_fn(|i| (10.5 + i as f32 * 1.5, 1.0));
                                 for (y, color, spans) in [
                                     (10.125, 0x5050aa, clipped.as_slice()),
@@ -373,8 +372,8 @@ mod tests {
             let quads = visual.rendered_filled_quads("miniature-paint-oracle");
             assert_eq!(
                 quads.len(),
-                10 + ROW_BATCH_CAPACITY + 3,
-                "background, four spans per short row, a run over capacity and overlay"
+                10 + LONG_ROW_SPAN_COUNT,
+                "background, four spans per short row, the long row, and overlay"
             );
             let samples = [
                 (10.0625, 10.5), // Left of the content mask.
