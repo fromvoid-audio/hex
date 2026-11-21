@@ -1377,18 +1377,31 @@ impl Session {
         {
             return Ok(None);
         }
-        let main_replacement =
-            main_history::stage_enabled_main_replacement(&mut self.editor, redo)?;
-        let stopped_fence = if let Some((_, device)) = &main_replacement {
-            Some(
-                sink.stopped_resident_power_fence(context, device.value())
-                    .map_err(SessionError::NativeAudio)?
-                    .ok_or(SessionError::Invalid(
-                        "stop playback to undo or redo this vst3 replacement",
-                    ))?,
-            )
+        let replacement = if let Some((edge, device)) =
+            main_history::stage_enabled_main_replacement(&mut self.editor, redo)?
+        {
+            let stopped = sink
+                .stopped_resident_power_fence(context, device.value())
+                .map_err(SessionError::NativeAudio)?;
+            Some((edge, stopped))
+        } else if let Some((edge, return_track, device)) =
+            hosted_replacement_history::stage_enabled_return_replacement(&mut self.editor, redo)?
+        {
+            Some((
+                edge,
+                sink.stopped_resident_return_history_fence(context, return_track, device.value()),
+            ))
         } else {
             None
+        };
+        let (replacement, stopped_fence) = match replacement {
+            Some((edge, stopped)) => (
+                Some(edge),
+                Some(stopped.ok_or(SessionError::Invalid(
+                    "stop playback to undo or redo this vst3 replacement",
+                ))?),
+            ),
+            None => (None, None),
         };
         self.stage_resident_graph_change(
             context,
@@ -1402,7 +1415,7 @@ impl Session {
             None,
             document_intent,
             |session| {
-                if let Some((edge, _)) = main_replacement {
+                if let Some(edge) = replacement {
                     return Ok(Some(StagedResidentChange {
                         edit: StagedChange::History(edge),
                         operation: Operation::HostedHistory(GraphEditOperation::ReplaceDevice),
