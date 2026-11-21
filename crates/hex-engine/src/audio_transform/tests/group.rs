@@ -116,26 +116,34 @@ fn assert_children_match_rendered_pcm(
     let events = clip.audio_events();
     assert_eq!(table.sources().len(), events.sources.len());
     for child in &events.sources {
-        let peaks = &table.sources()[table.index_of(child.id).unwrap()].1;
-        assert_eq!(peaks.source_frames(), child.clip.duration() as usize);
-        let source_start = child.clip.start() as usize;
-        let frames = &original[source_start..source_start + peaks.source_frames()];
-        let bins = peaks.bins();
-        let width = frames.len() / bins.len();
-        let extra = frames.len() % bins.len();
-        let mut offset = 0;
-        for (index, bin) in bins.iter().enumerate() {
-            let end = offset + width + usize::from(index < extra);
-            for channel in 0..2 {
-                let values = frames[offset..end].iter().map(|frame| frame[channel]);
-                assert_eq!(
-                    bin.min[channel],
-                    values.clone().fold(f32::INFINITY, f32::min)
-                );
-                assert_eq!(bin.max[channel], values.fold(f32::NEG_INFINITY, f32::max));
-            }
-            offset = end;
+        assert_child_matches_rendered_pcm(table, child, original);
+    }
+}
+
+fn assert_child_matches_rendered_pcm(
+    table: &PreparedGroupEventSources,
+    child: &hex_project::RetainedAudioRoot,
+    original: &[crate::Frame],
+) {
+    let peaks = &table.sources()[table.index_of(child.id).unwrap()].1;
+    assert_eq!(peaks.source_frames(), child.clip.duration() as usize);
+    let source_start = child.clip.start() as usize;
+    let frames = &original[source_start..source_start + peaks.source_frames()];
+    let bins = peaks.bins();
+    let width = frames.len() / bins.len();
+    let extra = frames.len() % bins.len();
+    let mut offset = 0;
+    for (index, bin) in bins.iter().enumerate() {
+        let end = offset + width + usize::from(index < extra);
+        for channel in 0..2 {
+            let values = frames[offset..end].iter().map(|frame| frame[channel]);
+            assert_eq!(
+                bin.min[channel],
+                values.clone().fold(f32::INFINITY, f32::min)
+            );
+            assert_eq!(bin.max[channel], values.fold(f32::NEG_INFINITY, f32::max));
         }
+        offset = end;
     }
 }
 
@@ -782,6 +790,7 @@ fn grouped_event_marker_move_changes_only_the_selected_retained_read() {
             settings: Some(settings.clone()),
         })
         .unwrap();
+    let mut independent = Editor::new(editor.project().clone(), 32).unwrap();
     let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
         panic!("group");
     };
@@ -803,6 +812,13 @@ fn grouped_event_marker_move_changes_only_the_selected_retained_read() {
             .move_marker(3_000, BeatTime::from_raw(beat + BeatTime::ONE.raw() / 32))
             .unwrap()
     );
+    independent
+        .execute(Command::SetAudioClipWarp {
+            clip: first,
+            settings: Some(settings.clone()),
+        })
+        .unwrap();
+    let independent = render(&prepare(&independent, &media, &context), 0, 16_000, 311);
     editor
         .execute(Command::EditAudioEvents {
             clip: group,
@@ -815,8 +831,21 @@ fn grouped_event_marker_move_changes_only_the_selected_retained_read() {
     let revision = prepare(&editor, &media, &context);
     let changed = render(&revision, 0, 16_000, 127);
     assert_ne!(changed[..split], original[..split]);
+    assert_eq!(changed[..split], independent[..split]);
     assert_eq!(changed[split..], original[split..]);
-    assert_children_match_rendered_pcm(&revision, editor.project().clip(group).unwrap(), &changed);
+    let edited = editor.project().clip(group).unwrap().audio_events();
+    let fork = edited.events[0].source;
+    assert_ne!(fork, events.events[0].source);
+    let table = child_peaks(&revision, group);
+    assert_eq!(table.sources().len(), edited.sources.len());
+    for child in &edited.sources {
+        let reference = if child.id == fork {
+            &independent
+        } else {
+            &original
+        };
+        assert_child_matches_rendered_pcm(table, child, reference);
+    }
     assert!(editor.undo());
     assert_eq!(
         render(&prepare(&editor, &media, &context), 0, 16_000, 311),
