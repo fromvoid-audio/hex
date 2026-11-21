@@ -9,6 +9,7 @@ const IMPULSE: usize = 192;
 const SPACING: usize = 4 * BLOCK;
 const SOURCE_FRAMES: u32 = 131_072;
 const SIGNAL: f32 = 0.25;
+const BED: f32 = 0.03125;
 const FADE: usize = 240;
 
 fn source_sample(frame: usize) -> f32 {
@@ -17,7 +18,7 @@ fn source_sample(frame: usize) -> f32 {
     } else if frame % SPACING == IMPULSE {
         SIGNAL
     } else if frame >= 128 {
-        0.03125
+        BED
     } else {
         0.0
     }
@@ -335,16 +336,35 @@ fn running_resident_main_vst3_removal_retires_a_worker_but_keeps_pass_latency() 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn running_resident_main_power_off_retires_the_worker_but_keeps_pass_latency() {
-    verify_running_main_power_off(false);
+    verify_running_main_power_cycle(MainPowerCheck::Off);
 }
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn cancelled_running_main_power_off_restores_the_worker_then_retry_installs() {
-    verify_running_main_power_off(true);
+    verify_running_main_power_cycle(MainPowerCheck::CancelOff);
 }
 
-fn verify_running_main_power_off(cancel_before_cut: bool) {
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn running_resident_main_power_on_installs_a_fresh_worker_at_its_exact_receipt() {
+    verify_running_main_power_cycle(MainPowerCheck::OnAgain);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn cancelled_running_resident_main_power_on_keeps_the_original_dry_pass() {
+    verify_running_main_power_cycle(MainPowerCheck::CancelOn);
+}
+
+enum MainPowerCheck {
+    Off,
+    CancelOff,
+    OnAgain,
+    CancelOn,
+}
+
+fn verify_running_main_power_cycle(check: MainPowerCheck) {
     let _native = native_fixture();
     let files = Files::new();
     let directory = files.0.canonicalize().unwrap();
@@ -408,7 +428,7 @@ fn verify_running_main_power_off(cancel_before_cut: bool) {
     // clearing the read or requiring an accidentally idle polling turn fails.
     h.plugin_progress.lock().unwrap().hold_pending_read = Some(binding);
     wait(|| h.plugin_progress.lock().unwrap().held_pending_read == Some(binding));
-    let cancelled_audio = if cancel_before_cut {
+    let cancelled_audio = if matches!(check, MainPowerCheck::CancelOff) {
         let (submitted, resume) = h.probe_next_submitted_device_insert();
         h.service
             .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
@@ -576,6 +596,16 @@ fn verify_running_main_power_off(cancel_before_cut: bool) {
     }
     assert_eq!(h.plugin_completed.load(Acquire), processed);
 
+    if matches!(check, MainPowerCheck::OnAgain | MainPowerCheck::CancelOn) {
+        assert_running_main_power_on(
+            &mut h,
+            &powered_off,
+            binding,
+            matches!(check, MainPowerCheck::CancelOn),
+        );
+        return;
+    }
+
     // The next Play belongs to a fresh pass and can use the reduced latency.
     h.audio.as_ref().unwrap().control.stop();
     h.render_plugin_block();
@@ -590,6 +620,190 @@ fn verify_running_main_power_off(cancel_before_cut: bool) {
     for _ in 0..4 {
         assert_dry_timing(&h, 0);
     }
+}
+
+fn assert_running_main_power_on(
+    h: &mut ResidentHarness,
+    powered_off: &Event,
+    binding: hex_audio::plugin_effects::EffectBinding,
+    cancel_restart: bool,
+) {
+    let off = &powered_off.state.project.main_devices()[0];
+    let device = off.id();
+    let applied = status(h).recording_source().unwrap();
+    let (prepared, enqueue, _) = h.probe_next_native_publication();
+    h.service
+        .submit(Request::Edit(Command::SetDeviceBypass {
+            device,
+            bypassed: false,
+        }))
+        .unwrap();
+    // Let the existing control owner prepare the fresh worker while only the
+    // original dry graph can render. The candidate is still held before enqueue.
+    let preparation_deadline = Instant::now() + Duration::from_secs(2);
+    while prepared.try_recv().is_err() {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            assert!(
+                event.error.is_none() && !event.request_complete,
+                "running On stopped in preparation: complete={}, status={:?}, error={:?}",
+                event.request_complete,
+                event.status,
+                event.error
+            );
+            assert_eq!(event.state.project, powered_off.state.project);
+        }
+        assert_eq!(status(h).recording_source(), Some(applied));
+        assert_dry_timing(h, BRIDGE);
+        assert!(
+            Instant::now() < preparation_deadline,
+            "running On never reached native publication"
+        );
+        std::thread::sleep(Duration::from_millis(4));
+    }
+    assert_eq!(status(h).recording_source(), Some(applied));
+    let (id, prepared_binding, accepted) = h.plugin_progress.lock().unwrap().newest_source.unwrap();
+    assert_eq!(id, device.value());
+    assert_ne!(prepared_binding, binding);
+    assert!(!accepted);
+    enqueue.send(()).unwrap();
+
+    // No callback can have installed the candidate since it was enqueued.
+    let pending = h.next();
+    assert_eq!(status(h).recording_source(), Some(applied));
+    assert!(status(h).native_effect_source().is_none());
+    assert!(
+        pending.error.is_none() && !pending.request_complete,
+        "running On did not stage an exact install: complete={}, status={:?}, error={:?}",
+        pending.request_complete,
+        pending.status,
+        pending.error
+    );
+    assert_eq!(pending.state.project, powered_off.state.project);
+    assert_eq!(pending.state.revision, powered_off.state.revision);
+    assert_eq!(pending.state.can_redo, powered_off.state.can_redo);
+    assert_eq!(pending.state.can_undo, powered_off.state.can_undo);
+
+    let mut offered = None;
+    let mut approved = None;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let powered_on = 'receipt: loop {
+        h.pump();
+        while let Ok(event) = h.service.try_event() {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            if let Some(confirmation) = &event.device_insert_confirmation {
+                assert_eq!(
+                    confirmation.operation(),
+                    hex_session::service::GraphEditOperation::PowerDevice
+                );
+                assert_eq!(event.state.project, powered_off.state.project);
+                assert_eq!(status(h).recording_source(), Some(applied));
+                assert!(offered.replace(confirmation.submission()).is_none());
+                if cancel_restart {
+                    assert!(confirmation.cancel());
+                } else {
+                    let (submitted, resume) = h.probe_next_submitted_device_insert();
+                    assert!(confirmation.proceed());
+                    let exact = submitted.recv_timeout(Duration::from_secs(1)).unwrap();
+                    assert_eq!(exact.context, confirmation.submission().context);
+                    assert_eq!(exact.output_identity, applied.output_identity);
+                    assert!(exact.audio_revision > confirmation.submission().audio_revision);
+                    assert_eq!(status(h).recording_source(), Some(applied));
+                    approved = Some(exact);
+                    resume.send(()).unwrap();
+                }
+            }
+            if event.request_complete {
+                break 'receipt event;
+            }
+            assert_eq!(event.state.project, powered_off.state.project);
+        }
+        assert!(Instant::now() < deadline, "running On receipt timed out");
+        if status(h).recording_source() == Some(applied) {
+            let before = status(h).position.load(Acquire);
+            h.render_plugin_block();
+            let after = status(h).position.load(Acquire);
+            assert!(
+                (before..=before + BLOCK as u64).contains(&after),
+                "main power on changed the musical position from {before} to {after}"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let completion = powered_on.device_insert_complete.unwrap();
+    if cancel_restart {
+        assert_eq!(
+            completion.submission,
+            offered.expect("exact Main timing consent")
+        );
+        assert_eq!(completion.outcome, DeviceInsertOutcome::Cancelled);
+        assert_eq!(powered_on.state.project, powered_off.state.project);
+        assert_eq!(powered_on.state.revision, powered_off.state.revision);
+        assert_eq!(powered_on.state.can_redo, powered_off.state.can_redo);
+        assert_eq!(powered_on.state.can_undo, powered_off.state.can_undo);
+        assert_eq!(status(h).recording_source(), Some(applied));
+        assert!(status(h).native_effect_source().is_none());
+        wait(|| {
+            h.pump();
+            assert_dry_timing(h, BRIDGE);
+            h.plugin_records.load(Acquire) == 0
+        });
+        return;
+    }
+    assert_eq!(
+        completion.submission,
+        approved.expect("exact approved restart")
+    );
+    assert_eq!(completion.outcome, DeviceInsertOutcome::Installed);
+    let active = status(h).recording_source().unwrap();
+    assert_eq!(active.output_identity, applied.output_identity);
+    assert_eq!(active.audio_revision, completion.submission.audio_revision);
+    assert_eq!(active.context, completion.submission.context);
+    assert_eq!(status(h).native_effect_source(), Some(active));
+    let on_device = powered_on.state.project.device(device).unwrap();
+    assert!(!on_device.bypassed());
+    assert_eq!(on_device.state(), off.state());
+    assert_eq!(powered_on.state.revision, powered_off.state.revision + 1);
+    assert_eq!(h.plugin_records.load(Acquire), 1);
+    let fresh = h.plugin_progress.lock().unwrap().binding.unwrap();
+    assert_eq!(fresh, prepared_binding);
+    for _ in 0..4 {
+        render_playing(h);
+    }
+    assert_fresh_main_output(h);
+}
+
+fn assert_fresh_main_output(h: &ResidentHarness) {
+    let mut previous_gain = None;
+    let mut heard_impulse = false;
+    for _ in 0..(SPACING / BLOCK) {
+        let (start, pcm) = render_playing(h);
+        let origin = start.checked_sub(BRIDGE).unwrap();
+        let background = (0..BLOCK)
+            .find(|&offset| source_sample(origin + offset) == BED)
+            .expect("known nonzero background in this block");
+        // A fresh SDK worker restarts its block modulation, even when the
+        // musical timeline resumes well after its original Play position.
+        let gain = pcm[background][0] / BED;
+        assert!((0.5..=2.0).contains(&gain));
+        if let Some(previous) = previous_gain.replace(gain) {
+            assert_eq!(gain, previous + 0.125);
+        }
+        for (offset, frame) in pcm.into_iter().enumerate() {
+            let dry = source_sample(origin + offset);
+            heard_impulse |= dry == SIGNAL;
+            assert_eq!(
+                frame,
+                [dry * gain; 2],
+                "fresh Main frame={}",
+                start + offset
+            );
+        }
+    }
+    assert!(
+        heard_impulse,
+        "fresh Main bridge proved with nonconstant PCM"
+    );
 }
 
 #[test]

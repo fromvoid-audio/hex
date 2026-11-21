@@ -152,6 +152,9 @@ pub(super) struct Resident {
     // Only one exact applied Off fact survives after its projection is unshared.
     // It owns no graph, configuration, meter, source, worker or native receipt.
     active_powered_off: Option<(hex_audio::prepared::AppliedAudioSource, u64)>,
+    /// Latest exact running Power Off and its pass's consumed Stop generation.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) running_powered_off: Option<(hex_audio::prepared::AppliedAudioSource, u64)>,
 }
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(super) struct PendingPausedNotes {
@@ -173,6 +176,13 @@ impl Resident {
     fn retain_applied_off(&mut self, actual: Option<hex_audio::prepared::AppliedAudioSource>) {
         if let Some(source) = actual {
             self.active_powered_off = self.powered_off_main(source).map(|device| (source, device));
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            if self
+                .running_powered_off
+                .is_some_and(|(old, _)| old != source)
+            {
+                self.running_powered_off = None;
+            }
         }
     }
 
