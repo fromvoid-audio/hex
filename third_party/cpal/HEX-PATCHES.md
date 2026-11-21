@@ -122,6 +122,12 @@ actual unstarted output and injects a delivered signal through the registered
 shim. Hardware property-notification delivery and physical timing still need
 native acceptance.
 
+The ignored `pinned_auhal_callback_clock_includes_one_device_buffer` test
+pins a silent output to the selected device while keeping its current buffer
+and nominal rate. It exercises the full timing watch on a running stream and
+compares the callback/playback pair to one device-buffer duration. This probe
+does not configure a worker bridge or measure the physical output time.
+
 ## Auxiliary macOS worker time constraint
 
 The safe `platform::CoreAudioWorkerTimeConstraint` handle uses the existing

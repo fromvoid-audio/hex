@@ -72,10 +72,12 @@
          coreaudio::audio_unit::IOType::DefaultOutput
      } else {
          coreaudio::audio_unit::IOType::HalOutput
-@@ -242,6 +265,41 @@
-     Ok(audio_unit)
- }
+@@ -240,6 +263,41 @@
+     )?;
  
+     Ok(audio_unit)
++}
++
 +#[cfg(test)]
 +mod route_probe_regression {
 +    use super::*;
@@ -109,12 +111,10 @@
 +        let previous = get_io_buffer_frame_size_range(&unit).expect("Audio Unit buffer range");
 +        assert_eq!(*config.buffer_size(), previous);
 +    }
-+}
-+
+ }
+ 
  fn get_io_buffer_frame_size_range(
-     audio_unit: &AudioUnit,
- ) -> Result<SupportedBufferSize, coreaudio::Error> {
-@@ -320,19 +378,18 @@
+@@ -320,19 +378,19 @@
          sample_format: SampleFormat,
          data_callback: D,
          error_callback: E,
@@ -134,10 +134,11 @@
              error_callback,
 -            timeout,
 +            None,
++            false,
          )
      }
  }
-@@ -342,14 +399,43 @@
+@@ -342,12 +400,41 @@
      pub(crate) audio_device_id: AudioDeviceID,
  }
  
@@ -147,8 +148,8 @@
 -
  fn is_default_output_device(device: &Device) -> bool {
      default_output_device().is_some_and(|d| d.audio_device_id == device.audio_device_id)
- }
- 
++}
++
 +// The input stream is pinned to the selected device even when it is the
 +// system default. Its disconnection must reach the stream's error callback.
 +fn input_disconnect_callback<E>(callback: Arc<Mutex<E>>) -> super::ErrorCallback
@@ -180,12 +181,10 @@
 +        disconnect(StreamError::DeviceNotAvailable);
 +        assert_eq!(observed.load(Ordering::Relaxed), 1);
 +    }
-+}
-+
+ }
+ 
  impl Device {
-     /// Construct a new device given its ID.
-     /// Useful for constructing hidden devices.
-@@ -688,8 +774,45 @@
+@@ -688,8 +775,45 @@
                      description: format!("unexpected scope (neither input nor output): {scope:?}"),
                  }),
              }?;
@@ -233,7 +232,7 @@
  
              let config = SupportedStreamConfig {
                  sample_rate: asbd.mSampleRate as _,
-@@ -743,6 +866,7 @@
+@@ -743,6 +867,7 @@
          D: FnMut(&Data, &InputCallbackInfo) + Send + 'static,
          E: FnMut(StreamError) + Send + 'static,
      {
@@ -241,7 +240,7 @@
          // The scope and element for working with a device's input stream.
          let scope = Scope::Output;
          let element = Element::Input;
-@@ -784,13 +908,6 @@
+@@ -784,13 +909,6 @@
              let len = data_byte_size as usize / bytes_per_channel;
              let data = Data::from_parts(data, len, sample_format);
  
@@ -255,7 +254,7 @@
              let buffer_frames = len / channels as usize;
              // Use device buffer size for latency calculation if available
              let latency_frames = device_buffer_frames.unwrap_or(
-@@ -799,9 +916,9 @@
+@@ -799,9 +917,9 @@
                  buffer_frames,
              );
              let delay = frames_to_duration(latency_frames, sample_rate);
@@ -268,7 +267,7 @@
              let timestamp = crate::InputStreamTimestamp { callback, capture };
  
              let info = InputCallbackInfo { timestamp };
-@@ -809,19 +926,12 @@
+@@ -809,19 +927,12 @@
              Ok(())
          })?;
  
@@ -290,7 +289,7 @@
                  audio_unit,
                  device_id: self.audio_device_id,
                  _loopback_device: loopback_aggregate,
-@@ -843,19 +953,66 @@
+@@ -843,19 +954,69 @@
          Ok(stream)
      }
  
@@ -320,6 +319,7 @@
 +            },
 +            error_callback,
 +            Some((device_rate, client_limit)),
++            false,
 +        )
 +    }
 +
@@ -331,6 +331,7 @@
          error_callback: E,
 -        _timeout: Option<Duration>,
 +        bounds: Option<(SampleRate, u16)>,
++        pin_for_observation: bool,
      ) -> Result<Stream, BuildStreamError>
      where
          D: FnMut(&mut Data, &OutputCallbackInfo) + Send + 'static,
@@ -352,7 +353,8 @@
 +        };
 +        // Pin the verified stream to the device just negotiated. The host
 +        // lifecycle owns reopening it after a default route change.
-+        let mut audio_unit = audio_unit_on_device(self, false, bounds.is_some())?;
++        let mut audio_unit =
++            audio_unit_on_device(self, false, bounds.is_some() || pin_for_observation)?;
 +        if bounds.is_some() {
 +            // CoreAudio derives the converted client limit when initialized.
 +            audio_unit.uninitialize()?;
@@ -360,7 +362,7 @@
  
          // The scope and element for working with a device's output stream.
          let scope = Scope::Input;
-@@ -863,6 +1020,26 @@
+@@ -863,6 +1024,26 @@
  
          // Configure device buffer (see comprehensive documentation in input stream above)
          configure_stream_format_and_buffer(&mut audio_unit, config, sample_format, scope, element)?;
@@ -387,7 +389,7 @@
  
          let error_callback = Arc::new(Mutex::new(error_callback));
          let error_callback_disconnect = error_callback.clone();
-@@ -887,13 +1064,6 @@
+@@ -887,13 +1068,6 @@
              let len = data_byte_size as usize / bytes_per_channel;
              let mut data = Data::from_parts(data, len, sample_format);
  
@@ -401,7 +403,7 @@
              let buffer_frames = len / channels as usize;
              // Use device buffer size for latency calculation if available
              let latency_frames = device_buffer_frames.unwrap_or(
-@@ -901,10 +1071,13 @@
+@@ -901,10 +1075,13 @@
                  // (may overestimate latency for BufferSize::Default)
                  buffer_frames,
              );
@@ -419,7 +421,7 @@
              let timestamp = crate::OutputStreamTimestamp { callback, playback };
  
              let info = OutputCallbackInfo { timestamp };
-@@ -912,6 +1085,20 @@
+@@ -912,6 +1089,20 @@
              Ok(())
          })?;
  
@@ -440,7 +442,7 @@
          // Create error callback for stream - either dummy or real based on device type
          let error_callback_for_stream: super::ErrorCallback = if is_default_output_device(self) {
              Box::new(|_: StreamError| {})
-@@ -925,6 +1112,7 @@
+@@ -925,6 +1116,7 @@
          let stream = Stream::new(
              StreamInner {
                  playing: true,
@@ -448,7 +450,7 @@
                  audio_unit,
                  device_id: self.audio_device_id,
                  _loopback_device: None,
-@@ -943,8 +1131,991 @@
+@@ -943,10 +1135,1096 @@
              .audio_unit
              .start()?;
  
@@ -456,7 +458,7 @@
 +            rollback.original = rollback.requested;
 +        }
          Ok(stream)
-     }
++    }
 +}
 +
 +fn bounded_output_error(description: &str) -> BuildStreamError {
@@ -854,7 +856,7 @@
 +        let receipt = watch.receipt;
 +        inner.timing_watch = Some(watch);
 +        Ok(receipt)
-+    }
+     }
 +
 +    /// Revalidate the original property values and notification state on
 +    /// control. Notifications can arrive after a property change, so this is a
@@ -879,8 +881,8 @@
 +        watch.validate(&inner.audio_unit, inner.device_id)?;
 +        Ok(watch.snapshot.0)
 +    }
-+}
-+
+ }
+ 
 +fn stable_output_timing(
 +    unit: &AudioUnit,
 +    device: AudioDeviceID,
@@ -1194,6 +1196,109 @@
 +mod output_timing_regression {
 +    use super::*;
 +
++    #[test]
++    #[ignore = "runs a silent pinned AUHAL stream on the unchanged default output"]
++    fn pinned_auhal_callback_clock_includes_one_device_buffer() {
++        use std::sync::atomic::{AtomicBool, AtomicU64};
++
++        let device = default_output_device().expect("current default CoreAudio output");
++        let supported = device.default_output_config().unwrap();
++        let config = supported.config();
++        let sample_format = supported.sample_format();
++        assert_eq!(config.buffer_size, BufferSize::Default);
++        assert!(matches!(
++            sample_format,
++            SampleFormat::F32 | SampleFormat::I16
++        ));
++        assert!(config.sample_rate > 0);
++        let buffer = device_buffer_frames(device.audio_device_id).unwrap();
++        assert!(buffer > 0);
++
++        #[derive(Default)]
++        struct Observation {
++            armed: AtomicBool,
++            callback_ns: AtomicU64,
++            playback_ns: AtomicU64,
++            failed: AtomicBool,
++        }
++        let observation = Arc::new(Observation::default());
++        let data_observation = Arc::clone(&observation);
++        let error_observation = Arc::clone(&observation);
++        let stream = device
++            .build_output_stream_with_limit(
++                &config,
++                sample_format,
++                move |data, info| {
++                    data.bytes_mut().fill(0);
++                    if data_observation.armed.swap(false, Ordering::AcqRel) {
++                        let pair = info.timestamp();
++                        let callback = u64::try_from(pair.callback.as_nanos());
++                        let playback = u64::try_from(pair.playback.as_nanos());
++                        if let (Ok(callback), Ok(playback)) = (callback, playback) {
++                            data_observation
++                                .callback_ns
++                                .store(callback, Ordering::Relaxed);
++                            data_observation
++                                .playback_ns
++                                .store(playback, Ordering::Release);
++                        } else {
++                            data_observation.failed.store(true, Ordering::Release);
++                        }
++                    }
++                },
++                move |_| error_observation.failed.store(true, Ordering::Release),
++                None,
++                true,
++            )
++            .expect("start silent pinned AUHAL with the existing device buffer");
++        let receipt = stream.watch_output_timing_on_control().unwrap();
++        let timing = stream.revalidate_output_timing_on_control(receipt).unwrap();
++        assert_eq!(timing.device_id, device.audio_device_id);
++        assert_eq!(timing.device_sample_rate, f64::from(config.sample_rate));
++        assert_eq!(timing.client_sample_rate, timing.device_sample_rate);
++        assert_eq!(timing.buffer_frames, buffer);
++
++        observation.armed.store(true, Ordering::Release);
++        let deadline = Instant::now() + Duration::from_millis(500);
++        let playback_ns = loop {
++            assert!(!observation.failed.load(Ordering::Acquire));
++            let playback_ns = observation.playback_ns.load(Ordering::Acquire);
++            if playback_ns != 0 {
++                break playback_ns;
++            }
++            assert!(Instant::now() < deadline, "no pinned AUHAL callback");
++            std::thread::sleep(Duration::from_millis(1));
++        };
++        assert_eq!(
++            stream.revalidate_output_timing_on_control(receipt).unwrap(),
++            timing
++        );
++        let callback_ns = observation.callback_ns.load(Ordering::Relaxed);
++        let observed_ns = playback_ns.checked_sub(callback_ns).unwrap();
++        let buffer_ns = u64::from(buffer) * 1_000_000_000 / u64::from(config.sample_rate);
++        // CPAL converts the buffer duration through f64 before truncating to ns.
++        assert!(observed_ns.abs_diff(buffer_ns) <= 1);
++        assert!(observed_ns.abs_diff(2 * buffer_ns) > 1);
++        let fresh = stream.watch_output_timing_on_control().unwrap();
++        assert!(stream.revalidate_output_timing_on_control(receipt).is_err());
++        assert_eq!(
++            stream.revalidate_output_timing_on_control(fresh).unwrap(),
++            timing
++        );
++        drop(stream);
++        assert!(!fresh.current());
++        assert!(is_default_output_device(&device));
++        assert_eq!(
++            device_buffer_frames(device.audio_device_id).unwrap(),
++            buffer
++        );
++        assert_eq!(
++            device.default_output_config().unwrap().sample_rate(),
++            config.sample_rate
++        );
++        println!("pinned AUHAL {:?} callback_ns={callback_ns} playback_ns={playback_ns} delta_ns={observed_ns}", timing);
++    }
++
 +    fn timing() -> OutputTiming {
 +        OutputTiming {
 +            device_id: 1,
@@ -1437,9 +1542,11 @@
 +        return Err(bounded_output_error("invalid coreaudio device buffer size"));
 +    }
 +    Ok(frames)
- }
- 
++}
++
  /// Configure stream format and buffer size for CoreAudio stream.
+ ///
+ /// This handles the common setup tasks for both input and output streams:
 --- a/src/host/coreaudio/macos/mod.rs
 +++ b/src/host/coreaudio/macos/mod.rs
 @@ -1,5 +1,5 @@
