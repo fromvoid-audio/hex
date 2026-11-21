@@ -43,24 +43,34 @@ fn original_plugin_catalog(path: std::path::PathBuf) -> hex_plugin_catalog::Cata
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[gpui::test]
 fn verified_main_drag_captures_the_rendered_replace_pad(cx: &mut TestAppContext) {
-    assert_verified_effect_bus_replacement(cx, VerifiedEffectBus::Main);
+    assert_verified_effect_replacement(cx, VerifiedEffectOwner::Main);
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[gpui::test]
 fn verified_return_drag_captures_the_rendered_replace_pad(cx: &mut TestAppContext) {
-    assert_verified_effect_bus_replacement(cx, VerifiedEffectBus::Return);
+    assert_verified_effect_replacement(cx, VerifiedEffectOwner::Return);
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-enum VerifiedEffectBus {
+#[gpui::test]
+fn verified_track_drag_captures_the_rendered_replace_pad(cx: &mut TestAppContext) {
+    assert_verified_effect_replacement(cx, VerifiedEffectOwner::Track);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+enum VerifiedEffectOwner {
     Main,
     Return,
+    Track,
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn assert_verified_effect_bus_replacement(cx: &mut TestAppContext, bus: VerifiedEffectBus) {
-    use crate::editor::{drag::EffectBusDropSlot, rendered_test_fixture};
+fn assert_verified_effect_replacement(cx: &mut TestAppContext, owner: VerifiedEffectOwner) {
+    use crate::editor::{
+        drag::{EffectBusDropSlot, NativeDeviceDropTarget},
+        rendered_test_fixture,
+    };
     use hex_session::{DocumentAudioMode, service::PluginEffectDestination};
 
     cx.update(crate::editor::bind_editor_keys);
@@ -88,8 +98,8 @@ fn assert_verified_effect_bus_replacement(cx: &mut TestAppContext, bus: Verified
         vec![0],
     )
     .unwrap();
-    let (prefix, effect, return_track, destination) = match bus {
-        VerifiedEffectBus::Main => {
+    let (prefix, effect, destination) = match owner {
+        VerifiedEffectOwner::Main => {
             let Created::Device(effect) = model
                 .execute(Command::InsertMainDevice {
                     before: None,
@@ -100,13 +110,12 @@ fn assert_verified_effect_bus_replacement(cx: &mut TestAppContext, bus: Verified
                 panic!("main effect");
             };
             (
-                "main",
+                "main-",
                 effect,
-                None,
                 PluginEffectDestination::ReplaceMainEffect { replacing: effect },
             )
         }
-        VerifiedEffectBus::Return => {
+        VerifiedEffectOwner::Return => {
             let Created::ReturnTrack(return_track) = model
                 .execute(Command::AddReturnTrack { name: "wet".into() })
                 .unwrap()
@@ -124,11 +133,38 @@ fn assert_verified_effect_bus_replacement(cx: &mut TestAppContext, bus: Verified
                 panic!("return effect");
             };
             (
-                "return",
+                "return-",
                 effect,
-                Some(return_track),
                 PluginEffectDestination::ReplaceReturnEffect {
                     return_track,
+                    replacing: effect,
+                },
+            )
+        }
+        VerifiedEffectOwner::Track => {
+            let Created::Track(track) = model
+                .execute(Command::AddTrack {
+                    name: "processed audio".into(),
+                })
+                .unwrap()
+            else {
+                panic!("audio track");
+            };
+            let Created::Device(effect) = model
+                .execute(Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: authored,
+                })
+                .unwrap()
+            else {
+                panic!("track effect");
+            };
+            (
+                "",
+                effect,
+                PluginEffectDestination::ReplaceTrackEffect {
+                    track,
                     replacing: effect,
                 },
             )
@@ -145,15 +181,25 @@ fn assert_verified_effect_bus_replacement(cx: &mut TestAppContext, bus: Verified
     wait_for_plugin_scan(&mut visual, &editor);
     editor.update(&mut visual, |view, cx| {
         view.document_audio_mode = DocumentAudioMode::VerifiedStreaming;
-        view.focused_return = return_track;
-        view.device_panel.main_selected = return_track.is_none().then_some(view.project_generation);
+        match destination {
+            PluginEffectDestination::ReplaceMainEffect { .. } => {
+                view.device_panel.main_selected = Some(view.project_generation);
+            }
+            PluginEffectDestination::ReplaceReturnEffect { return_track, .. } => {
+                view.focused_return = Some(return_track);
+            }
+            PluginEffectDestination::ReplaceTrackEffect { track, .. } => {
+                view.selected_track = Some(track);
+            }
+            _ => panic!("replacement target"),
+        }
         view.apply_plugin_catalog(catalog, cx);
         cx.notify();
     });
     visual.run_until_parked();
 
     let selector = |control: &str| -> &'static str {
-        Box::leak(format!("{prefix}-{control}-{}", effect.value()).into_boxed_str())
+        Box::leak(format!("{prefix}{control}-{}", effect.value()).into_boxed_str())
     };
     let row = visual.debug_bounds("browser-vst3-row-0").unwrap().center();
     let card = visual.debug_bounds(selector("device-drop-card")).unwrap();
@@ -176,26 +222,35 @@ fn assert_verified_effect_bus_replacement(cx: &mut TestAppContext, bus: Verified
     }
     let drop = visual
         .debug_bounds(selector("vst3-replace"))
-        .unwrap()
+        .expect("occupied effect has a replace pad during catalog drag")
         .center();
     visual.simulate_mouse_move(drop, left_button, modifiers);
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         let drag = view.active_native_device_drag.as_ref().unwrap();
-        assert_eq!(
-            drag.return_destination.get().unwrap().slot,
-            EffectBusDropSlot::Replace(effect)
-        );
+        if let PluginEffectDestination::ReplaceTrackEffect { track, .. } = destination {
+            assert_eq!(
+                drag.destination.get(),
+                Some(NativeDeviceDropTarget {
+                    track,
+                    before: None,
+                    replace: Some(effect),
+                })
+            );
+        } else {
+            assert_eq!(
+                drag.return_destination.get().unwrap().slot,
+                EffectBusDropSlot::Replace(effect)
+            );
+        }
     });
     visual.simulate_mouse_up(drop, left_button, modifiers);
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        let pending = view.pending_plugin_effect.as_ref().unwrap_or_else(|| {
-            panic!(
-                "effect bus drop did not enqueue replacement: {:?}",
-                view.error
-            )
-        });
+        let pending = view
+            .pending_plugin_effect
+            .as_ref()
+            .unwrap_or_else(|| panic!("effect drop did not enqueue replacement: {:?}", view.error));
         assert_eq!(pending.proposal.destination, destination);
         assert_eq!(pending.proposal.before, None);
         assert_eq!(
@@ -203,8 +258,12 @@ fn assert_verified_effect_bus_replacement(cx: &mut TestAppContext, bus: Verified
             model.project()
         );
     });
-    assert!(visual.debug_bounds(selector("device-drop-card")).is_some());
-    assert!(visual.debug_bounds("device-chain-loading-slot").is_some());
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds(selector("device-drop-card")).is_some());
+        assert!(visual.debug_bounds("device-chain-loading-slot").is_some());
+    }
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
