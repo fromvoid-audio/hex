@@ -72,7 +72,9 @@ pub use time_position_marker::{
 };
 mod text_click_selection;
 pub use spectrum_plot::{
-    MAX_SPECTRUM_PLOT_LAYERS, SpectrumPlotLayer, SpectrumPlotLayers, layered_spectrum_plot,
+    MAX_SPECTRUM_PLOT_LAYERS, SpectrumPlotConfig, SpectrumPlotCrosshair, SpectrumPlotLayer,
+    SpectrumPlotLayers, SpectrumPlotLegendItem, format_hz_and_note, layered_spectrum_plot,
+    layered_spectrum_plot_with_config, spectrum_plot_bounds,
 };
 pub use text_case::TextCase;
 pub use text_click_selection::TextClickSelection;
