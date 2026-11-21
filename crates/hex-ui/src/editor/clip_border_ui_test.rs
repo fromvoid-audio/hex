@@ -54,6 +54,96 @@ pub(in crate::editor) fn assert_open_upper_right(
 }
 
 #[gpui::test]
+fn notched_header_fills_its_clipped_corner_with_the_authored_mask(cx: &mut TestAppContext) {
+    use gpui::{Bounds, Context, Render, Window, canvas, div, point, prelude::*, px, rgb, size};
+
+    const HEADER: u32 = 0x856050;
+    const CASES: [(&str, f32, f32); 2] = [("wide-notch", 42.5, 12.5), ("short-notch", 7.0, 39.0)];
+    struct ClipCorners;
+    impl Render for ClipCorners {
+        fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
+            let stroke = 1.0 / window.scale_factor();
+            let mut lane = div().relative().w(px(120.0)).h(px(80.0));
+            for (selector, width, top) in CASES {
+                let left = 18.5;
+                let cut = 5.0_f32.min(width / 2.0);
+                let notch = super::Notch::new(true);
+                let style = super::Backdrop {
+                    body: 0x553320,
+                    header: HEADER,
+                    outline: 0x222222,
+                    hover_outline: 0x222222,
+                    stroke,
+                    header_height: 14.0,
+                    header_gradient: None,
+                    notch: notch.clone(),
+                };
+                lane = lane
+                    .child(
+                        canvas(
+                            move |bounds, _, _| notch.observe(bounds),
+                            move |bounds, _, window, _| {
+                                super::paint_backdrop(
+                                    bounds,
+                                    &style,
+                                    rgb(style.outline).into(),
+                                    window,
+                                );
+                            },
+                        )
+                        .absolute()
+                        .left(px(left))
+                        .top(px(top))
+                        .w(px(width))
+                        .h(px(20.0)),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(left + width - cut - stroke))
+                            .top(px(top))
+                            .size(px(cut + stroke))
+                            .debug_selector(move || selector.into()),
+                    );
+            }
+            lane
+        }
+    }
+
+    let handle = *cx.add_window(|_, _| ClipCorners);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let scale = visual.update(|window, _| window.scale_factor());
+    for (selector, width, top) in CASES {
+        let mask = Bounds::new(point(px(18.5), px(top)), size(px(width), px(20.0))).scale(scale);
+        let triangles = visual
+            .rendered_path_triangles(selector)
+            .into_iter()
+            .filter(|triangle| triangle.color == rgb(HEADER).into())
+            .collect::<Vec<_>>();
+        assert_eq!(triangles.len(), 3);
+        assert!(triangles.iter().all(|triangle| triangle.mask == mask));
+        let area = triangles
+            .iter()
+            .map(|triangle| {
+                let [a, b, c] = triangle.vertices;
+                (f64::from(b.x - a.x) * f64::from(c.y - a.y)
+                    - f64::from(b.y - a.y) * f64::from(c.x - a.x))
+                .abs()
+                    / 2.0
+            })
+            .sum::<f64>();
+        let cut = f64::from(5.0_f32.min(width / 2.0));
+        let scale = f64::from(scale);
+        let joined_edge = cut + 1.0 / scale;
+        assert_eq!(
+            area,
+            (joined_edge * joined_edge - cut * cut / 2.0) * scale * scale
+        );
+    }
+}
+
+#[gpui::test]
 fn pixel_ghosts_keep_authored_endpoints_on_shared_physical_columns(cx: &mut TestAppContext) {
     use gpui::{Context, Div, Render, Window, div, prelude::*, px};
     struct Ghosts;

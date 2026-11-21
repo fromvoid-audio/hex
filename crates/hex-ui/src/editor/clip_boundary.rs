@@ -512,20 +512,7 @@ fn paint_backdrop(
     );
     window.with_content_mask(Some(ContentMask { bounds: upper_left }), paint_square);
     window.with_content_mask(Some(ContentMask { bounds }), |window| {
-        // The remaining triangle is actual clip fill, not a lane-colored cover.
-        // Extend the two interior joins under their neighboring quads to avoid AA seams.
-        let overlap = px(style.stroke);
-        let mut triangle = gpui::PathBuilder::fill();
-        triangle.move_to(point(bounds.right() - px(cut) - overlap, bounds.top()));
-        triangle.line_to(point(bounds.right() - px(cut), bounds.top()));
-        triangle.line_to(point(bounds.right(), bounds.top() + px(cut)));
-        triangle.line_to(point(bounds.right(), bounds.top() + px(cut) + overlap));
-        triangle.line_to(point(
-            bounds.right() - px(cut) - overlap,
-            bounds.top() + px(cut) + overlap,
-        ));
-        triangle.close();
-        if let Ok(path) = triangle.build() {
+        if let Some(path) = notch_fill(bounds.right(), bounds.top(), px(cut), px(style.stroke)) {
             window.paint_path(path, rgb(style.header));
         }
         paint_header_gradient(window);
@@ -543,6 +530,49 @@ fn paint_backdrop(
             window.paint_path(path, color);
         }
     });
+}
+
+/// Fill the five-point convex header corner. Its bottom and left edges
+/// overlap the adjacent quads, which keeps their antialiased joins covered.
+fn notch_fill(
+    right: gpui::Pixels,
+    top: gpui::Pixels,
+    cut: gpui::Pixels,
+    stroke: gpui::Pixels,
+) -> Option<gpui::Path<gpui::Pixels>> {
+    use gpui::{Path, PathBuilder, point};
+
+    let top_left = point(right - cut - stroke, top);
+    let notch_start = point(right - cut, top);
+    let notch_end = point(right, top + cut);
+    let bottom_right = point(right, top + cut + stroke);
+    let bottom_left = point(top_left.x, bottom_right.y);
+    if top_left.x < notch_start.x
+        && notch_start.x < right
+        && top < notch_end.y
+        && notch_end.y < bottom_right.y
+    {
+        let solid = point(0.0, 1.0);
+        let mut path = Path::new(top_left);
+        for triangle in [
+            (notch_start, top_left, notch_end),
+            (notch_end, top_left, bottom_left),
+            (notch_end, bottom_left, bottom_right),
+        ] {
+            path.push_triangle(triangle, (solid, solid, solid));
+        }
+        return Some(path);
+    }
+
+    // Preserve the generic path for collapsed vertices after layout rounding.
+    let mut path = PathBuilder::fill();
+    path.move_to(top_left);
+    path.line_to(notch_start);
+    path.line_to(notch_end);
+    path.line_to(bottom_right);
+    path.line_to(bottom_left);
+    path.close();
+    path.build().ok()
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
