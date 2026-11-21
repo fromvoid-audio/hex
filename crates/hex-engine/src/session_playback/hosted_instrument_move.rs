@@ -49,7 +49,10 @@ impl SessionPlayback {
             .tracks()
             .iter()
             .position(|row| row.canonical_track_id() == Some(request.receiver))?;
-        if source == destination {
+        if source == destination
+            || (request.physical_owner != request.donor
+                && request.physical_owner != request.receiver)
+        {
             return None;
         }
         for (index, (a, b)) in old.tracks().iter().zip(new.tracks()).enumerate() {
@@ -84,7 +87,7 @@ impl SessionPlayback {
             || !donor.instrument_config_matches(receiver)
             || donor.source_receiver_index() != Some(source)
             || receiver.source_receiver_index() != Some(destination)
-            || from.owner != ProcessorChainOwner::Track(request.donor.value())
+            || from.owner != ProcessorChainOwner::Track(request.physical_owner.value())
             || to.owner != from.owner
             || from.device_id != request.device.value()
             || to.device_id != from.device_id
@@ -107,10 +110,19 @@ impl SessionPlayback {
             .compensation
             .as_ref()
             .zip(previous.compensation.as_ref())?;
+        let movement = HostedTrackCut {
+            source,
+            destination,
+            request,
+        };
         if !next.can_copy_hosted_move_from(old, request.donor, request.receiver)
             || !previous.foreign_arrangement.has_direct_move_gate(
                 source,
-                donor,
+                movement.authored_track(
+                    self.revision.arrangement().tracks(),
+                    previous.revision.arrangement().tracks(),
+                )?,
+                request.physical_owner,
                 FrameContext {
                     performance: previous.performance_frame,
                     arrangement: previous.arrangement_frame,
@@ -123,10 +135,22 @@ impl SessionPlayback {
         {
             return None;
         }
-        Some(HostedTrackCut {
-            source,
-            destination,
-            request,
-        })
+        Some(movement)
+    }
+}
+
+impl HostedTrackCut {
+    // The original note must still be authored by the physical worker's first
+    // track. On return that track's MIDI program is compiled on the successor.
+    pub(super) fn authored_track<'a>(
+        self,
+        next: &'a [crate::Track],
+        previous: &'a [crate::Track],
+    ) -> Option<&'a crate::Track> {
+        if self.request.physical_owner == self.request.receiver {
+            next.get(self.destination)
+        } else {
+            previous.get(self.source)
+        }
     }
 }
