@@ -61,6 +61,53 @@ fn assert_dry_timing(h: &ResidentHarness, latency: usize) {
     }
 }
 
+/// The SDK edit uses its actual 256-frame quantum. After real worker retirement,
+/// the same passive graph must also accept tiny and cross-quantum callbacks.
+fn assert_workerless_dry_partition(h: &ResidentHarness, latency: usize, partition: usize) {
+    const FRAMES: usize = 514;
+    let start = status(h).position.load(Acquire);
+    let performance = status(h).performance_frame.load(Acquire);
+    let mut pcm = [[0.0; 2]; FRAMES];
+    let mut host = [0.0; 2 * FRAMES];
+    let mut slot = h.callback.lock().unwrap();
+    let callback = slot.as_mut().unwrap();
+    let measured = allocation_counter::measure(|| {
+        for chunk in pcm.chunks_mut(partition) {
+            let output = &mut host[..chunk.len() * 2];
+            callback.render_native_direct(chunk, output).unwrap();
+            assert!(
+                output
+                    .chunks_exact(2)
+                    .zip(chunk.iter())
+                    .all(|(h, p)| h == p)
+            );
+        }
+    });
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.bytes_total,
+            measured.count_current,
+            measured.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(status(h).position.load(Acquire), start + FRAMES as u64);
+    assert_eq!(
+        status(h).performance_frame.load(Acquire),
+        performance + FRAMES as u64
+    );
+    assert!(status(h).playing.load(Acquire));
+    for (offset, frame) in pcm.into_iter().enumerate() {
+        let origin = (start as usize + offset).checked_sub(latency);
+        assert_eq!(
+            frame,
+            [origin.map_or(0.0, source_sample); 2],
+            "partition={partition} offset={offset}"
+        );
+    }
+}
+
 fn signed_output(at: usize) -> (f32, f32) {
     at.checked_sub(BRIDGE).map_or((0.0, 0.0), |origin| {
         let dry = source_sample(origin);
@@ -282,6 +329,16 @@ fn running_resident_main_vst3_removal_retires_a_worker_but_keeps_pass_latency() 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn running_resident_main_power_off_retires_the_worker_but_keeps_pass_latency() {
+    verify_running_main_power_off(false);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn cancelled_running_main_power_off_restores_the_worker_then_retry_installs() {
+    verify_running_main_power_off(true);
+}
+
+fn verify_running_main_power_off(cancel_before_cut: bool) {
     let _native = native_fixture();
     let files = Files::new();
     let directory = files.0.canonicalize().unwrap();
@@ -345,6 +402,63 @@ fn running_resident_main_power_off_retires_the_worker_but_keeps_pass_latency() {
     // clearing the read or requiring an accidentally idle polling turn fails.
     h.plugin_progress.lock().unwrap().hold_pending_read = Some(binding);
     wait(|| h.plugin_progress.lock().unwrap().held_pending_read == Some(binding));
+    let cancelled_audio = if cancel_before_cut {
+        let (submitted, resume) = h.probe_next_submitted_device_insert();
+        h.service
+            .submit(Request::Edit(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            }))
+            .unwrap();
+        let exact = submitted.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(exact.output_identity, predecessor.output_identity);
+        resume.send(()).unwrap();
+        let pending = h.next();
+        assert!(pending.error.is_none(), "{:?}", pending.error);
+        assert!(!pending.request_complete);
+        assert_eq!(pending.state.project, inserted.state.project);
+        assert_aligned_fade(&h, true);
+        assert_eq!(status(&h).recording_source(), Some(predecessor));
+        wait(|| {
+            match h
+                .audio
+                .as_ref()
+                .unwrap()
+                .control
+                .cancel_fresh_runtime_publication(exact.audio_revision)
+            {
+                FreshRuntimeCancellationResult::Busy => false,
+                result => {
+                    assert_eq!(result, FreshRuntimeCancellationResult::Cancelled);
+                    true
+                }
+            }
+        });
+        assert_aligned_fade(&h, false);
+        let cancelled = h.next();
+        assert!(cancelled.error.is_none(), "{:?}", cancelled.error);
+        let completion = cancelled.device_insert_complete.unwrap();
+        assert_eq!(completion.submission, exact);
+        assert_eq!(completion.outcome, DeviceInsertOutcome::Cancelled);
+        assert_eq!(cancelled.state.project, inserted.state.project);
+        assert_eq!(cancelled.state.revision, inserted.state.revision);
+        assert_eq!(
+            (cancelled.state.can_undo, cancelled.state.can_redo),
+            (inserted.state.can_undo, inserted.state.can_redo)
+        );
+        assert_eq!(status(&h).recording_source(), Some(predecessor));
+        assert_eq!(status(&h).native_effect_source(), Some(predecessor));
+        let progress = *h.plugin_progress.lock().unwrap();
+        assert_eq!(progress.binding, Some(binding));
+        assert!(progress.accepted && !progress.retiring);
+        assert_eq!(h.plugin_records.load(Acquire), 1);
+        let processed = h.plugin_completed.load(Acquire);
+        assert_wet_timing(&h);
+        assert!(h.plugin_completed.load(Acquire) > processed);
+        Some(exact.audio_revision)
+    } else {
+        None
+    };
     h.service
         .submit(Request::Edit(Command::SetDeviceBypass {
             device,
@@ -383,6 +497,9 @@ fn running_resident_main_power_off_retires_the_worker_but_keeps_pass_latency() {
         std::thread::yield_now();
     };
     let completion = powered_off.device_insert_complete.unwrap();
+    assert!(
+        cancelled_audio.is_none_or(|cancelled| completion.submission.audio_revision > cancelled)
+    );
     assert_eq!(completion.outcome, DeviceInsertOutcome::Installed);
     assert_eq!(powered_off.state.revision, inserted.state.revision + 1);
     let off_device = powered_off.state.project.device(device).unwrap();
@@ -418,6 +535,9 @@ fn running_resident_main_power_off_retires_the_worker_but_keeps_pass_latency() {
     let processed = h.plugin_completed.load(Acquire);
     for _ in 0..4 {
         assert_dry_timing(&h, BRIDGE);
+    }
+    for partition in [1, 257] {
+        assert_workerless_dry_partition(&h, BRIDGE, partition);
     }
     assert_eq!(h.plugin_completed.load(Acquire), processed);
 

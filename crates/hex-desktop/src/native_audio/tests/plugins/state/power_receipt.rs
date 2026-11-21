@@ -67,28 +67,6 @@ fn stopped_main_power_waits_for_its_exact_callback_receipt() {
         assert_eq!(h.plugin_records.load(Acquire), 1);
         original = installed.state;
     }
-    // The same opt-in sink retains ordinary dispatch after actual Play.
-    h.audio
-        .as_mut()
-        .unwrap()
-        .control
-        .command(PlaybackCommand::Play)
-        .unwrap();
-    h.render_plugin_block();
-    wait(|| h.plugin_completed.load(Acquire) > 0);
-    assert!(
-        h.audio
-            .as_ref()
-            .unwrap()
-            .status()
-            .unwrap()
-            .playing
-            .load(Acquire)
-    );
-    let running = h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
-    assert!(running.request_complete);
-    assert!(running.state.project.device(device).unwrap().bypassed());
-    assert_eq!(h.plugin_progress.lock().unwrap().binding, binding);
 }
 
 #[test]
