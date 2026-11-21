@@ -3747,10 +3747,12 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
         request_id: 1,
         project_generation: 0,
         revision: added.state.revision,
-        track,
-        slot: hex_session::service::SamplerLoadSlot::New(
-            hex_project::InstrumentLoadPlacement::First,
-        ),
+        target: hex_session::service::SamplerLoadTarget::Track {
+            track,
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
+        },
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -4022,10 +4024,12 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
         request_id: 1,
         project_generation: 0,
         revision: added.state.revision,
-        track,
-        slot: hex_session::service::SamplerLoadSlot::New(
-            hex_project::InstrumentLoadPlacement::First,
-        ),
+        target: hex_session::service::SamplerLoadTarget::Track {
+            track,
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
+        },
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -5287,10 +5291,12 @@ fn assert_held_instrument_move_history(instrument: HeldMoveInstrument) {
             request_id: 1,
             project_generation: 0,
             revision: track.state.revision,
-            track: source,
-            slot: hex_session::service::SamplerLoadSlot::New(
-                hex_project::InstrumentLoadPlacement::First,
-            ),
+            target: hex_session::service::SamplerLoadTarget::Track {
+                track: source,
+                slot: hex_session::service::SamplerLoadSlot::New(
+                    hex_project::InstrumentLoadPlacement::First,
+                ),
+            },
             path: files.wav(48_000, 96_000),
             cancel: Arc::new(AtomicBool::new(false)),
         });

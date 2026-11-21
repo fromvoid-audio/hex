@@ -489,8 +489,10 @@ fn library_load_uses_admitted_source_transaction_and_preserves_owner_on_refusal(
             decoded,
             &AtomicBool::new(false),
             crate::native_assets::NativeAssetDestination::NewInstrument {
-                track,
-                placement: hex_project::InstrumentLoadPlacement::First,
+                destination: hex_project::InstrumentLoadDestination::Track {
+                    track,
+                    placement: hex_project::InstrumentLoadPlacement::First,
+                },
                 state,
                 source_slot,
             },
@@ -895,8 +897,10 @@ fn default_worker_prepares_private_resident_graph_and_refuses_before_commit() {
             request_id: 1,
             project_generation: 0,
             revision: sampler_track.state.revision,
-            track: sampler_track_id,
-            slot: SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::First),
+            target: crate::service::SamplerLoadTarget::Track {
+                track: sampler_track_id,
+                slot: SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::First),
+            },
             path: files.source().to_owned(),
             cancel: Arc::new(AtomicBool::new(false)),
         })

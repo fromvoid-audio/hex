@@ -927,8 +927,12 @@ fn assert_native_move_history(layout: NativeMoveLayout) {
             request_id: 1,
             project_generation: 0,
             revision: setup_revision,
-            track: source,
-            slot: crate::service::SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::First),
+            target: crate::service::SamplerLoadTarget::Track {
+                track: source,
+                slot: crate::service::SamplerLoadSlot::New(
+                    hex_project::InstrumentLoadPlacement::First,
+                ),
+            },
             path: files.source().to_owned(),
             cancel: Arc::new(AtomicBool::new(false)),
         });

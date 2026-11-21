@@ -728,10 +728,12 @@ fn live_section_edits_retain_sampler(micro_bpm: u32, copy_before_self: bool) {
         request_id: 1,
         project_generation: 0,
         revision: added.state.revision,
-        track,
-        slot: hex_session::service::SamplerLoadSlot::New(
-            hex_project::InstrumentLoadPlacement::First,
-        ),
+        target: hex_session::service::SamplerLoadTarget::Track {
+            track,
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
+        },
         path: sampler_path,
         cancel: Arc::new(AtomicBool::new(false)),
     });

@@ -27,8 +27,7 @@ fn pcm_bytes(frames: u64) -> Result<usize, SessionError> {
 pub(crate) enum NativeAssetDestination {
     Unassigned,
     NewInstrument {
-        track: hex_project::TrackId,
-        placement: hex_project::InstrumentLoadPlacement,
+        destination: hex_project::InstrumentLoadDestination,
         state: hex_lattice_contract::NativeDeviceState,
         source_slot: hex_lattice_contract::DeviceAssetSlot,
     },
@@ -202,13 +201,11 @@ impl Session {
                 frames,
             },
             NativeAssetDestination::NewInstrument {
-                track,
-                placement,
+                destination,
                 state,
                 source_slot,
             } => Command::ImportDeviceAssetIntoNewInstrument {
-                track,
-                placement,
+                destination,
                 path,
                 sample_rate: source_rate,
                 frames,
