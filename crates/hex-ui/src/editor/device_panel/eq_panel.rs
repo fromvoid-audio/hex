@@ -710,14 +710,13 @@ fn response_model(
     let (bank, selected, group) = selection;
     let mut authored = state.encode().ok()?;
     for parameter in &device_view.parameters {
-        let effective = super::eq_automation::effective_value(
+        let effective = super::effective_parameter_value(
             view,
             ParameterKey {
                 device,
                 parameter: parameter.descriptor.id,
             },
-            device_view.type_id,
-            parameter,
+            parameter.value,
         );
         if effective != parameter.value {
             authored = hex_engine::patch_native_device_parameter_for_class(
