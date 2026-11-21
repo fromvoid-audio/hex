@@ -652,7 +652,6 @@ pub(in crate::service) fn running_main_power_on(
     let source = sink.running_resident_main_power_on(context, device)?;
     (source.context == context).then_some(ResidentMainPowerOn {
         device,
-        source_context: context,
         interval: ResidentMainPowerOnInterval::Running(source),
     })
 }
@@ -1438,8 +1437,7 @@ impl Session {
                         };
                         device.bypassed().then_some(ResidentMainPowerOn {
                             device: device.id().value(),
-                            source_context: context,
-                            interval: ResidentMainPowerOnInterval::Stopped(fence),
+                            interval: ResidentMainPowerOnInterval::Stopped { context, fence },
                         })
                     })
                 })

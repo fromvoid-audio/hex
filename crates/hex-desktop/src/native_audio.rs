@@ -1974,15 +1974,13 @@ impl WorkerAudioSink for NativeAudioSink {
         if let Some(intent) = input.main_power_on() {
             use hex_session::service::ResidentMainPowerOnInterval;
             let changed = match intent.interval() {
-                ResidentMainPowerOnInterval::Stopped(fence) => {
+                ResidentMainPowerOnInterval::Stopped { context, fence } => {
                     powered_off == Some(intent.device())
-                        && self.stopped_resident_power_fence(
-                            intent.source_context(),
-                            intent.device(),
-                        )? != Some(fence)
+                        && self.stopped_resident_power_fence(context, intent.device())?
+                            != Some(fence)
                 }
                 ResidentMainPowerOnInterval::Running(source) => {
-                    self.running_resident_main_power_on(intent.source_context(), intent.device())
+                    self.running_resident_main_power_on(source.context, intent.device())
                         != Some(source)
                 }
             };

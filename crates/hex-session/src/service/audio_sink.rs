@@ -50,13 +50,15 @@ pub struct ResidentHostedInstrumentMove {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResidentMainPowerOn {
     pub(in crate::service) device: u64,
-    pub(in crate::service) source_context: hex_engine::AudioSourceContext,
     pub(in crate::service) interval: ResidentMainPowerOnInterval,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResidentMainPowerOnInterval {
-    Stopped(ResidentFreshRuntimeFence),
+    Stopped {
+        context: hex_engine::AudioSourceContext,
+        fence: ResidentFreshRuntimeFence,
+    },
     Running(ResidentGraphSubmission),
 }
 impl ResidentMainPowerOn {
@@ -64,7 +66,10 @@ impl ResidentMainPowerOn {
         self.device
     }
     pub fn source_context(&self) -> hex_engine::AudioSourceContext {
-        self.source_context
+        match self.interval {
+            ResidentMainPowerOnInterval::Stopped { context, .. } => context,
+            ResidentMainPowerOnInterval::Running(source) => source.context,
+        }
     }
     pub fn interval(&self) -> ResidentMainPowerOnInterval {
         self.interval
@@ -246,18 +251,12 @@ impl<'a> ResidentEffectPreparation<'a> {
     pub fn main_power_on(&self) -> Option<ResidentMainPowerOn> {
         let intent = self.main_power_on?;
         let device = self.sole_played_main()?;
+        let source = intent.source_context();
         (self.preparing_edit
             && !device.bypassed()
             && device.id().value() == intent.device
-            && intent.source_context.project_generation == self.context.project_generation
-            && intent.source_context.editor_revision.checked_add(1)
-                == Some(self.context.editor_revision)
-            && match intent.interval {
-                ResidentMainPowerOnInterval::Stopped(_) => true,
-                ResidentMainPowerOnInterval::Running(source) => {
-                    source.context == intent.source_context
-                }
-            })
+            && source.project_generation == self.context.project_generation
+            && source.editor_revision.checked_add(1) == Some(self.context.editor_revision))
         .then_some(intent)
     }
     pub fn hosted_instrument_move(&self) -> Option<&ResidentHostedInstrumentMove> {
@@ -2496,15 +2495,17 @@ mod tests {
         };
         let intent = ResidentMainPowerOn {
             device: device.value(),
-            source_context,
-            interval: ResidentMainPowerOnInterval::Stopped(ResidentFreshRuntimeFence {
-                output_identity: 1,
-                active_audio_revision: 2,
-                route_generation: 3,
-                admitted_command_ticket: 4,
-                output_fault_epoch: 5,
-                consumed_stop_generation: 6,
-            }),
+            interval: ResidentMainPowerOnInterval::Stopped {
+                context: source_context,
+                fence: ResidentFreshRuntimeFence {
+                    output_identity: 1,
+                    active_audio_revision: 2,
+                    route_generation: 3,
+                    admitted_command_ticket: 4,
+                    output_fault_epoch: 5,
+                    consumed_stop_generation: 6,
+                },
+            },
         };
         let selected = |project: &Project, context, main_power_on| {
             ResidentEffectPreparation {
