@@ -212,6 +212,7 @@ impl EditorView {
             .as_ref()
             .map(|pending| pending.status.as_str())
             .or(scan_status.as_deref());
+        let mut showing_export_progress = false;
         if let Some(error) = &self.error
             && plugin_status.is_none()
         {
@@ -232,6 +233,11 @@ impl EditorView {
                     .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
                     .child(error.display_text()),
             );
+        } else if plugin_status.is_none()
+            && let Some(export_progress_indicator) = self.export_progress_indicator(cx)
+        {
+            bar = bar.child(export_progress_indicator);
+            showing_export_progress = true;
         } else {
             let status = plugin_status.unwrap_or(&self.status);
             let feedback_paint = self
@@ -454,7 +460,7 @@ impl EditorView {
         let recovery_pending = self.recovery.generation().is_some();
         let activity = [
             recovery_pending.then_some("audio recovery pending"),
-            self.export_pending.then_some("export pending"),
+            (self.export_pending && !showing_export_progress).then_some("export pending"),
             self.saving_project.then_some("save pending"),
         ]
         .into_iter()
