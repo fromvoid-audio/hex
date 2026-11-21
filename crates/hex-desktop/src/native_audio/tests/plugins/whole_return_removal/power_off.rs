@@ -90,7 +90,7 @@ fn queued_without_callback(
         while let Ok(event) = h.service.try_event() {
             assert!(
                 !event.request_complete,
-                "running Return power completed before the callback: status={:?}, error={:?}",
+                "Return power completed before the callback: status={:?}, error={:?}",
                 event.status, event.error
             );
             assert!(event.error.is_none(), "{:?}", event.error);
@@ -316,10 +316,23 @@ fn running_resident_return_power_off_waits_for_the_exact_cut_and_returns_the_wor
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn saved_off_resident_return_reopens_without_a_worker_and_preserves_authored_state() {
     let _native = native_fixture();
+    let _saved = reopen_saved_off_return();
+}
+
+struct SavedOffHostedReturn {
+    harness: ResidentHarness,
+    _files: Files,
+    saved_off: Event,
+    device: DeviceId,
+    retired_binding: EffectBinding,
+}
+
+fn reopen_saved_off_return() -> SavedOffHostedReturn {
     let files = Files::new();
     let RollingHostedReturn {
         harness: mut original,
         device,
+        binding: retired_binding,
         ..
     } = rolling_hosted_return(&files);
     original.audio.as_ref().unwrap().control.stop();
@@ -455,4 +468,78 @@ fn saved_off_resident_return_reopens_without_a_worker_and_preserves_authored_sta
     assert!(kept.bypassed());
     assert_eq!(kept.state(), &state);
     assert_no_worker(&reopened);
+    SavedOffHostedReturn {
+        harness: reopened,
+        _files: files,
+        saved_off,
+        device,
+        retired_binding,
+    }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn saved_off_resident_return_installs_a_fresh_worker_on_stopped_power_on() {
+    let _native = native_fixture();
+    let mut off = reopen_saved_off_return();
+    let h = &mut off.harness;
+    let current = &off.saved_off.state;
+    let device = off.device;
+    h.enable_confirmed_device_inserts();
+    assert!(!status(h).playing.load(Acquire));
+    let predecessor = status(h).recording_source().unwrap();
+    assert_eq!(status(h).paused_input_interval().unwrap().0, predecessor);
+    let command = Command::SetDeviceBypass {
+        device,
+        bypassed: false,
+    };
+    let mut expected = hex_project::Editor::new(current.project.as_ref().clone(), 8).unwrap();
+    expected.execute(command.clone()).unwrap();
+    h.service.submit(Request::Edit(command)).unwrap();
+    let submitted = queued_without_callback(h, current, predecessor);
+    assert_eq!(status(h).recording_source(), Some(predecessor));
+    assert!(status(h).native_effect_source().is_none());
+    assert_eq!(h.plugin_completed.load(Acquire), 0);
+
+    let on = terminal_at_cut(h, current, |h| {
+        assert_eq!(render(h), [[0.0; 2]; BLOCK]);
+    });
+    assert!(on.error.is_none(), "{:?}", on.error);
+    assert_eq!(on.state.project.as_ref(), expected.project());
+    assert_eq!(on.state.revision, current.revision + 1);
+    let receipt = on.device_insert_complete.unwrap();
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+    assert_eq!(receipt.submission, submitted);
+    assert_eq!(
+        h.applied(predecessor.audio_revision).0,
+        submitted.audio_revision
+    );
+    let applied = status(h).recording_source().unwrap();
+    assert_eq!(status(h).native_effect_source(), Some(applied));
+    assert_eq!(applied.output_identity, predecessor.output_identity);
+    let observation = h.submitted_observation().unwrap();
+    assert_eq!(
+        observation.processor_status(device.value(), hex_plugin_state::TYPE_ID),
+        Some(hex_engine::PreparedDeviceProcessing::Foreign)
+    );
+    wait(|| {
+        h.pump();
+        h.plugin_records.load(Acquire) == 1
+            && h.plugin_progress.lock().unwrap().source_bindings[0].is_some_and(
+                |(id, binding, _)| id == device.value() && binding != off.retired_binding,
+            )
+    });
+    assert_eq!(h.plugin_completed.load(Acquire), 0);
+
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::PlayFrom(0))
+        .unwrap();
+    for _ in 0..3 {
+        render(h);
+    }
+    let wet = assert_aligned_wet(h);
+    assert_eq!(assert_aligned_wet(h), wet + 0.0625);
 }
