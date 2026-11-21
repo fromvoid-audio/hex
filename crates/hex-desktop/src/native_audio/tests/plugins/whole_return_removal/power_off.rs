@@ -363,6 +363,14 @@ fn queue_stopped_return_on(
     let queued = submitted.recv_timeout(Duration::from_millis(800)).unwrap();
     resume.send(()).unwrap();
     assert_eq!(queued_without_callback(h, current, predecessor), queued);
+    assert_eq!(status(h).recording_source(), Some(predecessor));
+    let device = current.project.return_tracks()[0].devices()[0].id();
+    assert_eq!(
+        h.submitted_observation()
+            .unwrap()
+            .processor_status(device.value(), hex_plugin_state::TYPE_ID),
+        Some(hex_engine::PreparedDeviceProcessing::Foreign)
+    );
     queued
 }
 
@@ -615,7 +623,7 @@ fn saved_off_resident_return_installs_a_fresh_worker_on_stopped_power_on() {
     assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
     assert_eq!(receipt.submission, submitted);
     assert_eq!(
-        h.applied(predecessor.audio_revision).0,
+        h.applied(interrupted.audio_revision).0,
         submitted.audio_revision
     );
     let applied = status(h).recording_source().unwrap();
