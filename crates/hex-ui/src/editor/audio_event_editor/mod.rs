@@ -599,9 +599,18 @@ impl EditorView {
                 events.events.last().map_or(0, |event| event.end)
             });
         let mut saved = clipboard.root.clone();
+        let current_sources = root.domain.events.as_deref();
+        let copied_sources = saved.domain.events.as_deref();
+        let marker_sources_changed = clipboard.events.iter().any(|event| {
+            current_sources.and_then(|events| events.warp_source(event.source))
+                != copied_sources.and_then(|events| events.warp_source(event.source))
+        });
         std::sync::Arc::make_mut(&mut root.domain).events = None;
         std::sync::Arc::make_mut(&mut saved.domain).events = None;
-        if clipboard.owner != (clip, self.project_generation) || root.domain != saved.domain {
+        if clipboard.owner != (clip, self.project_generation)
+            || root.domain != saved.domain
+            || marker_sources_changed
+        {
             self.error = Some(
                 "audio event clipboard belongs to a different or changed clip; copy the events again".into(),
             );
@@ -691,7 +700,7 @@ impl EditorView {
             {
                 if gesture.moved {
                     if let Some(event) = event {
-                        self.commit_grouped_marker(event, source_frame, Some(beat));
+                        self.commit_event_marker(event, source_frame, Some(beat));
                     } else {
                         self.finish_event_warp_drag(source_frame, beat);
                     }
@@ -851,7 +860,7 @@ impl EditorView {
                 ..
             } => {
                 let beat = if let Some(event) = event {
-                    self.drag_grouped_marker(event, source_frame, gesture.anchor, position)
+                    self.drag_scoped_marker(event, source_frame, gesture.anchor, position)
                 } else {
                     markers::drag_beat(&root, source_frame, gesture.anchor, position)
                 };

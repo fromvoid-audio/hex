@@ -7,11 +7,12 @@
 //! schema-specific frame extent. Schema123 wraps a complete earlier document
 //! and restores the independent source spans of scoped musical clips. Earlier
 //! formats continue to admit these spans only on unplaced clips.
+use super::audio_event_roots::walk;
 use crate::{
     MUSICAL_EVENT_SOURCE_SCHEMA_VERSION, Project, SCOPED_MUSICAL_EVENTS_SCHEMA_VERSION,
     SIDECHAIN_SCHEMA_VERSION, StorageError,
 };
-use hex_project::{AudioClipEdit, BeatTime, MusicalEventSource, Snapshot, TrackContentSnapshot};
+use hex_project::{AudioClipEdit, BeatTime, MusicalEventSource};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, value::RawValue};
 use std::{collections::BTreeMap, sync::Arc};
@@ -59,66 +60,6 @@ fn contains_matching(project: &Project, matches_view: impl Fn(&AudioClipEdit) ->
         })
 }
 
-fn walk_edit(
-    project: &Project,
-    edit: &mut AudioClipEdit,
-    path: &mut Vec<u64>,
-    visit: &mut impl FnMut(&[u64], &mut AudioClipEdit) -> bool,
-) -> Result<bool, StorageError> {
-    let mut changed = visit(path, edit);
-    if let Some(events) = &edit.domain.events
-        && !events.sources.is_empty()
-    {
-        let mut roots = None;
-        for (index, root) in events.sources.iter().enumerate() {
-            let mut snapshot = root.clip.retained_snapshot();
-            let Some(child) = &mut snapshot.edit else {
-                continue;
-            };
-            path.push(root.id);
-            let child_changed = walk_edit(project, child, path, visit)?;
-            path.pop();
-            if child_changed {
-                let restored = project
-                    .restore_retained_audio_root(root.id, snapshot, Arc::clone(&root.tempo))
-                    .map_err(|error| StorageError::Invalid(error.0))?;
-                let replacement = roots.get_or_insert_with(|| events.sources.clone());
-                replacement[index] = restored;
-                changed = true;
-            }
-        }
-        if let Some(roots) = roots
-            && let Some(events) = Arc::make_mut(&mut edit.domain).events.as_mut()
-        {
-            Arc::make_mut(events).sources = roots;
-        }
-    }
-    Ok(changed)
-}
-
-fn walk(
-    project: &Project,
-    snapshot: &mut Snapshot,
-    mut visit: impl FnMut(&[u64], &mut AudioClipEdit) -> bool,
-) -> Result<(), StorageError> {
-    let mut path = Vec::with_capacity(hex_project::MAX_RETAINED_AUDIO_DEPTH + 1);
-    for track in &mut snapshot.tracks {
-        let clips = match &mut track.content {
-            TrackContentSnapshot::Audio(clips) => clips,
-            TrackContentSnapshot::Hybrid { audio_clips, .. } => audio_clips,
-            TrackContentSnapshot::Instrument(_) => continue,
-        };
-        for clip in clips {
-            if let Some(edit) = &mut clip.edit {
-                path.push(clip.id);
-                walk_edit(project, edit, &mut path, &mut visit)?;
-                path.pop();
-            }
-        }
-    }
-    super::audio_alias_projection::synchronize(snapshot)
-}
-
 fn capture(project: &Project, scoped: bool) -> Result<(Project, Vec<Row>), StorageError> {
     let mut snapshot = project.snapshot();
     let mut rows = Vec::new();
@@ -129,7 +70,7 @@ fn capture(project: &Project, scoped: bool) -> Result<(Project, Vec<Row>), Stora
         {
             if rows.len() == MAX_ROWS {
                 exceeded = true;
-                return false;
+                return Ok(false);
             }
             rows.push(Row {
                 path: path.to_vec(),
@@ -137,9 +78,9 @@ fn capture(project: &Project, scoped: bool) -> Result<(Project, Vec<Row>), Stora
                 length_raw: source.length.raw(),
             });
             Arc::make_mut(&mut edit.domain).musical_event_source = None;
-            true
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     })?;
     if exceeded {
@@ -231,9 +172,9 @@ fn restore(neutral: Project, rows: Vec<Row>, scoped: bool) -> Result<Project, St
             && let Some(source) = inventory.remove(path)
         {
             Arc::make_mut(&mut edit.domain).musical_event_source = Some(source);
-            true
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     })?;
     if !inventory.is_empty() {

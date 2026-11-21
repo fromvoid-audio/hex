@@ -1115,14 +1115,14 @@ fn grouped_repeat_transaction_prepares_complete_multi_source_waveform_root() {
         .id;
     let grouped_sources = |session: &Session, revision: &hex_engine::PreparedRevision| {
         let grouped = session.audio_clip_waveforms.borrow()[&group]
-            .group_event_sources
+            .event_sources
             .as_ref()
             .unwrap()
             .clone();
         let view = &revision.arrangement().audio_clip_views()[0];
         assert!(Arc::ptr_eq(
             &grouped.prepared,
-            view.group_event_sources.as_ref().unwrap()
+            view.event_sources.as_ref().unwrap()
         ));
         assert!(grouped.waveform(u64::MAX).is_none());
         grouped

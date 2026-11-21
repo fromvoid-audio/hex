@@ -3193,6 +3193,145 @@ fn event_warp_marker_drag_keeps_its_release_position_and_roundtrips(cx: &mut Tes
 }
 
 #[gpui::test]
+fn dragging_a_split_event_warp_marker_retimes_only_the_selected_half(cx: &mut TestAppContext) {
+    let (files, mut visual, editor, clip) = open(cx);
+    let mut settings = editor.read_with(&visual, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .audio_warp_settings_for_enable(clip)
+            .unwrap()
+    });
+    assert!(settings.insert_marker(24_000).unwrap());
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings.clone()),
+        })));
+    });
+    pump(&editor, &mut visual);
+    let marker = visual.debug_bounds("audio-event-warp-marker").unwrap();
+    let split = editor.read_with(&visual, |view, _| {
+        let clip = view.state.as_ref().unwrap().project.clip(clip).unwrap();
+        clip.audio_edit().unwrap().domain.clock.length() / 2
+    });
+    edit(
+        &mut visual,
+        &editor,
+        clip,
+        AudioEventEdit::Split { at: split },
+    );
+    let first_id = editor.read_with(&visual, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .clip(clip)
+            .unwrap()
+            .audio_events()
+            .events[0]
+            .id
+    });
+    let fade = hex_project::AudioEventFade::new(
+        0,
+        hex_project::ClipFade::new(split, 0, split / 8, split / 8).unwrap(),
+    )
+    .unwrap();
+    edit(
+        &mut visual,
+        &editor,
+        clip,
+        AudioEventEdit::SetFade {
+            event: first_id,
+            fade: Some(fade),
+        },
+    );
+    let before = editor.update(&mut visual, |view, cx| {
+        let project = &view.state.as_ref().unwrap().project;
+        let events = project.clip(clip).unwrap().audio_events();
+        let [first, second] = events.events.as_slice() else {
+            panic!("two split events");
+        };
+        assert_eq!((first.source, second.source), (0, 0));
+        assert_eq!(first.end, second.start);
+        assert_eq!(second.source_start, split);
+        assert_eq!(first.fade, Some(fade));
+        assert_eq!(
+            project
+                .clip(clip)
+                .unwrap()
+                .audio_edit()
+                .unwrap()
+                .domain
+                .warp
+                .as_ref(),
+            Some(&settings)
+        );
+        view.audio_event_editor.selected = Some(first.id);
+        view.audio_event_editor.grid = SnapGrid::Off;
+        cx.notify();
+        events
+    });
+    visual.run_until_parked();
+    let handle = visual
+        .debug_bounds("audio-event-warp-marker")
+        .expect("the selected split event must keep its authored warp marker");
+    assert_eq!(handle.center().x, marker.center().x);
+
+    let target = point(handle.center().x + px(24.0), handle.center().y);
+    visual.simulate_mouse_down(handle.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let held = visual.debug_bounds("audio-event-warp-marker").unwrap();
+    assert!(held.center().x > handle.center().x + px(12.0));
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    let terminal = take_event_terminal(&mut visual, &editor, "split warp marker move");
+    assert!(terminal.error.is_none(), "{:?}", terminal.error);
+    let events = |view: &EditorView| {
+        let project = &view.state.as_ref().unwrap().project;
+        let clip = project.clip(clip).unwrap();
+        assert_eq!(
+            clip.audio_edit().unwrap().domain.warp.as_ref(),
+            Some(&settings),
+            "the original live source still owns the unchanged warp map"
+        );
+        clip.audio_events()
+    };
+    repaint(&mut visual, &editor);
+    assert_eq!(visual.debug_bounds("audio-event-warp-marker"), Some(held));
+    editor.read_with(&visual, |view, _| assert_eq!(events(view), before));
+    editor.update(&mut visual, |view, cx| {
+        view.receive(terminal);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(visual.debug_bounds("audio-event-warp-marker"), Some(held));
+    let after = editor.read_with(&visual, |view, _| events(view));
+    assert_ne!(after, before);
+    assert_eq!(
+        AudioEvent {
+            source: before.events[0].source,
+            ..after.events[0]
+        },
+        before.events[0],
+        "marker edits preserve the selected interval, source window and fade"
+    );
+    assert_eq!(after.events[1..], before.events[1..]);
+    for (request, expected) in [(Request::Undo, &before), (Request::Redo, &after)] {
+        editor.update(&mut visual, |view, _| assert!(view.enqueue(request)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| assert_eq!(&events(view), expected));
+    }
+    let saved = files.root().join("split-event-warp-marker.hex");
+    for request in [Request::SaveNew(saved.clone()), Request::Open(saved)] {
+        editor.update(&mut visual, |view, _| assert!(view.enqueue(request)));
+        pump(&editor, &mut visual);
+    }
+    editor.read_with(&visual, |view, _| assert_eq!(events(view), after));
+}
+
+#[gpui::test]
 fn grouped_event_warp_marker_drag_forks_only_the_selected_source(cx: &mut TestAppContext) {
     let (files, mut visual, editor, first) = open(cx);
     let (track, asset, end, mut warp) = editor.read_with(&visual, |view, _| {

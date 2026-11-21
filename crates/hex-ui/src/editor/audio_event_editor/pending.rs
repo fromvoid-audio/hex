@@ -46,10 +46,7 @@ impl EditorView {
         let preview = if let Some(placement) = &placement {
             placement.clip().audio_events()
         } else {
-            match source
-                .editable_audio_events()
-                .and_then(|events| events.edited(operation.clone(), root.domain.clock.length()))
-            {
+            match source.preview_audio_event_edit(operation.clone()) {
                 Ok(events) => events,
                 Err(error) => {
                     self.error = Some(error.0.into());

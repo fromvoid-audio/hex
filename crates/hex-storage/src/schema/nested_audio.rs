@@ -326,6 +326,7 @@ fn attach(
         ));
     }
     Arc::make_mut(&mut edit.domain).events = Some(Arc::new(AudioEvents {
+        warp_sources: Vec::new(),
         next_id: state.next_id,
         events: state
             .events

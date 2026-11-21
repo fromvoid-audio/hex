@@ -2080,14 +2080,14 @@ fn prepare_with_waveforms_using(
         let mut next = BTreeMap::new();
         let mut musical_tempo = None;
         let mut event_roots = Vec::new();
-        let mut grouped_roots = Vec::new();
+        let mut source_tables = Vec::new();
         for view in prepared.arrangement().audio_clip_views() {
-            let group_event_sources = view.group_event_sources.as_ref().and_then(|prepared| {
-                group_event_waveforms(
+            let event_sources = view.event_sources.as_ref().and_then(|prepared| {
+                event_source_waveforms(
                     prepared,
                     old.get(&view.clip)
-                        .and_then(|entry| entry.group_event_sources.as_ref()),
-                    &mut grouped_roots,
+                        .and_then(|entry| entry.event_sources.as_ref()),
+                    &mut source_tables,
                 )
             });
             if let Some(map) = &view.sparse {
@@ -2113,7 +2113,7 @@ fn prepare_with_waveforms_using(
                         preview_root: None,
                         neutral_musical: None,
                         event_source: None,
-                        group_event_sources,
+                        event_sources,
                     },
                 );
                 continue;
@@ -2266,7 +2266,7 @@ fn prepare_with_waveforms_using(
                     preview_root,
                     neutral_musical,
                     event_source,
-                    group_event_sources,
+                    event_sources,
                 },
             );
         }
@@ -2360,13 +2360,13 @@ fn event_occurrence_waveforms(
     }))
 }
 
-fn group_event_waveforms(
-    prepared: &Arc<hex_engine::audio_transform::PreparedGroupEventSources>,
-    previous: Option<&Arc<service::AudioGroupEventWaveforms>>,
-    shared: &mut Vec<Arc<service::AudioGroupEventWaveforms>>,
-) -> Option<Arc<service::AudioGroupEventWaveforms>> {
+fn event_source_waveforms(
+    prepared: &Arc<hex_engine::audio_transform::PreparedEventSources>,
+    previous: Option<&Arc<service::AudioEventSourceWaveforms>>,
+    shared: &mut Vec<Arc<service::AudioEventSourceWaveforms>>,
+) -> Option<Arc<service::AudioEventSourceWaveforms>> {
     let same =
-        |entry: &&Arc<service::AudioGroupEventWaveforms>| Arc::ptr_eq(prepared, &entry.prepared);
+        |entry: &&Arc<service::AudioEventSourceWaveforms>| Arc::ptr_eq(prepared, &entry.prepared);
     if let Some(entry) = shared.iter().find(same) {
         return Some(Arc::clone(entry));
     }
@@ -2383,7 +2383,7 @@ fn group_event_waveforms(
                 previous.and_then(|entry| entry.waveform(*id)),
             )?);
         }
-        Arc::new(service::AudioGroupEventWaveforms {
+        Arc::new(service::AudioEventSourceWaveforms {
             prepared: Arc::clone(prepared),
             waveforms,
         })

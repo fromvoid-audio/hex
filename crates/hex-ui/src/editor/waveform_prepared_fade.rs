@@ -335,7 +335,7 @@ mod tests {
             let sparse = Arc::clone(view.sparse.as_ref().expect("real packed group"));
             AudioClipWaveform {
                 event_source: None,
-                group_event_sources: None,
+                event_sources: None,
                 neutral_musical: None,
                 waveform: Arc::new(waveform::summarize_sparse(&view.audio, sparse, 64).unwrap()),
                 offset: view.offset,

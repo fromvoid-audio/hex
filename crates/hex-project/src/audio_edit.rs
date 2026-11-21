@@ -806,17 +806,13 @@ impl AudioClipEdit {
             placement: None,
         }
     }
-    /// Source zero uses this root's declared clock. A grouped source reads its
-    /// independently retained finite output in frames, even beyond the containing
-    /// root's destination length. This query transfers no source custody.
+    /// The original and its marker forks use this root's clock. A grouped
+    /// source reads its retained finite output in frames, independently of
+    /// the container length.
     pub fn event_source_clock(&self, source: u64) -> Result<AudioDomainClock, Invalid> {
-        if source == 0 {
-            if self
-                .domain
-                .events
-                .as_ref()
-                .is_some_and(|events| !events.sources.is_empty())
-            {
+        let events = self.domain.events.as_deref();
+        if source == 0 || events.is_some_and(|events| events.warp_source(source).is_some()) {
+            if events.is_some_and(|events| !events.sources.is_empty()) {
                 return Err(Invalid("grouped audio requires a retained event source"));
             }
             return Ok(self
@@ -829,12 +825,28 @@ impl AudioClipEdit {
         if !matches!(self.domain.clock, AudioDomainClock::Frames(_)) {
             return Err(Invalid("grouped event sources require a frame clock"));
         }
-        self.domain
-            .events
-            .as_ref()
+        events
             .and_then(|events| events.source_length(source, self.domain.clock.length()))
             .map(AudioDomainClock::Frames)
             .ok_or(Invalid("audio event source is missing"))
+    }
+    /// Beat anchors for a read of the original musical source or a marker fork.
+    pub fn event_warp_markers(&self, source: u64) -> Option<&[WarpMarker]> {
+        if !self.domain.warp_enabled {
+            return None;
+        }
+        if source == 0 {
+            self.domain
+                .warp
+                .as_ref()
+                .map(|warp| warp.markers.as_slice())
+        } else {
+            self.domain
+                .events
+                .as_ref()?
+                .warp_source(source)
+                .map(|warp| warp.markers.as_ref())
+        }
     }
     /// Map an event's source-clock boundary to its processed source frame.
     pub fn event_source_frame_at(
@@ -847,7 +859,7 @@ impl AudioClipEdit {
         if position > clock.length() {
             return Err(Invalid("audio event position exceeds its source"));
         }
-        if source == 0 {
+        if source == 0 || matches!(clock, AudioDomainClock::Beats(_)) {
             if let Some(source) = self.domain.musical_event_source {
                 let origin = self.processing_origin()? + i128::from(source.zero_in_destination);
                 let tempo = self.processing_tempo(tempo);
@@ -869,8 +881,8 @@ impl AudioClipEdit {
         frame: u64,
         tempo: &TempoMap,
     ) -> Result<u64, Invalid> {
-        if source == 0 {
-            self.event_source_clock(source)?;
+        let clock = self.event_source_clock(source)?;
+        if source == 0 || matches!(clock, AudioDomainClock::Beats(_)) {
             if let Some(source) = self.domain.musical_event_source {
                 let origin = self.processing_origin()? + i128::from(source.zero_in_destination);
                 let tempo = self.processing_tempo(tempo);
@@ -1284,24 +1296,35 @@ impl AudioClipEdit {
                 return Err(Invalid("warp requires musical placement"));
             }
             warp.mode.validate()?;
-            if !(2..=MAX_AUDIO_POINTS).contains(&warp.markers.len())
-                || warp.markers.first().is_none_or(|marker| {
-                    marker.source_frame != domain.source_offset || marker.beat != BeatTime::ZERO
-                })
-                || warp.markers.last().is_none_or(|marker| {
-                    marker.source_frame != source_end || marker.beat == BeatTime::ZERO
-                })
-                || warp.markers.windows(2).any(|pair| {
-                    pair[0].source_frame >= pair[1].source_frame || pair[0].beat >= pair[1].beat
-                })
-            {
-                return Err(Invalid(
-                    "warp markers need increasing source/beat positions and explicit region endpoints",
-                ));
-            }
+            warp_projection::validate_warp_markers(
+                &warp.markers,
+                domain.source_offset,
+                source_end,
+            )?;
         }
         if domain.warp_enabled && domain.warp.is_none() {
             return Err(Invalid("active warp needs settings and markers"));
+        }
+        if let Some(events) = domain.events.as_ref()
+            && !events.warp_sources.is_empty()
+        {
+            let warp = domain
+                .warp
+                .as_ref()
+                .filter(|_| matches!(domain.clock, AudioDomainClock::Beats(_)))
+                .ok_or(Invalid("event warp sources require a musical warp root"))?;
+            for source in &events.warp_sources {
+                warp_projection::validate_warp_markers(
+                    &source.markers,
+                    domain.source_offset,
+                    source_end,
+                )?;
+                if source.markers.last() != warp.markers.last() {
+                    return Err(Invalid(
+                        "event warp sources must retain the original warp extent",
+                    ));
+                }
+            }
         }
         let (_, length, view_start, view_end) = self.projected_domain(tempo)?;
         if !self.accepts_projected_extent(length, clip) {
@@ -1746,6 +1769,7 @@ mod stretch;
 pub use stretch::preview_audio_clip_stretch;
 
 mod warp_projection;
+pub(crate) use warp_projection::validate_warp_markers;
 
 /// Apply only an explicitly bounded saved nearest-frame phase residual.
 pub(crate) fn offset_frame(frame: u64, offset: i8) -> Result<u64, Invalid> {

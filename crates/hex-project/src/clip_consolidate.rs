@@ -412,6 +412,7 @@ fn audio(
     merged.fade = ClipFade::neutral(duration)?;
     let mut edit = AudioClipEdit::capture(&merged);
     Arc::make_mut(&mut edit.domain).events = Some(Arc::new(AudioEvents {
+        warp_sources: Vec::new(),
         next_id: events.len() as u64 + 1,
         events,
         sources,

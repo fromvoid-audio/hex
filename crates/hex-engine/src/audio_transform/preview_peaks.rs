@@ -14,15 +14,16 @@ pub(super) fn event_source_budget() -> &'static Arc<Budget> {
     BUDGET.get_or_init(|| Arc::new(Budget::new(EVENT_SOURCE_PEAK_BYTES)))
 }
 
-/// Complete peak summaries in retained child coordinates. Each child keeps
-/// its compiled crop, direction, gain and fade, before the parent event law.
+/// Peak summaries in the independently prepared event source clocks.
+/// Group children retain their own processing. Marker forks share the
+/// original musical clock and have a distinct pre-event waveform.
 #[derive(Debug)]
-pub struct PreparedGroupEventSources {
+pub struct PreparedEventSources {
     sources: Vec<(u64, Arc<PreparedEventSourcePeaks>)>,
     _reservation: Reservation,
 }
 
-impl PreparedGroupEventSources {
+impl PreparedEventSources {
     pub(super) fn admit(count: usize, budget: &Arc<Budget>) -> Option<Self> {
         let storage = count
             .checked_mul(std::mem::size_of::<(u64, Arc<PreparedEventSourcePeaks>)>())?
@@ -45,7 +46,7 @@ impl PreparedGroupEventSources {
         Arc::new(self)
     }
 
-    /// Entries are ordered by the group's retained source ID.
+    /// Entries are ordered by retained source ID.
     pub fn sources(&self) -> &[(u64, Arc<PreparedEventSourcePeaks>)] {
         &self.sources
     }

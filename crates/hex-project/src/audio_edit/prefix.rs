@@ -99,6 +99,7 @@ pub(crate) fn extend_frame_left(clip: &Clip, frame: u64) -> Result<Option<Clip>,
         return Err(Invalid("audio event limit reached"));
     }
     let mut events = AudioEvents {
+        warp_sources: Vec::new(),
         sources: Vec::new(),
         next_id: old.map_or(2, |e| e.next_id),
         events: Vec::new(),

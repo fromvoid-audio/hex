@@ -1,5 +1,5 @@
 //! Cached source peaks and their accepted clock for live musical event bends.
-use super::waveform_frame::{coarse_peaks, merge};
+use super::waveform_frame::{coarse_peaks_from, merge};
 use hex_engine::PreparedAudioRepeat;
 use hex_engine::audio_transform::{
     DirectedMusicalDestinationFade, MusicalEventFadePreview, PreparedMusicalEventSourceClock,
@@ -9,7 +9,7 @@ use hex_project::{
 };
 use hex_session::{
     CachedPeak, CachedWaveform,
-    service::{AudioEventOccurrenceWaveforms, AudioEventSourceWaveform},
+    service::{AudioClipWaveform, AudioEventOccurrenceWaveforms, AudioEventSourceWaveforms},
 };
 use std::{ops::Range, sync::Arc};
 
@@ -26,6 +26,7 @@ pub(super) struct Projection {
     source_clock: PreparedMusicalEventSourceClock,
     repeat: Option<PreparedAudioRepeat>,
     occurrences: Option<Occurrences>,
+    sources: Option<EventSources>,
     events: Arc<AudioEvents>,
     gain: ClipGain,
 }
@@ -48,18 +49,37 @@ impl PartialEq for Occurrences {
 
 impl Eq for Occurrences {}
 
+struct EventSources(Arc<AudioEventSourceWaveforms>);
+
+impl std::fmt::Debug for EventSources {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("EventSources")
+            .field(&Arc::as_ptr(&self.0))
+            .finish()
+    }
+}
+
+impl PartialEq for EventSources {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for EventSources {}
+
 impl Projection {
     pub(super) fn for_display(
         project: &Project,
         clip: &Clip,
-        prepared: Option<&AudioEventSourceWaveform>,
+        prepared: Option<&AudioClipWaveform>,
         events: Option<AudioEvents>,
         gain: Option<ClipGain>,
         fade: Option<ClipFade>,
     ) -> Option<(Arc<CachedWaveform>, Arc<Self>)> {
         let edit = clip.audio_edit()?;
         let prepared = prepared?;
-        let source_clock = prepared.musical_clock.as_ref()?;
+        let source = prepared.event_source.as_ref()?;
+        let source_clock = source.musical_clock.as_ref()?;
         if project.clip(clip.id())? != clip
             || !matches!(edit.domain.clock, AudioDomainClock::Beats(_))
         {
@@ -80,11 +100,15 @@ impl Projection {
         let projection = Self {
             tempo: project.tempo_map().clone(),
             source_clock: source_clock.clone(),
-            repeat: prepared.repeat,
-            occurrences: prepared
+            repeat: source.repeat,
+            occurrences: source
                 .occurrences
                 .as_ref()
                 .map(|table| Occurrences(Arc::clone(table))),
+            sources: prepared
+                .event_sources
+                .as_ref()
+                .map(|table| EventSources(Arc::clone(table))),
             events,
             gain: gain.unwrap_or_else(|| clip.gain()),
             clip,
@@ -95,7 +119,7 @@ impl Projection {
         if placed && projection.occurrences.is_none() {
             projection.project(&[])?;
         }
-        Some((Arc::clone(&prepared.waveform), Arc::new(projection)))
+        Some((Arc::clone(&source.waveform), Arc::new(projection)))
     }
 
     pub(super) fn query(&self, clock: &Clock) -> Option<Query<'_>> {
@@ -125,6 +149,7 @@ impl Projection {
             && (self.occurrences.is_some() || self.clip.audio_edit()?.content_view.is_some())
         {
             return Some(Query::Shared {
+                projection: self,
                 clock: *clock,
                 preview: MusicalEventFadePreview::for_editor(
                     &self.clip,
@@ -141,6 +166,7 @@ impl Projection {
             Clock::Event(event) => std::slice::from_ref(event),
         };
         Some(Query::Shared {
+            projection: self,
             clock: *clock,
             preview: self.project(events)?,
         })
@@ -157,10 +183,27 @@ impl Projection {
         )
         .ok()?
     }
+
+    fn waveform<'a>(
+        &'a self,
+        original: &'a CachedWaveform,
+        clock: &PreparedMusicalEventSourceClock,
+        source_id: u64,
+    ) -> Option<&'a CachedWaveform> {
+        if source_id == 0 {
+            return Some(original);
+        }
+        let table = &self.sources.as_ref()?.0;
+        if table.musical_clock(source_id)? != clock {
+            return None;
+        }
+        table.waveform(source_id).map(Arc::as_ref)
+    }
 }
 
 pub(super) enum Query<'a> {
     Shared {
+        projection: &'a Projection,
         clock: Clock,
         preview: MusicalEventFadePreview<'a>,
     },
@@ -179,10 +222,17 @@ pub(super) fn peaks(
     remaining: &mut usize,
 ) -> Option<[CachedPeak; 2]> {
     match query {
-        Query::Shared { clock, preview } => coarse_peaks(waveform, |visit| match clock {
-            Clock::Arrangement => preview.visit_arrangement(range, remaining, visit),
-            Clock::Event(event) => preview.visit_event(event.id, range, remaining, visit),
-        }),
+        Query::Shared {
+            projection,
+            clock,
+            preview,
+        } => coarse_peaks_from(
+            |source| projection.waveform(waveform, &projection.source_clock, source),
+            |visit| match clock {
+                Clock::Arrangement => preview.visit_arrangement(range, remaining, visit),
+                Clock::Event(event) => preview.visit_event(event.id, range, remaining, visit),
+            },
+        ),
         Query::Placement {
             projection,
             table,
@@ -264,9 +314,12 @@ fn placement_peaks<'a>(
         if cursor < start {
             merge(&mut combined, SILENCE);
         }
-        let peaks = coarse_peaks(table.waveform(index)?, |visit| {
-            preview.visit_arrangement(start..end, remaining, visit)
-        })?;
+        let original = table.waveform(index)?;
+        let clock = read.source.musical_clock()?;
+        let peaks = coarse_peaks_from(
+            |source| projection.waveform(original, clock, source),
+            |visit| preview.visit_arrangement(start..end, remaining, visit),
+        )?;
         merge(&mut combined, peaks);
         cursor = end;
     }
