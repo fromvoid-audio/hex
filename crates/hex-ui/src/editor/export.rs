@@ -5,9 +5,7 @@ use gpui::{
     AnyWindowHandle, AppContext, Context, Div, PromptButton, PromptLevel, Stateful, Window, div,
     prelude::*, px, relative, rgb,
 };
-use hex_session::service::{
-    ExportControl, ExportFormat, ExportProgress, ExportSignal, Request, Stem,
-};
+use hex_session::service::{ExportControl, ExportFormat, ExportSignal, Request, Stem};
 use std::{path::PathBuf, sync::mpsc::TryRecvError};
 
 impl EditorView {
@@ -481,6 +479,7 @@ mod tests {
     use super::super::clip_drag_ui_test;
     use super::*;
     use gpui::{Modifiers, TestAppContext, VisualTestContext, size};
+    use hex_session::service::ExportProgress;
 
     #[gpui::test]
     fn export_dialog_cancel_reopen_starts_in_user_folder_and_native_save_needs_no_second_consent(
