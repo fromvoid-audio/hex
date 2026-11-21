@@ -9,8 +9,47 @@ use hex_session::device_gesture::{GestureKey, GestureRequest, ParameterValue};
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn verified_running_main_vst3_replacement_installs_at_its_exact_receipt() {
+    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::Main);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_running_return_vst3_replacement_installs_at_its_exact_receipt() {
+    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::Return);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_running_track_vst3_replacement_installs_at_its_exact_receipt() {
+    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::Track);
+}
+
+enum VerifiedReplacementOwner {
+    Main,
+    Return,
+    Track,
+}
+
+fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
     use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
     use std::sync::atomic::AtomicUsize;
+
+    fn effects(
+        project: &hex_project::Project,
+        destination: PluginEffectDestination,
+    ) -> &[hex_project::Device] {
+        match destination {
+            PluginEffectDestination::Main => project.main_devices(),
+            PluginEffectDestination::Track(id) => project.track(id).unwrap().devices(),
+            PluginEffectDestination::Return(id) => project
+                .return_tracks()
+                .iter()
+                .find(|track| track.id() == id)
+                .unwrap()
+                .devices(),
+            _ => panic!("effect fixture destination"),
+        }
+    }
 
     let _native = native_fixture();
     let files = Files::new();
@@ -36,6 +75,28 @@ fn verified_running_main_vst3_replacement_installs_at_its_exact_receipt() {
     h.applied(h.context.unwrap());
     let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
     h.applied(h.context.unwrap());
+    let track = imported.state.project.tracks()[0].id();
+    let (state, destination) = match owner {
+        VerifiedReplacementOwner::Main => (imported.state, PluginEffectDestination::Main),
+        VerifiedReplacementOwner::Track => (imported.state, PluginEffectDestination::Track(track)),
+        VerifiedReplacementOwner::Return => {
+            let added = h.run(Request::Edit(Command::AddReturnTrack {
+                name: "replacement send".into(),
+            }));
+            let Some(Created::ReturnTrack(return_track)) = added.created else {
+                panic!("return track");
+            };
+            h.applied(h.context.unwrap());
+            let routed = h.run(Request::Edit(Command::SetReturnSend {
+                track,
+                return_track,
+                gain: 0.5,
+            }));
+            assert!(routed.error.is_none(), "{:?}", routed.error);
+            h.applied(h.context.unwrap());
+            (routed.state, PluginEffectDestination::Return(return_track))
+        }
+    };
     let submit = |h: &Harness, input| {
         h.service
             .as_ref()
@@ -43,7 +104,7 @@ fn verified_running_main_vst3_replacement_installs_at_its_exact_receipt() {
             .submit(Request::InsertPluginEffect(input))
             .unwrap();
     };
-    submit(&h, request(&imported.state, PluginEffectDestination::Main));
+    submit(&h, request(&state, destination));
     let original = loop {
         let event = h.next_with_audio();
         assert!(event.error.is_none(), "{:?}", event.error);
@@ -53,7 +114,7 @@ fn verified_running_main_vst3_replacement_installs_at_its_exact_receipt() {
         }
     };
     let predecessor = h.applied(h.context.unwrap());
-    let old = original.state.project.main_devices()[0].id();
+    let old = effects(&original.state.project, destination)[0].id();
     let binding = || progress.lock().unwrap().source_bindings[0];
     wait(|| binding().is_some());
     let (_, old_binding, _) = binding().unwrap();
@@ -64,6 +125,15 @@ fn verified_running_main_vst3_replacement_installs_at_its_exact_receipt() {
         .command(PlaybackCommand::Play)
         .unwrap();
     let status = h.audio.as_ref().unwrap().status().unwrap();
+    let expected = |block| {
+        let effect = 0.125 + block as f32 * 0.03125;
+        match owner {
+            VerifiedReplacementOwner::Main | VerifiedReplacementOwner::Track => effect,
+            // The same authored 0.25 reaches the dry and wet routes. Return
+            // receives half of it, so the measured ramp must be above dry.
+            VerifiedReplacementOwner::Return => 0.25 + effect * 0.5,
+        }
+    };
     for block in 0..4 {
         let mut sample = 0.0;
         wait(|| {
@@ -75,22 +145,28 @@ fn verified_running_main_vst3_replacement_installs_at_its_exact_receipt() {
                 .and_then(|(_, _, completed)| completed)
                 .is_some_and(|completed| completed > block)
         });
-        assert_eq!(
-            sample,
-            if block < 2 {
-                0.0
-            } else {
-                0.125 + (block - 2) as f32 * 0.03125
-            }
-        );
+        assert_eq!(sample, block.checked_sub(2).map_or(0.0, expected));
     }
     assert!(status.playing.load(Acquire));
     assert_eq!(status.applied_audio_source(), Some(predecessor));
     let replacement = || {
-        request(
-            &original.state,
-            PluginEffectDestination::ReplaceMainEffect { replacing: old },
-        )
+        let target = match destination {
+            PluginEffectDestination::Main => {
+                PluginEffectDestination::ReplaceMainEffect { replacing: old }
+            }
+            PluginEffectDestination::Track(track) => PluginEffectDestination::ReplaceTrackEffect {
+                track,
+                replacing: old,
+            },
+            PluginEffectDestination::Return(return_track) => {
+                PluginEffectDestination::ReplaceReturnEffect {
+                    return_track,
+                    replacing: old,
+                }
+            }
+            _ => panic!("effect fixture destination"),
+        };
+        request(&original.state, target)
     };
     let approved = std::cell::Cell::new(None);
     let pump = || {
@@ -101,7 +177,7 @@ fn verified_running_main_vst3_replacement_installs_at_its_exact_receipt() {
             && status.performance_frame.load(Acquire) == frame + 256
         {
             assert_eq!(binding().unwrap().1, old_binding);
-            assert_eq!(pcm, 0.125 + (frame / 256 - 2) as f32 * 0.03125);
+            assert_eq!(pcm, expected(frame / 256 - 2));
         }
         wait(|| {
             h.backend
@@ -138,6 +214,15 @@ fn verified_running_main_vst3_replacement_installs_at_its_exact_receipt() {
     let cancellation = Arc::clone(&cancelled.control);
     submit(&h, cancelled);
     wait(|| {
+        if let Ok(event) = h.service.as_ref().unwrap().try_event() {
+            assert_predecessor(&event);
+            assert!(
+                event.plugin_effect_complete.is_empty(),
+                "running Verified {destination:?} replacement stopped before private preparation: {:?}",
+                event.error
+            );
+            assert!(event.error.is_none(), "{:?}", event.error);
+        }
         pump();
         assert_eq!(status.applied_audio_source(), Some(predecessor));
         progress
@@ -181,7 +266,7 @@ fn verified_running_main_vst3_replacement_installs_at_its_exact_receipt() {
             }
             assert!(
                 terminal.accepted,
-                "running Verified Main replacement refused: {:?}",
+                "running Verified {destination:?} replacement refused: {:?}",
                 event.error
             );
             break event;
@@ -207,11 +292,23 @@ fn verified_running_main_vst3_replacement_installs_at_its_exact_receipt() {
         assert_ne!(receipt.submission.audio_revision, consented.audio_revision);
     }
     assert_eq!(installed.state.revision, original.state.revision + 1);
-    let [fresh] = installed.state.project.main_devices() else {
-        panic!("fresh effect in the original Main slot");
+    let [fresh] = effects(&installed.state.project, destination) else {
+        panic!("fresh effect in the original slot");
     };
     assert_eq!(fresh.id().value(), original.state.project.next_identity());
     assert!(installed.state.project.device(old).is_none());
+    if let PluginEffectDestination::Track(track) = destination {
+        let before = original.state.project.track(track).unwrap();
+        let after = installed.state.project.track(track).unwrap();
+        assert_eq!(after.clips(), before.clips());
+        assert_eq!(after.source_id(), before.source_id());
+        assert_eq!(after.instrument_position(), before.instrument_position());
+    } else {
+        assert_eq!(
+            installed.state.project.tracks(),
+            original.state.project.tracks()
+        );
+    }
     wait(|| {
         pump();
         records.load(Acquire) == 1

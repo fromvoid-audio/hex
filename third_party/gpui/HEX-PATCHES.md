@@ -367,6 +367,13 @@ movement and repeated repaint, tooltip eligibility, release/button-loss/escape/
 deactivation recovery, and retained typed drop feedback/delivery. Native pointer
 and OS tooltip acceptance remain separate from these headless scene checks.
 
+21 November typed drag admission from the original press. Div can ask a typed
+factory for the drag value after its existing movement threshold. The factory
+can decline the source and leave the move available to subsequent handlers.
+Eager callers retain their value and constructor behavior. This shares the
+existing active-drag view, cursor and drop delivery contract with clip surfaces
+that choose their source from the completed press geometry.
+
 26 October explicit pointer ownership: Window admits one pressed-button lease
 before a control mutates its gesture. Captured mouse input bypasses ordinary/raw
 listeners after the initiating press; that press retains gesture-owned ancestor

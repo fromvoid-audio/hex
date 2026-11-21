@@ -186,7 +186,7 @@ fn route_only_device_proof_refuses_foreign_metadata_without_a_binding() {
 }
 
 #[test]
-fn group_reroute_refuses_a_delayed_replacement_edge() {
+fn group_reroute_refuses_a_delayed_leaf_to_group_edge_in_either_direction() {
     use hex_lattice_contract::NativeDeviceMetadata;
     let (mut editor, media, leaf, group) = fixture();
     let child = editor
@@ -226,6 +226,86 @@ fn group_reroute_refuses_a_delayed_replacement_edge() {
     let old = SessionPlayback::new(before).unwrap();
     let next = SessionPlayback::new(after).unwrap();
     assert_eq!(next.resident_group_reroute_from(&old), None);
+    assert_eq!(old.resident_group_reroute_from(&next), None);
+}
+
+#[test]
+fn aligned_nested_group_reroute_requires_immediately_related_groups() {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let (mut editor, media, leaf, inner) = fixture();
+    let group = |editor: &mut Editor, track, name: &str| {
+        let Created::Track(id) = editor
+            .execute(Command::GroupTracks {
+                tracks: TrackSelectionIds::new(&[track]).unwrap(),
+                name: name.into(),
+            })
+            .unwrap()
+        else {
+            panic!("enclosing group");
+        };
+        id
+    };
+    let enclosing = group(&mut editor, inner, "enclosing");
+    let outermost = group(&mut editor, enclosing, "outermost");
+    let Created::Track(unrelated) = editor
+        .execute(Command::AddTrack {
+            name: "unrelated".into(),
+        })
+        .unwrap()
+    else {
+        panic!("unrelated track");
+    };
+    editor
+        .execute(Command::InsertDevice {
+            track: unrelated,
+            before: None,
+            state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+        })
+        .unwrap();
+    let mut prepare_with_parent = |parent_group| {
+        editor
+            .execute(Command::ReparentTracks {
+                tracks: TrackSelectionIds::new(&[leaf]).unwrap(),
+                destination: TrackDestination {
+                    parent_group: Some(parent_group),
+                    before: None,
+                },
+            })
+            .unwrap();
+        Arc::new(
+            PreparedRevision::prepare(
+                editor.project(),
+                &media,
+                Arc::new(crate::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let inner_route = prepare_with_parent(inner);
+    let enclosing_route = prepare_with_parent(enclosing);
+    let outermost_route = prepare_with_parent(outermost);
+    let latency = inner_route.arrangement().main_latency_frames();
+    assert!(latency > 0);
+    assert_eq!(enclosing_route.arrangement().main_latency_frames(), latency);
+    assert_eq!(outermost_route.arrangement().main_latency_frames(), latency);
+    let inner_route = SessionPlayback::new(inner_route).unwrap();
+    let enclosing_route = SessionPlayback::new(enclosing_route).unwrap();
+    let outermost_route = SessionPlayback::new(outermost_route).unwrap();
+    // Each pair has the same track order and delay. Only the adjacent
+    // parent/child routes can exchange their leaf.
+    for (old, next) in [
+        (&inner_route, &enclosing_route),
+        (&enclosing_route, &inner_route),
+    ] {
+        assert!(next.resident_group_reroute_from(old).is_some());
+    }
+    for (old, next) in [
+        (&inner_route, &outermost_route),
+        (&outermost_route, &inner_route),
+    ] {
+        assert_eq!(next.resident_group_reroute_from(old), None);
+    }
 }
 
 fn hex_engine_delay() -> hex_lattice_contract::NativeDeviceState {

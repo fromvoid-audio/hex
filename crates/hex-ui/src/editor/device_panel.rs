@@ -2959,8 +2959,7 @@ impl EditorView {
                                 devices.iter().any(|device| device.id() == anchor)
                             }),
                             EffectBusDropSlot::Replace(replacing) => {
-                                owner.allows_vst3_replacement(self.document_audio_mode)
-                                    && drag.source.is_catalog_vst3_effect()
+                                drag.source.is_catalog_vst3_effect()
                                     && devices.iter().any(|device| {
                                         device.id() == replacing
                                             && device.parent().is_none()

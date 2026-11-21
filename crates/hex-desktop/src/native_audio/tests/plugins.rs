@@ -267,6 +267,21 @@ fn prepared_vst3_effect_drop_creates_one_track_and_undo_restores_the_project() {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn stopped_return_vst3_undo_redo_wait_for_the_callback_receipt() {
+    assert_stopped_bus_vst3_history(HistoryEffectBus::Return);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn stopped_main_vst3_undo_redo_wait_for_the_callback_receipt() {
+    assert_stopped_bus_vst3_history(HistoryEffectBus::Main);
+}
+
+enum HistoryEffectBus {
+    Main,
+    Return,
+}
+
+fn assert_stopped_bus_vst3_history(owner: HistoryEffectBus) {
     let _native = native_fixture();
     let files = Files::new();
     let directory = files.0.canonicalize().unwrap();
@@ -282,32 +297,39 @@ fn stopped_return_vst3_undo_redo_wait_for_the_callback_receipt() {
     assert!(h.next().error.is_none());
     let (applied, _) = h.applied(0);
     let imported = h.run(Request::Import(files.wav(48_000, 8192)));
-    let track = imported.state.project.tracks()[0].id();
     let (applied, _) = h.applied(applied);
-    let added = h.run(Request::Edit(Command::AddReturnTrack {
-        name: "hosted return".into(),
-    }));
-    let Some(Created::ReturnTrack(return_track)) = added.created else {
-        panic!("return");
+    let (document, destination, applied) = match owner {
+        HistoryEffectBus::Main => (imported.state, PluginEffectDestination::Main, applied),
+        HistoryEffectBus::Return => {
+            let track = imported.state.project.tracks()[0].id();
+            let added = h.run(Request::Edit(Command::AddReturnTrack {
+                name: "hosted return".into(),
+            }));
+            let Some(Created::ReturnTrack(return_track)) = added.created else {
+                panic!("return");
+            };
+            let (applied, _) = h.applied(applied);
+            let sent = h.run(Request::Edit(Command::SetReturnSend {
+                track,
+                return_track,
+                gain: 0.5,
+            }));
+            let (applied, _) = h.applied(applied);
+            (
+                sent.state,
+                PluginEffectDestination::Return(return_track),
+                applied,
+            )
+        }
     };
-    let (applied, _) = h.applied(applied);
-    let sent = h.run(Request::Edit(Command::SetReturnSend {
-        track,
-        return_track,
-        gain: 0.5,
-    }));
-    let (applied, _) = h.applied(applied);
     h.service
-        .submit(Request::InsertPluginEffect(request(
-            &sent.state,
-            PluginEffectDestination::Return(return_track),
-        )))
+        .submit(Request::InsertPluginEffect(request(&document, destination)))
         .unwrap();
     let accepted = terminal(&mut h);
     assert!(accepted.error.is_none(), "{:?}", accepted.error);
     assert!(accepted.plugin_effect_complete[0].accepted);
     let Some(Created::Device(device)) = accepted.created else {
-        panic!("return effect");
+        panic!("hosted effect");
     };
     let (applied, _) = h.applied(applied);
     assert_stopped_hosted_removal_history(&mut h, &accepted.state, device, applied);

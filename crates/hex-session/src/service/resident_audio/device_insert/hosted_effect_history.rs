@@ -1,4 +1,4 @@
-//! Confirm one top-level Track or Return VST3 history edge through the Resident callback.
+//! Confirm one top-level hosted effect history edge through the Resident callback.
 use super::GraphEditOperation;
 use hex_project::{Command, Device, DeviceId, Editor, Invalid, Project, StagedProjectHistory};
 
@@ -32,7 +32,15 @@ fn effect_membership(before: &Project, after: &Project) -> Option<(DeviceId, Gra
 }
 
 fn added_effect(before: &Project, after: &Project) -> Option<DeviceId> {
-    added_track_effect(before, after).or_else(|| added_return_effect(before, after))
+    added_track_effect(before, after)
+        .or_else(|| added_return_effect(before, after))
+        .or_else(|| {
+            let devices = after.main_devices();
+            if before.main_devices().len().checked_add(1) != Some(devices.len()) {
+                return None;
+            }
+            added_leaf(before, devices)
+        })
 }
 
 fn added_track_effect(before: &Project, after: &Project) -> Option<DeviceId> {
@@ -96,6 +104,21 @@ mod tests {
     use hex_lattice_contract::{NativeDeviceState, VST3_DEVICE_TYPE_ID};
     use hex_project::Created;
 
+    fn assert_exact_removal_history(editor: &mut Editor, id: DeviceId) {
+        let original = editor.project().clone();
+        editor.execute(Command::RemoveDevice(id)).unwrap();
+        let removed = editor.project().clone();
+        let (undo, operation) = stage(editor, false).unwrap().unwrap();
+        assert_eq!(operation, GraphEditOperation::InsertDevice);
+        assert_eq!(undo.project(), &original);
+        assert_eq!(editor.project(), &removed);
+        editor.commit_staged_history(undo).unwrap();
+        let (redo, operation) = stage(editor, true).unwrap().unwrap();
+        assert_eq!(operation, GraphEditOperation::RemoveDevice);
+        assert_eq!(redo.project(), &removed);
+        assert_eq!(editor.project(), &original);
+    }
+
     #[test]
     fn one_exact_track_leaf_history_installs_and_compound_edits_refuse() {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
@@ -107,29 +130,17 @@ mod tests {
         else {
             panic!("track");
         };
-        let state = NativeDeviceState::new(VST3_DEVICE_TYPE_ID, 1, vec![1]).unwrap();
         let Created::Device(id) = editor
             .execute(Command::InsertDevice {
                 track,
                 before: None,
-                state: state.clone(),
+                state: NativeDeviceState::new(VST3_DEVICE_TYPE_ID, 1, vec![1]).unwrap(),
             })
             .unwrap()
         else {
             panic!("device");
         };
-        let original = editor.project().clone();
-        editor.execute(Command::RemoveDevice(id)).unwrap();
-        let removed = editor.project().clone();
-        let (undo, operation) = stage(&mut editor, false).unwrap().unwrap();
-        assert_eq!(operation, GraphEditOperation::InsertDevice);
-        assert_eq!(undo.project(), &original);
-        assert_eq!(editor.project(), &removed);
-        editor.commit_staged_history(undo).unwrap();
-        let (redo, operation) = stage(&mut editor, true).unwrap().unwrap();
-        assert_eq!(operation, GraphEditOperation::RemoveDevice);
-        assert_eq!(redo.project(), &removed);
-        assert_eq!(editor.project(), &original);
+        assert_exact_removal_history(&mut editor, id);
 
         editor
             .execute_many_prepared(
@@ -142,14 +153,6 @@ mod tests {
                 ],
                 |_, _| Ok::<_, Invalid>(()),
             )
-            .unwrap();
-        assert!(stage(&mut editor, false).unwrap().is_none());
-
-        editor
-            .execute(Command::InsertMainDevice {
-                before: None,
-                state,
-            })
             .unwrap();
         assert!(stage(&mut editor, false).unwrap().is_none());
     }
@@ -175,18 +178,7 @@ mod tests {
         else {
             panic!("device");
         };
-        let original = editor.project().clone();
-        editor.execute(Command::RemoveDevice(id)).unwrap();
-        let removed = editor.project().clone();
-        let (undo, operation) = stage(&mut editor, false).unwrap().unwrap();
-        assert_eq!(operation, GraphEditOperation::InsertDevice);
-        assert_eq!(undo.project(), &original);
-        assert_eq!(editor.project(), &removed);
-        editor.commit_staged_history(undo).unwrap();
-        let (redo, operation) = stage(&mut editor, true).unwrap().unwrap();
-        assert_eq!(operation, GraphEditOperation::RemoveDevice);
-        assert_eq!(redo.project(), &removed);
-        assert_eq!(editor.project(), &original);
+        assert_exact_removal_history(&mut editor, id);
 
         editor
             .execute_many_prepared(
@@ -195,6 +187,45 @@ mod tests {
                     Command::ReturnGain {
                         return_track,
                         gain: 0.25,
+                    },
+                ],
+                |_, _| Ok::<_, Invalid>(()),
+            )
+            .unwrap();
+        assert!(stage(&mut editor, false).unwrap().is_none());
+    }
+
+    #[test]
+    fn one_exact_main_leaf_history_keeps_project_controls() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: hex_engine::default_native_device_state(
+                    hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                )
+                .unwrap(),
+            })
+            .unwrap();
+        assert!(stage(&mut editor, false).unwrap().is_none());
+
+        let Created::Device(id) = editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: NativeDeviceState::new(VST3_DEVICE_TYPE_ID, 1, vec![1]).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("device");
+        };
+        assert_exact_removal_history(&mut editor, id);
+
+        editor
+            .execute_many_prepared(
+                vec![
+                    Command::RemoveDevice(id),
+                    Command::SetProjectTempo {
+                        tempo: hex_project::Tempo::new(131_000_000).unwrap(),
                     },
                 ],
                 |_, _| Ok::<_, Invalid>(()),
