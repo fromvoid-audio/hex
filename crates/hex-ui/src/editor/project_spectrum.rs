@@ -67,27 +67,27 @@ impl SlopePreset {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum SmoothingPreset {
     #[default]
+    Human,
     Fine,
     Sixth,
     Third,
-    Human,
 }
 
 impl SmoothingPreset {
     fn label(self) -> &'static str {
         match self {
+            Self::Human => "erb",
             Self::Fine => "1/12",
             Self::Sixth => "1/6",
             Self::Third => "1/3",
-            Self::Human => "erb",
         }
     }
     fn next(self) -> Self {
         match self {
+            Self::Human => Self::Fine,
             Self::Fine => Self::Sixth,
             Self::Sixth => Self::Third,
             Self::Third => Self::Human,
-            Self::Human => Self::Fine,
         }
     }
 }
@@ -474,21 +474,25 @@ fn process_display_bands(
         return tilted;
     }
 
-    // Power-domain prefix sums for O(N) smoothing without ringing or bias.
+    // Smooth power-domain Gaussian smoothing (avoiding rectangular boxcar flat
+    // tops) followed by a gentle dB-domain corner polish so peaks roll smoothly
+    // into neighboring troughs without sharp V-notches or cliffs.
     let max_hz = 20_000.0_f32.min(sample_rate_hz as f32 * 0.49);
     let total_octaves = (max_hz / MIN_PLOT_HZ).log2().max(1.0);
     let bands_per_octave = SPECTRUM_BANDS as f32 / total_octaves;
-    let mut prefix = [0.0_f64; SPECTRUM_BANDS + 1];
+    let mut power = [0.0_f64; SPECTRUM_BANDS];
+    let mut any_signal = false;
     for i in 0..SPECTRUM_BANDS {
-        let p = if tilted[i] <= FLOOR_DBFS + 0.01 {
-            0.0
-        } else {
-            10.0_f64.powf(f64::from(tilted[i]) * 0.1)
-        };
-        prefix[i + 1] = prefix[i] + p;
+        if tilted[i] > FLOOR_DBFS + 0.01 {
+            power[i] = 10.0_f64.powf(f64::from(tilted[i]) * 0.1);
+            any_signal = true;
+        }
+    }
+    if !any_signal {
+        return [FLOOR_DBFS; SPECTRUM_BANDS];
     }
 
-    let mut out = [FLOOR_DBFS; SPECTRUM_BANDS];
+    let mut gaussian_db = [FLOOR_DBFS; SPECTRUM_BANDS];
     for i in 0..SPECTRUM_BANDS {
         let oct_width = match smoothing {
             SmoothingPreset::Fine => 0.0,
@@ -496,19 +500,55 @@ fn process_display_bands(
             SmoothingPreset::Third => 1.0 / 3.0,
             SmoothingPreset::Human => {
                 // Prism-inspired ERB/Bark-like perceptual curve: keep sub-bass
-                // tight (<120 Hz), smoothly widen to ~1/3 octave in the highs.
+                // tight (<100 Hz) and widen smoothly through mids and highs.
                 let hz = centers[i];
                 let t =
-                    ((hz / 120.0).max(1.0).log2() / (8_000.0_f32 / 120.0).log2()).clamp(0.0, 1.0);
-                (1.0 / 16.0) + t * (1.0 / 3.0 - 1.0 / 16.0)
+                    ((hz / 100.0).max(1.0).log2() / (8_000.0_f32 / 100.0).log2()).clamp(0.0, 1.0);
+                (1.0 / 14.0) + t * (1.0 / 3.0 - 1.0 / 14.0)
             }
         };
-        let half = ((oct_width * 0.5 * bands_per_octave).round() as usize).max(1);
-        let lo = i.saturating_sub(half);
-        let hi = (i + half + 1).min(SPECTRUM_BANDS);
-        let mean_power = (prefix[hi] - prefix[lo]) / (hi - lo) as f64;
+        // Full-width at half-maximum ≈ oct_width => sigma ≈ oct_width / 2.355.
+        let sigma = (oct_width * bands_per_octave / 2.355).max(0.65);
+        let radius = ((sigma * 3.5).ceil() as usize).clamp(2, 18);
+        let inv_two_sigma2 = 0.5 / (f64::from(sigma) * f64::from(sigma));
+        let lo = i.saturating_sub(radius);
+        let hi = (i + radius).min(SPECTRUM_BANDS - 1);
+        let mut weighted_sum = 0.0_f64;
+        let mut weight_total = 0.0_f64;
+        for (j, &pj) in power[lo..=hi].iter().enumerate() {
+            let d = (lo + j) as f64 - i as f64;
+            let w = (-d * d * inv_two_sigma2).exp();
+            weighted_sum += pj * w;
+            weight_total += w;
+        }
+        let mean_power = if weight_total > 0.0 {
+            weighted_sum / weight_total
+        } else {
+            0.0
+        };
         if mean_power > 1.0e-12 {
-            out[i] = (10.0 * mean_power.log10() as f32).max(FLOOR_DBFS);
+            gaussian_db[i] = (10.0 * mean_power.log10() as f32).max(FLOOR_DBFS);
+        }
+    }
+
+    // Gentle 5-tap dB-domain corner polish: preserves flat levels exactly while
+    // rounding sharp shoulder transitions where peaks meet troughs.
+    const POLISH: [f32; 5] = [0.08, 0.22, 0.40, 0.22, 0.08];
+    let mut out = [FLOOR_DBFS; SPECTRUM_BANDS];
+    for i in 0..SPECTRUM_BANDS {
+        let mut sum = 0.0_f32;
+        let mut w_sum = 0.0_f32;
+        for (tap, &w) in POLISH.iter().enumerate() {
+            let offset = tap as isize - 2;
+            let idx = (i as isize + offset).clamp(0, (SPECTRUM_BANDS - 1) as isize) as usize;
+            let v = gaussian_db[idx];
+            if v > FLOOR_DBFS + 0.01 {
+                sum += v * w;
+                w_sum += w;
+            }
+        }
+        if w_sum > 0.0 && gaussian_db[i] > FLOOR_DBFS + 0.01 {
+            out[i] = (sum / w_sum).max(FLOOR_DBFS);
         }
     }
     out
