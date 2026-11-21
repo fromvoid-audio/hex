@@ -1158,13 +1158,23 @@ class NativeInstanceTests(unittest.TestCase):
                 self.assertEqual(observed[12:], (0, 0))
 
     def test_effect_disables_trailing_auxiliary_input_and_renders_only_main(self):
-        session = self.session(variant=106, channels=(1, 2))
-        self.ready(session, controller=True)
-        header, inputs, (magic, reply) = session.render(7)
-        self.assertEqual((magic, reply[:64]), (b"HXVB", header))
-        self.assertEqual(struct.unpack("<14f", reply[64:]),
-                         tuple(value * .5 for value in inputs[::2] for _ in range(2)))
-        self.terminal(session, 0, message=session.stop())
+        for variant, channels in ((106, (1, 2)), (153, (2, 2))):
+            with self.subTest(variant=variant):
+                session = self.session(variant=variant, channels=channels)
+                self.ready(session, controller=True)
+                header, inputs, (magic, reply) = session.render(7)
+                self.assertEqual((magic, reply[:64]), (b"HXVB", header))
+                expected = (tuple(value * .5 for value in inputs[::2] for _ in range(2))
+                            if channels[0] == 1 else tuple(value * .5 for value in inputs))
+                self.assertEqual(struct.unpack("<14f", reply[64:]), expected)
+                self.terminal(session, 0, message=session.stop())
+
+    def test_effect_rejects_invalid_multiple_trailing_input_topologies(self):
+        for variant, code in ((154, 20), (155, 22), (156, 20)):
+            with self.subTest(variant=variant, code=code):
+                session = self.session(variant=variant, channels=(2, 2))
+                self.error(session, code)
+                self.terminal(session, code)
 
     def test_optional_presentation_and_missing_state_are_not_fabricated(self):
         shutil.rmtree(self.bundle)

@@ -123,6 +123,8 @@ constexpr int authored_instrument_variant=145, held_instrument_variant=146;
 constexpr int touched_automation_variant=147;
 constexpr int stopped_editor_echo_variant=150;
 constexpr int stopped_bus_refusal_effect=151, stopped_bus_refusal_instrument=152;
+constexpr int multiple_aux_inputs_variant=153, multiple_aux_main_input_variant=154,
+    multiple_aux_mismatch_variant=155, multiple_aux_excess_variant=156;
 static bool held_parameter_input(int variant) {
     return variant==144 || variant==held_instrument_variant || grouped_editor(variant);
 }
@@ -531,6 +533,7 @@ public:
 class ProcessingProcessor final : public Processor,public IAudioPresentationLatency {
     const int fault=next_fault;
     const bool multiple_outputs=fault>=128 && fault<=130;
+    const bool multiple_aux_inputs=fault>=multiple_aux_inputs_variant && fault<=multiple_aux_mismatch_variant;
     const bool silent_input=fault==120 || fault==136;
     const bool midi_instrument=fault==115 || silent_input || fault==127 || multiple_outputs ||
         fault==authored_instrument_variant || fault==held_instrument_variant || fault==grouped_instrument_variant ||
@@ -541,6 +544,7 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
     std::atomic<bool> processing{false};
     bool input=false,output=false,thread_bound=false;
     bool auxiliary_disabled=false;
+    unsigned inactive_aux_inputs=0;
     unsigned inactive_outputs=0;
     bool event_active=false;
     float note_signal=0;
@@ -744,17 +748,23 @@ public:
         if (media!=kAudio) return 0;
         if (fault==5) return 2;
         if (fault==106 && direction==kInput) return 2;
+        if (fault==multiple_aux_excess_variant && direction==kInput) return 17;
+        if (multiple_aux_inputs && direction==kInput) return 3;
         if (multiple_outputs && direction==kOutput) return 3;
         return direction==kInput && mode==1 && !silent_input?0:1;
     }
     tresult PLUGIN_API getBusInfo(MediaType media,BusDirection direction,int32 index,BusInfo& info) override {
-        const bool auxiliary=fault==106 && media==kAudio && direction==kInput && index==1;
+        const bool auxiliary=(fault==106 && media==kAudio && direction==kInput && index==1) ||
+            (multiple_aux_inputs && media==kAudio && direction==kInput && index>0 && index<3);
         const bool extra_output=multiple_outputs && media==kAudio && direction==kOutput && index>0 && index<3;
         if (!control() || (index && !auxiliary && !extra_output) || !getBusCount(media,direction))
             return kInvalidArgument;
         info={};info.mediaType=media;info.direction=direction;info.busType=kMain;
         info.channelCount=media==kEvent?4:(direction==kInput?inputs:outputs);
-        if (auxiliary) { info.busType=kAux;info.channelCount=2; }
+        if (auxiliary) {
+            info.busType=(fault==multiple_aux_main_input_variant && index==2)?kMain:kAux;
+            info.channelCount=(multiple_aux_inputs && (index==1 || (fault==multiple_aux_mismatch_variant && index==2)))?1:2;
+        }
         if (fault==136 && media==kAudio && direction==kInput) info.busType=kAux;
         if (extra_output) {
             info.busType=index==1?kAux:kMain;
@@ -769,6 +779,9 @@ public:
         if (control() && fault==106 && direction==kInput && index==1) {
             value=SpeakerArr::kStereo;return kResultOk;
         }
+        if (control() && multiple_aux_inputs && direction==kInput && index>0 && index<3) {
+            value=index==1?SpeakerArr::kMono:SpeakerArr::kStereo;return kResultOk;
+        }
         if (control() && multiple_outputs && direction==kOutput && index>0 && index<3) {
             value=index==1?SpeakerArr::kMono:SpeakerArr::kStereo;return kResultOk;
         }
@@ -782,9 +795,11 @@ public:
     }
     tresult PLUGIN_API setBusArrangements(SpeakerArrangement* in,int32 ni,SpeakerArrangement* out,int32 no) override {
         if(silent_input) return kResultFalse; // this default is already configured
-        if (!control() || !initialized || active || processing || ni!=(fault==106?2:(mode==1?0:1)) || no!=1 ||
+        const int32 expected_inputs=fault==106?2:(multiple_aux_inputs?3:(mode==1?0:1));
+        if (!control() || !initialized || active || processing || ni!=expected_inputs || no!=1 ||
             !out || (ni && !in)) return kInvalidArgument;
         if (fault==106 && in[1]!=SpeakerArr::kStereo) return kResultFalse;
+        if (multiple_aux_inputs && (in[1]!=SpeakerArr::kMono || in[2]!=SpeakerArr::kStereo)) return kResultFalse;
         const auto count=[](SpeakerArrangement value)->int32 {
             return value==SpeakerArr::kMono?1:(value==SpeakerArr::kStereo?2:0);
         };
@@ -812,6 +827,12 @@ public:
             if (enabled) return kResultFalse;
             auxiliary_disabled=true;return kResultOk;
         }
+        if (control() && setup && !active && !processing && multiple_aux_inputs &&
+            media==kAudio && direction==kInput && index>0 && index<3) {
+            if (enabled) return kResultFalse;
+            inactive_aux_inputs|=1u<<index;
+            return kResultOk;
+        }
         if (control() && setup && !active && !processing && multiple_outputs &&
             media==kAudio && direction==kOutput && index>0 && index<3) {
             if (enabled) return kResultFalse;
@@ -829,6 +850,7 @@ public:
         if (!enabled && fault==25) trace(7); // sensitivity: teardown after unknown startup
         if (!control() || !setup || processing) return kResultFalse;
         if (enabled && fault==106 && !auxiliary_disabled) return kResultFalse;
+        if (enabled && multiple_aux_inputs && inactive_aux_inputs!=6) return kResultFalse;
         if (enabled && multiple_outputs && inactive_outputs!=6) return kResultFalse;
         if (enabled && midi_instrument && !event_active) return kResultFalse;
         if (enabled && fault==111) {
@@ -1220,7 +1242,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>stopped_bus_refusal_instrument) return false;next_fault=value;
+        if (value>multiple_aux_excess_variant) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);
