@@ -11,6 +11,7 @@ enum RouteDirection {
     Enter,
     Exit,
     EnterEmpty,
+    EnterEmptyWithDelay,
     ExitLastChild,
     ExitLastChildWithDelay,
 }
@@ -85,6 +86,14 @@ fn cancelling_a_verified_first_child_entry_preserves_the_flat_source() {
 }
 
 #[test]
+fn verified_first_child_entry_starts_the_leaf_with_fresh_delay_history() {
+    let _serial = serial();
+    for end in [RouteEnd::Install, RouteEnd::Cancel] {
+        check_group_route(257, RouteDirection::EnterEmptyWithDelay, end);
+    }
+}
+
+#[test]
 fn verified_last_child_exit_fades_to_the_warmed_flat_source() {
     let _serial = serial();
     for partition in [1, 257] {
@@ -123,12 +132,16 @@ fn check_group_route(partition: usize, direction: RouteDirection, end: RouteEnd)
     let sibling_grouped = !matches!(
         direction,
         RouteDirection::EnterEmpty
+            | RouteDirection::EnterEmptyWithDelay
             | RouteDirection::ExitLastChild
             | RouteDirection::ExitLastChildWithDelay
     );
-    let stateful_exit = matches!(direction, RouteDirection::ExitLastChildWithDelay);
+    let stateful = matches!(
+        direction,
+        RouteDirection::EnterEmptyWithDelay | RouteDirection::ExitLastChildWithDelay
+    );
     let check = |frame: u64, actual, gain, grouped, source_start| {
-        let latency = if stateful_exit {
+        let latency = if stateful {
             // Each Delay has a 1 ms buffer with no dry signal or feedback.
             if grouped { 96 } else { 48 }
         } else {
@@ -205,7 +218,7 @@ fn check_group_route(partition: usize, direction: RouteDirection, end: RouteEnd)
                 .unwrap(),
         })
         .unwrap();
-    if stateful_exit {
+    if stateful {
         let state = hex_lattice_contract::NativeDeviceState::new(
             hex_devices::delay::TYPE_ID,
             1,
@@ -433,7 +446,7 @@ fn check_group_route(partition: usize, direction: RouteDirection, end: RouteEnd)
         }
     };
     let starting_gain = (FADE - faded) as f32 / FADE as f32;
-    let source_start = if stateful_exit && matches!(end, RouteEnd::Install) {
+    let source_start = if stateful && matches!(end, RouteEnd::Install) {
         cut + faded as u64
     } else {
         0
