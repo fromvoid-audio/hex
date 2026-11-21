@@ -505,16 +505,39 @@ impl Interactivity {
         T: 'static,
         W: 'static + Render,
     {
+        let value = Arc::new(value);
+        self.bind_drag_start(Box::new(move |_, offset, window, cx| {
+            let ghost = constructor(&value, offset, window, cx).into();
+            Some((value, ghost))
+        }));
+    }
+
+    /// Bind a typed drag whose source is chosen from the initiating press.
+    /// The factory runs after a left-button press crosses the existing drag
+    /// threshold. It receives that original press even when movement leaves
+    /// the source. Returning `None` leaves the event available to other handlers.
+    pub fn on_drag_from_press<T: 'static, W: 'static + Render>(
+        &mut self,
+        factory: impl FnOnce(
+            &MouseDownEvent,
+            Point<Pixels>,
+            &mut Window,
+            &mut App,
+        ) -> Option<(T, Entity<W>)>
+        + 'static,
+    ) {
+        self.bind_drag_start(Box::new(move |press, offset, window, cx| {
+            let (value, ghost) = factory(press, offset, window, cx)?;
+            Some((Arc::new(value), ghost.into()))
+        }));
+    }
+
+    fn bind_drag_start(&mut self, listener: DragListener) {
         debug_assert!(
             self.drag_listener.is_none(),
-            "calling on_drag more than once on the same element is not supported"
+            "binding more than one drag source on the same element is not supported"
         );
-        self.drag_listener = Some((
-            Arc::new(value),
-            Box::new(move |value, offset, window, cx| {
-                constructor(value.downcast_ref().unwrap(), offset, window, cx).into()
-            }),
-        ));
+        self.drag_listener = Some(listener);
     }
 
     /// Bind the given callback on the hover start and end events of this element. Note that the boolean
@@ -1143,6 +1166,21 @@ pub trait StatefulInteractiveElement: InteractiveElement {
         self
     }
 
+    /// See [`Interactivity::on_drag_from_press`].
+    fn on_drag_from_press<T: 'static, W: 'static + Render>(
+        mut self,
+        factory: impl FnOnce(
+            &MouseDownEvent,
+            Point<Pixels>,
+            &mut Window,
+            &mut App,
+        ) -> Option<(T, Entity<W>)>
+        + 'static,
+    ) -> Self {
+        self.interactivity().on_drag_from_press(factory);
+        self
+    }
+
     /// Bind the given callback on the hover start and end events of this element. Note that the boolean
     /// passed to the callback is true when the hover starts and false when it ends.
     /// The fluent API equivalent to [`Interactivity::on_hover`]
@@ -1194,8 +1232,14 @@ pub(crate) type ScrollWheelListener =
 
 pub(crate) type ClickListener = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
-pub(crate) type DragListener =
-    Box<dyn Fn(&dyn Any, Point<Pixels>, &mut Window, &mut App) -> AnyView + 'static>;
+pub(crate) type DragListener = Box<
+    dyn FnOnce(
+        &MouseDownEvent,
+        Point<Pixels>,
+        &mut Window,
+        &mut App,
+    ) -> Option<(Arc<dyn Any>, AnyView)>,
+>;
 
 type DropListener = Box<dyn Fn(&dyn Any, &mut Window, &mut App) + 'static>;
 
@@ -1545,7 +1589,7 @@ pub struct Interactivity {
     pub(crate) drop_listeners: Vec<(TypeId, DropListener)>,
     pub(crate) can_drop_predicate: Option<CanDropPredicate>,
     pub(crate) click_listeners: Vec<ClickListener>,
-    pub(crate) drag_listener: Option<(Arc<dyn Any>, DragListener)>,
+    pub(crate) drag_listener: Option<DragListener>,
     pub(crate) hover_listener: Option<Box<dyn Fn(&bool, &mut Window, &mut App)>>,
     pub(crate) tooltip_builder: Option<TooltipBuilder>,
     pub(crate) window_control: Option<WindowControlArea>,
@@ -2208,16 +2252,22 @@ impl Interactivity {
                         let mut pending_mouse_down = pending_mouse_down.borrow_mut();
                         if let Some(mouse_down) = pending_mouse_down.clone()
                             && !cx.has_active_drag()
-                            && (event.position - mouse_down.position).magnitude() > POINTER_DRAG_THRESHOLD
-                            && let Some((drag_value, drag_listener)) = drag_listener.take()
+                            && (event.position - mouse_down.position).magnitude()
+                                > POINTER_DRAG_THRESHOLD
+                            && let Some(drag_listener) = drag_listener.take()
                         {
-                            *clicked_state.borrow_mut() = ElementClickedState::default();
+                            let previous_click =
+                                clicked_state.replace(ElementClickedState::default());
                             let cursor_offset = event.position - hitbox.origin;
-                            let drag =
-                                (drag_listener)(drag_value.as_ref(), cursor_offset, window, cx);
+                            let Some((value, view)) =
+                                drag_listener(&mouse_down, cursor_offset, window, cx)
+                            else {
+                                clicked_state.replace(previous_click);
+                                return;
+                            };
                             cx.active_drag = Some(AnyDrag {
-                                view: drag,
-                                value: drag_value,
+                                view,
+                                value,
                                 cursor_offset,
                                 cursor_style: drag_cursor_style,
                             });
