@@ -105,7 +105,7 @@ pub(crate) struct TrackPlan {
     pub output: TrackOutput,
     pub sends: Vec<Send>,
     pub audio_feeds: Vec<Send>,
-    group_output_mutes: Vec<GroupOutputMuteRange>,
+    pub(crate) group_output_mutes: Vec<GroupOutputMuteRange>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ReturnPlan {
@@ -1069,6 +1069,16 @@ impl SignalGraph {
             && self.key_stages.is_empty()
             && self.returns.is_empty()
             && self.tracks.iter().all(|track| track.audio_feeds.is_empty())
+    }
+    /// Acyclic tracks (including group buses), sidechains, return buses and
+    /// Main chains can run whole compensated blocks in topological `owner_order`
+    /// once the stamp ring covers `plan.max_latency_frames()` consecutive
+    /// running frames.
+    pub(crate) fn supports_block_compensated_routing(&self) -> bool {
+        self.tracks
+            .iter()
+            .all(|track| track.audio_feeds.is_empty() && track.printed_merge.is_none())
+            && self.returns.iter().all(|bus| bus.audio_feeds.is_empty())
     }
     pub(crate) fn resident_main_alignment(&self, index: usize) -> Option<(usize, u32)> {
         let track = self.tracks.get(index)?;
@@ -2576,6 +2586,115 @@ impl SignalRuntime {
         )?;
         if output_stamp.is_none() {
             *frame = [0.0; 2];
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn process_effect_stage_block(
+        &mut self,
+        node: usize,
+        index: usize,
+        chain: &mut hex_lattice::NativeRuntimeChain,
+        frames: &mut [Frame],
+        offset: usize,
+        stamps: &[Option<TransportStamp>],
+        key_taps: &[[Frame; 256]],
+        key_buf: &mut [Frame; 256],
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+    ) -> Result<(), Invalid> {
+        let count = frames.len();
+        let has_key = if let Some(stage) = self.graph.key_stages.get(node).copied().flatten() {
+            self.edge_block(stage.main_edge, frames)?;
+            let source = key_taps
+                .get(stage.source_track)
+                .ok_or(Invalid("sidechain key source is missing"))?;
+            key_buf[..count].copy_from_slice(&source[..count]);
+            self.edge_block(stage.key_edge, &mut key_buf[..count])?;
+            true
+        } else {
+            false
+        };
+        let planned = &self.graph.plan.nodes()[node];
+        let input_clock = crate::compensation::OriginWindow {
+            history: &self.delays,
+            incoming: stamps,
+            delay: planned.input_arrival_frames,
+        };
+        let output_clock = crate::compensation::OriginWindow {
+            history: &self.delays,
+            incoming: stamps,
+            delay: planned.output_arrival_frames,
+        };
+        let mut observe = |owner, device, kind, phase, frame_offset, samples: &[Frame]| {
+            if let Some(observer) = observer.as_mut() {
+                observer(
+                    crate::PostNodeIdentity::new(owner, device, kind),
+                    phase,
+                    frame_offset,
+                    samples,
+                );
+            }
+        };
+        if has_key {
+            let block = hex_lattice::StereoAuxiliaryBlock::new(
+                frames,
+                Some(&key_buf[..count]),
+                &mut [],
+                count,
+            )
+            .map_err(|_| Invalid("sidechain auxiliary block is invalid"))?;
+            chain
+                .process_auxiliary_stage_with_external_set(
+                    index,
+                    block,
+                    offset,
+                    Some(&input_clock),
+                    Some(&output_clock),
+                    None,
+                    None,
+                    &mut observe,
+                )
+                .map_err(|_| Invalid("native effect processing failed"))?;
+        } else {
+            chain
+                .process_range_tapped_with_foreign_input_and_external_set(
+                    index..index + 1,
+                    frames,
+                    offset,
+                    Some(&input_clock),
+                    Some(&output_clock),
+                    foreign,
+                    None,
+                    None,
+                    &mut observe,
+                )
+                .map_err(|_| Invalid("native effect processing failed"))?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn process_main_block(
+        &mut self,
+        chain: &mut hex_lattice::NativeRuntimeChain,
+        frames: &mut [Frame],
+        offset: usize,
+        stamps: &[Option<TransportStamp>],
+        key_taps: &[[Frame; 256]],
+        key_buf: &mut [Frame; 256],
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+    ) -> Result<(), Invalid> {
+        if chain.len() != self.graph.main_devices.len() {
+            return Err(Invalid("main content-origin plan does not match runtime"));
+        }
+        for index in 0..self.graph.main_devices.len() {
+            let node = self.graph.main_devices[index];
+            self.process_effect_stage_block(
+                node, index, chain, frames, offset, stamps, key_taps, key_buf, foreign, observer,
+            )?;
         }
         Ok(())
     }

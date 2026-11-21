@@ -593,7 +593,7 @@ impl AutoPanDspState {
             weight.advance();
         }
         let amount = self.amount.current;
-        if amount != 0.0 {
+        if amount != 0.0 && (frame[0].to_bits() | frame[1].to_bits()) != 0 {
             let left_lfo = self.lfo(self.phase_cycles);
             let right_phase =
                 (self.phase_cycles + self.right_phase_degrees.current / 360.0).rem_euclid(1.0);

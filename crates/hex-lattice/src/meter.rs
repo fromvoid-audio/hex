@@ -77,20 +77,25 @@ impl DeviceMeter {
         Self::observe_stereo(&self.output, frames);
     }
     fn observe_stereo(output: &[AtomicU32; 2], frames: &[[f32; 2]]) {
-        let mut peaks = [0.0_f32; 2];
+        const EXP_MASK: u32 = 0x7f80_0000;
+        let mut peaks = [0_u32; 2];
         for frame in frames {
-            for (peak, sample) in peaks.iter_mut().zip(frame) {
-                if sample.is_finite() {
-                    *peak = peak.max(sample.abs());
-                }
+            let l = frame[0].to_bits() & 0x7fff_ffff;
+            let r = frame[1].to_bits() & 0x7fff_ffff;
+            peaks[0] = peaks[0].max(if l < EXP_MASK { l } else { 0 });
+            peaks[1] = peaks[1].max(if r < EXP_MASK { r } else { 0 });
+        }
+        Self::publish_output_bits(output, peaks);
+    }
+    fn publish_output_bits(output: &[AtomicU32; 2], peaks: [u32; 2]) {
+        for (target, bits) in output.iter().zip(peaks) {
+            if bits != 0 {
+                target.fetch_max(bits, Relaxed);
             }
         }
-        Self::publish_output(output, peaks);
     }
     fn publish_output(output: &[AtomicU32; 2], peaks: [f32; 2]) {
-        for (target, peak) in output.iter().zip(peaks) {
-            target.fetch_max(peak.to_bits(), Relaxed);
-        }
+        Self::publish_output_bits(output, [peaks[0].to_bits(), peaks[1].to_bits()]);
     }
     /// Accumulate the containing track's post-fader output independently of
     /// the instrument's own input and output taps.
@@ -134,18 +139,36 @@ impl DeviceMeter {
         }
     }
     fn observe(peak: &AtomicU32, frames: &[[f32; 2]]) {
-        Self::observe_with_gain(peak, frames, 1.0);
+        const EXP_MASK: u32 = 0x7f80_0000;
+        let mut max_bits = 0_u32;
+        for frame in frames {
+            let l = frame[0].to_bits() & 0x7fff_ffff;
+            let r = frame[1].to_bits() & 0x7fff_ffff;
+            let fl = if l < EXP_MASK { l } else { 0 };
+            let fr = if r < EXP_MASK { r } else { 0 };
+            max_bits = max_bits.max(fl).max(fr);
+        }
+        if max_bits != 0 {
+            peak.fetch_max(max_bits, Relaxed);
+        }
     }
     fn observe_with_gain(peak: &AtomicU32, frames: &[[f32; 2]], gain: f32) {
-        let value = frames.iter().flatten().fold(0.0_f32, |peak, sample| {
-            let sample = sample * gain;
-            if sample.is_finite() {
-                peak.max(sample.abs())
-            } else {
-                peak
-            }
-        });
-        peak.fetch_max(value.to_bits(), Relaxed);
+        if gain == 1.0 {
+            Self::observe(peak, frames);
+            return;
+        }
+        const EXP_MASK: u32 = 0x7f80_0000;
+        let mut max_bits = 0_u32;
+        for frame in frames {
+            let l = (frame[0] * gain).to_bits() & 0x7fff_ffff;
+            let r = (frame[1] * gain).to_bits() & 0x7fff_ffff;
+            let fl = if l < EXP_MASK { l } else { 0 };
+            let fr = if r < EXP_MASK { r } else { 0 };
+            max_bits = max_bits.max(fl).max(fr);
+        }
+        if max_bits != 0 {
+            peak.fetch_max(max_bits, Relaxed);
+        }
     }
     /// One UI consumer drains the maxima since its last refresh: the
     /// channel-combined input peak and the post-device left/right peaks.

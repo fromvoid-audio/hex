@@ -1247,6 +1247,60 @@ impl SessionPlayback {
                 .compensation
                 .as_ref()
                 .is_some_and(|runtime| runtime.graph.needs_upstream_frame_routing());
+            if upstream_frame_routing
+                && resident_source_index == resident_source_end
+                && live_audio.is_none()
+                && scalar.is_none()
+            {
+                let mut block_count = (output.len() - output_offset).min(256);
+                if let Some(next) = next_route.filter(|next| *next > performance_frame) {
+                    block_count = block_count
+                        .min(usize::try_from(next - performance_frame).unwrap_or(usize::MAX));
+                }
+                if let Some(region) = region {
+                    let until_wrap = if arrangement_frame < region.start() {
+                        region.start() - arrangement_frame
+                    } else {
+                        region.end() - arrangement_frame
+                    };
+                    block_count =
+                        block_count.min(usize::try_from(until_wrap).unwrap_or(usize::MAX));
+                }
+                if self.can_block_compensated_route(block_count) {
+                    let chunk_end = output_offset
+                        .checked_add(block_count)
+                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                    self.render_compensated_route_block(
+                        performance_frame,
+                        arrangement_frame,
+                        arrangement_loop_pass,
+                        &mut output[output_offset..chunk_end],
+                        pages.as_deref_mut(),
+                        output_offset,
+                        observer,
+                        capture,
+                        sources,
+                        foreign,
+                    )?;
+                    let chunk = u64::try_from(block_count)
+                        .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
+                    performance_frame = performance_frame
+                        .checked_add(chunk)
+                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                    arrangement_frame = arrangement_frame
+                        .checked_add(chunk)
+                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                    if let Some(region) = region {
+                        (arrangement_frame, arrangement_loop_pass) = normalize_loop_cursor(
+                            arrangement_frame,
+                            region,
+                            arrangement_loop_pass,
+                        )?;
+                    }
+                    output_offset = chunk_end;
+                    continue;
+                }
+            }
             let use_resident_sources = upstream_frame_routing
                 && self.playing
                 && !self.resident_source_scratch.is_empty()

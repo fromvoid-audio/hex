@@ -139,12 +139,16 @@ impl Default for Oversampler {
             previous: 0.0,
             previous_antiderivative: 0.0,
             previous_tag: 0,
-            zero_run: 0,
+            zero_run: DRAIN_FRAMES,
         }
     }
 }
 
 impl Oversampler {
+    pub(crate) fn is_drained(&self) -> bool {
+        self.zero_run >= DRAIN_FRAMES
+    }
+
     pub(crate) fn is_quiescent(&self) -> bool {
         self.previous == 0.0
             && self.input.iter().all(|v| *v == 0.0)
@@ -176,9 +180,14 @@ impl Oversampler {
         }
         self.input.copy_within(0..PHASE_TAPS - 1, 1);
         self.input[0] = input;
+        let x = &self.input;
         let scale = FACTOR as f64 * drive;
         for branch in &kernel.phases {
-            let interpolated: f64 = branch.iter().zip(&self.input).map(|(h, x)| h * x).sum();
+            let s0 = branch[0] * x[0] + branch[4] * x[4] + branch[8] * x[8];
+            let s1 = branch[1] * x[1] + branch[5] * x[5] + branch[9] * x[9];
+            let s2 = branch[2] * x[2] + branch[6] * x[6] + branch[10] * x[10];
+            let s3 = branch[3] * x[3] + branch[7] * x[7] + branch[11] * x[11];
+            let interpolated = (s0 + s1) + (s2 + s3);
             let driven = quiet(interpolated * scale);
             let antiderivative = shaper.antiderivative(driven);
             let shaped = quiet(adaa(
@@ -190,15 +199,30 @@ impl Oversampler {
             ));
             self.previous = driven;
             self.previous_antiderivative = antiderivative;
-            self.write = (self.write + TAPS - 1) % TAPS;
+            self.write = if self.write == 0 {
+                TAPS - 1
+            } else {
+                self.write - 1
+            };
             self.shaped[self.write] = shaped;
             self.shaped[self.write + TAPS] = shaped;
         }
-        self.shaped[self.write..self.write + TAPS]
-            .iter()
-            .zip(&kernel.taps)
-            .map(|(x, h)| x * h)
-            .sum()
+        let shaped = &self.shaped[self.write..self.write + TAPS];
+        let taps = &kernel.taps;
+        let mut a0 = 0.0;
+        let mut a1 = 0.0;
+        let mut a2 = 0.0;
+        let mut a3 = 0.0;
+        let mut k = 0;
+        while k < TAPS / 2 {
+            let r = TAPS - 1 - k;
+            a0 += (shaped[k] + shaped[r]) * taps[k];
+            a1 += (shaped[k + 1] + shaped[r - 1]) * taps[k + 1];
+            a2 += (shaped[k + 2] + shaped[r - 2]) * taps[k + 2];
+            a3 += (shaped[k + 3] + shaped[r - 3]) * taps[k + 3];
+            k += 4;
+        }
+        (a0 + a1) + (a2 + a3)
     }
 }
 

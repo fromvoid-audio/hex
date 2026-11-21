@@ -1172,10 +1172,11 @@ fn owned_delay_power_off_commits_silence_and_restarts_fresh() {
             render(&mut fresh, expected);
         }
         // The runtime starts at the first sample. Only the output uses the
-        // short dry-to-wet ramp. Every later echo follows the fresh oracle.
+        // short 0.5 ms dry-to-wet cold power-on ramp (4 frames at 8 kHz).
+        // Every later echo follows the fresh oracle.
         assert_eq!(expected[..40], [[0.0; 2]; 40]);
         assert!(expected[40..].iter().any(|frame| *frame != [0.0; 2]));
-        expected[0] = [0.5 - 0.5 / 40.0; 2];
+        expected[0] = [0.5 - 0.5 / 4.0; 2];
         assert_eq!(actual, expected, "partition {partition}");
     }
 

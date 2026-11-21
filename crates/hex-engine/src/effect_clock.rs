@@ -91,4 +91,14 @@ impl NativeInstrumentClock for ArrangementEffectClock<'_> {
     fn transport_is_running(&self) -> Option<bool> {
         Some(self.running)
     }
+    fn contiguous_running_frames(&self, first_offset: usize, len: usize) -> Option<(u64, u64)> {
+        if !self.running || len == 0 {
+            return None;
+        }
+        let arr0 = self.frame(self.start, first_offset)?;
+        let perf0 = self.frame(self.performance_start?, first_offset)?;
+        arr0.checked_add((len - 1) as u64)?;
+        perf0.checked_add((len - 1) as u64)?;
+        Some((arr0, perf0))
+    }
 }

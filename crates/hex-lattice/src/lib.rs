@@ -1128,6 +1128,16 @@ impl NativeInstrumentClock for OffsetClock<'_> {
     fn transport_is_running(&self) -> Option<bool> {
         self.clock.transport_is_running()
     }
+
+    fn contiguous_running_frames(&self, first_offset: usize, len: usize) -> Option<(u64, u64)> {
+        self.clock
+            .contiguous_running_frames(self.offset.checked_add(first_offset)?, len)
+    }
+
+    fn constant_tempo_micro_bpm(&self, first_offset: usize, len: usize) -> Option<u32> {
+        self.clock
+            .constant_tempo_micro_bpm(self.offset.checked_add(first_offset)?, len)
+    }
 }
 
 /// Paired audio-owned runtime state. `primary` is committed state; processing
@@ -4026,9 +4036,7 @@ impl NativeRuntimeChain {
             if !entry.powered_off(entry.scratch_bypass_ramp)
                 && let Some(history) = &mut entry.scratch_aligned_dry
             {
-                for &frame in frames.iter() {
-                    history.advance(frame);
-                }
+                history.advance_discard(frames);
             }
             return Self::process_entry_with_foreign_inner(
                 entry,
@@ -4108,9 +4116,7 @@ impl NativeRuntimeChain {
         if !entry.powered_off(entry.scratch_bypass_ramp)
             && let Some(history) = &mut entry.scratch_aligned_dry
         {
-            for &frame in &frames[offset..] {
-                history.advance(frame);
-            }
+            history.advance_discard(&frames[offset..]);
         }
         let shifted_clock = clock.map(|clock| OffsetClock { clock, offset });
         let shifted_output_clock = output_clock.map(|clock| OffsetClock { clock, offset });

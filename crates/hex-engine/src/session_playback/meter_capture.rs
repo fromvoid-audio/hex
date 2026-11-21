@@ -11,6 +11,7 @@ pub(super) struct Cell {
     peak: Frame,
     offset: Option<usize>,
     len: usize,
+    all_zero: bool,
     discarded: bool,
 }
 impl Cell {
@@ -21,22 +22,30 @@ impl Cell {
             peak: [0.0; 2],
             offset: None,
             len: 0,
+            all_zero: false,
             discarded: false,
         }
     }
     fn finish(&mut self) {
         if self.offset.take().is_some() {
+            if self.all_zero {
+                self.all_zero = false;
+                return;
+            }
             if self.len == 1 {
                 self.observe(self.frames[0]);
                 return;
             }
+            const EXP_MASK: u32 = 0x7f80_0000;
+            let mut p0 = self.peak[0].to_bits();
+            let mut p1 = self.peak[1].to_bits();
             for frame in &self.frames[..self.len] {
-                for (peak, value) in self.peak.iter_mut().zip(frame) {
-                    if value.is_finite() {
-                        *peak = peak.max(value.abs());
-                    }
-                }
+                let l = frame[0].to_bits() & 0x7fff_ffff;
+                let r = frame[1].to_bits() & 0x7fff_ffff;
+                p0 = p0.max(if l < EXP_MASK { l } else { 0 });
+                p1 = p1.max(if r < EXP_MASK { r } else { 0 });
             }
+            self.peak = [f32::from_bits(p0), f32::from_bits(p1)];
         }
     }
 
@@ -47,6 +56,7 @@ impl Cell {
             if self.offset.is_some_and(|previous| offset < previous) {
                 self.offset = None;
                 self.peak = [0.0; 2];
+                self.all_zero = false;
                 self.discarded = true;
             }
             if self.discarded {
@@ -58,8 +68,13 @@ impl Cell {
             if self.offset.is_none() {
                 self.frames[0] = *frame;
                 self.len = 1;
+                self.all_zero = false;
                 self.offset = Some(offset);
             } else {
+                if self.all_zero {
+                    self.frames[..self.len].fill([0.0; 2]);
+                    self.all_zero = false;
+                }
                 if self.len == 0 {
                     self.frames[0] = [0.0; 2];
                     self.len = 1;
@@ -80,20 +95,36 @@ impl Cell {
             // into an audio failure or publish a misleading partial peak.
             self.offset = None;
             self.peak = [0.0; 2];
+            self.all_zero = false;
             self.discarded = true;
         }
         if !self.discarded && self.offset.is_some_and(|previous| offset > previous) {
             self.finish();
         }
         if !self.discarded && self.offset.is_none() {
-            if let [frame] = frames {
-                self.frames[0] = *frame;
+            if frames
+                .iter()
+                .all(|f| (f[0].to_bits() | f[1].to_bits()) == 0)
+            {
+                self.all_zero = true;
             } else {
+                self.all_zero = false;
                 self.frames[..frames.len()].copy_from_slice(frames);
             }
             self.len = frames.len();
             self.offset = Some(offset);
         } else if !self.discarded {
+            if self.all_zero {
+                if frames
+                    .iter()
+                    .all(|f| (f[0].to_bits() | f[1].to_bits()) == 0)
+                {
+                    self.len = self.len.max(frames.len());
+                    return Ok(());
+                }
+                self.frames[..self.len].fill([0.0; 2]);
+                self.all_zero = false;
+            }
             if frames.len() > self.len {
                 self.frames[self.len..frames.len()].fill([0.0; 2]);
                 self.len = frames.len();
@@ -237,26 +268,25 @@ impl CaptureSink for MeterCapture<'_, '_> {
     fn commit(&mut self, frames: usize) {
         self.flush();
         let arrangement = self.revision.arrangement();
-        for track in arrangement.tracks() {
-            if let Some(index) = track
-                .canonical_track_id()
-                .and_then(|id| self.index(OutputCaptureId::Track(id)))
-            {
-                let cell = &mut self.cells[index];
-                if !cell.discarded {
+        for (i, track) in arrangement.tracks().iter().enumerate() {
+            let slot = self.track_slots.get(i).copied().unwrap_or(usize::MAX);
+            if let Some(cell) = self.cells.get_mut(slot) {
+                if !cell.discarded && cell.peak != [0.0; 2] {
                     track.instrument_meter.observe_track_output(&[cell.peak]);
                 }
                 cell.peak = [0.0; 2];
+                cell.all_zero = false;
                 cell.discarded = false;
             }
         }
-        for bus in arrangement.return_buses() {
-            if let Some(index) = self.index(OutputCaptureId::Return(bus.id)) {
-                let cell = &mut self.cells[index];
-                if !cell.discarded {
+        for (i, bus) in arrangement.return_buses().iter().enumerate() {
+            let slot = self.return_slots.get(i).copied().unwrap_or(usize::MAX);
+            if let Some(cell) = self.cells.get_mut(slot) {
+                if !cell.discarded && cell.peak != [0.0; 2] {
                     bus.output_meter.observe_track_output(&[cell.peak]);
                 }
                 cell.peak = [0.0; 2];
+                cell.all_zero = false;
                 cell.discarded = false;
             }
         }
@@ -272,6 +302,7 @@ impl CaptureSink for MeterCapture<'_, '_> {
         for cell in self.cells.iter_mut() {
             cell.peak = [0.0; 2];
             cell.offset = None;
+            cell.all_zero = false;
             cell.discarded = false;
         }
         if let Some(sink) = self.downstream.as_mut() {
@@ -291,6 +322,7 @@ mod tests {
             peak: [0.0; 2],
             offset: None,
             len: 0,
+            all_zero: false,
             discarded: false,
         }
     }

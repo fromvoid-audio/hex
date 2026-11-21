@@ -151,6 +151,9 @@ pub struct CompensationRuntime {
     edges: Vec<DelayPair>,
     stamps: delay::RingPair<Option<TransportStamp>>,
     storage_bytes: usize,
+    /// Consecutive running transport stamps at the newest end of `stamps`:
+    /// `(committed, speculative)`. Enables O(1) steady-state warm-up checks.
+    running_streak: (u32, u32),
     transaction_active: bool,
 }
 
@@ -165,6 +168,7 @@ impl CompensationRuntime {
             edges,
             stamps,
             storage_bytes: _,
+            running_streak: _,
             transaction_active,
         } = self;
         if *transaction_active {
@@ -238,6 +242,7 @@ impl CompensationRuntime {
             edges,
             stamps,
             storage_bytes,
+            running_streak: (0, 0),
             transaction_active: false,
         })
     }
@@ -254,6 +259,14 @@ impl CompensationRuntime {
         self.transaction_active
     }
 
+    pub(crate) const fn running_stamp_streak(&self) -> u32 {
+        if self.transaction_active {
+            self.running_streak.1
+        } else {
+            self.running_streak.0
+        }
+    }
+
     pub fn begin_transaction(&mut self) -> Result<(), CompensationError> {
         if self.transaction_active {
             return Err(CompensationError::TransactionActive);
@@ -262,6 +275,7 @@ impl CompensationRuntime {
             edge.begin_transaction()?;
         }
         self.stamps.begin();
+        self.running_streak.1 = self.running_streak.0;
         self.transaction_active = true;
         Ok(())
     }
@@ -302,6 +316,11 @@ impl CompensationRuntime {
     pub fn push_transport_stamp(&mut self, stamp: TransportStamp) -> Result<(), CompensationError> {
         if !self.transaction_active {
             return Err(CompensationError::TransactionInactive);
+        }
+        if stamp.transport_is_running {
+            self.running_streak.1 = self.running_streak.1.saturating_add(1);
+        } else {
+            self.running_streak.1 = 0;
         }
         self.stamps.push(Some(stamp));
         Ok(())
@@ -387,6 +406,7 @@ impl CompensationRuntime {
             edge.commit_transaction()?;
         }
         self.stamps.commit();
+        self.running_streak.0 = self.running_streak.1;
         self.transaction_active = false;
         Ok(())
     }
@@ -399,6 +419,7 @@ impl CompensationRuntime {
             edge.rollback_transaction()?;
         }
         self.stamps.rollback();
+        self.running_streak.1 = self.running_streak.0;
         self.transaction_active = false;
         Ok(())
     }
@@ -489,6 +510,7 @@ impl CompensationRuntime {
             return Err(CompensationError::StorageLimit);
         }
         self.stamps.copy_history_from(&source.stamps);
+        self.running_streak = source.running_streak;
         Ok(())
     }
     /// Discard both speculative and committed history at a transport epoch change.
@@ -498,6 +520,7 @@ impl CompensationRuntime {
             edge.reset_epoch();
         }
         self.stamps.reset();
+        self.running_streak = (0, 0);
         self.transaction_active = false;
     }
 }

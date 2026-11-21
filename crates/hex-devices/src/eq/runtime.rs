@@ -653,6 +653,20 @@ impl EqRuntime {
         node_overrides: Option<&automation::Nodes>,
     ) {
         let automated = !self.configuration.lanes.is_empty() || node_overrides.is_some();
+        if !automated
+            && !bypassed
+            && !frames.is_empty()
+            && frames.len() <= 256
+            && !self.refresh_target
+            && !self.pristine
+            && targets.mode == self.mode
+            && !self.mode_fade.is_active()
+            && self.audition.is_none()
+            && self.audition_request.is_none()
+            && self.try_process_steady_block(frames, clock, first_offset, targets)
+        {
+            return;
+        }
         for (offset, frame) in frames.iter_mut().enumerate() {
             let offset = first_offset + offset;
             let running = clock.is_some_and(|c| c.transport_is_running() == Some(true));
@@ -818,6 +832,194 @@ impl EqRuntime {
             self.fallback_frame = self.fallback_frame.wrapping_add(1);
             self.pristine = false;
         }
+    }
+
+    fn try_process_steady_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        first_offset: usize,
+        targets: automation::Targets,
+    ) -> bool {
+        let len = frames.len();
+        let next_last_frame = if let Some(clock) = clock {
+            if clock.transport_is_running() == Some(true) {
+                let Some((arr0, perf0)) = clock.contiguous_running_frames(first_offset, len) else {
+                    return false;
+                };
+                let Some((last_arr, last_perf)) = self.last_frame else {
+                    return false;
+                };
+                if last_arr.checked_add(1) != Some(arr0) || last_perf.checked_add(1) != Some(perf0)
+                {
+                    return false;
+                }
+                Some((arr0 + (len - 1) as u64, perf0 + (len - 1) as u64))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let gain_steady =
+            targets.mapped_gain || (self.gain + (targets.gain - self.gain) * 0.015625) == self.gain;
+        if !gain_steady {
+            return false;
+        }
+        let node_count = self.configuration.nodes.len();
+        if self.bands[..node_count]
+            .iter()
+            .any(|band| band.remaining > 0)
+        {
+            return false;
+        }
+        let mut all_zero = true;
+        for frame in frames.iter() {
+            if !frame[0].is_finite()
+                || !frame[1].is_finite()
+                || frame[0].abs() >= 1e10
+                || frame[1].abs() >= 1e10
+            {
+                return false;
+            }
+            if (frame[0].to_bits() | frame[1].to_bits()) != 0 {
+                all_zero = false;
+            }
+        }
+        if targets.mapped_gain {
+            self.gain = targets.gain;
+        }
+        if all_zero {
+            let history_quiet = self.bands[..node_count].iter().all(|band| {
+                let used = usize::from(band.stages_used);
+                band.history[0][..used]
+                    .iter()
+                    .chain(&band.history[1][..used])
+                    .all(|h| h[0] == 0.0 && h[1] == 0.0)
+            });
+            if history_quiet {
+                self.last_frame = next_last_frame;
+                self.fallback_frame = self.fallback_frame.wrapping_add(len as u64);
+                return true;
+            }
+        }
+
+        let mut working = [[0.0_f64; 2]; 256];
+        let working = &mut working[..len];
+        if self.mode == 2 {
+            for (dst, src) in working.iter_mut().zip(frames.iter()) {
+                let l = f64::from(src[0]);
+                let r = f64::from(src[1]);
+                *dst = [(l + r) * 0.5, (l - r) * 0.5];
+            }
+        } else {
+            for (dst, src) in working.iter_mut().zip(frames.iter()) {
+                *dst = [f64::from(src[0]), f64::from(src[1])];
+            }
+        }
+
+        let bank_l = bank(self.mode, 0);
+        let bank_r = bank(self.mode, 1);
+        let mut quieted = [false; 2];
+        for (index, band) in self.bands[..node_count].iter_mut().enumerate() {
+            let target_bank = self.effective_banks[index];
+            let run_l = target_bank == bank_l;
+            let run_r = target_bank == bank_r;
+            if !run_l && !run_r {
+                continue;
+            }
+            let used = usize::from(band.stages_used);
+            if used == 1 && band.current[0] == Coefficients::IDENTITY {
+                if run_l && band.history[0][0] == [0.0; 2] && !quieted[0] {
+                    for frame in working.iter_mut() {
+                        frame[0] = quiet(frame[0]);
+                    }
+                    quieted[0] = true;
+                } else if run_l && band.history[0][0] != [0.0; 2] {
+                    let h = &mut band.history[0][0];
+                    for frame in working.iter_mut() {
+                        let output = frame[0] + h[0];
+                        h[0] = quiet(h[1]);
+                        h[1] = 0.0;
+                        frame[0] = quiet(output);
+                    }
+                    quieted[0] = true;
+                }
+                if run_r && band.history[1][0] == [0.0; 2] && !quieted[1] {
+                    for frame in working.iter_mut() {
+                        frame[1] = quiet(frame[1]);
+                    }
+                    quieted[1] = true;
+                } else if run_r && band.history[1][0] != [0.0; 2] {
+                    let h = &mut band.history[1][0];
+                    for frame in working.iter_mut() {
+                        let output = frame[1] + h[0];
+                        h[0] = quiet(h[1]);
+                        h[1] = 0.0;
+                        frame[1] = quiet(output);
+                    }
+                    quieted[1] = true;
+                }
+                continue;
+            }
+            if run_l && run_r {
+                for stage in 0..used {
+                    let c = band.current[stage];
+                    let mut h0_l = band.history[0][stage][0];
+                    let mut h1_l = band.history[0][stage][1];
+                    let mut h0_r = band.history[1][stage][0];
+                    let mut h1_r = band.history[1][stage][1];
+                    for frame in working.iter_mut() {
+                        let x_l = frame[0];
+                        let y_l = c.b0 * x_l + h0_l;
+                        h0_l = quiet(c.b1 * x_l - c.a1 * y_l + h1_l);
+                        h1_l = quiet(c.b2 * x_l - c.a2 * y_l);
+                        frame[0] = quiet(y_l);
+
+                        let x_r = frame[1];
+                        let y_r = c.b0 * x_r + h0_r;
+                        h0_r = quiet(c.b1 * x_r - c.a1 * y_r + h1_r);
+                        h1_r = quiet(c.b2 * x_r - c.a2 * y_r);
+                        frame[1] = quiet(y_r);
+                    }
+                    band.history[0][stage] = [h0_l, h1_l];
+                    band.history[1][stage] = [h0_r, h1_r];
+                }
+                quieted = [true; 2];
+            } else {
+                let ch = usize::from(run_r);
+                for stage in 0..used {
+                    let c = band.current[stage];
+                    let mut h0 = band.history[ch][stage][0];
+                    let mut h1 = band.history[ch][stage][1];
+                    for frame in working.iter_mut() {
+                        let x = frame[ch];
+                        let y = c.b0 * x + h0;
+                        h0 = quiet(c.b1 * x - c.a1 * y + h1);
+                        h1 = quiet(c.b2 * x - c.a2 * y);
+                        frame[ch] = quiet(y);
+                    }
+                    band.history[ch][stage] = [h0, h1];
+                }
+                quieted[ch] = true;
+            }
+        }
+
+        let gain = self.gain;
+        if self.mode == 2 {
+            for (dst, src) in frames.iter_mut().zip(working.iter()) {
+                let l = (src[0] + src[1]) * gain;
+                let r = (src[0] - src[1]) * gain;
+                *dst = [finite_f32(l), finite_f32(r)];
+            }
+        } else {
+            for (dst, src) in frames.iter_mut().zip(working.iter()) {
+                *dst = [finite_f32(src[0] * gain), finite_f32(src[1] * gain)];
+            }
+        }
+        self.last_frame = next_last_frame;
+        self.fallback_frame = self.fallback_frame.wrapping_add(len as u64);
+        true
     }
 }
 fn stages_used(stages: &BandStages) -> u8 {

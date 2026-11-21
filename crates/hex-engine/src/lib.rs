@@ -1360,6 +1360,7 @@ impl PreparedTrackMix {
     }
 
     /// Return this track's post-fader contribution for routing to sends.
+    #[inline]
     pub(crate) fn apply_frame(self, source: Frame) -> Frame {
         if self.muted {
             return [0.0; 2];
@@ -1369,6 +1370,23 @@ impl PreparedTrackMix {
             source[0] * self.channel_gain[0],
             source[1] * self.channel_gain[1],
         ]
+    }
+
+    pub(crate) fn apply_block(self, frames: &mut [Frame]) {
+        if self.muted {
+            frames.fill([0.0; 2]);
+            return;
+        }
+        if let Some(matrix) = self.effects {
+            matrix.apply_block(frames);
+        }
+        let [gl, gr] = self.channel_gain;
+        if gl != 1.0 || gr != 1.0 {
+            for frame in frames.iter_mut() {
+                frame[0] *= gl;
+                frame[1] *= gr;
+            }
+        }
     }
 
     pub(crate) fn with_absolute_gain(mut self, gain: f32) -> Self {
