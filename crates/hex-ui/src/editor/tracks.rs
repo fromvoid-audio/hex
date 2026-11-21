@@ -3,7 +3,7 @@ mod clone_source_window;
 #[path = "tracks/group_overlap.rs"]
 mod group_overlap;
 #[path = "tracks/narrow_clips.rs"]
-mod narrow_clips;
+pub(super) mod narrow_clips;
 
 pub(super) use group_overlap::group_overlap_spans;
 
@@ -613,7 +613,6 @@ impl EditorView {
             caption_rem_size,
         } = timeline;
         let track_id = track.id();
-        let selected = self.selected_track() == Some(track_id);
         let Some(viewport_end) = viewport.end() else {
             return div().w_full().h(px(self.track_body_height(track_id)));
         };
@@ -1659,6 +1658,77 @@ impl EditorView {
                     view.drop_midi_trim(drag, track_id, cx);
                 }),
             );
+        if self.automation_view.enabled {
+            let width = self
+                .drag_lanes
+                .get(&track_id)
+                .map_or(0.0, |lane| lane.width);
+            if self.gain_lane.track == Some(track_id)
+                && !self
+                    .automation_view
+                    .devices
+                    .has_main(super::device_panel::DevicePanelOwner::Track(track_id))
+            {
+                clip_area = clip_area.children(super::gain_lane::inline(
+                    self, state, track_id, viewport, width, cx,
+                ));
+            }
+            clip_area = clip_area.children(super::device_automation::overlay(
+                self,
+                state,
+                super::device_panel::DevicePanelOwner::Track(track_id),
+                viewport,
+                cx,
+            ));
+        }
+        let header = self.build_track_header(state, track, track_index, cx);
+        let row = div()
+            .w_full()
+            .h(px(self.track_body_height(track_id)))
+            .flex_shrink_0()
+            .flex()
+            .child(clip_area)
+            .child(header)
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    view.open_track_context_menu(event.position, Some(track_id), window, cx);
+                }),
+            );
+        let rows = super::device_automation::rows(
+            self,
+            state,
+            super::device_panel::DevicePanelOwner::Track(track_id),
+            viewport,
+            cx,
+        );
+        let row = div()
+            .on_scroll_wheel(
+                cx.listener(move |view, event: &gpui::ScrollWheelEvent, _, cx| {
+                    view.resize_row_wheel(Some(track_id), event, cx);
+                }),
+            )
+            .w_full()
+            .h(px(self.track_height(track_id)))
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .child(row)
+            .child(rows);
+        self.decorate_focused_track_row(track_index, track_id, scale_factor, row)
+    }
+
+    pub(super) fn build_track_header(
+        &mut self,
+        state: &ViewState,
+        track: &Track,
+        track_index: usize,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let track_id = track.id();
+        let selected = self.selected_track() == Some(track_id);
+        let track_selected = self.track_selection.contains(track_id);
         let track_name = track.name().to_owned();
         let name_colors = theme::element_colors(track.color());
         let (name_fill, name_text) = if track_selected {
@@ -1997,64 +2067,8 @@ impl EditorView {
                 view.open_track_color_context_menu(event.position, track_id, window, cx);
             }),
         );
-        if self.automation_view.enabled {
-            let width = self
-                .drag_lanes
-                .get(&track_id)
-                .map_or(0.0, |lane| lane.width);
-            if self.gain_lane.track == Some(track_id)
-                && !self
-                    .automation_view
-                    .devices
-                    .has_main(super::device_panel::DevicePanelOwner::Track(track_id))
-            {
-                clip_area = clip_area.children(super::gain_lane::inline(
-                    self, state, track_id, viewport, width, cx,
-                ));
-            }
-            clip_area = clip_area.children(super::device_automation::overlay(
-                self,
-                state,
-                super::device_panel::DevicePanelOwner::Track(track_id),
-                viewport,
-                cx,
-            ));
-        }
-        let row = div()
-            .w_full()
-            .h(px(self.track_body_height(track_id)))
-            .flex_shrink_0()
-            .flex()
-            .child(clip_area)
-            .child(self.device_drop_header(track_id, header, cx))
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
-                    cx.stop_propagation();
-                    view.open_track_context_menu(event.position, Some(track_id), window, cx);
-                }),
-            );
-        let rows = super::device_automation::rows(
-            self,
-            state,
-            super::device_panel::DevicePanelOwner::Track(track_id),
-            viewport,
-            cx,
-        );
-        let row = div()
-            .on_scroll_wheel(
-                cx.listener(move |view, event: &gpui::ScrollWheelEvent, _, cx| {
-                    view.resize_row_wheel(Some(track_id), event, cx);
-                }),
-            )
-            .w_full()
-            .h(px(self.track_height(track_id)))
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .child(row)
-            .child(rows);
-        self.decorate_focused_track_row(track_index, track_id, scale_factor, row)
+        self.device_drop_header(track_id, header, cx)
+            .into_any_element()
     }
 
     pub(super) fn build_clip_contents(
@@ -2105,6 +2119,354 @@ impl EditorView {
             .or_else(|| self.arrangement_paste_view())
             .or_else(|| self.time_range_copy_view())
             .is_some_and(|view| std::ptr::eq(view.as_ref(), state));
+
+        if let Some(snapshot) = self
+            .state
+            .as_ref()
+            .filter(|snapshot| std::ptr::eq(snapshot.as_ref(), state))
+            .or_else(|| {
+                self.arrangement_duplicate_view()
+                    .or_else(|| self.committed_section_copy_view())
+                    .or_else(|| self.arrangement_paste_view())
+                    .or_else(|| self.time_range_copy_view())
+                    .filter(|snapshot| std::ptr::eq(snapshot.as_ref(), state))
+            })
+            .cloned()
+        {
+            self.arrangement_clip_index
+                .borrow_mut()
+                .ensure_current(self.project_generation, &snapshot);
+
+            let has_potential_overlays = exclusions.iter().any(Option::is_some)
+                || group.is_some()
+                || self.clip_name_edit.is_some()
+                || self.pending_trim.is_some()
+                || self.active_trim_drag.is_some()
+                || self.active_midi_trim_drag.is_some()
+                || self.fade_key_held
+                || self.hovered_fade_clip.is_some()
+                || self.hovered_fade_handle.is_some()
+                || self.active_fade_drag.is_some()
+                || self.pending_fade.is_some()
+                || self.clip_gain.has_displayed()
+                || self.audio_clip_controls.gain_preview(self).is_some()
+                || self.clip_loop_held()
+                || self.audio_event_editor.gesture.is_some()
+                || self.held_arrangement_event_clip().is_some();
+
+            if !has_potential_overlays {
+                let canvas = super::track_lane_canvas::TrackLaneCanvas::new(
+                    cx.entity(),
+                    snapshot,
+                    track_id,
+                    track_index,
+                    viewport,
+                    std::rc::Rc::from(grid),
+                    std::rc::Rc::from([]),
+                    is_committed_edit_view,
+                );
+                return self.wrap_track_lane_canvas(
+                    track_id,
+                    viewport,
+                    scale_factor,
+                    canvas,
+                    Vec::new(),
+                    cx,
+                );
+            }
+
+            let mut excluded: Vec<hex_project::ClipId> = Vec::new();
+            let mut overlays: Vec<gpui::AnyElement> = Vec::new();
+            let mut overlay_fade_foreground = Vec::new();
+            let mut overlay_selected_fade_foreground = Vec::new();
+            let mut overlay_selected_edges = Vec::new();
+            let mut overlay_bars = narrow_clips::Bars::default();
+
+            let visible_entries: Vec<_> = self
+                .arrangement_clip_index
+                .borrow()
+                .track(track_id)
+                .map(|idx| idx.candidate_slice(viewport.start, viewport_end).to_vec())
+                .unwrap_or_default();
+
+            for entry in visible_entries {
+                if entry.end <= viewport.start || entry.start >= viewport_end {
+                    continue;
+                }
+                if hides_group_member(entry.id) {
+                    excluded.push(entry.id);
+                    continue;
+                }
+                if !is_committed_edit_view && !self.arrangement_clip_visible(entry.id) {
+                    continue;
+                }
+                match entry.kind {
+                    super::arrangement_clip_index::IndexedClipKind::Audio(i) => {
+                        let Some(canonical_clip) = track.clips().get(i) else {
+                            continue;
+                        };
+                        let scope_preview = self.audio_scope_display_clip(canonical_clip, state);
+                        let clip = scope_preview.as_ref();
+                        let has_scope = !std::ptr::eq(clip, canonical_clip);
+                        let has_trim = self
+                            .audio_trim_display(track_id, Some(clip.id()))
+                            .is_some_and(|(orig, _)| orig.id() == clip.id());
+                        let has_exclusions = clip_intersects_exclusions(clip, exclusions);
+                        let has_rename = self.clip_name_is_editing(clip.id());
+                        let has_fade_overlay = self.fade_key_held
+                            || self.fade_curve_active(clip.id())
+                            || self.hovered_fade_clip == Some((self.project_generation, clip.id()))
+                            || self
+                                .hovered_fade_handle
+                                .and_then(|h| h.in_track(self.project_generation, track_id))
+                                .is_some_and(|(id, _)| id == clip.id())
+                            || self.fade_preview(clip.id()).is_some();
+                        let has_gain_overlay =
+                            self.displayed_clip_gain(clip.id()).is_some() || self.clip_gain.held();
+
+                        if !(has_scope
+                            || has_trim
+                            || has_exclusions
+                            || has_rename
+                            || has_fade_overlay
+                            || has_gain_overlay)
+                        {
+                            continue;
+                        }
+                        excluded.push(clip.id());
+                        if has_exclusions {
+                            for fragment in
+                                clip_fragments_outside(clip, exclusions, state.project.tempo_map())
+                                    .into_iter()
+                                    .flatten()
+                            {
+                                if let Some(fragment_view) = passive_audio_fragment(
+                                    self.drag_lanes
+                                        .get(&track_id)
+                                        .map_or(0.0, |lane| lane.width),
+                                    scale_factor,
+                                    theme::clip_activity_fill(
+                                        track.color(),
+                                        fragment.flavor(),
+                                        false,
+                                        fragment.active(),
+                                    ),
+                                    &fragment,
+                                    state.waveforms.get(&fragment.asset()),
+                                    viewport,
+                                    viewport_end,
+                                    grid,
+                                    std::rc::Rc::clone(&self.waveform_geometry_cache),
+                                    format!(
+                                        "time-move-audio-residual-{}-{}",
+                                        track_id.value(),
+                                        fragment.start()
+                                    ),
+                                    self.track_body_height(track_id)
+                                        <= super::track_layout::HEADER_ONLY_HEIGHT,
+                                ) {
+                                    overlays.push(fragment_view.into_any_element());
+                                }
+                            }
+                            continue;
+                        }
+                        let selected_clip = self.clip_is_selected(clip.id());
+                        let (body, foreground, notch) = self.clip_view(
+                            state,
+                            track_id,
+                            clip,
+                            ClipViewTimeline {
+                                viewport,
+                                grid,
+                                scale_factor,
+                                caption_rem_size,
+                            },
+                            &mut overlay_bars,
+                            cx,
+                        );
+                        overlays.push(body);
+                        if selected_clip
+                            && let Some(notch) = notch
+                            && let Some(end) = clip.start().checked_add(clip.duration())
+                        {
+                            let end = end.min(viewport_end);
+                            let id = clip.id();
+                            let active = self.displayed_clip_active(id, clip.active());
+                            let outline =
+                                theme::clip_activity_outline(active, theme::PaletteRole::Primary);
+                            overlay_selected_edges.push(
+                                super::clip_boundary::trailing_edge(notch, outline, outline)
+                                    .debug_selector(move || {
+                                        format!("clip-selected-trailing-{}", id.value())
+                                    })
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .left(relative(
+                                        (end - viewport.start) as f32 / viewport.length as f32,
+                                    ))
+                                    .w(px(1.0 / scale_factor.max(1.0)))
+                                    .into_any_element(),
+                            );
+                        }
+                        if let Some(foreground) = foreground {
+                            if self.selected_clip == Some(clip.id())
+                                || self.fade_curve_active(clip.id())
+                            {
+                                overlay_selected_fade_foreground
+                                    .push(foreground.into_any_element());
+                            } else {
+                                overlay_fade_foreground.push(foreground.into_any_element());
+                            }
+                        }
+                    }
+                    super::arrangement_clip_index::IndexedClipKind::Midi(i) => {
+                        let Some(clip) = track.midi_clips().get(i) else {
+                            continue;
+                        };
+                        let has_trim = self
+                            .midi_trim_display(track_id, Some(clip.id()))
+                            .is_some_and(|(orig, _)| orig.id() == clip.id());
+                        let has_exclusions = exclusions
+                            .into_iter()
+                            .flatten()
+                            .any(|(es, ee)| es < entry.end && ee > entry.start);
+                        let has_rename = self.clip_name_is_editing(clip.id());
+                        if !(has_trim || has_exclusions || has_rename) {
+                            continue;
+                        }
+                        excluded.push(clip.id());
+                        if has_exclusions {
+                            let active = self.displayed_clip_active(clip.id(), clip.active());
+                            for (fragment_index, interval) in
+                                time_fragments_outside(entry.start, entry.end, exclusions)
+                                    .into_iter()
+                                    .enumerate()
+                            {
+                                let Some(interval) = interval else {
+                                    continue;
+                                };
+                                if let Some(fragment) = passive_midi_fragment(
+                                    self.drag_lanes
+                                        .get(&track_id)
+                                        .map_or(0.0, |lane| lane.width),
+                                    scale_factor,
+                                    theme::clip_activity_fill(
+                                        track.color(),
+                                        clip.flavor(),
+                                        false,
+                                        active,
+                                    ),
+                                    clip.id(),
+                                    clip.name(),
+                                    active,
+                                    |start, end, merge| {
+                                        self.loop_note_shapes(
+                                            &state.project,
+                                            clip,
+                                            start,
+                                            end,
+                                            merge,
+                                        )
+                                    },
+                                    interval,
+                                    interval,
+                                    viewport,
+                                    viewport_end,
+                                    grid,
+                                    format!("time-move-midi-residual-{fragment_index}"),
+                                    self.track_body_height(track_id)
+                                        <= super::track_layout::HEADER_ONLY_HEIGHT,
+                                ) {
+                                    overlays.push(fragment.into_any_element());
+                                }
+                            }
+                            continue;
+                        }
+                        // For active MIDI rename or trim preview, mount just that one
+                        // clip's live header/shell overlay.
+                        if has_rename {
+                            let vis_start = entry.start.max(viewport.start);
+                            let vis_end = entry.end.min(viewport_end);
+                            let left = vis_start.saturating_sub(viewport.start) as f64
+                                / viewport.length as f64;
+                            let width =
+                                vis_end.saturating_sub(vis_start) as f64 / viewport.length as f64;
+                            let active = self.displayed_clip_active(clip.id(), clip.active());
+                            let header_fill = theme::clip_activity_fill(
+                                track.color(),
+                                clip.flavor(),
+                                false,
+                                active,
+                            );
+                            overlays.push(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .left(relative(left as f32))
+                                    .w(relative(width as f32))
+                                    .child(self.clip_name_header(
+                                        track_id,
+                                        clip.id(),
+                                        clip.name(),
+                                        header_fill,
+                                        cx,
+                                    ))
+                                    .into_any_element(),
+                            );
+                        } else if has_trim {
+                            let vis_start = entry.start.max(viewport.start);
+                            let vis_end = entry.end.min(viewport_end);
+                            let left = vis_start.saturating_sub(viewport.start) as f64
+                                / viewport.length as f64;
+                            let width =
+                                vis_end.saturating_sub(vis_start) as f64 / viewport.length as f64;
+                            let clip_id = clip.id();
+                            overlays.push(
+                                div()
+                                    .id(("midi-trim-source-anchor", clip_id.value()))
+                                    .debug_selector(move || {
+                                        format!("midi-clip-visual-{}", clip_id.value())
+                                    })
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .left(relative(left as f32))
+                                    .w(relative(width as f32))
+                                    .into_any_element(),
+                            );
+                        }
+                    }
+                }
+            }
+
+            if let Some(bars) = overlay_bars.view(track_id) {
+                overlays.insert(0, bars.into_any_element());
+            }
+            overlays.extend(overlay_fade_foreground);
+            overlays.extend(overlay_selected_fade_foreground);
+            overlays.extend(overlay_selected_edges);
+
+            let canvas = super::track_lane_canvas::TrackLaneCanvas::new(
+                cx.entity(),
+                snapshot,
+                track_id,
+                track_index,
+                viewport,
+                std::rc::Rc::from(grid),
+                std::rc::Rc::from(excluded),
+                is_committed_edit_view,
+            );
+            return self.wrap_track_lane_canvas(
+                track_id,
+                viewport,
+                scale_factor,
+                canvas,
+                overlays,
+                cx,
+            );
+        }
         for canonical_clip in track.clips() {
             let scope_preview = self.audio_scope_display_clip(canonical_clip, state);
             let clip = scope_preview.as_ref();
@@ -2665,6 +3027,150 @@ impl EditorView {
             }
         }
         Some(content.child(self.clip_name_drag_header(id, name, fill, on_backdrop)))
+    }
+
+    pub(super) fn resolve_audio_waveform_source(
+        &self,
+        state: &ViewState,
+        clip: &Clip,
+        visible_start: u64,
+        visible_end: u64,
+    ) -> Option<(
+        std::sync::Arc<hex_session::CachedWaveform>,
+        super::waveform_geometry::WaveformMapping,
+    )> {
+        use super::waveform_geometry::{WaveformMapping, WaveformWindow};
+
+        let waveform = state.waveforms.get(&clip.asset());
+        let gain = self
+            .waveform_clip_gain(clip)
+            .filter(|gain| *gain != clip.gain());
+        let fade = self.fade_preview(clip.id());
+        let trim = self.fade_trim_preview(clip.id());
+        let prepared = state.audio_clip_waveforms.get(&clip.id());
+        let fallback = if let Some(prepared) = prepared {
+            let root_offset = trim
+                .and_then(Clip::audio_edit)
+                .and_then(|edit| edit.projected_domain(state.project.tempo_map()).ok())
+                .map_or(prepared.offset, |(_, _, offset, _)| offset);
+            Some((
+                std::sync::Arc::clone(&prepared.waveform),
+                WaveformMapping::Prepared {
+                    timeline_origin: clip.start(),
+                    root_offset,
+                    gain: gain.unwrap_or(clip.gain()),
+                },
+            ))
+        } else {
+            waveform
+                .filter(|_| clip.audio_edit().is_none())
+                .map(|waveform| {
+                    (
+                        std::sync::Arc::clone(waveform),
+                        WaveformMapping::Clip {
+                            clip: clip.clone(),
+                            timeline_origin: clip.start(),
+                            gain: gain.map(hex_project::ClipGain::linear),
+                            fade: Some(fade.unwrap_or(clip.retained_fade())),
+                        },
+                    )
+                })
+        };
+        let events = self.arrangement_event_amplitude(clip);
+        let event_source = prepared.and_then(|prepared| prepared.event_source.as_ref());
+        let musical_source = if event_source.is_some_and(|source| source.musical_clock.is_some()) {
+            super::waveform_musical_event::Projection::for_display(
+                &state.project,
+                clip,
+                event_source,
+                events.clone(),
+                gain,
+                fade,
+            )
+        } else {
+            None
+        };
+        let source = if musical_source.is_none() {
+            super::waveform_frame::Projection::for_display(
+                &state.project,
+                clip,
+                waveform,
+                prepared,
+                fade,
+                events,
+                gain,
+            )
+        } else {
+            None
+        };
+        if let Some((waveform, projection)) = musical_source {
+            Some((
+                waveform,
+                WaveformMapping::MusicalEventFade {
+                    projection,
+                    clock: super::waveform_musical_event::Clock::Arrangement,
+                    fallback: fallback.map(|(waveform, mapping)| {
+                        std::sync::Arc::new(WaveformWindow {
+                            waveform,
+                            mapping,
+                            visible: visible_start..visible_end,
+                        })
+                    }),
+                },
+            ))
+        } else {
+            match source {
+                Some((waveform, projection)) => Some((
+                    waveform,
+                    WaveformMapping::Frame {
+                        projection,
+                        clock: super::waveform_frame::Clock::Arrangement,
+                        fallback: fallback.map(|(waveform, mapping)| {
+                            std::sync::Arc::new(WaveformWindow {
+                                waveform,
+                                mapping,
+                                visible: visible_start..visible_end,
+                            })
+                        }),
+                    },
+                )),
+                None => prepared
+                    .and_then(|prepared| {
+                        if let Some((waveform, view)) =
+                            super::waveform_prepared_fade::PreparedMusicalFade::for_clip(
+                                &state.project,
+                                clip,
+                                prepared,
+                                fade,
+                                gain.unwrap_or(clip.gain()),
+                            )
+                        {
+                            return Some((waveform, WaveformMapping::PreparedMusicalFade(view)));
+                        }
+                        let view = super::waveform_prepared_fade::PreparedFade::for_clip(
+                            &state.project,
+                            clip,
+                            prepared,
+                            fade,
+                            gain.unwrap_or(clip.gain()),
+                        )?;
+                        Some((
+                            std::sync::Arc::clone(&prepared.waveform),
+                            WaveformMapping::PreparedFade(view),
+                        ))
+                    })
+                    .or(fallback),
+            }
+        }
+    }
+
+    pub(super) fn waveform_grid_for(
+        &self,
+        track: hex_project::TrackId,
+        viewport: Viewport,
+        scale: f32,
+    ) -> Option<super::waveform::WaveformGrid> {
+        self.waveform_grid(track, viewport, scale)
     }
 
     fn audio_clip_body(
@@ -3672,7 +4178,7 @@ impl EditorView {
     }
 }
 
-struct ClipDragGhost;
+pub(super) struct ClipDragGhost;
 
 impl gpui::Render for ClipDragGhost {
     fn render(

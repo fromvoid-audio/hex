@@ -512,7 +512,7 @@ fn resize_pan_prefix<T: PartialEq>(
         .map(|_| last)
 }
 
-fn drag_admitted(view: &EditorView) -> bool {
+pub(super) fn drag_admitted(view: &EditorView) -> bool {
     view.pending_trim.is_none()
         && trim_drag_admitted(
             view.opening_project,
@@ -777,7 +777,276 @@ fn midi_preview_for_pointer(
     )
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct LaneTrimTarget {
+    pub(super) track: TrackId,
+    pub(super) clip_id: hex_project::ClipId,
+    pub(super) edge: TrimEdge,
+    pub(super) loop_kind: Option<LoopHandleKind>,
+}
+
 impl EditorView {
+    /// Record press state for an analytic audio trim/loop hit on a lane canvas.
+    pub(super) fn press_audio_trim_from_lane(
+        &mut self,
+        target: LaneTrimTarget,
+        viewport: Viewport,
+        pointer_x: f32,
+        window: &mut Window,
+    ) {
+        let LaneTrimTarget {
+            track,
+            clip_id,
+            edge,
+            loop_kind,
+        } = target;
+        let generation = self.project_generation;
+        let Some(source) = self.audio_trim_source_for(track, clip_id, edge, loop_kind, viewport)
+        else {
+            self.clear_pointer_down(generation, clip_id, Some(edge));
+            return;
+        };
+        if self.trim_drag_current(&source.payload()) {
+            self.focus.focus(window);
+            self.remember_pointer_down(generation, clip_id, Some(edge), pointer_x);
+        } else {
+            self.clear_pointer_down(generation, clip_id, Some(edge));
+        }
+    }
+
+    /// Record press state for an analytic MIDI trim/loop hit on a lane canvas.
+    pub(super) fn press_midi_trim_from_lane(
+        &mut self,
+        target: LaneTrimTarget,
+        viewport: Viewport,
+        pointer_x: f32,
+        window: &mut Window,
+    ) {
+        let LaneTrimTarget {
+            track,
+            clip_id,
+            edge,
+            loop_kind,
+        } = target;
+        let generation = self.project_generation;
+        let Some(payload) = self.midi_trim_drag_for(track, clip_id, edge, loop_kind, viewport)
+        else {
+            self.clear_pointer_down(generation, clip_id, Some(edge));
+            return;
+        };
+        if self.midi_trim_drag_current(&payload) {
+            self.focus.focus(window);
+            self.remember_pointer_down(generation, clip_id, Some(edge), pointer_x);
+        } else {
+            self.clear_pointer_down(generation, clip_id, Some(edge));
+        }
+    }
+
+    fn audio_trim_source_for(
+        &self,
+        track: TrackId,
+        clip_id: hex_project::ClipId,
+        edge: TrimEdge,
+        loop_kind: Option<LoopHandleKind>,
+        viewport: Viewport,
+    ) -> Option<AudioTrimSource> {
+        let state = self.state.as_ref()?;
+        let lane = *self.drag_lanes.get(&track)?;
+        let clip = state
+            .project
+            .track(track)?
+            .clips()
+            .iter()
+            .find(|c| c.id() == clip_id)?;
+        let asset = state.project.asset(clip.asset())?;
+        let repeat_available = loop_kind.is_none()
+            && edge == TrimEdge::Right
+            && loop_handles::audio_repeat_available(clip, &state.project);
+        Some(AudioTrimSource {
+            loop_kind,
+            repeat_available,
+            generation: self.project_generation,
+            revision: state.revision,
+            track,
+            clip: Rc::new(clip.clone()),
+            asset_playback_frames: asset.playback_frames(),
+            edge,
+            lane,
+            viewport,
+            snap_grid: self.snap_grid,
+        })
+    }
+
+    fn midi_trim_drag_for(
+        &self,
+        track: TrackId,
+        clip_id: hex_project::ClipId,
+        edge: TrimEdge,
+        loop_kind: Option<LoopHandleKind>,
+        viewport: Viewport,
+    ) -> Option<MidiTrimDrag> {
+        let state = self.state.as_ref()?;
+        let lane = *self.drag_lanes.get(&track)?;
+        let clip = state
+            .project
+            .track(track)?
+            .midi_clips()
+            .iter()
+            .find(|c| c.id() == clip_id)?;
+        let repeat_available = loop_kind.is_none()
+            && edge == TrimEdge::Right
+            && loop_handles::midi_repeat_available(clip);
+        Some(MidiTrimDrag {
+            loop_kind,
+            repeat_available,
+            repeat: Rc::new(Cell::new(false)),
+            canceled: Rc::new(Cell::new(false)),
+            capture: Rc::new(Cell::new(None)),
+            project_generation: self.project_generation,
+            revision: state.revision,
+            source_track: track,
+            clip: Rc::new(clip.clone()),
+            edge,
+            source_lane: lane,
+            viewport_start: viewport.start,
+            viewport_length: viewport.length,
+            scroll: Default::default(),
+            snap_grid: self.snap_grid,
+            stretch_modifier: Rc::new(Cell::new(false)),
+            snap_modifier: Rc::new(Cell::new(false)),
+            last_pointer_x: Rc::new(Cell::new(None)),
+            valid_pointer_x: Rc::new(Cell::new(None)),
+            grab_delta: Rc::new(RefCell::new(None)),
+            preview: Rc::new(RefCell::new(None)),
+        })
+    }
+
+    /// Construct and activate an audio `TrimDrag` from an analytic lane press.
+    pub(super) fn start_audio_trim_drag_from_lane(
+        &mut self,
+        target: LaneTrimTarget,
+        viewport: Viewport,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<(TrimDrag, gpui::Entity<TrimPreview>)> {
+        let LaneTrimTarget {
+            track,
+            clip_id,
+            edge,
+            loop_kind,
+        } = target;
+        let project = self.state.as_ref()?.project.clone();
+        let source = self.audio_trim_source_for(track, clip_id, edge, loop_kind, viewport)?;
+        let lane = source.lane;
+        let payload = source.payload();
+        let capture = if self.trim_drag_current(&payload) {
+            self.take_pointer_down(
+                payload.project_generation,
+                payload.clip.id(),
+                Some(payload.edge),
+            )
+        } else {
+            self.clear_pointer_down(
+                payload.project_generation,
+                payload.clip.id(),
+                Some(payload.edge),
+            );
+            None
+        };
+        payload.capture.set(capture);
+        let original_down_x = capture.map(|capture| capture.origin_x());
+        let pointer_frame = original_down_x.and_then(|x| frame_at_x(x, lane, viewport));
+        let delta = pointer_frame
+            .zip(audio_grab_frame(&payload, &project))
+            .map(|(pointer, edge_frame)| i128::from(pointer) - i128::from(edge_frame));
+        *payload.grab_delta.borrow_mut() = delta;
+        let pointer_x = f32::from(window.mouse_position().x);
+        payload.last_pointer_x.set(Some(pointer_x));
+        payload.snap_modifier.set(window.modifiers().platform);
+        payload.stretch_modifier.set(window.modifiers().shift);
+        payload
+            .repeat
+            .set(payload.repeat_available && window.modifiers().alt);
+        let cursor = if payload.repeat.get() {
+            gpui::CursorStyle::Loop
+        } else if let Some(kind) = loop_kind {
+            match kind {
+                LoopHandleKind::FirstBoundary => gpui::CursorStyle::ResizeLeftRight,
+                LoopHandleKind::Outer => gpui::CursorStyle::Loop,
+            }
+        } else {
+            super::drag::rectangle_part(Some(edge)).cursor()
+        };
+        window.defer(cx, move |window, cx| {
+            cx.set_active_drag_cursor_style(cursor, window);
+        });
+        self.begin_trim_drag(&payload);
+        self.update_trim_preview(&payload, pointer_x, cx);
+        let ghost = cx.new(|_| TrimPreview {
+            data: payload.preview.clone(),
+        });
+        Some((payload, ghost))
+    }
+
+    /// Construct and activate a `MidiTrimDrag` from an analytic lane press.
+    pub(super) fn start_midi_trim_drag_from_lane(
+        &mut self,
+        target: LaneTrimTarget,
+        viewport: Viewport,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<(MidiTrimDrag, gpui::Entity<TrimPreview>)> {
+        let LaneTrimTarget {
+            track,
+            clip_id,
+            edge,
+            loop_kind,
+        } = target;
+        let project = self.state.as_ref()?.project.clone();
+        let payload = self.midi_trim_drag_for(track, clip_id, edge, loop_kind, viewport)?;
+        let lane = payload.source_lane;
+        let capture = if self.midi_trim_drag_current(&payload) {
+            self.take_pointer_down(payload.project_generation, clip_id, Some(edge))
+        } else {
+            self.clear_pointer_down(payload.project_generation, clip_id, Some(edge));
+            None
+        };
+        payload.capture.set(capture);
+        let original_down_x = capture.map(|capture| capture.origin_x());
+        let pointer_beat =
+            original_down_x.and_then(|x| midi_pointer_beat(&project, x, lane, viewport));
+        let delta = pointer_beat
+            .zip(midi_grab_beat(&payload))
+            .map(|(pointer, edge_beat)| i128::from(pointer.raw()) - i128::from(edge_beat.raw()));
+        *payload.grab_delta.borrow_mut() = delta;
+        let pointer_x = f32::from(window.mouse_position().x);
+        payload.last_pointer_x.set(Some(pointer_x));
+        payload.snap_modifier.set(window.modifiers().platform);
+        payload.stretch_modifier.set(window.modifiers().shift);
+        payload
+            .repeat
+            .set(payload.repeat_available && window.modifiers().alt);
+        let cursor = if payload.repeat.get() {
+            gpui::CursorStyle::Loop
+        } else if let Some(kind) = loop_kind {
+            match kind {
+                LoopHandleKind::FirstBoundary => gpui::CursorStyle::ResizeLeftRight,
+                LoopHandleKind::Outer => gpui::CursorStyle::Loop,
+            }
+        } else {
+            super::drag::rectangle_part(Some(edge)).cursor()
+        };
+        window.defer(cx, move |window, cx| {
+            cx.set_active_drag_cursor_style(cursor, window);
+        });
+        self.begin_midi_trim_drag(&payload);
+        self.update_midi_trim_preview(&payload, pointer_x, cx);
+        let ghost = cx.new(|_| TrimPreview {
+            data: Rc::new(RefCell::new(None)),
+        });
+        Some((payload, ghost))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn trim_handles(
         &self,
@@ -1203,6 +1472,9 @@ impl EditorView {
         let audio = self.active_trim_drag.take();
         let midi = self.active_midi_trim_drag.take();
         let canceled = audio.is_some() || midi.is_some();
+        if canceled {
+            self.hovered_arrangement_clip = None;
+        }
         if let Some(drag) = audio {
             if canceled_view {
                 self.service.audition_arrangement_stretch(None);
@@ -1834,7 +2106,7 @@ impl EditorView {
     }
 }
 
-struct TrimPreview {
+pub(super) struct TrimPreview {
     data: Rc<RefCell<Option<TrimPreviewState>>>,
 }
 
