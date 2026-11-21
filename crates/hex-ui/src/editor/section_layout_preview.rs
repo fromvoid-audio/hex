@@ -2,8 +2,9 @@
 //! when the command is submitted and owned by the section receipt, so moved
 //! clips and markers retire together with the canonical installation. It never
 //! dispatches, prepares audio or replaces canonical state.
-//! Gain automation and the overview keep their canonical previews until the
-//! acknowledged installation; only arrangement clip rows read this layout.
+//! Gain automation and the Main-lane underlay keep their canonical previews
+//! until the acknowledged installation; arrangement clip rows and section
+//! clip previews read this layout.
 use super::ViewState;
 use hex_project::{Command, Project};
 use std::sync::Arc;

@@ -1,36 +1,88 @@
 //! Cached, view-only clip intervals for the Main lane and section miniatures.
 //! Project owns time/identity; section, range and automation owners retain input.
-use super::{EditorView, viewport::Viewport};
+use super::{EditorView, ViewState, viewport::Viewport};
 use crate::{section_surface::SectionCoverage, theme};
 use gpui::{
     Bounds, Div, Pixels, Rgba, ScaledPixels, Window, canvas, div, fill, point, prelude::*, px, rgb,
     size,
 };
+use std::rc::Rc;
 
 mod model;
-use model::cached;
 pub(super) use model::{
-    Interval, MAX_ROWS, MapCache, append_track_intervals, merge, project_interval,
+    Interval, MAX_ROWS, MapCache, SectionMapCache, append_track_intervals, merge, project_interval,
 };
+use model::{SectionRows, cached, cached_section_rows};
+
+enum Rows {
+    Main(Rc<MapCache>),
+    Section(SectionRows),
+}
+
+impl Rows {
+    fn len(&self) -> usize {
+        match self {
+            Self::Main(data) => data.rows.len(),
+            Self::Section(rows) => rows.len(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn row(&self, index: usize) -> Option<&[Interval]> {
+        match self {
+            Self::Main(data) => data.rows.get(index).map(Vec::as_slice),
+            Self::Section(rows) => rows.get(index).map(Box::as_ref),
+        }
+    }
+}
 
 pub(super) fn view(
     view: &EditorView,
     viewport: Viewport,
     coverage: Option<SectionCoverage>,
 ) -> Div {
-    layer(view, viewport, None, coverage)
+    let data = view.state.as_ref().map(|state| {
+        let focus = view.arrangement_focus_ranges();
+        let revealed = view.arrangement_revealed_track();
+        let cache = if focus.is_empty() && revealed.is_none() {
+            &view.arrangement_map_cache
+        } else {
+            &view.focused_arrangement_map_cache
+        };
+        Rows::Main(cached(
+            cache,
+            view.project_generation,
+            state.revision,
+            &state.project,
+            &focus,
+            revealed,
+        ))
+    });
+    paint_layer(data, viewport, None, coverage)
 }
 
-pub(super) fn section(view: &EditorView, start: u64, end: u64, chamfer: f32) -> Div {
-    layer(
-        view,
-        Viewport {
-            start,
-            length: end.saturating_sub(start),
-        },
-        Some(chamfer),
-        None,
-    )
+/// Render only the clips intersecting `section_range` (`[start, end)`) from
+/// every track in `state.project`, independent of arranger visibility filters.
+pub(super) fn section(
+    view: &EditorView,
+    state: &ViewState,
+    section_range: (u64, u64),
+    viewport: Viewport,
+    chamfer: f32,
+) -> Div {
+    let rows = cached_section_rows(
+        &view.section_map_cache,
+        view.project_generation,
+        state.revision,
+        &state.project,
+        section_range.0,
+        section_range.1,
+    );
+    let data = (!rows.is_empty()).then_some(Rows::Section(rows));
+    paint_layer(data, viewport, Some(chamfer), None)
 }
 
 /// Paint one row's miniature marks inside the enclosing paint layer so every
@@ -71,38 +123,12 @@ fn can_reserve_layer(bounds: Bounds<Pixels>, mask: Bounds<Pixels>, scale: f32) -
         .all(|edge| f64::from(edge).is_finite())
 }
 
-fn layer(
-    view: &EditorView,
+fn paint_layer(
+    data: Option<Rows>,
     viewport: Viewport,
     chamfer: Option<f32>,
     coverage: Option<SectionCoverage>,
 ) -> Div {
-    let data = view.state.as_ref().map(|state| {
-        // Section miniatures describe the project inside their own time spans.
-        // Only the Main underlay follows the track focus projection.
-        let (focus, revealed) = if chamfer.is_some() {
-            (None, None)
-        } else {
-            (
-                Some(view.arrangement_focus_ranges()),
-                view.arrangement_revealed_track(),
-            )
-        };
-        let ranges = focus.as_deref().unwrap_or_default();
-        let cache = if ranges.is_empty() && revealed.is_none() {
-            &view.arrangement_map_cache
-        } else {
-            &view.focused_arrangement_map_cache
-        };
-        cached(
-            cache,
-            view.project_generation,
-            state.revision,
-            &state.project,
-            ranges,
-            revealed,
-        )
-    });
     div()
         .debug_selector(move || {
             if chamfer.is_some() {
@@ -120,7 +146,7 @@ fn layer(
                     let Some(limit) = viewport.end() else {
                         return;
                     };
-                    if data.rows.is_empty() || viewport.length == 0 {
+                    if data.is_empty() || viewport.length == 0 {
                         return;
                     }
                     let width = f32::from(bounds.size.width);
@@ -136,7 +162,7 @@ fn layer(
                     if available <= 0.0 {
                         return;
                     }
-                    let row_height = available / data.rows.len() as f32;
+                    let row_height = available / data.len() as f32;
                     let pixel = 1.0 / window.scale_factor();
                     let coverage = coverage
                         .as_ref()
@@ -152,7 +178,10 @@ fn layer(
                         theme::PaletteRole::Raised
                     }));
                     let paint_all_rows = |window: &mut Window| {
-                        for (index, row) in data.rows.iter().enumerate() {
+                        for index in 0..data.len() {
+                            let Some(row) = data.row(index) else {
+                                continue;
+                            };
                             let first = row.partition_point(|span| span.end <= viewport.start);
                             let y = top + index as f32 * row_height;
                             let h = (row_height - pixel).max(pixel).min(height - y);
@@ -606,5 +635,363 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn section_preview_quads(
+        visual: &mut gpui::VisualTestContext,
+        selector: &'static str,
+    ) -> Vec<Bounds<ScaledPixels>> {
+        let ink = gpui::Background::from(rgb(theme::color(theme::PaletteRole::Background)));
+        let section = visual.debug_bounds(selector).unwrap();
+        let scale = visual.update(|window, _| window.scale_factor());
+        let body_top = point(
+            section.left(),
+            section.top() + px(super::super::clip_name::CLIP_NAME_HEIGHT),
+        )
+        .scale(scale)
+        .y;
+        let width = section.scale(scale).size.width;
+        visual
+            .rendered_filled_quads(selector)
+            .into_iter()
+            .filter_map(|(bounds, color)| {
+                (color == ink && bounds.top() >= body_top && bounds.size.width < width)
+                    .then_some(bounds)
+            })
+            .collect()
+    }
+
+    #[gpui::test]
+    fn section_previews_render_only_their_own_clips_regardless_of_arranger_visibility(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::{Modifiers, VisualTestContext, point, px, size};
+        use hex_project::{Created, IDENTITY_CONVERSION, Project, TrackSelectionIds, TrackTag};
+
+        let mut model = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
+        let mut tracks = Vec::new();
+        for name in ["a-only", "b-only", "muted-a", "empty"] {
+            let Created::Track(id) = model
+                .execute(Command::AddTrack { name: name.into() })
+                .unwrap()
+            else {
+                panic!("track");
+            };
+            tracks.push(id);
+        }
+        // Extra off-screen tracks so vertical scroll hides tracks in the arranger.
+        for index in 0..10 {
+            model
+                .execute(Command::AddTrack {
+                    name: format!("spacer {index}"),
+                })
+                .unwrap();
+        }
+        let Created::Track(bottom_a) = model
+            .execute(Command::AddTrack {
+                name: "bottom-a".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let Created::Track(group) = model
+            .execute(Command::GroupTracks {
+                tracks: TrackSelectionIds::new(&[tracks[0], tracks[1]]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group");
+        };
+        let bass = TrackTag::new("bass").unwrap();
+        model
+            .execute(Command::SetTrackTags {
+                track: tracks[2],
+                tags: vec![bass.clone()],
+            })
+            .unwrap();
+        // Section 0 [0, 4) has three tracks (tracks[0], muted tracks[2], bottom_a).
+        // Section 1 [4, 8) has one track (tracks[1]).
+        // Section 2 [8, 12) is empty.
+        model
+            .execute(Command::PlaceMidiClip {
+                track: tracks[0],
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(2).unwrap(),
+            })
+            .unwrap();
+        model
+            .execute(Command::PlaceMidiClip {
+                track: tracks[1],
+                start: BeatTime::from_quarters(4).unwrap(),
+                length: BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap();
+        model
+            .execute(Command::ImportPreparedAudioClip {
+                track: tracks[2],
+                start: 0,
+                path: "/tmp/section-muted.wav".into(),
+                source_sample_rate: 48_000,
+                source_frames: 48_000,
+                playback_frames: 48_000,
+                conversion_version: IDENTITY_CONVERSION,
+            })
+            .unwrap();
+        let muted_clip = model.project().track(tracks[2]).unwrap().clips()[0].id();
+        model
+            .execute(Command::SetClipActive {
+                clip: muted_clip,
+                active: false,
+            })
+            .unwrap();
+        model
+            .execute(Command::PlaceMidiClip {
+                track: bottom_a,
+                start: BeatTime::from_quarters(2).unwrap(),
+                length: BeatTime::from_quarters(2).unwrap(),
+            })
+            .unwrap();
+        for (name, start, end) in [("first", 0, 4), ("second", 4, 8), ("empty", 8, 12)] {
+            model
+                .execute(Command::AddArrangementSection {
+                    name: name.into(),
+                    color: hex_project::ElementColor::Orange,
+                    start: BeatTime::from_quarters(start).unwrap(),
+                    end: BeatTime::from_quarters(end).unwrap(),
+                })
+                .unwrap();
+        }
+        let before = model.project().snapshot();
+        let (handle, editor) = super::super::clip_drag_ui_test::editor_window(
+            cx,
+            model.project().clone(),
+            Default::default(),
+        );
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(1280.0), px(720.0)));
+        editor.update(&mut visual, |view, cx| {
+            view.viewport = Some(Viewport {
+                start: 0,
+                length: 384_000,
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+
+        let scale = visual.update(|window, _| window.scale_factor());
+        let first_bounds = visual.debug_bounds("arrangement-section-0").unwrap();
+        let second_bounds = visual.debug_bounds("arrangement-section-1").unwrap();
+        let body_height =
+            f32::from(first_bounds.size.height) - super::super::clip_name::CLIP_NAME_HEIGHT;
+
+        let first_baseline = section_preview_quads(&mut visual, "arrangement-section-0");
+        let second_baseline = section_preview_quads(&mut visual, "arrangement-section-1");
+        assert_eq!(
+            first_baseline.len(),
+            3,
+            "section 0 renders its 3 tracks including muted and scrolled tracks"
+        );
+        assert_eq!(
+            second_baseline.len(),
+            1,
+            "section 1 renders only its own 1 track"
+        );
+        assert!(section_preview_quads(&mut visual, "arrangement-section-2").is_empty());
+
+        // Section 1 has only one track with clips, so that single row fills
+        // section 1's full preview height instead of reserving blank rows for
+        // the other 14 tracks in the project.
+        let expected_single_h = f64::from((body_height - 1.0 / scale) * scale);
+        let expected_single_top = f64::from(
+            (f32::from(second_bounds.top()) + super::super::clip_name::CLIP_NAME_HEIGHT) * scale,
+        );
+        assert!(
+            (f64::from(second_baseline[0].top()) - expected_single_top).abs() <= 0.5,
+            "section 1 single row starts at body top: {:?}",
+            second_baseline[0]
+        );
+        assert!(
+            (f64::from(second_baseline[0].size.height) - expected_single_h).abs() <= 1.0,
+            "section 1 single row fills body height ({expected_single_h}): {:?}",
+            second_baseline[0]
+        );
+
+        // Hide tracks in the arranger via group fold, tag filter, Q focus and
+        // vertical scroll. Section previews must remain unchanged throughout.
+        editor.update(&mut visual, |view, cx| {
+            view.arrangement_focus.projection.toggle_fold(group);
+            view.reconcile_arrangement_focus();
+            cx.notify();
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(!view.arrangement_track_visible(tracks[0]));
+            assert!(!view.arrangement_track_visible(tracks[1]));
+        });
+        assert_eq!(
+            section_preview_quads(&mut visual, "arrangement-section-0"),
+            first_baseline
+        );
+        assert_eq!(
+            section_preview_quads(&mut visual, "arrangement-section-1"),
+            second_baseline
+        );
+
+        editor.update(&mut visual, |view, cx| {
+            view.arrangement_focus
+                .projection
+                .set_tag_filter(Some(bass.clone()));
+            view.reconcile_arrangement_focus();
+            cx.notify();
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(!view.arrangement_track_visible(bottom_a));
+            assert!(!view.arrangement_track_visible(tracks[1]));
+            assert!(view.arrangement_track_visible(tracks[2]));
+        });
+        assert_eq!(
+            section_preview_quads(&mut visual, "arrangement-section-0"),
+            first_baseline
+        );
+        assert_eq!(
+            section_preview_quads(&mut visual, "arrangement-section-1"),
+            second_baseline
+        );
+
+        let header = visual.debug_bounds("arrangement-section-header-2").unwrap();
+        visual.simulate_click(header.center(), Modifiers::default());
+        editor.update(&mut visual, |view, cx| {
+            view.toggle_arrangement_focus();
+            view.track_scroll.set_offset(point(px(0.0), px(-600.0)));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(view.arrangement_track_indices().is_empty());
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+        });
+        assert_eq!(
+            section_preview_quads(&mut visual, "arrangement-section-0"),
+            first_baseline
+        );
+        assert_eq!(
+            section_preview_quads(&mut visual, "arrangement-section-1"),
+            second_baseline
+        );
+        assert!(section_preview_quads(&mut visual, "arrangement-section-2").is_empty());
+    }
+
+    #[gpui::test]
+    fn section_previews_keep_their_own_clips_during_reorder_drag_and_pending_layout(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::{Modifiers, MouseButton, VisualTestContext, point, px, size};
+        use hex_project::{Created, Project};
+
+        let mut model = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let mut tracks = Vec::new();
+        for name in ["first", "second"] {
+            let Created::Track(id) = model
+                .execute(Command::AddTrack { name: name.into() })
+                .unwrap()
+            else {
+                panic!("track");
+            };
+            tracks.push(id);
+        }
+        // Section 0 [0, 4) has a half-width clip [0, 2); section 1 [4, 8) has a full-width clip [4, 8).
+        model
+            .execute(Command::PlaceMidiClip {
+                track: tracks[0],
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(2).unwrap(),
+            })
+            .unwrap();
+        model
+            .execute(Command::PlaceMidiClip {
+                track: tracks[1],
+                start: BeatTime::from_quarters(4).unwrap(),
+                length: BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap();
+        for (name, start, end) in [("half", 0, 4), ("full", 4, 8)] {
+            model
+                .execute(Command::AddArrangementSection {
+                    name: name.into(),
+                    color: hex_project::ElementColor::Orange,
+                    start: BeatTime::from_quarters(start).unwrap(),
+                    end: BeatTime::from_quarters(end).unwrap(),
+                })
+                .unwrap();
+        }
+        let (handle, editor) = super::super::clip_drag_ui_test::editor_window(
+            cx,
+            model.project().clone(),
+            Default::default(),
+        );
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(1280.0), px(720.0)));
+        editor.update(&mut visual, |view, cx| {
+            view.viewport = Some(Viewport {
+                start: 0,
+                length: 288_000,
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+
+        let half_before = section_preview_quads(&mut visual, "arrangement-section-0");
+        let full_before = section_preview_quads(&mut visual, "arrangement-section-1");
+        assert_eq!(half_before.len(), 1);
+        assert_eq!(full_before.len(), 1);
+        assert!(
+            full_before[0].size.width > half_before[0].size.width * 1.5,
+            "resting sections must distinguish half ({:?}) and full ({:?}) clips",
+            half_before[0],
+            full_before[0]
+        );
+
+        // Drag section 0 ("half") past the right edge of section 1 ("full").
+        let header0 = visual.debug_bounds("arrangement-section-header-0").unwrap();
+        let section1 = visual.debug_bounds("arrangement-section-1").unwrap();
+        let start_pt = point(
+            header0.left() + header0.size.width * 0.75,
+            header0.center().y,
+        );
+        let target_pt = point(section1.right() - px(2.0), header0.center().y);
+        visual.simulate_mouse_down(start_pt, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(target_pt, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+
+        // While dragging, "full" is now at index 0 and "half" is at index 1.
+        let drag_first = section_preview_quads(&mut visual, "arrangement-section-0");
+        let drag_second = section_preview_quads(&mut visual, "arrangement-section-1");
+        assert_eq!(drag_first.len(), 1);
+        assert_eq!(drag_second.len(), 1);
+        assert!(
+            drag_first[0].size.width > drag_second[0].size.width * 1.5,
+            "dragged sections must carry their own clips: index0={:?}, index1={:?}",
+            drag_first[0],
+            drag_second[0]
+        );
+
+        // Release without completing the worker ACK: pending layout preview must
+        // keep each moved section showing its own clips.
+        visual.simulate_mouse_up(target_pt, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| assert!(view.sections.pending()));
+        let pending_first = section_preview_quads(&mut visual, "arrangement-section-0");
+        let pending_second = section_preview_quads(&mut visual, "arrangement-section-1");
+        assert_eq!(pending_first.len(), 1);
+        assert_eq!(pending_second.len(), 1);
+        assert!(
+            pending_first[0].size.width > pending_second[0].size.width * 1.5,
+            "pending sections must keep their own clips: index0={:?}, index1={:?}",
+            pending_first[0],
+            pending_second[0]
+        );
     }
 }

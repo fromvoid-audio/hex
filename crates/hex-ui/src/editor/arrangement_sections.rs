@@ -2572,21 +2572,21 @@ impl EditorView {
                 && self.sections.name.is_none()
         });
         let canonical;
-        let display = if let Some(p) = self
+        let (display, preview_state, drag_gesture) = if let Some(p) = self
             .sections
             .ahead
             .as_ref()
             .filter(|p| p.layout.is_some())
             .or(self.sections.pending.as_ref())
         {
-            &p.display
+            (&p.display, p.layout.as_deref(), None)
         } else if let Some(g) = self
             .sections
             .gesture
             .as_ref()
             .filter(|g| self.section_current(g))
         {
-            &g.display
+            (&g.display, None, Some(g))
         } else {
             canonical = Display {
                 markers: state
@@ -2601,8 +2601,9 @@ impl EditorView {
                 marker_only: false,
                 drop_feedback: None,
             };
-            &canonical
+            (&canonical, None, None)
         };
+        let map_state = preview_state.unwrap_or(state.as_ref());
         let Some(limit) = viewport.end() else {
             return Vec::new();
         };
@@ -2636,18 +2637,18 @@ impl EditorView {
         let mut elements = Vec::new();
         let mut selected_edges = Vec::new();
         for (index, m) in display.markers.iter().enumerate() {
-            let (Ok(start), Ok(end)) = (
+            let (Ok(full_start), Ok(full_end)) = (
                 display.tempo.beat_to_frame(m.start),
                 display.tempo.beat_to_frame(m.end),
             ) else {
                 continue;
             };
-            let chamfer = if end <= limit {
+            let chamfer = if full_end <= limit {
                 crate::section_surface::CHAMFER
             } else {
                 0.0
             };
-            let (start, end) = (start.max(viewport.start), end.min(limit));
+            let (start, end) = (full_start.max(viewport.start), full_end.min(limit));
             if end <= start {
                 continue;
             }
@@ -2770,8 +2771,23 @@ impl EditorView {
                             format!("arrangement-section-focus-hatch-{index}")
                         })]);
             }
+            let (section_range, preview_viewport) = section_preview_span(
+                map_state,
+                display,
+                drag_gesture,
+                m,
+                new_copy,
+                (full_start, full_end),
+                (start, end),
+            );
             element = element
-                .child(super::arrangement_map::section(self, start, end, chamfer))
+                .child(super::arrangement_map::section(
+                    self,
+                    map_state,
+                    section_range,
+                    preview_viewport,
+                    chamfer,
+                ))
                 .child(header);
             if let Some(name) = name_edit {
                 // Name editing keeps its existing full-size native field; held
@@ -2906,6 +2922,139 @@ fn copied_section_source(command: &Command) -> Option<SectionId> {
             source, copy: true, ..
         } => Some(*source),
         _ => None,
+    }
+}
+
+/// Resolve the project frame span `(section_range, preview_viewport)` whose
+/// clips belong inside `marker` while resting, pending or dragging.
+fn section_preview_span(
+    state: &ViewState,
+    display: &Display,
+    gesture: Option<&Gesture>,
+    marker: &Marker,
+    new_copy: bool,
+    full_span: (u64, u64),
+    visible_span: (u64, u64),
+) -> ((u64, u64), Viewport) {
+    let default = (
+        full_span,
+        Viewport {
+            start: visible_span.0,
+            length: visible_span.1.saturating_sub(visible_span.0),
+        },
+    );
+    let Some(g) = gesture else {
+        return default;
+    };
+    let Some(command) = g
+        .command
+        .as_ref()
+        .filter(|cmd| cmd.requires_section_publication())
+    else {
+        return default;
+    };
+    match g.mode {
+        Mode::Reorder(_) => {
+            let source_id = marker
+                .id
+                .or_else(|| new_copy.then(|| copied_section_source(command)).flatten());
+            let Some(source) = source_id.and_then(|id| state.project.arrangement_section(id))
+            else {
+                return (
+                    (0, 0),
+                    Viewport {
+                        start: 0,
+                        length: 0,
+                    },
+                );
+            };
+            let (Ok(src_start), Ok(src_end)) = (
+                state.project.tempo_map().beat_to_frame(source.start()),
+                state.project.tempo_map().beat_to_frame(source.end()),
+            ) else {
+                return (
+                    (0, 0),
+                    Viewport {
+                        start: 0,
+                        length: 0,
+                    },
+                );
+            };
+            let full_len = full_span.1.saturating_sub(full_span.0);
+            let src_len = src_end.saturating_sub(src_start);
+            let map_offset = |offset: u64| -> u64 {
+                if full_len == 0 || src_len == full_len {
+                    offset.min(src_len)
+                } else {
+                    ((u128::from(offset) * u128::from(src_len)) / u128::from(full_len))
+                        .min(u128::from(src_len)) as u64
+                }
+            };
+            let mapped_start =
+                src_start.saturating_add(map_offset(visible_span.0.saturating_sub(full_span.0)));
+            let mapped_end =
+                src_start.saturating_add(map_offset(visible_span.1.saturating_sub(full_span.0)));
+            (
+                (src_start, src_end),
+                Viewport {
+                    start: mapped_start,
+                    length: mapped_end.saturating_sub(mapped_start),
+                },
+            )
+        }
+        Mode::ContentStart(_)
+        | Mode::ContentEnd(_)
+        | Mode::Shared {
+            marker_only: false, ..
+        } => {
+            let Some(source) = marker
+                .id
+                .and_then(|id| state.project.arrangement_section(id))
+            else {
+                return (
+                    (0, 0),
+                    Viewport {
+                        start: 0,
+                        length: 0,
+                    },
+                );
+            };
+            let keep_start = source.start().max(marker.start);
+            let keep_end = source.end().min(marker.end);
+            if keep_start >= keep_end {
+                return (
+                    (0, 0),
+                    Viewport {
+                        start: 0,
+                        length: 0,
+                    },
+                );
+            }
+            let (Ok(src_start), Ok(src_end), Ok(display_keep_start)) = (
+                state.project.tempo_map().beat_to_frame(keep_start),
+                state.project.tempo_map().beat_to_frame(keep_end),
+                display.tempo.beat_to_frame(keep_start),
+            ) else {
+                return default;
+            };
+            let shift = i128::from(display_keep_start) - i128::from(src_start);
+            let mapped_start =
+                u64::try_from(i128::from(visible_span.0) - shift).unwrap_or(visible_span.0);
+            (
+                (src_start, src_end),
+                Viewport {
+                    start: mapped_start,
+                    length: visible_span.1.saturating_sub(visible_span.0),
+                },
+            )
+        }
+        Mode::Paint
+        | Mode::Start(_)
+        | Mode::End(_)
+        | Mode::Move(_)
+        | Mode::Shared {
+            marker_only: true, ..
+        } => default,
     }
 }
 
