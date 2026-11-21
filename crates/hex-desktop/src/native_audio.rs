@@ -1809,6 +1809,7 @@ impl WorkerAudioSink for NativeAudioSink {
                 .and_then(|control| control.status.recording_source());
             self.plugins
                 .finish_power_off(context, accepted, applied, off);
+            self.plugins.finish_hosted_move(context, accepted, applied);
         }
         self.plugins.finish_edit(context, accepted);
     }
@@ -2526,6 +2527,19 @@ impl WorkerAudioSink for NativeAudioSink {
         hex_session::service::ResidentPublicationAcceptance,
         hex_session::service::ResidentPublicationRefusal,
     > {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let mut playback = playback;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if let Err(error) =
+            self.plugins
+                .mark_hosted_move_publication(metadata.context, policy, &mut playback)
+        {
+            return Err(hex_session::service::ResidentPublicationRefusal {
+                kind: hex_session::service::ResidentPublicationFailure::Other,
+                playback,
+                error,
+            });
+        }
         if let Err(error) = self.plugins.check_reopen_publication(
             metadata.context,
             matches!(
@@ -2602,6 +2616,11 @@ impl WorkerAudioSink for NativeAudioSink {
         };
         if preparing_output && let Err(ref refusal) = result {
             self.refuse_replacement_output(&refusal.error);
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if let Ok(accepted) = result.as_ref() {
+            self.plugins
+                .hosted_move_submitted(metadata.context, accepted);
         }
         result
     }

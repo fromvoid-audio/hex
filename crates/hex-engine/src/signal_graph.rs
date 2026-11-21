@@ -2,6 +2,7 @@
 use crate::{Frame, Invalid, Project, Track, compensation::*};
 mod append_latency;
 mod group_reroute;
+mod hosted_instrument_move;
 mod latency_observation;
 mod legacy;
 #[cfg(feature = "instrument-test-support")]
