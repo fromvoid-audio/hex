@@ -1,5 +1,6 @@
 //! Direct Resident instrument removal uses its original route fader before the cut.
 use super::{RouteOwner, SessionPlayback};
+use hex_devices::{fm4::device::FM4_TYPE_ID, operator_state::OPERATOR_TYPE_ID};
 
 impl SessionPlayback {
     pub(super) fn direct_analytic_transition_graph_matches(&self, previous: &Self) -> bool {
@@ -103,7 +104,7 @@ impl SessionPlayback {
         };
         match (state.type_id(), track.has_mutable_instrument()) {
             (hex_project::DEFAULT_INSTRUMENT_TYPE_ID, false) => true,
-            (hex_devices::operator_state::OPERATOR_TYPE_ID, true) => {
+            (FM4_TYPE_ID | OPERATOR_TYPE_ID, true) => {
                 let Some(id) = track.canonical_track_id() else {
                     return false;
                 };
