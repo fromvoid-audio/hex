@@ -508,13 +508,13 @@ impl SessionPlayback {
         self.native_removal.is_some()
     }
 
-    pub(crate) fn pending_foreign_main_pass_binding(
+    pub(crate) fn pending_foreign_main_pass(
         &self,
-    ) -> Option<hex_lattice_contract::ForeignProcessorBinding> {
+    ) -> Option<(hex_lattice_contract::ForeignProcessorBinding, u32)> {
         self.native_removal
             .filter(|pending| pending.started)?
             .main_pass_transition()?
-            .foreign_main_pass_binding()
+            .foreign_main_pass()
     }
 
     pub(crate) fn stage_foreign_main_pass_delay(
@@ -522,9 +522,7 @@ impl SessionPlayback {
         binding: hex_lattice_contract::ForeignProcessorBinding,
         delay: hex_lattice::MainPassDelay,
     ) -> bool {
-        if self.pending_foreign_main_pass_binding() != Some(binding)
-            || delay.latency_frames() != 512
-        {
+        if self.pending_foreign_main_pass() != Some((binding, delay.latency_frames())) {
             return false;
         }
         self.main_pass_delay = Some(delay);
@@ -534,10 +532,14 @@ impl SessionPlayback {
     /// Return a pending removal and restore the original stage from its
     /// current wet/dry mix, including after a transport command invalidates it.
     pub fn cancel_native_removal_from(&mut self, previous: &mut Self) {
-        if let Some(pending) = self.native_removal.take()
-            && pending.started
-            && pending.runtime == previous.capture_runtime
-        {
+        let Some(pending) = self.native_removal.take() else {
+            return;
+        };
+        if pending.main_pass_transition().is_some() {
+            // A refused candidate must discard its uninstalled PCM snapshot.
+            self.main_pass_delay = None;
+        }
+        if pending.started && pending.runtime == previous.capture_runtime {
             match pending.transition {
                 RemovalTransition::Move(movement) => {
                     let arrangement = previous.revision.arrangement();

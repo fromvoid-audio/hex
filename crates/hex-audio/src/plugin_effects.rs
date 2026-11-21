@@ -653,8 +653,10 @@ impl NativeEffectCallback {
     /// healthy. Copy only the aligned PCM after the full fade was accepted.
     pub(crate) fn settled_main_pass_delay(
         &self,
+        frames: u32,
     ) -> Result<Option<hex_lattice::MainPassDelay>, DeviceContractError> {
-        if self.identity().owner() != ProcessorChainOwner::Main || self.dry.len() != 512 {
+        if self.identity().owner() != ProcessorChainOwner::Main || self.dry.len() != frames as usize
+        {
             return Err(DeviceContractError::ForeignProcessingUnavailable);
         }
         if !self.bypass.settled_at_dry() {

@@ -96,32 +96,17 @@ fn only_an_exact_off_placeholder_accepts_the_hosted_main_pass_cut() {
         graph: 3,
         epoch: 4,
     };
-    let configured = || {
-        let mut value = node();
-        value.configuration = Some(std::sync::Arc::new(
-            NativeDeviceState::new(value.device_type, 1, vec![7]).unwrap(),
-        ));
-        value
-    };
-    let mut active = configured();
-    active.bypassed = false;
-    active.definition = Some(PreparedProcessorFactory::Foreign(
-        PreparedForeignProcessor::new(256, 0, 512)
-            .unwrap()
-            .with_binding(binding)
-            .unwrap(),
-    ));
-    let before = NativeRuntimeChain::new_prepared(vec![active]).unwrap();
-    let after = NativeRuntimeChain::new_prepared(vec![configured()]).unwrap();
+    let before = active_main_chain(0, binding);
+    let after = NativeRuntimeChain::new_prepared(vec![configured_main()]).unwrap();
     assert_eq!(
         after
             .main_pass_removal_from(&before)
             .unwrap()
-            .foreign_main_pass_binding(),
-        Some(binding)
+            .foreign_main_pass(),
+        Some((binding, 512))
     );
     for mismatch in 0..4 {
-        let mut candidate = configured();
+        let mut candidate = configured_main();
         match mismatch {
             0 => candidate.device_id += 1,
             1 => candidate.sample_rate = 96_000,
@@ -135,4 +120,57 @@ fn only_an_exact_off_placeholder_accepts_the_hosted_main_pass_cut() {
         let candidate = NativeRuntimeChain::new_prepared(vec![candidate]).unwrap();
         assert!(candidate.main_pass_removal_from(&before).is_none());
     }
+}
+
+#[test]
+fn nonzero_hosted_main_pass_requires_exact_seven_frame_deletion_and_binding() {
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    let mut before = active_main_chain(7, binding);
+    let removed = NativeRuntimeChain::new_prepared(Vec::new()).unwrap();
+    let transition = removed.main_pass_removal_from(&before).unwrap();
+    assert_eq!(transition.foreign_main_pass(), Some((binding, 519)));
+    let off = NativeRuntimeChain::new_prepared(vec![configured_main()]).unwrap();
+    assert!(off.main_pass_removal_from(&before).is_none());
+    for frames in [6, 8] {
+        let mut different = active_main_chain(frames, binding);
+        assert!(removed.main_pass_removal_from(&different).is_none());
+        assert!(!different.begin_native_removal(transition));
+    }
+    let mut different = active_main_chain(
+        7,
+        hex_lattice_contract::ForeignProcessorBinding {
+            epoch: binding.epoch + 1,
+            ..binding
+        },
+    );
+    assert!(!different.begin_native_removal(transition));
+    assert!(before.begin_native_removal(transition));
+}
+
+fn configured_main() -> PreparedRuntimeInstance {
+    let mut value = node();
+    value.configuration = Some(std::sync::Arc::new(
+        NativeDeviceState::new(value.device_type, 1, vec![7]).unwrap(),
+    ));
+    value
+}
+
+fn active_main_chain(
+    processor_frames: u32,
+    binding: hex_lattice_contract::ForeignProcessorBinding,
+) -> NativeRuntimeChain {
+    let mut active = configured_main();
+    active.bypassed = false;
+    active.definition = Some(PreparedProcessorFactory::Foreign(
+        PreparedForeignProcessor::new(256, processor_frames, 512)
+            .unwrap()
+            .with_binding(binding)
+            .unwrap(),
+    ));
+    NativeRuntimeChain::new_prepared(vec![active]).unwrap()
 }

@@ -95,6 +95,7 @@ pub use resources::{
 use runtime_ownership::RuntimeOwnership;
 use std::any::Any as StdAny;
 use std::fmt;
+use std::num::NonZeroU32;
 
 mod analytic_continuation;
 pub use analytic_continuation::{
@@ -1365,7 +1366,7 @@ pub struct NativeRemovalTransition {
     position: usize,
     identity: ProcessorInstanceIdentity,
     authored_bypass: bool,
-    foreign_main_pass: Option<hex_lattice_contract::ForeignProcessorBinding>,
+    foreign_main_pass: Option<(hex_lattice_contract::ForeignProcessorBinding, NonZeroU32)>,
 }
 
 impl NativeRemovalTransition {
@@ -1373,18 +1374,18 @@ impl NativeRemovalTransition {
         self.identity
     }
 
-    /// The exact endpoint that owns this Main stage's aligned fade and history.
-    pub fn foreign_main_pass_binding(
-        self,
-    ) -> Option<hex_lattice_contract::ForeignProcessorBinding> {
+    /// The exact endpoint and frame count of this Main stage's aligned history.
+    pub fn foreign_main_pass(self) -> Option<(hex_lattice_contract::ForeignProcessorBinding, u32)> {
         self.foreign_main_pass
+            .map(|(binding, frames)| (binding, frames.get()))
     }
 
     fn matches(self, entry: &RuntimeEntry) -> bool {
         entry.owner == self.identity.owner() && entry.device_id == self.identity.device_id()
-            && self.foreign_main_pass.is_none_or(|binding| {
+            && self.foreign_main_pass().is_none_or(|(binding, frames)| {
                 matches!(&entry.runtime,
-                    RuntimeOwnership::Foreign(runtime) if runtime.prepared.binding() == Some(binding))
+                    RuntimeOwnership::Foreign(runtime) if runtime.prepared.binding() == Some(binding)
+                        && runtime.prepared.total_latency_frames() == frames)
             })
     }
 }
@@ -2835,11 +2836,17 @@ impl NativeRuntimeChain {
                     || prepared.is_instrument_profile()
                     || prepared.quantum_frames() != 256
                     || prepared.bridge_latency_frames() != 512
-                    || prepared.processor_latency_frames() != 0
                 {
                     return None;
                 }
-                (512, Some(prepared.binding()?))
+                match prepared.processor_latency_frames() {
+                    0 => {}
+                    // Only deletion has been admitted for the seven-frame profile.
+                    7 if self.is_empty() => {}
+                    _ => return None,
+                }
+                let frames = NonZeroU32::new(prepared.total_latency_frames())?;
+                (frames.get(), Some((prepared.binding()?, frames)))
             }
             _ => (
                 entry

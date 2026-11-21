@@ -61,10 +61,16 @@ fn assert_dry_timing(h: &ResidentHarness, latency: usize) {
     }
 }
 
+pub(super) const WORKERLESS_DRY_PROBE_FRAMES: usize = 514;
+
 /// The SDK edit uses its actual 256-frame quantum. After real worker retirement,
 /// the same passive graph must also accept tiny and cross-quantum callbacks.
-fn assert_workerless_dry_partition(h: &ResidentHarness, latency: usize, partition: usize) {
-    const FRAMES: usize = 514;
+pub(super) fn assert_workerless_dry_partition(
+    h: &ResidentHarness,
+    partition: usize,
+    sample_at: impl Fn(usize) -> f32,
+) {
+    const FRAMES: usize = WORKERLESS_DRY_PROBE_FRAMES;
     let start = status(h).position.load(Acquire);
     let performance = status(h).performance_frame.load(Acquire);
     let mut pcm = [[0.0; 2]; FRAMES];
@@ -99,10 +105,10 @@ fn assert_workerless_dry_partition(h: &ResidentHarness, latency: usize, partitio
     );
     assert!(status(h).playing.load(Acquire));
     for (offset, frame) in pcm.into_iter().enumerate() {
-        let origin = (start as usize + offset).checked_sub(latency);
+        let at = start as usize + offset;
         assert_eq!(
             frame,
-            [origin.map_or(0.0, source_sample); 2],
+            [sample_at(at); 2],
             "partition={partition} offset={offset}"
         );
     }
@@ -564,7 +570,9 @@ fn verify_running_main_power_off(cancel_before_cut: bool) {
         assert_dry_timing(&h, BRIDGE);
     }
     for partition in [1, 257] {
-        assert_workerless_dry_partition(&h, BRIDGE, partition);
+        assert_workerless_dry_partition(&h, partition, |at| {
+            at.checked_sub(BRIDGE).map_or(0.0, source_sample)
+        });
     }
     assert_eq!(h.plugin_completed.load(Acquire), processed);
 
