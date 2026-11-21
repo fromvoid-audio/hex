@@ -157,6 +157,7 @@ enum Reroute {
     BetweenGroups,
     EnterWithMainDelay,
     EnterWithUpstreamDelay,
+    EnterFromAboveWithUpstreamDelay,
     ExitWithUpstreamDelay,
     MoveToEnclosingGroupWithUpstreamDelay,
     MoveIntoNestedGroupWithUpstreamDelay,
@@ -319,6 +320,19 @@ fn group_reparent_drains_its_old_aligned_edge_before_installing() -> Result {
 }
 
 #[test]
+fn shifting_a_leafs_row_drains_the_exact_old_alignment_ring() -> Result {
+    for partition in [1, 257] {
+        route_cut(
+            partition,
+            Terminal::Install,
+            true,
+            Reroute::EnterFromAboveWithUpstreamDelay,
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
 fn group_exit_preserves_pending_group_alignment_while_the_direct_edge_starts_empty() -> Result {
     for partition in [1, 257] {
         route_cut(
@@ -367,7 +381,10 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
             | Reroute::ExitAbove
             | Reroute::ExitWithUpstreamDelay
     );
-    let moves_from_above = matches!(reroute, Reroute::EnterFromAbove | Reroute::ExitAbove);
+    let moves_from_above = matches!(
+        reroute,
+        Reroute::EnterFromAbove | Reroute::ExitAbove | Reroute::EnterFromAboveWithUpstreamDelay
+    );
     let between_groups = matches!(reroute, Reroute::BetweenGroups);
     let moves_to_enclosing = matches!(reroute, Reroute::MoveToEnclosingGroupWithUpstreamDelay);
     let moves_into_nested = matches!(reroute, Reroute::MoveIntoNestedGroupWithUpstreamDelay);
@@ -378,6 +395,7 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
     let has_upstream_delay = matches!(
         reroute,
         Reroute::EnterWithUpstreamDelay
+            | Reroute::EnterFromAboveWithUpstreamDelay
             | Reroute::ExitWithUpstreamDelay
             | Reroute::MoveToEnclosingGroupWithUpstreamDelay
             | Reroute::MoveIntoNestedGroupWithUpstreamDelay
@@ -496,6 +514,14 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
     );
     let entered_inventory: Vec<_> = editor.project().tracks().iter().map(|t| t.id()).collect();
     assert_eq!(entered_inventory != inventory, changes_row_order);
+    if changes_row_order {
+        assert!(
+            inventory
+                .iter()
+                .filter(|id| **id != moved)
+                .eq(entered_inventory.iter().filter(|id| **id != moved))
+        );
+    }
     let after = prepare(&editor, &media)?;
     let (before, after) = if leaves_destination {
         let destination = if moves_to_enclosing {

@@ -53,9 +53,6 @@ impl SessionPlayback {
         for (old_index, old) in old.tracks().iter().enumerate() {
             let id = old.canonical_track_id()?;
             let new_index = new_graph.track_index(id)?;
-            if main_latency != 0 && old_index != new_index {
-                return None;
-            }
             let new = new.tracks().get(new_index)?;
             let old_chain = previous.device_chains.get(old_index)?;
             let new_chain = self.device_chains.get(new_index)?;
@@ -111,7 +108,23 @@ impl SessionPlayback {
             }
         }
         let (from, to) = changed?;
-        if old_graph.main_input_arrival() != 0 {
+        let upstream_delay = old_graph.main_input_arrival() != 0;
+        // The aligned entry from above retains the old fader and draining
+        // ring by TrackId even when the candidate row moves downward.
+        if main_latency != 0 && from != to {
+            let enters_group_from_above = from < to
+                && matches!(
+                    (
+                        old_graph.tracks.get(from)?.output,
+                        new_graph.tracks.get(to)?.output
+                    ),
+                    (TrackOutput::Main { .. }, TrackOutput::Group { .. })
+                );
+            if !upstream_delay || !enters_group_from_above {
+                return None;
+            }
+        }
+        if upstream_delay {
             let track = old.tracks().get(from)?.canonical_track_id()?;
             new_graph.aligned_group_reroute_edges_from(old_graph, track)?;
         }
