@@ -445,6 +445,67 @@ mod tests {
         );
     }
 
+    #[gpui::test]
+    fn section_previews_keep_their_clips_when_q_focus_moves_to_an_empty_section(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::{Modifiers, VisualTestContext};
+
+        let mut model = Editor::new(project(), 8).unwrap();
+        for (name, start, end) in [("populated", 0, 4), ("empty", 4, 8)] {
+            model
+                .execute(Command::AddArrangementSection {
+                    name: name.into(),
+                    color: hex_project::ElementColor::Orange,
+                    start: BeatTime::from_quarters(start).unwrap(),
+                    end: BeatTime::from_quarters(end).unwrap(),
+                })
+                .unwrap();
+        }
+        let before = model.project().snapshot();
+        let empty = model.project().arrangement_sections()[1].id();
+        let (handle, editor) = super::super::clip_drag_ui_test::editor_window(
+            cx,
+            model.project().clone(),
+            Default::default(),
+        );
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+
+        let header = visual.debug_bounds("arrangement-section-header-0").unwrap();
+        visual.simulate_click(header.center(), Modifiers::default());
+        editor.update(&mut visual, |view, cx| {
+            view.toggle_arrangement_focus();
+            cx.notify();
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.arrangement_track_indices(), &[0, 1]);
+        });
+
+        let ink = gpui::Background::from(rgb(theme::color(theme::PaletteRole::Background)));
+        let previews = |visual: &mut VisualTestContext, selector| {
+            visual
+                .rendered_filled_quads(selector)
+                .into_iter()
+                .filter_map(|(bounds, color)| (color == ink).then_some(bounds))
+                .collect::<Vec<_>>()
+        };
+        let populated = previews(&mut visual, "arrangement-section-0");
+        assert_eq!(populated.len(), 2, "populated section audio and MIDI ink");
+
+        let header = visual.debug_bounds("arrangement-section-header-1").unwrap();
+        visual.simulate_click(header.center(), Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.sections.selected, Some(empty));
+            assert!(view.arrangement_track_indices().is_empty());
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+        });
+        assert_eq!(previews(&mut visual, "arrangement-section-0"), populated);
+        assert!(previews(&mut visual, "arrangement-section-1").is_empty());
+    }
+
     #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn main_lane_paints_canonical_intervals_at_the_ruler_scale(cx: &mut gpui::TestAppContext) {
