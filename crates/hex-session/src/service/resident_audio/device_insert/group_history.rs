@@ -28,8 +28,8 @@ pub(super) fn fixed_entry(project: &Project, leaf: TrackId, group: TrackId) -> O
     }
 }
 
-/// Moving the final direct leaf immediately outside its still-populated Group
-/// preserves its row only when the anchor is the following root, if present.
+/// Moving the final direct leaf immediately outside its Group preserves its row
+/// when the anchor is the following root. The sole child can exit to flat Main.
 pub(super) fn fixed_exit(project: &Project, leaf: TrackId, before: Option<TrackId>) -> bool {
     let Some(group) = project
         .track(leaf)
@@ -37,10 +37,18 @@ pub(super) fn fixed_exit(project: &Project, leaf: TrackId, before: Option<TrackI
     else {
         return false;
     };
-    fixed_rows(project, leaf, group, Some(group)).is_some_and(|(leaf, group)| {
-        leaf.end == group.end
-            && group.len() > 2
-            && before == project.tracks().get(group.end).map(hex_project::Track::id)
+    fixed_rows(project, leaf, group, Some(group)).is_some_and(|(leaf_rows, group_rows)| {
+        leaf_rows.end == group_rows.end
+            && before
+                == project
+                    .tracks()
+                    .get(group_rows.end)
+                    .map(hex_project::Track::id)
+            && (group_rows.len() > 2
+                || project
+                    .tracks()
+                    .iter()
+                    .all(|track| track.id() == leaf || track.parent_group().is_none()))
     })
 }
 
@@ -246,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_exit_keeps_the_following_root_anchor_and_a_surviving_child() {
+    fn explicit_exit_at_the_end_needs_no_following_anchor() {
         let (mut editor, leaf, group) = fixture();
         editor.execute(entry(leaf, group)).unwrap();
         let following = editor.project().tracks().last().unwrap().id();
@@ -275,7 +283,7 @@ mod tests {
                 },
             })
             .unwrap();
-        assert!(!fixed_exit(editor.project(), leaf, None));
+        assert!(fixed_exit(editor.project(), leaf, None));
     }
 
     #[test]
@@ -304,10 +312,15 @@ mod tests {
             })
             .unwrap();
         assert!(fixed_entry(routed.project(), leaf, group).is_none());
+        routed.execute(entry(leaf, group)).unwrap();
+        let following = routed.project().tracks().last().unwrap().id();
+        assert!(!fixed_exit(routed.project(), leaf, Some(following)));
 
         let following = editor.project().tracks().last().unwrap().id();
         editor.execute(entry(leaf, group)).unwrap();
-        assert!(!fixed_exit(editor.project(), leaf, Some(following)));
+        assert!(fixed_exit(editor.project(), leaf, Some(following)));
+        assert!(!fixed_exit(editor.project(), leaf, None));
+        assert!(!fixed_exit(editor.project(), leaf, Some(sibling)));
         assert!(editor.inspect_history(false, command).flatten().is_none());
         assert!(editor.undo());
         assert!(editor.inspect_history(true, command).flatten().is_none());
