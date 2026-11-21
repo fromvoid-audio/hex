@@ -1,18 +1,23 @@
-//! One Resident Arrangement leaf changes its route to Main or an existing Group.
+//! One Arrangement leaf changes its route to Main or an existing Group.
 //! Classification borrows bounded prepared inventories only. Full handoff preview
 //! still fences runtime/tails before the child's existing post-device fader moves.
 //! Group and Main processors stay on their existing clocks. A supported
 //! compensated route waits for the departing output's aligned PCM to drain.
+//! Verified streaming admits a fixed-row, zero-delay entry only. The caller
+//! must prove both page windows before starting the fade.
 use super::{RouteOwner, SessionPlayback};
 use crate::signal_graph::{SignalGraph, TrackOutput};
 
 impl SessionPlayback {
     // The moving leaf can occupy different rows. Stage its predecessor fader
     // after proving that every other route and relative row order stays fixed.
-    pub(super) fn resident_group_reroute_from(&self, previous: &Self) -> Option<usize> {
+    pub(super) fn group_reroute_from(&self, previous: &Self) -> Option<usize> {
+        let streamed = self.revision.contains_streamed_sources();
+        if streamed != previous.revision.contains_streamed_sources() {
+            return None;
+        }
         for playback in [self, previous] {
-            if playback.revision.contains_streamed_sources()
-                || playback.foreign_runtime_bindings().next().is_some()
+            if playback.foreign_runtime_bindings().next().is_some()
                 || playback.revision.scalar_automation.is_some()
                 || playback.revision.native_parameter_input_target().is_some()
                 || playback.revision.gain_recording_track().is_some()
@@ -25,8 +30,14 @@ impl SessionPlayback {
                 return None;
             }
         }
-        let old_graph = previous.resident_group_cut_graph()?;
-        let new_graph = self.resident_group_cut_graph()?;
+        let old_graph = previous.group_cut_graph()?;
+        let new_graph = self.group_cut_graph()?;
+        if streamed
+            && (!old_graph.supports_closed_group_stream()
+                || !new_graph.supports_closed_group_stream())
+        {
+            return None;
+        }
         let old = previous.revision.arrangement();
         let new = self.revision.arrangement();
         let main_latency = old.main_latency_frames();
@@ -66,7 +77,7 @@ impl SessionPlayback {
                     .clips
                     .iter()
                     .zip(&new.clips)
-                    .all(|(a, b)| same_clip(a, b))
+                    .all(|(a, b)| same_clip(a, b, streamed))
                 || !same_devices(&old.device_chain, &new.device_chain)
                 || old_chain.len() != new_chain.len()
                 || !new_chain.configuration_matches_range(old_chain, 0..old_chain.len())
@@ -108,6 +119,21 @@ impl SessionPlayback {
             }
         }
         let (from, to) = changed?;
+        if streamed {
+            if from != to || !matches!(old_graph.tracks.get(from)?.output, TrackOutput::Main { .. })
+            {
+                return None;
+            }
+            let TrackOutput::Group { target, .. } = new_graph.tracks.get(to)?.output else {
+                return None;
+            };
+            let group = old_graph.track_index(new_graph.tracks.get(target)?.id?)?;
+            if !old_graph.tracks.iter().any(|track| {
+                matches!(track.output, TrackOutput::Group { target, .. } if target == group)
+            }) {
+                return None;
+            }
+        }
         let upstream_delay = old_graph.main_input_arrival() != 0;
         // The aligned entry from above and its upward inverse retain the
         // exact old fader and surviving rings by TrackId across the row shift.
@@ -145,7 +171,7 @@ impl SessionPlayback {
         other_old_ids.eq(other_new_ids).then_some(from)
     }
 
-    fn resident_group_cut_graph(&self) -> Option<&SignalGraph> {
+    fn group_cut_graph(&self) -> Option<&SignalGraph> {
         let arrangement = self.revision.arrangement();
         let graph = arrangement.signal_graph.as_deref()?;
         if !arrangement.return_buses().is_empty() {
@@ -197,28 +223,33 @@ fn same_devices(
         })
 }
 
-fn same_clip(a: &crate::Clip, b: &crate::Clip) -> bool {
+fn same_clip(a: &crate::Clip, b: &crate::Clip, streamed: bool) -> bool {
+    let same_audio = if streamed {
+        a.audio.is_none() && b.audio.is_none()
+    } else {
+        a.audio
+            .as_ref()
+            .zip(b.audio.as_ref())
+            .is_some_and(|(a, b)| {
+                a.sample_rate == b.sample_rate && std::sync::Arc::ptr_eq(&a.frames, &b.frames)
+            })
+    };
     a.active == b.active
         && a.start == b.start
         && a.end == b.end
         && a.looping == b.looping
         && a.source_offset == b.source_offset
         && a.source_length == b.source_length
-        && a.audio
-            .as_ref()
-            .zip(b.audio.as_ref())
-            .is_some_and(|(a, b)| {
-                a.sample_rate == b.sample_rate && std::sync::Arc::ptr_eq(&a.frames, &b.frames)
-            })
+        && same_audio
         && match (&a.metadata, &b.metadata) {
-            (None, None) => true,
+            (None, None) => !streamed,
             (Some(a), Some(b)) => {
                 a.gain == b.gain
                     && a.source_phase == b.source_phase
                     && a.reversed == b.reversed
                     && a.fade == b.fade
-                    && a.streamed.is_none()
-                    && b.streamed.is_none()
+                    && a.streamed.is_some() == streamed
+                    && a.streamed == b.streamed
                     && a.sparse.is_none()
                     && b.sparse.is_none()
             }

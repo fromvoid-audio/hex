@@ -4,6 +4,7 @@ use hex_engine::{AudioCandidateEffects, AudioSourceContext, Frame};
 use hex_project::{Command, Editor};
 use std::time::{Duration, Instant};
 
+mod group_route;
 mod position;
 
 #[test]
