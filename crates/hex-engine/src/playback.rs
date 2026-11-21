@@ -2520,13 +2520,11 @@ impl Playback {
             .is_some_and(crate::SessionPlayback::native_removal_pending)
     }
 
-    /// Exact ordinary endpoint whose settled dry PCM is needed at this cut.
-    pub fn pending_foreign_main_pass_binding(
+    /// Exact active endpoint and settled dry PCM length needed at this cut.
+    pub fn pending_foreign_main_pass(
         &self,
-    ) -> Option<hex_lattice_contract::ForeignProcessorBinding> {
-        self.session_runtime
-            .as_deref()?
-            .pending_foreign_main_pass_binding()
+    ) -> Option<(hex_lattice_contract::ForeignProcessorBinding, u32)> {
+        self.session_runtime.as_deref()?.pending_foreign_main_pass()
     }
 
     /// Supply a value-only snapshot from the active endpoint after host acceptance.
