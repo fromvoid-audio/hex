@@ -1,7 +1,28 @@
 //! Control-only membership proof; it grants no native or transport custody.
-use super::hosted_replacement_history::{replaces_chain_leaf, without_effect};
+use super::hosted_replacement_history::{replacement_leaves, replaces_chain_leaf, without_effect};
 use hex_lattice_contract::VST3_DEVICE_TYPE_ID;
-use hex_project::Project;
+use hex_project::{DeviceId, Editor, Invalid, Project, StagedProjectHistory};
+
+/// Stage one exact substitution between two enabled Main workers. The caller
+/// must still obtain the stopped witness for the leaving worker.
+pub(super) fn stage_enabled_main_replacement(
+    editor: &mut Editor,
+    redo: bool,
+) -> Result<Option<(StagedProjectHistory, DeviceId)>, Invalid> {
+    let Some(device) = editor
+        .inspect_history(redo, |before, after| {
+            let (old, new) = replacement_leaves(before.main_devices(), after.main_devices())?;
+            (!old.bypassed() && !new.bypassed()).then_some(old.id())
+        })
+        .flatten()
+    else {
+        return Ok(None);
+    };
+    Ok(editor
+        .stage_history(redo)?
+        .filter(|edge| replaces_one_main(editor.project(), edge.project()))
+        .map(|edge| (edge, device)))
+}
 
 /// Admit only one newly present Main VST3 whose removal reproduces every
 /// authored value of the incumbent Project, including IDs and automation.
@@ -34,7 +55,7 @@ pub(super) fn replaces_one_main(before: &Project, after: &Project) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hex_project::{Command, Created, Editor};
+    use hex_project::{Command, Created};
 
     fn fixture() -> (Editor, hex_project::DeviceId, hex_project::DeviceId) {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
@@ -124,7 +145,10 @@ mod tests {
             panic!("fresh Main effect");
         };
         let replaced = editor.project().clone();
-        let undo = editor.stage_history(false).unwrap().unwrap();
+        let (undo, leaving) = stage_enabled_main_replacement(&mut editor, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(leaving, fresh);
         assert!(replaces_one_main(&replaced, undo.project()));
         assert!(!restores_one_main(&replaced, undo.project()));
 
@@ -147,7 +171,10 @@ mod tests {
         assert!(!replaces_one_main(undo.project(), changed.project()));
 
         editor.commit_staged_history(undo).unwrap();
-        let redo = editor.stage_history(true).unwrap().unwrap();
+        let (redo, leaving) = stage_enabled_main_replacement(&mut editor, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(leaving, original);
         assert!(replaces_one_main(editor.project(), redo.project()));
     }
 }

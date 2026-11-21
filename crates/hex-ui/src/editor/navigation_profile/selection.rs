@@ -5,6 +5,7 @@ pub(super) enum Selection {
     Audio100Dense,
     ProjectDense,
     ProjectFitPan,
+    ProjectFitPanSweep,
     ProjectFitZoom,
 }
 
@@ -22,9 +23,10 @@ impl Selection {
             Some("audio-100-dense") => Ok(Self::Audio100Dense),
             Some("project-dense") => Ok(Self::ProjectDense),
             Some("project-fit-pan") => Ok(Self::ProjectFitPan),
+            Some("project-fit-pan-sweep") => Ok(Self::ProjectFitPanSweep),
             Some("project-fit-zoom") => Ok(Self::ProjectFitZoom),
             _ => Err(
-                "navigation scope must be all, audio-100-dense, project-dense, project-fit-pan or project-fit-zoom",
+                "navigation scope must be all, audio-100-dense, project-dense, project-fit-pan, project-fit-pan-sweep or project-fit-zoom",
             ),
         }
     }
@@ -35,6 +37,7 @@ impl Selection {
             Self::Audio100Dense => "audio-100-dense",
             Self::ProjectDense => "project-dense",
             Self::ProjectFitPan => "project-fit-pan",
+            Self::ProjectFitPanSweep => "project-fit-pan-sweep",
             Self::ProjectFitZoom => "project-fit-zoom",
         }
     }
@@ -48,13 +51,23 @@ impl Selection {
         match self {
             Self::All if project || mixed => Ok(()),
             Self::Audio100Dense if audio => Ok(()),
-            Self::ProjectDense | Self::ProjectFitPan | Self::ProjectFitZoom if project => Ok(()),
+            Self::ProjectDense
+            | Self::ProjectFitPan
+            | Self::ProjectFitPanSweep
+            | Self::ProjectFitZoom
+                if project =>
+            {
+                Ok(())
+            }
             _ => Err("selected navigation scope requires its project or fixture path"),
         }
     }
 
     pub(super) fn fits_project_rows(self) -> bool {
-        matches!(self, Self::ProjectFitPan | Self::ProjectFitZoom)
+        matches!(
+            self,
+            Self::ProjectFitPan | Self::ProjectFitPanSweep | Self::ProjectFitZoom
+        )
     }
 
     pub(super) fn cases(self, content: &str, tracks: usize, single_row: bool) -> Vec<Case> {
@@ -64,7 +77,10 @@ impl Selection {
         let dense_only = match self {
             Self::All => false,
             Self::Audio100Dense if content == "audio" && tracks == 100 && !single_row => true,
-            Self::ProjectDense | Self::ProjectFitPan | Self::ProjectFitZoom
+            Self::ProjectDense
+            | Self::ProjectFitPan
+            | Self::ProjectFitPanSweep
+            | Self::ProjectFitZoom
                 if content == "project" && !single_row =>
             {
                 true
@@ -82,7 +98,7 @@ impl Selection {
                 })
             })
             .filter(|case| match self {
-                Self::ProjectFitPan => case.action == "pan",
+                Self::ProjectFitPan | Self::ProjectFitPanSweep => case.action == "pan",
                 Self::ProjectFitZoom => case.action == "zoom",
                 _ => true,
             })
@@ -101,4 +117,18 @@ pub(super) fn comparison_trials(value: Option<&str>) -> Result<&'static [bool], 
 
 pub(super) fn iterations(smoke: bool) -> (usize, usize) {
     if smoke { (4, 1) } else { (8 + 40, 8) }
+}
+
+/// A short pan with alternating legs and a quarter-point phase per leg.
+/// Every step in a fitted trial is distinct while staying close to the fit span.
+pub(super) fn fitted_pan_sweep_offset(iteration: usize) -> f32 {
+    const LEG: usize = 12;
+    let phase = iteration / LEG % 4;
+    let index = iteration % LEG;
+    let step = if phase.is_multiple_of(2) {
+        index + 1
+    } else {
+        LEG - index
+    };
+    -(step as f32 * 1.5 + phase as f32 * 0.25)
 }

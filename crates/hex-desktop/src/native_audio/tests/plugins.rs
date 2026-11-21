@@ -10,6 +10,7 @@ mod live_stream;
 mod offline_bounce;
 mod paused_monitor;
 mod performance_profile;
+mod resident_replacement_history;
 mod state;
 mod tempo;
 mod ui;

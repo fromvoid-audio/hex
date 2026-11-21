@@ -149,6 +149,12 @@ enum StagedChange {
     History(hex_project::StagedProjectHistory),
 }
 
+struct StagedResidentChange {
+    edit: StagedChange,
+    operation: Operation,
+    hosted_instrument_move: Option<hosted_instrument_move::Intent>,
+}
+
 impl StagedChange {
     fn project(&self) -> &Project {
         match self {
@@ -618,6 +624,42 @@ pub(in crate::service) fn stages_main_power_off(
             .main_devices()
             .first()
             .is_some_and(|device| !device.bypassed())
+}
+
+pub(in crate::service) fn running_main_power_on(
+    project: &Project,
+    command: &Command,
+    context: hex_engine::AudioSourceContext,
+    sink: &mut dyn WorkerAudioSink,
+) -> Option<ResidentMainPowerOn> {
+    if !sink.confirms_device_inserts() || !stopped_power::eligible(project, command) {
+        return None;
+    }
+    let [device] = project.main_devices() else {
+        return None;
+    };
+    let [track] = project.tracks() else {
+        return None;
+    };
+    if !device.bypassed()
+        || track.is_group()
+        || track.parent_group().is_some()
+        || track.clips().len() != 1
+        || !track.midi_clips().is_empty()
+        || !track.devices().is_empty()
+        || track.instrument().is_some()
+        || !track.sends().is_empty()
+        || !project.return_tracks().is_empty()
+        || project.has_gain_automation()
+    {
+        return None;
+    }
+    let device = device.id().value();
+    let source = sink.running_resident_main_power_on(context, device)?;
+    (source.context == context).then_some(ResidentMainPowerOn {
+        device,
+        interval: ResidentMainPowerOnInterval::Running(source),
+    })
 }
 
 pub(in crate::service) fn stopped_hosted_power_fence(
@@ -1145,7 +1187,7 @@ impl Session {
             context,
             restoring_plugin_state: false,
             preparing_edit: true,
-            stopped_main_power_on: None,
+            main_power_on: None,
             running_main_power_off: None,
             hosted_instrument_move: None,
         };
@@ -1209,7 +1251,12 @@ impl Session {
         proposal_control: Option<&PluginEffectControl>,
         document_intent: u64,
     ) -> Result<Option<Pending>, SessionError> {
-        let stopped_fence = stopped_hosted_power_fence(self.project(), &command, context, sink)?;
+        let running_power_on = running_main_power_on(self.project(), &command, context, sink);
+        let stopped_fence = if running_power_on.is_none() {
+            stopped_hosted_power_fence(self.project(), &command, context, sink)?
+        } else {
+            None
+        };
         let running_power_off =
             if stopped_fence.is_none() && stages_main_power_off(self.project(), &command, sink) {
                 let device = self
@@ -1240,14 +1287,17 @@ impl Session {
             admission,
             current,
             stopped_fence,
+            running_power_on,
             running_power_off,
             plugin,
             proposal_control,
             document_intent,
-            hosted_instrument_move,
             |session| {
                 crate::validate_command_media(&command)?;
-                let operation = if stopped_fence.is_some() || running_power_off.is_some() {
+                let operation = if stopped_fence.is_some()
+                    || running_power_on.is_some()
+                    || running_power_off.is_some()
+                {
                     GraphEditOperation::PowerDevice
                 } else if plugin.is_some() {
                     match &command {
@@ -1272,10 +1322,11 @@ impl Session {
                 {
                     return Ok(None);
                 }
-                Ok(Some((
-                    StagedChange::Command(edit),
-                    Operation::Device(operation),
-                )))
+                Ok(Some(StagedResidentChange {
+                    edit: StagedChange::Command(edit),
+                    operation: Operation::Device(operation),
+                    hosted_instrument_move,
+                }))
             },
         )
     }
@@ -1297,30 +1348,58 @@ impl Session {
         {
             return Ok(None);
         }
+        let main_replacement =
+            main_history::stage_enabled_main_replacement(&mut self.editor, redo)?;
+        let stopped_fence = if let Some((_, device)) = &main_replacement {
+            Some(
+                sink.stopped_resident_power_fence(context, device.value())
+                    .map_err(SessionError::NativeAudio)?
+                    .ok_or(SessionError::Invalid(
+                        "stop playback to undo or redo this vst3 replacement",
+                    ))?,
+            )
+        } else {
+            None
+        };
         self.stage_resident_graph_change(
             context,
             sink,
             admission,
             current,
+            stopped_fence,
             None,
             None,
             None,
             None,
             document_intent,
-            None,
             |session| {
+                if let Some((edge, _)) = main_replacement {
+                    return Ok(Some(StagedResidentChange {
+                        edit: StagedChange::History(edge),
+                        operation: Operation::HostedHistory(GraphEditOperation::ReplaceDevice),
+                        hosted_instrument_move: None,
+                    }));
+                }
                 let hosted = match detached_history::stage(&mut session.editor, redo)? {
                     Some(edge) => Some(edge),
                     None => hosted_effect_history::stage(&mut session.editor, redo)?,
                 };
                 if let Some((edge, operation)) = hosted {
-                    return Ok(Some((
-                        StagedChange::History(edge),
-                        Operation::HostedHistory(operation),
-                    )));
+                    return Ok(Some(StagedResidentChange {
+                        edit: StagedChange::History(edge),
+                        operation: Operation::HostedHistory(operation),
+                        hosted_instrument_move: None,
+                    }));
                 }
-                Ok(move_history::stage(&mut session.editor, redo)?
-                    .map(|edge| (StagedChange::History(edge), Operation::ResidentMoveHistory)))
+                Ok(
+                    move_history::stage(&mut session.editor, redo)?.map(|staged| {
+                        StagedResidentChange {
+                            edit: StagedChange::History(staged.edge),
+                            operation: Operation::ResidentMoveHistory,
+                            hosted_instrument_move: staged.hosted_instrument_move,
+                        }
+                    }),
+                )
             },
         )
     }
@@ -1333,16 +1412,21 @@ impl Session {
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
         stopped_fence: Option<ResidentFreshRuntimeFence>,
+        running_power_on: Option<ResidentMainPowerOn>,
         running_power_off: Option<ResidentMainPowerOff>,
         plugin: Option<&PluginEffectControl>,
         proposal_control: Option<&PluginEffectControl>,
         document_intent: u64,
-        hosted_instrument_move: Option<hosted_instrument_move::Intent>,
-        stage: impl FnOnce(&mut Self) -> Result<Option<(StagedChange, Operation)>, SessionError>,
+        stage: impl FnOnce(&mut Self) -> Result<Option<StagedResidentChange>, SessionError>,
     ) -> Result<Option<Pending>, SessionError> {
         let preparation_deadline = device_edit_preparation_deadline();
         let staged = (|| {
-            let Some((edit, operation)) = stage(self)? else {
+            let Some(StagedResidentChange {
+                edit,
+                operation,
+                hosted_instrument_move,
+            }) = stage(self)?
+            else {
                 return Ok(None);
             };
             let installed = sink
@@ -1369,18 +1453,29 @@ impl Session {
                         "device edit needs the current installed audio graph"
                     },
                 ))?;
-            let stopped_main_power_on = if matches!(
+            if let Some(power) = running_power_on
+                && let ResidentMainPowerOnInterval::Running(source) = power.interval()
+                && (installed.output_identity != source.output_identity
+                    || installed.audio_revision != source.audio_revision
+                    || installed.source_context != Some(source.context))
+            {
+                return Err(SessionError::Invalid(
+                    "running main power on source changed",
+                ));
+            }
+            let main_power_on = if matches!(
                 operation,
                 Operation::Device(GraphEditOperation::PowerDevice)
             ) {
-                stopped_fence.and_then(|fence| {
-                    let [device] = self.project().main_devices() else {
-                        return None;
-                    };
-                    device.bypassed().then_some(ResidentMainPowerOn {
-                        device: device.id().value(),
-                        source_context: context,
-                        fence,
+                running_power_on.or_else(|| {
+                    stopped_fence.and_then(|fence| {
+                        let [device] = self.project().main_devices() else {
+                            return None;
+                        };
+                        device.bypassed().then_some(ResidentMainPowerOn {
+                            device: device.id().value(),
+                            interval: ResidentMainPowerOnInterval::Stopped { context, fence },
+                        })
                     })
                 })
             } else {
@@ -1392,7 +1487,7 @@ impl Session {
             };
             let inputs = Inputs {
                 preparing_edit: plugin.is_none(),
-                stopped_main_power_on,
+                main_power_on,
                 running_main_power_off: running_power_off,
                 hosted_instrument_move: hosted_instrument_move.and_then(|intent| {
                     intent.preparation(self.project(), edit.project(), installed)
