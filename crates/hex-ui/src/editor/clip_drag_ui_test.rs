@@ -149,9 +149,10 @@ fn drag_source_to_target(
         "gpui drag remains active while crossing the target row"
     );
     editor.read_with(cx, |view, _| {
-        assert!(
-            view.drag_move_event_count > move_count_before_target,
-            "source on_drag_move callback should run for the target-row movement"
+        assert_eq!(
+            view.drag_move_event_count - move_count_before_target,
+            2,
+            "the Arrangement should resolve each move once, across and outside lanes"
         );
         let drag = view.active_clip_drag.as_ref().expect("ui drag state");
         let direct = view
@@ -3147,6 +3148,7 @@ fn rendered_move_released_after_first_drag_motion_commits(cx: &mut TestAppContex
             "release still hits the painted source header"
         );
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        let continuations = editor.read_with(&visual, |view, _| view.drag_move_event_count);
         // One coalesced motion crosses the native drag threshold. There need
         // not be a second mouse-move before release over the original header.
         let destination = visual.update(|window, app| {
@@ -3160,7 +3162,12 @@ fn rendered_move_released_after_first_drag_motion_commits(cx: &mut TestAppContex
             );
             assert!(app.has_active_drag());
             let destination = {
-                let drag = editor.read(app).active_clip_drag.as_ref().unwrap();
+                let view = editor.read(app);
+                assert_eq!(
+                    view.drag_move_event_count, continuations,
+                    "the first motion prepares the drop during typed admission"
+                );
+                let drag = view.active_clip_drag.as_ref().unwrap();
                 let destination = drag
                     .preview
                     .get()
@@ -4505,14 +4512,12 @@ fn held_midi_move_submits_and_observes_exact_worker_audition(cx: &mut TestAppCon
     visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
     visual.run_until_parked();
     let (_, destination) = drag_source_to_target(cx, &mut visual, &editor, clip, 1, 90.0);
-    let identity = editor.update(&mut visual, |view, cx| {
-        view.sync_held_clip_move_audition();
+    let identity = editor.read_with(&visual, |view, _| {
         let identity = view.expected_clip_preview.expect("held target submitted");
         assert!(
             view.applied_clip_preview.is_none(),
             "submission is not a callback ACK"
         );
-        cx.notify();
         identity
     });
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -4552,7 +4557,6 @@ fn held_midi_move_submits_and_observes_exact_worker_audition(cx: &mut TestAppCon
     );
     visual.run_until_parked();
     let (next_identity, marker_fraction) = editor.update(&mut visual, |view, cx| {
-        view.sync_held_clip_move_audition();
         let expected = view.expected_clip_preview.unwrap();
         assert_ne!(expected.position, identity.position);
         assert_ne!(expected.destination, identity.destination);
