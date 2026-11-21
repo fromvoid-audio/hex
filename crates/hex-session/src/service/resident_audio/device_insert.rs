@@ -882,7 +882,7 @@ impl BrowserEdit {
 }
 
 impl Session {
-    /// Select the exact Verified Group reparent whose leaf fade Audio supports.
+    /// Select a fixed-row Verified Group reparent that Audio can de-click.
     /// The active source, page windows, and final candidate stay audio-owned.
     pub(in crate::service) fn should_stage_verified_group_route(
         &self,

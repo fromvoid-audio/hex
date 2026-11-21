@@ -6,15 +6,27 @@ use hex_session::service::DeviceInsertOutcome;
 
 #[test]
 fn verified_group_exit_before_the_following_root_waits_for_audio() {
-    verify_explicit_exit(true);
+    verify_explicit_exit(ExitCase::Populated);
 }
 
 #[test]
 fn verified_last_child_exit_before_the_following_root_waits_for_audio() {
-    verify_explicit_exit(false);
+    verify_explicit_exit(ExitCase::LastChild);
 }
 
-fn verify_explicit_exit(surviving_child: bool) {
+#[test]
+fn pausing_verified_last_child_exit_keeps_the_group_source_and_history() {
+    verify_explicit_exit(ExitCase::InterruptedLastChild);
+}
+
+enum ExitCase {
+    Populated,
+    LastChild,
+    InterruptedLastChild,
+}
+
+fn verify_explicit_exit(case: ExitCase) {
+    let surviving_child = matches!(case, ExitCase::Populated);
     let _native = native_fixture();
     let files = Files::new();
     let mut h = actual_native_harness();
@@ -109,6 +121,61 @@ fn verify_explicit_exit(surviving_child: bool) {
     assert_eq!(pending.state.project, grouped.state.project);
     assert_eq!(pending.state.revision, grouped.state.revision);
     assert_eq!(applied_source(&h), Some(predecessor));
+    if matches!(case, ExitCase::InterruptedLastChild) {
+        let deadline = Instant::now() + h.wait;
+        loop {
+            let pcm = h.render();
+            assert_eq!(applied_source(&h), Some(predecessor));
+            assert!(
+                pcm.iter()
+                    .all(|[left, right]| (left + right - 0.25).abs() < 1e-6)
+            );
+            if pcm.iter().any(|&frame| frame != old) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the old Group did not start fading"
+            );
+            std::thread::yield_now();
+        }
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Pause)
+            .unwrap();
+        let refused = h.next_with_audio();
+        assert!(refused.request_complete);
+        let receipt = refused.device_insert_complete.as_ref().unwrap();
+        assert!(matches!(
+            receipt.outcome,
+            DeviceInsertOutcome::Refused(_) | DeviceInsertOutcome::Cancelled
+        ));
+        assert_eq!(refused.state.project, grouped.state.project);
+        assert_eq!(refused.state.revision, grouped.state.revision);
+        assert_eq!(
+            (refused.state.can_undo, refused.state.can_redo),
+            (grouped.state.can_undo, grouped.state.can_redo),
+        );
+        assert_eq!(applied_source(&h), Some(predecessor));
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        let deadline = Instant::now() + h.wait;
+        while h.render() != [old; 64] {
+            assert!(
+                Instant::now() < deadline,
+                "the original Group did not resume"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(applied_source(&h), Some(predecessor));
+        return;
+    }
     for [left, right] in h.render() {
         assert!((left + right - 0.25).abs() < 1e-6);
     }
