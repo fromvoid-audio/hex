@@ -2432,14 +2432,17 @@ impl WorkerAudioSink for NativeAudioSink {
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    fn stopped_resident_return_history_fence(
+    fn stopped_resident_effect_history_fence(
         &mut self,
         context: AudioSourceContext,
-        return_track: hex_engine::ReturnId,
+        owner: hex_engine::ProcessorChainOwner,
         device: u64,
     ) -> Option<hex_session::service::ResidentFreshRuntimeFence> {
-        let owner = hex_engine::ProcessorChainOwner::Return(return_track.value());
-        if !self
+        use hex_engine::ProcessorChainOwner;
+        if !matches!(
+            owner,
+            ProcessorChainOwner::Track(_) | ProcessorChainOwner::Return(_)
+        ) || !self
             .plugins
             .has_accepted_effect_source(context, owner, device)
         {

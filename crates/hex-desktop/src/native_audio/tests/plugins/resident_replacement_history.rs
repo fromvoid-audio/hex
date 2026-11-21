@@ -48,6 +48,12 @@ fn stopped_resident_return_vst3_replacement_redo_waits_for_its_exact_receipt() {
     assert_stopped_redo(ReplacementOwner::Return);
 }
 
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn stopped_resident_track_vst3_replacement_redo_waits_for_its_exact_receipt() {
+    assert_stopped_redo(ReplacementOwner::Track);
+}
+
 fn assert_stopped_redo(bus: ReplacementOwner) {
     let _native = native_fixture();
     let files = Files::new();
@@ -82,6 +88,12 @@ fn rolling_resident_main_vst3_replacement_undo_preserves_the_predecessor() {
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn rolling_resident_return_vst3_replacement_undo_preserves_the_predecessor() {
     assert_rolling_refusal(ReplacementOwner::Return);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn rolling_resident_track_vst3_replacement_undo_preserves_the_predecessor() {
+    assert_rolling_refusal(ReplacementOwner::Track);
 }
 
 fn assert_rolling_refusal(bus: ReplacementOwner) {
