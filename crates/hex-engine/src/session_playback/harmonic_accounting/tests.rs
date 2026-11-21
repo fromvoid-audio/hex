@@ -157,10 +157,11 @@ fn proposal_preserves_actual_legacy_prefix_signed_zero_and_inactive_bank_bits() 
 
 #[test]
 fn independent_byte_count_and_overflow_boundaries_are_not_hidden() {
+    let actual_header = size_of::<crate::mutable_instrument::MutableInstrumentTrackRuntime>();
+    let proposed_header = size_of::<payload::HostOwner>();
     assert!(
-        size_of::<payload::HostOwner>()
-            >= size_of::<crate::mutable_instrument::MutableInstrumentTrackRuntime>(),
-        "the proposed owner must charge at least the complete actual owner header"
+        proposed_header >= actual_header,
+        "the proposed owner charges {proposed_header} bytes for the actual {actual_header}-byte header"
     );
     let pool = payload::PoolCapacity::allocated();
     let mut input = empty(pool);
@@ -180,7 +181,7 @@ fn independent_byte_count_and_overflow_boundaries_are_not_hidden() {
     input.pool.slots -= 1;
     assert_eq!(planner::plan(&input), Err(Refusal::PoolCapacity));
     let owner = OwnerCharge {
-        header: size_of::<payload::HostOwner>(),
+        header: proposed_header,
         payload: 8192,
         ledgers: 128 * size_of::<crate::mutable_instrument::MutableOccurrence>(),
         frozen: 0,
@@ -190,6 +191,12 @@ fn independent_byte_count_and_overflow_boundaries_are_not_hidden() {
     input = empty(pool);
     input.active = &owners;
     assert!(planner::plan(&input).is_ok());
+    let undersized_header = [OwnerCharge {
+        header: actual_header - 1,
+        ..owner
+    }];
+    input.active = &undersized_header;
+    assert_eq!(planner::plan(&input), Err(Refusal::OwnerContract));
     let too_large = [OwnerCharge {
         payload: 8193,
         ..owner

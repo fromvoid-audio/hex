@@ -199,6 +199,8 @@ pub(super) struct HostOwner {
     scratch: Vec<MutableOccurrence>,
     next_id: u64,
     next_id_scratch: u64,
+    // The current host also reserves an inline latency-cut frame marker.
+    retained_at_latency_cut: Option<u64>,
 }
 pub(super) struct TailOwner {
     track_id: hex_project::TrackId,
