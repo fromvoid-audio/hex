@@ -16,6 +16,10 @@ pub(super) enum EffectTransport {
 }
 
 impl EffectTransport {
+    pub(super) fn at_ordinary_committed_quantum_boundary(&self) -> bool {
+        matches!(self, Self::Ordinary(callback) if callback.at_committed_quantum_boundary())
+    }
+
     pub(super) fn reserve_observed_parameter_input(
         &self,
         source: &hex_plugin_host::transport::ParameterInputSource,

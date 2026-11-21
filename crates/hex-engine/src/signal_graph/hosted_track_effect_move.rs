@@ -1,17 +1,21 @@
 //! Clock transfer for an exact hosted effect move between two direct audio rows.
-use super::{SignalRuntime, TransportStamp, error};
-use crate::{Frame, Invalid};
+#[cfg(feature = "instrument-test-support")]
+use super::TransportStamp;
+use super::{SignalRuntime, error};
+#[cfg(feature = "instrument-test-support")]
+use crate::Frame;
+use crate::Invalid;
 use std::sync::Arc;
 
-#[derive(Clone, Copy)]
-struct HostedEffectClock {
-    old_dry: usize,
-    new_dry: usize,
-    delay: u32,
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HostedEffectClock {
+    old_dry: u8,
+    new_dry: u8,
+    delay: u16,
 }
 
 impl SignalRuntime {
-    fn hosted_effect_clock_from(
+    pub(crate) fn hosted_effect_clock_from(
         &self,
         previous: &Self,
         donor: usize,
@@ -56,28 +60,44 @@ impl SignalRuntime {
                 .then_some(dry)
         };
         Some(HostedEffectClock {
-            old_dry: check_alignment(previous, donor, receiver)?,
-            new_dry: check_alignment(self, receiver, donor)?,
-            delay,
+            old_dry: u8::try_from(check_alignment(previous, donor, receiver)?).ok()?,
+            new_dry: u8::try_from(check_alignment(self, receiver, donor)?).ok()?,
+            delay: u16::try_from(delay).ok()?,
         })
     }
 
-    fn transfer_hosted_effect_clock_from(
+    pub(crate) fn hosted_effect_clock_ready(&self, clock: HostedEffectClock) -> bool {
+        self.delays.history_ready()
+            && self
+                .delays
+                .edge_history_is_silent(usize::from(clock.old_dry))
+    }
+
+    pub(crate) fn can_transfer_hosted_effect_clock_from(
+        &self,
+        previous: &Self,
+        donor: usize,
+        receiver: usize,
+        expected: HostedEffectClock,
+    ) -> bool {
+        self.hosted_effect_clock_from(previous, donor, receiver) == Some(expected)
+            && previous.hosted_effect_clock_ready(expected)
+            && self
+                .delays
+                .edge_history_is_silent(usize::from(expected.new_dry))
+            && self.delays.latest_stamp().is_none()
+    }
+
+    pub(crate) fn transfer_hosted_effect_clock_from(
         &mut self,
         previous: &Self,
         donor: usize,
         receiver: usize,
+        expected: HostedEffectClock,
     ) -> Result<(), Invalid> {
-        let clock = self
-            .hosted_effect_clock_from(previous, donor, receiver)
-            .filter(|clock| {
-                previous.delays.history_ready()
-                    && previous.delays.edge_history_is_silent(clock.old_dry)
-                    && self.delays.edge_history_is_silent(clock.new_dry)
-                    && self.delays.latest_stamp().is_none()
-            })
-            .ok_or(Invalid("hosted effect alignment is not ready"))?;
-        debug_assert_eq!(clock.delay, self.horizon());
+        if !self.can_transfer_hosted_effect_clock_from(previous, donor, receiver, expected) {
+            return Err(Invalid("hosted effect alignment is not ready"));
+        }
         // The delayed edge has a different signal owner after the cut.
         // Only the original shared timeline stamps cross to the fresh ring.
         self.delays
@@ -86,6 +106,7 @@ impl SignalRuntime {
     }
 }
 
+#[cfg(feature = "instrument-test-support")]
 pub(crate) fn probe_hosted_effect_clock(
     mut old: SignalRuntime,
     mut next: SignalRuntime,
@@ -106,7 +127,7 @@ pub(crate) fn probe_hosted_effect_clock(
         meter: None,
         cycle_beats_raw: None,
     };
-    let render = |runtime: &mut SignalRuntime, frame, edge, input| {
+    let render = |runtime: &mut SignalRuntime, frame, edge: u8, input| {
         let mut output = [[0.0; 2]];
         runtime.delays.begin_transaction().map_err(error)?;
         runtime
@@ -115,35 +136,47 @@ pub(crate) fn probe_hosted_effect_clock(
             .map_err(error)?;
         runtime
             .delays
-            .process_edge(edge, &[input], &mut output)
+            .process_edge(usize::from(edge), &[input], &mut output)
             .map_err(error)?;
         Ok::<_, Invalid>(output)
     };
 
-    assert!(next.transfer_hosted_effect_clock_from(&old, 0, 1).is_err());
+    assert!(
+        next.transfer_hosted_effect_clock_from(&old, 0, 1, clock)
+            .is_err()
+    );
     let first: Frame = [0.125, -0.25];
     let delay = u64::from(clock.delay);
     for frame in 0..delay * 2 {
         let input = if frame == delay { first } else { [0.0; 2] };
         assert_eq!(render(&mut old, frame, clock.old_dry, input)?, [[0.0; 2]]);
         old.delays.commit_transaction().map_err(error)?;
-        assert!(next.transfer_hosted_effect_clock_from(&old, 0, 1).is_err());
+        assert!(
+            next.transfer_hosted_effect_clock_from(&old, 0, 1, clock)
+                .is_err()
+        );
     }
     assert!(next.delays.latest_stamp().is_none());
     assert_eq!(
         render(&mut old, delay * 2, clock.old_dry, [0.0; 2])?,
         [first]
     );
-    assert!(next.transfer_hosted_effect_clock_from(&old, 0, 1).is_err());
+    assert!(
+        next.transfer_hosted_effect_clock_from(&old, 0, 1, clock)
+            .is_err()
+    );
     old.delays.rollback_transaction().map_err(error)?;
-    assert!(next.transfer_hosted_effect_clock_from(&old, 0, 1).is_err());
+    assert!(
+        next.transfer_hosted_effect_clock_from(&old, 0, 1, clock)
+            .is_err()
+    );
     assert_eq!(
         render(&mut old, delay * 2, clock.old_dry, [0.0; 2])?,
         [first]
     );
     old.delays.commit_transaction().map_err(error)?;
-    next.transfer_hosted_effect_clock_from(&old, 0, 1)?;
-    for age in 0..=clock.delay {
+    next.transfer_hosted_effect_clock_from(&old, 0, 1, clock)?;
+    for age in 0..=u32::from(clock.delay) {
         assert_eq!(
             next.delays.stamp_at_delay(age),
             old.delays.stamp_at_delay(age)

@@ -41,6 +41,23 @@ impl NativeEffectEntry {
         }
         self.callback.settled_return_pass(identity, frame)
     }
+
+    pub(crate) fn settled_track_effect_move(
+        &self,
+        identity: ProcessorInstanceIdentity,
+    ) -> Result<bool, DeviceContractError> {
+        if !self.has_live_epoch()
+            || self.callback.identity() != identity
+            || !matches!(identity.owner(), ProcessorChainOwner::Track(_))
+        {
+            return Err(DeviceContractError::ForeignProcessingUnavailable);
+        }
+        Ok(!self.callback.concealed_output
+            && self
+                .callback
+                .transport
+                .at_ordinary_committed_quantum_boundary())
+    }
     pub(crate) fn new(callback: NativeEffectCallback) -> Self {
         Self {
             callback,

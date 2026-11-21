@@ -305,6 +305,22 @@ pub struct HostedInstrumentMove {
     pub binding: hex_lattice_contract::ForeignProcessorBinding,
 }
 
+/// A direct Track effect cut which retains the donor's physical SDK endpoint.
+/// The control caller still owns the original applied-source and worker proof.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostedTrackEffectMove {
+    pub donor: hex_project::TrackId,
+    pub receiver: hex_project::TrackId,
+    pub device: hex_project::DeviceId,
+    pub binding: hex_lattice_contract::ForeignProcessorBinding,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum HostedMoveRequest {
+    Instrument(HostedInstrumentMove),
+    Effect(HostedTrackEffectMove),
+}
+
 /// Compact truthful category for asynchronous callback handoff refusals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
@@ -2510,7 +2526,38 @@ impl Playback {
             .session_runtime
             .as_mut()
             .ok_or(Invalid("hosted move has no session runtime"))?;
-        runtime.hosted_instrument_move = Some(movement);
+        runtime.hosted_move = Some(HostedMoveRequest::Instrument(movement));
+        Ok(())
+    }
+
+    /// Mark one unpublished ordinary graph for the exact hosted effect cut.
+    pub fn require_hosted_track_effect_move(
+        &mut self,
+        movement: HostedTrackEffectMove,
+    ) -> Result<(), Invalid> {
+        let installed = self
+            .project
+            .tracks
+            .iter()
+            .find(|track| track.canonical_track_id() == Some(movement.receiver));
+        let matching = installed.is_some_and(|track| {
+            matches!(track.device_chain.as_ref(), [node]
+            if node.owner == crate::ProcessorChainOwner::Track(movement.donor.value())
+                && node.device_id == movement.device.value()
+                && node.foreign_processor().is_some_and(|facts| {
+                    !facts.is_instrument_profile() && facts.binding() == Some(movement.binding)
+                }))
+        });
+        if movement.donor == movement.receiver || !matching {
+            return Err(Invalid(
+                "hosted effect receiver differs from the retained worker",
+            ));
+        }
+        let runtime = self
+            .session_runtime
+            .as_mut()
+            .ok_or(Invalid("hosted effect move has no session runtime"))?;
+        runtime.hosted_move = Some(HostedMoveRequest::Effect(movement));
         Ok(())
     }
 
@@ -2607,6 +2654,13 @@ impl Playback {
         self.session_runtime
             .as_deref()?
             .pending_foreign_return_pass()
+    }
+
+    /// Observe the actual staged cut. Audio still fences the original endpoint.
+    pub fn pending_hosted_track_effect_move(&self) -> Option<(HostedTrackEffectMove, u64)> {
+        self.session_runtime
+            .as_deref()?
+            .pending_hosted_track_effect_move()
     }
 
     /// Stage Main PCM for the matching live Return cut after its exact endpoint
