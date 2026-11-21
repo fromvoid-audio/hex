@@ -389,13 +389,10 @@ impl Render for ProjectSpectrumCanvas {
                     cx.notify();
                 }
             }))
-            .on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, _, cx| {
+            .on_mouse_down(MouseButton::Left, move |_: &MouseDownEvent, _, cx| {
+                cx.stop_propagation();
                 let _ = editor_click.update(cx, |view, cx| {
-                    if event.click_count >= 2 {
-                        view.reset_project_spectrum_peaks(cx);
-                    } else {
-                        view.toggle_project_spectrum_freeze(cx);
-                    }
+                    view.toggle_project_spectrum_freeze(cx);
                 });
             })
             .on_mouse_down(MouseButton::Right, move |_: &MouseDownEvent, _, cx| {
@@ -864,6 +861,9 @@ impl EditorView {
 
     fn toggle_project_spectrum_freeze(&mut self, cx: &mut Context<Self>) {
         self.project_spectrum.options.frozen = !self.project_spectrum.options.frozen;
+        if !self.project_spectrum.options.frozen {
+            self.tick_project_spectrum(cx);
+        }
         self.notify_project_spectrum_options(cx);
     }
 
@@ -1284,7 +1284,7 @@ impl EditorView {
             let peak_btn = Self::control_button(
                 "project-spectrum-peak",
                 options.peak_mode.label(),
-                "peak trace (decay / max hold / off; double-click plot resets)",
+                "peak trace (decay / max hold / off; right-click plot resets)",
                 options.peak_mode == PeakMode::Hold,
                 style,
                 |view, _, cx| view.cycle_project_spectrum_peak_mode(cx),
@@ -1371,8 +1371,16 @@ impl EditorView {
             };
             self.sync_project_spectrum_canvas(now, cx);
             // Analyzer controls float over the quiet upper-right plot area;
-            // they do not reserve a permanent title row above the data.
-            let header = header.absolute().top_0().right_0();
+            // they do not reserve a permanent title row above the data, and
+            // occlude pointer input so clicks never bleed into the plot canvas.
+            let header = header
+                .absolute()
+                .top_0()
+                .right_0()
+                .occlude()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                .on_scroll_wheel(|_, _, cx| cx.stop_propagation());
             panel = panel
                 .child(
                     div()

@@ -734,3 +734,102 @@ fn project_spectrum_display_controls_freeze_max_hold_and_crosshair_work_without_
         assert!(view.pending_requests.is_empty());
     });
 }
+
+#[gpui::test]
+fn project_spectrum_control_clicks_do_not_bleed_into_plot_and_freeze_toggles_cleanly(
+    cx: &mut TestAppContext,
+) {
+    let (project, _, _, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1280.0), px(800.0)));
+    visual.run_until_parked();
+
+    // Clicking smoothing, slope, range, and peak pills must change only their
+    // own setting and never bleed through to the plot's freeze handler.
+    let smooth_pos = visual
+        .debug_bounds("project-spectrum-smoothing")
+        .unwrap()
+        .center();
+    visual.simulate_click(smooth_pos, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.project_spectrum.options.smoothing,
+            SmoothingPreset::Fine
+        );
+        assert!(
+            !view.project_spectrum.options.frozen,
+            "clicking smoothing pill must not toggle freeze"
+        );
+    });
+
+    for (selector, check) in [
+        (
+            "project-spectrum-slope",
+            Box::new(|o: DisplayOptions| o.slope == SlopePreset::Steep)
+                as Box<dyn Fn(DisplayOptions) -> bool>,
+        ),
+        (
+            "project-spectrum-range",
+            Box::new(|o: DisplayOptions| o.range == RangePreset::Wide96),
+        ),
+        (
+            "project-spectrum-peak",
+            Box::new(|o: DisplayOptions| o.peak_mode == PeakMode::Hold),
+        ),
+    ] {
+        let pos = visual.debug_bounds(selector).unwrap().center();
+        visual.simulate_click(pos, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(check(view.project_spectrum.options), "{selector} updated");
+            assert!(
+                !view.project_spectrum.options.frozen,
+                "clicking {selector} must not toggle freeze"
+            );
+        });
+    }
+
+    // Clicking the freeze pill toggles freeze on and off cleanly in one click each.
+    let freeze_pos = visual
+        .debug_bounds("project-spectrum-freeze")
+        .unwrap()
+        .center();
+    visual.simulate_click(freeze_pos, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            view.project_spectrum.options.frozen,
+            "first freeze pill click freezes"
+        );
+    });
+    visual.simulate_click(freeze_pos, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            !view.project_spectrum.options.frozen,
+            "second freeze pill click unfreezes cleanly"
+        );
+    });
+
+    // Consecutive clicks on the plot canvas itself toggle freeze on and off
+    // reliably even within the OS double-click interval.
+    let plot_pos = visual
+        .debug_bounds("project-spectrum-plot")
+        .unwrap()
+        .center();
+    visual.simulate_click(plot_pos, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.project_spectrum.options.frozen, "plot click freezes");
+    });
+    visual.simulate_click(plot_pos, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            !view.project_spectrum.options.frozen,
+            "immediate second plot click unfreezes cleanly"
+        );
+    });
+}
