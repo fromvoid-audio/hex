@@ -11,6 +11,7 @@ enum RouteDirection {
     Enter,
     Exit,
     EnterEmpty,
+    ExitLastChild,
 }
 
 #[derive(Clone, Copy)]
@@ -83,9 +84,23 @@ fn cancelling_a_verified_first_child_entry_preserves_the_flat_source() {
     check_group_route(257, RouteDirection::EnterEmpty, RouteEnd::Cancel);
 }
 
+#[test]
+fn verified_last_child_exit_fades_to_the_warmed_flat_source() {
+    let _serial = serial();
+    for partition in [1, 257] {
+        check_group_route(partition, RouteDirection::ExitLastChild, RouteEnd::Install);
+    }
+}
+
 fn check_group_route(partition: usize, direction: RouteDirection, end: RouteEnd) {
-    let predecessor_grouped = matches!(direction, RouteDirection::Exit);
-    let sibling_grouped = !matches!(direction, RouteDirection::EnterEmpty);
+    let predecessor_grouped = matches!(
+        direction,
+        RouteDirection::Exit | RouteDirection::ExitLastChild
+    );
+    let sibling_grouped = !matches!(
+        direction,
+        RouteDirection::EnterEmpty | RouteDirection::ExitLastChild
+    );
     let (mut control, mut data, errors, mut retirement) = anchored();
     let page = hex_engine::STREAM_PAGE_FRAMES as u64;
     let frames = u32::try_from(3 * page).unwrap();
