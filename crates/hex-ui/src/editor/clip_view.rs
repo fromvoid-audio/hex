@@ -384,3 +384,7 @@ impl EditorView {
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "clip_view_resize_tests.rs"]
 mod resize_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "clip_editor_play_start_ui_test.rs"]
+mod play_start_tests;
