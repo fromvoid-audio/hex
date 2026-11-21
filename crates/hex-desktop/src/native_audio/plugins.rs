@@ -2,6 +2,7 @@
 //! Root bindings; Root retains every actual child, worker, pair and return.
 use super::*;
 use hex_audio::plugin_effects::EffectBinding as Binding;
+use hex_audio::prepared::NativeProcessorIdentity;
 use hex_audio::{
     NativeSourcePreparationProgress as Progress,
     plugin_effects::{
@@ -241,7 +242,7 @@ pub(super) struct Plugins {
     installed_removals_checked: Option<AudioSourceContext>,
     restore: Option<Restore>,
     reopen: Option<Reopen>,
-    saved_off_document: Option<(u64, u64)>,
+    saved_off_document: Option<(u64, NativeProcessorIdentity)>,
     // Original binding, candidate key and optional original Stop generation.
     // All worker returns stay in Root.
     power_off: Option<(
@@ -1262,7 +1263,7 @@ impl Plugins {
         input: ResidentEffectPreparation<'_>,
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&hex_session::service::RequestCancellation>,
-        powered_off: Option<hex_audio::prepared::NativeProcessorIdentity>,
+        powered_off: Option<NativeProcessorIdentity>,
         prepare: &mut dyn FnMut(
             &hex_engine::AudioCandidateEffects<'_, '_>,
         ) -> Result<PreparedRevision, hex_engine::Invalid>,
@@ -1288,12 +1289,20 @@ impl Plugins {
             input.context(),
             desired.map(|source| source.context()),
         );
+        let saved_off = |owner, device| {
+            self.saved_off_document
+                .is_some_and(|(generation, identity)| {
+                    generation == input.context().project_generation
+                        && identity.owner() == owner
+                        && identity.device_id() == device
+                })
+        };
         let main_off = powered_off
             .filter(|identity| identity.owner() == ProcessorChainOwner::Main)
-            .map(hex_audio::prepared::NativeProcessorIdentity::device_id);
+            .map(NativeProcessorIdentity::device_id);
         if let Some((device, state)) = input.powered_off_main()
             && (incoming_document
-                || self.saved_off_document == Some((input.context().project_generation, device))
+                || saved_off(ProcessorChainOwner::Main, device)
                 || main_off == Some(device))
             && !self.has_accepted_main_source(input.context(), device)
         {
@@ -1309,7 +1318,9 @@ impl Plugins {
             .map(Some);
         }
         if let Some((owner, device, state)) = input.powered_off_return()
-            && powered_off.is_some_and(|off| off.owner() == owner && off.device_id() == device)
+            && (powered_off.is_some_and(|off| off.owner() == owner && off.device_id() == device)
+                || ((incoming_document || saved_off(owner, device))
+                    && !self.has_accepted_effect_source(input.context(), owner, device)))
         {
             return Hosting::prepare_powered_off_on_control(
                 hex_audio::plugin_effects::PoweredOffEffect {
