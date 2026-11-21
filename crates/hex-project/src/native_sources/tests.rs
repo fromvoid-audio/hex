@@ -17,7 +17,7 @@ fn add(editor: &mut Editor, name: &str) -> SourceId {
 }
 
 #[test]
-fn section_copy_updates_touch_only_automation_on_a_shared_source_once() {
+fn section_splices_update_touch_only_automation_on_a_shared_source_once() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let source = add(&mut editor, "shared");
     let tracks = ["first", "second"].map(|name| {
@@ -72,9 +72,12 @@ fn section_copy_updates_touch_only_automation_on_a_shared_source_once() {
     else {
         panic!("section")
     };
-    editor
+    let Created::ArrangementSection(copy) = editor
         .execute(Command::DuplicateArrangementSection(section))
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("section copy")
+    };
     let project = editor.project();
     let stored = project
         .device(device)
@@ -90,6 +93,31 @@ fn section_copy_updates_touch_only_automation_on_a_shared_source_once() {
         assert_eq!(lane, stored);
         assert_eq!(lane.value_at(beat(5)), Some(touched));
         assert_eq!(lane.value_at(beat(7)), None);
+    }
+
+    editor
+        .execute(Command::DeleteArrangementSection(section))
+        .unwrap();
+    let section = editor.project().arrangement_section(copy).unwrap();
+    assert_eq!((section.start(), section.end()), (beat(0), beat(4)));
+    for track in tracks {
+        let instrument = editor.project().track(track).unwrap().instrument().unwrap();
+        assert_eq!(instrument.id(), device);
+        let lane = instrument.automation_target(target).unwrap();
+        assert!(lane.points.is_empty());
+        assert_eq!(lane.touch.len(), 1);
+        assert_eq!(lane.value_at(beat(1)), Some(touched));
+        assert_eq!(lane.value_at(beat(3)), None);
+    }
+
+    editor
+        .execute(Command::DeleteArrangementSection(copy))
+        .unwrap();
+    assert!(!editor.project().has_device_automation());
+    for track in tracks {
+        let instrument = editor.project().track(track).unwrap().instrument().unwrap();
+        assert_eq!(instrument.id(), device);
+        assert!(instrument.automation_target(target).is_none());
     }
 }
 

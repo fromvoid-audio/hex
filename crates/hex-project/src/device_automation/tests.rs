@@ -326,6 +326,17 @@ fn unsupported_time_transforms_refuse_without_separating_envelopes_from_music() 
     else {
         panic!("section")
     };
+    let Created::ArrangementSection(next) = e
+        .execute(Command::AddArrangementSection {
+            name: "next".into(),
+            color: crate::ElementColor::Cyan,
+            start: BeatTime::from_quarters(4).unwrap(),
+            end: BeatTime::from_quarters(8).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("section")
+    };
     e.execute(Command::ReplaceDeviceAutomation {
         device,
         parameter: ParameterId::from_static(1),
@@ -339,7 +350,11 @@ fn unsupported_time_transforms_refuse_without_separating_envelopes_from_music() 
         crate::AUTOMATION_EDIT_UNSUPPORTED
     );
     for command in [
-        Command::DeleteArrangementSection(section),
+        Command::ReplaceArrangementSection {
+            source: section,
+            target: next,
+            copy: false,
+        },
         Command::ResizeArrangementSection {
             section,
             edge: crate::TrimEdge::Right,
@@ -352,6 +367,110 @@ fn unsupported_time_transforms_refuse_without_separating_envelopes_from_music() 
         );
         assert_eq!(e.project(), &original);
     }
+}
+
+#[test]
+fn section_delete_ripples_base_and_touch_automation_with_two_sided_join() {
+    use AutomationInterpolation::{Linear, Step};
+
+    let (mut editor, _, device) = fixture();
+    let beat = |n| BeatTime::from_quarters(n).unwrap();
+    let Created::ArrangementSection(section) = editor
+        .execute(Command::AddArrangementSection {
+            name: "cut".into(),
+            color: crate::ElementColor::Cyan,
+            start: beat(2),
+            end: beat(6),
+        })
+        .unwrap()
+    else {
+        panic!("section")
+    };
+    let target = DeviceAutomationTarget::Parameter(ParameterId::from_static(1));
+    editor
+        .execute(Command::ReplaceDeviceAutomationTarget {
+            device,
+            target,
+            points: vec![
+                point(1, 0.25, Linear),
+                point(3, 0.75, Step),
+                point(4, 0.125, Step),
+                point(6, 0.875, Linear),
+                point(8, 0.625, Step),
+                point(10, 0.5, Step),
+            ],
+        })
+        .unwrap();
+    let step = |at, value| DeviceAutomationTouchStep {
+        beat: beat(at),
+        value: AutomationValue::new(value).unwrap(),
+    };
+    editor
+        .execute(Command::SpliceDeviceAutomationTouch {
+            device,
+            target,
+            vst3_class: None,
+            spans: vec![DeviceAutomationTouchSpan {
+                start: beat(1),
+                end: beat(9),
+                steps: vec![step(1, 0.75), step(3, 0.9), step(5, 0.4), step(7, 0.2)],
+            }],
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetDeviceAutomationReadSelection {
+            device,
+            target,
+            selection: AutomationReadSelection::Base,
+        })
+        .unwrap();
+
+    let before = editor.project().snapshot();
+    editor
+        .execute(Command::DeleteArrangementSection(section))
+        .unwrap();
+    let project = editor.project();
+    assert!(project.arrangement_section(section).is_none());
+    let lane = project
+        .device(device)
+        .unwrap()
+        .automation_target(target)
+        .unwrap();
+    assert_eq!(lane.read_selection, AutomationReadSelection::Base);
+    assert_eq!(
+        lane.points,
+        [
+            point(1, 0.25, Linear),
+            point(2, 0.5, Step),
+            point(2, 0.875, Linear),
+            point(4, 0.625, Step),
+            point(6, 0.5, Step),
+        ]
+    );
+    assert_eq!(
+        lane.touch,
+        [
+            DeviceAutomationTouchSpan {
+                start: beat(1),
+                end: beat(2),
+                steps: vec![step(1, 0.75)],
+            },
+            DeviceAutomationTouchSpan {
+                start: beat(2),
+                end: beat(5),
+                steps: vec![step(2, 0.4), step(3, 0.2)],
+            },
+        ]
+    );
+    let after = project.snapshot();
+    assert_eq!(
+        Project::from_snapshot(after.clone()).unwrap().snapshot(),
+        after
+    );
+    assert!(editor.undo());
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
 }
 
 #[test]
@@ -540,7 +659,7 @@ fn section_copy_refuses_real_point_overflow_without_spending_capacity_on_holds()
         if offset == 0 {
             assert_eq!(
                 result.unwrap_err().0,
-                "device automation section copy exceeds the lane point limit"
+                "device automation section edit exceeds the lane point limit"
             );
             assert_eq!(editor.project().snapshot(), before);
         } else {

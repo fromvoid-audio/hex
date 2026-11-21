@@ -150,6 +150,7 @@ pub(super) fn delete(project: &mut Project, section: SectionId) -> Result<Create
         },
         TransformPurpose::Delete(section),
     )?;
+    crate::device_automation::arrangement::delete_section(project, marker.start, marker.end)?;
     Ok(Created::None)
 }
 
@@ -499,7 +500,7 @@ fn apply_transform(
     transform: Transform,
     purpose: TransformPurpose,
 ) -> Result<(), Invalid> {
-    if !matches!(transform, Transform::Duplicate { .. }) && project.has_device_automation() {
+    if matches!(purpose, TransformPurpose::Resize(..)) && project.has_device_automation() {
         return Err(Invalid(crate::AUTOMATION_EDIT_UNSUPPORTED));
     }
     let mut next_id = project.next_id;
