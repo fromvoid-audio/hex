@@ -315,10 +315,45 @@ pub struct HostedTrackEffectMove {
     pub binding: hex_lattice_contract::ForeignProcessorBinding,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum HostedMoveRequest {
+/// One of the two exact ordinary hosted Track cuts. The playback marker and
+/// Desktop receipt both keep the same request through admission or refusal.
+#[derive(Clone, Copy, Debug)]
+pub enum HostedMoveRequest {
     Instrument(HostedInstrumentMove),
     Effect(HostedTrackEffectMove),
+}
+
+impl HostedMoveRequest {
+    pub fn donor(self) -> hex_project::TrackId {
+        match self {
+            Self::Instrument(movement) => movement.donor,
+            Self::Effect(movement) => movement.donor,
+        }
+    }
+    pub fn receiver(self) -> hex_project::TrackId {
+        match self {
+            Self::Instrument(movement) => movement.receiver,
+            Self::Effect(movement) => movement.receiver,
+        }
+    }
+    pub fn physical_owner(self) -> hex_project::TrackId {
+        match self {
+            Self::Instrument(movement) => movement.physical_owner,
+            Self::Effect(movement) => movement.donor,
+        }
+    }
+    pub fn device(self) -> hex_project::DeviceId {
+        match self {
+            Self::Instrument(movement) => movement.device,
+            Self::Effect(movement) => movement.device,
+        }
+    }
+    pub fn binding(self) -> hex_lattice_contract::ForeignProcessorBinding {
+        match self {
+            Self::Instrument(movement) => movement.binding,
+            Self::Effect(movement) => movement.binding,
+        }
+    }
 }
 
 /// Compact truthful category for asynchronous callback handoff refusals.
