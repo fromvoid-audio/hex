@@ -482,7 +482,7 @@ fn assert_off_block(f: &mut OrdinaryFixture) {
 }
 
 fn input(frame: usize) -> Frame {
-    if frame % 17 == 0 {
+    if frame.is_multiple_of(17) {
         // This pair collapses to the same mixed Off sample at a 0.5 send.
         return [f32::from_bits(0x3e2a_aaad), f32::from_bits(0x3e2a_aaae)];
     }
