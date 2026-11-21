@@ -34,15 +34,15 @@ fn one_resident_leaf_reroutes_between_main_and_group_and_other_edits_refuse() {
     let after = prepare(next_editor.project());
     let old = SessionPlayback::new(Arc::clone(&before)).unwrap();
     let next = SessionPlayback::new(Arc::clone(&after)).unwrap();
-    assert_eq!(next.resident_group_reroute_from(&old), Some(2));
+    assert_eq!(next.group_reroute_from(&old), Some(2));
     assert_eq!(
-        old.resident_group_reroute_from(&next),
+        old.group_reroute_from(&next),
         Some(2),
         "the exact inverse keeps the Group and its other child"
     );
     let mut changed = next;
     changed.routes[0].owner = RouteOwner::Silence;
-    assert_eq!(changed.resident_group_reroute_from(&old), None);
+    assert_eq!(changed.group_reroute_from(&old), None);
     let device = next_editor.project().track(leaf).unwrap().devices()[0].id();
     for command in [
         Command::SetDeviceBypass {
@@ -81,7 +81,7 @@ fn one_resident_leaf_reroutes_between_main_and_group_and_other_edits_refuse() {
         assert_eq!(
             SessionPlayback::new(prepare(changed.project()))
                 .unwrap()
-                .resident_group_reroute_from(&old),
+                .group_reroute_from(&old),
             None
         );
     }
@@ -101,31 +101,31 @@ fn one_resident_leaf_reroutes_between_main_and_group_and_other_edits_refuse() {
     assert_eq!(
         SessionPlayback::new(changed)
             .unwrap()
-            .resident_group_reroute_from(&old),
+            .group_reroute_from(&old),
         None
     );
 
-    let sources = media
-        .iter()
-        .map(|(&asset, _)| {
-            (
-                asset,
-                crate::compile::PreparedAudioSource::Streamed(Arc::new(
-                    crate::StreamedSourceMetadata::new(
-                        crate::StreamSourceKey::new(9, asset),
-                        48_000,
-                        48_000,
-                        2048,
-                        2048,
-                        hex_project::IDENTITY_CONVERSION,
-                        [19; 32],
-                    )
-                    .unwrap(),
-                )),
-            )
-        })
-        .collect();
-    let streamed = |project: &Project| {
+    let streamed = |project: &Project, fingerprint| {
+        let sources = media
+            .keys()
+            .map(|&asset| {
+                (
+                    asset,
+                    crate::compile::PreparedAudioSource::Streamed(Arc::new(
+                        crate::StreamedSourceMetadata::new(
+                            crate::StreamSourceKey::new(9, asset),
+                            48_000,
+                            48_000,
+                            2048,
+                            2048,
+                            hex_project::IDENTITY_CONVERSION,
+                            fingerprint,
+                        )
+                        .unwrap(),
+                    )),
+                )
+            })
+            .collect();
         Arc::new(
             PreparedRevision::prepare_with_prepared_audio_sources(
                 project,
@@ -137,18 +137,29 @@ fn one_resident_leaf_reroutes_between_main_and_group_and_other_edits_refuse() {
             .unwrap(),
         )
     };
-    let streamed_before = streamed(editor.project());
-    let streamed_after = streamed(next_editor.project());
+    let streamed_before = streamed(editor.project(), [19; 32]);
+    let streamed_after = streamed(next_editor.project(), [19; 32]);
+    let changed_stream = streamed(next_editor.project(), [31; 32]);
+    let mut old = SessionPlayback::new(Arc::clone(&streamed_before)).unwrap();
+    old.playing = true;
+    let mut next = SessionPlayback::new(Arc::clone(&streamed_after)).unwrap();
+    next.require_continuous_insert = true;
+    assert_eq!(next.group_reroute_from(&old), Some(2));
+    assert!(next.plan_native_removal_from(&old).unwrap());
+    assert_eq!(old.group_reroute_from(&next), None);
+    assert!(old.track_faders.iter().all(|fader| !fader.active()));
+
     for (old, next) in [
-        (&streamed_before, &streamed_after),
+        (&streamed_before, &changed_stream),
         (&before, &streamed_after),
         (&streamed_before, &after),
     ] {
-        let old = SessionPlayback::new(Arc::clone(old)).unwrap();
+        let mut old = SessionPlayback::new(Arc::clone(old)).unwrap();
+        old.playing = true;
         let mut next = SessionPlayback::new(Arc::clone(next)).unwrap();
         next.require_continuous_insert = true;
-        assert_eq!(next.resident_group_reroute_from(&old), None);
-        assert_eq!(old.resident_group_reroute_from(&next), None);
+        assert_eq!(next.group_reroute_from(&old), None);
+        assert_eq!(old.group_reroute_from(&next), None);
         assert!(!next.plan_native_removal_from(&old).unwrap());
         assert!(old.track_faders.iter().all(|fader| !fader.active()));
     }
@@ -225,8 +236,8 @@ fn group_reroute_refuses_a_delayed_leaf_to_group_edge_in_either_direction() {
     assert_eq!(after.arrangement().main_latency_frames(), delay);
     let old = SessionPlayback::new(before).unwrap();
     let next = SessionPlayback::new(after).unwrap();
-    assert_eq!(next.resident_group_reroute_from(&old), None);
-    assert_eq!(old.resident_group_reroute_from(&next), None);
+    assert_eq!(next.group_reroute_from(&old), None);
+    assert_eq!(old.group_reroute_from(&next), None);
 }
 
 #[test]
@@ -281,8 +292,8 @@ fn aligned_group_entry_and_exit_require_reciprocal_row_shifts() {
     assert_eq!(after.arrangement().main_latency_frames(), latency);
     let old = SessionPlayback::new(before).unwrap();
     let next = SessionPlayback::new(after).unwrap();
-    assert_eq!(next.resident_group_reroute_from(&old), Some(0));
-    assert_eq!(old.resident_group_reroute_from(&next), Some(2));
+    assert_eq!(next.group_reroute_from(&old), Some(0));
+    assert_eq!(old.group_reroute_from(&next), Some(2));
 
     let mut below = Editor::new(editor.project().clone(), 4).unwrap();
     below
@@ -295,8 +306,8 @@ fn aligned_group_entry_and_exit_require_reciprocal_row_shifts() {
         })
         .unwrap();
     let below = SessionPlayback::new(prepare(&below)).unwrap();
-    assert_eq!(below.resident_group_reroute_from(&next), None);
-    assert_eq!(next.resident_group_reroute_from(&below), None);
+    assert_eq!(below.group_reroute_from(&next), None);
+    assert_eq!(next.group_reroute_from(&below), None);
 
     editor
         .execute(Command::MoveTracksBefore {
@@ -305,7 +316,7 @@ fn aligned_group_entry_and_exit_require_reciprocal_row_shifts() {
         })
         .unwrap();
     let compound = SessionPlayback::new(prepare(&editor)).unwrap();
-    assert_eq!(compound.resident_group_reroute_from(&old), None);
+    assert_eq!(compound.group_reroute_from(&old), None);
 }
 
 #[test]
@@ -377,13 +388,13 @@ fn aligned_nested_group_reroute_requires_immediately_related_groups() {
         (&inner_route, &enclosing_route),
         (&enclosing_route, &inner_route),
     ] {
-        assert!(next.resident_group_reroute_from(old).is_some());
+        assert!(next.group_reroute_from(old).is_some());
     }
     for (old, next) in [
         (&inner_route, &outermost_route),
         (&outermost_route, &inner_route),
     ] {
-        assert_eq!(next.resident_group_reroute_from(old), None);
+        assert_eq!(next.group_reroute_from(old), None);
     }
 }
 
