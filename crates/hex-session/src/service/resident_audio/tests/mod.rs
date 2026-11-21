@@ -489,8 +489,10 @@ fn library_load_uses_admitted_source_transaction_and_preserves_owner_on_refusal(
             decoded,
             &AtomicBool::new(false),
             crate::native_assets::NativeAssetDestination::NewInstrument {
-                track,
-                placement: hex_project::InstrumentLoadPlacement::First,
+                destination: hex_project::InstrumentLoadDestination::Track {
+                    track,
+                    placement: hex_project::InstrumentLoadPlacement::First,
+                },
                 state,
                 source_slot,
             },

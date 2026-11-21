@@ -520,8 +520,10 @@ fn first_sampler_staged_prepare_failure_or_late_cancel_keeps_source_model_and_hi
             fixture.decoded(),
             &cancel,
             NativeAssetDestination::NewInstrument {
-                track,
-                placement: hex_project::InstrumentLoadPlacement::First,
+                destination: hex_project::InstrumentLoadDestination::Track {
+                    track,
+                    placement: hex_project::InstrumentLoadPlacement::First,
+                },
                 state,
                 source_slot,
             },
