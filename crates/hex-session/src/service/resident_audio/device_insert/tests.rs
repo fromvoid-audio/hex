@@ -1033,7 +1033,11 @@ fn assert_native_move_history(layout: NativeMoveLayout) {
         )
         .unwrap();
     let compound_project = compound.project().clone();
-    assert!(move_history::stage(&mut compound, false).unwrap().is_none());
+    assert!(
+        move_history::stage(&mut compound, false, false)
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(compound.project(), &compound_project);
     assert!(compound.can_undo());
     assert!(!compound.can_redo());

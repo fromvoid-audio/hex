@@ -1487,6 +1487,8 @@ impl Session {
         } else {
             (None, None)
         };
+        let running_hosted_effect =
+            self.audio_mode() == DocumentAudioMode::Resident && sink.resident_playing();
         self.stage_resident_graph_change(
             context,
             sink,
@@ -1518,13 +1520,13 @@ impl Session {
                     }));
                 }
                 Ok(
-                    move_history::stage(&mut session.editor, redo)?.map(|staged| {
-                        StagedResidentChange {
+                    move_history::stage(&mut session.editor, redo, running_hosted_effect)?.map(
+                        |staged| StagedResidentChange {
                             edit: StagedChange::History(staged.edge),
                             operation: Operation::ResidentMoveHistory,
                             hosted_instrument_move: staged.hosted_instrument_move,
-                        }
-                    }),
+                        },
+                    ),
                 )
             },
         )
@@ -1618,9 +1620,7 @@ impl Session {
                         .preparation(self.project(), edit.project(), installed)
                         .map(ResidentHostedMove::Instrument)
                         .or_else(|| {
-                            if !matches!(&edit, StagedChange::Command(_))
-                                || !sink.resident_playing()
-                            {
+                            if !sink.resident_playing() {
                                 return None;
                             }
                             intent

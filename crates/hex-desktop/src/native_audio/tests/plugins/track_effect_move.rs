@@ -31,8 +31,21 @@ fn assert_donor_pcm(h: &ResidentHarness) {
 }
 
 fn assert_track_pcm_at_gain(h: &ResidentHarness, receiver_start: Option<u64>, receiver_gain: f32) {
+    assert_wet_track_pcm(
+        h,
+        receiver_start.unwrap_or(0),
+        receiver_start.is_some(),
+        receiver_gain,
+    );
+}
+
+fn assert_wet_track_pcm(
+    h: &ResidentHarness,
+    start: u64,
+    wet_on_receiver: bool,
+    receiver_gain: f32,
+) {
     let frame = status(h).position.load(Acquire);
-    let start = receiver_start.unwrap_or(0);
     assert!(frame >= start + BRIDGE);
     let pcm = instruments::render_replay_block(h);
     assert_eq!(status(h).position.load(Acquire), frame + BLOCK);
@@ -41,14 +54,14 @@ fn assert_track_pcm_at_gain(h: &ResidentHarness, receiver_start: Option<u64>, re
     let wet = 0.5 + ((frame - start - BRIDGE) / BLOCK) as f32 * 0.125;
     let donor = f32::from(DONOR_INPUT) / 32768.0 * DONOR_GAIN;
     let receiver = f32::from(RECEIVER_INPUT) / 32768.0 * receiver_gain;
-    let expected = if receiver_start.is_some() {
+    let expected = if wet_on_receiver {
         donor + receiver * wet
     } else {
         donor * wet + receiver
     };
     assert!(
         pcm.iter().all(|sample| *sample == [expected; 2]),
-        "receiver_start={receiver_start:?} frame={frame}: first sample {:?}, expected {expected}",
+        "start={start} wet_on_receiver={wet_on_receiver} frame={frame}: first sample {:?}, expected {expected}",
         pcm[0],
     );
 }
@@ -71,9 +84,16 @@ fn cancelling_a_running_track_effect_move_restores_the_original_wet_route() {
     run_track_effect_move(MoveCase::Cancelled);
 }
 
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn running_resident_track_vst3_effect_move_undo_redo_install_fresh_workers() {
+    run_track_effect_move(MoveCase::FreshHistory);
+}
+
 #[derive(PartialEq, Eq)]
 enum MoveCase {
     Fresh,
+    FreshHistory,
     Confirmed,
     Cancelled,
 }
@@ -383,6 +403,18 @@ fn run_track_effect_move(case: MoveCase) {
     let receiver_start = receiver_start.expect("exact callback cut frame");
     assert_track_pcm_at_gain(&h, Some(receiver_start), RECEIVER_GAIN);
 
+    if case == MoveCase::FreshHistory {
+        verify_running_move_history(
+            &mut h,
+            before,
+            &terminal,
+            [donor, receiver],
+            device,
+            receiver_start,
+        );
+        return;
+    }
+
     const UPDATED_GAIN: f32 = RECEIVER_GAIN * 0.5;
     let refreshed = h.run(Request::Edit(Command::SetTrackGains {
         gains: vec![(receiver, UPDATED_GAIN)],
@@ -406,6 +438,145 @@ fn run_track_effect_move(case: MoveCase) {
     }
     assert_eq!(live_worker(&h), fresh);
     assert_track_pcm_at_gain(&h, Some(receiver_start), UPDATED_GAIN);
+}
+
+fn verify_running_move_history(
+    h: &mut ResidentHarness,
+    original: &ViewState,
+    moved: &Event,
+    tracks: [hex_project::TrackId; 2],
+    device: hex_project::DeviceId,
+    mut worker_start: u64,
+) {
+    let binding = |h: &ResidentHarness| {
+        h.plugin_progress.lock().unwrap().source_bindings[0]
+            .filter(|(id, _, _)| *id == device.value())
+            .map(|(_, binding, _)| binding)
+    };
+    let mut current = moved.state.clone();
+    let mut prior_worker = binding(h).unwrap();
+    for (index, (request, target)) in [
+        (Request::Undo, original.project.as_ref()),
+        (Request::Redo, moved.state.project.as_ref()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let predecessor = status(h).recording_source().unwrap();
+        assert_eq!(predecessor.context.editor_revision, current.revision);
+        let prepared = h
+            .device_insert_probe()
+            .observe_next_foreign_effect_binding(device);
+        let (publication_ready, enqueue, _) = h.probe_next_native_publication();
+        let (submitted, resume) = h.probe_next_submitted_device_insert();
+        h.service.submit(request).unwrap();
+
+        let deadline = Instant::now() + Duration::from_millis(800);
+        let mut enqueued = false;
+        let submission = loop {
+            h.pump();
+            if let Ok(exact) = submitted.try_recv() {
+                break exact;
+            }
+            if !enqueued && publication_ready.try_recv().is_ok() {
+                enqueue.send(()).unwrap();
+                enqueued = true;
+            }
+            while let Ok(event) = h.service.try_event() {
+                assert_project_retained(&event, &current);
+                assert!(
+                    !event.request_complete,
+                    "move history ended before its exact submission: {:?}, {:?}",
+                    event.error, event.device_insert_complete,
+                );
+            }
+            assert!(Instant::now() < deadline, "move history did not stage");
+            if !enqueued {
+                assert_wet_track_pcm(h, worker_start, index == 0, RECEIVER_GAIN);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        assert_eq!(submission.output_identity, predecessor.output_identity);
+        assert_eq!(submission.context.editor_revision, current.revision + 1);
+        assert!(submission.audio_revision > predecessor.audio_revision);
+        assert_eq!(status(h).recording_source(), Some(predecessor));
+        assert_eq!(binding(h), Some(prior_worker));
+        let (prepared_owner, fresh) = prepared
+            .try_recv()
+            .expect("prepared history binding before callback")
+            .expect("fresh history worker");
+        assert_eq!(
+            prepared_owner,
+            hex_engine::ProcessorChainOwner::Track(tracks[index].value()),
+        );
+        assert_ne!(fresh, prior_worker);
+        resume.send(()).unwrap();
+        let pending = h.next();
+        assert!(!pending.request_complete && pending.error.is_none());
+        assert_project_retained(&pending, &current);
+
+        let deadline = Instant::now() + Duration::from_millis(800);
+        let mut cut_frame = None;
+        let installed = 'receipt: loop {
+            h.pump();
+            while let Ok(event) = h.service.try_event() {
+                if event.request_complete {
+                    break 'receipt event;
+                }
+                assert_project_retained(&event, &current);
+                assert!(event.device_insert_confirmation.is_none());
+            }
+            assert!(Instant::now() < deadline, "no exact history completion");
+            let frame = status(h).position.load(Acquire);
+            let pcm = instruments::render_replay_block(h);
+            if cut_frame.is_none()
+                && status(h)
+                    .recording_source()
+                    .is_some_and(|source| source.audio_revision == submission.audio_revision)
+            {
+                cut_frame = Some(frame);
+                assert_eq!(pcm, [[0.0; 2]; BLOCK as usize]);
+            }
+            assert_eq!(status(h).position.load(Acquire), frame + BLOCK);
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        assert!(installed.error.is_none(), "{:?}", installed.error);
+        let completion = installed.device_insert_complete.expect("history receipt");
+        assert_eq!(completion.outcome, DeviceInsertOutcome::Installed);
+        assert_eq!(completion.submission, submission);
+        assert_eq!(installed.state.project.as_ref(), target);
+        assert_eq!(installed.state.revision, submission.context.editor_revision);
+        assert_eq!(installed.state.can_redo, index == 0);
+        let accepted = status(h).recording_source().unwrap();
+        assert_eq!(accepted.output_identity, submission.output_identity);
+        assert_eq!(accepted.audio_revision, submission.audio_revision);
+        assert_eq!(accepted.context, submission.context);
+        worker_start = cut_frame.expect("history callback installed the exact source");
+
+        let terminal_poll = h.control_polls.load(Acquire);
+        for _ in 0..4 {
+            instruments::render_replay_block(h);
+        }
+        let deadline = Instant::now() + Duration::from_millis(800);
+        loop {
+            h.pump();
+            if h.control_polls.load(Acquire) > terminal_poll
+                && h.plugin_records.load(Acquire) == 1
+                && binding(h) == Some(fresh)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "old history worker did not return"
+            );
+            instruments::render_replay_block(h);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_wet_track_pcm(h, worker_start, index == 1, RECEIVER_GAIN);
+        prior_worker = fresh;
+        current = installed.state;
+    }
 }
 
 fn verify_confirmed_move(
