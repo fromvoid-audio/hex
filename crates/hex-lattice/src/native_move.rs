@@ -1,12 +1,12 @@
-//! Explicit cross-Track history permission; ordinary identities remain owner-bound.
+//! Exact authored stage matching for a cross-track cut between owner-bound runtimes.
 use crate::{NativeRuntimeChain, ProcessorChainOwner, ProcessorInstanceIdentity, RuntimeOwnership};
-use hex_lattice_contract::DeviceContractError;
 
 impl NativeRuntimeChain {
     /// Match the zero-latency donor stage to the receiver's final stage, with
     /// at most one retained prefix stage across the two chains.
-    /// The host must independently approve the provider's owner change, any
-    /// unchanged prefix, both route cuts and exclusive donor retirement.
+    /// The host separately proves the unchanged prefix and the two route
+    /// fades. The caller uses the donor identity to end its residual signal,
+    /// while the receiver keeps the fresh runtime prepared under its owner.
     pub fn cross_track_native_identity_from(
         &self,
         old: &Self,
@@ -59,29 +59,6 @@ impl NativeRuntimeChain {
         .then(|| ProcessorInstanceIdentity::new(old.owner, old.device_id).ok())
         .flatten()
     }
-
-    /// Move history once after the same preflight. For an approved legacy
-    /// provider, the host must prove that the two prepared runtime pairs are
-    /// interchangeable. Exchange the pairs so moving a large running effect
-    /// adds no ring copy to the cut. The old chain retires with the fresh pair.
-    pub fn transfer_cross_track_native_from(
-        &mut self,
-        old: &mut Self,
-    ) -> Result<(), DeviceContractError> {
-        if self.cross_track_native_identity_from(old).is_none() {
-            return Err(DeviceContractError::InvalidDescriptor);
-        }
-        let (Some(next), Some(old)) = (self.entries.last_mut(), old.entries.last_mut()) else {
-            return Err(DeviceContractError::InvalidDescriptor);
-        };
-        if matches!(next.runtime, RuntimeOwnership::Legacy { .. }) {
-            // The preflight already proved that both entries are Legacy.
-            std::mem::swap(&mut next.runtime, &mut old.runtime);
-        } else {
-            next.runtime.transfer_history_from(&mut old.runtime);
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -126,32 +103,13 @@ mod tests {
     }
 
     #[test]
-    fn cross_track_move_exchanges_the_legacy_runtime_pairs() {
+    fn cross_track_cut_identifies_the_donor_with_one_receiver_prefix() {
         let probe = Arc::new(Probe::default());
         let device =
             |track, id| instance(ProcessorChainOwner::Track(track), id, 48_000, 0, &probe).unwrap();
-        let pair = |entry: &crate::RuntimeEntry| {
-            let RuntimeOwnership::Legacy { primary, scratch } = &entry.runtime else {
-                panic!("legacy pair");
-            };
-            [
-                std::ptr::from_ref(primary.as_ref()).cast::<()>(),
-                std::ptr::from_ref(scratch.as_ref()).cast::<()>(),
-            ]
-        };
-        let mut old = NativeRuntimeChain::new_prepared(vec![device(1, 4)]).unwrap();
-        let mut next = NativeRuntimeChain::new_prepared(vec![device(2, 5), device(2, 4)]).unwrap();
-        let running = pair(&old.entries[0]);
-        let prefix = pair(&next.entries[0]);
-        let fresh = pair(&next.entries[1]);
-        next.transfer_cross_track_native_from(&mut old).unwrap();
-        assert_eq!(pair(&next.entries[0]), prefix);
-        assert_eq!(pair(&next.entries[1]), running);
-        assert_eq!(pair(&old.entries[0]), fresh);
-
-        old.transfer_cross_track_native_from(&mut next).unwrap();
-        assert_eq!(pair(&next.entries[0]), prefix);
-        assert_eq!(pair(&next.entries[1]), fresh);
-        assert_eq!(pair(&old.entries[0]), running);
+        let old = NativeRuntimeChain::new_prepared(vec![device(1, 4)]).unwrap();
+        let next = NativeRuntimeChain::new_prepared(vec![device(2, 5), device(2, 4)]).unwrap();
+        let donor = ProcessorInstanceIdentity::new(ProcessorChainOwner::Track(1), 4).unwrap();
+        assert_eq!(next.cross_track_native_identity_from(&old), Some(donor));
     }
 }

@@ -6606,15 +6606,6 @@ impl SessionPlayback {
                 }
             }
         }
-        if let Some(movement) = self.native_removal.and_then(|pending| pending.track_move()) {
-            let (next, old) = self
-                .device_chains
-                .get_mut(movement.destination)
-                .zip(previous.device_chains.get_mut(movement.source))
-                .ok_or(SessionPlaybackError::DeviceRuntime)?;
-            next.transfer_cross_track_native_from(old)
-                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-        }
         if let Some(movement) = hosted_effect_move {
             let (new_clock, old_clock) = self
                 .compensation
