@@ -1,7 +1,8 @@
 //! Persistent host bindings shared by specialized and descriptor-driven panels.
 //! Session gestures, canonical edits and app lifecycle remain with their owners.
 use super::super::{
-    device_action_owner::device_in_panel, native_automation_recording::automation_target,
+    EditorMode, device_action_owner::device_in_panel,
+    native_automation_recording::automation_target,
 };
 use super::gesture_adapter::{
     NumericGestureLease, dispatch_bound_numeric_gesture, owns_native_automation,
@@ -544,7 +545,7 @@ pub(super) fn render_parameter(
         }
         None => unsupported_parameter(descriptor.label),
     };
-    let menu_binding = CapturedBinding {
+    let pointer_binding = CapturedBinding {
         generation,
         owner: view.device_panel.owner,
         key,
@@ -555,20 +556,34 @@ pub(super) fn render_parameter(
         .when(automated, super::automation_tint::mark)
         .capture_any_mouse_down(cx.listener(
             move |view, event: &gpui::MouseDownEvent, window, cx| {
-                if event.button == gpui::MouseButton::Right
-                    && menu_binding.accepts_event(view, false)
-                    && view
+                let left = event.button == gpui::MouseButton::Left;
+                if (!left && event.button != gpui::MouseButton::Right)
+                    || (left && !enabled)
+                    || view
                         .state
                         .as_ref()
-                        .is_some_and(|state| state.revision == revision)
-                    && view.open_parameter_automation_menu(
-                        event.position,
-                        key.device,
-                        automation_target(key.parameter),
-                        window,
-                        cx,
-                    )
+                        .is_none_or(|state| state.revision != revision)
+                    || !pointer_binding.accepts_event(view, left)
                 {
+                    return;
+                }
+                let target = automation_target(key.parameter);
+                if left {
+                    // This press selects view state before the child decides
+                    // whether a value-edit gesture has actually begun.
+                    if view.remember_automation_parameter(key.device, target) {
+                        if view.automation_view.enabled && view.mode == EditorMode::Arrangement {
+                            view.track_scroll.remeasure();
+                        }
+                        cx.notify();
+                    }
+                } else if view.open_parameter_automation_menu(
+                    event.position,
+                    key.device,
+                    target,
+                    window,
+                    cx,
+                ) {
                     cx.stop_propagation();
                 }
             },
