@@ -8,7 +8,7 @@ use hex_audio::{
     plugin_effects::{
         AuthoredSelection, EffectPresentation, EffectPresentationPlan, EffectSelection,
         EffectStartupTimings, Hosting, PluginProfile, RetainedHostedSource,
-        RetainedInstrumentSource, RetainedTrackEffectSource,
+        RetainedInstrumentSource,
     },
 };
 use hex_engine::{PreparedRevision, ProcessorChainOwner};
@@ -1362,15 +1362,6 @@ impl Plugins {
         });
         let mut output = output;
         let retained = self.retained_instrument_move(output.as_deref_mut(), &input, desired)?;
-        let retained = match retained {
-            Some(route) => Some(route),
-            None => self.retained_track_effect_move(
-                output.as_deref_mut(),
-                &input,
-                desired,
-                cancellation,
-            )?,
-        };
         if input.preparing_edit() {
             self.prepare_edit_sources(
                 output.as_deref_mut(),
@@ -1456,6 +1447,12 @@ impl Plugins {
         let control = output
             .and_then(|output| output.publication.control())
             .ok_or("native output closed")?;
+        let movement = match retained {
+            Some(route) => Some(route),
+            None => {
+                self.fresh_track_effect_move(control, &input, desired, &bindings, cancellation)?
+            }
+        };
         let compiler_alias = match retained {
             Some(route) => route.compiler_alias()?,
             None => {
@@ -1497,11 +1494,6 @@ impl Plugins {
             Ok(())
         })?;
         for &binding in &bindings {
-            if retained.is_some()
-                && matches!(compiler_alias, Some(RetainedHostedSource::TrackEffect(route)) if route.binding() == binding)
-            {
-                continue;
-            }
             let revision = loop {
                 edits::check_cancel(cancellation)?;
                 match control.reserve_native_source_program_revision_on_control(binding) {
@@ -1523,7 +1515,7 @@ impl Plugins {
             }
         }
         loop {
-            if retained
+            if movement
                 .is_some_and(|route| control.status.recording_source() != Some(route.applied))
             {
                 return Err("original vst3 move source is no longer installed".into());
@@ -1549,7 +1541,7 @@ impl Plugins {
                     edits::poll_control(control);
                 }
                 Ok(prepared) => {
-                    if let Some(route) = retained {
+                    if let Some(route) = movement {
                         self.hosted_move = Some(route);
                     }
                     return Ok(Some(prepared));

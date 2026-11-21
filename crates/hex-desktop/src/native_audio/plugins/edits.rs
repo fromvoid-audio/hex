@@ -94,19 +94,19 @@ impl Plugins {
         )))
     }
 
-    pub(super) fn retained_track_effect_move(
+    /// Correlate a fresh source selected by the ordinary compiler with the
+    /// exact staged move. The donor remains owned by the applied graph.
+    pub(super) fn fresh_track_effect_move(
         &self,
-        output: Option<&mut WorkerPreparedOutput>,
+        control: &mut PublicationControl,
         input: &ResidentEffectPreparation<'_>,
         desired: Option<&CanonicalAudioSourceSnapshot>,
+        bindings: &[Binding],
         cancellation: Option<&RequestCancellation>,
     ) -> Result<Option<hosted_move::MoveRoute>, String> {
         let Some(route) = input.hosted_track_effect_move() else {
             return Ok(None);
         };
-        let control = output
-            .and_then(|output| output.publication.control())
-            .ok_or("native output closed")?;
         if !control
             .status
             .playing
@@ -119,51 +119,63 @@ impl Plugins {
             return Ok(None);
         }
         let device = route.device.value();
-        let owner = ProcessorChainOwner::Track(route.donor.value());
-        let mut sources = self.sources.iter().filter(|source| {
-            source.owner == owner
+        let donor = ProcessorChainOwner::Track(route.donor.value());
+        let receiver = ProcessorChainOwner::Track(route.receiver.value());
+        let mut donors = self.sources.iter().filter(|source| {
+            source.owner == donor
                 && source.device == device
                 && source.accepted
                 && !source.retiring
                 && source.project_generation == predecessor.context.project_generation
                 && source.binding.root == predecessor.output_identity
         });
-        let Some(source) = sources.next() else {
+        let Some(original) = donors.next() else {
             return Ok(None);
         };
-        if sources.next().is_some() {
+        if donors.next().is_some() {
             return Err("original vst3 move worker is ambiguous".into());
         }
-        if source.editor_open
-            || source.open_editor_group.is_some()
-            || source.edit_backlog
-            || source
+        if original.editor_open
+            || original.open_editor_group.is_some()
+            || original.edit_backlog
+            || original
                 .edit_recovery
                 .is_some_and(|read| read.recovery && read.source != predecessor)
             || self
                 .latency_notice
                 .is_some_and(|(installed, _)| installed == predecessor)
-            || source.pending_touch.is_some()
-            || self
-                .adopted_move(input.context())
-                .is_some_and(|adopted| adopted.request.binding() == source.binding)
+            || original.pending_touch.is_some()
         {
             return Ok(None);
         }
-        let binding = source.binding;
+        let mut prepared = self.sources.iter().filter(|source| {
+            source.owner == receiver
+                && source.device == device
+                && !source.accepted
+                && !source.retiring
+                && source.project_generation == input.context().project_generation
+                && source.operation.edit_context() == Some(input.context())
+                && source.binding.root == predecessor.output_identity
+                && source.binding != original.binding
+                && bindings.contains(&source.binding)
+        });
+        let Some(fresh) = prepared.next() else {
+            return Ok(None);
+        };
+        if prepared.next().is_some() {
+            return Err("fresh vst3 move worker is ambiguous".into());
+        }
         let identity =
-            NativeProcessorIdentity::new(owner, device).map_err(|error| error.to_string())?;
+            NativeProcessorIdentity::new(receiver, device).map_err(|error| error.to_string())?;
+        let binding = fresh.binding;
         let mut state = None;
-        input.visit_plugin_devices(|dest, id, authored| {
-            if !dest.is_instrument()
-                && dest.owner() == ProcessorChainOwner::Track(route.receiver.value())
-                && id == device
-            {
+        input.visit_plugin_devices(|destination, id, authored| {
+            if !destination.is_instrument() && destination.owner() == receiver && id == device {
                 state = Some(authored);
             }
             Ok(())
         })?;
-        let state = state.ok_or("retained vst3 effect receiver changed")?;
+        let state = state.ok_or("fresh vst3 effect receiver changed")?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
         let supported = loop {
             check_cancel(cancellation)?;

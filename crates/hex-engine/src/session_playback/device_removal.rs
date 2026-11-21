@@ -445,7 +445,7 @@ impl SessionPlayback {
         } else if matches!(self.hosted_move, Some(HostedMoveRequest::Effect(_))) {
             let movement = self
                 .direct_hosted_effect_cut_from(previous)
-                .ok_or(SessionPlaybackError::LatencyLayoutChanged)?;
+                .ok_or(SessionPlaybackError::DeviceInsertNeedsConfirmation)?;
             Some(RemovalTransition::Move(StagedTrackMove::HostedEffect(
                 movement,
             )))
@@ -589,20 +589,16 @@ impl SessionPlayback {
         self.native_removal.is_some()
     }
 
-    pub(crate) fn pending_hosted_track_effect_move(
-        &self,
-    ) -> Option<(crate::playback::HostedTrackEffectMove, u64)> {
+    pub(crate) fn pending_hosted_track_effect_deadline(&self) -> Option<u64> {
         let pending = self.native_removal?;
+        pending.hosted_effect_move()?;
         let started = pending.started_at?.get() - 1;
-        let effect = pending.hosted_effect_move()?;
         let fade = u64::from(super::track_fader::TrackFader::fade_frames(
             self.revision.arrangement().sample_rate(),
         ));
-        // One bridge for the old dry route plus a finite wait for a physical
-        // callback boundary on the original worker's quantum. A host with an
-        // incompatible subdivision eventually restores both original faders.
-        let deadline = started.saturating_add(fade + 512 + 2 * 1024);
-        Some((effect.request, deadline))
+        // Bound the fade and the old dry alignment drain, including callback
+        // subdivision. Expiry restores both predecessor faders.
+        Some(started.saturating_add(fade + 512 + 2 * 1024))
     }
 
     pub(crate) fn pending_foreign_main_pass(

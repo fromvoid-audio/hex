@@ -1,4 +1,4 @@
-//! Prototype an original effect borrow without publishing the moved graph.
+//! Exact publication proofs for a fresh direct Track effect move and the retired compiler experiment.
 use super::*;
 use hex_lattice::{DevicePreparationContext, PreparedProcessorFactory, TuningTable};
 use hex_project::DeviceSelectionIds;
@@ -258,7 +258,7 @@ fn private_compiler_borrows_original_root_binding_for_the_exact_receiver_chain()
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
-fn signed_track_effect_cut_drains_old_dry_route_and_keeps_the_worker() {
+fn signed_track_effect_cut_drains_the_old_route_and_starts_an_empty_receiver() {
     verify_track_effect_cut(false);
 }
 
@@ -318,7 +318,6 @@ fn verify_track_effect_cut(cancel_after_fade: bool) {
             .unwrap();
     }
     let playback = compile(&f, true);
-    let original = playback.foreign_nodes_on_control().next().unwrap().clone();
     let previous = publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
     f.control.command(PlaybackCommand::Play).unwrap();
     let root = f.control.native_candidate_root();
@@ -350,15 +349,31 @@ fn verify_track_effect_cut(cancel_after_fade: bool) {
         device.value(),
     )
     .unwrap();
-    let deadline = Instant::now() + Duration::from_millis(550);
+    let saved = staged.project().track(receiver).unwrap().devices()[0]
+        .state()
+        .clone();
+    let fresh = source_for_profile(
+        &mut f.control,
+        logical,
+        "processing",
+        QUANTUM as u16,
+        Some(saved.clone()),
+    );
+    assert_ne!(fresh, binding);
+    assert!(
+        f.control
+            .native_source_prepared_state(fresh)
+            .unwrap()
+            .processing_eq(&saved)
+    );
+    f.control.publish_native_source_endpoint(fresh).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
     let candidate = loop {
-        let prepared = f.control.with_retained_track_effect_definition(
-            predecessor,
-            &original,
-            logical,
-            |definition| prepare_registered_candidate(&f, staged.project(), definition),
-        );
-        match prepared {
+        match f
+            .control
+            .with_native_effect_definition(&[fresh], |definition| {
+                prepare_registered_candidate(&f, staged.project(), definition)
+            }) {
             Ok(candidate) => break candidate,
             Err(reason)
                 if matches!(
@@ -366,7 +381,7 @@ fn verify_track_effect_cut(cancel_after_fade: bool) {
                     "native effect preparation is busy" | "native effect selection is busy"
                 ) =>
             {
-                assert!(Instant::now() < deadline, "exact retained effect compiler");
+                assert!(Instant::now() < deadline, "fresh receiver effect compiler");
                 std::thread::yield_now();
             }
             Err(reason) => panic!("candidate compiler: {reason}"),
@@ -375,13 +390,22 @@ fn verify_track_effect_cut(cancel_after_fade: bool) {
     let mut successor =
         Playback::try_from_prepared_with_device_resources(Arc::new(candidate), &f.resources)
             .unwrap();
+    let movement = HostedTrackEffectMove {
+        donor,
+        receiver,
+        device,
+        binding: fresh,
+    };
+    assert!(
+        successor
+            .require_hosted_track_effect_move(HostedTrackEffectMove {
+                binding,
+                ..movement
+            })
+            .is_err()
+    );
     successor
-        .require_hosted_track_effect_move(HostedTrackEffectMove {
-            donor,
-            receiver,
-            device,
-            binding,
-        })
+        .require_hosted_track_effect_move(movement)
         .unwrap();
     let fence = f.control.capture_fresh_runtime_fence().unwrap();
     let context = hex_engine::AudioSourceContext {
@@ -424,7 +448,9 @@ fn verify_track_effect_cut(cancel_after_fade: bool) {
         assert_eq!(receipt.state(), PublicationReceiptState::Pending);
         assert_eq!(f.control.status.recording_source(), Some(predecessor));
     }
-    render(&mut f);
+    let first_fresh = physical_block::<QUANTUM>(&mut f);
+    replacement::wait_for_blocks(&root, fresh, 1);
+    assert_eq!(first_fresh, [[0.0; 2]; QUANTUM]);
     assert_eq!(receipt.state(), PublicationReceiptState::Installed);
     assert_eq!(
         f.control.status.recording_source(),
@@ -434,11 +460,11 @@ fn verify_track_effect_cut(cancel_after_fade: bool) {
             output_identity: binding.root,
         })
     );
-    render(&mut f);
-    let (block, moved) = render(&mut f);
-    // The old worker's ramp advances with the original quantum prefix. The
-    // final reflected sample has the new receiver input and the new dry donor.
-    let wet_gain = 0.5 + (block - 3) as f32 * 0.125;
+    assert_eq!(physical_block::<QUANTUM>(&mut f), [[0.0; 2]; QUANTUM]);
+    replacement::wait_for_blocks(&root, fresh, 2);
+    let moved = physical_block::<QUANTUM>(&mut f);
+    replacement::wait_for_blocks(&root, fresh, 3);
+    let wet_gain = 0.5;
     assert_eq!(
         moved[QUANTUM - 1],
         [
