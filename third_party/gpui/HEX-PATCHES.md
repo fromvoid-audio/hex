@@ -529,3 +529,9 @@ opacity as a read-only fully-opaque predicate during paint. Callers still
 have to establish that their own fill is opaque. Hex's Main miniature uses
 the predicate with its same-frame section fill coverage. The existing
 opacity stack, blending, masks and scene insertion retain their owners.
+
+21 November canvas debug-bounds test support: `Window::record_debug_bounds`
+exposes the existing test-support `Frame::debug_bounds` insertion to custom
+canvas/element painters without instantiating per-region `Div`s. Compiled only
+under `#[cfg(any(test, feature = "test-support"))]`; no production code, native
+API, or scene behavior changes.

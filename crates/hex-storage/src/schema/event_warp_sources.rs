@@ -248,7 +248,7 @@ mod tests {
     fn live_event_warp_inventory_round_trips_over_a_complete_schema123_document() {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
         let mut import = || {
-            let Created::Imported { clip, .. } = editor
+            let Created::Imported { asset, track, clip } = editor
                 .execute(Command::ImportAudioTrack {
                     name: "audio".into(),
                     path: "source.wav".into(),
@@ -259,10 +259,10 @@ mod tests {
             else {
                 panic!("audio fixture");
             };
-            clip
+            (track, asset, clip)
         };
-        let scoped = import();
-        let split = import();
+        let (_, _, scoped) = import();
+        let (track, asset, split) = import();
         let beat = BeatTime::ONE.raw();
         for command in [
             Command::SetAudioClipMusical {
@@ -348,5 +348,40 @@ mod tests {
         let mut missing = document;
         missing["event_warp_sources"][0]["reads"][0]["source"] = 9_000.into();
         assert!(crate::decode(&serde_json::to_vec(&missing).unwrap()).is_err());
+
+        let split_end = project.clip(split).unwrap().duration();
+        let Created::Clip(neighbor) = editor
+            .execute(Command::PlaceClip {
+                track,
+                asset,
+                start: split_end,
+                duration: 1_000,
+                source_offset: 0,
+                source_length: 1_000,
+                looping: false,
+            })
+            .unwrap()
+        else {
+            panic!("adjacent audio");
+        };
+        let Created::Clip(group) = editor
+            .execute(Command::GroupClips(vec![split, neighbor]))
+            .unwrap()
+        else {
+            panic!("grouped audio");
+        };
+        let project = editor.project();
+        let root = &project.clip(group).unwrap().audio_events().sources[0];
+        assert_eq!(root.clip.audio_events().warp_sources.len(), 1);
+        let encoded = crate::encode(project).unwrap();
+        let document: Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(
+            document["event_warp_sources"][0]["path"],
+            serde_json::json!([group.value(), root.id])
+        );
+        assert_eq!(
+            crate::decode(&encoded).unwrap().snapshot(),
+            project.snapshot()
+        );
     }
 }

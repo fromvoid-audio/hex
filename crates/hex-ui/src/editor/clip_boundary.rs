@@ -95,12 +95,12 @@ impl Notch {
             ));
         }
     }
-    fn extent(&self) -> f32 {
+    pub(super) fn extent(&self) -> f32 {
         self.0.as_ref().map_or(0.0, |value| value.get())
     }
 }
 
-fn corner_extent(width: f32, height: f32) -> f32 {
+pub(super) fn corner_extent(width: f32, height: f32) -> f32 {
     if !width.is_finite() || !height.is_finite() {
         return 0.0;
     }
@@ -413,31 +413,68 @@ pub(super) fn backdrop_shell(
 }
 
 /// Paint on the resolved endpoint so child layout rounding cannot move the edge.
-fn paint_resolved_trailing(
+pub(super) fn paint_resolved_trailing(
     bounds: gpui::Bounds<gpui::Pixels>,
     style: &Backdrop,
     color: gpui::Hsla,
     window: &mut gpui::Window,
 ) {
-    if bounds.size.width <= px(0.0) || px(style.notch.extent()) >= bounds.size.height {
+    let cut = style.notch.enabled().then(|| style.notch.extent());
+    paint_trailing_with_cut(bounds, style.stroke, cut, color, window);
+}
+
+pub(super) fn paint_trailing_with_cut(
+    bounds: gpui::Bounds<gpui::Pixels>,
+    stroke: f32,
+    notch_cut: Option<f32>,
+    color: gpui::Hsla,
+    window: &mut gpui::Window,
+) {
+    let cut_extent = notch_cut.unwrap_or(0.0);
+    if bounds.size.width <= px(0.0) || px(cut_extent) >= bounds.size.height {
         return;
     }
     let edge = gpui::Bounds::new(
         gpui::point(bounds.right(), bounds.top()),
-        gpui::size(px(style.stroke), bounds.size.height),
+        gpui::size(px(stroke), bounds.size.height),
     );
-    let mask = style.notch.enabled().then(|| gpui::ContentMask {
+    let mask = notch_cut.map(|cut| gpui::ContentMask {
         bounds: gpui::Bounds::from_corners(
-            gpui::point(edge.left(), edge.top() + px(style.notch.extent())),
+            gpui::point(edge.left(), edge.top() + px(cut)),
             edge.bottom_right(),
         ),
     });
     window.with_content_mask(mask, |window| window.paint_quad(gpui::fill(edge, color)));
 }
 
-fn paint_backdrop(
+pub(super) fn paint_backdrop(
     bounds: gpui::Bounds<gpui::Pixels>,
     style: &Backdrop,
+    color: gpui::Hsla,
+    window: &mut gpui::Window,
+) {
+    paint_backdrop_with_cut(
+        bounds,
+        style.body,
+        style.header,
+        style.stroke,
+        style.header_height,
+        style.header_gradient.as_ref(),
+        style.notch.extent(),
+        color,
+        window,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn paint_backdrop_with_cut(
+    bounds: gpui::Bounds<gpui::Pixels>,
+    body: u32,
+    header_color: u32,
+    stroke: f32,
+    header_height: f32,
+    header_gradient: Option<&super::clip_header_loop::HeaderGradient>,
+    cut: f32,
     color: gpui::Hsla,
     window: &mut gpui::Window,
 ) {
@@ -445,24 +482,20 @@ fn paint_backdrop(
     if bounds.size.width <= px(0.0) || bounds.size.height <= px(0.0) {
         return;
     }
-    let cut = style.notch.extent();
     let paint_square = |window: &mut gpui::Window| {
-        window.paint_quad(fill(bounds, rgb(style.body)));
+        window.paint_quad(fill(bounds, rgb(body)));
         // clip_name's -1 offsets compensate the containing layout border. Preserve
         // its old quad and ancestor mask exactly, including physical leading edges.
         let header = Bounds::from_corners(
-            point(bounds.left() + px(style.stroke - 1.0), bounds.top()),
-            point(
-                bounds.right() + px(1.0),
-                bounds.top() + px(style.header_height),
-            ),
+            point(bounds.left() + px(stroke - 1.0), bounds.top()),
+            point(bounds.right() + px(1.0), bounds.top() + px(header_height)),
         );
         let inner = Bounds::from_corners(
-            point(bounds.left() + px(style.stroke), bounds.top() + px(1.0)),
+            point(bounds.left() + px(stroke), bounds.top() + px(1.0)),
             point(bounds.right(), bounds.bottom() - px(1.0)),
         );
         window.with_content_mask(Some(ContentMask { bounds: inner }), |window| {
-            window.paint_quad(fill(header, rgb(style.header)));
+            window.paint_quad(fill(header, rgb(header_color)));
         });
         window.paint_quad(quad(
             bounds,
@@ -471,7 +504,7 @@ fn paint_backdrop(
             Edges {
                 top: px(1.0),
                 bottom: px(1.0),
-                left: px(style.stroke),
+                left: px(stroke),
                 right: px(0.0),
             },
             color,
@@ -479,15 +512,8 @@ fn paint_backdrop(
         ));
     };
     let paint_header_gradient = |window: &mut gpui::Window| {
-        if let Some(gradient) = &style.header_gradient {
-            gradient.paint(
-                bounds,
-                style.header_height,
-                style.stroke,
-                cut,
-                style.header,
-                window,
-            );
+        if let Some(gradient) = header_gradient {
+            gradient.paint(bounds, header_height, stroke, cut, header_color, window);
         }
     };
     if cut == 0.0 {
@@ -504,26 +530,76 @@ fn paint_backdrop(
         bounds.origin,
         point(bounds.right() - px(cut), bounds.top() + px(cut)),
     );
-    window.with_content_mask(Some(ContentMask { bounds: upper_left }), paint_square);
+    // When the header covers the notch band (cut <= header_height), skip the
+    // occluded body quad in upper_left and paint only the header and border.
+    window.with_content_mask(Some(ContentMask { bounds: upper_left }), |window| {
+        if cut > header_height {
+            paint_square(window);
+            return;
+        }
+        let header = Bounds::from_corners(
+            point(bounds.left() + px(stroke - 1.0), bounds.top()),
+            point(bounds.right() + px(1.0), bounds.top() + px(header_height)),
+        );
+        let inner = Bounds::from_corners(
+            point(bounds.left() + px(stroke), bounds.top() + px(1.0)),
+            point(bounds.right(), bounds.bottom() - px(1.0)),
+        );
+        window.with_content_mask(Some(ContentMask { bounds: inner }), |window| {
+            window.paint_quad(fill(header, rgb(header_color)));
+        });
+        window.paint_quad(quad(
+            bounds,
+            Corners::default(),
+            gpui::transparent_black(),
+            Edges {
+                top: px(1.0),
+                bottom: px(1.0),
+                left: px(stroke),
+                right: px(0.0),
+            },
+            color,
+            Default::default(),
+        ));
+    });
     window.with_content_mask(Some(ContentMask { bounds }), |window| {
-        if let Some(path) = notch_fill(bounds.right(), bounds.top(), px(cut), px(style.stroke)) {
-            window.paint_path(path, rgb(style.header));
+        if let Some(path) = notch_fill(bounds.right(), bounds.top(), px(cut), px(stroke)) {
+            window.paint_path(path, rgb(header_color));
         }
         paint_header_gradient(window);
-        let inset = px(style.stroke / (2.0 * std::f32::consts::SQRT_2));
-        let mut diagonal = gpui::PathBuilder::stroke(px(style.stroke));
-        diagonal.move_to(point(
-            bounds.right() - px(cut) - inset,
-            bounds.top() + inset,
-        ));
-        diagonal.line_to(point(
-            bounds.right() - inset,
-            bounds.top() + px(cut) + inset,
-        ));
-        if let Ok(path) = diagonal.build() {
+        if let Some(path) = notch_diagonal(bounds.right(), bounds.top(), px(cut), px(stroke)) {
             window.paint_path(path, color);
         }
     });
+}
+
+/// Direct two-triangle diagonal stroke for the 45-degree notch corner, avoiding
+/// per-clip Lyon path stroke tessellation across dense timelines.
+fn notch_diagonal(
+    right: gpui::Pixels,
+    top: gpui::Pixels,
+    cut: gpui::Pixels,
+    stroke: gpui::Pixels,
+) -> Option<gpui::Path<gpui::Pixels>> {
+    use gpui::{Path, point};
+
+    let cut_f = f32::from(cut);
+    let stroke_f = f32::from(stroke);
+    if !cut_f.is_finite() || !stroke_f.is_finite() || cut_f <= 0.0 || stroke_f <= 0.0 {
+        return None;
+    }
+    let inset = px(stroke_f / (2.0 * std::f32::consts::SQRT_2));
+    let p0 = point(right - cut - inset, top + inset);
+    let p1 = point(right - inset, top + cut + inset);
+    let a = point(p0.x - inset, p0.y + inset);
+    let b = point(p0.x + inset, p0.y - inset);
+    let c = point(p1.x + inset, p1.y - inset);
+    let d = point(p1.x - inset, p1.y + inset);
+    let solid = point(0.0, 1.0);
+    let mut path = Path::new(a);
+    path.push_triangle((a, b, c), (solid, solid, solid));
+    path.push_triangle((a, c, d), (solid, solid, solid));
+    Some(path)
 }
 
 /// Fill the five-point convex header corner. Its bottom and left edges

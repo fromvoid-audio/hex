@@ -33,10 +33,11 @@ pub(super) fn section(view: &EditorView, start: u64, end: u64, chamfer: f32) -> 
     )
 }
 
+#[cfg(test)]
 const ROW_BATCH_CAPACITY: usize = 16;
 
-/// Nearby spans of one row share an order. Each original quad and its
-/// content mask still paint independently.
+/// Paint one row's miniature marks inside the enclosing paint layer so every
+/// miniature quad shares a single BoundsTree draw order and GPU batch.
 fn paint_row(
     window: &mut Window,
     color: Rgba,
@@ -46,14 +47,7 @@ fn paint_row(
     covers: impl Fn(Bounds<ScaledPixels>, Bounds<ScaledPixels>) -> bool,
 ) {
     let scale = window.scale_factor();
-    let mask = window.content_mask().bounds;
-    let scaled_mask = mask.scale(scale);
-    let max_gap = ScaledPixels::from(2.0);
-    let mut batch = [Bounds::default(); ROW_BATCH_CAPACITY];
-    let mut count = 0;
-    let mut first_clipped = Bounds::<ScaledPixels>::default();
-    let mut right = ScaledPixels::default();
-
+    let scaled_mask = window.content_mask().bounds.scale(scale);
     for (left, width) in spans {
         let span = Bounds::new(point(left, top), size(width, height));
         let scaled = span.scale(scale);
@@ -61,81 +55,23 @@ fn paint_row(
         if clipped.is_empty() || covers(scaled, scaled_mask) {
             continue;
         }
-        let gap = clipped.left() - right;
-        if count == batch.len()
-            || (count > 0 && !(ScaledPixels::default() <= gap && gap <= max_gap))
-        {
-            paint_row_batch(
-                window,
-                color,
-                &batch[..count],
-                mask,
-                scale,
-                first_clipped,
-                right,
-            );
-            count = 0;
-        }
-        if count == 0 {
-            first_clipped = clipped;
-        }
-        batch[count] = span;
-        count += 1;
-        right = clipped.right();
+        window.paint_quad(fill(span, color));
     }
-    paint_row_batch(
-        window,
-        color,
-        &batch[..count],
-        mask,
-        scale,
-        first_clipped,
-        right,
-    );
 }
 
-fn paint_row_batch(
-    window: &mut Window,
-    color: Rgba,
-    batch: &[Bounds<Pixels>],
-    mask: Bounds<Pixels>,
-    scale: f32,
-    first_clipped: Bounds<ScaledPixels>,
-    clipped_right: ScaledPixels,
-) {
-    let paint = |window: &mut Window| {
-        for &span in batch {
-            window.paint_quad(fill(span, color));
-        }
-    };
-    if let [first, .., last] = batch {
-        let layer = first.union(last);
-        let clipped_layer = layer.intersect(&mask);
-        let reserved = clipped_layer.scale(scale);
-        // The layer clips before scaling, while Scene clips the scaled
-        // quads. Guard rounded outer edges before sharing one draw order.
-        if !clipped_layer.is_empty()
-            && !reserved.is_empty()
-            && first_clipped.left() < clipped_right
-            && first_clipped.top() < first_clipped.bottom()
-            && reserved.left() <= first_clipped.left()
-            && reserved.right() >= clipped_right
-            && reserved.top() <= first_clipped.top()
-            && reserved.bottom() >= first_clipped.bottom()
-            && [
-                reserved.left(),
-                reserved.right(),
-                reserved.top(),
-                reserved.bottom(),
-            ]
-            .into_iter()
-            .all(|edge| f64::from(edge).is_finite())
-        {
-            window.paint_layer(layer, paint);
-            return;
-        }
-    }
-    paint(window);
+fn can_reserve_layer(bounds: Bounds<Pixels>, mask: Bounds<Pixels>, scale: f32) -> bool {
+    let clipped = bounds.intersect(&mask);
+    let reserved = clipped.scale(scale);
+    !clipped.is_empty()
+        && !reserved.is_empty()
+        && [
+            reserved.left(),
+            reserved.right(),
+            reserved.top(),
+            reserved.bottom(),
+        ]
+        .into_iter()
+        .all(|edge| f64::from(edge).is_finite())
 }
 
 fn layer(
@@ -218,33 +154,41 @@ fn layer(
                     } else {
                         theme::PaletteRole::Raised
                     }));
-                    for (index, row) in data.rows.iter().enumerate() {
-                        let first = row.partition_point(|span| span.end <= viewport.start);
-                        let y = top + index as f32 * row_height;
-                        let h = (row_height - pixel).max(pixel).min(height - y);
-                        let edge = chamfer.map_or(width, |cut| {
-                            crate::section_surface::geometry::miniature_right(
-                                width,
-                                height,
-                                cut,
-                                y + h,
-                            )
-                        });
-                        let spans = row[first..]
-                            .iter()
-                            .take_while(|span| span.start < limit)
-                            .filter_map(|&span| {
-                                let (left, right) = project_interval(span, viewport, width)?;
-                                let w = (right - left - pixel)
-                                    .max(pixel)
-                                    .min(right - left)
-                                    .min(edge - left);
-                                if w <= 0.0 {
-                                    return None;
-                                }
-                                Some((bounds.left() + px(left), px(w)))
+                    let paint_all_rows = |window: &mut Window| {
+                        for (index, row) in data.rows.iter().enumerate() {
+                            let first = row.partition_point(|span| span.end <= viewport.start);
+                            let y = top + index as f32 * row_height;
+                            let h = (row_height - pixel).max(pixel).min(height - y);
+                            let edge = chamfer.map_or(width, |cut| {
+                                crate::section_surface::geometry::miniature_right(
+                                    width,
+                                    height,
+                                    cut,
+                                    y + h,
+                                )
                             });
-                        paint_row(window, color, bounds.top() + px(y), px(h), spans, covers);
+                            let spans = row[first..]
+                                .iter()
+                                .take_while(|span| span.start < limit)
+                                .filter_map(|&span| {
+                                    let (left, right) = project_interval(span, viewport, width)?;
+                                    let w = (right - left - pixel)
+                                        .max(pixel)
+                                        .min(right - left)
+                                        .min(edge - left);
+                                    if w <= 0.0 {
+                                        return None;
+                                    }
+                                    Some((bounds.left() + px(left), px(w)))
+                                });
+                            paint_row(window, color, bounds.top() + px(y), px(h), spans, covers);
+                        }
+                    };
+                    let mask = window.content_mask().bounds;
+                    if can_reserve_layer(bounds, mask, window.scale_factor()) {
+                        window.paint_layer(bounds, paint_all_rows);
+                    } else {
+                        paint_all_rows(window);
                     }
                 },
             )
