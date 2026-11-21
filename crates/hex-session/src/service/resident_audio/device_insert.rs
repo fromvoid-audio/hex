@@ -20,7 +20,8 @@ pub enum GraphEditOperation {
     MoveDevice,
     /// A single Resident track reparent, confirmed by its exact graph receipt.
     MoveTrack,
-    /// One hosted Main power edit admitted from its original settled Stop interval.
+    /// One hosted Main power edit behind its exact graph receipt: an original
+    /// settled Stop interval, or a proved running Off source and passive cut.
     PowerDevice,
     RemoveTrack,
 }
