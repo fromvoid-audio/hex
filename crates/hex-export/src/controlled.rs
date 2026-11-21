@@ -165,10 +165,14 @@ pub fn control_storage_allowance(signal: Option<&ExportSignal>) -> Result<usize,
     let block = FRAMES_PER_BLOCK
         .checked_mul(std::mem::size_of::<Frame>())
         .ok_or_else(overflow)?;
+    let encoded_block = FRAMES_PER_BLOCK * super::format::MAX_FRAME_BYTES;
     let mut bytes = block
-        .checked_add(
-            std::mem::size_of::<ControlledRenderer>() - std::mem::size_of::<SessionPlayback>(),
-        )
+        .checked_add(encoded_block)
+        .and_then(|bytes| {
+            bytes.checked_add(
+                std::mem::size_of::<ControlledRenderer>() - std::mem::size_of::<SessionPlayback>(),
+            )
+        })
         .ok_or_else(overflow)?;
     // Five shared scalar controls; conservative Arc headers/alignment, never source payloads.
     bytes = bytes
@@ -246,12 +250,8 @@ pub fn control_storage_allowance(signal: Option<&ExportSignal>) -> Result<usize,
                 std::mem::size_of::<super::Stem>() + 4096 + std::mem::size_of::<OutputCaptureId>(),
             )
             .ok_or_else(overflow)?;
-        // One encoded block (sized for the widest format) reused for each stem;
-        // the full frame transaction is above.
-        bytes = bytes
-            .checked_add(ordered)
-            .and_then(|bytes| bytes.checked_add(FRAMES_PER_BLOCK * super::format::MAX_FRAME_BYTES))
-            .ok_or_else(overflow)?;
+        // The encoded block budget above is reused for each stem.
+        bytes = bytes.checked_add(ordered).ok_or_else(overflow)?;
     }
     Ok(bytes)
 }
