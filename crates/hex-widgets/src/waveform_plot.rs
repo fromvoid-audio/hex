@@ -376,6 +376,106 @@ where
 /// so cached local paths can be reused at a new location without rebuilding or
 /// cloning their path meshes. The existing [`waveform_plot`] submits a zero
 /// offset and retains its original behavior.
+fn paint_channels_with_opacity(
+    geometry: &WaveformGeometry,
+    offset: Point<Pixels>,
+    color: u32,
+    centerline: u32,
+    overrange: u32,
+    opacity: f32,
+    window: &mut Window,
+) {
+    let color = gpui::Hsla::from(rgb(color)).opacity(opacity);
+    let centerline = gpui::Hsla::from(rgb(centerline)).opacity(opacity);
+    let overrange = gpui::Hsla::from(rgb(overrange)).opacity(opacity);
+    if let Channels::Stereo(channels) = &geometry.channels {
+        let [upper, lower] = channels;
+        if [upper, lower].iter().all(|channel| {
+            channel.filled_envelope && channel.centerline.is_none() && channel.zero_ranges.is_none()
+        }) {
+            window.paint_disjoint_path_pair_with_offset(
+                [&upper.envelope, &lower.envelope],
+                offset,
+                color,
+            );
+            for channel in channels {
+                if let Some(path) = &channel.overrange {
+                    window.paint_path_with_offset(path, offset, overrange);
+                }
+            }
+            return;
+        }
+    }
+    for channel in geometry.channels() {
+        if let Some(path) = &channel.centerline {
+            window.paint_path_with_offset(path, offset, centerline);
+        }
+        window.paint_path_with_offset(&channel.envelope, offset, color);
+        if let Some(path) = &channel.zero_ranges {
+            window.paint_path_with_offset(path, offset, color);
+        }
+        if let Some(path) = &channel.overrange {
+            window.paint_path_with_offset(path, offset, overrange);
+        }
+    }
+}
+
+/// Directly paint precomputed waveform geometry at `offset` inside an existing
+/// canvas or custom element without wrapping it in an extra layout `Div`.
+pub fn paint_waveform_geometry_with_offset(
+    geometry: &WaveformGeometry,
+    bounds: Bounds<Pixels>,
+    offset: Point<Pixels>,
+    colors: WaveformColors,
+    emphasis: WaveformEmphasis,
+    opacity: f32,
+    window: &mut Window,
+) {
+    let width = f32::from(bounds.size.width);
+    let height = f32::from(bounds.size.height);
+    if !valid_point(bounds.origin)
+        || !valid_point(offset)
+        || !width.is_finite()
+        || width <= 0.0
+        || !height.is_finite()
+        || height <= 0.0
+    {
+        return;
+    }
+    if emphasis == WaveformEmphasis::Uniform {
+        paint_channels_with_opacity(
+            geometry,
+            offset,
+            colors.waveform,
+            colors.centerline,
+            colors.overrange,
+            opacity,
+            window,
+        );
+        return;
+    }
+    for (left, right, color) in regions(emphasis, colors) {
+        if right <= left {
+            continue;
+        }
+        let mask = Bounds::new(
+            bounds.origin + gpui::point(px(left as f32 * width), px(0.0)),
+            gpui::size(px((right - left) as f32 * width), bounds.size.height),
+        );
+        window.with_content_mask(Some(ContentMask { bounds: mask }), |window| {
+            paint_channels_with_opacity(
+                geometry,
+                offset,
+                color,
+                colors.centerline,
+                colors.overrange,
+                opacity,
+                window,
+            );
+        });
+    }
+}
+
 pub fn waveform_plot_with_offset<D>(
     prepare: impl FnOnce(WaveformViewport) -> Option<(D, Point<Pixels>)> + 'static,
     colors: WaveformColors,
