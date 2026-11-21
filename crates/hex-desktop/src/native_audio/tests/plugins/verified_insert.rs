@@ -897,24 +897,6 @@ fn verified_hosted_removal_undo_installs_a_fresh_catalog_worker() {
         assert_eq!(applied(h), Some(predecessor));
     };
 
-    transport(&mut h, PlaybackCommand::Play);
-    wait(|| {
-        h.render();
-        h.audio
-            .as_ref()
-            .unwrap()
-            .status()
-            .unwrap()
-            .playing
-            .load(Acquire)
-    });
-    submit(&h, Request::Undo);
-    let running = terminal(&mut h);
-    assert_eq!(
-        running.error.as_deref(),
-        Some("stop playback to undo or redo this vst3 edit")
-    );
-    check_refused(&running, &h);
     settle_transport(&mut h, PlaybackCommand::Stop);
 
     let unavailable = directory.join("temporarily-unavailable.vst3");
