@@ -8,6 +8,7 @@ use crate::{
     AtlasTextureId, AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, Pixels,
     Point, Radians, ScaledPixels, Size, bounds_tree::BoundsTree, point,
 };
+use smallvec::SmallVec;
 use std::{
     fmt::Debug,
     iter::Peekable,
@@ -21,6 +22,8 @@ pub(crate) type PathVertex_ScaledPixels = PathVertex<ScaledPixels>;
 
 pub(crate) type DrawOrder = u32;
 
+const MAX_ORDERED_GROUP_PRIMITIVES: usize = 16;
+
 #[derive(Default)]
 pub(crate) struct Scene {
     paint_operations: Vec<PaintOperation>,
@@ -29,6 +32,8 @@ pub(crate) struct Scene {
     unmatched_layer_end: Option<usize>,
     primitive_bounds: BoundsTree<ScaledPixels>,
     layer_stack: Vec<DrawOrder>,
+    collecting_group: bool,
+    group_primitives: Vec<(Primitive, Bounds<ScaledPixels>)>,
     pub(crate) shadows: Vec<Shadow>,
     pub(crate) quads: Vec<Quad>,
     pub(crate) paths: Vec<Path<ScaledPixels>>,
@@ -45,6 +50,8 @@ impl Scene {
         self.unmatched_layer_end = None;
         self.primitive_bounds.clear();
         self.layer_stack.clear();
+        self.collecting_group = false;
+        self.group_primitives.clear();
         self.paths.clear();
         self.shadows.clear();
         self.quads.clear();
@@ -55,10 +62,11 @@ impl Scene {
     }
 
     pub fn len(&self) -> usize {
-        self.paint_operations.len()
+        self.paint_operations.len() + self.group_primitives.len()
     }
 
     pub fn push_layer(&mut self, bounds: Bounds<ScaledPixels>) {
+        self.end_ordered_primitive_group();
         let order = self.primitive_bounds.insert(bounds);
         let outermost = self.layer_stack.is_empty();
         self.layer_stack.push(order);
@@ -66,6 +74,7 @@ impl Scene {
     }
 
     pub fn pop_layer(&mut self) {
+        self.end_ordered_primitive_group();
         let matched = self.layer_stack.pop().is_some();
         self.record_layer_end(matched && self.layer_stack.is_empty());
         if !matched && self.unmatched_layer_end.is_none() {
@@ -98,6 +107,57 @@ impl Scene {
             return;
         }
 
+        if self.collecting_group {
+            if self.group_primitives.len() < MAX_ORDERED_GROUP_PRIMITIVES
+                && finite_scene_bounds(&clipped_bounds)
+            {
+                self.group_primitives.push((primitive, clipped_bounds));
+                return;
+            }
+            self.end_ordered_primitive_group();
+        }
+        self.append_clipped_primitive(primitive, clipped_bounds);
+    }
+
+    pub(crate) fn start_ordered_primitive_group(&mut self) -> bool {
+        if self.collecting_group || !self.layer_stack.is_empty() {
+            return false;
+        }
+        self.collecting_group = true;
+        true
+    }
+
+    pub(crate) fn end_ordered_primitive_group(&mut self) {
+        if !self.collecting_group {
+            return;
+        }
+        self.collecting_group = false;
+        let mut primitives = std::mem::take(&mut self.group_primitives);
+        if primitives.len() > 1 {
+            let bounds: SmallVec<[Bounds<ScaledPixels>; MAX_ORDERED_GROUP_PRIMITIVES]> =
+                primitives.iter().map(|(_, bounds)| *bounds).collect();
+            let mut orders = [0; MAX_ORDERED_GROUP_PRIMITIVES];
+            if self
+                .primitive_bounds
+                .insert_group(&bounds, &mut orders[..bounds.len()])
+                .is_some()
+            {
+                for ((primitive, _), order) in primitives.drain(..).zip(orders) {
+                    self.append_primitive(primitive, order);
+                }
+            }
+        }
+        for (primitive, clipped_bounds) in primitives.drain(..) {
+            self.append_clipped_primitive(primitive, clipped_bounds);
+        }
+        self.group_primitives = primitives;
+    }
+
+    fn append_clipped_primitive(
+        &mut self,
+        primitive: Primitive,
+        clipped_bounds: Bounds<ScaledPixels>,
+    ) {
         let order = self
             .layer_stack
             .last()
@@ -107,6 +167,7 @@ impl Scene {
     }
 
     pub(crate) fn insert_disjoint_path_pair(&mut self, paths: [Path<ScaledPixels>; 2]) {
+        self.end_ordered_primitive_group();
         let [first, second] = paths.each_ref().map(Path::clipped_bounds);
         let gap = ScaledPixels::from(1.0);
         let separated = first.bottom() + gap <= second.top() || second.bottom() + gap <= first.top();
@@ -178,6 +239,7 @@ impl Scene {
     }
 
     pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
+        self.end_ordered_primitive_group();
         if self.try_bulk_replay(range.clone(), prev_scene) {
             return;
         }
@@ -311,6 +373,7 @@ impl Scene {
     }
 
     pub fn finish(&mut self) {
+        self.end_ordered_primitive_group();
         self.shadows.sort_by_key(|shadow| shadow.order);
         self.quads.sort_by_key(|quad| quad.order);
         self.paths.sort_by_key(|path| path.order);
@@ -1680,7 +1743,79 @@ mod replay_verification {
         equivalent(&mut fast, &mut legacy)
     }
 
+    fn verify_fresh_ordered_group() -> Result<(), String> {
+        let mask = bounds(1.0, 0.0, 24.0, 22.0, 2.0);
+        let background = primitive(1, 46, mask, mask);
+        let mut ordinary = Scene::default();
+        ordinary.insert_primitive(background.clone());
+        let mut grouped = Scene::default();
+        grouped.insert_primitive(background);
+
+        let range = |left| {
+            [
+                (1, bounds(left, 1.0, 5.5, 18.0, 2.0)),
+                (2, bounds(left + 1.5, 0.0, 4.0, 4.5, 2.0)),
+                (1, bounds(left + 5.5, 3.0, 0.5, 15.0, 2.0)),
+            ]
+        };
+        for x in [-2.25, 2.25, 7.75, 13.25, 18.75] {
+            require(
+                grouped.start_ordered_primitive_group(),
+                "clip group refused",
+            )?;
+            require(
+                !grouped.start_ordered_primitive_group(),
+                "nested collector replaced the active group",
+            )?;
+            for (kind, bounds) in range(x) {
+                let value = primitive(kind, 47 + kind as u32, bounds, mask);
+                ordinary.insert_primitive(value.clone());
+                grouped.insert_primitive(value);
+            }
+            grouped.end_ordered_primitive_group();
+        }
+        require(
+            grouped.start_ordered_primitive_group(),
+            "overflow fixture refused",
+        )?;
+        for i in 0..=MAX_ORDERED_GROUP_PRIMITIVES {
+            let value = primitive(i % 2 + 1, 51 + i as u32, mask, mask);
+            ordinary.insert_primitive(value.clone());
+            grouped.insert_primitive(value);
+        }
+        grouped.end_ordered_primitive_group();
+
+        require(
+            grouped.start_ordered_primitive_group(),
+            "layer fixture refused",
+        )?;
+        let overlay = primitive(1, 72, mask, mask);
+        grouped.insert_primitive(overlay.clone());
+        ordinary.insert_primitive(overlay.clone());
+        grouped.push_layer(mask);
+        ordinary.push_layer(mask);
+        grouped.insert_primitive(overlay.clone());
+        ordinary.insert_primitive(overlay);
+        grouped.pop_layer();
+        ordinary.pop_layer();
+        grouped.end_ordered_primitive_group();
+        require(
+            operations(&ordinary, false) == operations(&grouped, false),
+            "group changed exact primitive order, paint payload or path ID",
+        )?;
+        equivalent(&mut grouped, &mut ordinary)?;
+        let mut retained = Scene::default();
+        let mut reference = Scene::default();
+        retained.replay(0..grouped.len(), &grouped);
+        reference.replay_legacy(0..ordinary.len(), &ordinary);
+        let cover = primitive(2, 73, mask, mask);
+        retained.insert_primitive(cover.clone());
+        reference.insert_primitive(cover);
+        equivalent(&mut retained, &mut reference)
+    }
+
     pub(super) fn verify() -> Result<(), String> {
+        verify_fresh_ordered_group()?;
         verify_path_clone_value_semantics()?;
         verify_disjoint_path_pair()?;
         verify_rounded_replay_envelope()?;
