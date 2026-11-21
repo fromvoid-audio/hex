@@ -1807,8 +1807,12 @@ impl WorkerAudioSink for NativeAudioSink {
                 .as_mut()
                 .and_then(|output| output.publication.control())
                 .and_then(|control| control.status.recording_source());
-            self.plugins
-                .finish_power_off(context, accepted, applied, off);
+            if let Some(running_off) = self
+                .plugins
+                .finish_power_off(context, accepted, applied, off)
+            {
+                self.resident.running_powered_off = Some(running_off);
+            }
             self.plugins.finish_hosted_move(context, accepted, applied);
         }
         self.plugins.finish_edit(context, accepted);
@@ -2328,9 +2332,14 @@ impl WorkerAudioSink for NativeAudioSink {
         context: AudioSourceContext,
         device: u64,
     ) -> Option<hex_session::service::ResidentGraphSubmission> {
+        let (off_source, stop_generation) = self.resident.running_powered_off?;
         let control = self.output.as_mut()?.publication.control()?;
         let actual = control.status.recording_source()?;
-        if actual.context != context
+        let fence = control.capture_fresh_runtime_fence()?;
+        if actual != off_source
+            || actual.context != context
+            || fence.expected_active_revision() != actual.audio_revision
+            || fence.consumed_stop_generation() != stop_generation
             || self.resident.powered_off_main(actual) != Some(device)
             || !control
                 .status

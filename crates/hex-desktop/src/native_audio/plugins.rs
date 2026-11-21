@@ -242,10 +242,12 @@ pub(super) struct Plugins {
     restore: Option<Restore>,
     reopen: Option<Reopen>,
     saved_off_document: Option<(u64, u64)>,
-    // Nonowning original binding and candidate key; actual returns stay in Root.
+    // Original binding, candidate key and optional original Stop generation.
+    // All worker returns stay in Root.
     power_off: Option<(
         hex_session::service::ResidentMainPowerOff,
         AudioSourceContext,
+        Option<u64>,
     )>,
     hosted_move: Option<hosted_move::MoveRoute>,
     adopted_hosted_move: Option<hosted_move::AdoptedRoute>,
