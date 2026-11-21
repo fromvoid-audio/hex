@@ -103,6 +103,7 @@ pub(super) fn prepare_private_export(
         preparing_edit: false,
         stopped_main_power_on: None,
         running_main_power_off: None,
+        hosted_instrument_move: None,
     };
     let mut owner = sink
         .prepare_offline_bounce(input, control)?
@@ -176,6 +177,7 @@ struct Inputs<'a> {
     preparing_edit: bool,
     stopped_main_power_on: Option<ResidentMainPowerOn>,
     running_main_power_off: Option<ResidentMainPowerOff>,
+    hosted_instrument_move: Option<ResidentHostedInstrumentMove>,
     stopped_history: bool,
     admission: sampler_export::Admission<'a>,
     current: Option<&'a Snapshot>,
@@ -632,6 +634,7 @@ impl Inputs<'_> {
                     preparing_edit: self.preparing_edit,
                     stopped_main_power_on: self.stopped_main_power_on,
                     running_main_power_off: self.running_main_power_off,
+                    hosted_instrument_move: self.hosted_instrument_move,
                 },
                 &mut compile,
             )
@@ -1381,6 +1384,7 @@ pub(super) fn prepare_document_replacement(
                 preparing_edit: false,
                 stopped_main_power_on: None,
                 running_main_power_off: None,
+                hosted_instrument_move: None,
             },
             &mut |effects| {
                 crate::prepare_with_waveforms_using(
@@ -1602,6 +1606,7 @@ pub(super) fn prepare_import_playback(
         preparing_edit: false,
         stopped_main_power_on: None,
         running_main_power_off: None,
+        hosted_instrument_move: None,
         stopped_history: false,
         predecessor: None,
         native: NativeSamplerSources::Committed(input.native),
@@ -1950,6 +1955,7 @@ impl Session {
                     preparing_edit: false,
                     stopped_main_power_on: None,
                     running_main_power_off: None,
+                    hosted_instrument_move: None,
                     stopped_history: false,
                     predecessor: None,
                     native: NativeSamplerSources::Staged(stage),
@@ -1983,6 +1989,7 @@ impl Session {
                     preparing_edit: false,
                     stopped_main_power_on: None,
                     running_main_power_off: None,
+                    hosted_instrument_move: None,
                     stopped_history: false,
                     predecessor: None,
                     native: NativeSamplerSources::Staged(stage),
@@ -2310,6 +2317,7 @@ impl Session {
             preparing_edit: false,
             stopped_main_power_on: None,
             running_main_power_off: None,
+            hosted_instrument_move: None,
             stopped_history: false,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
@@ -2391,6 +2399,7 @@ impl Session {
             preparing_edit: false,
             stopped_main_power_on: None,
             running_main_power_off: None,
+            hosted_instrument_move: None,
             stopped_history: false,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -2425,6 +2434,7 @@ impl Session {
             preparing_edit: false,
             stopped_main_power_on: None,
             running_main_power_off: None,
+            hosted_instrument_move: None,
             stopped_history: false,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
@@ -2739,6 +2749,7 @@ impl Session {
             preparing_edit: false,
             stopped_main_power_on: None,
             running_main_power_off: None,
+            hosted_instrument_move: None,
             stopped_history: false,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
@@ -2969,6 +2980,7 @@ impl Session {
             preparing_edit: false,
             stopped_main_power_on: None,
             running_main_power_off: None,
+            hosted_instrument_move: None,
             stopped_history: false,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
@@ -3090,6 +3102,7 @@ impl Session {
             preparing_edit: !matches!(&transition, Transition::PluginEffect { .. }),
             stopped_main_power_on: None,
             running_main_power_off: None,
+            hosted_instrument_move: None,
             stopped_history: matches!(&transition, Transition::History { .. })
                 || matches!(&transition, Transition::Command(command)
                 if matches!(command.as_ref(), Command::ReplaceDeviceAutomationTarget {

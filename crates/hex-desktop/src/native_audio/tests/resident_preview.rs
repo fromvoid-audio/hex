@@ -1587,6 +1587,8 @@ pub(super) struct DeviceInsertProbe {
     // fixture opts into and retains the exact production callback receipt.
     enabled: AtomicBool,
     submitted: Mutex<Option<DeviceInsertGate>>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    foreign_binding: Mutex<Option<ForeignDeviceInsertProbe>>,
 }
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 impl DeviceInsertProbe {
@@ -1607,11 +1609,41 @@ impl DeviceInsertProbe {
         assert!(previous.is_none());
         (submitted, resume)
     }
+
+    pub(super) fn observe_next_foreign_binding(
+        &self,
+        track: hex_project::TrackId,
+        device: hex_project::DeviceId,
+    ) -> mpsc::Receiver<Option<PreparedInstrumentSource>> {
+        let (ready, binding) = mpsc::sync_channel(1);
+        let previous = self
+            .foreign_binding
+            .lock()
+            .unwrap()
+            .replace(ForeignDeviceInsertProbe {
+                track,
+                device,
+                ready,
+            });
+        assert!(previous.is_none());
+        binding
+    }
 }
 struct DeviceInsertGate {
     ready: SyncSender<hex_session::service::ResidentGraphSubmission>,
     resume: mpsc::Receiver<()>,
 }
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+struct ForeignDeviceInsertProbe {
+    track: hex_project::TrackId,
+    device: hex_project::DeviceId,
+    ready: SyncSender<Option<PreparedInstrumentSource>>,
+}
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+type PreparedInstrumentSource = (
+    hex_engine::ProcessorChainOwner,
+    hex_audio::plugin_effects::EffectBinding,
+);
 struct ConfirmationProbe {
     stage: ProbeStage,
     ready: SyncSender<()>,
@@ -2174,6 +2206,20 @@ impl WorkerAudioSink for ResidentSink {
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         self.file_publication_waiting
             .store(inputs.files.is_some(), std::sync::atomic::Ordering::Release);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if matches!(policy, ResidentPublicationPolicy::DeviceInsert { .. })
+            && let Some(probe) = self
+                .device_insert_probe
+                .foreign_binding
+                .lock()
+                .unwrap()
+                .take()
+        {
+            probe
+                .ready
+                .try_send(playback.foreign_instrument_binding_on_control(probe.track, probe.device))
+                .unwrap();
+        }
         let refuse = self.refuse.load(Acquire);
         if let Some(probe) = self.publication_probe.lock().unwrap().take() {
             self.inner.native_graph_gate = Some((probe.ready, probe.resume));

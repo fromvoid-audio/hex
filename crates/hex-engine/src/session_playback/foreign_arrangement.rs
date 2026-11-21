@@ -427,6 +427,18 @@ impl ForeignArrangement {
         let mut displaced_index = None;
         for (index, candidate) in self.generators.iter_mut().enumerate() {
             let Some(candidate) = candidate else { continue };
+            // A compiled route can retain the donor's physical source while
+            // its canonical receiver is new. Installing it needs a separate
+            // gate and compensation handoff, even if Stop wins preparation.
+            if tracks
+                .get(index)
+                .and_then(|track| track.foreign_instrument.as_ref())
+                .is_some_and(|node| {
+                    node.owner != crate::ProcessorChainOwner::Track(candidate.track.value())
+                })
+            {
+                return Err(INCOMPATIBLE_HANDOFF);
+            }
             let matched = old.generators.iter().enumerate().find_map(|(index, old)| {
                 let old = old.as_ref()?;
                 (old.track == candidate.track && old.processor == candidate.processor)
