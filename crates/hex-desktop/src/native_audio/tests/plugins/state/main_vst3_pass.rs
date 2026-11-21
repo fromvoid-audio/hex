@@ -433,7 +433,10 @@ fn verify_running_main_power_off(cancel_before_cut: bool) {
         });
         assert_aligned_fade(&h, false);
         let cancelled = h.next();
-        assert!(cancelled.error.is_none(), "{:?}", cancelled.error);
+        assert_eq!(
+            cancelled.error.as_deref(),
+            Some("device edit cancelled before installation")
+        );
         let completion = cancelled.device_insert_complete.unwrap();
         assert_eq!(completion.submission, exact);
         assert_eq!(completion.outcome, DeviceInsertOutcome::Cancelled);
