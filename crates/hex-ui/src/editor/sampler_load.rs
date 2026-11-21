@@ -425,7 +425,10 @@ impl EditorView {
         self.queue_sampler_load(
             target.generation,
             target.revision,
-            SamplerLoadTarget::Track { track, slot: target.slot },
+            SamplerLoadTarget::Track {
+                track,
+                slot: target.slot,
+            },
             target.path,
             cx,
         );
@@ -446,7 +449,10 @@ impl EditorView {
         };
         let cancel = Arc::new(AtomicBool::new(false));
         let track = target.track();
-        let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or_default();
         let loading = format!("loading {name} into sampler");
         let request = Request::LoadFirstSampler {
             request_id: id,
@@ -461,7 +467,12 @@ impl EditorView {
             self.sampler_load.serial = id;
             self.status = loading;
             self.error = None;
-            self.sampler_load.pending = Some(Pending { id, generation, track, cancel });
+            self.sampler_load.pending = Some(Pending {
+                id,
+                generation,
+                track,
+                cancel,
+            });
         }
         cx.notify();
         queued

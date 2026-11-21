@@ -195,8 +195,12 @@ impl EditorView {
         header
             .drag_over::<BrowserAudioDrag>(move |style, drag, window, cx| {
                 let view = sample_owner.read(cx);
-                if view.painted_sampler_track_gap(window.mouse_position()).is_none()
-                    && view.browser_sampler_drop_track(drag, Some(track), cx).is_ok()
+                if view
+                    .painted_sampler_track_gap(window.mouse_position())
+                    .is_none()
+                    && view
+                        .browser_sampler_drop_track(drag, Some(track), cx)
+                        .is_ok()
                 {
                     let color = rgb(theme::color(theme::PaletteRole::Secondary));
                     style
@@ -206,18 +210,22 @@ impl EditorView {
                     style
                 }
             })
-            .on_drop(cx.listener(move |view, drag: &BrowserAudioDrag, window, cx| {
-                if let Some((before_track, _)) = view.painted_sampler_track_gap(window.mouse_position()) {
-                    view.drop_browser_sample_on_new_track(drag, before_track, cx);
-                } else {
-                    view.drop_browser_sample_on_track(
-                        drag,
-                        Some(track),
-                        hex_project::InstrumentLoadPlacement::First,
-                        cx,
-                    );
-                }
-            }))
+            .on_drop(
+                cx.listener(move |view, drag: &BrowserAudioDrag, window, cx| {
+                    if let Some((before_track, _)) =
+                        view.painted_sampler_track_gap(window.mouse_position())
+                    {
+                        view.drop_browser_sample_on_new_track(drag, before_track, cx);
+                    } else {
+                        view.drop_browser_sample_on_track(
+                            drag,
+                            Some(track),
+                            hex_project::InstrumentLoadPlacement::First,
+                            cx,
+                        );
+                    }
+                }),
+            )
             .drag_over::<NativeDeviceDrag>(move |style, drag, window, cx| {
                 let valid = owner
                     .read(cx)
