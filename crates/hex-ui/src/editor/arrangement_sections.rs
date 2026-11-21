@@ -2411,10 +2411,17 @@ impl EditorView {
         scale: f32,
         window: &Window,
         cx: &mut Context<Self>,
+        coverage: Option<&crate::section_surface::SectionCoverage>,
     ) -> Vec<AnyElement> {
         let Some(state) = self.state.as_ref() else {
             return Vec::new();
         };
+        let coverage = coverage.filter(|_| {
+            self.sections.ahead.is_none()
+                && self.sections.pending.is_none()
+                && self.sections.gesture.is_none()
+                && self.sections.name.is_none()
+        });
         let canonical;
         let display = if let Some(p) = self
             .sections
@@ -2539,9 +2546,12 @@ impl EditorView {
             let stroke = 1.0 / scale.max(1.0);
             let has_border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
             let mut element = crate::section_surface::surface(
-                (start - viewport.start) as f32 / viewport.length as f32,
-                (end - start) as f32 / viewport.length as f32,
+                (
+                    (start - viewport.start) as f32 / viewport.length as f32,
+                    (end - start) as f32 / viewport.length as f32,
+                ),
                 pixel_width, chamfer, m.color, selected, owned_hover,
+                coverage.cloned(),
             )
                 .id(("arrangement-section", index))
                 .debug_selector(move || format!("arrangement-section-{index}"))

@@ -2,7 +2,7 @@
 use crate::theme;
 use gpui::{
     Bounds, Div, PathBuilder, Pixels, Styled, Window, canvas, fill, point, prelude::*, px,
-    relative, rgb, rgba, size,
+    relative, rgb, rgba,
 };
 use hex_project::{BeatTime, ElementColor, SectionId};
 
@@ -27,13 +27,13 @@ impl Hover {
 
 /// Main's section body and its opaque header share identity and hover colors.
 pub(crate) fn surface(
-    left: f32,
-    width: f32,
+    (left, width): (f32, f32),
     pixel_width: f32,
     chamfer: f32,
     color: ElementColor,
     selected: bool,
     hovered: bool,
+    coverage: Option<SectionCoverage>,
 ) -> Div {
     let colors = theme::section_colors(color, selected, hovered);
     let hover = theme::section_colors(color, selected, true);
@@ -45,15 +45,25 @@ pub(crate) fn surface(
         .text_xs()
         .child(
             canvas(
-                |_, _, _| (),
-                move |bounds, _, window, _| {
+                move |bounds, window, _| {
+                    let rects = geometry::fill_rects(bounds, chamfer)?;
+                    if let Some(coverage) = coverage {
+                        coverage.record(rects, window);
+                    }
+                    Some(rects)
+                },
+                move |bounds, rects, window, _| {
+                    let Some(rects) = rects else {
+                        return;
+                    };
                     let over = hovered || bounds.contains(&window.mouse_position());
                     let colors = theme::section_colors(color, selected, over);
-                    paint(
+                    paint_fills(
                         bounds,
                         chamfer,
                         colors.0,
                         (selected || over).then_some(colors.2),
+                        rects,
                         window,
                     );
                 },
@@ -129,6 +139,9 @@ pub(crate) fn header(color: ElementColor, selected: bool, hovered: bool, minimum
 #[path = "section_surface/geometry.rs"]
 mod geometry;
 pub(crate) use geometry::{CHAMFER, cut, miniature_right};
+#[path = "section_surface/coverage.rs"]
+mod coverage;
+pub(crate) use coverage::SectionCoverage;
 
 pub(crate) fn paint(
     bounds: Bounds<Pixels>,
@@ -137,24 +150,25 @@ pub(crate) fn paint(
     outline: Option<u32>,
     window: &mut Window,
 ) {
+    if let Some(rects) = geometry::fill_rects(bounds, requested) {
+        paint_fills(bounds, requested, color, outline, rects, window);
+    }
+}
+
+fn paint_fills(
+    bounds: Bounds<Pixels>,
+    requested: f32,
+    color: u32,
+    outline: Option<u32>,
+    rects: geometry::SectionFillRects,
+    window: &mut Window,
+) {
     let width = f32::from(bounds.size.width);
     let height = f32::from(bounds.size.height);
-    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
-        return;
-    }
-    let cut = cut(width, height, requested);
-    window.paint_quad(fill(
-        Bounds::new(bounds.origin, size(bounds.size.width, px(height - cut))),
-        rgb(color),
-    ));
-    if cut > 0.0 {
-        window.paint_quad(fill(
-            Bounds::new(
-                point(bounds.left(), bounds.top() + px(height - cut)),
-                size(px(miniature_right(width, height, cut, height)), px(cut)),
-            ),
-            rgb(color),
-        ));
+    let cut = rects.cut;
+    window.paint_quad(fill(rects.upper, rgb(color)));
+    if let Some(lower_left) = rects.lower_left {
+        window.paint_quad(fill(lower_left, rgb(color)));
         // Overlap only the internal joins by one physical pixel so their
         // antialiasing cannot leave hairline gaps between the filled pieces.
         let overlap = cut.min(1.0 / window.scale_factor());

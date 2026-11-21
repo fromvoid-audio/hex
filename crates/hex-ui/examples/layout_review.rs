@@ -34,6 +34,7 @@ mod section_resize;
 #[path = "../src/section_selection.rs"]
 mod section_selection;
 #[path = "../src/section_surface.rs"]
+#[allow(dead_code)] // The gallery has no Main miniature underlay.
 mod section_surface;
 #[path = "../src/editor/seek.rs"]
 #[allow(dead_code)] // The editor also uses transport seek acknowledgement.
