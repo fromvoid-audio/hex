@@ -9,6 +9,7 @@ const IMPULSE: usize = 192;
 const SPACING: usize = 4 * BLOCK;
 const SOURCE_FRAMES: u32 = 131_072;
 const SIGNAL: f32 = 0.25;
+const BED: f32 = 0.03125;
 const FADE: usize = 240;
 
 fn source_sample(frame: usize) -> f32 {
@@ -17,7 +18,7 @@ fn source_sample(frame: usize) -> f32 {
     } else if frame % SPACING == IMPULSE {
         SIGNAL
     } else if frame >= 128 {
-        0.03125
+        BED
     } else {
         0.0
     }
@@ -350,10 +351,17 @@ fn running_resident_main_power_on_installs_a_fresh_worker_at_its_exact_receipt()
     verify_running_main_power_cycle(MainPowerCheck::OnAgain);
 }
 
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn cancelled_running_resident_main_power_on_keeps_the_original_dry_pass() {
+    verify_running_main_power_cycle(MainPowerCheck::CancelOn);
+}
+
 enum MainPowerCheck {
     Off,
     CancelOff,
     OnAgain,
+    CancelOn,
 }
 
 fn verify_running_main_power_cycle(check: MainPowerCheck) {
@@ -588,8 +596,13 @@ fn verify_running_main_power_cycle(check: MainPowerCheck) {
     }
     assert_eq!(h.plugin_completed.load(Acquire), processed);
 
-    if matches!(check, MainPowerCheck::OnAgain) {
-        assert_running_main_power_on(&mut h, &powered_off, binding);
+    if matches!(check, MainPowerCheck::OnAgain | MainPowerCheck::CancelOn) {
+        assert_running_main_power_on(
+            &mut h,
+            &powered_off,
+            binding,
+            matches!(check, MainPowerCheck::CancelOn),
+        );
         return;
     }
 
@@ -613,6 +626,7 @@ fn assert_running_main_power_on(
     h: &mut ResidentHarness,
     powered_off: &Event,
     binding: hex_audio::plugin_effects::EffectBinding,
+    cancel_restart: bool,
 ) {
     let off = &powered_off.state.project.main_devices()[0];
     let device = off.id();
@@ -670,6 +684,8 @@ fn assert_running_main_power_on(
     assert_eq!(pending.state.can_redo, powered_off.state.can_redo);
     assert_eq!(pending.state.can_undo, powered_off.state.can_undo);
 
+    let mut offered = None;
+    let mut approved = None;
     let deadline = Instant::now() + Duration::from_secs(2);
     let powered_on = 'receipt: loop {
         h.pump();
@@ -682,7 +698,20 @@ fn assert_running_main_power_on(
                 );
                 assert_eq!(event.state.project, powered_off.state.project);
                 assert_eq!(status(h).recording_source(), Some(applied));
-                assert!(confirmation.proceed());
+                assert!(offered.replace(confirmation.submission()).is_none());
+                if cancel_restart {
+                    assert!(confirmation.cancel());
+                } else {
+                    let (submitted, resume) = h.probe_next_submitted_device_insert();
+                    assert!(confirmation.proceed());
+                    let exact = submitted.recv_timeout(Duration::from_secs(1)).unwrap();
+                    assert_eq!(exact.context, confirmation.submission().context);
+                    assert_eq!(exact.output_identity, applied.output_identity);
+                    assert!(exact.audio_revision > confirmation.submission().audio_revision);
+                    assert_eq!(status(h).recording_source(), Some(applied));
+                    approved = Some(exact);
+                    resume.send(()).unwrap();
+                }
             }
             if event.request_complete {
                 break 'receipt event;
@@ -699,9 +728,32 @@ fn assert_running_main_power_on(
                 "main power on changed the musical position from {before} to {after}"
             );
         }
-        std::thread::yield_now();
+        std::thread::sleep(Duration::from_millis(1));
     };
     let completion = powered_on.device_insert_complete.unwrap();
+    if cancel_restart {
+        assert_eq!(
+            completion.submission,
+            offered.expect("exact Main timing consent")
+        );
+        assert_eq!(completion.outcome, DeviceInsertOutcome::Cancelled);
+        assert_eq!(powered_on.state.project, powered_off.state.project);
+        assert_eq!(powered_on.state.revision, powered_off.state.revision);
+        assert_eq!(powered_on.state.can_redo, powered_off.state.can_redo);
+        assert_eq!(powered_on.state.can_undo, powered_off.state.can_undo);
+        assert_eq!(status(h).recording_source(), Some(applied));
+        assert!(status(h).native_effect_source().is_none());
+        wait(|| {
+            h.pump();
+            assert_dry_timing(h, BRIDGE);
+            h.plugin_records.load(Acquire) == 0
+        });
+        return;
+    }
+    assert_eq!(
+        completion.submission,
+        approved.expect("exact approved restart")
+    );
     assert_eq!(completion.outcome, DeviceInsertOutcome::Installed);
     let active = status(h).recording_source().unwrap();
     assert_eq!(active.output_identity, applied.output_identity);
@@ -718,7 +770,40 @@ fn assert_running_main_power_on(
     for _ in 0..4 {
         render_playing(h);
     }
-    assert_wet_timing(h);
+    assert_fresh_main_output(h);
+}
+
+fn assert_fresh_main_output(h: &ResidentHarness) {
+    let mut previous_gain = None;
+    let mut heard_impulse = false;
+    for _ in 0..(SPACING / BLOCK) {
+        let (start, pcm) = render_playing(h);
+        let origin = start.checked_sub(BRIDGE).unwrap();
+        let background = (0..BLOCK)
+            .find(|&offset| source_sample(origin + offset) == BED)
+            .expect("known nonzero background in this block");
+        // A fresh SDK worker restarts its block modulation, even when the
+        // musical timeline resumes well after its original Play position.
+        let gain = pcm[background][0] / BED;
+        assert!((0.5..=2.0).contains(&gain));
+        if let Some(previous) = previous_gain.replace(gain) {
+            assert_eq!(gain, previous + 0.125);
+        }
+        for (offset, frame) in pcm.into_iter().enumerate() {
+            let dry = source_sample(origin + offset);
+            heard_impulse |= dry == SIGNAL;
+            assert_eq!(
+                frame,
+                [dry * gain; 2],
+                "fresh Main frame={}",
+                start + offset
+            );
+        }
+    }
+    assert!(
+        heard_impulse,
+        "fresh Main bridge proved with nonconstant PCM"
+    );
 }
 
 #[test]
