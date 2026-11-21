@@ -12,6 +12,14 @@ use hex_widgets::TextInput;
 /// Shared title geometry; time-selection handles keep their own independent zones.
 pub(super) const CLIP_NAME_HEIGHT: f32 = 14.0;
 
+/// A notched header reserves a quarter rem on the left and six points on
+/// the right. The -1px header insets add two points, and two device pixels
+/// conservatively cover layout rounding. Use the real lane width from this
+/// prepaint so an earlier narrow window cannot suppress a visible label.
+pub(super) fn notched_label_is_clipped(width: f32, rem: f32, scale: f32) -> bool {
+    width > 0.0 && scale > 0.0 && width + 2.0 + 2.0 / scale <= rem * 0.25 + 6.0
+}
+
 pub(super) struct NameEdit {
     clip: ClipId,
     generation: u64,
@@ -250,7 +258,16 @@ impl EditorView {
         fill: u32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        self.clip_name_strip(track, clip, name, fill, true, false, false, cx)
+        self.clip_name_strip(
+            track,
+            clip,
+            self.clip_name_label(clip, name),
+            fill,
+            true,
+            false,
+            false,
+            cx,
+        )
     }
 
     pub(super) fn clip_name_is_editing(&self, clip: ClipId) -> bool {
@@ -285,9 +302,18 @@ impl EditorView {
         name: &str,
         fill: u32,
         notched: bool,
+        label_clipped: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        self.clip_name_strip(track, clip, name, fill, true, true, notched, cx)
+        let label = if notched && label_clipped && !self.clip_name_is_editing(clip) {
+            clip_name_text_surface()
+                .h(px(CLIP_NAME_HEIGHT))
+                .debug_selector(move || format!("clip-name-label-{}", clip.value()))
+                .into_any_element()
+        } else {
+            self.clip_name_label(clip, name)
+        };
+        self.clip_name_strip(track, clip, label, fill, true, true, notched, cx)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -301,7 +327,16 @@ impl EditorView {
         notched: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        self.clip_name_strip(track, clip, name, fill, false, on_backdrop, notched, cx)
+        self.clip_name_strip(
+            track,
+            clip,
+            self.clip_name_label(clip, name),
+            fill,
+            false,
+            on_backdrop,
+            notched,
+            cx,
+        )
     }
     pub(super) fn clip_name_drag_header(
         &self,
@@ -320,7 +355,7 @@ impl EditorView {
         &self,
         track: hex_project::TrackId,
         clip: ClipId,
-        name: &str,
+        label: gpui::AnyElement,
         fill: u32,
         interactive: bool,
         on_backdrop: bool,
@@ -338,7 +373,7 @@ impl EditorView {
             .when(self.clip_has_alias(clip), |header| {
                 header.pr(px(if notched { 20.0 } else { 15.0 }))
             })
-            .child(self.clip_name_label(clip, name))
+            .child(label)
             .children(
                 self.clip_alias_indicator(clip, fill)
                     .map(|indicator| indicator.when(notched, |indicator| indicator.right(px(7.0)))),
@@ -401,7 +436,11 @@ fn clip_name_surface(fill: u32) -> gpui::Div {
 
 // A passive drag clone must never mount the live rename input a second time.
 fn clip_name_text(name: &str) -> gpui::Div {
-    div().min_w_0().flex_1().truncate().child(theme::text(name))
+    clip_name_text_surface().child(theme::text(name))
+}
+
+fn clip_name_text_surface() -> gpui::Div {
+    div().min_w_0().flex_1().truncate()
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -410,6 +449,96 @@ mod tests {
     use crate::editor::clip_drag_ui_test::{audio_project, editor_window};
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
     use std::sync::Arc;
+
+    #[cfg(target_os = "macos")]
+    #[gpui::test]
+    fn clipped_arrangement_title_restores_visible_text_and_keeps_rename_across_zoom(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::editor::{
+            rendered_test_fixture::editor_window_with_timeline, viewport::Viewport,
+        };
+
+        cx.use_native_text_system().expect("native text shaping");
+        cx.update(|app| {
+            theme::load_fonts(app).expect("bundled ioskeley mono");
+            crate::editor::bind_editor_keys(app);
+        });
+        let (project, track, _, clip) = audio_project();
+        let duration = project.clip(clip).expect("audio fixture clip").duration();
+        let (handle, editor) = editor_window_with_timeline(cx, project, Arc::default(), 96_000_000);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+        let wide = Viewport::fit(384_000);
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                view.viewport = Some(wide);
+                view.select_arrangement_clip(track, clip);
+                view.focus.focus(window);
+                cx.notify();
+            });
+        });
+        visual.run_until_parked();
+
+        let name: &'static str =
+            Box::leak(format!("clip-name-label-{}", clip.value()).into_boxed_str());
+        let body: &'static str =
+            Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
+        let wide_bounds = visual.debug_bounds(name).expect("expanded title label");
+        let wide_glyphs = visual.rendered_monochrome_colors(name);
+        assert!(wide_bounds.size.width > px(0.0) && !wide_glyphs.is_empty());
+        let compact = editor.read_with(&visual, |view, _| {
+            let lane = view.drag_lanes.get(&track).expect("resolved audio lane");
+            Viewport::fit((duration as f64 * f64::from(lane.width) / 4.5).round() as u64)
+        });
+        let zoom = |visual: &mut VisualTestContext, viewport| {
+            editor.update(visual, |view, cx| {
+                view.viewport = Some(viewport);
+                cx.notify();
+            });
+            visual.run_until_parked();
+        };
+
+        zoom(&mut visual, compact);
+        let compact_body = visual.debug_bounds(body).expect("detailed compact clip");
+        assert!(compact_body.size.width > px(2.0) && compact_body.size.width <= px(6.0));
+        assert_eq!(
+            visual
+                .debug_bounds(name)
+                .expect("clipped title slot")
+                .size
+                .width,
+            px(0.0)
+        );
+        assert!(visual.rendered_monochrome_colors(name).is_empty());
+
+        zoom(&mut visual, wide);
+        assert_eq!(visual.debug_bounds(name), Some(wide_bounds));
+        assert_eq!(visual.rendered_monochrome_colors(name), wide_glyphs);
+
+        zoom(&mut visual, compact);
+        visual.simulate_keystrokes("cmd-r");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.clip_name_edit.as_ref().map(|edit| edit.clip),
+                Some(clip)
+            );
+        });
+        zoom(&mut visual, wide);
+        let input = visual
+            .debug_bounds("clip-name-input")
+            .expect("expanded rename input");
+        assert!(input.size.width > px(0.0));
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(view.clip_name_edit.is_none());
+            assert_eq!(view.selected_clip, Some(clip));
+            assert!(view.last_enqueued_edit.is_none());
+        });
+        assert_eq!(visual.rendered_monochrome_colors(name), wide_glyphs);
+    }
 
     #[gpui::test]
     fn click_selects_header_cmd_r_edits_in_place_and_escape_cancels(cx: &mut TestAppContext) {

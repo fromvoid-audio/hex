@@ -95,7 +95,7 @@ struct ClipContents {
     builds: usize,
 }
 impl Render for ClipContents {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(test)]
         {
             self.builds += 1;
@@ -123,6 +123,10 @@ impl Render for ClipContents {
                 // geometry consumed by this build so the next selection-only
                 // draw does not invalidate an already-current clip scene.
                 self.key.lane = view.drag_lanes.get(&self.key.track).copied();
+                let caption_rem_size = (self.key.lane.is_some()
+                    && view.drag_lane_epochs.get(&self.key.track)
+                        == Some(&view.drag_layout_generation))
+                .then(|| f32::from(window.rem_size()));
                 view.build_clip_contents(
                     &self.snapshot,
                     track,
@@ -131,6 +135,7 @@ impl Render for ClipContents {
                         viewport: self.key.viewport,
                         grid: &self.key.grid,
                         scale_factor: f32::from_bits(self.key.scale),
+                        caption_rem_size,
                     },
                     cx,
                 )
