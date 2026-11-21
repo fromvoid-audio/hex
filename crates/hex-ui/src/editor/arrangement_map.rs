@@ -2,7 +2,10 @@
 //! Project owns time/identity; section, range and automation owners retain input.
 use super::{EditorView, viewport::Viewport};
 use crate::theme;
-use gpui::{Div, canvas, div, fill, point, prelude::*, px, rgb, size};
+use gpui::{
+    Bounds, Div, Pixels, Rgba, ScaledPixels, Window, canvas, div, fill, point, prelude::*, px, rgb,
+    size,
+};
 
 mod model;
 use model::cached;
@@ -23,6 +26,109 @@ pub(super) fn section(view: &EditorView, start: u64, end: u64, chamfer: f32) -> 
         },
         Some(chamfer),
     )
+}
+
+const ROW_BATCH_CAPACITY: usize = 16;
+
+/// Nearby spans of one row share an order. Each original quad and its
+/// content mask still paint independently.
+fn paint_row(
+    window: &mut Window,
+    color: Rgba,
+    top: Pixels,
+    height: Pixels,
+    spans: impl Iterator<Item = (Pixels, Pixels)>,
+) {
+    let scale = window.scale_factor();
+    let mask = window.content_mask().bounds;
+    let scaled_mask = mask.scale(scale);
+    let max_gap = ScaledPixels::from(2.0);
+    let mut batch = [Bounds::default(); ROW_BATCH_CAPACITY];
+    let mut count = 0;
+    let mut first_clipped = Bounds::<ScaledPixels>::default();
+    let mut right = ScaledPixels::default();
+
+    for (left, width) in spans {
+        let span = Bounds::new(point(left, top), size(width, height));
+        let clipped = span.scale(scale).intersect(&scaled_mask);
+        if clipped.is_empty() {
+            continue;
+        }
+        let gap = clipped.left() - right;
+        if count == batch.len()
+            || (count > 0 && !(ScaledPixels::default() <= gap && gap <= max_gap))
+        {
+            paint_row_batch(
+                window,
+                color,
+                &batch[..count],
+                mask,
+                scale,
+                first_clipped,
+                right,
+            );
+            count = 0;
+        }
+        if count == 0 {
+            first_clipped = clipped;
+        }
+        batch[count] = span;
+        count += 1;
+        right = clipped.right();
+    }
+    paint_row_batch(
+        window,
+        color,
+        &batch[..count],
+        mask,
+        scale,
+        first_clipped,
+        right,
+    );
+}
+
+fn paint_row_batch(
+    window: &mut Window,
+    color: Rgba,
+    batch: &[Bounds<Pixels>],
+    mask: Bounds<Pixels>,
+    scale: f32,
+    first_clipped: Bounds<ScaledPixels>,
+    clipped_right: ScaledPixels,
+) {
+    let paint = |window: &mut Window| {
+        for &span in batch {
+            window.paint_quad(fill(span, color));
+        }
+    };
+    if let [first, .., last] = batch {
+        let layer = first.union(last);
+        let clipped_layer = layer.intersect(&mask);
+        let reserved = clipped_layer.scale(scale);
+        // The layer clips before scaling, while Scene clips the scaled
+        // quads. Guard rounded outer edges before sharing one draw order.
+        if !clipped_layer.is_empty()
+            && !reserved.is_empty()
+            && first_clipped.left() < clipped_right
+            && first_clipped.top() < first_clipped.bottom()
+            && reserved.left() <= first_clipped.left()
+            && reserved.right() >= clipped_right
+            && reserved.top() <= first_clipped.top()
+            && reserved.bottom() >= first_clipped.bottom()
+            && [
+                reserved.left(),
+                reserved.right(),
+                reserved.top(),
+                reserved.bottom(),
+            ]
+            .into_iter()
+            .all(|edge| f64::from(edge).is_finite())
+        {
+            window.paint_layer(layer, paint);
+            return;
+        }
+    }
+    paint(window);
 }
 
 fn layer(view: &EditorView, viewport: Viewport, chamfer: Option<f32>) -> Div {
@@ -80,32 +186,24 @@ fn layer(view: &EditorView, viewport: Viewport, chamfer: Option<f32>) -> Div {
                         let first = row.partition_point(|span| span.end <= viewport.start);
                         let y = top + index as f32 * row_height;
                         let h = (row_height - pixel).max(pixel).min(height - y);
-                        for &span in row[first..].iter().take_while(|span| span.start < limit) {
-                            if let Some((left, right)) = project_interval(span, viewport, width) {
-                                let edge = chamfer.map_or(width, |cut| {
-                                    crate::section_surface::miniature_right(
-                                        width,
-                                        height,
-                                        cut,
-                                        y + h,
-                                    )
-                                });
+                        let edge = chamfer.map_or(width, |cut| {
+                            crate::section_surface::miniature_right(width, height, cut, y + h)
+                        });
+                        let spans = row[first..]
+                            .iter()
+                            .take_while(|span| span.start < limit)
+                            .filter_map(|&span| {
+                                let (left, right) = project_interval(span, viewport, width)?;
                                 let w = (right - left - pixel)
                                     .max(pixel)
                                     .min(right - left)
                                     .min(edge - left);
                                 if w <= 0.0 {
-                                    continue;
+                                    return None;
                                 }
-                                window.paint_quad(fill(
-                                    gpui::Bounds::new(
-                                        point(bounds.left() + px(left), bounds.top() + px(y)),
-                                        size(px(w), px(h)),
-                                    ),
-                                    color,
-                                ));
-                            }
-                        }
+                                Some((bounds.left() + px(left), px(w)))
+                            });
+                        paint_row(window, color, bounds.top() + px(y), px(h), spans);
                     }
                 },
             )
@@ -118,6 +216,116 @@ mod tests {
     use super::model::tests::project;
     use super::*;
     use hex_project::{BeatTime, Command, Editor};
+
+    struct MiniaturePaintOracle {
+        batch: bool,
+    }
+
+    impl gpui::Render for MiniaturePaintOracle {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            let batch = self.batch;
+            div()
+                .debug_selector(|| "miniature-paint-oracle".into())
+                .size_full()
+                .child(
+                    canvas(
+                        |_, _, _| (),
+                        move |_, _, window, _| {
+                            let rect =
+                                |x, y, w, h| Bounds::new(point(px(x), px(y)), size(px(w), px(h)));
+                            let mask = gpui::ContentMask {
+                                bounds: rect(10.125, 10.25, 32.125, 8.25),
+                            };
+                            window.paint_quad(fill(rect(9.0, 9.0, 37.0, 11.0), rgb(0x505050)));
+                            window.with_content_mask(Some(mask), |window| {
+                                // Keep fractional/empty spans and overlap between short rows
+                                // when the projected vertical stride is below one device pixel.
+                                let clipped = [
+                                    (8.0, 1.0),
+                                    (10.0, 3.25),
+                                    (13.75, 2.0),
+                                    (15.625, 3.125),
+                                    (38.625, 5.75),
+                                ];
+                                let long: [(f32, f32); ROW_BATCH_CAPACITY + 3] =
+                                    std::array::from_fn(|i| (10.5 + i as f32 * 1.5, 1.0));
+                                for (y, color, spans) in [
+                                    (10.125, 0x5050aa, clipped.as_slice()),
+                                    (10.4375, 0xaa5050, clipped.as_slice()),
+                                    (14.5, 0xaaaa50, long.as_slice()),
+                                ] {
+                                    if batch {
+                                        paint_row(
+                                            window,
+                                            rgb(color),
+                                            px(y),
+                                            px(0.5),
+                                            spans
+                                                .iter()
+                                                .copied()
+                                                .map(|(left, width)| (px(left), px(width))),
+                                        );
+                                    } else {
+                                        for &(left, width) in spans {
+                                            window.paint_quad(fill(
+                                                rect(left, y, width, 0.5),
+                                                rgb(color),
+                                            ));
+                                        }
+                                    }
+                                }
+                            });
+                            window.paint_quad(fill(rect(13.0, 10.375, 4.0, 0.5), rgb(0x50aa50)));
+                        },
+                    )
+                    .size_full(),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn miniature_batches_preserve_clipped_quads_and_overlap_order(cx: &mut gpui::TestAppContext) {
+        let mut scenes = Vec::new();
+        for batch in [false, true] {
+            let handle = cx.add_window(move |_, _| MiniaturePaintOracle { batch });
+            let mut visual = gpui::VisualTestContext::from_window(*handle, cx);
+            visual.run_until_parked();
+            let scale = visual.update(|window, _| window.scale_factor());
+            let quads = visual.rendered_filled_quads("miniature-paint-oracle");
+            assert_eq!(
+                quads.len(),
+                10 + ROW_BATCH_CAPACITY + 3,
+                "background, four spans per short row, a run over capacity and overlay"
+            );
+            let samples = [
+                (10.0625, 10.5), // Left of the content mask.
+                (10.5, 10.5),    // Overlapping miniature rows.
+                (13.5, 10.5),    // Gap between spans with the later overlay.
+                (14.25, 10.5),   // Overlay above both rows.
+                (15.6875, 10.5), // Overlapping spans within both rows.
+                (22.0, 10.5),    // Main gap outside the miniature.
+                (42.5, 10.5),    // Right of the content mask.
+                (42.0, 10.75),   // Near the mask edge in the later row only.
+            ];
+            let stacks = samples.map(|(x, y)| {
+                let sample = point(px(x), px(y)).scale(scale);
+                quads
+                    .iter()
+                    .filter(|(bounds, _)| bounds.contains(&sample))
+                    .map(|(_, color)| *color)
+                    .collect::<Vec<_>>()
+            });
+            let mut geometry = quads;
+            geometry.sort_by_key(|(bounds, _)| (bounds.top(), bounds.left()));
+            scenes.push((geometry, stacks));
+        }
+        assert_eq!(scenes[0], scenes[1]);
+        assert_eq!(
+            scenes[0].1.each_ref().map(Vec::len),
+            [1, 3, 2, 4, 6, 1, 1, 2]
+        );
+    }
+
     #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn main_lane_paints_canonical_intervals_at_the_ruler_scale(cx: &mut gpui::TestAppContext) {
