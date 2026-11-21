@@ -1251,8 +1251,8 @@ pub trait WorkerAudioSink: Send {
     fn stopped_resident_return_history_fence(
         &mut self,
         _context: hex_engine::AudioSourceContext,
-        _return_track: hex_project::ReturnId,
-        _device: hex_project::DeviceId,
+        _return_track: hex_engine::ReturnId,
+        _device: u64,
     ) -> Option<ResidentFreshRuntimeFence> {
         None
     }

@@ -1354,7 +1354,7 @@ impl Session {
         {
             Some((
                 edge,
-                sink.stopped_resident_return_history_fence(context, return_track, device),
+                sink.stopped_resident_return_history_fence(context, return_track, device.value()),
             ))
         } else {
             None

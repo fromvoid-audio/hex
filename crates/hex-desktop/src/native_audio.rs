@@ -2419,13 +2419,13 @@ impl WorkerAudioSink for NativeAudioSink {
     fn stopped_resident_return_history_fence(
         &mut self,
         context: AudioSourceContext,
-        return_track: hex_project::ReturnId,
-        device: hex_project::DeviceId,
+        return_track: hex_engine::ReturnId,
+        device: u64,
     ) -> Option<hex_session::service::ResidentFreshRuntimeFence> {
         let owner = hex_engine::ProcessorChainOwner::Return(return_track.value());
         if !self
             .plugins
-            .has_accepted_effect_source(context, owner, device.value())
+            .has_accepted_effect_source(context, owner, device)
         {
             return None;
         }
