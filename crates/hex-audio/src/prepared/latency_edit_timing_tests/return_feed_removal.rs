@@ -12,15 +12,20 @@ const DEPARTING_GAIN: f32 = SEND * UTILITY_GAIN;
 
 #[test]
 fn removing_a_return_fades_its_feed_and_keeps_the_downstream_delay_history() {
-    assert_faded_removal(false);
+    assert_faded_removal(false, false);
 }
 
 #[test]
 fn removing_a_return_keeps_the_surviving_feed_and_its_downstream_audio() {
-    assert_faded_removal(true);
+    assert_faded_removal(true, false);
 }
 
-fn assert_faded_removal(relay: bool) {
+#[test]
+fn additive_feed_removal_cancel_survives_an_unrelated_install() {
+    assert_faded_removal(true, true);
+}
+
+fn assert_faded_removal(relay: bool, republish_on_cancel: bool) {
     let mut dry = vec![[0.015625, -0.03125]; FRAMES];
     dry[512..1536].fill([0.25, -0.125]);
     dry[CUT + 512..CUT + 1024].fill([-0.25, 0.125]);
@@ -75,6 +80,16 @@ fn assert_faded_removal(relay: bool) {
             .id()
     });
     let old = prepare(editor.project());
+    let retitled = republish_on_cancel.then(|| {
+        let mut unrelated = Editor::new(editor.project().clone(), 8).unwrap();
+        unrelated
+            .execute(Command::RenameTrack {
+                track,
+                name: "unrelated track rename".into(),
+            })
+            .unwrap();
+        prepare(unrelated.project())
+    });
     editor
         .execute(Command::RemoveReturnTrack(departing))
         .unwrap();
@@ -91,6 +106,9 @@ fn assert_faded_removal(relay: bool) {
     assert_eq!(new.arrangement().main_latency_frames(), 0);
 
     for cancel in [false, true] {
+        if republish_on_cancel && !cancel {
+            continue;
+        }
         let prefix = if cancel { FADE / 2 } else { FADE };
         let expected = downstream_oracle(&dry, prefix, cancel, relay);
         if !cancel {
@@ -105,7 +123,7 @@ fn assert_faded_removal(relay: bool) {
             }
         }
         for partition in [1, BLOCK] {
-            let (control, mut callback, original, receipt) =
+            let (mut control, mut callback, original, receipt) =
                 begin_insert_with_pending_track(Arc::clone(&old), Arc::clone(&new), None, CUT);
             let mut output = vec![[0.0; 2]; FRAMES - CUT];
             for frames in output[..prefix].chunks_mut(partition) {
@@ -113,10 +131,31 @@ fn assert_faded_removal(relay: bool) {
                 assert_eq!(receipt.state(), PublicationReceiptState::Pending);
                 assert_eq!(control.status.recording_source(), Some(original));
             }
-            if cancel {
+            let unrelated_revision = if cancel {
                 assert_eq!(receipt.cancel(), FreshRuntimeCancellationResult::Cancelled);
-            }
-            for frames in output[prefix..].chunks_mut(partition) {
+                retitled.as_ref().map(|retitled| {
+                    render(&mut callback, &mut output[prefix..prefix + 1]);
+                    assert_eq!(receipt.state(), PublicationReceiptState::Cancelled);
+                    assert_eq!(control.status.recording_source(), Some(original));
+                    control
+                        .publish_unaccounted_pcm_obligation(
+                            Playback::try_from_prepared_with_session(Arc::clone(retitled)).unwrap(),
+                            PublicationPolicy::InheritRuntime,
+                            original.context.project_generation,
+                            true,
+                            false,
+                            Some(hex_engine::AudioSourceContext {
+                                editor_revision: original.context.editor_revision + 2,
+                                ..original.context
+                            }),
+                        )
+                        .unwrap()
+                })
+            } else {
+                None
+            };
+            let rendered = prefix + usize::from(unrelated_revision.is_some());
+            for frames in output[rendered..].chunks_mut(partition) {
                 render(&mut callback, frames);
             }
             let active = control.status.recording_source().unwrap();
@@ -124,7 +163,15 @@ fn assert_faded_removal(relay: bool) {
             assert_eq!(control.status.position.load(Acquire), FRAMES as u64);
             if cancel {
                 assert_eq!(receipt.state(), PublicationReceiptState::Cancelled);
-                assert_eq!(active, original);
+                if let Some(revision) = unrelated_revision {
+                    assert_eq!(active.audio_revision, revision);
+                    assert_eq!(
+                        active.context.editor_revision,
+                        original.context.editor_revision + 2
+                    );
+                } else {
+                    assert_eq!(active, original);
+                }
             } else {
                 assert_eq!(receipt.state(), PublicationReceiptState::Installed);
                 assert_eq!(active.audio_revision, receipt.revision());
