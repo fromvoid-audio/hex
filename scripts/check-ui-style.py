@@ -234,6 +234,13 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/clip_border_ui_test.rs'
             and suffix.startswith('super::pixel_backdrop_shell(')
         )
+        # The batched Arrangement lane nests a TrackLaneCanvas and typed
+        # Divs that own pointer and drag handlers, without raw string children.
+        header_mixer_component = header_mixer_component or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/track_lane_canvas.rs'
+            and suffix.startswith(('canvas)', 'inner)', 'with_audio_trim)',
+                                   'with_midi_trim)', 'with_clip_move)'))
+        )
         # Track meters compose a text-free shared gauge and its rendered fixture.
         # Tooltip text still passes through MiniTooltip's theme::text boundary.
         header_mixer_component = header_mixer_component or (
