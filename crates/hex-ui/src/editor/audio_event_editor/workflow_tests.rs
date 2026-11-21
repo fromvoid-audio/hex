@@ -3105,3 +3105,89 @@ fn held_two_selects_audio_event_edges_without_editing_source(cx: &mut TestAppCon
 
 #[path = "play_start_tests.rs"]
 mod saved_start_tests;
+
+#[gpui::test]
+fn event_warp_marker_drag_keeps_its_release_position_and_roundtrips(cx: &mut TestAppContext) {
+    let (files, mut visual, editor, clip) = open(cx);
+    editor.update(&mut visual, |view, cx| {
+        view.audio_event_editor.grid = SnapGrid::Off;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let event = visual.debug_bounds("audio-event-1").unwrap();
+    let down = point(
+        event.left() + event.size.width * 0.25,
+        event.top() + px(4.0),
+    );
+    visual.simulate_event(gpui::MouseDownEvent {
+        button: MouseButton::Left,
+        position: down,
+        click_count: 2,
+        ..Default::default()
+    });
+    visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    let map = |view: &EditorView| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .clip(clip)
+            .unwrap()
+            .audio_edit()
+            .unwrap()
+            .domain
+            .warp
+            .clone()
+            .unwrap()
+    };
+    let before = editor.read_with(&visual, |view, _| map(view));
+    assert_eq!(before.markers.len(), 3);
+    assert!(before.markers[1].source_frame.abs_diff(24_000) < 8);
+
+    let handle = visual.debug_bounds("audio-event-warp-marker").unwrap();
+    let target = point(
+        handle.center().x + event.size.width * 0.12,
+        handle.center().y,
+    );
+    visual.simulate_mouse_down(handle.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let held = visual.debug_bounds("audio-event-warp-marker").unwrap();
+    assert!(held.left() > handle.left() + px(10.0));
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+
+    let terminal = take_event_terminal(&mut visual, &editor, "warp marker move");
+    assert!(terminal.error.is_none(), "{:?}", terminal.error);
+    for _ in 0..3 {
+        repaint(&mut visual, &editor);
+        assert_eq!(visual.debug_bounds("audio-event-warp-marker"), Some(held));
+        editor.read_with(&visual, |view, _| assert_eq!(map(view), before));
+    }
+    editor.update(&mut visual, |view, cx| {
+        view.receive(terminal);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(visual.debug_bounds("audio-event-warp-marker"), Some(held));
+    let after = editor.read_with(&visual, |view, _| map(view));
+    assert_eq!(
+        after.markers[1].source_frame,
+        before.markers[1].source_frame
+    );
+    assert!(after.markers[1].beat > before.markers[1].beat);
+    assert_eq!(after.markers[0], before.markers[0]);
+    assert_eq!(after.markers[2], before.markers[2]);
+
+    for (request, expected) in [(Request::Undo, &before), (Request::Redo, &after)] {
+        editor.update(&mut visual, |view, _| assert!(view.enqueue(request)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| assert_eq!(map(view), *expected));
+    }
+    let saved = files.root().join("event-warp-markers.hex");
+    for request in [Request::SaveNew(saved.clone()), Request::Open(saved)] {
+        editor.update(&mut visual, |view, _| assert!(view.enqueue(request)));
+        pump(&editor, &mut visual);
+    }
+    editor.read_with(&visual, |view, _| assert_eq!(map(view), after));
+}

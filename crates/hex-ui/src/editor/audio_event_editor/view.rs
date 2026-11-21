@@ -566,6 +566,76 @@ pub(in crate::editor) fn view(
         ));
         body = body.child(element);
     }
+    let direct_warp_event = markers::direct_event(&root, &clip);
+    let warp = view
+        .audio_clip_controls
+        .pending_warp_settings(clip_id)
+        .or_else(|| {
+            root.domain
+                .warp
+                .as_ref()
+                .filter(|_| root.domain.warp_enabled)
+        });
+    let held_marker = view
+        .audio_event_editor
+        .gesture
+        .as_ref()
+        .and_then(|gesture| {
+            if let Kind::WarpMarker { source_frame, beat } = gesture.kind
+                && gesture.moved
+            {
+                Some((source_frame, beat))
+            } else {
+                None
+            }
+        });
+    if let Some(event) = direct_warp_event
+        && let Some(warp) = warp
+    {
+        for marker in warp
+            .markers
+            .iter()
+            .skip(1)
+            .take(warp.markers.len().saturating_sub(2))
+        {
+            if held_marker.is_some_and(|(source, _)| source == marker.source_frame) {
+                continue;
+            }
+            let position = match root.domain.clock {
+                hex_project::AudioDomainClock::Beats(_) => Some(marker.beat.raw()),
+                hex_project::AudioDomainClock::Frames(_) => transients::event_position(
+                    &root,
+                    event,
+                    marker.source_frame,
+                    state.project.tempo_map(),
+                ),
+            };
+            if let Some(frame) = position
+                .and_then(frame_at)
+                .filter(|frame| root_window.contains(i128::from(*frame)))
+            {
+                body = body.children([markers::marker_handle(
+                    marker.source_frame,
+                    frame_to_x(frame),
+                    EVENT_TOP,
+                    true,
+                    cx,
+                )]);
+            }
+        }
+    }
+    if let Some((source_frame, beat)) = held_marker
+        && let Some(frame) =
+            frame_at(beat.raw()).filter(|frame| root_window.contains(i128::from(*frame)))
+    {
+        body = body.children([markers::marker_handle(
+            source_frame,
+            frame_to_x(frame),
+            EVENT_TOP,
+            true,
+            cx,
+        )]);
+    }
     if let Some(analysis) = view.audio_event_editor.transients.as_ref()
         && let Some(event) = preview.events.iter().copied().find(|event| {
             event.active
@@ -577,9 +647,24 @@ pub(in crate::editor) fn view(
         && transients::supports_root(&root)
     {
         let mut next_x = 0.0;
-        let step = 3.0 / width.max(1.0);
+        let step = if direct_warp_event.is_some() {
+            8.0
+        } else {
+            3.0
+        } / width.max(1.0);
         let tempo = state.project.tempo_map();
         for &source in analysis.frames() {
+            if direct_warp_event.is_some()
+                && (held_marker.is_some_and(|(frame, _)| frame == source)
+                    || warp.is_some_and(|warp| {
+                        warp.markers
+                            .binary_search_by_key(&source, |m| m.source_frame)
+                            .is_ok()
+                    })
+                    || source <= root.domain.source_offset)
+            {
+                continue;
+            }
             let Some(position) =
                 transients::event_position(&root, event, source, tempo).filter(|position| {
                     *position >= content_bounds(&root).0 && *position < content_bounds(&root).1
@@ -597,6 +682,10 @@ pub(in crate::editor) fn view(
                 continue;
             }
             next_x = x + step;
+            if direct_warp_event.is_some() {
+                body = body.children([markers::marker_handle(source, x, EVENT_TOP, false, cx)]);
+                continue;
+            }
             body = body.child(
                 div()
                     .debug_selector(|| "audio-event-transient".into())
@@ -804,6 +893,18 @@ pub(in crate::editor) fn view(
                 return;
             };
             let local_y = f32::from(event.position.y - bounds.origin.y);
+            if event.click_count == 2
+                && !view.time_selection_key_held
+                && !view.audio_event_editor.fade_key_held
+                && (EVENT_TOP..EVENT_TOP + 9.0).contains(&local_y)
+                && markers::direct_event(&root, clip).is_some()
+                && let Some(position) = view.event_hit_position(&root, f32::from(event.position.x))
+            {
+                view.insert_event_warp_marker_at(position);
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
             let ruler = (0.0..EVENT_RULER_HEIGHT).contains(&local_y);
             let target = if ruler {
                 RangeSelectionTarget::Paint
