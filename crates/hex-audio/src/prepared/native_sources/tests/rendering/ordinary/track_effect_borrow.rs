@@ -19,7 +19,20 @@ fn private_compiler_borrows_original_root_binding_for_the_exact_receiver_chain()
     else {
         panic!("receiver");
     };
+    let asset = *f.media.keys().next().unwrap();
+    f.editor
+        .execute(Command::PlaceClip {
+            track: receiver,
+            asset,
+            start: 0,
+            duration: 32,
+            source_offset: 0,
+            source_length: 32,
+            looping: false,
+        })
+        .unwrap();
     let playback = compile(&f, true);
+    let original_revision = Arc::clone(playback.prepared_revision().unwrap());
     let original = playback.foreign_nodes_on_control().next().unwrap().clone();
     let binding = f.binding;
     let physical =
@@ -43,7 +56,7 @@ fn private_compiler_borrows_original_root_binding_for_the_exact_receiver_chain()
             if index < 2 {
                 [[0.0; 2]; 8]
             } else {
-                [[0.125, -0.25]; 8]
+                [[0.375, -0.75]; 8]
             }
         );
     }
@@ -202,6 +215,15 @@ fn private_compiler_borrows_original_root_binding_for_the_exact_receiver_chain()
             .unwrap()
             .processing_eq(state)
     );
+    assert_eq!(
+        hex_engine::compile::test_retained_track_effect_alignment(
+            original_revision.arrangement().as_ref(),
+            staged.project(),
+            borrowed,
+        )
+        .unwrap(),
+        [[0, 16], [16, 0]]
+    );
     root.check_native_borrow_nodes_for_test(&compiled).unwrap();
     let wrong_owner = hex_lattice::PreparedRuntimeInstance {
         owner: logical.owner(),
@@ -217,7 +239,7 @@ fn private_compiler_borrows_original_root_binding_for_the_exact_receiver_chain()
     );
     assert_eq!(f.control.submitted_revision(), revision);
     assert_eq!(f.control.status.recording_source(), Some(applied));
-    assert_eq!(block(&mut f), [[0.15625, -0.3125]; 8]);
+    assert_eq!(block(&mut f), [[0.40625, -0.8125]; 8]);
     replacement::wait_for_blocks(&root, binding, 4);
     assert_eq!(f.control.status.recording_source(), Some(applied));
     dispose(f);

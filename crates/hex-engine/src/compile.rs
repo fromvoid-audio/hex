@@ -1415,6 +1415,59 @@ pub fn test_compile_retained_track_effect_receiver(
     Ok(chain)
 }
 
+/// Inspect the two Main alignment edges after privately splicing the
+/// compiled effect into the staged receiver. No playback is constructed.
+#[cfg(feature = "instrument-test-support")]
+#[doc(hidden)]
+pub fn test_retained_track_effect_alignment(
+    before: &Project,
+    staged: &hex_project::Project,
+    effect: &hex_lattice::PreparedRuntimeInstance,
+) -> Result<[[u32; 2]; 2], Invalid> {
+    let Some(old_graph) = before.signal_graph.as_ref() else {
+        return Err(Invalid("original signal graph is absent"));
+    };
+    let mut private = before.clone();
+    let [donor, receiver] = private.tracks.as_mut_slice() else {
+        return Err(Invalid("expected two direct audio rows"));
+    };
+    let [previous] = donor.device_chain.as_ref() else {
+        return Err(Invalid("original effect chain differs"));
+    };
+    if previous.owner != effect.owner
+        || previous.device_id != effect.device_id
+        || previous.foreign_processor() != effect.foreign_processor()
+        || !receiver.device_chain.is_empty()
+        || donor.clips.is_empty()
+        || receiver.clips.is_empty()
+        || !old_graph.independent_main_routes()
+    {
+        return Err(Invalid("original effect route differs"));
+    }
+    donor.device_chain = Arc::from([]);
+    receiver.device_chain = Arc::from([effect.clone()]);
+    let next_graph = crate::signal_graph::SignalGraph::prepare(&private, &[], staged)?
+        .ok_or(Invalid("receiver signal graph is absent"))?;
+    if !next_graph.independent_main_routes()
+        || old_graph.main_input_arrival() != next_graph.main_input_arrival()
+    {
+        return Err(Invalid("moving the effect changes the Main clock"));
+    }
+    let alignment = |graph: &crate::signal_graph::SignalGraph| {
+        Ok::<_, Invalid>([
+            graph
+                .track_latency(0, 0)
+                .ok_or(Invalid("donor alignment is absent"))?
+                .default_route_delay_frames,
+            graph
+                .track_latency(1, 0)
+                .ok_or(Invalid("receiver alignment is absent"))?
+                .default_route_delay_frames,
+        ])
+    };
+    Ok([alignment(old_graph)?, alignment(&next_graph)?])
+}
+
 /// Build at most one source-owned recipe per compiled receiver. Definitions
 /// without a current receiver do not acquire DSP or resource custody.
 pub(crate) fn prepare_source_effect_recipes(
