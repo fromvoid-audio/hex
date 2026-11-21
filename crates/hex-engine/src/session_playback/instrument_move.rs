@@ -94,7 +94,7 @@ impl SessionPlayback {
         } = kind
         {
             let receiver_track = receiver.canonical_track_id()?;
-            if !self.direct_mutable_move_preserves_occurrences(
+            if !self.direct_mutable_move_matches_resources_and_routes(
                 previous,
                 source,
                 destination,
@@ -111,7 +111,7 @@ impl SessionPlayback {
         })
     }
 
-    fn direct_mutable_move_preserves_occurrences(
+    fn direct_mutable_move_matches_resources_and_routes(
         &self,
         previous: &Self,
         source: usize,
@@ -139,13 +139,12 @@ impl SessionPlayback {
             .revision
             .source_routing()
             .arrangement_voice_envelope(destination);
-        let authored = proofs.len().saturating_add(next_input);
         previous.loop_region().is_none()
             && self.loop_region().is_none()
             && donor.is_source_owner()
             && !donor.has_committed_live_occurrences()
-            // Sampler's existing inheritance also compares the actual
-            // backing owners. The move must have both original PCM leases.
+            // Validate both Sampler leases and their backing owners. Fresh
+            // playback still needs the same admitted original media.
             && (!requires_original_sample
                 || (donor.resources.is_some() && receiver.resources.is_some()))
             && receiver.can_inherit_from(donor)
@@ -161,8 +160,6 @@ impl SessionPlayback {
                         .instrument_automation(tracks[1], device)
                         .is_none()
             })
-            // An inverse finds the original contributor's dispatched gates
-            // in the current donor's kernel, alongside gates it added there.
             && proofs
                 .iter()
                 .all(|proof| tracks.contains(&proof.signature.key().track))
@@ -173,11 +170,11 @@ impl SessionPlayback {
                     MAX_UNCHANGED_CLIPS,
                 )
             })
-            && authored
+            && next_input
                 <= receiver
                     .max_active_occurrences()
                     .min(receiver.transition_proof_capacity())
-            && authored.saturating_mul(2).saturating_add(3) <= receiver.max_events_per_block()
+            && next_input.saturating_mul(2).saturating_add(3) <= receiver.max_events_per_block()
     }
 }
 
