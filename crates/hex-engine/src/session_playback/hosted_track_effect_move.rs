@@ -108,6 +108,9 @@ impl SessionPlayback {
             || moved.owner != ProcessorChainOwner::Track(request.receiver.value())
             || original.device_id != request.device.value()
             || moved.device_id != original.device_id
+            || moved.device_type != original.device_type
+            || moved.sample_rate != original.sample_rate
+            || moved.matrix != original.matrix
             || original.bypassed
             || moved.bypassed
             || !original.automation.is_empty()
@@ -121,6 +124,8 @@ impl SessionPlayback {
             || fresh.binding() != Some(request.binding)
             || original_binding == request.binding
             || original_binding.root != request.binding.root
+            || original_binding.instance != original.device_id
+            || request.binding.instance != moved.device_id
             || fresh.with_binding(original_binding).ok() != Some(processor)
             || !original
                 .configuration
