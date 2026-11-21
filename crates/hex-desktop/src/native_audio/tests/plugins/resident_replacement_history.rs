@@ -40,10 +40,20 @@ fn stopped_resident_return_vst3_replacement_undo_waits_for_its_exact_receipt() {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn stopped_resident_main_vst3_replacement_redo_waits_for_its_exact_receipt() {
+    assert_stopped_redo(HistoryEffectBus::Main);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn stopped_resident_return_vst3_replacement_redo_waits_for_its_exact_receipt() {
+    assert_stopped_redo(HistoryEffectBus::Return);
+}
+
+fn assert_stopped_redo(bus: HistoryEffectBus) {
     let _native = native_fixture();
     let files = Files::new();
     let (mut h, original, installed, original_binding, destination) =
-        installed_replacement(&files, HistoryEffectBus::Main);
+        installed_replacement(&files, bus);
     let replaced_binding = binding(&h).unwrap().1;
     let restored = assert_stopped_history(
         &mut h,
@@ -66,11 +76,26 @@ fn stopped_resident_main_vst3_replacement_redo_waits_for_its_exact_receipt() {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn rolling_resident_main_vst3_replacement_undo_preserves_the_predecessor() {
+    assert_rolling_refusal(HistoryEffectBus::Main);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn rolling_resident_return_vst3_replacement_undo_preserves_the_predecessor() {
+    assert_rolling_refusal(HistoryEffectBus::Return);
+}
+
+fn assert_rolling_refusal(bus: HistoryEffectBus) {
     let _native = native_fixture();
     let files = Files::new();
-    let (mut h, _, installed, _, _) = installed_replacement(&files, HistoryEffectBus::Main);
+    let (mut h, _, installed, _, destination) = installed_replacement(&files, bus);
     let predecessor = status(&h).recording_source().unwrap();
     let incumbent = binding(&h).unwrap();
+    let minimum = if matches!(destination, PluginEffectDestination::Return(_)) {
+        0.251
+    } else {
+        0.001
+    };
     h.audio
         .as_mut()
         .unwrap()
@@ -80,7 +105,8 @@ fn rolling_resident_main_vst3_replacement_undo_preserves_the_predecessor() {
     wait(|| {
         h.pump();
         let pcm = h.render_plugin_block();
-        status(&h).playing.load(Acquire) && pcm.iter().flatten().any(|sample| sample.abs() > 0.001)
+        status(&h).playing.load(Acquire)
+            && pcm.iter().flatten().any(|sample| sample.abs() > minimum)
     });
 
     h.service.submit(Request::Undo).unwrap();

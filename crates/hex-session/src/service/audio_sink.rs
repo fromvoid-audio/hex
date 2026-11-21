@@ -1246,6 +1246,17 @@ pub trait WorkerAudioSink: Send {
         Ok(None)
     }
 
+    /// Observe an accepted Return worker on the exact settled stopped source.
+    /// This grants no custody; publication must revalidate the same witness.
+    fn stopped_resident_return_history_fence(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _return_track: hex_project::ReturnId,
+        _device: hex_project::DeviceId,
+    ) -> Option<ResidentFreshRuntimeFence> {
+        None
+    }
+
     /// Copy the exact currently playing Main source; no endpoint custody escapes.
     fn running_resident_main_power_off(
         &mut self,

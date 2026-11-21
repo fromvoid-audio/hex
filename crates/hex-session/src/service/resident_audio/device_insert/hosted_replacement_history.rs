@@ -1,21 +1,52 @@
 //! Compare exact, normalized hosted replacement history edges on control.
 use hex_lattice_contract::VST3_DEVICE_TYPE_ID;
-use hex_project::{Command, Device, DeviceId, Editor, Project};
+use hex_project::{
+    Command, Device, DeviceId, Editor, Invalid, Project, ReturnId, ReturnTrack,
+    StagedProjectHistory,
+};
+
+/// Stage one exact substitution between two enabled workers on the same
+/// Return. Obtaining the stopped audio witness remains the caller's job.
+pub(super) fn stage_enabled_return_replacement(
+    editor: &mut Editor,
+    redo: bool,
+) -> Result<Option<(StagedProjectHistory, ReturnId, DeviceId)>, Invalid> {
+    let Some((return_track, device)) = editor
+        .inspect_history(redo, |before, after| {
+            let (old_bus, new_bus) = return_replacement_chains(before, after)?;
+            let (old, new) = replacement_leaves(old_bus.devices(), new_bus.devices())?;
+            (!old.bypassed() && !new.bypassed()).then_some((old_bus.id(), old.id()))
+        })
+        .flatten()
+    else {
+        return Ok(None);
+    };
+    Ok(editor
+        .stage_history(redo)?
+        .filter(|edge| replaces_one_return(editor.project(), edge.project()))
+        .map(|edge| (edge, return_track, device)))
+}
 
 /// Admit a same-slot leaf substitution on the same Return, with all other
 /// authored values (including routing and send levels) preserved.
 pub(super) fn replaces_one_return(before: &Project, after: &Project) -> bool {
+    return_replacement_chains(before, after)
+        .is_some_and(|(old, new)| replaces_chain_leaf(before, after, old.devices(), new.devices()))
+}
+
+fn return_replacement_chains<'a>(
+    before: &'a Project,
+    after: &'a Project,
+) -> Option<(&'a ReturnTrack, &'a ReturnTrack)> {
     if before.return_tracks().len() != after.return_tracks().len() {
-        return false;
+        return None;
     }
     before
         .return_tracks()
         .iter()
         .zip(after.return_tracks())
         .find(|(old, new)| effect_ids_differ(old.devices(), new.devices()))
-        .is_some_and(|(old, new)| {
-            old.id() == new.id() && replaces_chain_leaf(before, after, old.devices(), new.devices())
-        })
+        .filter(|(old, new)| old.id() == new.id())
 }
 
 /// A direct Track effect swap keeps the separately authored instrument gap.
@@ -102,7 +133,7 @@ pub(super) fn without_effect(project: &Project, device: DeviceId) -> Option<Edit
 mod tests {
     use super::*;
     use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
-    use hex_project::{Created, ReturnId, TrackDeviceSlot, TrackSelectionIds};
+    use hex_project::{Created, TrackDeviceSlot, TrackSelectionIds};
 
     fn add_return(editor: &mut Editor, name: &str) -> ReturnId {
         let Created::ReturnTrack(id) = editor
@@ -169,7 +200,10 @@ mod tests {
         };
 
         let replaced = editor.project().clone();
-        let undo = editor.stage_history(false).unwrap().unwrap();
+        let (undo, bus_id, leaving) = stage_enabled_return_replacement(&mut editor, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!((bus_id, leaving), (bus, fresh));
         assert!(replaces_one_return(&replaced, undo.project()));
 
         for commands in [
@@ -195,7 +229,10 @@ mod tests {
         }
 
         editor.commit_staged_history(undo).unwrap();
-        let redo = editor.stage_history(true).unwrap().unwrap();
+        let (redo, bus_id, leaving) = stage_enabled_return_replacement(&mut editor, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!((bus_id, leaving), (bus, original));
         assert!(replaces_one_return(editor.project(), redo.project()));
     }
 

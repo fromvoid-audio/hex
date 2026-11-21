@@ -2312,6 +2312,16 @@ impl WorkerAudioSink for ResidentSink {
         self.inner.stopped_resident_power_fence(context, device)
     }
 
+    fn stopped_resident_return_history_fence(
+        &mut self,
+        context: AudioSourceContext,
+        return_track: hex_project::ReturnId,
+        device: hex_project::DeviceId,
+    ) -> Option<hex_session::service::ResidentFreshRuntimeFence> {
+        self.inner
+            .stopped_resident_return_history_fence(context, return_track, device)
+    }
+
     fn resident_runtime_loop(
         &mut self,
         context: AudioSourceContext,

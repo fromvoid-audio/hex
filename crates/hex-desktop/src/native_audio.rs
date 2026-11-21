@@ -107,6 +107,32 @@ struct StoppedForeignHistory {
     fence: hex_audio::prepared::StoppedEditFence,
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn settled_resident_effect_fence(
+    control: &hex_audio::prepared::PublicationControl,
+    context: AudioSourceContext,
+    matches_source: impl FnOnce(hex_audio::prepared::AppliedAudioSource) -> bool,
+) -> Option<hex_session::service::ResidentFreshRuntimeFence> {
+    let interval = control.status.paused_input_interval()?;
+    if interval.0.context != context || !matches_source(interval.0) {
+        return None;
+    }
+    let fence = control.capture_fresh_runtime_fence()?;
+    if fence.expected_active_revision() != interval.0.audio_revision
+        || control.status.paused_input_interval() != Some(interval)
+    {
+        return None;
+    }
+    Some(hex_session::service::ResidentFreshRuntimeFence {
+        output_identity: interval.0.output_identity,
+        active_audio_revision: fence.expected_active_revision(),
+        route_generation: fence.route_state_generation(),
+        admitted_command_ticket: fence.admitted_command_ticket(),
+        output_fault_epoch: fence.output_fault_epoch(),
+        consumed_stop_generation: fence.consumed_stop_generation(),
+    })
+}
+
 #[cfg(all(test, feature = "allocation-probe"))]
 struct VerifiedPageHold {
     index: u64,
@@ -2367,29 +2393,16 @@ impl WorkerAudioSink for NativeAudioSink {
             if !off && !self.plugins.has_accepted_main_source(context, device) {
                 return Ok(None);
             }
-            let fence = (|| {
-                let control = self.output.as_mut()?.publication.control()?;
-                let interval = control.status.paused_input_interval()?;
-                if interval.0.context != context
-                    || (off && self.resident.powered_off_main(interval.0) != Some(device))
-                {
-                    return None;
-                }
-                let fence = control.capture_fresh_runtime_fence()?;
-                if fence.expected_active_revision() != interval.0.audio_revision
-                    || control.status.paused_input_interval() != Some(interval)
-                {
-                    return None;
-                }
-                Some(hex_session::service::ResidentFreshRuntimeFence {
-                    output_identity: interval.0.output_identity,
-                    active_audio_revision: fence.expected_active_revision(),
-                    route_generation: fence.route_state_generation(),
-                    admitted_command_ticket: fence.admitted_command_ticket(),
-                    output_fault_epoch: fence.output_fault_epoch(),
-                    consumed_stop_generation: fence.consumed_stop_generation(),
-                })
-            })();
+            let resident = &self.resident;
+            let fence = self
+                .output
+                .as_mut()
+                .and_then(|output| output.publication.control())
+                .and_then(|control| {
+                    settled_resident_effect_fence(control, context, |source| {
+                        !off || resident.powered_off_main(source) == Some(device)
+                    })
+                });
             if off && fence.is_none() {
                 return Err("power on requires the original settled stop interval".into());
             }
@@ -2400,6 +2413,24 @@ impl WorkerAudioSink for NativeAudioSink {
             let _ = (context, device);
             Ok(None)
         }
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn stopped_resident_return_history_fence(
+        &mut self,
+        context: AudioSourceContext,
+        return_track: hex_project::ReturnId,
+        device: hex_project::DeviceId,
+    ) -> Option<hex_session::service::ResidentFreshRuntimeFence> {
+        let owner = hex_engine::ProcessorChainOwner::Return(return_track.value());
+        if !self
+            .plugins
+            .has_accepted_effect_source(context, owner, device.value())
+        {
+            return None;
+        }
+        let control = self.output.as_mut()?.publication.control()?;
+        settled_resident_effect_fence(control, context, |_| true)
     }
 
     fn resident_runtime_loop(

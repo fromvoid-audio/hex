@@ -581,12 +581,21 @@ impl Plugins {
         context: AudioSourceContext,
         device: u64,
     ) -> bool {
+        self.has_accepted_effect_source(context, ProcessorChainOwner::Main, device)
+    }
+
+    pub(super) fn has_accepted_effect_source(
+        &self,
+        context: AudioSourceContext,
+        owner: ProcessorChainOwner,
+        device: u64,
+    ) -> bool {
         self.sources.iter().any(|source| {
             source.accepted
                 && !source.retiring
                 && source.project_generation == context.project_generation
                 && source.device == device
-                && source.owner == ProcessorChainOwner::Main
+                && source.owner == owner
         })
     }
 
