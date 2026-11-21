@@ -169,8 +169,12 @@ fn installed_sdk_marker_joins_bound_main_pcm_with_an_injected_output_clock() {
     };
     f.data.owner_mut().unwrap().run(|callback, _| {
         callback.begin_block();
+        // Ordinary publication retains a stream envelope even with no pages.
+        // Drive its render-side installation without advancing the SDK request.
+        callback.render(&mut []).unwrap();
         assert_eq!(callback.recording_source(), Some(source));
     });
+    assert_eq!(f.control.status.recording_source(), Some(source));
     assert_eq!(
         f.control.native_source_endpoint_installed(f.binding),
         Some(true)
