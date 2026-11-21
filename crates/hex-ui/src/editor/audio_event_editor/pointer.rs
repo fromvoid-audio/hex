@@ -9,7 +9,7 @@ impl Kind {
     pub(super) fn pointer_cursor(self) -> CursorStyle {
         match self {
             Self::Select => CursorStyle::Arrow,
-            Self::PlayStart { .. } => CursorStyle::ResizeLeftRight,
+            Self::PlayStart { .. } | Self::WarpMarker { .. } => CursorStyle::ResizeLeftRight,
             Self::RangeMove { .. }
             | Self::FreeRangeMove { .. }
             | Self::Move(_)

@@ -4,6 +4,7 @@
 mod fades;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod free_placement_tests;
+mod markers;
 mod navigation;
 mod paint;
 mod pending;
@@ -208,6 +209,10 @@ enum Kind {
     FreeMove {
         event: AudioEvent,
         limits: (i64, i64),
+    },
+    WarpMarker {
+        source_frame: u64,
+        beat: hex_project::BeatTime,
     },
     Leading(AudioEvent),
     Trailing(AudioEvent),
@@ -677,6 +682,10 @@ impl EditorView {
                 } else {
                     self.sync_held_play_start_audition();
                 }
+            } else if let Kind::WarpMarker { source_frame, beat } = gesture.kind {
+                if gesture.moved {
+                    self.finish_event_warp_drag(source_frame, beat);
+                }
             } else if let Some(operation) = gesture.operation {
                 self.event_commit(operation);
             }
@@ -825,6 +834,13 @@ impl EditorView {
                     position,
                     recovery_attempted,
                 };
+            }
+            Kind::WarpMarker { source_frame, .. } => {
+                let Some(beat) = markers::drag_beat(&root, source_frame, gesture.anchor, position)
+                else {
+                    return;
+                };
+                gesture.kind = Kind::WarpMarker { source_frame, beat };
             }
             Kind::Select => {
                 self.audio_event_editor.range =

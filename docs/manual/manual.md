@@ -676,6 +676,22 @@ into a source-event container is currently unsupported.
 outside a focused audio time-selection context, **command+f** keeps browser search.
 plain **f** keeps its momentary fade-handle behavior.
 
+## warp markers in audio events
+
+choose **events** in the audio clip editor. a short muted tick marks a detected
+attack on the waveform. double-click a tick to pin that source frame to the
+timeline and enable warp. double-click the top edge of the event between ticks
+to pin a different position.
+
+drag a pin to move its source frame to a new beat. with warp enabled you can
+also drag a detected tick to pin and move it in one gesture. the adjacent pins
+stay in place. double-click an interior pin to remove it. the region endpoints
+are fixed. one undo restores the previous map, and saving the project keeps its
+authored pins.
+
+direct pin editing is available for a single complete, forward, unlooped event
+with neutral pitch. automatic ticks require resident source audio.
+
 ## audio event fades
 
 the **scope bar** at the top of each clip editor defines the clip's **scope**.
