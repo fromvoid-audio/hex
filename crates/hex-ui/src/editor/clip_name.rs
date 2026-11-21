@@ -355,7 +355,7 @@ impl EditorView {
         &self,
         track: hex_project::TrackId,
         clip: ClipId,
-        label: gpui::AnyElement,
+        content: gpui::AnyElement,
         fill: u32,
         interactive: bool,
         on_backdrop: bool,
@@ -373,7 +373,7 @@ impl EditorView {
             .when(self.clip_has_alias(clip), |header| {
                 header.pr(px(if notched { 20.0 } else { 15.0 }))
             })
-            .child(label)
+            .child(content)
             .children(
                 self.clip_alias_indicator(clip, fill)
                     .map(|indicator| indicator.when(notched, |indicator| indicator.right(px(7.0)))),
