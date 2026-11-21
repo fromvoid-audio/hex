@@ -64,14 +64,32 @@ impl EditorView {
         &self,
         root: &AudioClipEdit,
     ) -> Option<SignedFrameViewport> {
+        self.event_frame_window(root)
+            .shifted(self.event_project_frame(root, editor_bounds(root).0)?)
+    }
+
+    /// The project frame of an event-editor grid position. The crop and
+    /// projected root clock are shared with the pointer and ruler geometry.
+    fn event_project_frame(&self, root: &AudioClipEdit, position: u64) -> Option<i128> {
         let state = self.state.as_ref()?;
         let clip = state.project.clip(self.detail_clip_id()?)?;
         let tempo = state.project.tempo_map();
-        let first = root.root_frame_at(editor_bounds(root).0, tempo).ok()?;
         let grid_origin = root.root_frame_at(event_grid_origin(root), tempo).ok()?;
-        self.event_frame_window(root)
-            .shifted(i128::from(clip.start()) + i128::from(first) - i128::from(grid_origin))
+        let frame = root.root_frame_at(position, tempo).ok()?;
+        Some(i128::from(clip.start()) + i128::from(frame) - i128::from(grid_origin))
     }
+
+    pub(in crate::editor) fn audio_editor_cursor_play_start(&self) -> Option<u64> {
+        if self.audio_event_editor.source_view
+            || !self.audio_event_editor.retained_ancestors.is_empty()
+            || !self.event_context_current()
+        {
+            return None;
+        }
+        let (_, root, _) = self.event_context()?;
+        u64::try_from(self.event_project_frame(&root, self.audio_event_editor.cursor)?).ok()
+    }
+
     pub(super) fn event_pointer_position(&self, x: f32, platform: bool) -> Option<u64> {
         let (_, root, _) = self.event_context()?;
         let state = self.state.as_ref()?;
@@ -134,11 +152,7 @@ impl EditorView {
     pub(super) fn event_snap_position(&self, position: u64, platform: bool) -> Option<u64> {
         let (_, root, _) = self.event_context()?;
         let state = self.state.as_ref()?;
-        let clip = state.project.clip(self.detail_clip_id()?)?;
-        let tempo = state.project.tempo_map();
-        let first = root.root_frame_at(event_grid_origin(&root), tempo).ok()?;
-        let root_frame = root.root_frame_at(position, tempo).ok()?;
-        let project_frame = i128::from(clip.start()) + i128::from(root_frame) - i128::from(first);
+        let project_frame = self.event_project_frame(&root, position)?;
         let snapped = self
             .audio_event_editor
             .grid
