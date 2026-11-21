@@ -6279,8 +6279,7 @@ fn exercise_sampler_modulation_mapper(cx: &mut TestAppContext, host_output: bool
             request_id: 1,
             project_generation: view.project_generation,
             revision: empty.revision,
-            track,
-            slot,
+            target: hex_session::service::SamplerLoadTarget::Track { track, slot },
             path: file.0.clone(),
             cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }));
