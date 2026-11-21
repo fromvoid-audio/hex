@@ -289,6 +289,7 @@ impl EditorView {
                             viewport: rows_viewport,
                             grid: &rows_grid,
                             scale_factor: track_scale_factor,
+                            caption_rem_size: None,
                         },
                         cx,
                     )
