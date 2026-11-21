@@ -30,6 +30,17 @@ impl NativeEffectEntry {
         }
         self.callback.settled_main_pass_delay(frames)
     }
+
+    pub(crate) fn settled_return_pass(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        frame: u64,
+    ) -> Result<bool, DeviceContractError> {
+        if !self.has_live_epoch() {
+            return Err(DeviceContractError::ForeignProcessingUnavailable);
+        }
+        self.callback.settled_return_pass(identity, frame)
+    }
     pub(crate) fn new(callback: NativeEffectCallback) -> Self {
         Self {
             callback,

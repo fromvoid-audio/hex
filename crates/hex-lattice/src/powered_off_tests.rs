@@ -57,7 +57,7 @@ fn powered_off_rejects_active_wrong_owner_and_unknown_configuration() {
         match index {
             0 => value.bypassed = false,
             1 => value.owner = ProcessorChainOwner::Track(1),
-            2 => value.owner = ProcessorChainOwner::Return(1),
+            2 => value.owner = ProcessorChainOwner::Source(1),
             3 => value.configuration = None,
             4 => value.device_type = DeviceTypeId::from_static("hex.utility"),
             5 => value.matrix = StereoMatrix::new([[0.5, 0.0], [0.0, 0.5]]).unwrap(),
@@ -86,6 +86,55 @@ fn powered_off_rejects_active_wrong_owner_and_unknown_configuration() {
         }
         assert!(NativeRuntimeChain::new_prepared(vec![value]).is_err());
     }
+}
+
+#[test]
+fn return_power_off_requires_the_exact_aligned_owner_and_untrimmed_stage() {
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root: 1,
+        instance: 7,
+        graph: 3,
+        epoch: 4,
+    };
+    let owner = ProcessorChainOwner::Return(1);
+    let mut node = configured_main();
+    node.owner = owner;
+    let off = NativeRuntimeChain::new_prepared(vec![node.clone()]).unwrap();
+    let mut active = node.clone();
+    active.bypassed = false;
+    active.definition = Some(PreparedProcessorFactory::Foreign(
+        PreparedForeignProcessor::new(256, 0, 512)
+            .unwrap()
+            .with_binding(binding)
+            .unwrap(),
+    ));
+    let mut original = NativeRuntimeChain::new_prepared(vec![active.clone()]).unwrap();
+    let cut = off.return_power_off_from(&original, 1).unwrap();
+    assert_eq!(cut.foreign_return_pass(), Some(binding));
+    assert!(cut.foreign_main_pass().is_none());
+    assert!(off.return_power_off_from(&original, 2).is_none());
+    assert!(off.main_pass_removal_from(&original).is_none());
+    assert!(original.begin_native_removal(cut));
+    assert!(original.native_removal_ready(cut));
+    original.cancel_native_removal(cut);
+    assert!(!original.native_removal_ready(cut));
+    assert!(off.return_power_off_from(&original, 1).is_some());
+
+    let trimmed = active
+        .configuration
+        .as_ref()
+        .unwrap()
+        .as_ref()
+        .clone()
+        .with_input_gain_db(6.0)
+        .unwrap();
+    active.configuration = Some(std::sync::Arc::new(trimmed));
+    let trimmed = NativeRuntimeChain::new_prepared(vec![active]).unwrap();
+    assert!(off.return_power_off_from(&trimmed, 1).is_none());
+    let wrong = NativeRuntimeChain::new_prepared(vec![configured_main()]).unwrap();
+    assert!(wrong.return_power_off_from(&original, 1).is_none());
+    let deleted = NativeRuntimeChain::new_prepared(Vec::new()).unwrap();
+    assert!(deleted.return_power_off_from(&original, 1).is_none());
 }
 
 #[test]

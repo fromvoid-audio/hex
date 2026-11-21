@@ -66,12 +66,21 @@ impl NativeDeviceDefinition for Definition {
 
 #[test]
 fn typed_main_off_seals_actual_data_and_reports_its_distinct_status() {
+    verify_typed_off(false);
+}
+
+#[test]
+fn typed_return_off_seals_actual_data_and_reports_its_distinct_status() {
+    verify_typed_off(true);
+}
+
+fn verify_typed_off(on_return: bool) {
     let definition = Definition(true);
     let defs: [&dyn NativeDeviceDefinition; 1] = [&definition];
     let registry = NativeDeviceRegistry::new(&defs).unwrap();
     let effects = AudioCandidateEffects::new(&registry);
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
-    let Created::Imported { asset, .. } = editor
+    let Created::Imported { track, asset, .. } = editor
         .execute(Command::ImportAudioTrack {
             name: "input".into(),
             path: "memory/off.wav".into(),
@@ -83,14 +92,41 @@ fn typed_main_off_seals_actual_data_and_reports_its_distinct_status() {
         panic!("audio")
     };
     let state = definition.default_state().unwrap();
-    let Created::Device(device) = editor
-        .execute(Command::InsertMainDevice {
-            before: None,
-            state: state.clone(),
-        })
-        .unwrap()
-    else {
-        panic!("main")
+    let (command, owner) = if on_return {
+        let Created::ReturnTrack(bus) = editor
+            .execute(Command::AddReturnTrack {
+                name: "send".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return");
+        };
+        editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 0.5,
+            })
+            .unwrap();
+        (
+            Command::InsertReturnDevice {
+                return_track: bus,
+                before: None,
+                state: state.clone(),
+            },
+            hex_lattice::ProcessorChainOwner::Return(bus.value()),
+        )
+    } else {
+        (
+            Command::InsertMainDevice {
+                before: None,
+                state: state.clone(),
+            },
+            hex_lattice::ProcessorChainOwner::Main,
+        )
+    };
+    let Created::Device(device) = editor.execute(command).unwrap() else {
+        panic!("off device")
     };
     editor
         .execute(Command::SetDeviceBypass {
@@ -132,26 +168,30 @@ fn typed_main_off_seals_actual_data_and_reports_its_distinct_status() {
         Err(AudioStorageError::Capacity)
     );
     let playback = &owner.inner.runtime.as_ref().unwrap().playback;
-    let chain = playback.test_main_chain().unwrap();
-    assert_eq!(chain.stateful_count(), 0);
-    assert_eq!(chain.declared_pair_bytes(), 0);
     assert_eq!(playback.main_output_latency_frames(), 0);
+    let revision = playback.prepared_revision().unwrap();
     assert_eq!(
-        playback
-            .prepared_revision()
-            .unwrap()
-            .sole_powered_off_main_device_on_control(),
-        Some(device.value())
+        revision.sole_powered_off_device_on_control(),
+        Some(ProcessorInstanceIdentity::new(owner, device.value()).unwrap())
     );
     assert_eq!(playback.foreign_nodes_on_control().count(), 0);
-    assert!(
-        chain
-            .storage_view()
-            .entries()
-            .next()
-            .unwrap()
-            .is_powered_off()
-    );
+    if !on_return {
+        let chain = playback.test_main_chain().unwrap();
+        assert_eq!(chain.stateful_count(), 0);
+        assert_eq!(chain.declared_pair_bytes(), 0);
+        assert!(
+            chain
+                .storage_view()
+                .entries()
+                .next()
+                .unwrap()
+                .is_powered_off()
+        );
+        assert_eq!(
+            revision.sole_powered_off_main_device_on_control(),
+            Some(device.value())
+        );
+    }
     let observation = playback.prepare_observation_on_control().unwrap();
     assert_eq!(
         observation.processor_status(device.value(), state.type_id()),
@@ -161,16 +201,13 @@ fn typed_main_off_seals_actual_data_and_reports_its_distinct_status() {
         observation.foreign_processor(device.value(), state.type_id()),
         Some(false)
     );
-    assert_eq!(
-        playback
-            .prepared_revision()
-            .unwrap()
-            .arrangement()
-            .main_device_chain[0]
-            .configuration
-            .as_deref(),
-        Some(&state)
-    );
+    let arrangement = revision.arrangement();
+    let stage = if on_return {
+        &arrangement.return_buses()[0].device_chain[0]
+    } else {
+        &arrangement.main_device_chain[0]
+    };
+    assert_eq!(stage.configuration.as_deref(), Some(&state));
     // The old generic factoryless hosted path remains unsupported.
     let missing = Definition(false);
     let defs: [&dyn NativeDeviceDefinition; 1] = [&missing];

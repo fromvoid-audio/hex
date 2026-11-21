@@ -698,6 +698,44 @@ fn settled_main_pass_copy_uses_committed_519_frame_ring_without_allocating() {
 }
 
 #[test]
+fn settled_return_pass_requires_the_exact_accepted_frame_and_owner() {
+    let binding = Binding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Return(5), 2).unwrap();
+    let state =
+        hex_engine::default_native_device_state(hex_devices::utility::UTILITY_TYPE_ID).unwrap();
+    let (control, transport, _worker) = channel(binding, 256).unwrap();
+    let callback = NativeEffectCallback::for_test(identity, binding, state, transport);
+    let mut entry = NativeEffectEntry::new(callback);
+    assert_eq!(entry.settled_return_pass(identity, 768), Ok(false));
+    // Model the exact committed endpoint facts at the public callback seam.
+    // The signed pass test checks their real worker and render progression.
+    entry
+        .callback
+        .bypass
+        .process(&mut [[0.0; 2]; 256], &[[0.0; 2]; 256], true, 48_000, 1.0);
+    entry.callback.return_bypass_frame = std::num::NonZeroU64::new(768);
+    let other = ProcessorInstanceIdentity::new(ProcessorChainOwner::Return(6), 2).unwrap();
+    assert_eq!(
+        allocations_during(|| {
+            assert_eq!(entry.settled_return_pass(identity, 768), Ok(true));
+            assert!(entry.settled_return_pass(identity, 769).is_err());
+            assert!(entry.settled_return_pass(other, 768).is_err());
+        }),
+        [0; 4]
+    );
+    entry.staged = true;
+    assert!(entry.settled_return_pass(identity, 768).is_err());
+    entry.staged = false;
+    control.revoke();
+    assert!(entry.settled_return_pass(identity, 768).is_err());
+}
+
+#[test]
 fn late_native_effect_replies_use_aligned_dry_and_resume_wet() {
     let binding = Binding {
         root: 1,

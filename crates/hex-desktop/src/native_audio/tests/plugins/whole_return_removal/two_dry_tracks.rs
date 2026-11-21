@@ -104,12 +104,16 @@ fn await_terminal(
     }
 }
 
-#[test]
-#[ignore = "explicit original SDK helper and source fixtures required"]
-fn running_resident_whole_vst3_return_removal_keeps_two_dry_tracks_aligned() {
-    let _native = native_fixture();
-    let files = Files::new();
-    let sibling_files = Files::new();
+struct RollingTwoDryTracks {
+    harness: ResidentHarness,
+    original: Arc<ViewState>,
+    bus: ReturnId,
+    device: DeviceId,
+    predecessor: AppliedAudioSource,
+    original_worker: Option<(u64, EffectBinding)>,
+}
+
+fn rolling_two_dry_tracks(files: &Files, sibling_files: &Files) -> RollingTwoDryTracks {
     let directory = files.0.canonicalize().unwrap();
     hex_ui::write_plugin_effect_test_catalog(&directory, &selection(), "Fx", 0).unwrap();
     let mut h = ResidentHarness::with_plugins_at_rate_and_catalog(
@@ -124,10 +128,10 @@ fn running_resident_whole_vst3_return_removal_keeps_two_dry_tracks_aligned() {
     );
     assert!(h.next().error.is_none());
     let (empty, _) = h.applied(0);
-    let first = h.run(Request::Import(timed_wav(&files)));
+    let first = h.run(Request::Import(timed_wav(files)));
     let track = first.state.project.tracks()[0].id();
     let (first_revision, _) = h.applied(empty);
-    let bed = h.run(Request::Import(sibling_wav(&sibling_files)));
+    let bed = h.run(Request::Import(sibling_wav(sibling_files)));
     assert_eq!(bed.state.project.tracks().len(), 2);
     let (bed_revision, _) = h.applied(first_revision);
     let created = h.run(Request::Edit(Command::AddReturnTrack {
@@ -196,6 +200,31 @@ fn running_resident_whole_vst3_return_removal_keeps_two_dry_tracks_aligned() {
     }
     let (start, pcm) = render_rolling(&h);
     assert_bed_with_wet(start, &pcm);
+    RollingTwoDryTracks {
+        harness: h,
+        original: inserted.state,
+        bus,
+        device,
+        predecessor,
+        original_worker,
+    }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn running_resident_whole_vst3_return_removal_keeps_two_dry_tracks_aligned() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let sibling_files = Files::new();
+    let RollingTwoDryTracks {
+        harness: mut h,
+        original,
+        bus,
+        predecessor,
+        original_worker,
+        ..
+    } = rolling_two_dry_tracks(&files, &sibling_files);
+    let original = &original;
     for cancel in [true, false] {
         let (ready, resume, _busy) = h.probe_next_native_publication();
         let (submitted, submit_resume) = h.probe_next_submitted_device_insert();
@@ -310,4 +339,79 @@ fn running_resident_whole_vst3_return_removal_keeps_two_dry_tracks_aligned() {
         .command(PlaybackCommand::Play)
         .unwrap();
     assert_both_dry(&h, 0);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn running_resident_return_power_off_preserves_the_wet_source_on_unsupported_bed() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let sibling_files = Files::new();
+    let RollingTwoDryTracks {
+        harness: mut h,
+        original,
+        device,
+        predecessor,
+        original_worker,
+        ..
+    } = rolling_two_dry_tracks(&files, &sibling_files);
+    h.enable_confirmed_device_inserts();
+    let assert_original = |h: &ResidentHarness, event: &Event| {
+        assert!(event.device_insert_confirmation.is_none());
+        assert_eq!(event.state.project, original.project);
+        assert_eq!(event.state.revision, original.revision);
+        assert_eq!(event.state.can_undo, original.can_undo);
+        assert_eq!(event.state.can_redo, original.can_redo);
+        assert_eq!(status(h).recording_source(), Some(predecessor));
+        assert_eq!(worker_identity(h), original_worker);
+        assert!(status(h).playing.load(Acquire));
+    };
+
+    let (submitted, resume) = h.probe_next_submitted_device_insert();
+    h.service
+        .submit(Request::Edit(Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        }))
+        .unwrap();
+    let exact = await_preparation(&mut h, &submitted);
+    assert_eq!(exact.output_identity, predecessor.output_identity);
+    assert_eq!(exact.context.editor_revision, original.revision + 1);
+    resume.send(()).unwrap();
+    let pending = h.next();
+    assert!(!pending.request_complete && pending.error.is_none());
+    assert_original(&h, &pending);
+
+    let deadline = Instant::now() + Duration::from_millis(350);
+    let terminal = 'terminal: loop {
+        let (start, pcm) = render_rolling(&h);
+        assert_bed_with_wet(start, &pcm);
+        h.pump();
+        while let Ok(event) = h.service.try_event() {
+            assert_original(&h, &event);
+            if event.request_complete {
+                break 'terminal event;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "missing typed Return power refusal"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let receipt = terminal.device_insert_complete.unwrap();
+    assert_eq!(receipt.submission, exact);
+    assert_eq!(
+        receipt.outcome,
+        DeviceInsertOutcome::Refused(
+            hex_engine::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation
+        )
+    );
+    assert_eq!(
+        terminal.error.as_deref(),
+        Some("running return power off cannot keep this route aligned")
+    );
+    assert_eq!(h.plugin_records.load(Acquire), 1);
+    let (start, pcm) = render_rolling(&h);
+    assert_bed_with_wet(start, &pcm);
 }

@@ -7,7 +7,7 @@ const MAX_NATIVE_MAIN_PASS_DRY_FRAMES: usize = 288;
 // Two 256-frame bridge quanta and the admitted seven-frame Main processor.
 const MAX_MAIN_PASS_DRY_FRAMES: usize = 519;
 
-/// Value-only aligned PCM after the original Main processor has retired.
+/// Value-only aligned PCM retained at Main when an original processor retires.
 pub type MainPassDelay = InlineDryDelay<MAX_MAIN_PASS_DRY_FRAMES>;
 
 /// Inline aligned dry history can outlive the processor that filled it.
@@ -39,6 +39,13 @@ impl<const CAPACITY: usize> InlineDryDelay<CAPACITY> {
 
     pub fn latency_frames(&self) -> u32 {
         self.len as u32
+    }
+
+    /// Change PCM values in a private copy without moving its playback cursor.
+    pub fn map_frames(&mut self, mut map: impl FnMut([f32; 2]) -> [f32; 2]) {
+        for frame in &mut self.frames[..self.len] {
+            *frame = map(*frame);
+        }
     }
 
     pub fn process(&mut self, frames: &mut [[f32; 2]]) {

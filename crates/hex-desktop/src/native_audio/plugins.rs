@@ -245,7 +245,7 @@ pub(super) struct Plugins {
     // Original binding, candidate key and optional original Stop generation.
     // All worker returns stay in Root.
     power_off: Option<(
-        hex_session::service::ResidentMainPowerOff,
+        hex_session::service::ResidentRunningPowerOff,
         AudioSourceContext,
         Option<u64>,
     )>,
@@ -1253,7 +1253,7 @@ impl Plugins {
         input: ResidentEffectPreparation<'_>,
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&hex_session::service::RequestCancellation>,
-        powered_off: Option<u64>,
+        powered_off: Option<hex_audio::prepared::NativeProcessorIdentity>,
         prepare: &mut dyn FnMut(
             &hex_engine::AudioCandidateEffects<'_, '_>,
         ) -> Result<PreparedRevision, hex_engine::Invalid>,
@@ -1266,9 +1266,9 @@ impl Plugins {
         }) {
             return Err("vst3 state restoration is pending".into());
         }
-        if input.running_main_power_off().is_some() {
+        if input.running_power_off().is_some() {
             return self
-                .prepare_main_power_off(output, &input, prepare)
+                .prepare_running_power_off(output, &input, prepare)
                 .map(Some);
         }
         // Document preparation precedes source_changed/request_reopen. Its
@@ -1279,10 +1279,13 @@ impl Plugins {
             input.context(),
             desired.map(|source| source.context()),
         );
+        let main_off = powered_off
+            .filter(|identity| identity.owner() == ProcessorChainOwner::Main)
+            .map(hex_audio::prepared::NativeProcessorIdentity::device_id);
         if let Some((device, state)) = input.powered_off_main()
             && (incoming_document
                 || self.saved_off_document == Some((input.context().project_generation, device))
-                || powered_off == Some(device))
+                || main_off == Some(device))
             && !self.has_accepted_main_source(input.context(), device)
         {
             return Hosting::prepare_powered_off_on_control(
@@ -1296,9 +1299,23 @@ impl Plugins {
             )
             .map(Some);
         }
+        if let Some((owner, device, state)) = input.powered_off_return()
+            && powered_off.is_some_and(|off| off.owner() == owner && off.device_id() == device)
+        {
+            return Hosting::prepare_powered_off_on_control(
+                hex_audio::plugin_effects::PoweredOffEffect {
+                    owner,
+                    device_id: device,
+                    sample_rate: input.sample_rate(),
+                    state,
+                },
+                prepare,
+            )
+            .map(Some);
+        }
         let powering_on = input
             .main_power_on()
-            .filter(|intent| powered_off == Some(intent.device()))
+            .filter(|intent| main_off == Some(intent.device()))
             .map(|intent| intent.device());
         let mut output = output;
         let retained = self.retained_instrument_move(output.as_deref_mut(), &input, desired)?;

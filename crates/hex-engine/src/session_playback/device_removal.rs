@@ -448,6 +448,7 @@ impl SessionPlayback {
                 })
         } else {
             self.short_main_pass_removal_from(previous)
+                .or_else(|| self.short_hosted_return_off_from(previous))
                 .map(RemovalTransition::MainPass)
                 .or_else(|| {
                     self.short_hosted_return_pass_from(previous)
@@ -563,6 +564,39 @@ impl SessionPlayback {
         if self.pending_foreign_main_pass() != Some((binding, delay.latency_frames())) {
             return false;
         }
+        self.main_pass_delay = Some(delay);
+        true
+    }
+
+    pub(crate) fn pending_foreign_return_pass(
+        &self,
+    ) -> Option<(
+        hex_lattice::ProcessorInstanceIdentity,
+        hex_lattice_contract::ForeignProcessorBinding,
+    )> {
+        let transition = self
+            .native_removal
+            .filter(|pending| pending.started)?
+            .main_pass_transition()?;
+        Some((transition.identity(), transition.foreign_return_pass()?))
+    }
+
+    pub(crate) fn stage_foreign_return_pass_delay(
+        &mut self,
+        previous: &Self,
+        identity: hex_lattice::ProcessorInstanceIdentity,
+        binding: hex_lattice_contract::ForeignProcessorBinding,
+    ) -> bool {
+        if self.pending_foreign_return_pass() != Some((identity, binding))
+            || !self
+                .native_removal
+                .is_some_and(|pending| pending.matches(previous) && pending.ready_on(previous))
+        {
+            return false;
+        }
+        let Some(delay) = previous.committed_return_off_main_pass(identity.owner()) else {
+            return false;
+        };
         self.main_pass_delay = Some(delay);
         true
     }
