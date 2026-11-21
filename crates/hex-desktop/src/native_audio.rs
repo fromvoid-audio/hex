@@ -2530,6 +2530,30 @@ impl WorkerAudioSink for NativeAudioSink {
         settled_resident_effect_fence(control, context, |_| true)
     }
 
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn running_resident_main_history_source(
+        &mut self,
+        context: AudioSourceContext,
+        device: u64,
+    ) -> Option<hex_session::service::ResidentGraphSubmission> {
+        if !self.plugins.has_accepted_main_source(context, device) {
+            return None;
+        }
+        let control = self.output.as_mut()?.publication.control()?;
+        let actual = control.status.recording_source()?;
+        if actual.context != context
+            || control.status.native_effect_source() != Some(actual)
+            || !control.status.playing.load(Acquire)
+        {
+            return None;
+        }
+        Some(hex_session::service::ResidentGraphSubmission {
+            context,
+            audio_revision: actual.audio_revision,
+            output_identity: actual.output_identity,
+        })
+    }
+
     fn resident_runtime_loop(
         &mut self,
         context: AudioSourceContext,
