@@ -250,7 +250,7 @@ fn project_sample_enter_reuses_asset_and_undoes_placement(cx: &mut TestAppContex
         assert_eq!(state.project.assets().count(), 1);
         let revision = state.revision;
         let generation = view.project_generation;
-        view.offline_cursor = 100;
+        view.offline_cursor = 5_300;
         (asset, revision, generation)
     });
     editor.update(cx, |view, _| {
@@ -261,7 +261,7 @@ fn project_sample_enter_reuses_asset_and_undoes_placement(cx: &mut TestAppContex
             asset,
             destination: hex_session::import_batch::AudioBatchDestination::Track {
                 track,
-                start: 100,
+                start: 6_000,
             },
             new_track_gain: None,
             warp: hex_project::AudioImportWarp::Off,
@@ -329,7 +329,7 @@ fn project_sample_enter_reuses_asset_and_undoes_placement(cx: &mut TestAppContex
         let clips = project.track(track).unwrap().clips();
         assert_eq!(clips.len(), 2);
         assert!(clips.iter().all(|clip| clip.asset() == asset));
-        assert_eq!(clips[1].start(), 100);
+        assert_eq!(clips[1].start(), 6_000);
     });
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
     receive_worker(&editor, cx, false);
@@ -374,7 +374,10 @@ fn browser_insert_captures_selected_track_frame_native_path_and_atomic_overwrite
     let (handle, editor, _directory, path) = fixture(cx);
     let visual = &mut VisualTestContext::from_window(handle, cx);
     let track = select_sample(&editor, visual);
-    editor.update(visual, |view, _| view.offline_cursor = 100);
+    editor.update(visual, |view, _| {
+        view.set_input_quantization(hex_project::InputQuantization::Off);
+        view.offline_cursor = 100;
+    });
     visual.simulate_keystrokes("enter");
     // No worker response/tick has been consumed. Changing UI selection/cursor must
     // not retarget the captured metadata even if the service has already decoded.
@@ -453,6 +456,10 @@ fn browser_insert_quantized_toggle_uses_nearest_canonical_grid_and_snapshots_mod
         let (handle, editor, _directory, _path) = fixture(cx);
         let visual = &mut VisualTestContext::from_window(handle, cx);
         let track = select_sample(&editor, visual);
+        editor.update(visual, |view, cx| {
+            view.set_input_quantization(hex_project::InputQuantization::Off);
+            cx.notify();
+        });
         if quantized {
             let toggle = visual.debug_bounds("browser-insert-grid").unwrap();
             visual.simulate_click(toggle.center(), Modifiers::default());
