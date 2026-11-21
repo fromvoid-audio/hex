@@ -122,7 +122,12 @@ impl Bank {
     }
 }
 
-#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+#[cfg(all(
+    test,
+    feature = "allocation-probe",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
 impl CandidateRoot {
     /// Delegate to the actual reference fence without retaining a graph.
     pub(crate) fn check_native_borrow_nodes_for_test(

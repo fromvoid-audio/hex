@@ -5,7 +5,7 @@ use hex_project::DeviceSelectionIds;
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
-fn private_track_effect_borrow_keeps_root_and_callback_on_the_original_worker() {
+fn private_compiler_borrows_original_root_binding_for_the_exact_receiver_chain() {
     let _serial = serial();
     let mut f = fixture_at("processing", 0);
     let donor = f.editor.project().tracks()[0].id();
@@ -79,7 +79,7 @@ fn private_track_effect_borrow_keeps_root_and_callback_on_the_original_worker() 
         resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
     };
     let deadline = Instant::now() + Duration::from_millis(500);
-    let borrowed = loop {
+    let compiled = loop {
         let selected = f
             .control
             .with_native_effect_definition(&[binding], |definition| {
@@ -163,17 +163,18 @@ fn private_track_effect_borrow_keeps_root_and_callback_on_the_original_worker() 
                         probe(applied, logical, &impostor, state, &preparation_context).is_err()
                     );
                 }
-                let factory = definition
-                    .prepare_instance_runtime_factory(resolved, state, &preparation_context)
-                    .unwrap();
-                Ok(hex_lattice::PreparedRuntimeInstance {
-                    owner: resolved.owner(),
-                    definition: factory,
-                    ..original.clone()
-                })
+                let definitions: [&dyn NativeDeviceDefinition; 1] = [definition];
+                let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+                hex_engine::compile::test_compile_retained_track_effect_receiver(
+                    staged.project(),
+                    receiver,
+                    resolved,
+                    &registry,
+                )
+                .map_err(|error| error.to_string())
             });
         match selected {
-            Ok(node) => break node,
+            Ok(chain) => break chain,
             Err(reason)
                 if matches!(
                     reason.as_str(),
@@ -186,12 +187,22 @@ fn private_track_effect_borrow_keeps_root_and_callback_on_the_original_worker() 
             Err(reason) => panic!("original Root did not lend the track effect: {reason}"),
         }
     };
-    assert_eq!(
-        borrowed.foreign_processor().unwrap().binding(),
-        Some(binding)
+    let [borrowed] = compiled.as_slice() else {
+        panic!("one exact logical receiver chain");
+    };
+    assert_eq!(borrowed.owner, physical.owner());
+    assert_eq!(borrowed.device_id, device.value());
+    assert_eq!(borrowed.foreign_processor(), original.foreign_processor());
+    assert_eq!(borrowed.matrix, original.matrix);
+    assert_eq!(borrowed.sample_rate, original.sample_rate);
+    assert!(
+        borrowed
+            .configuration
+            .as_ref()
+            .unwrap()
+            .processing_eq(state)
     );
-    root.check_native_borrow_nodes_for_test(std::slice::from_ref(&borrowed))
-        .unwrap();
+    root.check_native_borrow_nodes_for_test(&compiled).unwrap();
     let wrong_owner = hex_lattice::PreparedRuntimeInstance {
         owner: logical.owner(),
         ..borrowed.clone()
@@ -201,7 +212,7 @@ fn private_track_effect_borrow_keeps_root_and_callback_on_the_original_worker() 
         Err("native graph configuration or original source differs")
     );
     assert_eq!(
-        root.check_native_borrow_nodes_for_test(&[borrowed.clone(), borrowed]),
+        root.check_native_borrow_nodes_for_test(&[borrowed.clone(), borrowed.clone()]),
         Err("native source appears more than once in graph")
     );
     assert_eq!(f.control.submitted_revision(), revision);
