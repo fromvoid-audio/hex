@@ -671,6 +671,12 @@ fn sampler_track_drop_refuses_bad_source_then_saves_and_reopens() {
         "{:?}",
         saved_event.error
     );
+    let stored = hex_storage::load(&saved).unwrap();
+    assert_eq!(stored.tracks(), loaded.state.project.tracks());
+    assert_eq!(stored.assets().count(), 1);
+    let original = stored.asset(asset).unwrap();
+    assert_eq!(original.path(), files.source);
+    assert!(original.original_source().is_some());
     service.submit(Request::Open(saved)).unwrap();
     let reopened = event(&service);
     assert!(
@@ -678,5 +684,5 @@ fn sampler_track_drop_refuses_bad_source_then_saves_and_reopens() {
         "{:?}",
         reopened.error
     );
-    assert_eq!(reopened.state.project, loaded.state.project);
+    assert_eq!(reopened.state.project.as_ref(), &stored);
 }
