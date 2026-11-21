@@ -617,13 +617,44 @@ fn assert_running_main_power_on(
     let off = &powered_off.state.project.main_devices()[0];
     let device = off.id();
     let applied = status(h).recording_source().unwrap();
+    let (prepared, enqueue, _) = h.probe_next_native_publication();
     h.service
         .submit(Request::Edit(Command::SetDeviceBypass {
             device,
             bypassed: false,
         }))
         .unwrap();
-    // The engine has not processed a callback since the request.
+    // Let the existing control owner prepare the fresh worker while only the
+    // original dry graph can render. The candidate is still held before enqueue.
+    let preparation_deadline = Instant::now() + Duration::from_secs(2);
+    while prepared.try_recv().is_err() {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            assert!(
+                event.error.is_none() && !event.request_complete,
+                "running On stopped in preparation: complete={}, status={:?}, error={:?}",
+                event.request_complete,
+                event.status,
+                event.error
+            );
+            assert_eq!(event.state.project, powered_off.state.project);
+        }
+        assert_eq!(status(h).recording_source(), Some(applied));
+        assert_dry_timing(h, BRIDGE);
+        assert!(
+            Instant::now() < preparation_deadline,
+            "running On never reached native publication"
+        );
+        std::thread::sleep(Duration::from_millis(4));
+    }
+    assert_eq!(status(h).recording_source(), Some(applied));
+    let (id, prepared_binding, accepted) = h.plugin_progress.lock().unwrap().newest_source.unwrap();
+    assert_eq!(id, device.value());
+    assert_ne!(prepared_binding, binding);
+    assert!(!accepted);
+    enqueue.send(()).unwrap();
+
+    // No callback can have installed the candidate since it was enqueued.
     let pending = h.next();
     assert_eq!(status(h).recording_source(), Some(applied));
     assert!(status(h).native_effect_source().is_none());
@@ -683,7 +714,7 @@ fn assert_running_main_power_on(
     assert_eq!(powered_on.state.revision, powered_off.state.revision + 1);
     assert_eq!(h.plugin_records.load(Acquire), 1);
     let fresh = h.plugin_progress.lock().unwrap().binding.unwrap();
-    assert_ne!(fresh, binding);
+    assert_eq!(fresh, prepared_binding);
     for _ in 0..4 {
         render_playing(h);
     }
