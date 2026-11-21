@@ -1023,13 +1023,13 @@ impl Render for RectangleDemo {
                 self.kind == Kind::Section && ((held_marker && hovered) || hover_marker);
             let surface = if self.kind == Kind::Section {
                 crate::section_surface::surface(
-                    start,
-                    end - start,
+                    (start, end - start),
                     pixel_width,
                     crate::section_surface::CHAMFER,
                     identity,
                     selected,
                     hovered,
+                    None,
                 )
                 .cursor(RectanglePart::Body.cursor())
                 .children(marker_only.then(|| {

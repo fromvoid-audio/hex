@@ -2789,6 +2789,13 @@ impl Window {
         self.element_opacity
     }
 
+    /// Whether the active element and its ancestors apply no opacity attenuation.
+    /// Call during paint. Individual fills can still have their own transparency.
+    pub fn is_paint_fully_opaque(&self) -> bool {
+        self.invalidator.debug_assert_paint();
+        self.element_opacity() == 1.0
+    }
+
     /// Obtain the current content mask. This method should only be called during element drawing.
     pub fn content_mask(&self) -> ContentMask<Pixels> {
         self.invalidator.debug_assert_paint_or_prepaint();

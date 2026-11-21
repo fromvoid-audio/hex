@@ -1079,6 +1079,12 @@ impl EditorView {
             )
         });
         let lane_entity = cx.entity();
+        let section_coverage = state
+            .as_ref()
+            .filter(|state| !state.project.arrangement_sections().is_empty())
+            .map(|_| crate::section_surface::SectionCoverage::default());
+        let section_elements =
+            self.section_elements(viewport, scale, window, cx, section_coverage.as_ref());
         let lane = div()
             .id("main-track-lane")
             .debug_selector(|| "main-track-lane".to_owned())
@@ -1087,9 +1093,13 @@ impl EditorView {
             .min_w_0()
             .h_full()
             .children([main_track_grid_layer(bands, lines, viewport, scale)])
-            .child(super::arrangement_map::view(self, viewport))
+            .child(super::arrangement_map::view(
+                self,
+                viewport,
+                section_coverage,
+            ))
             .children(self.main_time_selection_overlay(viewport))
-            .children(self.section_elements(viewport, scale, window, cx))
+            .children(section_elements)
             .children([self.section_pointer_events(cx)])
             .children(automation)
             .child(

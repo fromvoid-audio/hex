@@ -1,7 +1,7 @@
 //! Cached, view-only clip intervals for the Main lane's arrangement miniature.
 //! Project owns time/identity; section, range and automation owners retain input.
 use super::{EditorView, viewport::Viewport};
-use crate::theme;
+use crate::{section_surface::SectionCoverage, theme};
 use gpui::{
     Bounds, Div, Pixels, Rgba, ScaledPixels, Window, canvas, div, fill, point, prelude::*, px, rgb,
     size,
@@ -13,8 +13,12 @@ pub(super) use model::{
     Interval, MAX_ROWS, MapCache, append_track_intervals, merge, project_interval,
 };
 
-pub(super) fn view(view: &EditorView, viewport: Viewport) -> Div {
-    layer(view, viewport, None)
+pub(super) fn view(
+    view: &EditorView,
+    viewport: Viewport,
+    coverage: Option<SectionCoverage>,
+) -> Div {
+    layer(view, viewport, None, coverage)
 }
 
 pub(super) fn section(view: &EditorView, start: u64, end: u64, chamfer: f32) -> Div {
@@ -25,6 +29,7 @@ pub(super) fn section(view: &EditorView, start: u64, end: u64, chamfer: f32) -> 
             length: end.saturating_sub(start),
         },
         Some(chamfer),
+        None,
     )
 }
 
@@ -38,6 +43,7 @@ fn paint_row(
     top: Pixels,
     height: Pixels,
     spans: impl Iterator<Item = (Pixels, Pixels)>,
+    covers: impl Fn(Bounds<ScaledPixels>, Bounds<ScaledPixels>) -> bool,
 ) {
     let scale = window.scale_factor();
     let mask = window.content_mask().bounds;
@@ -50,8 +56,9 @@ fn paint_row(
 
     for (left, width) in spans {
         let span = Bounds::new(point(left, top), size(width, height));
-        let clipped = span.scale(scale).intersect(&scaled_mask);
-        if clipped.is_empty() {
+        let scaled = span.scale(scale);
+        let clipped = scaled.intersect(&scaled_mask);
+        if clipped.is_empty() || covers(scaled, scaled_mask) {
             continue;
         }
         let gap = clipped.left() - right;
@@ -131,7 +138,12 @@ fn paint_row_batch(
     paint(window);
 }
 
-fn layer(view: &EditorView, viewport: Viewport, chamfer: Option<f32>) -> Div {
+fn layer(
+    view: &EditorView,
+    viewport: Viewport,
+    chamfer: Option<f32>,
+    coverage: Option<SectionCoverage>,
+) -> Div {
     let data = view.state.as_ref().map(|state| {
         cached(
             &view.arrangement_map_cache,
@@ -177,6 +189,14 @@ fn layer(view: &EditorView, viewport: Viewport, chamfer: Option<f32>) -> Div {
                     }
                     let row_height = available / data.rows.len() as f32;
                     let pixel = 1.0 / window.scale_factor();
+                    let coverage = coverage
+                        .as_ref()
+                        .and_then(|coverage| coverage.for_paint(window));
+                    let covers = |mark, mask| {
+                        coverage
+                            .as_ref()
+                            .is_some_and(|coverage| coverage.covers(mark, mask))
+                    };
                     let color = rgb(theme::color(if chamfer.is_some() {
                         theme::PaletteRole::Background
                     } else {
@@ -187,7 +207,12 @@ fn layer(view: &EditorView, viewport: Viewport, chamfer: Option<f32>) -> Div {
                         let y = top + index as f32 * row_height;
                         let h = (row_height - pixel).max(pixel).min(height - y);
                         let edge = chamfer.map_or(width, |cut| {
-                            crate::section_surface::miniature_right(width, height, cut, y + h)
+                            crate::section_surface::geometry::miniature_right(
+                                width,
+                                height,
+                                cut,
+                                y + h,
+                            )
                         });
                         let spans = row[first..]
                             .iter()
@@ -203,7 +228,7 @@ fn layer(view: &EditorView, viewport: Viewport, chamfer: Option<f32>) -> Div {
                                 }
                                 Some((bounds.left() + px(left), px(w)))
                             });
-                        paint_row(window, color, bounds.top() + px(y), px(h), spans);
+                        paint_row(window, color, bounds.top() + px(y), px(h), spans, covers);
                     }
                 },
             )
@@ -216,6 +241,99 @@ mod tests {
     use super::model::tests::project;
     use super::*;
     use hex_project::{BeatTime, Command, Editor};
+
+    struct SectionCoverageOracle {
+        left: f32,
+        opacity: f32,
+    }
+
+    const ORACLE_INK: u32 = 0x6741d9;
+
+    impl gpui::Render for SectionCoverageOracle {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            let coverage = SectionCoverage::default();
+            let underlay = coverage.clone();
+            let body = crate::section_surface::surface(
+                (self.left, 0.5),
+                48.0,
+                crate::section_surface::CHAMFER,
+                hex_project::ElementColor::Orange,
+                false,
+                false,
+                Some(coverage),
+            );
+            div()
+                .debug_selector(|| "main-miniature-coverage-oracle".into())
+                .relative()
+                .w(px(96.0))
+                .h(px(36.0))
+                .opacity(self.opacity)
+                .child(
+                    canvas(
+                        |_, _, _| (),
+                        move |bounds, _, window, _| {
+                            let read = underlay.for_paint(window);
+                            let covers = |mark, mask| {
+                                read.as_ref().is_some_and(|read| read.covers(mark, mask))
+                            };
+                            for (y, marks) in [(24.0, &[16.0, 55.0][..]), (33.0, &[45.0][..])] {
+                                paint_row(
+                                    window,
+                                    rgb(ORACLE_INK),
+                                    bounds.top() + px(y),
+                                    px(1.0),
+                                    marks.iter().map(|&x| (bounds.left() + px(x), px(1.0))),
+                                    covers,
+                                );
+                            }
+                        },
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+                .child(body)
+        }
+    }
+
+    #[gpui::test]
+    fn main_miniature_only_omits_current_opaque_section_coverage(cx: &mut gpui::TestAppContext) {
+        let handle = cx.add_window(|_, _| SectionCoverageOracle {
+            left: 0.0,
+            opacity: 1.0,
+        });
+        let root = handle.root(cx).unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(*handle, cx);
+        let submitted_marks = |visual: &mut gpui::VisualTestContext, opacity| {
+            visual.run_until_parked();
+            let scale = visual.update(|window, _| window.scale_factor());
+            let bounds = visual
+                .debug_bounds("main-miniature-coverage-oracle")
+                .unwrap();
+            let ink = gpui::Background::from(rgb(ORACLE_INK)).opacity(opacity);
+            let mut xs = visual
+                .rendered_filled_quads("main-miniature-coverage-oracle")
+                .into_iter()
+                .filter(|(_, color)| *color == ink)
+                .map(|(mark, _)| mark.left() - bounds.left().scale(scale))
+                .collect::<Vec<_>>();
+            xs.sort_unstable();
+            xs.into_iter()
+                .map(|x| x / ScaledPixels::from(scale))
+                .collect::<Vec<_>>()
+        };
+        // Covered mark at 16 drops. The cutout at 45 and gap at 55 remain.
+        assert_eq!(submitted_marks(&mut visual, 1.0), [45.0, 55.0]);
+        root.update(&mut visual, |view, cx| {
+            view.left = 0.5;
+            cx.notify();
+        });
+        assert_eq!(submitted_marks(&mut visual, 1.0), [16.0, 45.0]);
+        root.update(&mut visual, |view, cx| {
+            view.opacity = 0.5;
+            cx.notify();
+        });
+        assert_eq!(submitted_marks(&mut visual, 0.5), [16.0, 45.0, 55.0]);
+    }
 
     struct MiniaturePaintOracle {
         batch: bool,
@@ -264,6 +382,7 @@ mod tests {
                                                 .iter()
                                                 .copied()
                                                 .map(|(left, width)| (px(left), px(width))),
+                                            |_, _| false,
                                         );
                                     } else {
                                         for &(left, width) in spans {
@@ -378,6 +497,27 @@ mod tests {
                     }))
                     .into();
                     let quads = visual.rendered_filled_quads("main-arrangement-map");
+                    if start == 0 {
+                        // The authored audio span is wholly inside the
+                        // section when present. The Main mark under the
+                        // section must be absent from the completed scene.
+                        let main_top = (f32::from(lane.size.height)
+                            * hex_widgets::RANGE_HANDLE_FRACTION)
+                            .max(super::super::clip_name::CLIP_NAME_HEIGHT);
+                        let probe = point(
+                            lane.left() + lane.size.width * (72_000.0 / viewport.length as f32),
+                            lane.top() + px(main_top + 2.0),
+                        )
+                        .scale(scale);
+                        let main_color =
+                            gpui::Background::from(rgb(theme::color(theme::PaletteRole::Raised)));
+                        assert_eq!(
+                            quads.iter().any(|(rect, color)| {
+                                *color == main_color && rect.contains(&probe)
+                            }),
+                            !has_section,
+                        );
+                    }
                     let top = if has_section {
                         super::super::clip_name::CLIP_NAME_HEIGHT
                     } else {
