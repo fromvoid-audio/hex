@@ -11,6 +11,8 @@ enum RouteDirection {
     Enter,
     Exit,
     EnterEmpty,
+    ExitLastChild,
+    ExitLastChildWithDelay,
 }
 
 #[derive(Clone, Copy)]
@@ -23,12 +25,11 @@ fn sample(frame: u32) -> i16 {
     i16::try_from(1024 + (frame * 13) % 4096).unwrap()
 }
 
-fn assert_frame(frame: u64, actual: Frame, gain: f32, leaf_grouped: bool, sibling_grouped: bool) {
+fn assert_frame(frame: u64, actual: Frame, leaf: f32, leaf_grouped: bool, sibling_grouped: bool) {
     // Both leaves use the same verified asset. The unaffected quarter-gain
     // sibling keeps its own route for the full edit.
     let source = f32::from(sample(u32::try_from(frame).unwrap())) / 32768.0;
     let sibling = source * 0.25;
-    let leaf = source * gain;
     let sibling_left = if sibling_grouped { -sibling } else { sibling };
     let leaf_left = if leaf_grouped { -leaf } else { leaf };
     let expected = [sibling_left + leaf_left, sibling + leaf];
@@ -83,9 +84,65 @@ fn cancelling_a_verified_first_child_entry_preserves_the_flat_source() {
     check_group_route(257, RouteDirection::EnterEmpty, RouteEnd::Cancel);
 }
 
+#[test]
+fn verified_last_child_exit_fades_to_the_warmed_flat_source() {
+    let _serial = serial();
+    for partition in [1, 257] {
+        check_group_route(partition, RouteDirection::ExitLastChild, RouteEnd::Install);
+    }
+}
+
+#[test]
+fn cancelling_a_verified_last_child_exit_preserves_the_group_source() {
+    let _serial = serial();
+    check_group_route(257, RouteDirection::ExitLastChild, RouteEnd::Cancel);
+}
+
+#[test]
+fn verified_last_child_exit_fades_the_old_group_and_discards_both_delay_histories() {
+    let _serial = serial();
+    check_group_route(
+        257,
+        RouteDirection::ExitLastChildWithDelay,
+        RouteEnd::Install,
+    );
+    check_group_route(
+        257,
+        RouteDirection::ExitLastChildWithDelay,
+        RouteEnd::Cancel,
+    );
+}
+
 fn check_group_route(partition: usize, direction: RouteDirection, end: RouteEnd) {
-    let predecessor_grouped = matches!(direction, RouteDirection::Exit);
-    let sibling_grouped = !matches!(direction, RouteDirection::EnterEmpty);
+    let predecessor_grouped = matches!(
+        direction,
+        RouteDirection::Exit
+            | RouteDirection::ExitLastChild
+            | RouteDirection::ExitLastChildWithDelay
+    );
+    let sibling_grouped = !matches!(
+        direction,
+        RouteDirection::EnterEmpty
+            | RouteDirection::ExitLastChild
+            | RouteDirection::ExitLastChildWithDelay
+    );
+    let stateful_exit = matches!(direction, RouteDirection::ExitLastChildWithDelay);
+    let check = |frame: u64, actual, gain, grouped, source_start| {
+        let latency = if stateful_exit {
+            // Each Delay has a 1 ms buffer with no dry signal or feedback.
+            if grouped { 96 } else { 48 }
+        } else {
+            0
+        };
+        let leaf = frame
+            .checked_sub(latency)
+            .filter(|frame| *frame >= source_start)
+            .map_or(0.0, |frame| {
+                f32::from(sample(u32::try_from(frame).unwrap())) / 32768.0
+            })
+            * gain;
+        assert_frame(frame, actual, leaf, grouped, sibling_grouped);
+    };
     let (mut control, mut data, errors, mut retirement) = anchored();
     let page = hex_engine::STREAM_PAGE_FRAMES as u64;
     let frames = u32::try_from(3 * page).unwrap();
@@ -148,6 +205,26 @@ fn check_group_route(partition: usize, direction: RouteDirection, end: RouteEnd)
                 .unwrap(),
         })
         .unwrap();
+    if stateful_exit {
+        let state = hex_lattice_contract::NativeDeviceState::new(
+            hex_devices::delay::TYPE_ID,
+            1,
+            [1.0f32, 0.0, 1.0]
+                .into_iter()
+                .flat_map(f32::to_le_bytes)
+                .collect(),
+        )
+        .unwrap();
+        for track in [group, leaf] {
+            editor
+                .execute(Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: state.clone(),
+                })
+                .unwrap();
+        }
+    }
     let context = AudioSourceContext {
         project_generation: 2,
         editor_revision: 7,
@@ -286,13 +363,7 @@ fn check_group_route(partition: usize, direction: RouteDirection, end: RouteEnd)
         if status.position.load(Acquire) != start {
             assert_eq!(status.position.load(Acquire), start + count as u64);
             for (offset, frame) in pcm[..count].iter().copied().enumerate() {
-                assert_frame(
-                    start + offset as u64,
-                    frame,
-                    1.0,
-                    predecessor_grouped,
-                    sibling_grouped,
-                );
+                check(start + offset as u64, frame, 1.0, predecessor_grouped, 0);
             }
         }
         assert!(Instant::now() < deadline, "predecessor did not play");
@@ -330,12 +401,12 @@ fn check_group_route(partition: usize, direction: RouteDirection, end: RouteEnd)
         assert_eq!(status.position.load(Acquire), cut + (start + count) as u64);
         for (offset, frame) in pcm[..count].iter().copied().enumerate() {
             let elapsed = start + offset;
-            assert_frame(
+            check(
                 cut + elapsed as u64,
                 frame,
                 (FADE - elapsed - 1) as f32 / FADE as f32,
                 predecessor_grouped,
-                sibling_grouped,
+                0,
             );
         }
     }
@@ -362,6 +433,11 @@ fn check_group_route(partition: usize, direction: RouteDirection, end: RouteEnd)
         }
     };
     let starting_gain = (FADE - faded) as f32 / FADE as f32;
+    let source_start = if stateful_exit && matches!(end, RouteEnd::Install) {
+        cut + faded as u64
+    } else {
+        0
+    };
     for start in (0..=FADE).step_by(partition) {
         let count = partition.min(FADE + 1 - start);
         let pcm = render(count);
@@ -371,12 +447,12 @@ fn check_group_route(partition: usize, direction: RouteDirection, end: RouteEnd)
             let elapsed = start + offset;
             let ramp = ((elapsed + 1) as f32 / FADE as f32).min(1.0);
             let gain = starting_gain + (1.0 - starting_gain) * ramp;
-            assert_frame(
+            check(
                 cut + (faded + elapsed) as u64,
                 frame,
                 gain,
                 grouped,
-                sibling_grouped,
+                source_start,
             );
         }
     }

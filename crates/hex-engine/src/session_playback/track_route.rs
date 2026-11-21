@@ -4,8 +4,8 @@
 //! Group and Main processors stay on their existing clocks. A supported
 //! compensated route waits for the departing output's aligned PCM to drain.
 //! Verified streaming admits fixed-row, zero-delay moves between Main and a
-//! Group that retains another child, or entry into the first running Group.
-//! Both page windows must be ready first.
+//! Group that retains another child, or across the flat boundary when only
+//! one Group route changes. Both page windows must be ready first.
 use super::{RouteOwner, SessionPlayback};
 use crate::signal_graph::{SignalGraph, TrackOutput};
 
@@ -33,12 +33,12 @@ impl SessionPlayback {
         }
         let old_graph = previous.group_cut_graph()?;
         let new_graph = self.group_cut_graph()?;
-        // A flat predecessor has no upstream route or latency history. The
-        // existing zero-delay Group handoff can install the first Group stamps.
-        let flat_verified_predecessor = streamed && !old_graph.needs_runtime();
+        // A flat side has no buffered route or latency history. Every
+        // runtime-backed side still needs the closed zero-delay Group proof.
         if streamed
-            && (!new_graph.supports_closed_group_stream()
-                || (!flat_verified_predecessor && !old_graph.supports_closed_group_stream()))
+            && [old_graph, new_graph]
+                .into_iter()
+                .any(|graph| graph.needs_runtime() && !graph.supports_closed_group_stream())
         {
             return None;
         }
@@ -140,7 +140,7 @@ impl SessionPlayback {
                 _ => return None,
             };
             let group = direct.track_index(grouped.tracks.get(target)?.id?)?;
-            if !flat_verified_predecessor
+            if direct.needs_runtime()
                 && !direct.tracks.iter().any(|track| {
                     matches!(track.output, TrackOutput::Group { target, .. } if target == group)
                 })
@@ -183,6 +183,24 @@ impl SessionPlayback {
             .filter(|(index, _)| *index != to)
             .map(|(_, track)| track.canonical_track_id());
         other_old_ids.eq(other_new_ids).then_some(from)
+    }
+
+    /// After the fixed-row route proof, identify the old Group that loses its
+    /// only input. Its post-device fader can silence the entire old route.
+    pub(super) fn verified_last_child_exit_group(
+        &self,
+        previous: &Self,
+        leaf: usize,
+    ) -> Option<usize> {
+        if !self.revision.contains_streamed_sources() || self.compensation.is_some() {
+            return None;
+        }
+        let TrackOutput::Group { target, .. } =
+            previous.group_cut_graph()?.tracks.get(leaf)?.output
+        else {
+            return None;
+        };
+        Some(target)
     }
 
     fn group_cut_graph(&self) -> Option<&SignalGraph> {

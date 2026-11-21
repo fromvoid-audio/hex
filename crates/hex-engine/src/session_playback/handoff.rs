@@ -2112,6 +2112,12 @@ impl SessionPlayback {
         } else {
             None
         };
+        let verified_last_child_exit = self
+            .native_removal
+            .and_then(|pending| pending.verified_last_child_exit(previous));
+        let ends_verified_group_history = |index| {
+            verified_last_child_exit.is_some_and(|(leaf, group)| index == leaf || index == group)
+        };
         let removed_send_clock = !force_restart
             && previous.playing
             && mapped_main_clock
@@ -5462,7 +5468,9 @@ impl SessionPlayback {
         for old_index in 0..previous.routes.len() {
             // The donor's fade already ended its contribution. The fresh
             // receiver must never inherit or render a detached donor tail.
-            if hosted_effect_move.is_some_and(|movement| old_index == movement.source) {
+            if hosted_effect_move.is_some_and(|movement| old_index == movement.source)
+                || ends_verified_group_history(old_index)
+            {
                 continue;
             }
             let old_route = previous
@@ -6544,6 +6552,9 @@ impl SessionPlayback {
             }
         }
         for (old_index, _) in previous.routes.iter().enumerate() {
+            if ends_verified_group_history(old_index) {
+                continue;
+            }
             let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
             if let Some(new_index) = self
                 .routes
@@ -6821,6 +6832,18 @@ impl SessionPlayback {
                 .map(|_| index)
                 .or_else(|| previous.routes.iter().position(|old| old.id == route.id));
             if let Some(old_index) = old_index {
+                if verified_last_child_exit.is_some_and(|(leaf, _)| old_index == leaf) {
+                    // The old Group fader silenced the previous route. Start
+                    // the new, independently prepared direct route at zero.
+                    let arrangement = self.revision.arrangement();
+                    let fader = &mut self.track_faders[index];
+                    fader.follow([0.0; 2]);
+                    fader.retarget(
+                        arrangement.tracks()[index].mix().channel_gain(),
+                        arrangement.sample_rate(),
+                    );
+                    continue;
+                }
                 self.track_faders[index] = previous.track_faders[old_index];
                 let track = &self.revision.arrangement().tracks()[index];
                 if !track.has_gain_automation() {
