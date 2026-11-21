@@ -1,4 +1,5 @@
 //! Retire an original SDK processor without retiring the current Main clock.
+use super::main_vst3_pass::{WORKERLESS_DRY_PROBE_FRAMES, assert_workerless_dry_partition};
 use super::*;
 use hex_audio::prepared::FreshRuntimeCancellationResult;
 use hex_session::service::{
@@ -367,12 +368,12 @@ fn running_main_vst3_with_sdk_processor_latency_retires_worker_and_keeps_pass_ti
     }
     assert!(h.plugin_progress.lock().unwrap().binding.is_none());
     assert!(
-        status(&h).position.load(Acquire) + (4 * BLOCK) as u64
+        status(&h).position.load(Acquire) + (2 * WORKERLESS_DRY_PROBE_FRAMES) as u64
             <= u64::from(SOURCE_FRAMES) + TOTAL_DELAY as u64,
         "the retained delay must be tested on audible PCM after worker retirement"
     );
-    for _ in 0..4 {
-        assert_pcm(render_playing(&h), |at, _| dry(at, TOTAL_DELAY));
+    for partition in [1, 257] {
+        assert_workerless_dry_partition(&h, partition, |at| dry(at, TOTAL_DELAY));
     }
 
     h.audio.as_ref().unwrap().control.stop();
