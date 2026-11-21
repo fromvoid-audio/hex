@@ -161,7 +161,7 @@ impl EditorView {
             && self.active_fade_drag.is_none()
             && !self.clip_gain.has_displayed()
             && self.audio_clip_controls.gain_preview(self).is_none()
-            && !self.clip_loop_held()
+            && !self.shows_audio_clip_loop_preview()
             && self.held_audio_play_start_position().is_none()
             && self.active_trim_drag.is_none()
             && self.active_midi_trim_drag.is_none()

@@ -110,6 +110,12 @@ impl EditorView {
     pub(super) fn clip_loop_held(&self) -> bool {
         self.clip_loop.audio_gesture.is_some()
     }
+
+    /// Keep the Arrangement overlay eligible through the exact edit receipt.
+    pub(super) fn shows_audio_clip_loop_preview(&self) -> bool {
+        self.clip_loop_held() || self.pending_audio_clip_loop().is_some()
+    }
+
     /// Consume clip-editor context even when no edit is possible; it must never
     /// fall through to the Arrangement transport-loop action.
     pub(super) fn clip_loop_key(&mut self, window: &gpui::Window) -> bool {
@@ -218,8 +224,13 @@ impl EditorView {
         }
     }
     pub(super) fn pending_clip_loop_audio(&self, clip: ClipId) -> Option<&Clip> {
+        self.pending_audio_clip_loop()
+            .filter(|preview| preview.id() == clip)
+    }
+
+    fn pending_audio_clip_loop(&self) -> Option<&Clip> {
         let p = self.clip_loop.pending.as_ref()?;
-        if p.generation != self.project_generation || p.clip != clip {
+        if p.generation != self.project_generation {
             return None;
         }
         match &p.preview {
