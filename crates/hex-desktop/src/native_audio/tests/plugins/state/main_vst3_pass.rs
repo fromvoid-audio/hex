@@ -405,10 +405,7 @@ fn verify_running_main_power_off(cancel_before_cut: bool) {
     let cancelled_audio = if cancel_before_cut {
         let (submitted, resume) = h.probe_next_submitted_device_insert();
         h.service
-            .submit(Request::Edit(Command::SetDeviceBypass {
-                device,
-                bypassed: true,
-            }))
+            .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
             .unwrap();
         let exact = submitted.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(exact.output_identity, predecessor.output_identity);
