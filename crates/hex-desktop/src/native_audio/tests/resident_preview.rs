@@ -2320,6 +2320,17 @@ impl WorkerAudioSink for ResidentSink {
         self.inner.stopped_resident_power_fence(context, device)
     }
 
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn stopped_resident_return_power_on_fence(
+        &mut self,
+        context: AudioSourceContext,
+        owner: hex_engine::ProcessorChainOwner,
+        device: u64,
+    ) -> Result<Option<hex_session::service::ResidentFreshRuntimeFence>, String> {
+        self.inner
+            .stopped_resident_return_power_on_fence(context, owner, device)
+    }
+
     fn stopped_resident_effect_history_fence(
         &mut self,
         context: AudioSourceContext,

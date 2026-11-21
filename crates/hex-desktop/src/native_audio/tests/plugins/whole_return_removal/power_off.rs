@@ -90,7 +90,7 @@ fn queued_without_callback(
         while let Ok(event) = h.service.try_event() {
             assert!(
                 !event.request_complete,
-                "running Return power completed before the callback: status={:?}, error={:?}",
+                "Return power completed before the callback: status={:?}, error={:?}",
                 event.status, event.error
             );
             assert!(event.error.is_none(), "{:?}", event.error);
@@ -316,10 +316,70 @@ fn running_resident_return_power_off_waits_for_the_exact_cut_and_returns_the_wor
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn saved_off_resident_return_reopens_without_a_worker_and_preserves_authored_state() {
     let _native = native_fixture();
+    let _saved = reopen_saved_off_return();
+}
+
+struct SavedOffHostedReturn {
+    harness: ResidentHarness,
+    files: Files,
+    saved_off: Event,
+    device: DeviceId,
+    retired_binding: EffectBinding,
+}
+
+fn queue_stopped_return_on(
+    h: &mut ResidentHarness,
+    current: &ViewState,
+    predecessor: AppliedAudioSource,
+    command: Command,
+) -> ResidentGraphSubmission {
+    let (prepared, enqueue, _) = h.probe_next_native_publication();
+    let (submitted, resume) = h.probe_next_submitted_device_insert();
+    h.service.submit(Request::Edit(command)).unwrap();
+    let deadline = Instant::now() + Duration::from_millis(800);
+    while prepared.try_recv().is_err() {
+        h.pump();
+        while let Ok(event) = h.service.try_event() {
+            assert!(
+                !event.request_complete && event.error.is_none(),
+                "stopped Return On ended before native submission: {:?} {:?}",
+                event.status,
+                event.error
+            );
+            assert_original(&event, current);
+        }
+        // Preparation may need old-graph callback progress for file custody.
+        // The native publication gate prevents the new runtime from queuing.
+        assert_eq!(render(h), [[0.0; 2]; BLOCK]);
+        assert_eq!(status(h).recording_source(), Some(predecessor));
+        assert!(
+            Instant::now() < deadline,
+            "private stopped Return preparation"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(h.plugin_completed.load(Acquire), 0);
+    enqueue.send(()).unwrap();
+    let queued = submitted.recv_timeout(Duration::from_millis(800)).unwrap();
+    resume.send(()).unwrap();
+    assert_eq!(queued_without_callback(h, current, predecessor), queued);
+    assert_eq!(status(h).recording_source(), Some(predecessor));
+    let device = current.project.return_tracks()[0].devices()[0].id();
+    assert_eq!(
+        h.submitted_observation()
+            .unwrap()
+            .processor_status(device.value(), hex_plugin_state::TYPE_ID),
+        Some(hex_engine::PreparedDeviceProcessing::Foreign)
+    );
+    queued
+}
+
+fn reopen_saved_off_return() -> SavedOffHostedReturn {
     let files = Files::new();
     let RollingHostedReturn {
         harness: mut original,
         device,
+        binding: retired_binding,
         ..
     } = rolling_hosted_return(&files);
     original.audio.as_ref().unwrap().control.stop();
@@ -455,4 +515,143 @@ fn saved_off_resident_return_reopens_without_a_worker_and_preserves_authored_sta
     assert!(kept.bypassed());
     assert_eq!(kept.state(), &state);
     assert_no_worker(&reopened);
+    SavedOffHostedReturn {
+        harness: reopened,
+        files,
+        saved_off,
+        device,
+        retired_binding,
+    }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn saved_off_resident_return_installs_a_fresh_worker_on_stopped_power_on() {
+    const CHILD: &str = "HEX_TEST_SAVED_OFF_RETURN_FRESH_ON_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        // Variant 37 captures restorable component and controller state.
+        // The original processing fixture puts a block counter in the
+        // component field that its startup restore reads as latency.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "37")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let mut off = reopen_saved_off_return();
+    let h = &mut off.harness;
+    let current = &off.saved_off.state;
+    let device = off.device;
+    let captured =
+        hex_plugin_state::decode(current.project.device(device).unwrap().state()).unwrap();
+    let component = captured.component.unwrap();
+    assert_eq!(&component[..4], b"HXPS");
+    assert_eq!(u32::from_le_bytes(component[4..8].try_into().unwrap()), 0);
+    h.enable_confirmed_device_inserts();
+    assert!(!status(h).playing.load(Acquire));
+    let predecessor = status(h).recording_source().unwrap();
+    assert_eq!(status(h).paused_input_interval().unwrap().0, predecessor);
+    let command = Command::SetDeviceBypass {
+        device,
+        bypassed: false,
+    };
+    let mut expected = hex_project::Editor::new(current.project.as_ref().clone(), 8).unwrap();
+    expected.execute(command.clone()).unwrap();
+
+    let catalog = off.files.0.join("plugin-catalog.json");
+    let parked = off.files.0.join("parked-catalog.json");
+    fs::rename(&catalog, &parked).unwrap();
+    h.service.submit(Request::Edit(command.clone())).unwrap();
+    let unavailable = state::edits::ordinary_terminal(h);
+    assert!(unavailable.error.is_some());
+    assert_original(&unavailable, current);
+    assert_eq!(status(h).recording_source(), Some(predecessor));
+    assert_eq!(h.plugin_records.load(Acquire), 0);
+    fs::rename(&parked, &catalog).unwrap();
+
+    let interrupted = queue_stopped_return_on(h, current, predecessor, command.clone());
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let refused = terminal_at_cut(h, current, |h| assert_aligned_bypass(h, 0));
+    assert_original(&refused, current);
+    assert_eq!(
+        status(h).rejected_revision(),
+        Some((
+            interrupted.audio_revision,
+            hex_engine::playback::PlaybackHandoffRejection::RuntimeFenceChanged
+        ))
+    );
+    assert_eq!(status(h).recording_source(), Some(predecessor));
+    h.audio.as_ref().unwrap().control.stop();
+    render(h);
+    wait(|| {
+        h.pump();
+        render(h);
+        h.plugin_records.load(Acquire) == 0
+    });
+
+    let submitted = queue_stopped_return_on(h, current, predecessor, command);
+    assert_eq!(status(h).recording_source(), Some(predecessor));
+    assert!(status(h).native_effect_source().is_none());
+    assert_eq!(h.plugin_completed.load(Acquire), 0);
+
+    let on = terminal_at_cut(h, current, |h| {
+        assert_eq!(render(h), [[0.0; 2]; BLOCK]);
+    });
+    assert!(on.error.is_none(), "{:?}", on.error);
+    assert_eq!(on.state.project.as_ref(), expected.project());
+    assert_eq!(on.state.revision, current.revision + 1);
+    let receipt = on.device_insert_complete.unwrap();
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+    assert_eq!(receipt.submission, submitted);
+    assert_eq!(
+        h.applied(interrupted.audio_revision).0,
+        submitted.audio_revision
+    );
+    let applied = status(h).recording_source().unwrap();
+    assert_eq!(status(h).native_effect_source(), Some(applied));
+    assert_eq!(applied.output_identity, predecessor.output_identity);
+    let observation = h.submitted_observation().unwrap();
+    assert_eq!(
+        observation.processor_status(device.value(), hex_plugin_state::TYPE_ID),
+        Some(hex_engine::PreparedDeviceProcessing::Foreign)
+    );
+    wait(|| {
+        h.pump();
+        h.plugin_records.load(Acquire) == 1
+            && h.plugin_progress.lock().unwrap().source_bindings[0].is_some_and(
+                |(id, binding, _)| id == device.value() && binding != off.retired_binding,
+            )
+    });
+    assert_eq!(h.plugin_completed.load(Acquire), 0);
+
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::PlayFrom(0))
+        .unwrap();
+    for _ in 0..3 {
+        render(h);
+    }
+    let wet = assert_aligned_wet(h);
+    assert_eq!(assert_aligned_wet(h), wet + 0.0625);
 }

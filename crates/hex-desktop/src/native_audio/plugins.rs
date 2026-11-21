@@ -1242,7 +1242,7 @@ impl Plugins {
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&hex_session::service::RequestCancellation>,
         fresh_hosted_sources: bool,
-        powering_on_main: Option<u64>,
+        power_on: Option<NativeProcessorIdentity>,
         retained: Option<hosted_move::MoveRoute>,
     ) -> Result<(), String> {
         let previous = desired
@@ -1257,7 +1257,9 @@ impl Plugins {
             }
             // History may carry the identity and state of a deleted device.
             // The predecessor's membership decides whether DSP can survive.
-            let powering_on = powering_on_main == Some(device);
+            let powering_on = power_on.is_some_and(|identity| {
+                identity.owner() == destination.owner() && identity.device_id() == device
+            });
             let fresh_source = previous
                 .as_ref()
                 .is_some_and(|source| source.plugin_device_bypassed(device).is_none());
@@ -1352,10 +1354,11 @@ impl Plugins {
             )
             .map(Some);
         }
-        let powering_on = input
-            .main_power_on()
-            .filter(|intent| main_off == Some(intent.device()))
-            .map(|intent| intent.device());
+        let powering_on = powered_off.filter(|identity| {
+            input.power_on().is_some_and(|intent| {
+                identity.owner() == intent.owner() && identity.device_id() == intent.device()
+            })
+        });
         let mut output = output;
         let retained = self.retained_instrument_move(output.as_deref_mut(), &input, desired)?;
         if input.preparing_edit() {

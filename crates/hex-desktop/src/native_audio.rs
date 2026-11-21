@@ -2001,23 +2001,40 @@ impl WorkerAudioSink for NativeAudioSink {
             .as_ref()
             .map(|source| source.context())
             .and_then(|context| self.applied_powered_off(context));
-        if let Some(intent) = input.main_power_on() {
-            use hex_session::service::ResidentMainPowerOnInterval;
+        if let Some(intent) = input.power_on() {
+            use hex_engine::ProcessorChainOwner;
+            use hex_session::service::ResidentPowerOnInterval;
             let changed = match intent.interval() {
-                ResidentMainPowerOnInterval::Stopped { context, fence } => {
+                ResidentPowerOnInterval::Stopped {
+                    owner: ProcessorChainOwner::Main,
+                    context,
+                    fence,
+                } => {
                     powered_off.is_some_and(|identity| {
-                        identity.owner() == hex_engine::ProcessorChainOwner::Main
+                        identity.owner() == ProcessorChainOwner::Main
                             && identity.device_id() == intent.device()
                     }) && self.stopped_resident_power_fence(context, intent.device())?
                         != Some(fence)
                 }
-                ResidentMainPowerOnInterval::Running(source) => {
+                ResidentPowerOnInterval::Stopped {
+                    owner,
+                    context,
+                    fence,
+                } => {
+                    self.stopped_resident_return_power_on_fence(context, owner, intent.device())?
+                        != Some(fence)
+                }
+                ResidentPowerOnInterval::Running(source) => {
                     self.running_resident_main_power_on(source.context, intent.device())
                         != Some(source)
                 }
             };
             if changed {
-                return Err("main power-on source changed before preparation".into());
+                return Err(match intent.owner() {
+                    ProcessorChainOwner::Main => "main power-on source changed before preparation",
+                    _ => "return power-on source changed before preparation",
+                }
+                .into());
             }
         }
         self.plugins.compile(
@@ -2429,6 +2446,41 @@ impl WorkerAudioSink for NativeAudioSink {
             let _ = (context, device);
             Ok(None)
         }
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn stopped_resident_return_power_on_fence(
+        &mut self,
+        context: AudioSourceContext,
+        owner: hex_engine::ProcessorChainOwner,
+        device: u64,
+    ) -> Result<Option<hex_session::service::ResidentFreshRuntimeFence>, String> {
+        if !matches!(owner, hex_engine::ProcessorChainOwner::Return(_))
+            || self
+                .plugins
+                .has_accepted_effect_source(context, owner, device)
+        {
+            return Ok(None);
+        }
+        if self.output.is_none() {
+            return Ok(None);
+        }
+        let expected = hex_audio::prepared::NativeProcessorIdentity::new(owner, device)
+            .map_err(|error| error.to_string())?;
+        if self.applied_powered_off(context) != Some(expected) {
+            return Err("return power on requires the original applied off source".into());
+        }
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .ok_or("native output closed")?;
+        let resident = &self.resident;
+        let fence = settled_resident_effect_fence(control, context, |source| {
+            resident.powered_off(source) == Some(expected)
+        })
+        .ok_or("return power on requires the original settled off source")?;
+        Ok(Some(fence))
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

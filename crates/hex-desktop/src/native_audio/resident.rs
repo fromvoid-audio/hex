@@ -178,7 +178,7 @@ impl Resident {
             .map(hex_audio::prepared::NativeProcessorIdentity::device_id)
     }
 
-    fn powered_off(
+    pub(super) fn powered_off(
         &self,
         actual: hex_audio::prepared::AppliedAudioSource,
     ) -> Option<hex_audio::prepared::NativeProcessorIdentity> {

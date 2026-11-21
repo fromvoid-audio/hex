@@ -20,7 +20,7 @@ pub struct ResidentEffectPreparation<'a> {
     pub(in crate::service) context: hex_engine::AudioSourceContext,
     pub(in crate::service) restoring_plugin_state: bool,
     pub(in crate::service) preparing_edit: bool,
-    pub(in crate::service) main_power_on: Option<ResidentMainPowerOn>,
+    pub(in crate::service) power_on: Option<ResidentPowerOn>,
     pub(in crate::service) running_power_off: Option<ResidentRunningPowerOff>,
     pub(in crate::service) hosted_instrument_move: Option<ResidentHostedInstrumentMove>,
 }
@@ -49,30 +49,37 @@ pub struct ResidentHostedInstrumentMove {
 /// The explicit PowerDevice command's nonowning Off predecessor.
 /// Desktop revalidates the observed interval before fresh SDK preparation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ResidentMainPowerOn {
+pub struct ResidentPowerOn {
     pub(in crate::service) device: u64,
-    pub(in crate::service) interval: ResidentMainPowerOnInterval,
+    pub(in crate::service) interval: ResidentPowerOnInterval,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ResidentMainPowerOnInterval {
+pub enum ResidentPowerOnInterval {
     Stopped {
+        owner: hex_engine::ProcessorChainOwner,
         context: hex_engine::AudioSourceContext,
         fence: ResidentFreshRuntimeFence,
     },
     Running(ResidentGraphSubmission),
 }
-impl ResidentMainPowerOn {
+impl ResidentPowerOn {
     pub fn device(&self) -> u64 {
         self.device
     }
-    pub fn source_context(&self) -> hex_engine::AudioSourceContext {
+    pub fn owner(&self) -> hex_engine::ProcessorChainOwner {
         match self.interval {
-            ResidentMainPowerOnInterval::Stopped { context, .. } => context,
-            ResidentMainPowerOnInterval::Running(source) => source.context,
+            ResidentPowerOnInterval::Stopped { owner, .. } => owner,
+            ResidentPowerOnInterval::Running(_) => hex_engine::ProcessorChainOwner::Main,
         }
     }
-    pub fn interval(&self) -> ResidentMainPowerOnInterval {
+    pub fn source_context(&self) -> hex_engine::AudioSourceContext {
+        match self.interval {
+            ResidentPowerOnInterval::Stopped { context, .. } => context,
+            ResidentPowerOnInterval::Running(source) => source.context,
+        }
+    }
+    pub fn interval(&self) -> ResidentPowerOnInterval {
         self.interval
     }
 }
@@ -269,9 +276,19 @@ impl<'a> ResidentEffectPreparation<'a> {
     }
     /// Only the explicit power command can prepare a fresh On worker.
     /// Generic history/moves and changed owner, bypass or context cannot use it.
-    pub fn main_power_on(&self) -> Option<ResidentMainPowerOn> {
-        let intent = self.main_power_on?;
-        let device = self.sole_played_main()?;
+    pub fn power_on(&self) -> Option<ResidentPowerOn> {
+        let intent = self.power_on?;
+        let device = match intent.owner() {
+            hex_engine::ProcessorChainOwner::Main => self.sole_played_main()?,
+            hex_engine::ProcessorChainOwner::Return(_) => {
+                let (owner, device) = sole_hosted_return(self.project)?;
+                if owner != intent.owner() {
+                    return None;
+                }
+                device
+            }
+            _ => return None,
+        };
         let source = intent.source_context();
         (self.preparing_edit
             && !device.bypassed()
@@ -1281,6 +1298,17 @@ pub trait WorkerAudioSink: Send {
     fn stopped_resident_power_fence(
         &mut self,
         _context: hex_engine::AudioSourceContext,
+        _device: u64,
+    ) -> Result<Option<ResidentFreshRuntimeFence>, String> {
+        Ok(None)
+    }
+
+    /// Observe the exact resource-free Return Off on a settled native output.
+    /// An installed Off source with a stale stop interval must refuse On.
+    fn stopped_resident_return_power_on_fence(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _owner: hex_engine::ProcessorChainOwner,
         _device: u64,
     ) -> Result<Option<ResidentFreshRuntimeFence>, String> {
         Ok(None)
@@ -2487,7 +2515,7 @@ mod tests {
                 running_power_off,
                 hosted_instrument_move: None,
                 restoring_plugin_state: false,
-                main_power_on: None,
+                power_on: None,
             }
             .running_power_off()
         };
@@ -2553,9 +2581,10 @@ mod tests {
             editor_revision: 3,
             ..source_context
         };
-        let intent = ResidentMainPowerOn {
+        let intent = ResidentPowerOn {
             device: device.value(),
-            interval: ResidentMainPowerOnInterval::Stopped {
+            interval: ResidentPowerOnInterval::Stopped {
+                owner: hex_engine::ProcessorChainOwner::Main,
                 context: source_context,
                 fence: ResidentFreshRuntimeFence {
                     output_identity: 1,
@@ -2567,25 +2596,25 @@ mod tests {
                 },
             },
         };
-        let selected = |project: &Project, context, main_power_on| {
+        let selected = |project: &Project, context, power_on| {
             ResidentEffectPreparation {
                 project,
                 context,
                 restoring_plugin_state: false,
                 preparing_edit: true,
-                main_power_on,
+                power_on,
                 running_power_off: None,
                 hosted_instrument_move: None,
             }
-            .main_power_on()
+            .power_on()
         };
         assert_eq!(selected(editor.project(), candidate, None), None);
         assert_eq!(
             selected(editor.project(), candidate, Some(intent)),
             Some(intent)
         );
-        let running = ResidentMainPowerOn {
-            interval: ResidentMainPowerOnInterval::Running(ResidentGraphSubmission {
+        let running = ResidentPowerOn {
+            interval: ResidentPowerOnInterval::Running(ResidentGraphSubmission {
                 context: source_context,
                 audio_revision: 2,
                 output_identity: 1,
@@ -2608,7 +2637,7 @@ mod tests {
             selected(
                 editor.project(),
                 candidate,
-                Some(ResidentMainPowerOn {
+                Some(ResidentPowerOn {
                     device: device.value() + 1,
                     ..intent
                 })
@@ -2649,7 +2678,7 @@ mod tests {
                 },
                 restoring_plugin_state: false,
                 preparing_edit: false,
-                main_power_on: None,
+                power_on: None,
                 running_power_off: None,
                 hosted_instrument_move: None,
             }
@@ -2711,7 +2740,7 @@ mod tests {
                 },
                 restoring_plugin_state: false,
                 preparing_edit: false,
-                main_power_on: None,
+                power_on: None,
                 running_power_off: None,
                 hosted_instrument_move: None,
             }
@@ -2927,7 +2956,7 @@ mod tests {
                 },
                 restoring_plugin_state: false,
                 preparing_edit: true,
-                main_power_on: None,
+                power_on: None,
                 running_power_off: None,
                 hosted_instrument_move: None,
             }
@@ -3037,7 +3066,7 @@ mod tests {
             },
             restoring_plugin_state: false,
             preparing_edit: true,
-            main_power_on: None,
+            power_on: None,
             running_power_off: None,
             hosted_instrument_move: None,
         };
@@ -3092,7 +3121,7 @@ mod tests {
                 },
                 restoring_plugin_state: reopen,
                 preparing_edit: !reopen,
-                main_power_on: None,
+                power_on: None,
                 running_power_off: None,
                 hosted_instrument_move: None,
             }
