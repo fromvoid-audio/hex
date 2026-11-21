@@ -111,6 +111,7 @@ fn prepare_move(duration: BeatTime) -> ([ResidentRevision; 2], HostedInstrumentM
         HostedInstrumentMove {
             donor,
             receiver,
+            physical_owner: donor,
             device,
             binding,
         },
@@ -169,4 +170,71 @@ fn hosted_track_fade_refuses_wrong_epoch_or_an_ended_donor_gate() {
         assert_eq!(original.track_faders[0].current(), gain);
         assert!(!original.track_faders[0].active());
     }
+}
+
+#[test]
+fn returning_to_the_physical_owner_requires_the_original_live_gate_and_binding() {
+    use crate::session_playback::NativeRemovalProgress;
+
+    let ([old, new], forward) = prepare_move(BeatTime::from_ratio(1, 8).unwrap());
+    let mut original =
+        SessionPlayback::new_with_device_resources(Arc::clone(&old.prepared), &old.resources)
+            .unwrap();
+    let mut moved =
+        SessionPlayback::new_with_device_resources(new.prepared, &new.resources).unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    original.apply(SessionPlaybackCommand::Play).unwrap();
+    for _ in 0..4 {
+        endpoint
+            .render(&mut original, &mut [[0.0; 2]; 256])
+            .unwrap();
+    }
+    moved.require_continuous_insert = true;
+    moved.hosted_instrument_move = Some(forward);
+    assert_eq!(
+        moved.advance_native_removal_from(&mut original),
+        Ok(NativeRemovalProgress::Fading)
+    );
+    endpoint
+        .render(&mut original, &mut [[0.0; 2]; 256])
+        .unwrap();
+    assert_eq!(
+        moved.advance_native_removal_from(&mut original),
+        Ok(NativeRemovalProgress::Ready)
+    );
+    moved.try_inherit_state_live_from(&mut original).unwrap();
+
+    let inverse = HostedInstrumentMove {
+        donor: forward.receiver,
+        receiver: forward.donor,
+        ..forward
+    };
+    let mut returned =
+        SessionPlayback::new_with_device_resources(old.prepared, &old.resources).unwrap();
+    returned.require_continuous_insert = true;
+    returned.hosted_instrument_move = Some(inverse);
+    assert!(returned.direct_hosted_track_cut_from(&moved).is_some());
+
+    let mut wrong = inverse;
+    wrong.binding.epoch += 1;
+    let assert_refused = |returned: &mut SessionPlayback, moved: &mut SessionPlayback, request| {
+        returned.hosted_instrument_move = Some(request);
+        let faders = moved.track_faders;
+        let frame = moved.performance_frame();
+        assert_eq!(
+            returned.advance_native_removal_from(moved),
+            Err(crate::session_playback::foreign_arrangement::INCOMPATIBLE_HANDOFF)
+        );
+        assert_eq!(moved.track_faders, faders);
+        assert_eq!(moved.performance_frame(), frame);
+        assert!(!returned.native_removal_started());
+    };
+    // Refusal cannot replace the forward cut's already-armed fade-in.
+    assert!(moved.track_faders[1].active());
+    assert_refused(&mut returned, &mut moved, wrong);
+
+    for _ in 0..8 {
+        endpoint.render(&mut moved, &mut [[0.0; 2]; 256]).unwrap();
+    }
+    assert_refused(&mut returned, &mut moved, inverse);
 }
