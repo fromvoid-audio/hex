@@ -305,8 +305,8 @@ pub struct HostedInstrumentMove {
     pub binding: hex_lattice_contract::ForeignProcessorBinding,
 }
 
-/// A direct Track effect cut which retains the donor's physical SDK endpoint.
-/// The control caller still owns the original applied-source and worker proof.
+/// An exact direct Track effect cut with a fresh SDK endpoint at the receiver.
+/// The control caller still owns the original applied-source proof.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HostedTrackEffectMove {
     pub donor: hex_project::TrackId,
@@ -339,7 +339,7 @@ impl HostedMoveRequest {
     pub fn physical_owner(self) -> hex_project::TrackId {
         match self {
             Self::Instrument(movement) => movement.physical_owner,
-            Self::Effect(movement) => movement.donor,
+            Self::Effect(movement) => movement.receiver,
         }
     }
     pub fn device(self) -> hex_project::DeviceId {
@@ -2577,7 +2577,7 @@ impl Playback {
             .find(|track| track.canonical_track_id() == Some(movement.receiver));
         let matching = installed.is_some_and(|track| {
             matches!(track.device_chain.as_ref(), [node]
-            if node.owner == crate::ProcessorChainOwner::Track(movement.donor.value())
+            if node.owner == crate::ProcessorChainOwner::Track(movement.receiver.value())
                 && node.device_id == movement.device.value()
                 && node.foreign_processor().is_some_and(|facts| {
                     !facts.is_instrument_profile() && facts.binding() == Some(movement.binding)
@@ -2585,7 +2585,7 @@ impl Playback {
         });
         if movement.donor == movement.receiver || !matching {
             return Err(Invalid(
-                "hosted effect receiver differs from the retained worker",
+                "hosted effect receiver differs from the fresh worker",
             ));
         }
         let runtime = self
@@ -2691,11 +2691,11 @@ impl Playback {
             .pending_foreign_return_pass()
     }
 
-    /// Observe the actual staged cut. Audio still fences the original endpoint.
-    pub fn pending_hosted_track_effect_move(&self) -> Option<(HostedTrackEffectMove, u64)> {
+    /// Latest performance frame for a running direct hosted effect cut.
+    pub fn pending_hosted_track_effect_deadline(&self) -> Option<u64> {
         self.session_runtime
             .as_deref()?
-            .pending_hosted_track_effect_move()
+            .pending_hosted_track_effect_deadline()
     }
 
     /// Stage Main PCM for the matching live Return cut after its exact endpoint

@@ -5475,8 +5475,8 @@ impl SessionPlayback {
         // chain inherits history under those new controls, without capturing
         // duplicate tails or consuming the finite retirement bank.
         for old_index in 0..previous.routes.len() {
-            // The paired receiver uses this exact original stage. Capturing a
-            // detached tail would ask the same worker to process twice.
+            // The donor's fade already ended its contribution. The fresh
+            // receiver must never inherit or render a detached donor tail.
             if hosted_effect_move.is_some_and(|movement| old_index == movement.source) {
                 continue;
             }
@@ -6629,12 +6629,6 @@ impl SessionPlayback {
                     movement.clock,
                 )
                 .map_err(|_| SessionPlaybackError::LatencyLayoutChanged)?;
-            let (next, old) = self
-                .device_chains
-                .get_mut(movement.destination)
-                .zip(previous.device_chains.get_mut(movement.source))
-                .ok_or(SessionPlaybackError::DeviceRuntime)?;
-            next.transfer_history_from(old);
         }
         // The bypassed track saw no instrument signal. Its ordinary history
         // transfer above cannot supply the detached suffix's committed state.

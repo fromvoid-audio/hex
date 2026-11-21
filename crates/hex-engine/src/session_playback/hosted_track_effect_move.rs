@@ -1,5 +1,5 @@
-//! Exact two-row Resident cut. The old dry alignment drains after both fades;
-//! the original physical effect and its input clock move together.
+//! Exact two-row Resident cut. The old dry alignment drains after both fades.
+//! The receiver starts fresh DSP on the existing transport clock.
 use super::{RouteOwner, SessionPlayback, device_move::same_clip};
 use crate::{
     playback::{HostedMoveRequest, HostedTrackEffectMove},
@@ -100,12 +100,17 @@ impl SessionPlayback {
             return None;
         };
         let processor = original.foreign_processor()?;
+        let original_binding = processor.binding()?;
+        let fresh = moved.foreign_processor()?;
         if !old.tracks()[destination].device_chain.is_empty()
             || !new.tracks()[source].device_chain.is_empty()
             || original.owner != ProcessorChainOwner::Track(request.donor.value())
-            || moved.owner != original.owner
+            || moved.owner != ProcessorChainOwner::Track(request.receiver.value())
             || original.device_id != request.device.value()
             || moved.device_id != original.device_id
+            || moved.device_type != original.device_type
+            || moved.sample_rate != original.sample_rate
+            || moved.matrix != original.matrix
             || original.bypassed
             || moved.bypassed
             || !original.automation.is_empty()
@@ -116,14 +121,18 @@ impl SessionPlayback {
             || processor.quantum_frames() != 256
             || processor.processor_latency_frames() != 0
             || processor.bridge_latency_frames() != 512
-            || processor.binding() != Some(request.binding)
-            || moved.foreign_processor() != Some(processor)
+            || fresh.binding() != Some(request.binding)
+            || original_binding == request.binding
+            || original_binding.root != request.binding.root
+            || original_binding.instance != original.device_id
+            || request.binding.instance != moved.device_id
+            || fresh.with_binding(original_binding).ok() != Some(processor)
+            || !original
+                .configuration
+                .as_ref()
+                .zip(moved.configuration.as_ref())
+                .is_some_and(|(before, after)| before.processing_eq(after))
         {
-            return None;
-        }
-        let from = previous.device_chains.get(source)?;
-        let to = self.device_chains.get(destination)?;
-        if !to.configuration_matches_range(from, 0..1) || !to.can_inherit_from(from) {
             return None;
         }
         let (next, old) = self
