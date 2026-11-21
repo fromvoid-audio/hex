@@ -30,6 +30,8 @@ struct ContentKey {
     drag_available: bool,
     fade_key_held: bool,
     fade_handle_hover: Option<(ClipId, super::fade_handles::Handle)>,
+    hovered_fade_clip: Option<ClipId>,
+    hovered_arrangement_clip: Option<super::track_lane_canvas::HoveredArrangementClip>,
     option_held: bool,
     time_selection_key_held: bool,
     automation_view: bool,
@@ -156,7 +158,7 @@ impl EditorView {
             && self.active_clip_drag.is_none()
             && self.active_browser_audio_drag.is_none()
             && self.active_fade_drag.is_none()
-            && !self.clip_gain.held()
+            && !self.clip_gain.has_displayed()
             && self.audio_clip_controls.gain_preview(self).is_none()
             && !self.clip_loop_held()
             && self.held_audio_play_start_position().is_none()
@@ -212,6 +214,19 @@ impl EditorView {
             fade_handle_hover: self
                 .hovered_fade_handle
                 .and_then(|hover| hover.in_track(self.project_generation, track.id())),
+            hovered_fade_clip: self
+                .hovered_fade_clip
+                .filter(|(generation, clip)| {
+                    *generation == self.project_generation
+                        && track
+                            .clips()
+                            .iter()
+                            .any(|candidate| candidate.id() == *clip)
+                })
+                .map(|(_, clip)| clip),
+            hovered_arrangement_clip: self.hovered_arrangement_clip.filter(|hover| {
+                hover.generation == self.project_generation && hover.track == track.id()
+            }),
             option_held: self.option_held,
             time_selection_key_held: self.time_selection_key_held,
             automation_view: self.automation_view.enabled,
