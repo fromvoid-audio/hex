@@ -11,7 +11,7 @@ use std::sync::Arc;
 impl SignalGraph {
     /// An upstream-aligned cut swaps a delayed direct-to-Main edge and an
     /// unbuffered Group input in either direction. It can also move an
-    /// undelayed leaf to the immediate enclosing Group.
+    /// undelayed leaf between a Group and its immediate enclosing Group.
     pub(crate) fn aligned_group_reroute_edges_from(
         &self,
         previous: &Self,
@@ -36,13 +36,16 @@ impl SignalGraph {
                     target: old_parent,
                 },
             ) => {
-                let TrackOutput::Group {
-                    target: enclosing, ..
-                } = previous.tracks.get(old_parent)?.output
-                else {
-                    return None;
-                };
-                if self.tracks.get(next_parent)?.id? != previous.tracks.get(enclosing)?.id? {
+                let enclosing_id =
+                    |graph: &Self, parent: usize| match graph.tracks.get(parent)?.output {
+                        TrackOutput::Group { target, .. } => graph.tracks.get(target)?.id,
+                        TrackOutput::Main { .. } => None,
+                    };
+                let old_parent_id = previous.tracks.get(old_parent)?.id?;
+                let next_parent_id = self.tracks.get(next_parent)?.id?;
+                if enclosing_id(previous, old_parent) != Some(next_parent_id)
+                    && enclosing_id(self, next_parent) != Some(old_parent_id)
+                {
                     return None;
                 }
                 (next, old, (false, false))

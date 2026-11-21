@@ -21,6 +21,16 @@ pub struct ResidentEffectPreparation<'a> {
     pub(in crate::service) restoring_plugin_state: bool,
     pub(in crate::service) preparing_edit: bool,
     pub(in crate::service) stopped_main_power_on: Option<ResidentMainPowerOn>,
+    pub(in crate::service) running_main_power_off: Option<ResidentMainPowerOff>,
+}
+
+/// Copied original source/binding for one explicit running Main Off command.
+/// This is not custody; only Session can attach it to compiler preparation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidentMainPowerOff {
+    pub device: u64,
+    pub source: ResidentGraphSubmission,
+    pub binding: hex_lattice_contract::ForeignProcessorBinding,
 }
 
 /// The explicit stopped PowerDevice command's original nonowning source fence.
@@ -201,6 +211,18 @@ impl<'a> ResidentEffectPreparation<'a> {
     pub fn powered_off_main(&self) -> Option<(u64, &'a NativeDeviceState)> {
         let device = self.sole_played_main().filter(|device| device.bypassed())?;
         Some((device.id().value(), device.state()))
+    }
+    /// Only a staged running PowerDevice may replace the exact On source by Off.
+    pub fn running_main_power_off(&self) -> Option<ResidentMainPowerOff> {
+        let intent = self.running_main_power_off?;
+        let device = self.sole_played_main()?;
+        (self.preparing_edit
+            && device.bypassed()
+            && device.id().value() == intent.device
+            && intent.source.context.project_generation == self.context.project_generation
+            && intent.source.context.editor_revision.checked_add(1)
+                == Some(self.context.editor_revision))
+        .then_some(intent)
     }
     /// Only the explicit stopped power command can prepare a fresh On worker.
     /// Generic history/moves and changed owner, bypass or context cannot use it.
@@ -1194,6 +1216,15 @@ pub trait WorkerAudioSink: Send {
         _context: hex_engine::AudioSourceContext,
         _device: u64,
     ) -> Result<Option<ResidentFreshRuntimeFence>, String> {
+        Ok(None)
+    }
+
+    /// Copy the exact currently playing Main source; no endpoint custody escapes.
+    fn running_resident_main_power_off(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _device: u64,
+    ) -> Result<Option<ResidentMainPowerOff>, String> {
         Ok(None)
     }
 
@@ -2309,6 +2340,99 @@ mod tests {
     use std::time::Instant;
 
     #[test]
+    fn running_main_off_requires_its_explicit_exact_command_input() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: NativeDeviceState::new(
+                    hex_lattice_contract::VST3_DEVICE_TYPE_ID,
+                    1,
+                    vec![1],
+                )
+                .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("Main fixture");
+        };
+        let previous = hex_engine::AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 2,
+        };
+        let candidate = hex_engine::AudioSourceContext {
+            editor_revision: 3,
+            ..previous
+        };
+        let intent = ResidentMainPowerOff {
+            device: device.value(),
+            source: ResidentGraphSubmission {
+                context: previous,
+                output_identity: 1,
+                audio_revision: 4,
+            },
+            binding: hex_lattice_contract::ForeignProcessorBinding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 4,
+            },
+        };
+        editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            })
+            .unwrap();
+        let selected = |project: &Project, context, preparing_edit, running_main_power_off| {
+            ResidentEffectPreparation {
+                project,
+                context,
+                preparing_edit,
+                running_main_power_off,
+                restoring_plugin_state: false,
+                stopped_main_power_on: None,
+            }
+            .running_main_power_off()
+        };
+        assert_eq!(
+            selected(editor.project(), candidate, true, Some(intent)),
+            Some(intent)
+        );
+        assert_eq!(selected(editor.project(), candidate, true, None), None);
+        assert_eq!(
+            selected(editor.project(), previous, true, Some(intent)),
+            None
+        );
+        assert_eq!(
+            selected(editor.project(), candidate, false, Some(intent)),
+            None
+        );
+        assert_eq!(
+            selected(
+                editor.project(),
+                candidate,
+                true,
+                Some(ResidentMainPowerOff {
+                    device: device.value() + 1,
+                    ..intent
+                })
+            ),
+            None
+        );
+        editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: false,
+            })
+            .unwrap();
+        assert_eq!(
+            selected(editor.project(), candidate, true, Some(intent)),
+            None
+        );
+    }
+
+    #[test]
     fn fresh_main_on_requires_the_explicit_power_input_and_unchanged_target() {
         let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Device(device) = editor
@@ -2352,6 +2476,7 @@ mod tests {
                 restoring_plugin_state: false,
                 preparing_edit: true,
                 stopped_main_power_on,
+                running_main_power_off: None,
             }
             .stopped_main_power_on()
         };
@@ -2410,6 +2535,7 @@ mod tests {
                 restoring_plugin_state: false,
                 preparing_edit: false,
                 stopped_main_power_on: None,
+                running_main_power_off: None,
             }
             .powered_off_main()
             .map(|(id, _)| id)
@@ -2470,6 +2596,7 @@ mod tests {
                 restoring_plugin_state: false,
                 preparing_edit: false,
                 stopped_main_power_on: None,
+                running_main_power_off: None,
             }
             .plugin_device_bypassed(device.value())
         };
@@ -2684,6 +2811,7 @@ mod tests {
                 restoring_plugin_state: false,
                 preparing_edit: true,
                 stopped_main_power_on: None,
+                running_main_power_off: None,
             }
         }
 
@@ -2792,6 +2920,7 @@ mod tests {
             restoring_plugin_state: false,
             preparing_edit: true,
             stopped_main_power_on: None,
+            running_main_power_off: None,
         };
         assert_eq!(
             input
@@ -2845,6 +2974,7 @@ mod tests {
                 restoring_plugin_state: reopen,
                 preparing_edit: !reopen,
                 stopped_main_power_on: None,
+                running_main_power_off: None,
             }
             .modulated_plugin_target(device.value())
             .unwrap()

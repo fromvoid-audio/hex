@@ -159,6 +159,7 @@ enum Reroute {
     EnterWithUpstreamDelay,
     ExitWithUpstreamDelay,
     MoveToEnclosingGroupWithUpstreamDelay,
+    MoveIntoNestedGroupWithUpstreamDelay,
 }
 
 #[test]
@@ -343,6 +344,19 @@ fn moving_a_nested_leaf_to_its_enclosing_group_preserves_pending_alignment() -> 
     Ok(())
 }
 
+#[test]
+fn moving_an_enclosing_group_leaf_into_its_nested_group_preserves_pending_alignment() -> Result {
+    for partition in [1, 257] {
+        route_cut(
+            partition,
+            Terminal::Install,
+            true,
+            Reroute::MoveIntoNestedGroupWithUpstreamDelay,
+        )?;
+    }
+    Ok(())
+}
+
 fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute) -> Result {
     let exiting = matches!(
         reroute,
@@ -356,6 +370,8 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
     let moves_from_above = matches!(reroute, Reroute::EnterFromAbove | Reroute::ExitAbove);
     let between_groups = matches!(reroute, Reroute::BetweenGroups);
     let moves_to_enclosing = matches!(reroute, Reroute::MoveToEnclosingGroupWithUpstreamDelay);
+    let moves_into_nested = matches!(reroute, Reroute::MoveIntoNestedGroupWithUpstreamDelay);
+    let moves_between_ancestors = moves_to_enclosing || moves_into_nested;
     let leaves_destination = exiting || moves_to_enclosing;
     let changes_row_order = moves_from_above || between_groups;
     let has_main_delay = matches!(reroute, Reroute::EnterWithMainDelay);
@@ -364,9 +380,10 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
         Reroute::EnterWithUpstreamDelay
             | Reroute::ExitWithUpstreamDelay
             | Reroute::MoveToEnclosingGroupWithUpstreamDelay
+            | Reroute::MoveIntoNestedGroupWithUpstreamDelay
     );
     let nested =
-        moves_to_enclosing || matches!(reroute, Reroute::EnterNested | Reroute::ExitNested);
+        moves_between_ancestors || matches!(reroute, Reroute::EnterNested | Reroute::ExitNested);
     let has_other_group = !matches!(reroute, Reroute::EnterSoleGroup | Reroute::ExitSoleGroup);
     let has_sibling = changes_row_order
         || nested
@@ -455,6 +472,14 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
             tracks: TrackSelectionIds::new(&[moved])?,
             before: Some(destination),
         })?;
+    } else if moves_into_nested {
+        editor.execute(Command::ReparentTracks {
+            tracks: TrackSelectionIds::new(&[moved])?,
+            destination: TrackDestination {
+                parent_group: Some(outer_group.ok_or("enclosing group")?),
+                before: None,
+            },
+        })?;
     }
     let before = prepare(&editor, &media)?;
     let inventory: Vec<_> = editor.project().tracks().iter().map(|t| t.id()).collect();
@@ -465,6 +490,10 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
             before: None,
         },
     })?;
+    assert_eq!(
+        editor.project().track(moved).unwrap().parent_group(),
+        Some(destination)
+    );
     let entered_inventory: Vec<_> = editor.project().tracks().iter().map(|t| t.id()).collect();
     assert_eq!(entered_inventory != inventory, changes_row_order);
     let after = prepare(&editor, &media)?;
@@ -523,11 +552,12 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
     // The old direct edge must deliver the last nonzero fade frame before
     // a Group entry. An undelayed Group input can leave after the fade.
     // The still-running Group owns the aligned sum across installation.
-    let drain = if matches!(terminal, Terminal::Install) && !leaves_destination {
-        pre_main_delay.saturating_sub(1)
-    } else {
-        0
-    };
+    let drain =
+        if matches!(terminal, Terminal::Install) && !leaves_destination && !moves_into_nested {
+            pre_main_delay.saturating_sub(1)
+        } else {
+            0
+        };
     let switch = CUT + if fade { fade_frames + drain } else { 0 };
     if fade {
         // The existing child Delay keeps running; only its routed output fades.
@@ -570,12 +600,14 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
     let other_pcm = standalone(other_group_input, &other_group_chain, &[])?;
     let mut destination_pcm = standalone(destination_input, &[delay(11.0), invert()], &[])?;
     let destination_pcm = if nested {
-        if moves_to_enclosing && matches!(terminal, Terminal::Install) {
-            // After the cut, add the leaf outside the still-running inner Delay
-            // and before the still-running outer Delay and its Main alignment.
-            for (outer_input, leaf) in destination_pcm[switch..].iter_mut().zip(&leaf[switch..]) {
-                for channel in 0..2 {
-                    outer_input[channel] += leaf[channel];
+        if moves_between_ancestors {
+            // When the leaf belongs directly to the enclosing Group, add it
+            // after the still-running inner Delay and before the outer Delay.
+            for (frame, (outer_input, leaf)) in destination_pcm.iter_mut().zip(&leaf).enumerate() {
+                if !grouped_at(frame) {
+                    for channel in 0..2 {
+                        outer_input[channel] += leaf[channel];
+                    }
                 }
             }
         }
@@ -588,7 +620,7 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
         let source = i - pre_main_delay;
         for channel in 0..2 {
             frame[channel] += destination_pcm[source][channel];
-            if !between_groups && !moves_to_enclosing && !grouped_at(source) {
+            if !between_groups && !moves_between_ancestors && !grouped_at(source) {
                 frame[channel] += leaf[source][channel];
             }
         }

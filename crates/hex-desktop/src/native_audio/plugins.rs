@@ -31,6 +31,7 @@ mod paused_monitor;
 pub(super) use paused_monitor::{
     PREPARATION_TIMEOUT, PausedEffects, PausedMonitorPreparation, paused_monitor_busy,
 };
+mod power_off;
 mod reopen;
 mod retiring_editor;
 mod retiring_replay;
@@ -240,6 +241,11 @@ pub(super) struct Plugins {
     restore: Option<Restore>,
     reopen: Option<Reopen>,
     saved_off_document: Option<(u64, u64)>,
+    // Nonowning original binding and candidate key; actual returns stay in Root.
+    power_off: Option<(
+        hex_session::service::ResidentMainPowerOff,
+        AudioSourceContext,
+    )>,
     edit: Option<AudioSourceContext>,
     pub(super) catalog: Option<std::path::PathBuf>,
     degraded: degraded::DegradedReport<Binding>,
@@ -350,6 +356,7 @@ impl Plugins {
         self.degraded_changed.take()
     }
     pub fn output_closed(&mut self) {
+        self.power_off = None;
         // The relinquished output's Root retains every outstanding loan.
         self.paused_monitor_sources.clear();
         self.editor_close_output_closed();
@@ -1245,6 +1252,11 @@ impl Plugins {
                     || !input.restoring_plugin_state())
         }) {
             return Err("vst3 state restoration is pending".into());
+        }
+        if input.running_main_power_off().is_some() {
+            return self
+                .prepare_main_power_off(output, &input, prepare)
+                .map(Some);
         }
         // Document preparation precedes source_changed/request_reopen. Its
         // next-generation declaration can select resource-free Off directly;
