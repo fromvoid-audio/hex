@@ -274,8 +274,35 @@ fn verify_track_effect_cut(cancel_after_fade: bool) {
     const FRAMES: u64 = 8192;
     const DONOR: Frame = [0.125, -0.0625];
     const RECEIVER: Frame = [0.25, -0.125];
+    const PRESET_GAIN: f32 = 0.75;
     let _serial = serial();
-    let mut f = fixture_with_quantum("processing", 0, QUANTUM as u16);
+    let (_, source, _) = crate::candidate_custody::native_source_test_fixture::input_for(
+        "processing",
+        [
+            0x48, 0x45, 0x58, 0x50, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+        ],
+    );
+    // The signed processing fixture restores HXPS component state. Bytes
+    // 4..8 leave SDK latency at zero, and 8..12 carry its authored gain.
+    let mut component = [0; 32];
+    component[..4].copy_from_slice(b"HXPS");
+    component[8..12].copy_from_slice(&PRESET_GAIN.to_le_bytes());
+    let preset = hex_plugin_state::encode(hex_plugin_state::State {
+        identity: source.identity(),
+        component: Some(&component),
+        controller: None,
+    })
+    .unwrap();
+    let mut f = fixture_with_rate(
+        "processing",
+        0,
+        QUANTUM as u16,
+        &[],
+        false,
+        2,
+        48_000,
+        Some(preset),
+    );
     let donor = f.editor.project().tracks()[0].id();
     let device = f.editor.project().tracks()[0].devices()[0].id();
     let clip = f.editor.project().tracks()[0].clips().first().unwrap().id();
@@ -333,7 +360,7 @@ fn verify_track_effect_cut(cancel_after_fade: bool) {
     assert_eq!(first, [[0.0; 2]; QUANTUM]);
     render(&mut f);
     let (_, incumbent) = render(&mut f);
-    assert_eq!(incumbent[QUANTUM - 1], [0.3125, -0.15625]);
+    assert_eq!(incumbent[QUANTUM - 1], [0.296875, -0.1484375]);
     let predecessor = f.control.status.recording_source().unwrap();
     assert_eq!(predecessor.audio_revision, previous);
     let staged = f
@@ -432,7 +459,7 @@ fn verify_track_effect_cut(cancel_after_fade: bool) {
         assert_eq!(receipt.state(), PublicationReceiptState::Cancelled);
         assert_eq!(f.control.status.recording_source(), Some(predecessor));
         let (block, restored) = render(&mut f);
-        let wet_gain = 0.5 + (block - 3) as f32 * 0.125;
+        let wet_gain = PRESET_GAIN * (0.5 + (block - 3) as f32 * 0.125);
         assert_eq!(
             restored[QUANTUM - 1],
             [
@@ -464,7 +491,7 @@ fn verify_track_effect_cut(cancel_after_fade: bool) {
     replacement::wait_for_blocks(&root, fresh, 2);
     let moved = physical_block::<QUANTUM>(&mut f);
     replacement::wait_for_blocks(&root, fresh, 3);
-    let wet_gain = 0.5;
+    let wet_gain = PRESET_GAIN * 0.5;
     assert_eq!(
         moved[QUANTUM - 1],
         [

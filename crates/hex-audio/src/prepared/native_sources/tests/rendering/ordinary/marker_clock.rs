@@ -128,7 +128,7 @@ fn verify_installed_marker<const QUANTUM: usize>(rate: u32) {
         return;
     }
     let _serial = serial();
-    let mut f = fixture_with_rate("processing", 0, QUANTUM as u16, &[], true, 2, rate);
+    let mut f = fixture_with_rate("processing", 0, QUANTUM as u16, &[], true, 2, rate, None);
     // This isolated child has exactly one Root and one native source. Assert
     // the fully armed tuple; never infer identity from a matching waveform.
     assert_eq!(f.binding, EXPECTED);

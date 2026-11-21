@@ -89,9 +89,11 @@ fn fixture_with_authored_mode_and_capacity(
         instrument,
         source_capacity,
         48_000,
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)] // Exact native fixture source and output configuration.
 fn fixture_with_rate(
     profile: &str,
     location: usize,
@@ -100,6 +102,7 @@ fn fixture_with_rate(
     instrument: bool,
     source_capacity: usize,
     rate: u32,
+    restored_state: Option<NativeDeviceState>,
 ) -> OrdinaryFixture {
     let (mut control, mut callback) = channel(rate).unwrap();
     control
@@ -172,7 +175,7 @@ fn fixture_with_rate(
         identity,
         profile,
         quantum,
-        None,
+        restored_state,
         ids,
         if instrument {
             PluginProfile::Instrument
