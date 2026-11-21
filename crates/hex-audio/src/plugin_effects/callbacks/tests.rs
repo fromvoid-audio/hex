@@ -639,6 +639,103 @@ fn revoked_endpoint_passes_aligned_dry_with_current_enabled_trim() {
 }
 
 #[test]
+fn settled_main_pass_copy_uses_committed_519_frame_ring_without_allocating() {
+    const LATENCY: usize = 519;
+    let binding = Binding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 2).unwrap();
+    let state =
+        hex_engine::default_native_device_state(hex_devices::utility::UTILITY_TYPE_ID).unwrap();
+    let (control, transport, _worker) = channel(binding, 256).unwrap();
+    let mut callback = NativeEffectCallback::for_test(identity, binding, state, transport);
+    callback.configuration.prepared = hex_lattice::PreparedForeignProcessor::new(256, 7, 512)
+        .unwrap()
+        .with_binding(binding)
+        .unwrap();
+    callback.dry.resize(LATENCY, [0.0; 2]);
+    let input = |index: usize| [index as f32 / 1024.0, -(index as f32) / 1024.0];
+    let prefix: [_; LATENCY + 13] = std::array::from_fn(input);
+    for block in prefix.chunks(256) {
+        callback.advance_dry(block);
+    }
+    let mut entry = NativeEffectEntry::new(callback);
+    assert!(entry.settled_main_pass_delay(519).unwrap().is_none());
+    for bypassed in [false, true] {
+        entry.callback.bypass.process(
+            &mut [[0.0; 2]; 256],
+            &[[0.0; 2]; 256],
+            bypassed,
+            48_000,
+            1.0,
+        );
+    }
+    assert!(entry.settled_main_pass_delay(512).is_err());
+    entry.staged = true;
+    assert!(entry.settled_main_pass_delay(519).unwrap().is_none());
+    entry.staged = false;
+    for partition in [1, 257] {
+        let mut output: [_; LATENCY + 17] =
+            std::array::from_fn(|index| input(prefix.len() + index));
+        assert_eq!(
+            allocations_during(|| {
+                let mut delay = entry.settled_main_pass_delay(519).unwrap().unwrap();
+                for block in output.chunks_mut(partition) {
+                    delay.process(block);
+                }
+            }),
+            [0; 4]
+        );
+        for (index, frame) in output.into_iter().enumerate() {
+            assert_eq!(frame, input(13 + index));
+        }
+    }
+    control.revoke();
+    assert!(entry.settled_main_pass_delay(519).is_err());
+}
+
+#[test]
+fn settled_return_pass_requires_the_exact_accepted_frame_and_owner() {
+    let binding = Binding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Return(5), 2).unwrap();
+    let state =
+        hex_engine::default_native_device_state(hex_devices::utility::UTILITY_TYPE_ID).unwrap();
+    let (control, transport, _worker) = channel(binding, 256).unwrap();
+    let callback = NativeEffectCallback::for_test(identity, binding, state, transport);
+    let mut entry = NativeEffectEntry::new(callback);
+    assert_eq!(entry.settled_return_pass(identity, 768), Ok(false));
+    // Model the exact committed endpoint facts at the public callback seam.
+    // The signed pass test checks their real worker and render progression.
+    entry
+        .callback
+        .bypass
+        .process(&mut [[0.0; 2]; 256], &[[0.0; 2]; 256], true, 48_000, 1.0);
+    entry.callback.return_bypass_frame = std::num::NonZeroU64::new(768);
+    let other = ProcessorInstanceIdentity::new(ProcessorChainOwner::Return(6), 2).unwrap();
+    assert_eq!(
+        allocations_during(|| {
+            assert_eq!(entry.settled_return_pass(identity, 768), Ok(true));
+            assert!(entry.settled_return_pass(identity, 769).is_err());
+            assert!(entry.settled_return_pass(other, 768).is_err());
+        }),
+        [0; 4]
+    );
+    entry.staged = true;
+    assert!(entry.settled_return_pass(identity, 768).is_err());
+    entry.staged = false;
+    control.revoke();
+    assert!(entry.settled_return_pass(identity, 768).is_err());
+}
+
+#[test]
 fn late_native_effect_replies_use_aligned_dry_and_resume_wet() {
     let binding = Binding {
         root: 1,

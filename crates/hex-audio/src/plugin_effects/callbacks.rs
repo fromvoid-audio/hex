@@ -20,6 +20,7 @@ impl NativeEffectEntry {
     /// PCM. Its dry cursor still represents the last accepted block until then.
     pub(crate) fn settled_main_pass_delay(
         &self,
+        frames: u32,
     ) -> Result<Option<hex_lattice::MainPassDelay>, DeviceContractError> {
         if !self.transport_is_live() {
             return Err(DeviceContractError::ForeignProcessingUnavailable);
@@ -27,7 +28,18 @@ impl NativeEffectEntry {
         if self.staged {
             return Ok(None);
         }
-        self.callback.settled_main_pass_delay()
+        self.callback.settled_main_pass_delay(frames)
+    }
+
+    pub(crate) fn settled_return_pass(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        frame: u64,
+    ) -> Result<bool, DeviceContractError> {
+        if !self.has_live_epoch() {
+            return Err(DeviceContractError::ForeignProcessingUnavailable);
+        }
+        self.callback.settled_return_pass(identity, frame)
     }
     pub(crate) fn new(callback: NativeEffectCallback) -> Self {
         Self {

@@ -99,11 +99,12 @@ pub use audio_sink::{
     PluginParameterGestureResult, PluginParameterObservation, PluginParameterOverride,
     ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata, ResidentFilePitch,
     ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
-    ResidentFreshRuntimeFence, ResidentGraphSubmission, ResidentPublicationAcceptance,
+    ResidentFreshRuntimeFence, ResidentGraphSubmission, ResidentHostedInstrumentMove,
+    ResidentMainPowerOn, ResidentMainPowerOnInterval, ResidentPublicationAcceptance,
     ResidentPublicationFailure, ResidentPublicationInputs, ResidentPublicationMetadata,
     ResidentPublicationPolicy, ResidentPublicationReadiness, ResidentPublicationRefusal,
-    ResidentRuntimeLoop, ResidentSourceOrigin, ResidentTempoEdit, ResidentTempoEditOutcome,
-    WorkerAudioSink,
+    ResidentRunningPowerOff, ResidentRuntimeLoop, ResidentSourceOrigin, ResidentTempoEdit,
+    ResidentTempoEditOutcome, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -6651,6 +6652,13 @@ fn run_worker(
                                     }
                                 }
                             }
+                            DeviceInsertAudioState::Refused(reason)
+                                if pending.is_live_return_power_off()
+                                    && reason == hex_engine::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation =>
+                            {
+                                error = Some("running return power off cannot keep this route aligned".into());
+                                DeviceInsertOutcome::Refused(reason)
+                            }
                             DeviceInsertAudioState::Refused(reason) => {
                                 if reason == hex_engine::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation {
                                     error = Some(match operation.device() {
@@ -7643,7 +7651,11 @@ fn run_worker(
                     if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
                         && (matches!(&command, Command::PasteDevices { .. })
                             || resident_audio::device_insert::graph_edit_operation(&command)
-                                .is_some())
+                                .is_some()
+                            || session.should_stage_verified_group_route(
+                                &command,
+                                compiled.as_ref().map(|(_, prepared)| prepared.as_ref()),
+                            ))
                         && events
                             .resident_audio()
                             .is_some_and(|sink| sink.confirms_verified_device_inserts()) =>
@@ -7666,9 +7678,17 @@ fn run_worker(
                         Ok(Some(mut staged)) => {
                             staged.cut_devices = cut_device_clipboard.take();
                             staged.cut_tracks = cut_clipboard.take();
+                            status = Some(
+                                if staged.operation.device() == Some(GraphEditOperation::MoveTrack)
+                                {
+                                    "track move pending · waiting for audio"
+                                } else {
+                                    "device edit pending · waiting for audio"
+                                }
+                                .into(),
+                            );
                             pending_device_insert = Some(staged);
                             request_complete = false;
-                            status = Some("device edit pending · waiting for audio".into());
                         }
                         Ok(None) => status = Some("no change".into()),
                         Err(reason) => error = Some(reason.to_string()),
@@ -7698,16 +7718,36 @@ fn run_worker(
                         .and_then(|sink| {
                             if resident_audio::device_insert::should_stage_resident_graph_edit(
                                 &command, sink,
-                            ) || resident_audio::device_insert::stopped_hosted_power_fence(
+                            ) || resident_audio::device_insert::stages_main_power_off(
                                 session.project(),
                                 &command,
-                                hex_engine::AudioSourceContext {
-                                    project_generation,
-                                    editor_revision: revision,
-                                },
+                                sink,
+                            ) || resident_audio::device_insert::running_return_power_target(
+                                session.project(),
+                                &command,
                                 sink,
                             )
                             .is_some()
+                                || resident_audio::device_insert::running_main_power_on(
+                                    session.project(),
+                                    &command,
+                                    hex_engine::AudioSourceContext {
+                                        project_generation,
+                                        editor_revision: revision,
+                                    },
+                                    sink,
+                                )
+                                .is_some()
+                                || resident_audio::device_insert::stopped_hosted_power_fence(
+                                    session.project(),
+                                    &command,
+                                    hex_engine::AudioSourceContext {
+                                        project_generation,
+                                        editor_revision: revision,
+                                    },
+                                    sink,
+                                )?
+                                .is_some()
                             {
                                 let staged = session.stage_resident_device_insert(
                                     command,
@@ -9868,80 +9908,85 @@ fn run_worker(
                         Err(reason) => error = Some(reason.to_string()),
                     }
                 }
-                Request::Undo => match session.comparison_history(
-                    false,
-                    compiled
-                        .as_ref()
-                        .filter(|_| comparison_binding.is_some())
-                        .map(|(_, artifact)| artifact),
-                    |source, target, prepared| {
-                        prepare_tuning_input_publication(
-                            source,
-                            target,
-                            prepared,
-                            project_generation,
-                            revision,
-                            keyboard_activation.as_ref(),
-                            keyboard_tuning_hint.as_ref(),
-                            audition_activation.as_ref(),
-                            false,
+                request @ (Request::Undo | Request::Redo) => {
+                    let redo = matches!(request, Request::Redo);
+                    let group_history = if session.audio_mode()
+                        == DocumentAudioMode::VerifiedStreaming
+                        && let Some(sink) = events.resident_audio()
+                        && sink.confirms_verified_device_inserts()
+                    {
+                        session.stage_verified_group_history(
+                            redo,
+                            &state,
+                            compiled.as_ref().map(|(_, prepared)| prepared.as_ref()),
+                            sink,
+                            request_document_intent,
                         )
-                    },
-                ) {
-                    Ok(Some(outcome)) => {
-                        unsaved = true;
-                        if outcome.metadata_only {
-                            comparison_changed = true;
-                        } else {
-                            replacement_revision = Some(outcome.prepared);
+                    } else {
+                        Ok(None)
+                    };
+                    match group_history {
+                        Ok(Some(staged)) => {
+                            pending_device_insert = Some(staged);
+                            request_complete = false;
+                            status = Some("history pending · waiting for audio".into());
                         }
-                        tuning_input_publication = outcome.completed.flatten();
-                        status = Some("undo committed".into());
+                        Err(reason) => error = Some(reason.to_string()),
+                        Ok(None) => match session.comparison_history(
+                            redo,
+                            compiled
+                                .as_ref()
+                                .filter(|_| comparison_binding.is_some())
+                                .map(|(_, artifact)| artifact),
+                            |source, target, prepared| {
+                                prepare_tuning_input_publication(
+                                    source,
+                                    target,
+                                    prepared,
+                                    project_generation,
+                                    revision,
+                                    keyboard_activation.as_ref(),
+                                    keyboard_tuning_hint.as_ref(),
+                                    audition_activation.as_ref(),
+                                    false,
+                                )
+                            },
+                        ) {
+                            Ok(Some(outcome)) => {
+                                unsaved = true;
+                                if outcome.metadata_only {
+                                    comparison_changed = true;
+                                } else {
+                                    replacement_revision = Some(outcome.prepared);
+                                }
+                                tuning_input_publication = outcome.completed.flatten();
+                                status = Some(
+                                    if redo {
+                                        "redo committed"
+                                    } else {
+                                        "undo committed"
+                                    }
+                                    .into(),
+                                );
+                            }
+                            Ok(None) => {
+                                status = Some(
+                                    if redo {
+                                        "nothing to redo"
+                                    } else {
+                                        "nothing to undo"
+                                    }
+                                    .into(),
+                                )
+                            }
+                            Err(reason) => {
+                                error = Some(hex_storage::text::lowercase_outside_verbatim(
+                                    &reason.to_string(),
+                                ))
+                            }
+                        },
                     }
-                    Ok(None) => status = Some("nothing to undo".into()),
-                    Err(reason) => {
-                        error = Some(hex_storage::text::lowercase_outside_verbatim(
-                            &reason.to_string(),
-                        ))
-                    }
-                },
-                Request::Redo => match session.comparison_history(
-                    true,
-                    compiled
-                        .as_ref()
-                        .filter(|_| comparison_binding.is_some())
-                        .map(|(_, artifact)| artifact),
-                    |source, target, prepared| {
-                        prepare_tuning_input_publication(
-                            source,
-                            target,
-                            prepared,
-                            project_generation,
-                            revision,
-                            keyboard_activation.as_ref(),
-                            keyboard_tuning_hint.as_ref(),
-                            audition_activation.as_ref(),
-                            false,
-                        )
-                    },
-                ) {
-                    Ok(Some(outcome)) => {
-                        unsaved = true;
-                        if outcome.metadata_only {
-                            comparison_changed = true;
-                        } else {
-                            replacement_revision = Some(outcome.prepared);
-                        }
-                        tuning_input_publication = outcome.completed.flatten();
-                        status = Some("redo committed".into());
-                    }
-                    Ok(None) => status = Some("nothing to redo".into()),
-                    Err(reason) => {
-                        error = Some(hex_storage::text::lowercase_outside_verbatim(
-                            &reason.to_string(),
-                        ))
-                    }
-                },
+                }
                 request @ (Request::SaveNew(_) | Request::SaveProjectAs { .. }) => {
                     save_complete = true;
                     let (path, folder_layout) = match request {

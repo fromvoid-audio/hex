@@ -8,6 +8,576 @@ use hex_session::device_gesture::{GestureKey, GestureRequest, ParameterValue};
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_running_main_vst3_replacement_installs_at_its_exact_receipt() {
+    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::Main);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_running_return_vst3_replacement_installs_at_its_exact_receipt() {
+    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::Return);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_running_track_vst3_replacement_installs_at_its_exact_receipt() {
+    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::Track);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_running_track_vst3_replacement_undo_restores_a_fresh_worker() {
+    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::TrackHistory {
+        redo: false,
+    });
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_running_track_vst3_replacement_redo_restores_a_fresh_worker() {
+    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::TrackHistory { redo: true });
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_running_main_vst3_replacement_undo_restores_a_fresh_worker() {
+    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::MainHistory { redo: false });
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_running_main_vst3_replacement_redo_restores_a_fresh_worker() {
+    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::MainHistory { redo: true });
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_running_return_vst3_replacement_undo_restores_a_fresh_worker() {
+    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::ReturnHistory {
+        redo: false,
+    });
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_running_return_vst3_replacement_redo_restores_a_fresh_worker() {
+    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::ReturnHistory {
+        redo: true,
+    });
+}
+
+enum VerifiedReplacementOwner {
+    Main,
+    Return,
+    Track,
+    MainHistory { redo: bool },
+    ReturnHistory { redo: bool },
+    TrackHistory { redo: bool },
+}
+
+fn replacement_effects(
+    project: &hex_project::Project,
+    destination: PluginEffectDestination,
+) -> &[hex_project::Device] {
+    match destination {
+        PluginEffectDestination::Main => project.main_devices(),
+        PluginEffectDestination::Track(id) => project.track(id).unwrap().devices(),
+        PluginEffectDestination::Return(id) => project
+            .return_tracks()
+            .iter()
+            .find(|track| track.id() == id)
+            .unwrap()
+            .devices(),
+        _ => panic!("effect fixture destination"),
+    }
+}
+
+fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
+    use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
+    use std::sync::atomic::AtomicUsize;
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let directory = files.0.canonicalize().unwrap();
+    hex_ui::write_plugin_effect_test_catalog(&directory, &selection(), "Fx", 0).unwrap();
+    let progress = Arc::new(Mutex::new(
+        crate::native_audio::plugins::PreparationObservation::default(),
+    ));
+    let records = Arc::new(AtomicUsize::new(0));
+    let mut h = super::super::verified_gain::native_harness_with(|sink| {
+        sink.plugins = crate::native_audio::plugins::Plugins::with_fixture(host(), None);
+        sink.plugins.catalog = Some(directory.join("plugin-catalog.json"));
+        sink.plugins.progress = Some(Arc::clone(&progress));
+        sink.plugins.records = Some(Arc::clone(&records));
+    });
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
+    h.applied(h.context.unwrap());
+    let track = imported.state.project.tracks()[0].id();
+    let (state, destination) = match owner {
+        VerifiedReplacementOwner::Main | VerifiedReplacementOwner::MainHistory { .. } => {
+            (imported.state, PluginEffectDestination::Main)
+        }
+        VerifiedReplacementOwner::Track | VerifiedReplacementOwner::TrackHistory { .. } => {
+            (imported.state, PluginEffectDestination::Track(track))
+        }
+        VerifiedReplacementOwner::Return | VerifiedReplacementOwner::ReturnHistory { .. } => {
+            let added = h.run(Request::Edit(Command::AddReturnTrack {
+                name: "replacement send".into(),
+            }));
+            let Some(Created::ReturnTrack(return_track)) = added.created else {
+                panic!("return track");
+            };
+            h.applied(h.context.unwrap());
+            let routed = h.run(Request::Edit(Command::SetReturnSend {
+                track,
+                return_track,
+                gain: 0.5,
+            }));
+            assert!(routed.error.is_none(), "{:?}", routed.error);
+            h.applied(h.context.unwrap());
+            (routed.state, PluginEffectDestination::Return(return_track))
+        }
+    };
+    let submit = |h: &Harness, input| {
+        h.service
+            .as_ref()
+            .unwrap()
+            .submit(Request::InsertPluginEffect(input))
+            .unwrap();
+    };
+    submit(&h, request(&state, destination));
+    let original = loop {
+        let event = h.next_with_audio();
+        assert!(event.error.is_none(), "{:?}", event.error);
+        if let Some(terminal) = event.plugin_effect_complete.first() {
+            assert!(terminal.accepted);
+            break event;
+        }
+    };
+    let predecessor = h.applied(h.context.unwrap());
+    let old = replacement_effects(&original.state.project, destination)[0].id();
+    let binding = || progress.lock().unwrap().source_bindings[0];
+    wait(|| binding().is_some());
+    let (_, old_binding, _) = binding().unwrap();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    let expected = |block| {
+        let effect = 0.125 + block as f32 * 0.03125;
+        match owner {
+            VerifiedReplacementOwner::Main
+            | VerifiedReplacementOwner::MainHistory { .. }
+            | VerifiedReplacementOwner::Track
+            | VerifiedReplacementOwner::TrackHistory { .. } => effect,
+            // The same authored 0.25 reaches the dry and wet routes. Return
+            // receives half of it, so the measured ramp must be above dry.
+            VerifiedReplacementOwner::Return | VerifiedReplacementOwner::ReturnHistory { .. } => {
+                0.25 + effect * 0.5
+            }
+        }
+    };
+    for block in 0..4 {
+        let mut sample = 0.0;
+        wait(|| {
+            sample = render_hosted_quantum(&h);
+            status.performance_frame.load(Acquire) == (block + 1) * 256
+        });
+        wait(|| {
+            binding()
+                .and_then(|(_, _, completed)| completed)
+                .is_some_and(|completed| completed > block)
+        });
+        assert_eq!(sample, block.checked_sub(2).map_or(0.0, expected));
+    }
+    assert!(status.playing.load(Acquire));
+    assert_eq!(status.applied_audio_source(), Some(predecessor));
+    let replacement = || {
+        let target = match destination {
+            PluginEffectDestination::Main => {
+                PluginEffectDestination::ReplaceMainEffect { replacing: old }
+            }
+            PluginEffectDestination::Track(track) => PluginEffectDestination::ReplaceTrackEffect {
+                track,
+                replacing: old,
+            },
+            PluginEffectDestination::Return(return_track) => {
+                PluginEffectDestination::ReplaceReturnEffect {
+                    return_track,
+                    replacing: old,
+                }
+            }
+            _ => panic!("effect fixture destination"),
+        };
+        request(&original.state, target)
+    };
+    let approved = std::cell::Cell::new(None);
+    let pump = || {
+        let frame = status.performance_frame.load(Acquire);
+        let pcm = render_hosted_quantum(&h);
+        if approved.get().is_none()
+            && status.applied_audio_source() == Some(predecessor)
+            && status.performance_frame.load(Acquire) == frame + 256
+        {
+            assert_eq!(binding().unwrap().1, old_binding);
+            assert_eq!(pcm, expected(frame / 256 - 2));
+        }
+        wait(|| {
+            h.backend
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .native_workers_idle_on_control()
+                == Some(true)
+        });
+    };
+    let next = || {
+        let mut next = None;
+        wait(|| {
+            if let Ok(event) = h.service.as_ref().unwrap().try_event() {
+                next = Some(event);
+                return true;
+            }
+            pump();
+            false
+        });
+        next.unwrap()
+    };
+    let assert_predecessor = |event: &Event| {
+        assert_eq!(event.state.project, original.state.project);
+        assert_eq!(event.state.revision, original.state.revision);
+        assert_eq!(event.state.can_undo, original.state.can_undo);
+        assert_eq!(event.state.can_redo, original.state.can_redo);
+        assert_eq!(status.applied_audio_source(), Some(predecessor));
+        assert_eq!(binding().unwrap().1, old_binding);
+        assert!(status.playing.load(Acquire));
+    };
+    let cancelled = replacement();
+    let cancellation = Arc::clone(&cancelled.control);
+    submit(&h, cancelled);
+    wait(|| {
+        if let Ok(event) = h.service.as_ref().unwrap().try_event() {
+            assert_predecessor(&event);
+            assert!(
+                event.plugin_effect_complete.is_empty(),
+                "running Verified {destination:?} replacement stopped before private preparation: {:?}",
+                event.error
+            );
+            assert!(event.error.is_none(), "{:?}", event.error);
+        }
+        pump();
+        assert_eq!(status.applied_audio_source(), Some(predecessor));
+        progress
+            .lock()
+            .unwrap()
+            .newest_source
+            .is_some_and(|(id, pending, accepted)| {
+                id == original.state.project.next_identity() && pending != old_binding && !accepted
+            })
+    });
+    assert!(cancellation.cancel());
+    loop {
+        let event = next();
+        assert_predecessor(&event);
+        if let Some(terminal) = event.plugin_effect_complete.first() {
+            assert!(Arc::ptr_eq(&terminal.control, &cancellation));
+            assert!(!terminal.accepted);
+            break;
+        }
+    }
+    wait(|| {
+        pump();
+        records.load(Acquire) == 1
+    });
+
+    let candidate = replacement();
+    let operation = Arc::clone(&candidate.control);
+    submit(&h, candidate);
+    let installed = loop {
+        let event = next();
+        if let Some(offer) = &event.device_insert_confirmation {
+            assert_eq!(offer.operation(), GraphEditOperation::ReplaceDevice);
+            assert_predecessor(&event);
+            assert!(approved.replace(Some(offer.submission())).is_none());
+            assert!(offer.proceed());
+        }
+        if let Some(terminal) = event.plugin_effect_complete.first() {
+            assert!(Arc::ptr_eq(&terminal.control, &operation));
+            if !terminal.accepted {
+                assert_predecessor(&event);
+            }
+            assert!(
+                terminal.accepted,
+                "running Verified {destination:?} replacement refused: {:?}",
+                event.error
+            );
+            break event;
+        }
+        assert!(event.error.is_none(), "{:?}", event.error);
+        assert_eq!(event.state.project, original.state.project);
+    };
+    let receipt = installed.device_insert_complete.unwrap();
+    let applied = status.applied_audio_source().unwrap();
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+    assert_eq!(receipt.submission.context, applied.context);
+    assert_eq!(receipt.submission.audio_revision, applied.audio_revision);
+    assert_eq!(
+        receipt.submission.output_identity,
+        predecessor.output_identity
+    );
+    if let Some(consented) = approved.get() {
+        assert_eq!(receipt.submission.context, consented.context);
+        assert_eq!(
+            receipt.submission.output_identity,
+            consented.output_identity
+        );
+        assert_ne!(receipt.submission.audio_revision, consented.audio_revision);
+    }
+    assert_eq!(installed.state.revision, original.state.revision + 1);
+    let [fresh] = replacement_effects(&installed.state.project, destination) else {
+        panic!("fresh effect in the original slot");
+    };
+    assert_eq!(fresh.id().value(), original.state.project.next_identity());
+    assert!(installed.state.project.device(old).is_none());
+    if let PluginEffectDestination::Track(track) = destination {
+        let before = original.state.project.track(track).unwrap();
+        let after = installed.state.project.track(track).unwrap();
+        assert_eq!(after.clips(), before.clips());
+        assert_eq!(after.source_id(), before.source_id());
+        assert_eq!(after.instrument_position(), before.instrument_position());
+    } else {
+        assert_eq!(
+            installed.state.project.tracks(),
+            original.state.project.tracks()
+        );
+    }
+    wait(|| {
+        pump();
+        records.load(Acquire) == 1
+            && binding().is_some_and(|(device, binding, _)| {
+                device == fresh.id().value() && binding != old_binding
+            })
+    });
+    let redo = match owner {
+        VerifiedReplacementOwner::MainHistory { redo }
+        | VerifiedReplacementOwner::ReturnHistory { redo }
+        | VerifiedReplacementOwner::TrackHistory { redo } => Some(redo),
+        _ => None,
+    };
+    if let Some(redo) = redo {
+        let retired_on_undo = binding().unwrap().1;
+        let restored = assert_verified_replacement_history(
+            &h,
+            (&original, destination),
+            &installed,
+            &progress,
+            &records,
+            old_binding,
+            ReplacementHistoryDirection::Undo,
+        );
+        if redo {
+            assert_verified_replacement_history(
+                &h,
+                (&installed, destination),
+                &restored,
+                &progress,
+                &records,
+                retired_on_undo,
+                ReplacementHistoryDirection::Redo,
+            );
+        }
+    }
+}
+
+enum ReplacementHistoryDirection {
+    Undo,
+    Redo,
+}
+
+fn assert_verified_replacement_history(
+    h: &Harness,
+    (target, destination): (&Event, PluginEffectDestination),
+    incumbent: &Event,
+    progress: &Mutex<crate::native_audio::plugins::PreparationObservation>,
+    records: &std::sync::atomic::AtomicUsize,
+    retired_target_binding: hex_audio::plugin_effects::EffectBinding,
+    direction: ReplacementHistoryDirection,
+) -> Event {
+    use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
+
+    let (request, name, can_redo) = match direction {
+        ReplacementHistoryDirection::Undo => (Request::Undo, "Undo", true),
+        ReplacementHistoryDirection::Redo => (Request::Redo, "Redo", false),
+    };
+    let ramp_increment = if matches!(destination, PluginEffectDestination::Return(_)) {
+        0.015625
+    } else {
+        0.03125
+    };
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    let predecessor = status.applied_audio_source().unwrap();
+    let accepted = || progress.lock().unwrap().source_bindings[0].unwrap();
+    let (incumbent_device, incumbent_binding, _) = accepted();
+    assert_ne!(incumbent_binding, retired_target_binding);
+    let [effect] = replacement_effects(&incumbent.state.project, destination) else {
+        panic!("replacement in the occupied effect slot");
+    };
+    assert_eq!(effect.id().value(), incumbent_device);
+    let [target_effect] = replacement_effects(&target.state.project, destination) else {
+        panic!("original effect");
+    };
+    let preparing_target = || {
+        progress
+            .lock()
+            .unwrap()
+            .newest_source
+            .is_some_and(|(device, binding, accepted)| {
+                device == target_effect.id().value()
+                    && binding != retired_target_binding
+                    && binding != incumbent_binding
+                    && !accepted
+            })
+    };
+    let assert_canonical = |event: &Event| {
+        assert_eq!(event.state.project, incumbent.state.project);
+        assert_eq!(event.state.revision, incumbent.state.revision);
+        assert_eq!(event.state.can_undo, incumbent.state.can_undo);
+        assert_eq!(event.state.can_redo, incumbent.state.can_redo);
+    };
+    let assert_predecessor = |event: &Event| {
+        assert_canonical(event);
+        assert_eq!(status.applied_audio_source(), Some(predecessor));
+        assert_eq!(accepted().1, incumbent_binding);
+        assert!(status.playing.load(Acquire));
+    };
+    let pump = || {
+        let frame = status.performance_frame.load(Acquire);
+        let sample = render_hosted_quantum(h);
+        wait(|| {
+            h.backend
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .native_workers_idle_on_control()
+                == Some(true)
+        });
+        (status.performance_frame.load(Acquire) == frame + 256).then_some(sample)
+    };
+    // Clear the bridge fill and one cut fade, then measure the replacement's
+    // own signed block ramp rather than accepting its dry input as evidence.
+    let mut warmup = [0.0; 5];
+    for slot in &mut warmup {
+        wait(|| {
+            let Some(sample) = pump() else {
+                return false;
+            };
+            *slot = sample;
+            true
+        });
+    }
+    assert_eq!(warmup[4] - warmup[3], ramp_increment);
+    let mut last = warmup[4];
+    assert_predecessor(incumbent);
+
+    let service = h.service.as_ref().unwrap();
+    service.submit(request).unwrap();
+    let mut offer = None;
+    let mut heard_predecessor = false;
+    let mut pending = false;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let restored =
+        'terminal: loop {
+            assert!(
+                Instant::now() < deadline,
+                "running {destination:?} replacement {name} stalled"
+            );
+            while let Ok(event) = service.try_event() {
+                if let Some(error) = event.error.as_deref() {
+                    assert_predecessor(&event);
+                    assert!(event.device_insert_complete.is_none_or(|receipt| {
+                        receipt.outcome != DeviceInsertOutcome::Installed
+                    }));
+                    panic!("running Verified {destination:?} replacement {name} refused: {error}");
+                }
+                if event.request_complete {
+                    break 'terminal event;
+                }
+                assert_canonical(&event);
+                pending = true;
+                if let Some(confirmation) = &event.device_insert_confirmation {
+                    assert_predecessor(&event);
+                    assert_eq!(confirmation.operation(), GraphEditOperation::ReplaceDevice);
+                    let sample = pump().expect("predecessor block before replacement consent");
+                    assert_eq!(sample - last, ramp_increment);
+                    heard_predecessor |= preparing_target();
+                    assert!(offer.replace(confirmation.submission()).is_none());
+                    assert!(confirmation.proceed());
+                }
+            }
+            if let Some(sample) = pump()
+                && offer.is_none()
+                && status.applied_audio_source() == Some(predecessor)
+            {
+                assert_eq!(accepted().1, incumbent_binding);
+                assert_eq!(sample - last, ramp_increment);
+                heard_predecessor |= pending && preparing_target();
+                last = sample;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+    assert!(pending && heard_predecessor);
+    let receipt = restored.device_insert_complete.unwrap();
+    let exact = status.applied_audio_source().unwrap();
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+    assert_eq!(receipt.submission.context, exact.context);
+    assert_eq!(receipt.submission.audio_revision, exact.audio_revision);
+    assert_eq!(receipt.submission.output_identity, exact.output_identity);
+    assert_eq!(exact.output_identity, predecessor.output_identity);
+    assert_ne!(exact, predecessor);
+    if let Some(consented) = offer {
+        assert_eq!(receipt.submission.context, consented.context);
+        assert_ne!(receipt.submission.audio_revision, consented.audio_revision);
+    }
+    assert_eq!(restored.state.revision, incumbent.state.revision + 1);
+    assert_eq!(
+        replacement_effects(&restored.state.project, destination),
+        std::slice::from_ref(target_effect)
+    );
+    assert_eq!(
+        restored.state.project.tracks(),
+        target.state.project.tracks()
+    );
+    assert_eq!(restored.state.can_redo, can_redo);
+    assert!(restored.state.can_undo);
+    wait(|| {
+        let _ = pump();
+        let Some((device, binding, _)) = progress.lock().unwrap().source_bindings[0] else {
+            return false;
+        };
+        records.load(Acquire) == 1
+            && device == target_effect.id().value()
+            && binding != retired_target_binding
+            && binding != incumbent_binding
+    });
+    assert!(status.playing.load(Acquire));
+    restored
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
 fn verified_running_vst3_copy_keeps_the_original_until_exact_install() {
     use hex_project::{DeviceChainOwner, DeviceSelectionIds};
     use hex_session::service::{DeviceClipboardAction, DeviceInsertOutcome};

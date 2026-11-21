@@ -70,6 +70,23 @@ impl Plugins {
         snapshot: &CanonicalAudioSourceSnapshot,
     ) {
         let input = snapshot.effect_preparation();
+        self.saved_off_document = input
+            .powered_off_main()
+            .map(|(device, _)| (ProcessorChainOwner::Main, device))
+            .or_else(|| {
+                if snapshot.audio_mode() != DocumentAudioMode::Resident {
+                    return None;
+                }
+                input
+                    .powered_off_return()
+                    .map(|(owner, device, _)| (owner, device))
+            })
+            .and_then(|(owner, device)| NativeProcessorIdentity::new(owner, device).ok())
+            .map(|identity| (input.context().project_generation, identity));
+        if self.saved_off_document.is_some() {
+            self.reopen = None;
+            return;
+        }
         #[cfg(all(test, feature = "allocation-probe"))]
         if let Some(observed) = &self.progress
             && let Ok(mut observed) = observed.try_lock()

@@ -1,5 +1,28 @@
 //! Control-only membership proof; it grants no native or transport custody.
-use hex_project::{Command, Editor, Project};
+use super::hosted_replacement_history::{replacement_leaves, replaces_chain_leaf, without_effect};
+use hex_lattice_contract::VST3_DEVICE_TYPE_ID;
+use hex_project::{DeviceId, Editor, Invalid, Project, StagedProjectHistory};
+
+/// Stage one exact substitution between two enabled Main workers. The caller
+/// must still obtain the stopped witness for the leaving worker.
+pub(super) fn stage_enabled_main_replacement(
+    editor: &mut Editor,
+    redo: bool,
+) -> Result<Option<(StagedProjectHistory, DeviceId)>, Invalid> {
+    let Some(device) = editor
+        .inspect_history(redo, |before, after| {
+            let (old, new) = replacement_leaves(before.main_devices(), after.main_devices())?;
+            (!old.bypassed() && !new.bypassed()).then_some(old.id())
+        })
+        .flatten()
+    else {
+        return Ok(None);
+    };
+    Ok(editor
+        .stage_history(redo)?
+        .filter(|edge| replaces_one_main(editor.project(), edge.project()))
+        .map(|edge| (edge, device)))
+}
 
 /// Admit only one newly present Main VST3 whose removal reproduces every
 /// authored value of the incumbent Project, including IDs and automation.
@@ -15,21 +38,24 @@ pub(super) fn restores_one_main(before: &Project, after: &Project) -> bool {
     let Some(device) = added.next() else {
         return false;
     };
-    if added.next().is_some()
-        || device.state().type_id() != hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
-    {
+    if added.next().is_some() || device.state().type_id() != VST3_DEVICE_TYPE_ID {
         return false;
     }
-    let Ok(mut without) = Editor::new(after.clone(), 1) else {
-        return false;
-    };
-    without.execute(Command::RemoveDevice(device.id())).is_ok() && without.project() == before
+    without_effect(after, device.id()).is_some_and(|without| without.project() == before)
+}
+
+/// Compare a staged, normalized history target with its incumbent. Both must
+/// describe the same complete project once the exact substituted leaves are
+/// removed. The ordinal check also rules out an otherwise equal remove/insert
+/// at separate Main positions.
+pub(super) fn replaces_one_main(before: &Project, after: &Project) -> bool {
+    replaces_chain_leaf(before, after, before.main_devices(), after.main_devices())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hex_project::Created;
+    use hex_project::{Command, Created};
 
     fn fixture() -> (Editor, hex_project::DeviceId, hex_project::DeviceId) {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
@@ -99,5 +125,56 @@ mod tests {
             })
             .unwrap();
         assert!(!restores_one_main(&removed, extra.project()));
+    }
+
+    #[test]
+    fn exact_main_swap_requires_the_same_slot_and_normalized_project_in_both_directions() {
+        let (mut editor, original, kept) = fixture();
+        let Created::Device(fresh) = editor
+            .execute(Command::ReplaceMainDevice {
+                replacing: original,
+                state: hex_lattice_contract::NativeDeviceState::new(
+                    VST3_DEVICE_TYPE_ID,
+                    1,
+                    vec![1],
+                )
+                .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("fresh Main effect");
+        };
+        let replaced = editor.project().clone();
+        let (undo, leaving) = stage_enabled_main_replacement(&mut editor, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(leaving, fresh);
+        assert!(replaces_one_main(&replaced, undo.project()));
+        assert!(!restores_one_main(&replaced, undo.project()));
+
+        let mut moved = Editor::new(replaced.clone(), 1).unwrap();
+        moved
+            .execute(Command::MoveMainDevice {
+                device: fresh,
+                before: Some(kept),
+            })
+            .unwrap();
+        assert!(!replaces_one_main(undo.project(), moved.project()));
+
+        let mut changed = Editor::new(replaced, 1).unwrap();
+        changed
+            .execute(Command::SetDeviceBypass {
+                device: kept,
+                bypassed: true,
+            })
+            .unwrap();
+        assert!(!replaces_one_main(undo.project(), changed.project()));
+
+        editor.commit_staged_history(undo).unwrap();
+        let (redo, leaving) = stage_enabled_main_replacement(&mut editor, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(leaving, original);
+        assert!(replaces_one_main(editor.project(), redo.project()));
     }
 }

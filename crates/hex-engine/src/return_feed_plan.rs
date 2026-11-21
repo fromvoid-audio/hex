@@ -87,6 +87,21 @@ impl ReturnFeedPlan {
                     .map(move |feed| (source, feed.destination, feed.id, feed.gain))
             })
     }
+    /// Compare feeds after a single Return has been removed. The caller has
+    /// already proved that the surviving Return IDs keep their relative order.
+    pub(crate) fn keeps_feeds_after_removal(&self, old: &Self, removed: usize) -> bool {
+        old.edges()
+            .filter(|&(source, destination, _, _)| source != removed && destination != removed)
+            .map(|(source, destination, id, gain)| {
+                (
+                    source - usize::from(source > removed),
+                    destination - usize::from(destination > removed),
+                    id,
+                    gain,
+                )
+            })
+            .eq(self.edges())
+    }
     #[cfg(test)]
     pub(crate) fn test_edges(&self) -> impl Iterator<Item = (usize, usize, u64, f32)> + '_ {
         self.edges()
@@ -139,6 +154,44 @@ impl ReturnFeedPlan {
 mod tests {
     use super::*;
     use hex_project::{Command, Created, Editor, Project};
+
+    #[test]
+    fn removal_remaps_surviving_feed_slots_and_refuses_a_changed_gain() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
+        let ids = std::array::from_fn::<_, 4, _>(|_| {
+            let Created::ReturnTrack(id) = editor
+                .execute(Command::AddReturnTrack { name: "bus".into() })
+                .unwrap()
+            else {
+                panic!("return")
+            };
+            id
+        });
+        for [source, destination] in [[ids[0], ids[1]], [ids[1], ids[2]], [ids[2], ids[3]]] {
+            editor
+                .execute(Command::SetReturnFeed {
+                    source,
+                    destination,
+                    gain: 0.5,
+                })
+                .unwrap();
+        }
+        let old = ReturnFeedPlan::prepare(editor.project()).unwrap();
+        editor.execute(Command::RemoveReturnTrack(ids[1])).unwrap();
+        let new = ReturnFeedPlan::prepare(editor.project()).unwrap();
+        assert!(new.keeps_feeds_after_removal(&old, 1));
+
+        editor
+            .execute(Command::SetReturnFeed {
+                source: ids[2],
+                destination: ids[3],
+                gain: 0.25,
+            })
+            .unwrap();
+        let changed = ReturnFeedPlan::prepare(editor.project()).unwrap();
+        assert!(!changed.keeps_feeds_after_removal(&old, 1));
+    }
+
     #[test]
     fn complete_sixteen_return_dag_has_bounded_deterministic_plan_and_safe_scratch() {
         let mut editor = Editor::new(Project::new(48000).unwrap(), 1).unwrap();

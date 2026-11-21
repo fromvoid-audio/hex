@@ -1,5 +1,6 @@
-//! Finite effect-only owners reuse the existing Return rail and worker commands.
+//! Main and Return share the effect-bus rail and typed replacement in both audio modes.
 use super::*;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::editor) enum EffectBusOwner {
     Main,

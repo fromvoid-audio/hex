@@ -8,6 +8,100 @@ use hex_session::service::RequestCancellation;
 mod authored;
 
 impl Plugins {
+    pub(super) fn retained_instrument_move(
+        &self,
+        output: Option<&mut WorkerPreparedOutput>,
+        input: &ResidentEffectPreparation<'_>,
+        desired: Option<&CanonicalAudioSourceSnapshot>,
+    ) -> Result<Option<hosted_move::MoveRoute>, String> {
+        let Some(route) = input.hosted_instrument_move() else {
+            return Ok(None);
+        };
+        let control = output
+            .and_then(|output| output.publication.control())
+            .ok_or("native output closed")?;
+        if !control
+            .status
+            .playing
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Ok(None);
+        }
+        let predecessor = control
+            .status
+            .recording_source()
+            .filter(|installed| {
+                installed.output_identity == route.predecessor.output_identity
+                    && installed.audio_revision == route.predecessor.audio_revision
+                    && Some(installed.context) == route.predecessor.source_context
+                    && desired.is_some_and(|desired| desired.context() == installed.context)
+                    && installed.context.project_generation == input.context().project_generation
+                    && installed.context.editor_revision.checked_add(1)
+                        == Some(input.context().editor_revision)
+            })
+            .ok_or("original vst3 move publication changed")?;
+        let device = route.device.value();
+        let donor = ProcessorChainOwner::Track(route.donor.value());
+        let mut sources = self.sources.iter().filter(|source| {
+            source.owner == donor
+                && source.device == device
+                && source.project_generation == predecessor.context.project_generation
+                && source.accepted
+                && !source.retiring
+                && source.binding.root == predecessor.output_identity
+        });
+        let source = sources
+            .next()
+            .ok_or("original vst3 move worker is unavailable")?;
+        if sources.next().is_some() {
+            return Err("original vst3 move worker is ambiguous".into());
+        }
+        // The read mode also covers ordinary Resident polling. A read at
+        // the exact predecessor stays with the same physical worker. An
+        // observed latency restart or a recovery read from another source
+        // still needs to settle before the move.
+        if source.editor_open
+            || source.open_editor_group.is_some()
+            || source.edit_backlog
+            || source
+                .edit_recovery
+                .is_some_and(|read| read.recovery && read.source != predecessor)
+            || self
+                .latency_notice
+                .is_some_and(|(source, _)| source == predecessor)
+            || source.pending_touch.is_some()
+        {
+            return Err("running vst3 move requires one settled instrument route".into());
+        }
+        let physical_owner = if let Some(adopted) = self.adopted_move(input.context()) {
+            let installed = adopted.request;
+            if installed.receiver != route.donor
+                || installed.physical_owner != route.receiver
+                || installed.device != route.device
+                || installed.binding != source.binding
+            {
+                return Err(
+                    "running vst3 move must return the original worker to its first track".into(),
+                );
+            }
+            installed.physical_owner
+        } else {
+            route.donor
+        };
+        Ok(Some(hosted_move::MoveRoute::prepare(
+            input.context(),
+            route.predecessor,
+            hex_engine::playback::HostedInstrumentMove {
+                donor: route.donor,
+                receiver: route.receiver,
+                physical_owner,
+                device: route.device,
+                binding: source.binding,
+            },
+            predecessor,
+        )))
+    }
+
     pub(in crate::native_audio) fn received_foreign_program_on_control(
         control: &mut PublicationControl,
         binding: Binding,
@@ -272,12 +366,14 @@ impl Plugins {
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&RequestCancellation>,
         fresh_source: bool,
+        powering_on: bool,
     ) -> Result<(), String> {
         let context = input.context();
         let owner = destination.owner();
         let control = output.publication.control().ok_or("native output closed")?;
         self.extend_edit_targets(control, input, destination, device, state, cancellation)?;
         if !fresh_source
+            && !powering_on
             && self
                 .matching_edit_source(
                     control,
@@ -338,9 +434,10 @@ impl Plugins {
             let previous = desired
                 .filter(|source| source.context().project_generation == context.project_generation)
                 .map(CanonicalAudioSourceSnapshot::effect_preparation);
-            let reintroduced = previous
-                .as_ref()
-                .is_some_and(|old| old.plugin_device_bypassed(device).is_none());
+            let reintroduced = powering_on
+                || previous
+                    .as_ref()
+                    .is_some_and(|old| old.plugin_device_bypassed(device).is_none());
             let selected = if reintroduced {
                 self.saved_catalog_selection(state, destination)
             } else {
@@ -349,6 +446,9 @@ impl Plugins {
             catalog = match selected {
                 Ok(selected) => selected,
                 Err(reason) => {
+                    if powering_on {
+                        return Err(reason);
+                    }
                     let mut preserved = false;
                     if let Some(previous) = previous {
                         previous.visit_plugin_devices(|_, _, old| {

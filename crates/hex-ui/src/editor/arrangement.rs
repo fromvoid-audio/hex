@@ -289,6 +289,7 @@ impl EditorView {
                             viewport: rows_viewport,
                             grid: &rows_grid,
                             scale_factor: track_scale_factor,
+                            caption_rem_size: None,
                         },
                         cx,
                     )
@@ -1021,7 +1022,9 @@ impl EditorView {
             .on_drop(cx.listener(|view, payload: &BrowserAudioDrag, window, cx| {
                 view.drop_browser_audio(payload, window, cx);
             }))
-            .on_drag_move::<super::drag::ClipDrag>(move |event, _, cx| {
+            // Continue the typed move once per input, even when the source
+            // clip leaves the virtualized rows. Child receivers own release.
+            .on_drag_move::<super::drag::ClipDrag>(move |event, window, cx| {
                 let Some(payload) = event.dragged_item().downcast_ref::<super::drag::ClipDrag>()
                 else {
                     return;
@@ -1030,12 +1033,24 @@ impl EditorView {
                 let pointer = (f32::from(pointer.x), f32::from(pointer.y));
                 payload.last_pointer.set(Some(pointer));
                 payload.snap_modifier.set(event.event.modifiers.platform);
+                payload.copy_modifier.set(event.event.modifiers.alt);
+                cx.set_active_drag_cursor_style(
+                    super::drag::copy_cursor(payload.copy_modifier.get()),
+                    window,
+                );
                 let (preview, lane_hovered) = clip_entity.update(cx, |view, _| {
                     view.clip_drag_drop_position(payload, pointer.0, pointer.1)
                 });
                 payload.preview.set(preview);
                 payload.lane_hovered.set(lane_hovered);
-                clip_entity.update(cx, |_, cx| cx.notify());
+                clip_entity.update(cx, |view, cx| {
+                    #[cfg(test)]
+                    {
+                        view.drag_move_event_count = view.drag_move_event_count.saturating_add(1);
+                    }
+                    view.sync_held_clip_move_audition();
+                    cx.notify();
+                });
             })
             .on_drop(
                 cx.listener(|view, payload: &super::drag::ClipDrag, window, cx| {

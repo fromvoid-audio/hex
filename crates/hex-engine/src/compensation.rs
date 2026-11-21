@@ -419,6 +419,34 @@ impl CompensationRuntime {
                 .get(index)
                 .is_some_and(DelayPair::history_is_silent)
     }
+
+    pub(crate) fn committed_main_pass_edge(
+        &self,
+        index: usize,
+        latency: u32,
+    ) -> Option<hex_lattice::MainPassDelay> {
+        let edge = self.edges.get(index)?;
+        if !self.is_closed() || edge.delay_frames() != latency {
+            return None;
+        }
+        edge.committed_main_pass_delay()
+    }
+
+    /// Borrow two separate, fully committed direct Main alignment rings.
+    pub(crate) fn committed_hosted_return_pair(
+        &self,
+        [first, second]: [usize; 2],
+    ) -> Option<[(&[Frame; 512], usize); 2]> {
+        if !self.is_closed() || first == second {
+            return None;
+        }
+        let pcm = |index: usize| {
+            let (frames, next) = self.edges.get(index)?.committed_main_pass_pcm()?;
+            Some((frames.try_into().ok()?, next))
+        };
+        Some([pcm(first)?, pcm(second)?])
+    }
+
     /// True when no committed routing edge holds PCM. Transport stamps do not
     /// affect signal quiescence. This visits only the bounded edge table.
     pub(crate) fn pcm_history_is_silent(&self) -> bool {

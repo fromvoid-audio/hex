@@ -1587,6 +1587,8 @@ pub(super) struct DeviceInsertProbe {
     // fixture opts into and retains the exact production callback receipt.
     enabled: AtomicBool,
     submitted: Mutex<Option<DeviceInsertGate>>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    foreign_binding: Mutex<Option<ForeignDeviceInsertProbe>>,
 }
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 impl DeviceInsertProbe {
@@ -1607,11 +1609,41 @@ impl DeviceInsertProbe {
         assert!(previous.is_none());
         (submitted, resume)
     }
+
+    pub(super) fn observe_next_foreign_binding(
+        &self,
+        track: hex_project::TrackId,
+        device: hex_project::DeviceId,
+    ) -> mpsc::Receiver<Option<PreparedInstrumentSource>> {
+        let (ready, binding) = mpsc::sync_channel(1);
+        let previous = self
+            .foreign_binding
+            .lock()
+            .unwrap()
+            .replace(ForeignDeviceInsertProbe {
+                track,
+                device,
+                ready,
+            });
+        assert!(previous.is_none());
+        binding
+    }
 }
 struct DeviceInsertGate {
     ready: SyncSender<hex_session::service::ResidentGraphSubmission>,
     resume: mpsc::Receiver<()>,
 }
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+struct ForeignDeviceInsertProbe {
+    track: hex_project::TrackId,
+    device: hex_project::DeviceId,
+    ready: SyncSender<Option<PreparedInstrumentSource>>,
+}
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+type PreparedInstrumentSource = (
+    hex_engine::ProcessorChainOwner,
+    hex_audio::plugin_effects::EffectBinding,
+);
 struct ConfirmationProbe {
     stage: ProbeStage,
     ready: SyncSender<()>,
@@ -2174,6 +2206,20 @@ impl WorkerAudioSink for ResidentSink {
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         self.file_publication_waiting
             .store(inputs.files.is_some(), std::sync::atomic::Ordering::Release);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if matches!(policy, ResidentPublicationPolicy::DeviceInsert { .. })
+            && let Some(probe) = self
+                .device_insert_probe
+                .foreign_binding
+                .lock()
+                .unwrap()
+                .take()
+        {
+            probe
+                .ready
+                .try_send(playback.foreign_instrument_binding_on_control(probe.track, probe.device))
+                .unwrap();
+        }
         let refuse = self.refuse.load(Acquire);
         if let Some(probe) = self.publication_probe.lock().unwrap().take() {
             self.inner.native_graph_gate = Some((probe.ready, probe.resume));
@@ -2242,12 +2288,43 @@ impl WorkerAudioSink for ResidentSink {
             .resident_file_seek_storage_bytes(prepared, sources)
     }
 
+    fn running_resident_power_off(
+        &mut self,
+        context: AudioSourceContext,
+        owner: hex_engine::ProcessorChainOwner,
+        device: u64,
+    ) -> Result<Option<hex_session::service::ResidentRunningPowerOff>, String> {
+        self.inner
+            .running_resident_power_off(context, owner, device)
+    }
+    fn resident_playing(&mut self) -> bool {
+        self.inner.resident_playing()
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn running_resident_main_power_on(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+        device: u64,
+    ) -> Option<hex_session::service::ResidentGraphSubmission> {
+        self.inner.running_resident_main_power_on(context, device)
+    }
+
     fn stopped_resident_power_fence(
         &mut self,
         context: AudioSourceContext,
         device: u64,
-    ) -> Option<hex_session::service::ResidentFreshRuntimeFence> {
+    ) -> Result<Option<hex_session::service::ResidentFreshRuntimeFence>, String> {
         self.inner.stopped_resident_power_fence(context, device)
+    }
+
+    fn stopped_resident_effect_history_fence(
+        &mut self,
+        context: AudioSourceContext,
+        owner: hex_engine::ProcessorChainOwner,
+        device: u64,
+    ) -> Option<hex_session::service::ResidentFreshRuntimeFence> {
+        self.inner
+            .stopped_resident_effect_history_fence(context, owner, device)
     }
 
     fn resident_runtime_loop(
@@ -5088,20 +5165,87 @@ fn install_running_device_move_for_history(
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
 fn undo_and_redo_a_held_sine_move_waits_for_the_callback_receipt() {
+    assert_held_instrument_move_history(HeldMoveInstrument::Sine);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn undo_and_redo_a_held_vector_move_waits_for_the_callback_receipt() {
+    assert_held_instrument_move_history(HeldMoveInstrument::Vector);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn undo_and_redo_a_held_sampler_move_waits_for_the_callback_receipt() {
+    assert_held_instrument_move_history(HeldMoveInstrument::Sampler);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+enum HeldMoveInstrument {
+    Sine,
+    Vector,
+    Sampler,
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn assert_held_instrument_move_history(instrument: HeldMoveInstrument) {
     use hex_project::{BeatTime, Command, Created, DeviceSelectionIds, TrackDeviceSlot};
+    use hex_session::device_gesture::{ParameterId, ParameterValue};
 
     let _native = native_fixture();
     let mut h = ResidentHarness::with_frame_limit(262_144);
     assert!(h.next().error.is_none());
     let (mut applied, _) = h.applied(0);
-    let added = h.run(Request::Edit(Command::InsertTrackWithDevice {
-        name: "source".into(),
-        before_track: None,
-        slot: TrackDeviceSlot::Instrument,
-        state: hex_project::default_instrument_state().unwrap(),
-    }));
-    let Some(Created::Track(source)) = added.created else {
-        panic!("source track");
+    let sampler_files = matches!(instrument, HeldMoveInstrument::Sampler).then(Files::new);
+    let (source, added) = if let Some(files) = sampler_files.as_ref() {
+        let track = h.run(Request::Edit(Command::AddMidiTrack {
+            name: "source".into(),
+        }));
+        let Some(Created::Track(source)) = track.created else {
+            panic!("source track");
+        };
+        applied = h.applied(applied).0;
+        let loaded = h.run(Request::LoadFirstSampler {
+            request_id: 1,
+            project_generation: 0,
+            revision: track.state.revision,
+            track: source,
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
+            path: files.wav(48_000, 96_000),
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+        assert!(loaded.error.is_none(), "{:?}", loaded.error);
+        (source, loaded)
+    } else {
+        let state = if matches!(instrument, HeldMoveInstrument::Vector) {
+            let class = hex_engine::NativeDeviceClass::Instrument;
+            let state = hex_engine::default_native_device_state_for_class(
+                class,
+                hex_engine::DeviceTypeId::from_static("hex.instrument.operator"),
+            )
+            .unwrap();
+            hex_engine::patch_native_device_parameter_for_class(
+                class,
+                &state,
+                ParameterId::from_static(20_001),
+                ParameterValue::Bool(true),
+            )
+            .unwrap()
+        } else {
+            hex_project::default_instrument_state().unwrap()
+        };
+        let added = h.run(Request::Edit(Command::InsertTrackWithDevice {
+            name: "source".into(),
+            before_track: None,
+            slot: TrackDeviceSlot::Instrument,
+            state,
+        }));
+        let Some(Created::Track(source)) = added.created else {
+            panic!("source track");
+        };
+        (source, added)
     };
     applied = h.applied(applied).0;
     let device = added

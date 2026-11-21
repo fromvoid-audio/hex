@@ -7,7 +7,8 @@ use std::sync::Weak;
 mod shared_sources;
 use shared_sources::SharedSourceHandoff;
 
-const GROUP_ROUTE_STAMP_TRANSFER: u8 = 4;
+const GROUP_ROUTE_HISTORY_TRANSFER: u8 = 4;
+const HOSTED_MOVE_HISTORY_TRANSFER: u8 = 5;
 
 // This comparison does not authenticate publication or transfer custody.
 pub(super) fn configuration_matches_continuation(
@@ -1514,6 +1515,10 @@ impl SessionPlayback {
         let main_pass_cut = self
             .native_removal
             .and_then(|pending| pending.main_pass_transition());
+        let return_pass_latency = self
+            .native_removal
+            .and_then(|pending| pending.return_pass_latency());
+        let keeps_pass_clock = main_pass_cut.is_some() || return_pass_latency.is_some();
         let tail_policy = if let Some(removal) = self.native_removal {
             if !continuous_insert || !removal.matches(previous) {
                 return Err(SessionPlaybackError::InvalidCommand);
@@ -1523,6 +1528,10 @@ impl SessionPlayback {
             }
             if let Some(bus) = removal.faded_return() {
                 DeviceEditTailPolicy::FadedReturn(bus)
+            } else if let Some(off) =
+                main_pass_cut.filter(|cut| cut.foreign_return_pass().is_some())
+            {
+                DeviceEditTailPolicy::PoweredOffReturn(off.identity())
             } else {
                 removal
                     .faded_native_identity()
@@ -1592,12 +1601,24 @@ impl SessionPlayback {
         } else {
             foreign_arrangement::held_removal::candidate(self, previous)
         };
+        let hosted_move = if self.hosted_instrument_move.is_some() {
+            let staged = self
+                .native_removal
+                .and_then(|pending| pending.hosted_track_move())
+                .ok_or(foreign_arrangement::INCOMPATIBLE_HANDOFF)?;
+            if !continuous_insert
+                || restart != Restart::None
+                || self.direct_hosted_track_cut_from(previous) != Some(staged)
+            {
+                return Err(foreign_arrangement::INCOMPATIBLE_HANDOFF);
+            }
+            Some(staged)
+        } else {
+            None
+        };
         let foreign_handoff = self.foreign_arrangement.plan_handoff(
             &previous.foreign_arrangement,
-            [
-                self.revision.arrangement().tracks(),
-                previous.revision.arrangement().tracks(),
-            ],
+            [&self.revision, &previous.revision],
             foreign_arrangement::FrameContext {
                 performance: previous.performance_frame,
                 arrangement: previous.arrangement_frame,
@@ -1610,6 +1631,7 @@ impl SessionPlayback {
             continuous_insert,
             hosted_cut,
             held_removal,
+            hosted_move,
             [old_loop_region, new_loop_region],
             tempo_cut,
             continuation,
@@ -1743,16 +1765,31 @@ impl SessionPlayback {
         if continuous_insert
             && (force_restart
                 || !mapped_main_clock
-                || (main_pass_cut.is_none()
+                || (!keeps_pass_clock
                     && self.revision.arrangement().main_latency_frames()
                         != previous.revision.arrangement().main_latency_frames()))
         {
             return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
         }
-        let main_pass_delay = if let Some(transition) = main_pass_cut {
+        let main_pass_delay = if let Some(latency) = return_pass_latency {
             if demand.is_none() {
-                let settled = if transition.foreign_main_pass_binding().is_some() {
+                Some(
+                    previous
+                        .committed_return_main_pass(latency)
+                        .ok_or(SessionPlaybackError::DeviceRuntime)?,
+                )
+            } else {
+                None
+            }
+        } else if let Some(transition) = main_pass_cut {
+            if demand.is_none() {
+                let foreign_frames = transition
+                    .foreign_main_pass()
+                    .map(|(_, frames)| frames)
+                    .or_else(|| transition.foreign_return_pass().map(|_| 512));
+                let settled = if let Some(frames) = foreign_frames {
                     self.main_pass_delay
+                        .filter(|delay| delay.latency_frames() == frames)
                 } else {
                     previous.main_chain.settled_main_pass_delay(transition)
                 };
@@ -2041,16 +2078,22 @@ impl SessionPlayback {
                 })
                 .filter(|_| !candidate.can_copy_from(old, None))
         });
-        let group_route_stamps = continuous_insert
+        let group_route_track = if continuous_insert
             && !force_restart
             && mapped_main_clock
             && previous.periodic_tempo() == self.periodic_tempo_at(previous.arrangement_frame)
             && donor_epoch_matches
-            && self
-                .native_removal
-                .is_some_and(|pending| pending.matches_group_reroute(previous))
-            && compensation_pair
-                .is_some_and(|(candidate, old)| candidate.can_copy_group_route_stamps_from(old));
+        {
+            self.native_removal
+                .and_then(|pending| pending.group_reroute_track(previous))
+                .filter(|&track| {
+                    compensation_pair.is_some_and(|(candidate, old)| {
+                        candidate.can_copy_group_route_history_from(old, track)
+                    })
+                })
+        } else {
+            None
+        };
         let removed_send_clock = !force_restart
             && previous.playing
             && mapped_main_clock
@@ -2072,8 +2115,9 @@ impl SessionPlayback {
                     })
             });
         let planned_transfer = match (&self.compensation, &previous.compensation) {
-            (None, Some(_)) if main_pass_cut.is_some() => Some(0),
-            (Some(_), Some(_)) if group_route_stamps => Some(GROUP_ROUTE_STAMP_TRANSFER),
+            (None, Some(_)) if keeps_pass_clock => Some(0),
+            (Some(_), Some(_)) if hosted_move.is_some() => Some(HOSTED_MOVE_HISTORY_TRANSFER),
+            (Some(_), Some(_)) if group_route_track.is_some() => Some(GROUP_ROUTE_HISTORY_TRANSFER),
             (Some(_), Some(_)) if removed_send_clock => Some(3_u8),
             (Some(candidate), Some(old))
                 if (candidate.graph.compatible(&old.graph) || mapped_main_clock)
@@ -2152,6 +2196,18 @@ impl SessionPlayback {
         let relocate = (planned_transfer.is_none() || force_restart)
             && !self.current_sampler_console
             && !self.revision.requires_control_sampler_sources();
+        if let Some(movement) = hosted_move
+            && demand.is_none()
+        {
+            let (next, old) = self
+                .compensation
+                .as_mut()
+                .zip(previous.compensation.as_ref())
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            // Prepare only the unpublished clock before changing the donor.
+            next.copy_hosted_move_from(old, movement.request.donor, movement.request.receiver)
+                .map_err(|_| SessionPlaybackError::LatencyLayoutChanged)?;
+        }
         if continuous_insert && relocate {
             return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
         }
@@ -2808,8 +2864,8 @@ impl SessionPlayback {
         let instrument_move = self
             .native_removal
             .and_then(|pending| pending.instrument_track_move());
-        let mutable_move =
-            instrument_move.filter(|movement| movement.kind == InstrumentMoveKind::MutableVector);
+        let mutable_move = instrument_move
+            .filter(|movement| matches!(movement.kind, InstrumentMoveKind::Mutable { .. }));
         if let Some(movement) = mutable_move
             && source_handoff.new_for_old.get(movement.source) != Some(&movement.destination)
         {
@@ -5181,7 +5237,22 @@ impl SessionPlayback {
             &mut tail_runtime_bytes,
             &mut suffix_entry_count,
             continuation,
-            tail_policy.for_chain(old_main, new_main),
+            // The passive cut or exact approved restart ended this worker's
+            // contribution. Off retains its authored ID, so the generic
+            // same-ID policy would otherwise preserve its incompatible tail.
+            if matches!(new_main.as_ref(), [off]
+                    if off.bypassed && off.definition.as_ref().is_some_and(|factory| factory.is_powered_off()))
+                && (main_pass_cut.is_some()
+                    || (confirmed_insert
+                        && self
+                            .main_chain
+                            .main_pass_removal_from(&previous.main_chain)
+                            .is_some()))
+            {
+                DeviceEditTailPolicy::Cut
+            } else {
+                tail_policy.for_chain(old_main, new_main)
+            },
         )?;
         if clock_transfer == 2
             && self.compensation.is_none()
@@ -6771,14 +6842,17 @@ impl SessionPlayback {
         } else {
             previous.route_state_generation
         };
-        if clock_transfer == GROUP_ROUTE_STAMP_TRANSFER {
+        if clock_transfer == GROUP_ROUTE_HISTORY_TRANSFER {
             let (candidate, old) = self
                 .compensation
                 .as_mut()
                 .zip(previous.compensation.as_ref())
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
             candidate
-                .copy_group_route_stamps_from(old)
+                .copy_group_route_history_from(
+                    old,
+                    group_route_track.ok_or(SessionPlaybackError::DeviceRuntime)?,
+                )
                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         } else if clock_transfer == 3 {
             if let (Some(candidate), Some(old)) = (&mut self.compensation, &previous.compensation) {
@@ -6935,18 +7009,30 @@ impl SessionPlayback {
             true,
         );
         // A cancelled fade may still be ramping back up during an unrelated
-        // flat graph install. Carry it by stable bus ID rather than slot.
-        if self.compensation.is_none() && self.revision.arrangement().return_feed_plan.is_empty() {
+        // graph install. Match the stable bus ID and keep the same feed path.
+        if self.compensation.is_none() {
             self.return_fade = previous.return_fade.filter(|fade| {
-                self.revision
-                    .arrangement()
-                    .return_buses()
-                    .iter()
-                    .any(|bus| bus.id == fade.id)
+                let current = self.revision.arrangement();
+                let old = previous.revision.arrangement();
+                let same_feeds = if old.return_feed_plan.is_empty() {
+                    current.return_feed_plan.is_empty()
+                } else {
+                    current
+                        .return_buses()
+                        .iter()
+                        .map(|bus| bus.id)
+                        .eq(old.return_buses().iter().map(|bus| bus.id))
+                        && current
+                            .return_feed_plan
+                            .edges()
+                            .eq(old.return_feed_plan.edges())
+                };
+                same_feeds && current.return_buses().iter().any(|bus| bus.id == fade.id)
             });
         }
         self.main_pass_delay = main_pass_delay;
         self.native_removal = None;
+        self.hosted_instrument_move = None;
         Ok(report)
     }
 

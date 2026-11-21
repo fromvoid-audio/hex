@@ -4,10 +4,10 @@ use hex_lattice_contract::DeviceContractError;
 const MAX_ALIGNED_DRY_FRAMES: usize = 16;
 // The fixed 1.5 ms native path at the maximum 192 kHz output rate.
 const MAX_NATIVE_MAIN_PASS_DRY_FRAMES: usize = 288;
-// Covers the short native stages and the admitted two-quantum Main bridge.
-const MAX_MAIN_PASS_DRY_FRAMES: usize = 512;
+// Two 256-frame bridge quanta and the admitted seven-frame Main processor.
+const MAX_MAIN_PASS_DRY_FRAMES: usize = 519;
 
-/// Value-only aligned PCM after the original Main processor has retired.
+/// Value-only aligned PCM retained at Main when an original processor retires.
 pub type MainPassDelay = InlineDryDelay<MAX_MAIN_PASS_DRY_FRAMES>;
 
 /// Inline aligned dry history can outlive the processor that filled it.
@@ -39,6 +39,13 @@ impl<const CAPACITY: usize> InlineDryDelay<CAPACITY> {
 
     pub fn latency_frames(&self) -> u32 {
         self.len as u32
+    }
+
+    /// Change PCM values in a private copy without moving its playback cursor.
+    pub fn map_frames(&mut self, mut map: impl FnMut([f32; 2]) -> [f32; 2]) {
+        for frame in &mut self.frames[..self.len] {
+            *frame = map(*frame);
+        }
     }
 
     pub fn process(&mut self, frames: &mut [[f32; 2]]) {
@@ -257,16 +264,20 @@ mod tests {
     fn committed_main_pass_copy_preserves_the_cursor_and_rejects_bad_extent() {
         use super::MainPassDelay;
 
-        let mut ring = [[0.0; 2]; 512];
-        ring[511] = [0.25, -0.25];
-        ring[0] = [0.5, -0.5];
-        let mut delay = MainPassDelay::copy_committed_ring(&ring, 511).unwrap();
-        let mut frames = [[0.0; 2]; 2];
-        delay.process(&mut frames);
-        assert_eq!(frames, [ring[511], ring[0]]);
-        assert!(MainPassDelay::copy_committed_ring(&ring, 512).is_none());
+        for len in [512, 519] {
+            let mut ring = [[0.0; 2]; 519];
+            let cursor = len - 1;
+            ring[cursor] = [0.25, -0.25];
+            ring[0] = [0.5, -0.5];
+            let ring = &ring[..len];
+            let mut delay = MainPassDelay::copy_committed_ring(ring, cursor).unwrap();
+            let mut frames = [[0.0; 2]; 2];
+            delay.process(&mut frames);
+            assert_eq!(frames, [ring[cursor], ring[0]]);
+            assert!(MainPassDelay::copy_committed_ring(ring, len).is_none());
+        }
         assert!(MainPassDelay::copy_committed_ring(&[], 0).is_none());
-        assert!(MainPassDelay::copy_committed_ring(&[[0.0; 2]; 513], 0).is_none());
+        assert!(MainPassDelay::copy_committed_ring(&[[0.0; 2]; 520], 0).is_none());
     }
 
     #[test]

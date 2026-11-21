@@ -296,6 +296,18 @@ impl DelayPair {
         self.committed_nonzero = source.committed_nonzero;
         self.scratch_nonzero = self.committed_nonzero;
     }
+
+    pub(super) fn committed_main_pass_delay(&self) -> Option<hex_lattice::MainPassDelay> {
+        let (frames, next) = self.committed_main_pass_pcm()?;
+        hex_lattice::MainPassDelay::copy_committed_ring(frames, next)
+    }
+
+    pub(super) fn committed_main_pass_pcm(&self) -> Option<(&[Frame], usize)> {
+        let ring = &self.ring;
+        (!self.transaction_active && ring.committed_cursor.valid == ring.committed.len())
+            .then_some((&ring.committed, ring.committed_cursor.next))
+    }
+
     pub fn reset_epoch(&mut self) {
         self.ring.reset();
         self.committed_nonzero = 0;

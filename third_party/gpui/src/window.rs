@@ -3042,6 +3042,19 @@ impl Window {
         result
     }
 
+    /// Submit consecutive primitives while sharing one draw-order traversal
+    /// entry. Each primitive keeps its ordinary overlap order. Layers, scene
+    /// replay and groups exceeding the internal bound use ordinary insertion.
+    pub fn paint_ordered_group<R>(&mut self, paint: impl FnOnce(&mut Self) -> R) -> R {
+        self.invalidator.debug_assert_paint();
+        let collect = self.next_frame.scene.start_ordered_primitive_group();
+        let result = paint(self);
+        if collect {
+            self.next_frame.scene.end_ordered_primitive_group();
+        }
+        result
+    }
+
     /// Paint one or more drop shadows into the scene for the next frame at the current z-index.
     ///
     /// This method should only be called as part of the paint phase of element drawing.

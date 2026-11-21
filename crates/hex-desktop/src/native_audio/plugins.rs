@@ -2,11 +2,12 @@
 //! Root bindings; Root retains every actual child, worker, pair and return.
 use super::*;
 use hex_audio::plugin_effects::EffectBinding as Binding;
+use hex_audio::prepared::NativeProcessorIdentity;
 use hex_audio::{
     NativeSourcePreparationProgress as Progress,
     plugin_effects::{
         AuthoredSelection, EffectPresentation, EffectPresentationPlan, EffectSelection,
-        EffectStartupTimings, Hosting, PluginProfile,
+        EffectStartupTimings, Hosting, PluginProfile, RetainedInstrumentSource,
     },
 };
 use hex_engine::{PreparedRevision, ProcessorChainOwner};
@@ -19,6 +20,7 @@ mod degraded;
 mod editor;
 mod editor_close;
 pub(super) mod editor_recording;
+mod hosted_move;
 mod parameter_conversion;
 mod parameter_gesture;
 mod parameters;
@@ -31,6 +33,7 @@ mod paused_monitor;
 pub(super) use paused_monitor::{
     PREPARATION_TIMEOUT, PausedEffects, PausedMonitorPreparation, paused_monitor_busy,
 };
+mod power_off;
 mod reopen;
 mod retiring_editor;
 mod retiring_replay;
@@ -184,6 +187,9 @@ pub(super) struct PreparationObservation {
     pub(super) facts_ready_for_session: bool,
     pub(super) restore_refused: bool,
     pub(super) observed_latency_receipt: bool,
+    /// Last accepted binding whose live recovery batch returned. This copied
+    /// receipt may outlive its source; readers must match the current binding.
+    pub(super) recovery_read_binding: Option<Binding>,
     pub(super) editor_receipts: [Option<hex_audio::plugin_worker::ParameterEdit>; 16],
     pub(super) editor_receipt_count: usize,
     pub(super) hold_pending_read: Option<Binding>,
@@ -195,6 +201,8 @@ impl std::fmt::Debug for PreparationObservation {
         f.debug_struct("preparation")
             .field("output", &self.output)
             .field("binding", &self.binding)
+            .field("source_bindings", &self.source_bindings)
+            .field("recovery_read_binding", &self.recovery_read_binding)
             .field("pending", &self.pending)
             .field("accepted", &self.accepted)
             .field("retiring", &self.retiring)
@@ -234,6 +242,16 @@ pub(super) struct Plugins {
     installed_removals_checked: Option<AudioSourceContext>,
     restore: Option<Restore>,
     reopen: Option<Reopen>,
+    saved_off_document: Option<(u64, NativeProcessorIdentity)>,
+    // Original binding, candidate key and optional original Stop generation.
+    // All worker returns stay in Root.
+    power_off: Option<(
+        hex_session::service::ResidentRunningPowerOff,
+        AudioSourceContext,
+        Option<u64>,
+    )>,
+    hosted_move: Option<hosted_move::MoveRoute>,
+    adopted_hosted_move: Option<hosted_move::AdoptedRoute>,
     edit: Option<AudioSourceContext>,
     pub(super) catalog: Option<std::path::PathBuf>,
     degraded: degraded::DegradedReport<Binding>,
@@ -344,6 +362,7 @@ impl Plugins {
         self.degraded_changed.take()
     }
     pub fn output_closed(&mut self) {
+        self.power_off = None;
         // The relinquished output's Root retains every outstanding loan.
         self.paused_monitor_sources.clear();
         self.editor_close_output_closed();
@@ -563,12 +582,21 @@ impl Plugins {
         context: AudioSourceContext,
         device: u64,
     ) -> bool {
+        self.has_accepted_effect_source(context, ProcessorChainOwner::Main, device)
+    }
+
+    pub(super) fn has_accepted_effect_source(
+        &self,
+        context: AudioSourceContext,
+        owner: ProcessorChainOwner,
+        device: u64,
+    ) -> bool {
         self.sources.iter().any(|source| {
             source.accepted
                 && !source.retiring
                 && source.project_generation == context.project_generation
                 && source.device == device
-                && source.owner == ProcessorChainOwner::Main
+                && source.owner == owner
         })
     }
 
@@ -1128,6 +1156,7 @@ impl Plugins {
                     restore_refused,
                     observed_latency_receipt: source
                         .is_some_and(|source| source.observed_latency_receipt),
+                    recovery_read_binding: observed.recovery_read_binding,
                     editor_receipts,
                     editor_receipt_count,
                     hold_pending_read: observed.hold_pending_read,
@@ -1186,6 +1215,7 @@ impl Plugins {
             }
         }
     }
+    #[allow(clippy::too_many_arguments)] // Publication context selects fresh versus retained sources.
     pub(super) fn prepare_edit_sources(
         &mut self,
         mut output: Option<&mut WorkerPreparedOutput>,
@@ -1193,13 +1223,22 @@ impl Plugins {
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&hex_session::service::RequestCancellation>,
         fresh_hosted_sources: bool,
+        powering_on_main: Option<u64>,
+        retained: Option<hosted_move::MoveRoute>,
     ) -> Result<(), String> {
         let previous = desired
             .filter(|_| fresh_hosted_sources)
             .map(CanonicalAudioSourceSnapshot::effect_preparation);
         input.visit_plugin_devices(|destination, device, state| {
+            if retained
+                .and_then(|route| route.binding_for(destination, device))
+                .is_some()
+            {
+                return Ok(());
+            }
             // History may carry the identity and state of a deleted device.
             // The predecessor's membership decides whether DSP can survive.
+            let powering_on = powering_on_main == Some(device);
             let fresh_source = previous
                 .as_ref()
                 .is_some_and(|source| source.plugin_device_bypassed(device).is_none());
@@ -1212,6 +1251,7 @@ impl Plugins {
                 desired,
                 cancellation,
                 fresh_source,
+                powering_on,
             )
             .map_err(bounded_error)
         })
@@ -1223,6 +1263,7 @@ impl Plugins {
         input: ResidentEffectPreparation<'_>,
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&hex_session::service::RequestCancellation>,
+        powered_off: Option<NativeProcessorIdentity>,
         prepare: &mut dyn FnMut(
             &hex_engine::AudioCandidateEffects<'_, '_>,
         ) -> Result<PreparedRevision, hex_engine::Invalid>,
@@ -1235,9 +1276,79 @@ impl Plugins {
         }) {
             return Err("vst3 state restoration is pending".into());
         }
+        if input.running_power_off().is_some() {
+            return self
+                .prepare_running_power_off(output, &input, prepare)
+                .map(Some);
+        }
+        // Document preparation precedes source_changed/request_reopen. Its
+        // next-generation declaration can select resource-free Off directly;
+        // this grants no SDK source or fresh-On permission.
+        let incoming_document = off_document_preparation(
+            input.preparing_edit(),
+            input.context(),
+            desired.map(|source| source.context()),
+        );
+        let saved_off = |owner, device| {
+            self.saved_off_document
+                .is_some_and(|(generation, identity)| {
+                    generation == input.context().project_generation
+                        && identity.owner() == owner
+                        && identity.device_id() == device
+                })
+        };
+        let main_off = powered_off
+            .filter(|identity| identity.owner() == ProcessorChainOwner::Main)
+            .map(NativeProcessorIdentity::device_id);
+        if let Some((device, state)) = input.powered_off_main()
+            && (incoming_document
+                || saved_off(ProcessorChainOwner::Main, device)
+                || main_off == Some(device))
+            && !self.has_accepted_main_source(input.context(), device)
+        {
+            return Hosting::prepare_powered_off_on_control(
+                hex_audio::plugin_effects::PoweredOffEffect {
+                    owner: ProcessorChainOwner::Main,
+                    device_id: device,
+                    sample_rate: input.sample_rate(),
+                    state,
+                },
+                prepare,
+            )
+            .map(Some);
+        }
+        if let Some((owner, device, state)) = input.powered_off_return()
+            && (powered_off.is_some_and(|off| off.owner() == owner && off.device_id() == device)
+                || ((incoming_document || saved_off(owner, device))
+                    && !self.has_accepted_effect_source(input.context(), owner, device)))
+        {
+            return Hosting::prepare_powered_off_on_control(
+                hex_audio::plugin_effects::PoweredOffEffect {
+                    owner,
+                    device_id: device,
+                    sample_rate: input.sample_rate(),
+                    state,
+                },
+                prepare,
+            )
+            .map(Some);
+        }
+        let powering_on = input
+            .main_power_on()
+            .filter(|intent| main_off == Some(intent.device()))
+            .map(|intent| intent.device());
         let mut output = output;
+        let retained = self.retained_instrument_move(output.as_deref_mut(), &input, desired)?;
         if input.preparing_edit() {
-            self.prepare_edit_sources(output.as_deref_mut(), &input, desired, cancellation, false)?;
+            self.prepare_edit_sources(
+                output.as_deref_mut(),
+                &input,
+                desired,
+                cancellation,
+                false,
+                powering_on,
+                retained,
+            )?;
         }
         let mut bindings = Vec::new();
         bindings
@@ -1246,6 +1357,11 @@ impl Plugins {
         let context = input.context();
         let mut unavailable = Vec::new();
         input.visit_plugin_devices(|destination, device, state| {
+            if let Some(binding) = retained.and_then(|route| route.binding_for(destination, device))
+            {
+                bindings.push(binding);
+                return Ok(());
+            }
             let owner = destination.owner();
             let source = match output
                 .as_deref_mut()
@@ -1308,6 +1424,12 @@ impl Plugins {
         let control = output
             .and_then(|output| output.publication.control())
             .ok_or("native output closed")?;
+        let compiler_alias = match retained {
+            Some(route) => route.compiler_alias()?,
+            None => {
+                self.adopted_hosted_route(context, &bindings, control.status.recording_source())?
+            }
+        };
         let mut canonical = Vec::new();
         canonical
             .try_reserve_exact(bindings.len())
@@ -1364,11 +1486,17 @@ impl Plugins {
             }
         }
         loop {
+            if retained
+                .is_some_and(|route| control.status.recording_source() != Some(route.applied))
+            {
+                return Err("original vst3 move source is no longer installed".into());
+            }
             match Hosting::prepare_with_canonical_bases_on_control(
                 control,
                 &bindings,
                 &unavailable,
                 &canonical,
+                compiler_alias,
                 prepare,
             ) {
                 Err(error)
@@ -1383,7 +1511,13 @@ impl Plugins {
                     edits::check_cancel(cancellation)?;
                     edits::poll_control(control);
                 }
-                result => return result.map(Some),
+                Ok(prepared) => {
+                    if let Some(route) = retained {
+                        self.hosted_move = Some(route);
+                    }
+                    return Ok(Some(prepared));
+                }
+                Err(error) => return Err(error),
             }
         }
     }
@@ -1654,5 +1788,58 @@ mod idle_tests {
         plugins.sources[0].edit_backlog = true;
         plugins.output_closed();
         assert!(plugins.idle());
+    }
+}
+
+/// Pure document-generation eligibility, never source or SDK authority.
+fn off_document_preparation(
+    preparing_edit: bool,
+    candidate: AudioSourceContext,
+    previous: Option<AudioSourceContext>,
+) -> bool {
+    !preparing_edit
+        && match previous {
+            Some(previous) => {
+                previous.project_generation.checked_add(1) == Some(candidate.project_generation)
+            }
+            None => candidate.project_generation == 0 && candidate.editor_revision == 0,
+        }
+}
+
+#[cfg(test)]
+mod powered_off_document_tests {
+    use super::*;
+    #[test]
+    fn only_bootstrap_or_the_exact_incoming_document_can_declare_initial_off() {
+        let boot = AudioSourceContext {
+            project_generation: 0,
+            editor_revision: 0,
+        };
+        let next = AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 0,
+        };
+        assert!(off_document_preparation(false, boot, None));
+        assert!(off_document_preparation(false, next, Some(boot)));
+        assert!(!off_document_preparation(true, next, Some(boot)));
+        assert!(!off_document_preparation(false, next, None));
+        assert!(!off_document_preparation(
+            false,
+            AudioSourceContext {
+                editor_revision: 1,
+                ..boot
+            },
+            None
+        ));
+        assert!(!off_document_preparation(false, boot, Some(boot)));
+        assert!(!off_document_preparation(false, boot, Some(next)));
+        assert!(!off_document_preparation(
+            false,
+            AudioSourceContext {
+                project_generation: 2,
+                ..boot
+            },
+            Some(boot)
+        ));
     }
 }

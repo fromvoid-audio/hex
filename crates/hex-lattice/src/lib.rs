@@ -95,6 +95,7 @@ pub use resources::{
 use runtime_ownership::RuntimeOwnership;
 use std::any::Any as StdAny;
 use std::fmt;
+use std::num::NonZeroU32;
 
 mod analytic_continuation;
 pub use analytic_continuation::{
@@ -175,6 +176,18 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
         _context: &DevicePreparationContext<'_>,
     ) -> Result<NativeDeviceState, DeviceContractError> {
         self.migrate_state(state)
+    }
+
+    /// Resolve a witnessed hosted instrument receiver to the physical source
+    /// identity whose facts the provider already owns. Ordinary preparation
+    /// keeps the canonical identity. This grants no endpoint or runtime access.
+    fn retained_foreign_instrument_identity(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        _state: &NativeDeviceState,
+        _context: &DevicePreparationContext<'_>,
+    ) -> Result<ProcessorInstanceIdentity, DeviceContractError> {
+        Ok(identity)
     }
 
     /// Control-side selection for one canonical chain/device. Instance-bound
@@ -1353,7 +1366,7 @@ pub struct NativeRemovalTransition {
     position: usize,
     identity: ProcessorInstanceIdentity,
     authored_bypass: bool,
-    foreign_main_pass: Option<hex_lattice_contract::ForeignProcessorBinding>,
+    foreign_pass: Option<(hex_lattice_contract::ForeignProcessorBinding, NonZeroU32)>,
 }
 
 impl NativeRemovalTransition {
@@ -1361,18 +1374,25 @@ impl NativeRemovalTransition {
         self.identity
     }
 
-    /// The exact endpoint that owns this Main stage's aligned fade and history.
-    pub fn foreign_main_pass_binding(
-        self,
-    ) -> Option<hex_lattice_contract::ForeignProcessorBinding> {
-        self.foreign_main_pass
+    /// The exact endpoint and frame count of this Main stage's aligned history.
+    pub fn foreign_main_pass(self) -> Option<(hex_lattice_contract::ForeignProcessorBinding, u32)> {
+        let (binding, frames) = self.foreign_pass?;
+        (self.identity.owner() == ProcessorChainOwner::Main).then_some((binding, frames.get()))
+    }
+
+    /// The exact original binding for the sole 512-frame hosted Return going Off.
+    pub fn foreign_return_pass(self) -> Option<hex_lattice_contract::ForeignProcessorBinding> {
+        let (binding, frames) = self.foreign_pass?;
+        (matches!(self.identity.owner(), ProcessorChainOwner::Return(_)) && frames.get() == 512)
+            .then_some(binding)
     }
 
     fn matches(self, entry: &RuntimeEntry) -> bool {
         entry.owner == self.identity.owner() && entry.device_id == self.identity.device_id()
-            && self.foreign_main_pass.is_none_or(|binding| {
+            && self.foreign_pass.is_none_or(|(binding, frames)| {
                 matches!(&entry.runtime,
-                    RuntimeOwnership::Foreign(runtime) if runtime.prepared.binding() == Some(binding))
+                    RuntimeOwnership::Foreign(runtime) if runtime.prepared.binding() == Some(binding)
+                        && runtime.prepared.total_latency_frames() == frames.get())
             })
     }
 }
@@ -1527,8 +1547,10 @@ impl NativeRuntimeChain {
                 .as_ref()
                 .is_some_and(PreparedProcessorFactory::is_powered_off);
             if powered_off
-                && (instance.owner != ProcessorChainOwner::Main
-                    || !instance.bypassed
+                && (!matches!(
+                    instance.owner,
+                    ProcessorChainOwner::Main | ProcessorChainOwner::Return(_)
+                ) || !instance.bypassed
                     || instance.device_type
                         != hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
                     || !instance.matrix.is_identity()
@@ -2805,17 +2827,39 @@ impl NativeRuntimeChain {
                 position,
                 identity,
                 authored_bypass: removed.bypassed,
-                foreign_main_pass: None,
+                foreign_pass: None,
             })
     }
 
     /// One outgoing Main stage whose delayed dry history can be copied by
     /// value. The host separately proves the unchanged upstream signal clock.
     pub fn main_pass_removal_from(&self, previous: &Self) -> Option<NativeRemovalTransition> {
+        self.pass_removal_from(previous, ProcessorChainOwner::Main)
+    }
+
+    /// Exactly one unchanged hosted Return stage becomes resource-free Off.
+    /// The host separately proves the original binding and both route clocks.
+    pub fn return_power_off_from(
+        &self,
+        previous: &Self,
+        return_id: u64,
+    ) -> Option<NativeRemovalTransition> {
+        self.pass_removal_from(previous, ProcessorChainOwner::Return(return_id))
+    }
+
+    fn pass_removal_from(
+        &self,
+        previous: &Self,
+        owner: ProcessorChainOwner,
+    ) -> Option<NativeRemovalTransition> {
         let [entry] = previous.entries.as_slice() else {
             return None;
         };
-        let (latency_frames, foreign_main_pass) = match &entry.runtime {
+        if entry.owner != owner {
+            return None;
+        }
+        let main = owner == ProcessorChainOwner::Main;
+        let (latency_frames, foreign_pass) = match &entry.runtime {
             RuntimeOwnership::Memoryless => return None,
             RuntimeOwnership::Foreign(runtime) => {
                 let prepared = runtime.prepared;
@@ -2823,22 +2867,51 @@ impl NativeRuntimeChain {
                     || prepared.is_instrument_profile()
                     || prepared.quantum_frames() != 256
                     || prepared.bridge_latency_frames() != 512
-                    || prepared.processor_latency_frames() != 0
                 {
                     return None;
                 }
-                (512, Some(prepared.binding()?))
+                match prepared.processor_latency_frames() {
+                    0 => {}
+                    // Only deletion has been admitted for the seven-frame profile.
+                    7 if main && self.is_empty() => {}
+                    _ => return None,
+                }
+                let frames = NonZeroU32::new(prepared.total_latency_frames())?;
+                (frames.get(), Some((prepared.binding()?, frames)))
             }
-            _ => (
+            _ if main => (
                 entry
                     .committed_aligned_dry
                     .as_ref()?
                     .main_pass_latency_frames()?,
                 None,
             ),
+            _ => return None,
         };
-        if !self.is_empty()
-            || entry.owner != ProcessorChainOwner::Main
+        // A genuine hosted Off keeps authored identity but owns no runtime.
+        // Its live-pass timing is the same separately copied passive delay as
+        // deletion; the old foreign processor remains only in the donor graph.
+        let off = match self.entries.as_slice() {
+            [off] => {
+                matches!(entry.runtime, RuntimeOwnership::Foreign(_))
+                    && off.powered_off
+                    && off.bypassed
+                    && off.owner == entry.owner
+                    && off.device_id == entry.device_id
+                    && off.device_type == entry.device_type
+                    && off.sample_rate == entry.sample_rate
+                    && off.algorithmic_latency_frames == Some(0)
+                    && off.input_gain == entry.input_gain
+                    && off.output_gain == entry.output_gain
+                    && off
+                        .configuration
+                        .as_deref()
+                        .zip(entry.configuration.as_deref())
+                        .is_some_and(|(new, old)| new.processing_eq_on_callback(old))
+            }
+            _ => false,
+        };
+        if !(off || (main && self.is_empty()))
             || entry.algorithmic_latency_frames != Some(latency_frames)
             || entry.bypassed
             || entry.removal_bypassing
@@ -2858,7 +2931,7 @@ impl NativeRuntimeChain {
             position: 0,
             identity: ProcessorInstanceIdentity::new(entry.owner, entry.device_id).ok()?,
             authored_bypass: false,
-            foreign_main_pass,
+            foreign_pass,
         })
     }
 
@@ -2956,7 +3029,7 @@ impl NativeRuntimeChain {
             return false;
         }
         // The foreign endpoint already mixes against its aligned dry ring.
-        let ramp = if transition.foreign_main_pass.is_some() {
+        let ramp = if transition.foreign_pass.is_some() {
             bypass_ramp::BypassRamp::INACTIVE
         } else {
             bypass_ramp::BypassRamp::inherited(
@@ -4676,6 +4749,19 @@ impl<'a> NativeDeviceRegistry<'a> {
                 .with_host_metadata_from(state)?,
         )
     }
+    /// Read the provider's physical identity for a compiler-proven instrument route.
+    pub fn retained_foreign_instrument_identity(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &DevicePreparationContext<'_>,
+    ) -> Result<ProcessorInstanceIdentity, DeviceContractError> {
+        context.validate_for(state)?;
+        self.definition(state.type_id())
+            .ok_or(DeviceContractError::WrongDeviceType)?
+            .retained_foreign_instrument_identity(identity, state, context)
+    }
+
     /// Validate instance-bound runtime state without changing canonical state.
     pub fn prepare_instance_state(
         &self,

@@ -167,7 +167,7 @@ fn wrong_identity_rate_state_and_malformed_off_selection_refuse() {
     );
     assert!(
         NativeEffectDefinition::powered_off(&[PoweredOffEffect {
-            owner: ProcessorChainOwner::Return(1),
+            owner: ProcessorChainOwner::Track(1),
             ..entry
         }])
         .is_err()
@@ -197,4 +197,66 @@ fn wrong_identity_rate_state_and_malformed_off_selection_refuse() {
             .prepare_instance_runtime_factory(identity, &changed, &context)
             .is_err()
     );
+}
+
+#[test]
+fn running_main_off_requires_the_exact_real_512_frame_source_facts() {
+    let state = saved();
+    let binding = Binding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    for (quantum, processor_latency, bridge, instrument, eligible) in [
+        (256, 0, 512, false, true),
+        (128, 0, 512, false, false),
+        (256, 11, 512, false, false),
+        (256, 0, 256, false, false),
+        (256, 0, 512, true, false),
+    ] {
+        let prepared = PreparedForeignProcessor::new(quantum, processor_latency, bridge)
+            .unwrap()
+            .with_binding(binding)
+            .unwrap();
+        let configuration = Configuration {
+            identity: ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 7).unwrap(),
+            binding,
+            sample_rate: 48_000,
+            state: state.clone(),
+            prepared: if instrument {
+                prepared.with_instrument_profile()
+            } else {
+                prepared
+            },
+            authored: Default::default(),
+            dense_raw_id: None,
+            program_revision: std::num::NonZeroU64::new(1).unwrap(),
+            state_verifier: None,
+        };
+        let definition = NativeEffectDefinition::from_selected([(&configuration, true)]).unwrap();
+        assert_eq!(
+            definition.matches_power_off_on_control(
+                ProcessorChainOwner::Main,
+                binding,
+                7,
+                &state,
+                48_000
+            ),
+            Ok(eligible)
+        );
+        assert_eq!(
+            definition.matches_power_off_on_control(
+                ProcessorChainOwner::Main,
+                Binding {
+                    epoch: 5,
+                    ..binding
+                },
+                7,
+                &state,
+                48_000
+            ),
+            Ok(false)
+        );
+    }
 }

@@ -293,6 +293,18 @@ pub enum PlaybackHandoffError {
     FreshRuntimeCancelled,
 }
 
+/// One requested logical route change for an already retained worker. The
+/// output owner fences the original publication and Engine revalidates the cut.
+/// The physical owner stays at the worker's first track in either direction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostedInstrumentMove {
+    pub donor: hex_project::TrackId,
+    pub receiver: hex_project::TrackId,
+    pub physical_owner: hex_project::TrackId,
+    pub device: hex_project::DeviceId,
+    pub binding: hex_lattice_contract::ForeignProcessorBinding,
+}
+
 /// Compact truthful category for asynchronous callback handoff refusals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
@@ -1552,6 +1564,27 @@ impl Playback {
         })
     }
 
+    /// Observe an instrument's physical identity at an exact canonical track
+    /// in this prepared graph. Neither identity grants native source custody.
+    pub fn foreign_instrument_binding_on_control(
+        &self,
+        track: hex_project::TrackId,
+        device: hex_project::DeviceId,
+    ) -> Option<(
+        hex_lattice::ProcessorChainOwner,
+        hex_lattice_contract::ForeignProcessorBinding,
+    )> {
+        let node = self
+            .project
+            .tracks()
+            .iter()
+            .find(|row| row.canonical_track_id() == Some(track))?
+            .foreign_instrument
+            .as_ref()
+            .filter(|node| node.device_id == device.value() && !node.bypassed)?;
+        Some((node.owner, node.foreign_processor()?.binding()?))
+    }
+
     /// Observe actual current and committed release-tail foreign bindings.
     /// The audio owner uses this bounded scalar visit before exposing a graph
     /// return; copied immutable revision facts alone omit migrated tails.
@@ -2457,6 +2490,30 @@ impl Playback {
         }
     }
 
+    /// Mark an unpublished ordinary candidate for its exact hosted move proof.
+    pub fn require_hosted_instrument_move(
+        &mut self,
+        movement: HostedInstrumentMove,
+    ) -> Result<(), Invalid> {
+        let (owner, binding) = self
+            .foreign_instrument_binding_on_control(movement.receiver, movement.device)
+            .ok_or(Invalid("hosted move receiver has no prepared worker"))?;
+        if movement.donor == movement.receiver
+            || owner != crate::ProcessorChainOwner::Track(movement.physical_owner.value())
+            || movement.binding != binding
+        {
+            return Err(Invalid(
+                "hosted move receiver differs from the retained worker",
+            ));
+        }
+        let runtime = self
+            .session_runtime
+            .as_mut()
+            .ok_or(Invalid("hosted move has no session runtime"))?;
+        runtime.hosted_instrument_move = Some(movement);
+        Ok(())
+    }
+
     /// Advance the Engine's stage-local fade for an exact staged resident
     /// removal. The publication owner authenticates the source and command fence.
     pub fn advance_native_removal_from(
@@ -2520,13 +2577,11 @@ impl Playback {
             .is_some_and(crate::SessionPlayback::native_removal_pending)
     }
 
-    /// Exact ordinary endpoint whose settled dry PCM is needed at this cut.
-    pub fn pending_foreign_main_pass_binding(
+    /// Exact active endpoint and settled dry PCM length needed at this cut.
+    pub fn pending_foreign_main_pass(
         &self,
-    ) -> Option<hex_lattice_contract::ForeignProcessorBinding> {
-        self.session_runtime
-            .as_deref()?
-            .pending_foreign_main_pass_binding()
+    ) -> Option<(hex_lattice_contract::ForeignProcessorBinding, u32)> {
+        self.session_runtime.as_deref()?.pending_foreign_main_pass()
     }
 
     /// Supply a value-only snapshot from the active endpoint after host acceptance.
@@ -2539,6 +2594,33 @@ impl Playback {
         self.session_runtime
             .as_deref_mut()
             .is_some_and(|next| next.stage_foreign_main_pass_delay(binding, delay))
+    }
+
+    /// Identity and binding of the active Return whose input-aligned bypass
+    /// must settle before the original worker and graph can be returned.
+    pub fn pending_foreign_return_pass(
+        &self,
+    ) -> Option<(
+        hex_lattice::ProcessorInstanceIdentity,
+        hex_lattice_contract::ForeignProcessorBinding,
+    )> {
+        self.session_runtime
+            .as_deref()?
+            .pending_foreign_return_pass()
+    }
+
+    /// Stage Main PCM for the matching live Return cut after its exact endpoint
+    /// settles. Uses the donor's current committed route stamp and inline copy.
+    pub fn stage_foreign_return_pass_delay(
+        &mut self,
+        previous: &Self,
+        identity: hex_lattice::ProcessorInstanceIdentity,
+        binding: hex_lattice_contract::ForeignProcessorBinding,
+    ) -> bool {
+        self.session_runtime
+            .as_deref_mut()
+            .zip(previous.session_runtime.as_deref())
+            .is_some_and(|(next, old)| next.stage_foreign_return_pass_delay(old, identity, binding))
     }
 
     /// Ordinary publication may rebind a fresh monitor to the same physical input client in

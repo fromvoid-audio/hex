@@ -23,7 +23,7 @@ SOURCES = ("macos_bootstrap.py", "macos_helper.mm", "macos_fixture.cpp", "build.
            "macos_scan.mm", "macos_scan_wire.hpp", "macos_factory_fixture.cpp", "launch_ignored.cpp",
            "macos_instance.hpp", "macos_lifecycle_fixture.cpp", "macos_lifecycle_case.hpp",
            "macos_host_messages.hpp", "macos_host.hpp", "macos_parameters.hpp", "macos_editor_touch.hpp", "macos_parameter_page.hpp", "macos_host_case.hpp", "macos_stream_case.hpp",
-           "macos_processing.hpp", "macos_processing_fixture.cpp", "macos_processing_case.hpp", "macos_bundle.hpp", "macos_state_stream.hpp", "macos_instance_wire.hpp", "macos_input_notes.hpp", "macos_editor.hpp", "macos_editor_position.hpp", "macos_instance_worker.mm")
+           "macos_processing.hpp", "macos_processing_fixture.cpp", "macos_processing_case.hpp", "macos_bundle.hpp", "macos_state_stream.hpp", "macos_instance_wire.hpp", "macos_input_notes.hpp", "macos_editor.hpp", "macos_editor_position.hpp", "macos_instance_worker.mm", "macos_slice_clock_observation.hpp")
 MAX_FILE = 16 * 1024 * 1024
 
 
@@ -160,9 +160,19 @@ def verify(receipt, run=False, expected_source_digest=None, expected_sdk_pins=No
     return data
 
 
-def build(sdk, output, *, discovery_only=False, instance_only=False):
+OBSERVATION_DEFINE = "-DHEX_ORIGINAL_SLICE_CLOCK_OBSERVATION=1"
+
+
+def is_observation_build(data):
+    return any(isinstance(argument, str) and argument.startswith("-DHEX_ORIGINAL_SLICE_CLOCK_OBSERVATION")
+               for command in data.get("build_commands", []) for argument in command)
+
+
+def build(sdk, output, *, discovery_only=False, instance_only=False, original_slice_clock_observation=False):
     if discovery_only and instance_only:
         raise ValueError("choose one minimal helper role")
+    if original_slice_clock_observation and not instance_only:
+        raise ValueError("original slice clock observation requires the instance-only role")
     app = INSTANCE_APP if instance_only else APP
     minimal = discovery_only or instance_only
     if platform.system() != "Darwin" or platform.machine() != "arm64":
@@ -287,7 +297,8 @@ def build(sdk, output, *, discovery_only=False, instance_only=False):
         compile_one("macos_helper.mm", output / EXECUTABLE, ["-I" + str(output), "-framework", "Foundation", "-Wno-deprecated-declarations"])
     scan_executable = APP / "Contents/MacOS/hex-vst3-factory-scan"
     if instance_only:
-        compile_one("macos_instance_worker.mm", output / INSTANCE_EXECUTABLE, ["-framework", "AppKit", "-framework", "Foundation", "-Wno-deprecated-declarations"])
+        compile_one("macos_instance_worker.mm", output / INSTANCE_EXECUTABLE, ["-framework", "AppKit", "-framework", "Foundation", "-Wno-deprecated-declarations",
+                    *([OBSERVATION_DEFINE] if original_slice_clock_observation else [])])
     else:
         compile_one("macos_scan.mm", output / scan_executable, ["-I" + str(output), "-framework", "Foundation", "-Wno-deprecated-declarations"])
     reply_hang = APP / "Contents/MacOS/hex-vst3-factory-scan-reply-hang"
@@ -316,7 +327,8 @@ def build(sdk, output, *, discovery_only=False, instance_only=False):
                "runtime": {"os_build": command(["/usr/bin/sw_vers", "-buildVersion"]), "dependencies": runtime,
                            "qualification": "system runtime install names and OS build; shared-cache images are not individually hashed or compatibility-qualified"},
                "build_commands": commands, "build_closure": closure, "bundle_files": inventory(output / app),
-               "signing": "ad-hoc local helper build; no entitlements or notarization"}
+               "signing": ("ad-hoc local diagnostic slice clock observation; never deploy" if original_slice_clock_observation else
+                           "ad-hoc local helper build; no entitlements or notarization")}
     path = output / "controlled-macos.json"
     path.write_text(json.dumps(receipt, indent=2) + "\n")
     verify(path, run=not minimal)
@@ -330,6 +342,8 @@ def main():
     roles = builder.add_mutually_exclusive_group()
     roles.add_argument("--discovery-only", action="store_true", help="minimal deployable factory scanner, without bootstrap/fault fixtures")
     roles.add_argument("--instance-only", action="store_true", help="minimal source-bound ordinary-instance worker, without discovery/fault fixtures")
+    builder.add_argument("--original-slice-clock-observation", action="store_true",
+                         help="signed original SDK observation profile; never deploy or package")
     builder.add_argument("--sdk", type=Path, required=True)
     builder.add_argument("--output", type=Path, required=True)
     checker = commands.add_parser("verify")
@@ -337,7 +351,7 @@ def main():
     checker.add_argument("--run", action="store_true")
     args = parser.parse_args()
     try:
-        result = build(args.sdk, args.output, discovery_only=args.discovery_only, instance_only=args.instance_only) if args.mode == "build" else verify(args.receipt, args.run)
+        result = build(args.sdk, args.output, discovery_only=args.discovery_only, instance_only=args.instance_only, original_slice_clock_observation=args.original_slice_clock_observation) if args.mode == "build" else verify(args.receipt, args.run)
         print(result if isinstance(result, Path) else json.dumps({"verified": True, "scope": result["scope"]}))
     except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
         parser.exit(1, "controlled macOS bootstrap refused: " + str(error) + "\n")

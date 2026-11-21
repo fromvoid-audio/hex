@@ -20,6 +20,61 @@ pub struct ResidentEffectPreparation<'a> {
     pub(in crate::service) context: hex_engine::AudioSourceContext,
     pub(in crate::service) restoring_plugin_state: bool,
     pub(in crate::service) preparing_edit: bool,
+    pub(in crate::service) main_power_on: Option<ResidentMainPowerOn>,
+    pub(in crate::service) running_power_off: Option<ResidentRunningPowerOff>,
+    pub(in crate::service) hosted_instrument_move: Option<ResidentHostedInstrumentMove>,
+}
+
+/// Copied original source/binding for one explicit running hosted Off command.
+/// This is not custody; only Session can attach it to compiler preparation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidentRunningPowerOff {
+    pub owner: hex_engine::ProcessorChainOwner,
+    pub device: u64,
+    pub source: ResidentGraphSubmission,
+    pub binding: hex_lattice_contract::ForeignProcessorBinding,
+}
+
+/// The exact canonical receiver of a staged Resident command, with the
+/// original installed source stamp. This grants no native source custody.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidentHostedInstrumentMove {
+    pub donor: hex_project::TrackId,
+    pub receiver: hex_project::TrackId,
+    pub device: hex_project::DeviceId,
+    pub source: hex_project::SourceId,
+    pub predecessor: ResidentRuntimeLoop,
+}
+
+/// The explicit PowerDevice command's nonowning Off predecessor.
+/// Desktop revalidates the observed interval before fresh SDK preparation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidentMainPowerOn {
+    pub(in crate::service) device: u64,
+    pub(in crate::service) interval: ResidentMainPowerOnInterval,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResidentMainPowerOnInterval {
+    Stopped {
+        context: hex_engine::AudioSourceContext,
+        fence: ResidentFreshRuntimeFence,
+    },
+    Running(ResidentGraphSubmission),
+}
+impl ResidentMainPowerOn {
+    pub fn device(&self) -> u64 {
+        self.device
+    }
+    pub fn source_context(&self) -> hex_engine::AudioSourceContext {
+        match self.interval {
+            ResidentMainPowerOnInterval::Stopped { context, .. } => context,
+            ResidentMainPowerOnInterval::Running(source) => source.context,
+        }
+    }
+    pub fn interval(&self) -> ResidentMainPowerOnInterval {
+        self.interval
+    }
 }
 
 /// One ordered plugin gesture request and its exact canonical baseline. This
@@ -156,6 +211,78 @@ pub enum PluginParameterGestureError {
     SourceLost(String),
 }
 impl<'a> ResidentEffectPreparation<'a> {
+    fn sole_played_main(&self) -> Option<&'a hex_project::Device> {
+        let [device] = self.project.main_devices() else {
+            return None;
+        };
+        if !is_plugin_effect(device)
+            || !device.automation().is_empty()
+            || !device.modulation().sources().is_empty()
+            || !device.modulation().routes().is_empty()
+        {
+            return None;
+        }
+        let mut played = playback_plugin_devices(self.project);
+        let (destination, actual) = played.next()?;
+        (played.next().is_none()
+            && destination.owner() == hex_engine::ProcessorChainOwner::Main
+            && actual.id() == device.id())
+        .then_some(device)
+    }
+    /// One saved Off Main on a playback route, without automation or modulation.
+    /// This declaration grants no worker, endpoint or applied-source authority.
+    pub fn powered_off_main(&self) -> Option<(u64, &'a NativeDeviceState)> {
+        let device = self.sole_played_main().filter(|device| device.bypassed())?;
+        Some((device.id().value(), device.state()))
+    }
+    /// The sole hosted Return authored Off on a playback route. This
+    /// declaration grants no preparation or installation authority.
+    pub fn powered_off_return(
+        &self,
+    ) -> Option<(hex_engine::ProcessorChainOwner, u64, &'a NativeDeviceState)> {
+        let (owner, device) = sole_hosted_return(self.project)?;
+        device
+            .bypassed()
+            .then_some((owner, device.id().value(), device.state()))
+    }
+    /// Only a staged running PowerDevice may replace the exact On source by Off.
+    pub fn running_power_off(&self) -> Option<ResidentRunningPowerOff> {
+        let intent = self.running_power_off?;
+        let device = match intent.owner {
+            hex_engine::ProcessorChainOwner::Main => self.sole_played_main()?,
+            hex_engine::ProcessorChainOwner::Return(_) => {
+                let (owner, device) = sole_hosted_return(self.project)?;
+                if owner != intent.owner {
+                    return None;
+                }
+                device
+            }
+            _ => return None,
+        };
+        (self.preparing_edit
+            && device.bypassed()
+            && device.id().value() == intent.device
+            && intent.source.context.project_generation == self.context.project_generation
+            && intent.source.context.editor_revision.checked_add(1)
+                == Some(self.context.editor_revision))
+        .then_some(intent)
+    }
+    /// Only the explicit power command can prepare a fresh On worker.
+    /// Generic history/moves and changed owner, bypass or context cannot use it.
+    pub fn main_power_on(&self) -> Option<ResidentMainPowerOn> {
+        let intent = self.main_power_on?;
+        let device = self.sole_played_main()?;
+        let source = intent.source_context();
+        (self.preparing_edit
+            && !device.bypassed()
+            && device.id().value() == intent.device
+            && source.project_generation == self.context.project_generation
+            && source.editor_revision.checked_add(1) == Some(self.context.editor_revision))
+        .then_some(intent)
+    }
+    pub fn hosted_instrument_move(&self) -> Option<&ResidentHostedInstrumentMove> {
+        self.hosted_instrument_move.as_ref()
+    }
     pub fn sample_rate(&self) -> u32 {
         self.project.sample_rate()
     }
@@ -339,6 +466,25 @@ fn is_plugin_effect(device: &hex_project::Device) -> bool {
     device.state().type_id() == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
 }
 
+pub(super) fn sole_hosted_return(
+    project: &Project,
+) -> Option<(hex_engine::ProcessorChainOwner, &hex_project::Device)> {
+    let [bus] = project.return_tracks() else {
+        return None;
+    };
+    let [device] = bus.devices() else { return None };
+    let mut played = playback_plugin_devices(project);
+    let (destination, actual) = played.next()?;
+    let owner = hex_engine::ProcessorChainOwner::Return(bus.id().value());
+    (destination.owner() == owner
+        && actual.id() == device.id()
+        && played.next().is_none()
+        && device.automation().is_empty()
+        && device.modulation().sources().is_empty()
+        && device.modulation().routes().is_empty())
+    .then_some((owner, device))
+}
+
 fn playback_plugin_devices(
     project: &Project,
 ) -> impl Iterator<Item = (PluginEffectDestination, &hex_project::Device)> {
@@ -498,7 +644,7 @@ pub enum ResidentPublicationPolicy {
     DeviceInsert {
         predecessor: ResidentRuntimeLoop,
         hosted: bool,
-        /// A power receipt is restricted to this original settled Stop interval.
+        /// A stopped-only edit must retain this original settled Stop interval.
         stopped_fence: Option<ResidentFreshRuntimeFence>,
         /// Exact seamless refusal whose interruption the user approved.
         confirmation: Option<ResidentGraphSubmission>,
@@ -1129,14 +1275,51 @@ pub trait WorkerAudioSink: Send {
     fn resident_publication_readiness(&mut self) -> ResidentPublicationReadiness {
         ResidentPublicationReadiness::NoOutput
     }
-    /// Observe the exact installed source only in a settled Stop interval.
+    /// Observe the exact Main device and source in a settled Stop interval for
+    /// stopped power or replacement history.
     /// This grants no custody; publication must revalidate the complete witness.
     fn stopped_resident_power_fence(
         &mut self,
         _context: hex_engine::AudioSourceContext,
         _device: u64,
+    ) -> Result<Option<ResidentFreshRuntimeFence>, String> {
+        Ok(None)
+    }
+
+    /// Observe an accepted Track or Return worker on the exact stopped source.
+    /// This grants no custody; publication must revalidate the same witness.
+    fn stopped_resident_effect_history_fence(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _owner: hex_engine::ProcessorChainOwner,
+        _device: u64,
     ) -> Option<ResidentFreshRuntimeFence> {
         None
+    }
+
+    /// Copy the exact currently playing hosted source; no endpoint custody escapes.
+    fn running_resident_power_off(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _owner: hex_engine::ProcessorChainOwner,
+        _device: u64,
+    ) -> Result<Option<ResidentRunningPowerOff>, String> {
+        Ok(None)
+    }
+
+    /// Observe the exact workerless Off graph of a playing Resident output.
+    fn running_resident_main_power_on(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _device: u64,
+    ) -> Option<ResidentGraphSubmission> {
+        None
+    }
+
+    /// Shape-only Return eligibility never stages a running power command
+    /// while the sink's ordinary playback transport is stopped.
+    fn resident_playing(&mut self) -> bool {
+        false
     }
 
     /// Actual output/source/revision-bound loop, never the saved loop marker.
@@ -2251,6 +2434,253 @@ mod tests {
     use std::time::Instant;
 
     #[test]
+    fn running_main_off_requires_its_explicit_exact_command_input() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: NativeDeviceState::new(
+                    hex_lattice_contract::VST3_DEVICE_TYPE_ID,
+                    1,
+                    vec![1],
+                )
+                .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("Main fixture");
+        };
+        let previous = hex_engine::AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 2,
+        };
+        let candidate = hex_engine::AudioSourceContext {
+            editor_revision: 3,
+            ..previous
+        };
+        let intent = ResidentRunningPowerOff {
+            owner: hex_engine::ProcessorChainOwner::Main,
+            device: device.value(),
+            source: ResidentGraphSubmission {
+                context: previous,
+                output_identity: 1,
+                audio_revision: 4,
+            },
+            binding: hex_lattice_contract::ForeignProcessorBinding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 4,
+            },
+        };
+        editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            })
+            .unwrap();
+        let selected = |project: &Project, context, preparing_edit, running_power_off| {
+            ResidentEffectPreparation {
+                project,
+                context,
+                preparing_edit,
+                running_power_off,
+                hosted_instrument_move: None,
+                restoring_plugin_state: false,
+                main_power_on: None,
+            }
+            .running_power_off()
+        };
+        assert_eq!(
+            selected(editor.project(), candidate, true, Some(intent)),
+            Some(intent)
+        );
+        assert_eq!(selected(editor.project(), candidate, true, None), None);
+        assert_eq!(
+            selected(editor.project(), previous, true, Some(intent)),
+            None
+        );
+        assert_eq!(
+            selected(editor.project(), candidate, false, Some(intent)),
+            None
+        );
+        assert_eq!(
+            selected(
+                editor.project(),
+                candidate,
+                true,
+                Some(ResidentRunningPowerOff {
+                    device: device.value() + 1,
+                    ..intent
+                })
+            ),
+            None
+        );
+        editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: false,
+            })
+            .unwrap();
+        assert_eq!(
+            selected(editor.project(), candidate, true, Some(intent)),
+            None
+        );
+    }
+
+    #[test]
+    fn fresh_main_on_requires_the_explicit_power_input_and_unchanged_target() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: NativeDeviceState::new(
+                    hex_lattice_contract::VST3_DEVICE_TYPE_ID,
+                    1,
+                    vec![1],
+                )
+                .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("main");
+        };
+        let source_context = hex_engine::AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 2,
+        };
+        let candidate = hex_engine::AudioSourceContext {
+            editor_revision: 3,
+            ..source_context
+        };
+        let intent = ResidentMainPowerOn {
+            device: device.value(),
+            interval: ResidentMainPowerOnInterval::Stopped {
+                context: source_context,
+                fence: ResidentFreshRuntimeFence {
+                    output_identity: 1,
+                    active_audio_revision: 2,
+                    route_generation: 3,
+                    admitted_command_ticket: 4,
+                    output_fault_epoch: 5,
+                    consumed_stop_generation: 6,
+                },
+            },
+        };
+        let selected = |project: &Project, context, main_power_on| {
+            ResidentEffectPreparation {
+                project,
+                context,
+                restoring_plugin_state: false,
+                preparing_edit: true,
+                main_power_on,
+                running_power_off: None,
+                hosted_instrument_move: None,
+            }
+            .main_power_on()
+        };
+        assert_eq!(selected(editor.project(), candidate, None), None);
+        assert_eq!(
+            selected(editor.project(), candidate, Some(intent)),
+            Some(intent)
+        );
+        let running = ResidentMainPowerOn {
+            interval: ResidentMainPowerOnInterval::Running(ResidentGraphSubmission {
+                context: source_context,
+                audio_revision: 2,
+                output_identity: 1,
+            }),
+            ..intent
+        };
+        assert_eq!(
+            selected(editor.project(), candidate, Some(running)),
+            Some(running)
+        );
+        assert_eq!(
+            selected(editor.project(), source_context, Some(running)),
+            None
+        );
+        assert_eq!(
+            selected(editor.project(), source_context, Some(intent)),
+            None
+        );
+        assert_eq!(
+            selected(
+                editor.project(),
+                candidate,
+                Some(ResidentMainPowerOn {
+                    device: device.value() + 1,
+                    ..intent
+                })
+            ),
+            None
+        );
+        editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            })
+            .unwrap();
+        assert_eq!(selected(editor.project(), candidate, Some(intent)), None);
+        editor.execute(Command::RemoveDevice(device)).unwrap();
+        assert_eq!(selected(editor.project(), candidate, Some(intent)), None);
+    }
+
+    #[test]
+    fn only_the_sole_played_bypassed_main_is_a_saved_off_declaration() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let state =
+            NativeDeviceState::new(hex_lattice_contract::VST3_DEVICE_TYPE_ID, 1, vec![1]).unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: state.clone(),
+            })
+            .unwrap()
+        else {
+            panic!("main");
+        };
+        let selected = |project: &Project| {
+            ResidentEffectPreparation {
+                project,
+                context: hex_engine::AudioSourceContext {
+                    project_generation: 1,
+                    editor_revision: 0,
+                },
+                restoring_plugin_state: false,
+                preparing_edit: false,
+                main_power_on: None,
+                running_power_off: None,
+                hosted_instrument_move: None,
+            }
+            .powered_off_main()
+            .map(|(id, _)| id)
+        };
+        assert_eq!(selected(editor.project()), None);
+        editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            })
+            .unwrap();
+        assert_eq!(selected(editor.project()), Some(device.value()));
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "detached".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        editor
+            .execute(Command::InsertInstrument { track, state })
+            .unwrap();
+        assert_eq!(selected(editor.project()), None);
+        editor.execute(Command::RemoveInstrument { track }).unwrap();
+        assert_eq!(selected(editor.project()), Some(device.value()));
+    }
+
+    #[test]
     fn detached_hosted_instrument_keeps_authored_state_without_playback_membership() {
         let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Track(track) = editor
@@ -2281,6 +2711,9 @@ mod tests {
                 },
                 restoring_plugin_state: false,
                 preparing_edit: false,
+                main_power_on: None,
+                running_power_off: None,
+                hosted_instrument_move: None,
             }
             .plugin_device_bypassed(device.value())
         };
@@ -2494,6 +2927,9 @@ mod tests {
                 },
                 restoring_plugin_state: false,
                 preparing_edit: true,
+                main_power_on: None,
+                running_power_off: None,
+                hosted_instrument_move: None,
             }
         }
 
@@ -2601,6 +3037,9 @@ mod tests {
             },
             restoring_plugin_state: false,
             preparing_edit: true,
+            main_power_on: None,
+            running_power_off: None,
+            hosted_instrument_move: None,
         };
         assert_eq!(
             input
@@ -2653,6 +3092,9 @@ mod tests {
                 },
                 restoring_plugin_state: reopen,
                 preparing_edit: !reopen,
+                main_power_on: None,
+                running_power_off: None,
+                hosted_instrument_move: None,
             }
             .modulated_plugin_target(device.value())
             .unwrap()

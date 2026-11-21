@@ -107,6 +107,32 @@ struct StoppedForeignHistory {
     fence: hex_audio::prepared::StoppedEditFence,
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn settled_resident_effect_fence(
+    control: &hex_audio::prepared::PublicationControl,
+    context: AudioSourceContext,
+    matches_source: impl FnOnce(hex_audio::prepared::AppliedAudioSource) -> bool,
+) -> Option<hex_session::service::ResidentFreshRuntimeFence> {
+    let interval = control.status.paused_input_interval()?;
+    if interval.0.context != context || !matches_source(interval.0) {
+        return None;
+    }
+    let fence = control.capture_fresh_runtime_fence()?;
+    if fence.expected_active_revision() != interval.0.audio_revision
+        || control.status.paused_input_interval() != Some(interval)
+    {
+        return None;
+    }
+    Some(hex_session::service::ResidentFreshRuntimeFence {
+        output_identity: interval.0.output_identity,
+        active_audio_revision: fence.expected_active_revision(),
+        route_generation: fence.route_state_generation(),
+        admitted_command_ticket: fence.admitted_command_ticket(),
+        output_fault_epoch: fence.output_fault_epoch(),
+        consumed_stop_generation: fence.consumed_stop_generation(),
+    })
+}
+
 #[cfg(all(test, feature = "allocation-probe"))]
 struct VerifiedPageHold {
     index: u64,
@@ -1799,6 +1825,22 @@ impl WorkerAudioSink for NativeAudioSink {
         {
             control.release_stopped_edit_fence(lease.fence);
         }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let off = self.applied_powered_off(context);
+            let applied = self
+                .output
+                .as_mut()
+                .and_then(|output| output.publication.control())
+                .and_then(|control| control.status.recording_source());
+            if let Some(running_off) = self
+                .plugins
+                .finish_power_off(context, accepted, applied, off)
+            {
+                self.resident.running_powered_off = Some(running_off);
+            }
+            self.plugins.finish_hosted_move(context, accepted, applied);
+        }
         self.plugins.finish_edit(context, accepted);
     }
     fn plugin_state_restore_pending(&self, context: AudioSourceContext) -> bool {
@@ -1954,11 +1996,36 @@ impl WorkerAudioSink for NativeAudioSink {
         )
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
+        let powered_off = self
+            .desired
+            .as_ref()
+            .map(|source| source.context())
+            .and_then(|context| self.applied_powered_off(context));
+        if let Some(intent) = input.main_power_on() {
+            use hex_session::service::ResidentMainPowerOnInterval;
+            let changed = match intent.interval() {
+                ResidentMainPowerOnInterval::Stopped { context, fence } => {
+                    powered_off.is_some_and(|identity| {
+                        identity.owner() == hex_engine::ProcessorChainOwner::Main
+                            && identity.device_id() == intent.device()
+                    }) && self.stopped_resident_power_fence(context, intent.device())?
+                        != Some(fence)
+                }
+                ResidentMainPowerOnInterval::Running(source) => {
+                    self.running_resident_main_power_on(source.context, intent.device())
+                        != Some(source)
+                }
+            };
+            if changed {
+                return Err("main power-on source changed before preparation".into());
+            }
+        }
         self.plugins.compile(
             self.output.as_mut(),
             input,
             self.desired.as_deref(),
             self.request_cancellation.as_ref(),
+            powered_off,
             prepare,
         )
     }
@@ -2000,6 +2067,8 @@ impl WorkerAudioSink for NativeAudioSink {
                 self.desired.as_deref(),
                 Some(&cancellation),
                 true,
+                None,
+                None,
             )?;
             Some(cancellation)
         } else {
@@ -2244,41 +2313,143 @@ impl WorkerAudioSink for NativeAudioSink {
         crate::streamed_export::resident_seek_storage_bytes(prepared, sources)
     }
 
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn running_resident_power_off(
+        &mut self,
+        context: AudioSourceContext,
+        owner: hex_engine::ProcessorChainOwner,
+        device: u64,
+    ) -> Result<Option<hex_session::service::ResidentRunningPowerOff>, String> {
+        let binding = match self.plugins.power_off_binding(context, owner, device) {
+            Some(binding) => binding,
+            None => return Ok(None),
+        };
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .ok_or("running power output unavailable")?;
+        let Some(actual) = control
+            .status
+            .recording_source()
+            .filter(|actual| actual.context == context)
+        else {
+            return Ok(None);
+        };
+        if !control
+            .status
+            .playing
+            .load(std::sync::atomic::Ordering::Acquire)
+            || control.status.native_effect_source() != Some(actual)
+        {
+            return Ok(None);
+        }
+        Ok(Some(hex_session::service::ResidentRunningPowerOff {
+            owner,
+            device,
+            binding,
+            source: hex_session::service::ResidentGraphSubmission {
+                context: actual.context,
+                audio_revision: actual.audio_revision,
+                output_identity: actual.output_identity,
+            },
+        }))
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn running_resident_main_power_on(
+        &mut self,
+        context: AudioSourceContext,
+        device: u64,
+    ) -> Option<hex_session::service::ResidentGraphSubmission> {
+        let (off_source, stop_generation) = self.resident.running_powered_off?;
+        let control = self.output.as_mut()?.publication.control()?;
+        let actual = control.status.recording_source()?;
+        let fence = control.capture_fresh_runtime_fence()?;
+        if actual != off_source
+            || actual.context != context
+            || fence.expected_active_revision() != actual.audio_revision
+            || fence.consumed_stop_generation() != stop_generation
+            || self.resident.powered_off_main(actual) != Some(device)
+            || !control
+                .status
+                .playing
+                .load(std::sync::atomic::Ordering::Acquire)
+            || control.status.native_effect_source().is_some()
+        {
+            return None;
+        }
+        Some(hex_session::service::ResidentGraphSubmission {
+            context,
+            audio_revision: actual.audio_revision,
+            output_identity: actual.output_identity,
+        })
+    }
+
+    fn resident_playing(&mut self) -> bool {
+        self.output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .is_some_and(|control| {
+                control
+                    .status
+                    .playing
+                    .load(std::sync::atomic::Ordering::Acquire)
+            })
+    }
+
     fn stopped_resident_power_fence(
         &mut self,
         context: AudioSourceContext,
         device: u64,
-    ) -> Option<hex_session::service::ResidentFreshRuntimeFence> {
+    ) -> Result<Option<hex_session::service::ResidentFreshRuntimeFence>, String> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            if !self.plugins.has_accepted_main_source(context, device) {
-                return None;
+            let off = self.applied_powered_off_main(context) == Some(device);
+            if !off && !self.plugins.has_accepted_main_source(context, device) {
+                return Ok(None);
             }
-            let control = self.output.as_mut()?.publication.control()?;
-            let interval = control.status.paused_input_interval()?;
-            if interval.0.context != context {
-                return None;
+            let resident = &self.resident;
+            let fence = self
+                .output
+                .as_mut()
+                .and_then(|output| output.publication.control())
+                .and_then(|control| {
+                    settled_resident_effect_fence(control, context, |source| {
+                        !off || resident.powered_off_main(source) == Some(device)
+                    })
+                });
+            if off && fence.is_none() {
+                return Err("power on requires the original settled stop interval".into());
             }
-            let fence = control.capture_fresh_runtime_fence()?;
-            if fence.expected_active_revision() != interval.0.audio_revision
-                || control.status.paused_input_interval() != Some(interval)
-            {
-                return None;
-            }
-            Some(hex_session::service::ResidentFreshRuntimeFence {
-                output_identity: interval.0.output_identity,
-                active_audio_revision: fence.expected_active_revision(),
-                route_generation: fence.route_state_generation(),
-                admitted_command_ticket: fence.admitted_command_ticket(),
-                output_fault_epoch: fence.output_fault_epoch(),
-                consumed_stop_generation: fence.consumed_stop_generation(),
-            })
+            Ok(fence)
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
             let _ = (context, device);
-            None
+            Ok(None)
         }
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn stopped_resident_effect_history_fence(
+        &mut self,
+        context: AudioSourceContext,
+        owner: hex_engine::ProcessorChainOwner,
+        device: u64,
+    ) -> Option<hex_session::service::ResidentFreshRuntimeFence> {
+        use hex_engine::ProcessorChainOwner;
+        if !matches!(
+            owner,
+            ProcessorChainOwner::Track(_) | ProcessorChainOwner::Return(_)
+        ) || !self
+            .plugins
+            .has_accepted_effect_source(context, owner, device)
+        {
+            return None;
+        }
+        let control = self.output.as_mut()?.publication.control()?;
+        settled_resident_effect_fence(control, context, |_| true)
     }
 
     fn resident_runtime_loop(
@@ -2450,6 +2621,19 @@ impl WorkerAudioSink for NativeAudioSink {
         hex_session::service::ResidentPublicationAcceptance,
         hex_session::service::ResidentPublicationRefusal,
     > {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let mut playback = playback;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if let Err(error) =
+            self.plugins
+                .mark_hosted_move_publication(metadata.context, policy, &mut playback)
+        {
+            return Err(hex_session::service::ResidentPublicationRefusal {
+                kind: hex_session::service::ResidentPublicationFailure::Other,
+                playback,
+                error,
+            });
+        }
         if let Err(error) = self.plugins.check_reopen_publication(
             metadata.context,
             matches!(
@@ -2526,6 +2710,11 @@ impl WorkerAudioSink for NativeAudioSink {
         };
         if preparing_output && let Err(ref refusal) = result {
             self.refuse_replacement_output(&refusal.error);
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if let Ok(accepted) = result.as_ref() {
+            self.plugins
+                .hosted_move_submitted(metadata.context, accepted);
         }
         result
     }
@@ -2759,7 +2948,7 @@ impl WorkerAudioSink for NativeAudioSink {
         hold
     }
     fn poll(&mut self) {
-        self.resident.reap_control_owners();
+        self.reap_resident_control_owners();
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if self.output_generation.is_none() || self.output.is_none() {
             self.plugins.poll_retiring_edits();

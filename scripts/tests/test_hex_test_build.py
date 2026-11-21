@@ -27,6 +27,22 @@ SIGNED = {"identifier": delivery.IDENTITY, "team_identifier": SIGNING["team_iden
           "designated_requirement": f'designated => identifier "{delivery.IDENTITY}" and anchor apple generic and certificate leaf[subject.OU] = {SIGNING["team_identifier"]}'}
 
 
+class InstanceObservationInputTests(unittest.TestCase):
+    def test_ordinary_input_passes_but_flagged_input_cannot_be_deployed(self):
+        candidate = "a" * 40
+        data = {"scope": "native-macos-instance", "source_commit": candidate,
+                "source_dirty": False, "package_layout": None,
+                "build_commands": [["clang++", "-O2"]]}
+        builder = delivery.discovery_builder()
+        with patch.object(delivery, "assert_plain_path"), \
+                patch.object(builder, "verify", return_value=data), \
+                patch.object(delivery, "discovery_builder", return_value=builder):
+            self.assertIs(delivery.validate_instance_input(Path("unused-receipt"), candidate), data)
+            data["build_commands"][0].append(builder.OBSERVATION_DEFINE)
+            with self.assertRaisesRegex(delivery.DeliveryError, "cannot be deployed"):
+                delivery.validate_instance_input(Path("unused-receipt"), candidate)
+
+
 class DeliveryTests(unittest.TestCase):
     def test_delivery_switches_validation_when_fresh_owner_is_admitted(self):
         (self.root / "scripts/hex-test-build.json").write_text(json.dumps({"app_path": "hex.app", "signing": SIGNING}))

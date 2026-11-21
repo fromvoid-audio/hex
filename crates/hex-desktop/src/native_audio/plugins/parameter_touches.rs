@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Copy)]
 pub(super) struct PendingRead {
     pub(super) recovery: bool,
-    source: AppliedAudioSource,
+    pub(super) source: AppliedAudioSource,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -337,6 +337,17 @@ impl Plugins {
                 if let Some(progress) = &self.progress
                     && let Ok(mut progress) = progress.lock()
                 {
+                    // Request admission and first PCM do not acknowledge the
+                    // helper's latency opt-in. Only its returned recovery batch
+                    // can qualify this exact accepted source for the fixture.
+                    if requested_recovery
+                        && live
+                        && source.accepted
+                        && !source.retiring
+                        && source.binding.root == active.output_identity
+                    {
+                        progress.recovery_read_binding = Some(source.binding);
+                    }
                     for edit in batch.edits.as_slice() {
                         let index = progress.editor_receipt_count;
                         if let Some(slot) = progress.editor_receipts.get_mut(index) {
@@ -456,6 +467,40 @@ mod tests {
             attempts: 0,
         }
     }
+    #[test]
+    fn main_power_off_refuses_an_admitted_read_without_its_retirement_lease() {
+        let active = AppliedAudioSource {
+            context: AudioSourceContext {
+                project_generation: 1,
+                editor_revision: 2,
+            },
+            output_identity: 1,
+            audio_revision: 3,
+        };
+        let mut plugins = Plugins::default();
+        let mut original = source(7, active, 42);
+        original.pending_touch = None;
+        let binding = original.binding;
+        plugins.sources.push(original);
+        assert_eq!(
+            plugins.power_off_binding(active.context, ProcessorChainOwner::Main, 7),
+            Some(binding)
+        );
+        plugins.sources[0].edit_recovery = Some(PendingRead {
+            recovery: true,
+            source: active,
+        });
+        assert!(plugins.sources[0].editor_retirement.lease.is_none());
+        assert_eq!(
+            plugins.power_off_binding(active.context, ProcessorChainOwner::Main, 7),
+            None
+        );
+        let retained = plugins.sources[0].edit_recovery.unwrap();
+        assert_eq!(retained.source, active);
+        assert!(retained.recovery);
+        assert!(plugins.sources[0].accepted && !plugins.sources[0].retiring);
+    }
+
     fn scheduling_sources() -> (AppliedAudioSource, Vec<Source>) {
         let active = AppliedAudioSource {
             context: AudioSourceContext {

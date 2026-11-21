@@ -240,6 +240,32 @@ fn direct_replacement_predecessor<'a>(
 }
 
 impl ForeignArrangement {
+    pub(super) fn has_direct_move_gate(
+        &self,
+        index: usize,
+        authored: &Track,
+        origin: TrackId,
+        cut: FrameContext,
+    ) -> bool {
+        let Some(generator) = self.generators.get(index).and_then(Option::as_ref) else {
+            return false;
+        };
+        let ledger = &generator.committed;
+        let [gate] = ledger.notes.as_slice() else {
+            return false;
+        };
+        !ledger.cut
+            && ledger.route == Some(RouteOwner::Arrangement)
+            && ledger.loop_pass == Some(cut.loop_pass)
+            && !ledger.live.held()
+            && !ledger.hardware.held()
+            && !gate.note_off_sent
+            && gate.gate_end_frame > cut.performance
+            && cut.performance.saturating_sub(gate.onset_frame)
+                >= u64::from(generator.processor.total_latency_frames())
+            && validate_held_gates(authored, origin, ledger, &cut, None).is_ok()
+    }
+
     pub(super) fn prepare(revision: &PreparedRevision) -> Result<Self, SessionPlaybackError> {
         let tracks = revision.arrangement().tracks();
         let mut generators = Vec::new();
@@ -402,17 +428,20 @@ impl ForeignArrangement {
     pub(super) fn plan_handoff(
         &mut self,
         old: &Self,
-        tracks: [&[Track]; 2],
+        revisions: [&PreparedRevision; 2],
         cut: FrameContext,
         fresh: Option<TrackId>,
         may_offer_device_cut: bool,
         hosted_cut: HeldInstrumentCut,
         held_removal: Option<TrackId>,
+        hosted_move: Option<super::hosted_instrument_move::HostedTrackCut>,
         loops: [Option<hex_project::LoopRegion>; 2],
         tempo_cut: Option<(u64, u64)>,
         parameter_continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
     ) -> Result<Handoff, SessionPlaybackError> {
-        let [tracks, old_tracks] = tracks;
+        let [revision, old_revision] = revisions;
+        let tracks = revision.arrangement().tracks();
+        let old_tracks = old_revision.arrangement().tracks();
         let mut plan = Handoff {
             old_indices: [None; MAX_TRACKS],
             held_session_for_old: [false; MAX_TRACKS],
@@ -427,11 +456,31 @@ impl ForeignArrangement {
         let mut displaced_index = None;
         for (index, candidate) in self.generators.iter_mut().enumerate() {
             let Some(candidate) = candidate else { continue };
+            let movement = hosted_move.filter(|movement| movement.destination == index);
             let matched = old.generators.iter().enumerate().find_map(|(index, old)| {
                 let old = old.as_ref()?;
-                (old.track == candidate.track && old.processor == candidate.processor)
-                    .then_some((index, old))
+                let route_matches = movement.map_or(old.track == candidate.track, |movement| {
+                    movement.source == index
+                        && old.track == movement.request.donor
+                        && candidate.track == movement.request.receiver
+                        && old.processor.binding() == Some(movement.request.binding)
+                });
+                (route_matches && old.processor == candidate.processor).then_some((index, old))
             });
+            let node = tracks
+                .get(index)
+                .and_then(|track| track.foreign_instrument.as_ref())
+                .ok_or(INCOMPATIBLE_HANDOFF)?;
+            if node.owner != crate::ProcessorChainOwner::Track(candidate.track.value())
+                && !matched.is_some_and(|(old_index, _)| {
+                    old_tracks
+                        .get(old_index)
+                        .and_then(|track| track.foreign_instrument.as_ref())
+                        .is_some_and(|old| old.owner == node.owner)
+                })
+            {
+                return Err(INCOMPATIBLE_HANDOFF);
+            }
             let Some((old_index, donor)) = matched else {
                 let replacement = (!held_edit_needs_cut
                     && displaced_index.is_none()
@@ -494,6 +543,30 @@ impl ForeignArrangement {
                 .get_mut(old_index)
                 .ok_or(SessionPlaybackError::RevisionTrackMismatch)? = true;
             let ledger = &donor.committed;
+            // After a cut, an ordinary refresh may see the original gate and
+            // later receiver notes together. The detached gate keeps its
+            // authored origin and deadline on the same worker.
+            let carried_origin = if movement.is_none()
+                && node.owner != crate::ProcessorChainOwner::Track(candidate.track.value())
+                && ledger.notes.iter().any(|note| {
+                    !note.note_off_sent && note.signature.key().track != candidate.track
+                }) {
+                let origin = old_tracks
+                    .iter()
+                    .filter_map(Track::canonical_track_id)
+                    .find(|id| node.owner == crate::ProcessorChainOwner::Track(id.value()))
+                    .ok_or(INCOMPATIBLE_HANDOFF)?;
+                if tempo_cut.is_some()
+                    || loops[0] != loops[1]
+                    || old_revision.arrangement().tempo_map != revision.arrangement().tempo_map
+                    || !old_revision.bounded_mutable_arrangement_sources_match(revision, origin, 16)
+                {
+                    return Err(INCOMPATIBLE_HANDOFF);
+                }
+                Some(origin)
+            } else {
+                None
+            };
             if ledger.loop_pass.is_some() && (cut.playing || ledger.has_any_held_notes()) {
                 plan.requires_clock_continuity = true;
                 // An Arrangement gate keeps its performance-frame deadline at
@@ -588,10 +661,15 @@ impl ForeignArrangement {
                 && ledger.route == Some(RouteOwner::Arrangement)
                 && ledger.loop_pass == Some(cut.loop_pass)
             {
-                let track = tracks
-                    .get(index)
+                let track = movement
+                    .map_or_else(
+                        || tracks.get(index),
+                        |movement| movement.authored_track(tracks, old_tracks),
+                    )
                     .ok_or(SessionPlaybackError::RevisionTrackMismatch)?;
-                validate_held_gates(track, candidate.track, ledger, &cut)?;
+                let origin =
+                    movement.map_or(donor.track, |movement| movement.request.physical_owner);
+                validate_held_gates(track, origin, ledger, &cut, carried_origin)?;
             }
         }
         for (index, generator) in old.generators.iter().enumerate() {
@@ -983,10 +1061,13 @@ fn validate_held_gates(
     track_id: TrackId,
     ledger: &Ledger,
     cut: &FrameContext,
+    carried_origin: Option<TrackId>,
 ) -> Result<(), SessionPlaybackError> {
     let mut unmatched = [false; MAX_FOREIGN_NOTES];
     for (flag, note) in unmatched.iter_mut().zip(&ledger.notes) {
-        *flag = !note.note_off_sent && note.gate_end_frame > cut.performance;
+        *flag = !note.note_off_sent
+            && note.gate_end_frame > cut.performance
+            && carried_origin != Some(note.signature.key().track);
     }
     if !unmatched.contains(&true) {
         return Ok(());

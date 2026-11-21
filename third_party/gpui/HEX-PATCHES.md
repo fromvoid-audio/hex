@@ -82,6 +82,11 @@ The scene records the outermost layer boundaries for both live and bulk-replayed
 paint operations. Replay tests for an enclosing layer at the requested start
 with a binary search. An unmatched earlier end still forces per-operation replay.
 
+Cached replay accumulates the exact minimum and maximum corners of its clipped
+envelope. If the final origin-and-size conversion rounds an outer edge inward,
+the scene uses per-operation replay before reserving any order. The mixed-kind
+oracle checks a later visible overlap that the rounded envelope would hide.
+
 No whole-row layer shortcut, native calls, unsafe code or new dependency is added.
 
 The implementation is confined to `src/scene.rs` and `src/bounds_tree.rs`;
@@ -113,6 +118,26 @@ the new rectangle. After the usual query, keep the largest order in the leaf
 and propagate the maximum along the usual ancestor path. Every primitive
 keeps its own assigned order and every future overlap has the same maximum.
 The locked verifier covers repeated overlap, reservation and disjoint reuse.
+
+Draw-order nodes retain both corners directly. A union no longer recreates
+an edge from a rounded origin and size, which could hide a fractional
+intersection in a sibling subtree. The independent ordering oracle checks a
+five-rectangle reproduction alongside cached replay and reserve coverage.
+
+Best-fit insertion also keeps the draw-order tree height balanced. In-place
+rotations retain every leaf and the ordering of intersecting draws. Each affected
+ancestor is refreshed from its children after insertion. The ordering
+verifier covers 4,096 consecutive non-overlapping clip positions and
+their repeated draws, with logarithmic tree depth.
+
+The Arrangement clip backdrop can submit a bounded group of fresh primitives
+through `Window::paint_ordered_group`. The Scene keeps the effective clipped
+bounds and exact ordinary draw order for each member but places one grouped
+leaf in the balanced tree. Subsequent queries refine this leaf against its
+actual members. The group ends before layer or replay operations and at its
+size limit. If group order assignment fails, queued primitives use ordinary
+insertion. The Scene oracle compares exact order, operation payloads, cache
+replay and later mixed-kind overlaps.
 
 Mac display requests still service dirty frames and explicit presentation.
 The optional recent-input replay of an unchanged scene skips drawable
@@ -356,6 +381,13 @@ movement and repeated repaint, tooltip eligibility, release/button-loss/escape/
 deactivation recovery, and retained typed drop feedback/delivery. Native pointer
 and OS tooltip acceptance remain separate from these headless scene checks.
 
+21 November typed drag admission from the original press. Div can ask a typed
+factory for the drag value after its existing movement threshold. The factory
+can decline the source and leave the move available to subsequent handlers.
+Eager callers retain their value and constructor behavior. This shares the
+existing active-drag view, cursor and drop delivery contract with clip surfaces
+that choose their source from the completed press geometry.
+
 26 October explicit pointer ownership: Window admits one pressed-button lease
 before a control mutates its gesture. Captured mouse input bypasses ordinary/raw
 listeners after the initiating press; that press retains gesture-owned ancestor
@@ -478,3 +510,10 @@ the completed triangles under the live clip mask.
 colors and widths of completed canvas quads at a logical point inside their
 content masks. Hex uses it to distinguish the idle, hover, and selected rounded
 note outlines. It is confined to the existing test-support context.
+
+21 November cached glyph clipping: Scene bulk replay uses each sprite's
+transformed painted bounds when copying the cached operations, matching
+fresh paint and fallback. A rotated glyph can remain visible through a
+mask outside its original horizontal rectangle. The cached-scene oracle
+checks visible and clipped transformed sprites, unchanged ordinary glyphs,
+and their relative order against a translucent overlay at both scales.

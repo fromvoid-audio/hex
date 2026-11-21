@@ -5,6 +5,8 @@ use hex_project::BeatTime;
 
 mod automation_start;
 mod held_removal;
+mod held_track_cut;
+mod held_track_move;
 mod section_edit;
 mod section_recovery;
 mod track_duplicate;

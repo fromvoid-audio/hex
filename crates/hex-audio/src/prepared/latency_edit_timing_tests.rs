@@ -16,8 +16,12 @@ mod instrument_move;
 #[cfg(feature = "allocation-probe")]
 mod reorder;
 #[cfg(feature = "allocation-probe")]
+mod return_feed_removal;
+#[cfg(feature = "allocation-probe")]
 mod return_removal;
 mod reverb_power;
+#[cfg(feature = "allocation-probe")]
+mod sampler_move;
 #[cfg(feature = "allocation-probe")]
 mod short_main_pass;
 #[cfg(feature = "allocation-probe")]

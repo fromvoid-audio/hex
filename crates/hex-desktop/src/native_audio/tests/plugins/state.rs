@@ -6,8 +6,10 @@ use hex_session::service::NativeDeviceState;
 use std::sync::atomic::Ordering::Release;
 pub(super) mod edits;
 mod main_vst3_pass;
+mod main_vst3_processor_latency;
 mod power_receipt;
 mod save;
+mod saved_off_main;
 mod verified;
 
 /// Tests that hold a fresh callback before its first graph use the real

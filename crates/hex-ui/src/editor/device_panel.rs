@@ -5,7 +5,9 @@ use gpui::{
     App, Bounds, Context, Div, ElementId, Entity, MouseButton, Pixels, Stateful, Subscription,
     Window, div, prelude::*, px, rgb,
 };
-use hex_engine::{NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView};
+use hex_engine::{
+    NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView, PreparedDeviceProcessing,
+};
 use hex_lattice_contract::{
     NativeDeviceState, ParameterDescriptor, ParameterKind, ParameterPresentation, ParameterValue,
 };
@@ -1577,7 +1579,6 @@ fn render_track(
                     && device.state().type_id().as_str() == Ok("hex.instrument.sampler"),
                 replace_vst3: class == NativeDeviceClass::Effect
                     && device.state().type_id() == hex_lattice_contract::VST3_DEVICE_TYPE_ID
-                    && view.document_audio_mode == hex_session::DocumentAudioMode::Resident
                     && view
                         .active_native_device_drag
                         .as_ref()
@@ -2469,7 +2470,7 @@ enum Vst3PanelPending {
 fn audible_vst3_processor(
     view: &EditorView,
     device_id: DeviceId,
-) -> Result<bool, Vst3PanelPending> {
+) -> Result<PreparedDeviceProcessing, Vst3PanelPending> {
     use Vst3PanelPending::*;
     let device = view
         .state
@@ -2492,7 +2493,7 @@ fn audible_vst3_processor(
         .observation
         .as_ref()
         .ok_or(ObservationMissing)?
-        .foreign_processor(device_id.value(), device.state().type_id())
+        .processor_status(device_id.value(), device.state().type_id())
         .ok_or(ProcessorMissing)
 }
 
@@ -2544,8 +2545,11 @@ pub(super) fn trace_vst3_track_panel(view: &EditorView, snapshot: &mut String) {
         snapshot.push_str(" vst3_panel=degraded");
     } else {
         match audible_vst3_processor(view, device) {
-            Ok(true) => snapshot.push_str(" vst3_panel=active"),
-            Ok(false) => snapshot.push_str(" vst3_panel=unavailable"),
+            Ok(PreparedDeviceProcessing::Foreign) => snapshot.push_str(" vst3_panel=active"),
+            Ok(PreparedDeviceProcessing::PoweredOff) => {
+                snapshot.push_str(" vst3_panel=powered_off")
+            }
+            Ok(_) => snapshot.push_str(" vst3_panel=unavailable"),
             Err(reason) => {
                 let _ = write!(snapshot, " vst3_panel=pending vst3_wait={reason:?}");
             }
@@ -2564,8 +2568,8 @@ fn vst3_status_body(
     }
     let availability = audible_vst3_processor(view, device_id);
     let parameters = match availability {
-        Ok(true) => Some(vst3_parameters::body(view, device_id, cx)),
-        Ok(false) => None,
+        Ok(PreparedDeviceProcessing::Foreign) => Some(vst3_parameters::body(view, device_id, cx)),
+        Ok(_) => None,
         Err(_) => vst3_parameters::pending_body(view, device_id, cx),
     };
     if let Some(body) = parameters {
@@ -2583,6 +2587,10 @@ fn vst3_status_body(
             .child(body);
     }
     let (message, status) = match availability {
+        Ok(PreparedDeviceProcessing::PoweredOff) => (
+            theme::text("vst3 powered off · saved state preserved"),
+            "powered-off",
+        ),
         Ok(_) => (
             theme::text("vst3 unavailable · saved state preserved"),
             "unavailable",
@@ -2950,8 +2958,7 @@ impl EditorView {
                                 devices.iter().any(|device| device.id() == anchor)
                             }),
                             EffectBusDropSlot::Replace(replacing) => {
-                                self.document_audio_mode == hex_session::DocumentAudioMode::Resident
-                                    && drag.source.is_catalog_vst3_effect()
+                                drag.source.is_catalog_vst3_effect()
                                     && devices.iter().any(|device| {
                                         device.id() == replacing
                                             && device.parent().is_none()
@@ -3213,7 +3220,6 @@ impl EditorView {
             let (valid_target, message) = if drag.source.is_catalog_vst3_effect() {
                 (
                     track == drop_target.track
-                        && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
                         && is_track_vst3_replacement_leaf(target_track, replacement),
                     "effect replacement target changed · drag again",
                 )

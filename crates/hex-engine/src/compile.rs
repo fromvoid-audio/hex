@@ -182,6 +182,20 @@ fn prepare_foreign_instrument(
     let owner = hex_lattice::ProcessorChainOwner::Track(track.id().value());
     let identity = hex_lattice::ProcessorInstanceIdentity::new(owner, device.id().value())
         .map_err(|_| Invalid("invalid vst3 instrument identity"))?;
+    let identity = registry
+        .retained_foreign_instrument_identity(identity, device.state(), context)
+        .map_err(|_| Invalid("vst3 instrument route could not retain its original source"))?;
+    if identity.device_id() != device.id().value()
+        || !matches!(identity.owner(), hex_lattice::ProcessorChainOwner::Track(_))
+        || (identity.owner() != owner
+            && (device.bypassed()
+                || !device.automation().is_empty()
+                || !device.modulation().is_empty()))
+    {
+        return Err(Invalid(
+            "foreign instrument route differs from its prepared source",
+        ));
+    }
     let migrated = registry
         .prepare_instance_state(identity, device.state(), context)
         .map_err(|_| Invalid("vst3 instrument state is unsupported or malformed"))?;
@@ -219,7 +233,7 @@ fn prepare_foreign_instrument(
         modulation: None,
         automation,
         meter: Default::default(),
-        owner,
+        owner: identity.owner(),
         device_id: device.id().value(),
         device_type: migrated.type_id(),
         matrix: prepared.matrix,
@@ -1098,7 +1112,9 @@ fn compile_project_inner<'a>(
             external_inputs,
         )?;
         for device in &effect_plan.device_chain {
-            if let Some(definition) = &device.definition {
+            if let Some(definition) = &device.definition
+                && !definition.is_powered_off()
+            {
                 stateful_count = stateful_count
                     .checked_add(1)
                     .ok_or(Invalid("stateful device count overflow"))?;

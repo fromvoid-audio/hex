@@ -392,19 +392,43 @@ impl Hosting {
         bindings: &[Binding],
         unavailable: &[super::UnavailableEffect<'_>],
         canonical: &[CapturedCanonicalBases],
+        retained: Option<RetainedInstrumentSource>,
         prepare: &mut dyn FnMut(
             &AudioCandidateEffects<'_, '_>,
         )
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<hex_engine::PreparedRevision, String> {
+        if let Some(retained) = retained
+            && output.status.recording_source() != Some(retained.predecessor)
+        {
+            return Err("original vst3 move source is no longer installed".into());
+        }
         output.with_native_effect_definition(bindings, |definition| {
             let definition = definition
                 .including_unavailable(unavailable)
                 .and_then(|definition| definition.including_canonical_bases(canonical))
+                .and_then(|definition| match retained {
+                    Some(retained) => definition.including_retained_instrument(retained),
+                    None => Ok(definition),
+                })
                 .map_err(|error| error.to_string())?;
             AudioCandidateEffects::with_host_definitions(&[&definition], prepare)
                 .map_err(|error| error.to_string())
         })
+    }
+
+    /// Compile exact resource-free Off metadata without touching any SDK owner.
+    pub fn prepare_powered_off_on_control(
+        entry: super::PoweredOffEffect<'_>,
+        prepare: &mut dyn FnMut(
+            &AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<hex_engine::PreparedRevision, String> {
+        let definition =
+            NativeEffectDefinition::powered_off(&[entry]).map_err(|error| error.to_string())?;
+        AudioCandidateEffects::with_host_definitions(&[&definition], prepare)
+            .map_err(|error| error.to_string())
     }
 
     /// Preserve validated opaque devices without claiming native processing.

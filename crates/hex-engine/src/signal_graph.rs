@@ -1,6 +1,8 @@
 //! Typed production signal topology and control-prepared compensation ownership.
 use crate::{Frame, Invalid, Project, Track, compensation::*};
 mod append_latency;
+mod group_reroute;
+mod hosted_instrument_move;
 mod latency_observation;
 mod legacy;
 #[cfg(feature = "instrument-test-support")]
@@ -1079,6 +1081,32 @@ impl SignalGraph {
             && self.plan.edges()[self.pre_main_edges[track.audio_merge]].delay_frames == 0)
             .then_some((edge, self.plan.nodes()[track.fader].output_arrival_frames))
     }
+
+    /// One fader feeds both Main and a single Return input at the same origin.
+    pub(crate) fn direct_return_send(&self, id: ReturnId, gain: f32) -> bool {
+        let ([track], [bus]) = (self.tracks.as_slice(), self.returns.as_slice()) else {
+            return false;
+        };
+        let [send] = track.sends.as_slice() else {
+            return false;
+        };
+        bus.id == id
+            && send.target == 0
+            && send.gain == gain
+            && bus.feeds.is_empty()
+            && bus.audio_feeds.is_empty()
+            && track.audio_feeds.is_empty()
+            && !self.has_group_outputs
+            && self.key_stages.is_empty()
+            && self
+                .resident_main_alignment(0)
+                .is_some_and(|(_, arrival)| arrival == 0)
+            && self
+                .plan
+                .edges()
+                .get(send.edge)
+                .is_some_and(|edge| edge.delay_frames == 0)
+    }
     /// With no pre-Main latency or typed feeds, these graphs retain transport
     /// stamps only: every pre-Main edge has zero delay and owns no pending PCM.
     /// Inserting/removing zero-latency effects may change node/edge indices, but
@@ -2057,49 +2085,37 @@ impl SignalRuntime {
             && self.delay_graph.history_compatible(&self.graph)
             && other.delay_graph.history_compatible(&other.graph)
     }
+
+    /// Snapshot only the committed Fader→Main PCM of an unshifted direct
+    /// track. The caller still proves which routings survive the graph cut.
+    pub(crate) fn committed_resident_main_alignment(
+        &self,
+        track: usize,
+        latency: u32,
+    ) -> Option<hex_lattice::MainPassDelay> {
+        self.delays
+            .committed_main_pass_edge(self.resident_main_pass_edge(track)?, latency)
+    }
+
+    pub(crate) fn committed_hosted_return_pair(&self) -> Option<[(&[Frame; 512], usize); 2]> {
+        self.delays.committed_hosted_return_pair([
+            self.resident_main_pass_edge(0)?,
+            self.resident_main_pass_edge(1)?,
+        ])
+    }
+
+    fn resident_main_pass_edge(&self, track: usize) -> Option<usize> {
+        if !Arc::ptr_eq(&self.graph, &self.delay_graph) {
+            return None;
+        }
+        let (edge, 0) = self.graph.resident_main_alignment(track)? else {
+            return None;
+        };
+        self.delay_graph.pre_main_edges.get(edge).copied()
+    }
+
     pub(crate) fn horizon(&self) -> u32 {
         self.delays.history_horizon()
-    }
-
-    /// A grouped graph with latency only in Main owns no pre-Main delay PCM.
-    /// The route proof separately checks the unchanged processor chains.
-    pub(crate) fn group_route_main_delay_only(&self) -> bool {
-        let Some(&last_main_device) = self.graph.main_devices.last() else {
-            return false;
-        };
-        let output_latency = self.graph.plan.nodes()[last_main_device].output_arrival_frames;
-        output_latency != 0
-            && self.horizon() == output_latency
-            && self.graph.main_input_arrival() == 0
-            && self.graph.supports_closed_compensated_audio_groups()
-            && self
-                .graph
-                .tracks
-                .iter()
-                .all(|track| track.audio_feeds.is_empty())
-            && self
-                .graph
-                .pre_main_edges
-                .iter()
-                .all(|&edge| self.graph.plan.edges()[edge].delay_frames == 0)
-            && Arc::ptr_eq(&self.graph, &self.delay_graph)
-            && self.delays.is_closed()
-    }
-
-    pub(crate) fn can_copy_group_route_stamps_from(&self, previous: &Self) -> bool {
-        self.group_route_main_delay_only()
-            && previous.group_route_main_delay_only()
-            && self.horizon() == previous.horizon()
-            && previous.delays.history_ready()
-    }
-
-    pub(crate) fn copy_group_route_stamps_from(&mut self, previous: &Self) -> Result<(), Invalid> {
-        if !self.can_copy_group_route_stamps_from(previous) {
-            return Err(Invalid("group route cannot carry main transport history"));
-        }
-        self.delays
-            .copy_stamp_history_from(&previous.delays)
-            .map_err(error)
     }
 
     /// Whether the bounded edge table holds any PCM for the departing owner.

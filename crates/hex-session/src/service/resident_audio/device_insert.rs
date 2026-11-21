@@ -1,6 +1,10 @@
 //! Keep a validated graph edit private until the callback installs its exact graph.
 use super::*;
 mod detached_history;
+mod group_history;
+mod hosted_effect_history;
+mod hosted_instrument_move;
+mod hosted_replacement_history;
 mod main_history;
 mod stopped_power;
 
@@ -17,9 +21,10 @@ pub enum GraphEditOperation {
     ReplaceDevice,
     RemoveDevice,
     MoveDevice,
-    /// A single Resident track reparent, confirmed by its exact graph receipt.
+    /// A single track reparent confirmed by its exact graph receipt.
     MoveTrack,
-    /// One hosted Main power edit admitted from its original settled Stop interval.
+    /// One hosted power edit behind its exact graph receipt: the Main's
+    /// settled Stop interval, or a proved running Off source and passive cut.
     PowerDevice,
     RemoveTrack,
 }
@@ -90,6 +95,7 @@ pub(in crate::service) enum Operation {
     Device(GraphEditOperation),
     HostedHistory(GraphEditOperation),
     ResidentMoveHistory,
+    VerifiedGroupHistory,
     HostedClipboard,
     Tempo,
 }
@@ -106,7 +112,9 @@ impl Operation {
             Self::Device(GraphEditOperation::MoveTrack) => "track moved",
             Self::Device(GraphEditOperation::PowerDevice) => "device power changed",
             Self::Device(GraphEditOperation::RemoveTrack) => "track removed",
-            Self::HostedHistory(_) | Self::ResidentMoveHistory => "history committed",
+            Self::HostedHistory(_) | Self::ResidentMoveHistory | Self::VerifiedGroupHistory => {
+                "history committed"
+            }
             Self::Tempo => "tempo applied",
         }
     }
@@ -115,6 +123,7 @@ impl Operation {
         match self {
             Self::Device(operation) | Self::HostedHistory(operation) => Some(operation),
             Self::ResidentMoveHistory => Some(GraphEditOperation::MoveDevice),
+            Self::VerifiedGroupHistory => Some(GraphEditOperation::MoveTrack),
             Self::HostedClipboard => Some(GraphEditOperation::InsertDevice),
             Self::Tempo => None,
         }
@@ -140,6 +149,12 @@ enum StagedChange {
     History(hex_project::StagedProjectHistory),
 }
 
+struct StagedResidentChange {
+    edit: StagedChange,
+    operation: Operation,
+    hosted_instrument_move: Option<hosted_instrument_move::Intent>,
+}
+
 impl StagedChange {
     fn project(&self) -> &Project {
         match self {
@@ -154,6 +169,7 @@ struct Resident {
     receipt: Receipt,
     predecessor: ResidentRuntimeLoop,
     stopped_fence: Option<ResidentFreshRuntimeFence>,
+    live_return_power_off: bool,
 }
 
 enum Prepared {
@@ -185,7 +201,7 @@ struct VerifiedAttempt {
 enum HostedSources {
     InstalledOnly,
     Clipboard,
-    MainHistory,
+    RunningHistory,
     PausedHistory,
 }
 
@@ -237,7 +253,8 @@ impl VerifiedGraphEditAttempt {
     }
 
     /// Unsupported hosted history still requires its exact settled interval.
-    /// A single Main restore or removal uses an ordinary fenced install.
+    /// A single Main restore, removal or same-slot replacement uses an
+    /// ordinary fenced install.
     pub fn stages_hosted_history(&self) -> bool {
         self.0.hosted_sources == HostedSources::PausedHistory
     }
@@ -399,6 +416,10 @@ impl Pending {
         self.confirmation.is_some()
     }
 
+    pub(in crate::service) fn is_live_return_power_off(&self) -> bool {
+        matches!(&self.prepared, Prepared::Resident(resident) if resident.live_return_power_off)
+    }
+
     pub(in crate::service) fn cancel_confirmation(&self) {
         if let Some(offer) = self.confirmation.as_ref() {
             offer.cancel();
@@ -429,7 +450,7 @@ impl Pending {
         sink: &mut dyn WorkerAudioSink,
     ) -> Option<DeviceInsertConfirmation> {
         let operation = self.operation.device()?;
-        if self.confirmation.is_some() {
+        if self.confirmation.is_some() || self.is_live_return_power_off() {
             return None;
         }
         let submission = self.submission()?;
@@ -597,17 +618,90 @@ pub(in crate::service) fn should_stage_resident_graph_edit(
                 )))
 }
 
+pub(in crate::service) fn stages_main_power_off(
+    project: &Project,
+    command: &Command,
+    sink: &dyn WorkerAudioSink,
+) -> bool {
+    sink.confirms_device_inserts()
+        && stopped_power::eligible(project, command)
+        && project
+            .main_devices()
+            .first()
+            .is_some_and(|device| !device.bypassed())
+}
+
+pub(in crate::service) fn running_main_power_on(
+    project: &Project,
+    command: &Command,
+    context: hex_engine::AudioSourceContext,
+    sink: &mut dyn WorkerAudioSink,
+) -> Option<ResidentMainPowerOn> {
+    if !sink.confirms_device_inserts() || !stopped_power::eligible(project, command) {
+        return None;
+    }
+    let [device] = project.main_devices() else {
+        return None;
+    };
+    let [track] = project.tracks() else {
+        return None;
+    };
+    if !device.bypassed()
+        || track.is_group()
+        || track.parent_group().is_some()
+        || track.clips().len() != 1
+        || !track.midi_clips().is_empty()
+        || !track.devices().is_empty()
+        || track.instrument().is_some()
+        || !track.sends().is_empty()
+        || !project.return_tracks().is_empty()
+        || project.has_gain_automation()
+    {
+        return None;
+    }
+    let device = device.id().value();
+    let source = sink.running_resident_main_power_on(context, device)?;
+    (source.context == context).then_some(ResidentMainPowerOn {
+        device,
+        interval: ResidentMainPowerOnInterval::Running(source),
+    })
+}
+
+pub(in crate::service) fn running_return_power_target(
+    project: &Project,
+    command: &Command,
+    sink: &mut dyn WorkerAudioSink,
+) -> Option<(hex_engine::ProcessorChainOwner, u64)> {
+    if !sink.confirms_device_inserts() {
+        return None;
+    }
+    let target = match command {
+        Command::ToggleDeviceBypass { device }
+        | Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        } => *device,
+        _ => return None,
+    };
+    let (owner, device) = super::super::audio_sink::sole_hosted_return(project)?;
+    (device.id() == target && !device.bypassed() && sink.resident_playing())
+        .then_some((owner, target.value()))
+}
+
 pub(in crate::service) fn stopped_hosted_power_fence(
     project: &Project,
     command: &Command,
     context: hex_engine::AudioSourceContext,
     sink: &mut dyn WorkerAudioSink,
-) -> Option<ResidentFreshRuntimeFence> {
+) -> Result<Option<ResidentFreshRuntimeFence>, SessionError> {
     if !sink.confirms_device_inserts() || !stopped_power::eligible(project, command) {
-        return None;
+        return Ok(None);
     }
-    let device = project.main_devices().first()?;
+    let Some(device) = project.main_devices().first() else {
+        return Ok(None);
+    };
     sink.stopped_resident_power_fence(context, device.id().value())
+        .map_err(SessionError::NativeAudio)
 }
 
 fn resident_graph_edit_operation(
@@ -752,6 +846,75 @@ impl BrowserEdit {
 }
 
 impl Session {
+    /// Select the exact Verified Group reparent whose leaf fade Audio supports.
+    /// The active source, page windows, and final candidate stay audio-owned.
+    pub(in crate::service) fn should_stage_verified_group_route(
+        &self,
+        command: &Command,
+        previous: Option<&PreparedRevision>,
+    ) -> bool {
+        let Command::ReparentTracks {
+            tracks,
+            destination,
+        } = command
+        else {
+            return false;
+        };
+        let [leaf] = tracks.ids() else {
+            return false;
+        };
+        let project = self.project();
+        let fixed_row = match destination.parent_group {
+            Some(group) => {
+                destination.before.is_none()
+                    && group_history::fixed_entry(project, *leaf, group).is_some()
+            }
+            None => group_history::fixed_exit(project, *leaf, destination.before),
+        };
+        fixed_row && self.verified_group_route_inputs(previous)
+    }
+
+    fn verified_group_route_inputs(&self, previous: Option<&PreparedRevision>) -> bool {
+        let Some(previous) = previous else {
+            return false;
+        };
+        let project = self.project();
+        if previous.arrangement().main_latency_frames() != 0
+            || !previous.contains_streamed_sources()
+            || previous.native_parameter_input_target().is_some()
+            || previous.gain_recording_track().is_some()
+            || previous.scalar_automation_binding().is_some()
+            || project.has_gain_automation()
+            || !project.session_cells().is_empty()
+            || !project.return_tracks().is_empty()
+            || !project.audio_feeds().is_empty()
+            || !project.midi_routes().is_empty()
+            || !project.sidechains().is_empty()
+        {
+            return false;
+        }
+        let vst3 = hex_lattice_contract::DeviceTypeId::from_static("hex.vst3");
+        let plain_native_chain = |devices: &[hex_project::Device]| {
+            devices.iter().all(|device| {
+                device.state().type_id() != vst3
+                    && device.modulation().is_empty()
+                    && device.automation().is_empty()
+            })
+        };
+        plain_native_chain(project.main_devices())
+            && project.tracks().iter().all(|track| {
+                track.instrument().is_none()
+                    && track.midi_clips().is_empty()
+                    && track.sends().is_empty()
+                    && track.group_output_mutes().is_empty()
+                    && plain_native_chain(track.devices())
+                    && track.clips().iter().all(|clip| {
+                        clip.audio_edit().is_none()
+                            && self.verified_sources.contains_key(&clip.asset())
+                    })
+            })
+    }
+
     fn verified_graph_predecessor(
         &self,
         state: &ViewState,
@@ -782,6 +945,42 @@ impl Session {
             .is_some()
     }
 
+    pub(in crate::service) fn stage_verified_group_history(
+        &mut self,
+        redo: bool,
+        state: &ViewState,
+        previous: Option<&PreparedRevision>,
+        sink: &mut dyn WorkerAudioSink,
+        document_intent: u64,
+    ) -> Result<Option<Pending>, SessionError> {
+        let Some(command) = self
+            .editor
+            .inspect_history(redo, group_history::command)
+            .flatten()
+        else {
+            return Ok(None);
+        };
+        if !self.verified_group_route_inputs(previous) {
+            return Ok(None);
+        }
+        let Some(edge) = group_history::stage(&mut self.editor, redo, command)? else {
+            return Ok(None);
+        };
+        let predecessor = self.verified_graph_predecessor(state)?;
+        self.start_verified_graph_edit(
+            StagedChange::History(edge),
+            Operation::VerifiedGroupHistory,
+            predecessor,
+            state.revision,
+            previous,
+            sink,
+            document_intent,
+            None,
+            None,
+        )
+        .map(Some)
+    }
+
     pub(in crate::service) fn stage_verified_hosted_history(
         &mut self,
         redo: bool,
@@ -797,9 +996,16 @@ impl Session {
             .ok_or(SessionError::Invalid(
                 "verified device history target changed",
             ))?;
-        let operation = hosted_membership_operation(self.project(), edge.project()).ok_or(
-            SessionError::Invalid("verified device history target changed"),
-        )?;
+        let operation = if main_history::replaces_one_main(self.project(), edge.project())
+            || hosted_replacement_history::replaces_one_return(self.project(), edge.project())
+            || hosted_replacement_history::replaces_one_track(self.project(), edge.project())
+        {
+            GraphEditOperation::ReplaceDevice
+        } else {
+            hosted_membership_operation(self.project(), edge.project()).ok_or(
+                SessionError::Invalid("verified device history target changed"),
+            )?
+        };
         self.start_verified_graph_edit(
             StagedChange::History(edge),
             Operation::HostedHistory(operation),
@@ -831,6 +1037,17 @@ impl Session {
             Operation::Tempo
         } else if clipboard {
             Operation::Device(GraphEditOperation::InsertDevice)
+        } else if proposal_control.is_some()
+            && matches!(
+                &command,
+                Command::ReplaceMainDevice { .. }
+                    | Command::ReplaceReturnDevice { .. }
+                    | Command::ReplaceTrackDevice { .. }
+            )
+        {
+            Operation::Device(GraphEditOperation::ReplaceDevice)
+        } else if self.should_stage_verified_group_route(&command, previous) {
+            Operation::Device(GraphEditOperation::MoveTrack)
         } else {
             Operation::Device(
                 catalog_graph_edit_operation(&command, proposal_control.is_some())
@@ -913,12 +1130,15 @@ impl Session {
             Operation::HostedHistory(GraphEditOperation::InsertDevice)
                 if main_history::restores_one_main(self.project(), edit.project()) =>
             {
-                HostedSources::MainHistory
+                HostedSources::RunningHistory
             }
             Operation::HostedHistory(GraphEditOperation::RemoveDevice)
                 if main_history::restores_one_main(edit.project(), self.project()) =>
             {
-                HostedSources::MainHistory
+                HostedSources::RunningHistory
+            }
+            Operation::HostedHistory(GraphEditOperation::ReplaceDevice) => {
+                HostedSources::RunningHistory
             }
             Operation::HostedHistory(_) => HostedSources::PausedHistory,
             Operation::HostedClipboard => HostedSources::Clipboard,
@@ -972,7 +1192,10 @@ impl Session {
             document_intent,
             plugin: None,
             proposal_control: None,
-            publish_created: !matches!(operation, Operation::HostedHistory(_)),
+            publish_created: !matches!(
+                operation,
+                Operation::HostedHistory(_) | Operation::VerifiedGroupHistory
+            ),
         })
     }
 
@@ -991,6 +1214,9 @@ impl Session {
             context,
             restoring_plugin_state: false,
             preparing_edit: true,
+            main_power_on: None,
+            running_power_off: None,
+            hosted_instrument_move: None,
         };
         let prepared = if input.requires_plugin_profile() {
             sink.prepare_verified_effects(input, proposal, &mut |effects| {
@@ -1052,19 +1278,56 @@ impl Session {
         proposal_control: Option<&PluginEffectControl>,
         document_intent: u64,
     ) -> Result<Option<Pending>, SessionError> {
-        let stopped_fence = stopped_hosted_power_fence(self.project(), &command, context, sink);
+        let running_power_on = running_main_power_on(self.project(), &command, context, sink);
+        let stopped_fence = if running_power_on.is_none() {
+            stopped_hosted_power_fence(self.project(), &command, context, sink)?
+        } else {
+            None
+        };
+        let running_power_target =
+            if stopped_fence.is_none() && stages_main_power_off(self.project(), &command, sink) {
+                let device = self
+                    .project()
+                    .main_devices()
+                    .first()
+                    .ok_or(SessionError::Invalid("main power target changed"))?
+                    .id()
+                    .value();
+                Some((hex_engine::ProcessorChainOwner::Main, device))
+            } else {
+                running_return_power_target(self.project(), &command, sink)
+            };
+        let running_power_off = running_power_target
+            .map(|(owner, device)| {
+                sink.running_resident_power_off(context, owner, device)
+                    .map_err(SessionError::NativeAudio)?
+                    .ok_or(SessionError::Invalid(
+                        "running power off is unavailable for this source",
+                    ))
+            })
+            .transpose()?;
+        let hosted_instrument_move = if self.audio_mode() == DocumentAudioMode::Resident {
+            hosted_instrument_move::Intent::from_command(&command)
+        } else {
+            None
+        };
         self.stage_resident_graph_change(
             context,
             sink,
             admission,
             current,
             stopped_fence,
+            running_power_on,
+            running_power_off,
             plugin,
             proposal_control,
             document_intent,
             |session| {
                 crate::validate_command_media(&command)?;
-                let operation = if stopped_fence.is_some() {
+                let operation = if stopped_fence.is_some()
+                    || running_power_on.is_some()
+                    || running_power_off.is_some()
+                {
                     GraphEditOperation::PowerDevice
                 } else if plugin.is_some() {
                     match &command {
@@ -1089,10 +1352,11 @@ impl Session {
                 {
                     return Ok(None);
                 }
-                Ok(Some((
-                    StagedChange::Command(edit),
-                    Operation::Device(operation),
-                )))
+                Ok(Some(StagedResidentChange {
+                    edit: StagedChange::Command(edit),
+                    operation: Operation::Device(operation),
+                    hosted_instrument_move,
+                }))
             },
         )
     }
@@ -1114,25 +1378,86 @@ impl Session {
         {
             return Ok(None);
         }
+        let replacement = if let Some((edge, device)) =
+            main_history::stage_enabled_main_replacement(&mut self.editor, redo)?
+        {
+            let stopped = sink
+                .stopped_resident_power_fence(context, device.value())
+                .map_err(SessionError::NativeAudio)?;
+            Some((edge, stopped))
+        } else if let Some((edge, return_track, device)) =
+            hosted_replacement_history::stage_enabled_return_replacement(&mut self.editor, redo)?
+        {
+            Some((
+                edge,
+                sink.stopped_resident_effect_history_fence(
+                    context,
+                    hex_engine::ProcessorChainOwner::Return(return_track.value()),
+                    device.value(),
+                ),
+            ))
+        } else if let Some((edge, track, device)) =
+            hosted_replacement_history::stage_enabled_track_replacement(&mut self.editor, redo)?
+        {
+            Some((
+                edge,
+                sink.stopped_resident_effect_history_fence(
+                    context,
+                    hex_engine::ProcessorChainOwner::Track(track.value()),
+                    device.value(),
+                ),
+            ))
+        } else {
+            None
+        };
+        let (replacement, stopped_fence) = match replacement {
+            Some((edge, stopped)) => (
+                Some(edge),
+                Some(stopped.ok_or(SessionError::Invalid(
+                    "stop playback to undo or redo this vst3 replacement",
+                ))?),
+            ),
+            None => (None, None),
+        };
         self.stage_resident_graph_change(
             context,
             sink,
             admission,
             current,
+            stopped_fence,
+            None,
             None,
             None,
             None,
             document_intent,
             |session| {
-                if let Some((edge, operation)) = detached_history::stage(&mut session.editor, redo)?
-                {
-                    return Ok(Some((
-                        StagedChange::History(edge),
-                        Operation::HostedHistory(operation),
-                    )));
+                if let Some(edge) = replacement {
+                    return Ok(Some(StagedResidentChange {
+                        edit: StagedChange::History(edge),
+                        operation: Operation::HostedHistory(GraphEditOperation::ReplaceDevice),
+                        hosted_instrument_move: None,
+                    }));
                 }
-                Ok(move_history::stage(&mut session.editor, redo)?
-                    .map(|edge| (StagedChange::History(edge), Operation::ResidentMoveHistory)))
+                let hosted = match detached_history::stage(&mut session.editor, redo)? {
+                    Some(edge) => Some(edge),
+                    None => hosted_effect_history::stage(&mut session.editor, redo)?,
+                };
+                if let Some((edge, operation)) = hosted {
+                    return Ok(Some(StagedResidentChange {
+                        edit: StagedChange::History(edge),
+                        operation: Operation::HostedHistory(operation),
+                        hosted_instrument_move: None,
+                    }));
+                }
+                Ok(
+                    move_history::stage(&mut session.editor, redo)?.map(|staged| {
+                        StagedResidentChange {
+                            edit: StagedChange::History(staged.edge),
+                            operation: Operation::ResidentMoveHistory,
+                            hosted_instrument_move: staged.hosted_instrument_move,
+                        }
+                    }),
+                )
             },
         )
     }
@@ -1145,14 +1470,21 @@ impl Session {
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
         stopped_fence: Option<ResidentFreshRuntimeFence>,
+        running_power_on: Option<ResidentMainPowerOn>,
+        running_power_off: Option<ResidentRunningPowerOff>,
         plugin: Option<&PluginEffectControl>,
         proposal_control: Option<&PluginEffectControl>,
         document_intent: u64,
-        stage: impl FnOnce(&mut Self) -> Result<Option<(StagedChange, Operation)>, SessionError>,
+        stage: impl FnOnce(&mut Self) -> Result<Option<StagedResidentChange>, SessionError>,
     ) -> Result<Option<Pending>, SessionError> {
         let preparation_deadline = device_edit_preparation_deadline();
         let staged = (|| {
-            let Some((edit, operation)) = stage(self)? else {
+            let Some(StagedResidentChange {
+                edit,
+                operation,
+                hosted_instrument_move,
+            }) = stage(self)?
+            else {
                 return Ok(None);
             };
             let installed = sink
@@ -1179,12 +1511,45 @@ impl Session {
                         "device edit needs the current installed audio graph"
                     },
                 ))?;
+            if let Some(power) = running_power_on
+                && let ResidentMainPowerOnInterval::Running(source) = power.interval()
+                && (installed.output_identity != source.output_identity
+                    || installed.audio_revision != source.audio_revision
+                    || installed.source_context != Some(source.context))
+            {
+                return Err(SessionError::Invalid(
+                    "running main power on source changed",
+                ));
+            }
+            let main_power_on = if matches!(
+                operation,
+                Operation::Device(GraphEditOperation::PowerDevice)
+            ) {
+                running_power_on.or_else(|| {
+                    stopped_fence.and_then(|fence| {
+                        let [device] = self.project().main_devices() else {
+                            return None;
+                        };
+                        device.bypassed().then_some(ResidentMainPowerOn {
+                            device: device.id().value(),
+                            interval: ResidentMainPowerOnInterval::Stopped { context, fence },
+                        })
+                    })
+                })
+            } else {
+                None
+            };
             let context = hex_engine::AudioSourceContext {
                 editor_revision: context.editor_revision.saturating_add(1),
                 ..context
             };
             let inputs = Inputs {
                 preparing_edit: plugin.is_none(),
+                main_power_on,
+                running_power_off,
+                hosted_instrument_move: hosted_instrument_move.and_then(|intent| {
+                    intent.preparation(self.project(), edit.project(), installed)
+                }),
                 device_insert_control: proposal_control,
                 ..self.resident_seek_inputs(admission, current, None)?
             };
@@ -1229,6 +1594,9 @@ impl Session {
                     receipt: Receipt(receipt),
                     predecessor: installed,
                     stopped_fence,
+                    live_return_power_off: running_power_off.is_some_and(|intent| {
+                        matches!(intent.owner, hex_engine::ProcessorChainOwner::Return(_))
+                    }),
                 })),
                 confirmation: None,
                 operation,

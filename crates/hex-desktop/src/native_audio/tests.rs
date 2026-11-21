@@ -359,8 +359,18 @@ impl WorkerAudioSink for ObservedSink {
         &mut self,
         context: AudioSourceContext,
         device: u64,
-    ) -> Option<hex_session::service::ResidentFreshRuntimeFence> {
+    ) -> Result<Option<hex_session::service::ResidentFreshRuntimeFence>, String> {
         self.inner.stopped_resident_power_fence(context, device)
+    }
+
+    fn stopped_resident_effect_history_fence(
+        &mut self,
+        context: AudioSourceContext,
+        owner: hex_engine::ProcessorChainOwner,
+        device: u64,
+    ) -> Option<hex_session::service::ResidentFreshRuntimeFence> {
+        self.inner
+            .stopped_resident_effect_history_fence(context, owner, device)
     }
 
     fn resident_runtime_loop(

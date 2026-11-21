@@ -28,7 +28,9 @@ mod bypass;
 mod definition;
 mod tail;
 mod transport;
-pub use definition::{NativeEffectDefinition, PoweredOffEffect, UnavailableEffect};
+pub use definition::{
+    NativeEffectDefinition, PoweredOffEffect, RetainedInstrumentSource, UnavailableEffect,
+};
 use transport::EffectTransport;
 mod hosting;
 mod offline_preparation;
@@ -479,6 +481,7 @@ impl NativeEffect {
                 concealed_output: false,
                 tail,
                 bypass: bypass::BypassMix::default(),
+                return_bypass_frame: None,
             },
         })
     }
@@ -638,6 +641,9 @@ pub struct NativeEffectCallback {
     concealed_output: bool,
     tail: tail::TailDrain,
     bypass: bypass::BypassMix,
+    // Exclusive performance-frame end of the last staged Return bypass PCM.
+    // The endpoint entry exposes it only after the physical callback accepts.
+    return_bypass_frame: Option<std::num::NonZeroU64>,
 }
 impl NativeEffectCallback {
     pub fn binding(&self) -> Binding {
@@ -651,8 +657,10 @@ impl NativeEffectCallback {
     /// healthy. Copy only the aligned PCM after the full fade was accepted.
     pub(crate) fn settled_main_pass_delay(
         &self,
+        frames: u32,
     ) -> Result<Option<hex_lattice::MainPassDelay>, DeviceContractError> {
-        if self.identity().owner() != ProcessorChainOwner::Main || self.dry.len() != 512 {
+        if self.identity().owner() != ProcessorChainOwner::Main || self.dry.len() != frames as usize
+        {
             return Err(DeviceContractError::ForeignProcessingUnavailable);
         }
         if !self.bypass.settled_at_dry() {
@@ -661,6 +669,29 @@ impl NativeEffectCallback {
         hex_lattice::MainPassDelay::copy_committed_ring(&self.dry, self.dry_cursor)
             .map(Some)
             .ok_or(DeviceContractError::ForeignProcessingUnavailable)
+    }
+
+    fn settled_return_pass(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        frame: u64,
+    ) -> Result<bool, DeviceContractError> {
+        if self.identity() != identity
+            || !matches!(identity.owner(), ProcessorChainOwner::Return(_))
+            || self.dry.len() != 512
+        {
+            return Err(DeviceContractError::ForeignProcessingUnavailable);
+        }
+        if !self.bypass.settled_at_dry() {
+            return Ok(false);
+        }
+        if self.return_bypass_frame.map(std::num::NonZeroU64::get) == Some(frame)
+            && !self.concealed_output
+        {
+            Ok(true)
+        } else {
+            Err(DeviceContractError::ForeignProcessingUnavailable)
+        }
     }
     pub fn matches_worker(&self, worker: &NativeWorker) -> bool {
         self.transport.matches_worker(worker)
@@ -793,6 +824,7 @@ impl NativeEffectCallback {
             concealed_output: false,
             tail: tail::TailDrain::new(0, latency),
             bypass: bypass::BypassMix::default(),
+            return_bypass_frame: None,
         }
     }
     #[cfg(test)]
@@ -1028,6 +1060,14 @@ impl NativeEffectCallback {
             node.sample_rate,
             node.output_gain,
         );
+        if node.bypassed && matches!(node.owner, ProcessorChainOwner::Return(_)) {
+            self.return_bypass_frame = frames
+                .len()
+                .checked_sub(1)
+                .and_then(|last| clock?.performance_frame_at_offset(last))
+                .and_then(|last| last.checked_add(1))
+                .and_then(std::num::NonZeroU64::new);
+        }
         Ok(())
     }
 }

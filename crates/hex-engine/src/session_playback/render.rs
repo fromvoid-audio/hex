@@ -17,6 +17,20 @@ struct LiveTrackAudio<'a> {
     frames: &'a [Frame],
 }
 
+fn apply_return_fade(
+    fade: &mut Option<device_removal::ReturnFade>,
+    id: hex_project::ReturnId,
+    frames: &mut [Frame],
+) {
+    if let Some(fade) = fade.as_mut().filter(|fade| fade.id == id) {
+        for frame in frames {
+            let gain = fade.fader.next();
+            frame[0] *= gain[0];
+            frame[1] *= gain[1];
+        }
+    }
+}
+
 impl SessionPlayback {
     /// An edit at the stopped origin may have retained an original bus/Main
     /// endpoint. Drain its actual zero-input tail before it can return. A
@@ -2549,6 +2563,7 @@ impl SessionPlayback {
                 if let Some(matrix) = bus.matrix {
                     matrix.apply_block(frames);
                 }
+                apply_return_fade(&mut self.return_fade_scratch, bus.id, frames);
                 if bus.muted {
                     frames.fill([0.0; 2]);
                 } else {
@@ -2623,17 +2638,7 @@ impl SessionPlayback {
             if let Some(matrix) = bus.matrix {
                 matrix.apply_block(frames);
             }
-            if let Some(fade) = self
-                .return_fade_scratch
-                .as_mut()
-                .filter(|fade| fade.id == bus.id)
-            {
-                for frame in frames.iter_mut() {
-                    let gain = fade.fader.next();
-                    frame[0] *= gain[0];
-                    frame[1] *= gain[1];
-                }
-            }
+            apply_return_fade(&mut self.return_fade_scratch, bus.id, frames);
             if !bus.muted {
                 for (destination, source) in output.iter_mut().zip(frames.iter()) {
                     destination[0] += source[0] * bus.gain;

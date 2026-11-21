@@ -13,7 +13,7 @@ use hex_lattice_contract::{
 /// resources through the endpoint's actual return. Private offline preparation
 /// may borrow an actual stopped lease and reserved epoch; it must complete that
 /// epoch before rendering. Neither view grants live Root source admission.
-/// Intentional Off instead retains one exact saved-state declaration without
+/// Intentional Off instead retains one exact authored-state declaration without
 /// borrowing an SDK owner; it cannot construct active processing or an endpoint.
 pub struct NativeEffectDefinition<'a> {
     // Borrow only immutable configuration across pure compiler threads. The
@@ -22,6 +22,51 @@ pub struct NativeEffectDefinition<'a> {
     canonical: &'a [CapturedCanonicalBases],
     unavailable: Vec<(ProcessorInstanceIdentity, &'a NativeDeviceState)>,
     powered_off: Option<(ProcessorInstanceIdentity, u32, &'a NativeDeviceState)>,
+    retained_instrument: Option<RetainedInstrumentSource>,
+}
+
+/// One logical compiler destination and the exact original physical source.
+/// The applied stamp and binding are observations, never worker custody.
+#[derive(Clone, Copy, Debug)]
+pub struct RetainedInstrumentSource {
+    pub(super) predecessor: crate::prepared::AppliedAudioSource,
+    original: ProcessorInstanceIdentity,
+    receiver: ProcessorInstanceIdentity,
+    binding: Binding,
+}
+
+impl RetainedInstrumentSource {
+    /// Identify a candidate receiver of an already selected original binding.
+    /// The Audio host still verifies the selected Root-held configuration.
+    pub fn for_track_move(
+        predecessor: crate::prepared::AppliedAudioSource,
+        donor: u64,
+        receiver: u64,
+        device: u64,
+        binding: Binding,
+    ) -> Result<Self, DeviceContractError> {
+        if donor == receiver
+            || !binding.is_valid()
+            || binding.instance != device
+            || binding.root != predecessor.output_identity
+        {
+            return Err(DeviceContractError::ForeignProcessingUnavailable);
+        }
+        Ok(Self {
+            predecessor,
+            original: ProcessorInstanceIdentity::new(ProcessorChainOwner::Track(donor), device)?,
+            receiver: ProcessorInstanceIdentity::new(ProcessorChainOwner::Track(receiver), device)?,
+            binding,
+        })
+    }
+
+    pub fn binding(self) -> Binding {
+        self.binding
+    }
+
+    pub fn matches_receiver(self, owner: ProcessorChainOwner, device: u64) -> bool {
+        self.receiver.owner() == owner && self.receiver.device_id() == device
+    }
 }
 
 /// One exact preserved device with no native processing source. This grants no
@@ -32,7 +77,7 @@ pub struct UnavailableEffect<'a> {
     pub device_id: u64,
     pub state: &'a NativeDeviceState,
 }
-/// Exact saved Main metadata selected for an intentionally disabled stage.
+/// Exact authored Main metadata selected for an intentionally disabled stage.
 /// No source, factory, endpoint, SDK owner or publication authority is borrowed.
 #[derive(Clone, Copy)]
 pub struct PoweredOffEffect<'a> {
@@ -43,13 +88,17 @@ pub struct PoweredOffEffect<'a> {
 }
 
 impl<'a> NativeEffectDefinition<'a> {
-    /// Prepare one resource-free Main Off declaration. The output owner still
-    /// proves its stopped source and exact installation through ordinary admission.
+    /// Prepare one resource-free Main or Return Off declaration. The output owner must
+    /// separately prove the exact source, supported stopped or running timing
+    /// policy, and graph installation through ordinary admission.
     pub fn powered_off(entries: &[PoweredOffEffect<'a>]) -> Result<Self, DeviceContractError> {
         let [entry] = entries else {
             return Err(DeviceContractError::InvalidId);
         };
-        if entry.owner != hex_lattice::ProcessorChainOwner::Main {
+        if !matches!(
+            entry.owner,
+            ProcessorChainOwner::Main | ProcessorChainOwner::Return(_)
+        ) {
             return Err(DeviceContractError::UnsupportedProcessingClass);
         }
         if entry.sample_rate == 0 {
@@ -125,6 +174,7 @@ impl<'a> NativeEffectDefinition<'a> {
             canonical: self.canonical,
             unavailable,
             powered_off: None,
+            retained_instrument: self.retained_instrument,
         })
     }
     /// Borrow actual zero-PCM private offline leases and their reserved epochs.
@@ -146,6 +196,7 @@ impl<'a> NativeEffectDefinition<'a> {
             canonical: &[],
             unavailable: Vec::new(),
             powered_off: None,
+            retained_instrument: None,
         })
     }
     fn push_configuration(
@@ -276,6 +327,50 @@ impl<'a> NativeEffectDefinition<'a> {
         Err(DeviceContractError::ForeignProcessingUnavailable)
     }
 
+    /// Pure exact-source eligibility for a proved 512-frame passive Off cut.
+    /// This borrows constructed metadata; it neither dispatches nor retires DSP.
+    pub fn matches_power_off_on_control(
+        &self,
+        owner: ProcessorChainOwner,
+        binding: Binding,
+        device: u64,
+        state: &NativeDeviceState,
+        sample_rate: u32,
+    ) -> Result<bool, DeviceContractError> {
+        if !matches!(
+            owner,
+            ProcessorChainOwner::Main | ProcessorChainOwner::Return(_)
+        ) {
+            return Ok(false);
+        }
+        let identity = ProcessorInstanceIdentity::new(owner, device)?;
+        Ok(self
+            .exact_configuration(identity, state, sample_rate)?
+            .is_some_and(|effect| {
+                let prepared = effect.prepared;
+                prepared.binding() == Some(binding)
+                    && !prepared.is_instrument_profile()
+                    && prepared.quantum_frames() == 256
+                    && prepared.bridge_latency_frames() == 512
+                    && prepared.processor_latency_frames() == 0
+            }))
+    }
+
+    pub(super) fn including_retained_instrument(
+        mut self,
+        retained: RetainedInstrumentSource,
+    ) -> Result<Self, DeviceContractError> {
+        if !self.effects.iter().any(|effect| {
+            effect.identity == retained.original
+                && effect.binding == retained.binding
+                && effect.prepared.is_instrument_profile()
+        }) {
+            return Err(DeviceContractError::ForeignProcessingUnavailable);
+        }
+        self.retained_instrument = Some(retained);
+        Ok(self)
+    }
+
     /// Copy the processing declaration from a real source that matches this
     /// exact authored state and rate. This does not loan or publish an endpoint.
     pub fn prepared_processor_on_control(
@@ -307,6 +402,7 @@ impl<'a> NativeEffectDefinition<'a> {
             canonical: &[],
             unavailable: Vec::new(),
             powered_off: None,
+            retained_instrument: None,
         })
     }
 }
@@ -361,6 +457,27 @@ impl NativeDeviceMetadata for NativeEffectDefinition<'_> {
     }
 }
 impl NativeDeviceDefinition for NativeEffectDefinition<'_> {
+    fn retained_foreign_instrument_identity(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &DevicePreparationContext<'_>,
+    ) -> Result<ProcessorInstanceIdentity, DeviceContractError> {
+        let Some(retained) = self
+            .retained_instrument
+            .filter(|route| route.receiver == identity)
+        else {
+            return Ok(identity);
+        };
+        let original = self
+            .exact_configuration(retained.original, state, context.sample_rate)?
+            .filter(|effect| {
+                effect.binding == retained.binding && effect.state.processing_eq(state)
+            })
+            .ok_or(DeviceContractError::ForeignProcessingUnavailable)?;
+        Ok(original.identity)
+    }
+
     fn prepare_instance_state(
         &self,
         identity: ProcessorInstanceIdentity,
@@ -503,3 +620,5 @@ mod unavailable_tests {
 
 #[cfg(test)]
 mod powered_off_tests;
+#[cfg(test)]
+mod retained_instrument_tests;
