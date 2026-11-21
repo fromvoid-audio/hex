@@ -16,7 +16,8 @@ pub(crate) use native::{
 pub(crate) use project::ProjectSelectionMailbox;
 pub use project::{
     MAX_PROJECT_CONTRIBUTION_FRAMES, MAX_PROJECT_LAYERS, MAX_PROJECT_PAYLOAD_BYTES,
-    MAX_PROJECT_TRACKS, PROJECT_DISPLAY_STALE_AFTER, ProjectSelection, PublishedProjectSpectrum,
+    MAX_PROJECT_TRACKS, PROJECT_DISPLAY_STALE_AFTER, PROJECT_FAST_ANALYSIS_INTERVAL,
+    ProjectSelection, PublishedProjectSpectrum,
 };
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::{

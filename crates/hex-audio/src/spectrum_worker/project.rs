@@ -14,6 +14,8 @@ pub const MAX_PROJECT_CONTRIBUTION_FRAMES: usize = MAX_PROJECT_LAYERS * MAX_CAPT
 const PROJECT_CAPTURE_QUEUE_CAPACITY: usize = 32;
 pub const PROJECT_PACKET_OWNERS: usize = PROJECT_CAPTURE_QUEUE_CAPACITY + 1;
 pub const MAX_PROJECT_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
+/// 60 Hz analysis cadence for normal selections (master alone or up to 8 tracks).
+pub const PROJECT_FAST_ANALYSIS_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 pub const PROJECT_DISPLAY_STALE_AFTER: Duration = Duration::from_millis(400);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,10 +69,12 @@ impl ProjectSelection {
         selection.tracks[..tracks.len()].copy_from_slice(tracks);
         Ok(selection)
     }
-    /// At most30/10/5Hz for up to32/128/256 selected tracks. Every layer
+    /// At most 60/30/10/5 Hz for up to 8/32/128/256 selected tracks. Every layer
     /// shares the same actual sample window; increasing selection never drops one.
     pub fn analysis_interval(&self) -> Duration {
-        if self.count <= 32 {
+        if self.count <= 8 {
+            PROJECT_FAST_ANALYSIS_INTERVAL
+        } else if self.count <= 32 {
             ANALYSIS_INTERVAL
         } else if self.count <= 128 {
             Duration::from_millis(100)
@@ -224,11 +228,9 @@ pub struct PublishedProjectSpectrum {
     pub applied_revision: u64,
     pub captured_at: Instant,
     pub processed_at: Instant,
-    // Keep the fixed maximum payload out of factory, reader and UI stack values.
-    // A boxed slice clones through the heap; a boxed fixed array would be
-    // copied through the stack in unoptimized builds. Always
-    // `MAX_PROJECT_LAYERS` long when produced by the worker.
-    pub frames: Box<[SpectrumFrame]>,
+    /// Shared immutable slice sized to `selection.layer_count()` when produced
+    /// by the worker, so steady-state reader clones never copy frame payloads.
+    pub frames: Arc<[SpectrumFrame]>,
 }
 impl PublishedProjectSpectrum {
     /// Master first, followed by one independent layer per sorted selected ID.
@@ -448,7 +450,7 @@ impl ProjectReader {
         now: Instant,
         selection: ProjectSelection,
     ) -> Option<PublishedProjectSpectrum> {
-        if let Ok(result) = self.results.try_recv() {
+        while let Ok(result) = self.results.try_recv() {
             self.latest = Some(result);
         }
         if self
@@ -574,7 +576,10 @@ struct ProjectCore {
 const MAX_PROJECT_LAYERS_PER_POLL: usize = 8;
 const MAX_PROJECT_BATCHES_PER_POLL: usize = 2;
 struct PendingAnalysis {
-    result: PublishedProjectSpectrum,
+    selection: ProjectSelection,
+    applied_revision: u64,
+    captured_at: Instant,
+    frames: Vec<SpectrumFrame>,
     next_layer: usize,
     at: Instant,
     elapsed: Duration,
@@ -644,15 +649,12 @@ impl ProjectCore {
             {
                 return None;
             }
-            let frames = project_frames(self.rate).ok()?;
+            let frames = project_frames(self.rate, selection.layer_count()).ok()?;
             self.pending = Some(PendingAnalysis {
-                result: PublishedProjectSpectrum {
-                    selection,
-                    applied_revision: self.revision,
-                    captured_at: self.captured_at?,
-                    processed_at: now,
-                    frames,
-                },
+                selection,
+                applied_revision: self.revision,
+                captured_at: self.captured_at?,
+                frames,
                 next_layer: 0,
                 at: now,
                 elapsed: self
@@ -663,8 +665,8 @@ impl ProjectCore {
             self.dirty = false;
         }
         let mut pending = self.pending.take()?;
-        let end = (pending.next_layer + MAX_PROJECT_LAYERS_PER_POLL)
-            .min(pending.result.selection.layer_count());
+        let layer_count = pending.selection.layer_count();
+        let end = (pending.next_layer + MAX_PROJECT_LAYERS_PER_POLL).min(layer_count);
         for layer in pending.next_layer..end {
             let (Some(window), Some(ballistics)) =
                 (self.windows.get(layer), self.ballistics.get_mut(layer))
@@ -677,15 +679,20 @@ impl ProjectCore {
                 return None;
             };
             ballistics.apply(&mut frame, pending.elapsed);
-            if let Some(slot) = pending.result.frames.get_mut(layer) {
+            if let Some(slot) = pending.frames.get_mut(layer) {
                 *slot = frame;
             }
         }
         pending.next_layer = end;
-        if end == pending.result.selection.layer_count() {
+        if end == layer_count {
             self.envelope_at = Some(pending.at);
-            pending.result.processed_at = Instant::now();
-            Some(pending.result)
+            Some(PublishedProjectSpectrum {
+                selection: pending.selection,
+                applied_revision: pending.applied_revision,
+                captured_at: pending.captured_at,
+                processed_at: Instant::now(),
+                frames: Arc::from(pending.frames),
+            })
         } else {
             self.pending = Some(pending);
             None
@@ -719,13 +726,14 @@ impl ProjectCore {
             .checked_add(std::mem::size_of::<[SpectrumFrame; MAX_PROJECT_LAYERS]>())
     }
 }
-fn project_frames(rate: u32) -> Result<Box<[SpectrumFrame]>, SpectrumWorkerError> {
+fn project_frames(rate: u32, count: usize) -> Result<Vec<SpectrumFrame>, SpectrumWorkerError> {
+    let count = count.min(MAX_PROJECT_LAYERS);
     let mut frames = Vec::new();
     frames
-        .try_reserve_exact(MAX_PROJECT_LAYERS)
+        .try_reserve_exact(count)
         .map_err(|_| SpectrumWorkerError::Allocation)?;
-    frames.resize(MAX_PROJECT_LAYERS, SpectrumFrame::silent(rate));
-    Ok(frames.into_boxed_slice())
+    frames.resize(count, SpectrumFrame::silent(rate));
+    Ok(frames)
 }
 fn zeroed_frames(count: usize) -> Result<Box<[Frame]>, SpectrumWorkerError> {
     let mut frames = Vec::new();
@@ -1462,5 +1470,63 @@ mod tests {
                 captures[captures.len() - 1]
             );
         }
+    }
+
+    #[test]
+    fn fast_cadence_and_shared_sized_frames_avoid_full_payload_copies() {
+        assert_eq!(
+            selected(&[]).analysis_interval(),
+            PROJECT_FAST_ANALYSIS_INTERVAL
+        );
+        let eight: Vec<u64> = (1..=8).collect();
+        assert_eq!(
+            selected(&eight).analysis_interval(),
+            PROJECT_FAST_ANALYSIS_INTERVAL
+        );
+        let nine: Vec<u64> = (1..=9).collect();
+        assert_eq!(selected(&nine).analysis_interval(), ANALYSIS_INTERVAL);
+        let thirty_three: Vec<u64> = (1..=33).collect();
+        assert_eq!(
+            selected(&thirty_three).analysis_interval(),
+            Duration::from_millis(100)
+        );
+        let large: Vec<u64> = (1..=129).collect();
+        assert_eq!(
+            selected(&large).analysis_interval(),
+            Duration::from_millis(200)
+        );
+
+        let (mut capture, mut reader, mut worker) = channel(48_000).unwrap();
+        let selection = selected(&[1, 2]);
+        let now = Instant::now();
+        for sequence in 0..16 {
+            observe(&mut capture, selection, sequence, now);
+        }
+        for _ in 0..8 {
+            worker.poll(now);
+        }
+        let first = reader.latest_at(now, selection).unwrap();
+        assert_eq!(
+            first.frames.len(),
+            3,
+            "sized strictly to active layer count"
+        );
+        let second = reader.latest_at(now, selection).unwrap();
+        assert!(
+            Arc::ptr_eq(&first.frames, &second.frames),
+            "steady-state reader polls share the frame slice without copying"
+        );
+        // Next frame becomes due at 60 Hz (16.67 ms), not 33.3 ms.
+        observe(
+            &mut capture,
+            selection,
+            16,
+            now + PROJECT_FAST_ANALYSIS_INTERVAL,
+        );
+        worker.poll(now + PROJECT_FAST_ANALYSIS_INTERVAL);
+        let next = reader
+            .latest_at(now + PROJECT_FAST_ANALYSIS_INTERVAL, selection)
+            .unwrap();
+        assert!(!Arc::ptr_eq(&first.frames, &next.frames));
     }
 }
