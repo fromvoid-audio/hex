@@ -91,69 +91,85 @@ fn private_compiler_borrows_original_root_binding_for_the_exact_receiver_chain()
         tuning: &tuning,
         resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
     };
+    let binding_error = "original vst3 effect binding differs";
+    let wrong_root = original
+        .foreign_processor()
+        .unwrap()
+        .with_binding(Binding {
+            root: binding.root + 1,
+            ..binding
+        })
+        .unwrap();
+    let wrong_root = hex_lattice::PreparedRuntimeInstance {
+        definition: Some(PreparedProcessorFactory::Foreign(wrong_root)),
+        ..original.clone()
+    };
+    assert_eq!(
+        f.control
+            .with_retained_track_effect_definition(applied, &wrong_root, logical, |_| panic!(
+                "a different Root must not reach the compiler"
+            )),
+        Err::<(), String>(binding_error.into())
+    );
+    let stale = AppliedAudioSource {
+        audio_revision: revision + 1,
+        ..applied
+    };
+    assert_eq!(
+        f.control
+            .with_retained_track_effect_definition(stale, &original, logical, |_| panic!(
+                "a different installed revision must not reach the compiler"
+            )),
+        Err::<(), String>("original vst3 effect move source is no longer installed".into())
+    );
     let deadline = Instant::now() + Duration::from_millis(500);
-    let compiled = loop {
-        let selected = f
-            .control
-            .with_native_effect_definition(&[binding], |definition| {
+    let candidate = loop {
+        let selected = f.control.with_retained_track_effect_definition(
+            applied,
+            &original,
+            logical,
+            |definition| {
                 assert!(
                     definition
                         .prepare_instance_runtime_factory(logical, state, &preparation_context)
                         .is_err(),
-                    "the ordinary compiler cannot select a copied logical identity"
+                    "the factory still accepts only the original physical identity"
                 );
-                let probe = |active,
-                             requested,
-                             node: &hex_lattice::PreparedRuntimeInstance,
-                             state: &hex_lattice_contract::NativeDeviceState,
-                             context: &DevicePreparationContext<'_>| {
-                    definition.probe_retained_track_effect_identity(
-                        active,
-                        (applied, logical),
-                        requested,
-                        node,
-                        state,
-                        context,
-                    )
-                };
-                let resolved =
-                    probe(applied, logical, &original, state, &preparation_context).unwrap();
-                assert_eq!(resolved, physical);
-                let wrong_receiver = ProcessorInstanceIdentity::new(
+                assert_eq!(
+                    definition
+                        .retained_foreign_effect_identity(logical, state, &preparation_context)
+                        .unwrap(),
+                    physical
+                );
+                let other = ProcessorInstanceIdentity::new(
                     ProcessorChainOwner::Track(receiver.value() + 1),
                     device.value(),
                 )
                 .unwrap();
-                assert!(
-                    probe(
-                        applied,
-                        wrong_receiver,
-                        &original,
-                        state,
-                        &preparation_context
-                    )
-                    .is_err()
+                assert_eq!(
+                    definition
+                        .retained_foreign_effect_identity(other, state, &preparation_context)
+                        .unwrap(),
+                    other
                 );
-                let stale = AppliedAudioSource {
-                    audio_revision: revision + 1,
-                    ..applied
-                };
-                assert!(probe(stale, logical, &original, state, &preparation_context).is_err());
                 assert!(
-                    probe(
-                        applied,
-                        logical,
-                        &original,
-                        &wrong_state,
-                        &preparation_context
-                    )
-                    .is_err()
+                    definition
+                        .retained_foreign_effect_identity(
+                            logical,
+                            &wrong_state,
+                            &preparation_context,
+                        )
+                        .is_err()
                 );
                 let wrong_rate = DevicePreparationContext {
                     sample_rate: 96_000,
                     ..preparation_context
                 };
-                assert!(probe(applied, logical, &original, state, &wrong_rate).is_err());
+                assert!(
+                    definition
+                        .retained_foreign_effect_identity(logical, state, &wrong_rate)
+                        .is_err()
+                );
                 let prepared = original.foreign_processor().unwrap();
                 let wrong_epoch = prepared
                     .with_binding(Binding {
@@ -161,33 +177,35 @@ fn private_compiler_borrows_original_root_binding_for_the_exact_receiver_chain()
                         ..binding
                     })
                     .unwrap();
-                let wrong_root = prepared
-                    .with_binding(Binding {
-                        root: binding.root + 1,
-                        ..binding
-                    })
-                    .unwrap();
-                for invalid in [wrong_epoch, wrong_root, prepared.with_instrument_profile()] {
-                    let impostor = hex_lattice::PreparedRuntimeInstance {
-                        definition: Some(PreparedProcessorFactory::Foreign(invalid)),
+                for wrong in [wrong_epoch, prepared.with_instrument_profile()] {
+                    let node = hex_lattice::PreparedRuntimeInstance {
+                        definition: Some(PreparedProcessorFactory::Foreign(wrong)),
                         ..original.clone()
                     };
                     assert!(
-                        probe(applied, logical, &impostor, state, &preparation_context).is_err()
+                        definition
+                            .including_retained_track_effect(logical, &node)
+                            .is_err()
                     );
                 }
-                let definitions: [&dyn NativeDeviceDefinition; 1] = [definition];
-                let registry = NativeDeviceRegistry::new(&definitions).unwrap();
-                hex_engine::compile::test_compile_retained_track_effect_receiver(
-                    staged.project(),
-                    receiver,
-                    resolved,
-                    &registry,
-                )
+                hex_engine::AudioCandidateEffects::with_host_definitions(&[definition], |effects| {
+                    effects.prepare_registered_revision(
+                        staged.project(),
+                        &f.media,
+                        Arc::new(hex_engine::SineTable::new()),
+                        None,
+                        &hex_engine::audio_transform::AudioTransformPreparation::default(),
+                        &f.resources,
+                        1_000_000,
+                        &AtomicBool::new(false),
+                        None,
+                    )
+                })
                 .map_err(|error| error.to_string())
-            });
+            },
+        );
         match selected {
-            Ok(chain) => break chain,
+            Ok(candidate) => break candidate,
             Err(reason)
                 if matches!(
                     reason.as_str(),
@@ -200,7 +218,22 @@ fn private_compiler_borrows_original_root_binding_for_the_exact_receiver_chain()
             Err(reason) => panic!("original Root did not lend the track effect: {reason}"),
         }
     };
-    let [borrowed] = compiled.as_slice() else {
+    assert_eq!(
+        hex_engine::compile::test_retained_track_effect_alignment(
+            original_revision.arrangement().as_ref(),
+            candidate.arrangement().as_ref(),
+        )
+        .unwrap(),
+        [[0, 16], [16, 0]]
+    );
+    let compiled =
+        Playback::try_from_prepared_with_device_resources(Arc::new(candidate), &f.resources)
+            .unwrap();
+    let nodes = compiled
+        .foreign_nodes_on_control()
+        .cloned()
+        .collect::<Vec<_>>();
+    let [borrowed] = nodes.as_slice() else {
         panic!("one exact logical receiver chain");
     };
     assert_eq!(borrowed.owner, physical.owner());
@@ -215,16 +248,7 @@ fn private_compiler_borrows_original_root_binding_for_the_exact_receiver_chain()
             .unwrap()
             .processing_eq(state)
     );
-    assert_eq!(
-        hex_engine::compile::test_retained_track_effect_alignment(
-            original_revision.arrangement().as_ref(),
-            staged.project(),
-            borrowed,
-        )
-        .unwrap(),
-        [[0, 16], [16, 0]]
-    );
-    root.check_native_borrow_nodes_for_test(&compiled).unwrap();
+    root.check_native_borrow_nodes_for_test(&nodes).unwrap();
     let wrong_owner = hex_lattice::PreparedRuntimeInstance {
         owner: logical.owner(),
         ..borrowed.clone()

@@ -1351,102 +1351,43 @@ fn compile_device_effects(
     )
 }
 
-/// Compile the staged receiver's real solitary effect chain with the original
-/// physical factory identity. This fixture seam creates no playback or admission.
-#[cfg(feature = "instrument-test-support")]
-#[doc(hidden)]
-pub fn test_compile_retained_track_effect_receiver(
-    project: &hex_project::Project,
-    receiver: hex_project::TrackId,
-    physical: hex_lattice::ProcessorInstanceIdentity,
-    registry: &hex_lattice::NativeDeviceRegistry<'_>,
-) -> Result<Vec<hex_lattice::PreparedRuntimeInstance>, Invalid> {
-    use hex_lattice::ProcessorChainOwner::Track;
-    let row = project
-        .track(receiver)
-        .ok_or(Invalid("staged effect receiver is missing"))?;
-    let [effect] = row.devices() else {
-        return Err(Invalid("staged effect receiver must have one device"));
-    };
-    let Track(donor) = physical.owner() else {
-        return Err(Invalid("physical effect source must be a track"));
-    };
-    if donor == receiver.value()
-        || row.is_group()
-        || row.parent_group().is_some()
-        || row.source_id().is_some()
-        || !row.sends().is_empty()
-        || effect.id().value() != physical.device_id()
-        || effect.parent().is_some()
-        || effect.bypassed()
-        || !effect.automation().is_empty()
-        || !effect.modulation().is_empty()
-        || effect.state().type_id() != hex_lattice_contract::VST3_DEVICE_TYPE_ID
-    {
-        return Err(Invalid("staged effect receiver geometry differs"));
-    }
-    let tuning = hex_lattice::TuningTable::default();
-    let context = hex_lattice::DevicePreparationContext {
-        sample_rate: project.sample_rate(),
-        tuning: &tuning,
-        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
-    };
-    let chain = compile_effect_devices(
-        EffectPower::new(row.devices())?,
-        physical.owner(),
-        project,
-        &context,
-        registry,
-        None,
-        &[],
-    )?
-    .device_chain;
-    let [node] = chain.as_slice() else {
-        return Err(Invalid("compiled effect receiver chain differs"));
-    };
-    if node.owner != physical.owner()
-        || node.device_id != physical.device_id()
-        || node
-            .foreign_processor()
-            .is_none_or(|facts| facts.is_instrument_profile())
-    {
-        return Err(Invalid("compiled effect receiver physical owner differs"));
-    }
-    Ok(chain)
-}
-
-/// Inspect the two Main alignment edges after privately splicing the
-/// compiled effect into the staged receiver. No playback is constructed.
+/// Exercise both Main alignment edges from ordinary compiled arrangements.
 #[cfg(feature = "instrument-test-support")]
 #[doc(hidden)]
 pub fn test_retained_track_effect_alignment(
     before: &Project,
-    staged: &hex_project::Project,
-    effect: &hex_lattice::PreparedRuntimeInstance,
+    next: &Project,
 ) -> Result<[[u32; 2]; 2], Invalid> {
     let Some(old_graph) = before.signal_graph.as_ref() else {
         return Err(Invalid("original signal graph is absent"));
     };
-    let mut private = before.clone();
-    let [donor, receiver] = private.tracks.as_mut_slice() else {
+    let [old_donor, old_receiver] = before.tracks.as_slice() else {
         return Err(Invalid("expected two direct audio rows"));
     };
-    let [previous] = donor.device_chain.as_ref() else {
+    let [new_donor, new_receiver] = next.tracks.as_slice() else {
+        return Err(Invalid("expected two direct audio rows"));
+    };
+    let ([previous], [effect]) = (
+        old_donor.device_chain.as_ref(),
+        new_receiver.device_chain.as_ref(),
+    ) else {
         return Err(Invalid("original effect chain differs"));
     };
     if previous.owner != effect.owner
         || previous.device_id != effect.device_id
         || previous.foreign_processor() != effect.foreign_processor()
-        || !receiver.device_chain.is_empty()
-        || donor.clips.is_empty()
-        || receiver.clips.is_empty()
+        || !old_receiver.device_chain.is_empty()
+        || !new_donor.device_chain.is_empty()
+        || [old_donor, old_receiver, new_donor, new_receiver]
+            .into_iter()
+            .any(|track| track.clips.is_empty())
         || !old_graph.independent_main_routes()
     {
         return Err(Invalid("original effect route differs"));
     }
-    donor.device_chain = Arc::from([]);
-    receiver.device_chain = Arc::from([effect.clone()]);
-    let next_graph = crate::signal_graph::SignalGraph::prepare(&private, &[], staged)?
+    let next_graph = next
+        .signal_graph
+        .as_ref()
         .ok_or(Invalid("receiver signal graph is absent"))?;
     if !next_graph.independent_main_routes()
         || old_graph.main_input_arrival() != next_graph.main_input_arrival()
@@ -1465,10 +1406,10 @@ pub fn test_retained_track_effect_alignment(
                 .default_route_delay_frames,
         ])
     };
-    let result = [alignment(old_graph)?, alignment(&next_graph)?];
+    let result = [alignment(old_graph)?, alignment(next_graph)?];
     crate::signal_graph::hosted_track_effect_move::probe_hosted_effect_clock(
         crate::signal_graph::SignalRuntime::new(Arc::clone(old_graph))?,
-        crate::signal_graph::SignalRuntime::new(next_graph)?,
+        crate::signal_graph::SignalRuntime::new(Arc::clone(next_graph))?,
     )?;
     Ok(result)
 }
@@ -1617,8 +1558,29 @@ fn compile_effect_devices(
     let mut admission_matrix = hex_lattice::StereoMatrix::identity();
     for entry in source_devices {
         let (device, bypassed) = entry?;
-        let identity = hex_lattice::ProcessorInstanceIdentity::new(owner, device.id().value())
+        let authored = hex_lattice::ProcessorInstanceIdentity::new(owner, device.id().value())
             .map_err(|_| Invalid("invalid prepared device identity"))?;
+        let identity = if device.state().type_id() == hex_lattice_contract::VST3_DEVICE_TYPE_ID {
+            registry
+                .retained_foreign_effect_identity(authored, device.state(), context)
+                .map_err(|_| Invalid("vst3 effect route could not retain its original source"))?
+        } else {
+            authored
+        };
+        let retained = identity != authored;
+        if retained
+            && (identity.device_id() != authored.device_id()
+                || !matches!(owner, hex_lattice::ProcessorChainOwner::Track(_))
+                || !matches!(identity.owner(), hex_lattice::ProcessorChainOwner::Track(_))
+                || device.parent().is_some()
+                || bypassed
+                || !device.automation().is_empty()
+                || !device.modulation().is_empty())
+        {
+            return Err(Invalid(
+                "foreign effect route differs from its prepared source",
+            ));
+        }
         let migrated = registry
             .prepare_instance_state(identity, device.state(), context)
             .map_err(|_| Invalid("native device state is unsupported or malformed"))?;
@@ -1659,6 +1621,13 @@ fn compile_effect_devices(
             .prepare_runtime_instance_with_automation(identity, &migrated, context, parameters)
             .map_err(|_| Invalid("native device state or automation could not be prepared"))?;
         let processor = prepared_device.processor;
+        if retained
+            && !matches!(&processor, Some(hex_lattice::PreparedProcessorFactory::Foreign(facts))
+                if !facts.is_instrument_profile()
+                    && facts.binding().is_some_and(|binding| binding.instance == device.id().value()))
+        {
+            return Err(Invalid("retained effect has no matching foreign worker"));
+        }
         let modulation = match (modulation, processor.as_ref()) {
             (Some(plan), Some(hex_lattice::PreparedProcessorFactory::Foreign(facts))) => {
                 plan.prepare_foreign(device, identity, registry, *facts, sample_rate)?
@@ -1679,7 +1648,9 @@ fn compile_effect_devices(
         // An explicitly admitted unavailable effect has no factory. Keep its
         // canonical lanes through document staging; the restored foreign
         // worker must still prove its exact metadata before any playback.
-        if let Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) = processor.as_ref() {
+        if let Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) =
+            processor.as_ref().filter(|_| !retained)
+        {
             if let Some(program) = crate::foreign_automation::candidate::prepare_device(
                 device,
                 identity,
@@ -1722,7 +1693,7 @@ fn compile_effect_devices(
             modulation,
             automation,
             meter: Default::default(),
-            owner,
+            owner: identity.owner(),
             device_id: device.id().value(),
             device_type: migrated.type_id(),
             matrix: prepared,

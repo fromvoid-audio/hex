@@ -23,6 +23,7 @@ pub struct NativeEffectDefinition<'a> {
     unavailable: Vec<(ProcessorInstanceIdentity, &'a NativeDeviceState)>,
     powered_off: Option<(ProcessorInstanceIdentity, u32, &'a NativeDeviceState)>,
     retained_instrument: Option<RetainedInstrumentSource>,
+    retained_effect_receiver: Option<ProcessorInstanceIdentity>,
 }
 
 /// One logical compiler destination and the exact original physical source.
@@ -175,6 +176,7 @@ impl<'a> NativeEffectDefinition<'a> {
             unavailable,
             powered_off: None,
             retained_instrument: self.retained_instrument,
+            retained_effect_receiver: self.retained_effect_receiver,
         })
     }
     /// Borrow actual zero-PCM private offline leases and their reserved epochs.
@@ -197,6 +199,7 @@ impl<'a> NativeEffectDefinition<'a> {
             unavailable: Vec::new(),
             powered_off: None,
             retained_instrument: None,
+            retained_effect_receiver: None,
         })
     }
     fn push_configuration(
@@ -371,37 +374,21 @@ impl<'a> NativeEffectDefinition<'a> {
         Ok(self)
     }
 
-    /// Prototype the compiler identity selection without adding an effect
-    /// alias to the ordinary definition or granting publication authority.
-    #[cfg(all(
-        test,
-        feature = "allocation-probe",
-        target_os = "macos",
-        target_arch = "aarch64"
-    ))]
-    pub(crate) fn probe_retained_track_effect_identity(
+    /// Lend one exact original effect configuration to a scoped compiler.
+    pub(crate) fn including_retained_track_effect(
         &self,
-        applied: crate::prepared::AppliedAudioSource,
-        witnessed: (
-            crate::prepared::AppliedAudioSource,
-            ProcessorInstanceIdentity,
-        ),
-        requested: ProcessorInstanceIdentity,
+        receiver: ProcessorInstanceIdentity,
         original: &hex_lattice::PreparedRuntimeInstance,
-        state: &NativeDeviceState,
-        context: &DevicePreparationContext<'_>,
-    ) -> Result<ProcessorInstanceIdentity, DeviceContractError> {
-        let (predecessor, receiver) = witnessed;
+    ) -> Result<Self, DeviceContractError> {
         let unavailable = DeviceContractError::ForeignProcessingUnavailable;
         let identity = ProcessorInstanceIdentity::new(original.owner, original.device_id)?;
         let prepared = original.foreign_processor().ok_or(unavailable)?;
         let binding = prepared.binding().ok_or(unavailable)?;
-        if applied != predecessor
-            || applied.audio_revision == 0
-            || !binding.is_valid()
-            || binding.root != applied.output_identity
+        let [configuration] = self.effects.as_slice() else {
+            return Err(unavailable);
+        };
+        if !binding.is_valid()
             || binding.instance != identity.device_id()
-            || requested != receiver
             || receiver.device_id() != identity.device_id()
             || receiver.owner() == identity.owner()
             || !matches!(receiver.owner(), ProcessorChainOwner::Track(_))
@@ -410,22 +397,20 @@ impl<'a> NativeEffectDefinition<'a> {
             || original.bypassed
             || !original.automation.is_empty()
             || original.modulation.is_some()
-            || original.sample_rate != context.sample_rate
+            || configuration.identity != identity
+            || configuration.binding != binding
+            || configuration.prepared != prepared
+            || configuration.sample_rate != original.sample_rate
             || original
                 .configuration
                 .as_ref()
-                .is_none_or(|configuration| !configuration.processing_eq(state))
+                .is_none_or(|state| !configuration.state.processing_eq(state))
         {
             return Err(unavailable);
         }
-        self.exact_configuration(identity, state, context.sample_rate)?
-            .filter(|effect| {
-                effect.binding == binding
-                    && effect.prepared == prepared
-                    && effect.state.processing_eq(state)
-            })
-            .map(|effect| effect.identity)
-            .ok_or(unavailable)
+        let mut retained = Self::from_selected([(*configuration, true)])?;
+        retained.retained_effect_receiver = Some(receiver);
+        Ok(retained)
     }
 
     /// Copy the processing declaration from a real source that matches this
@@ -460,6 +445,7 @@ impl<'a> NativeEffectDefinition<'a> {
             unavailable: Vec::new(),
             powered_off: None,
             retained_instrument: None,
+            retained_effect_receiver: None,
         })
     }
 }
@@ -514,6 +500,24 @@ impl NativeDeviceMetadata for NativeEffectDefinition<'_> {
     }
 }
 impl NativeDeviceDefinition for NativeEffectDefinition<'_> {
+    fn retained_foreign_effect_identity(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &DevicePreparationContext<'_>,
+    ) -> Result<ProcessorInstanceIdentity, DeviceContractError> {
+        if self.retained_effect_receiver != Some(identity) {
+            return Ok(identity);
+        }
+        let [effect] = self.effects.as_slice() else {
+            return Err(DeviceContractError::ForeignProcessingUnavailable);
+        };
+        if effect.sample_rate != context.sample_rate || !effect.state.processing_eq(state) {
+            return Err(DeviceContractError::ForeignProcessingUnavailable);
+        }
+        Ok(effect.identity)
+    }
+
     fn retained_foreign_instrument_identity(
         &self,
         identity: ProcessorInstanceIdentity,
