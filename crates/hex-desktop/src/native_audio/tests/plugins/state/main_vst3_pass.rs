@@ -636,6 +636,8 @@ fn assert_running_main_power_on(
     );
     assert_eq!(pending.state.project, powered_off.state.project);
     assert_eq!(pending.state.revision, powered_off.state.revision);
+    assert_eq!(pending.state.can_redo, powered_off.state.can_redo);
+    assert_eq!(pending.state.can_undo, powered_off.state.can_undo);
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let powered_on = 'receipt: loop {
@@ -658,7 +660,13 @@ fn assert_running_main_power_on(
         }
         assert!(Instant::now() < deadline, "running On receipt timed out");
         if status(h).recording_source() == Some(applied) {
+            let before = status(h).position.load(Acquire);
             h.render_plugin_block();
+            let after = status(h).position.load(Acquire);
+            assert!(
+                (before..=before + BLOCK as u64).contains(&after),
+                "main power on changed the musical position from {before} to {after}"
+            );
         }
         std::thread::yield_now();
     };
