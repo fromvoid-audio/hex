@@ -53,6 +53,105 @@ fn terminal_default_limiter_retains_288_frames_at_192_khz() {
 }
 
 #[test]
+fn terminal_main_limiter_keeps_two_resident_tracks_aligned_until_stop() {
+    const CUT: usize = 512;
+    const FADE: usize = 240;
+    const FRAMES: usize = 2_048;
+    let sources: [[Frame; FRAMES]; 2] = [
+        std::array::from_fn(|frame| [0.0625, (frame % 79) as f32 / 2_048.0]),
+        std::array::from_fn(|frame| [-((frame % 113) as f32) / 2_048.0, 0.03125]),
+    ];
+    let sum = |frame: usize| {
+        let [first, second] = &sources;
+        [
+            first[frame][0] + second[frame][0],
+            first[frame][1] + second[frame][1],
+        ]
+    };
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
+    let mut media = BTreeMap::new();
+    for (index, pcm) in sources.iter().enumerate() {
+        let Created::Imported { asset, .. } = editor
+            .execute(Command::ImportPreparedAudioTrack {
+                name: format!("dry input {index}"),
+                path: format!("memory/dry-{index}.wav").into(),
+                source_sample_rate: RATE,
+                source_frames: FRAMES as u64,
+                playback_frames: FRAMES as u64,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+            })
+            .unwrap()
+        else {
+            panic!("resident dry track");
+        };
+        media.insert(asset, hex_engine::Audio::new(RATE, pcm.to_vec()).unwrap());
+    }
+    let table = Arc::new(hex_engine::SineTable::new());
+    let prepare = |project: &Project| {
+        Arc::new(
+            hex_engine::PreparedRevision::prepare(project, &media, Arc::clone(&table), None)
+                .unwrap(),
+        )
+    };
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("default Main limiter");
+    };
+    let before = prepare(editor.project());
+    editor.execute(Command::RemoveDevice(device)).unwrap();
+    let after = prepare(editor.project());
+    assert_eq!(before.arrangement().main_latency_frames(), DELAY as u32);
+    assert_eq!(after.arrangement().main_latency_frames(), 0);
+
+    for partition in [1, BLOCK] {
+        let (mut control, mut callback, predecessor, receipt) =
+            begin_insert_with_pending_track(Arc::clone(&before), Arc::clone(&after), None, CUT);
+        let mut fade = [[0.0; 2]; FADE];
+        for (chunk_index, chunk) in fade.chunks_mut(partition).enumerate() {
+            render(&mut callback, chunk);
+            for (offset, sample) in chunk.iter().enumerate() {
+                let expected = sum(CUT + chunk_index * partition + offset - DELAY);
+                assert!(
+                    sample
+                        .iter()
+                        .zip(expected)
+                        .all(|(actual, dry)| (*actual - dry).abs() < 1e-6),
+                    "Main summing PCM during fade"
+                );
+            }
+            assert_eq!(control.status.recording_source(), Some(predecessor));
+            assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+        }
+        let mut installed = [[0.0; 2]; BLOCK + 1];
+        for chunk in installed.chunks_mut(partition) {
+            render(&mut callback, chunk);
+        }
+        assert_eq!(receipt.state(), PublicationReceiptState::Installed);
+        let active = control.status.recording_source().unwrap();
+        assert_eq!(active.audio_revision, receipt.revision());
+        assert_eq!(active.output_identity, predecessor.output_identity);
+        assert_eq!(control.reclaim(), 1, "retired Main DSP returns to control");
+        assert_eq!(
+            installed,
+            std::array::from_fn(|offset| sum(CUT + FADE + offset - DELAY))
+        );
+
+        control.stop();
+        render(&mut callback, &mut installed[..1]);
+        control.command(PlaybackCommand::Play).unwrap();
+        render(&mut callback, &mut installed[..partition]);
+        for (offset, &actual) in installed[..partition].iter().enumerate() {
+            assert_eq!(actual, sum(offset));
+        }
+    }
+}
+
+#[test]
 fn longer_main_limiter_removal_requires_consent() {
     let limiter = &hex_devices::limiter::DEFINITION;
     let state = limiter
