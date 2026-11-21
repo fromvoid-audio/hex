@@ -3041,6 +3041,15 @@ pub(super) mod tests {
             ids.push(id);
             state = event.state;
         }
+        let (handle, editor) = section_test_window(cx, service, state);
+        (handle, editor, [ids[0], ids[1]])
+    }
+
+    fn section_test_window(
+        cx: &mut TestAppContext,
+        service: Service,
+        state: Arc<ViewState>,
+    ) -> (gpui::AnyWindowHandle, Entity<EditorView>) {
         let handle = *cx.add_window(|_, _| gpui::Empty);
         let editor = cx
             .update_window(handle, |_, window, cx| {
@@ -3056,7 +3065,7 @@ pub(super) mod tests {
                 editor
             })
             .unwrap();
-        (handle, editor, [ids[0], ids[1]])
+        (handle, editor)
     }
 
     #[gpui::test]
@@ -4423,6 +4432,126 @@ pub(super) mod tests {
             assert_eq!(actual, before);
         });
     }
+    #[gpui::test]
+    fn section_duplicate_shortcut_copies_a_copy_at_a_rounded_sample_seam(cx: &mut TestAppContext) {
+        use crate::editor::external_audio_drop_ui_test::BatchFiles;
+        use hex_project::{Editor, Project, Tempo};
+
+        let rate = 8_000;
+        let tempo = Tempo::new(143_000_000).unwrap();
+        let beat = |n| BeatTime::from_quarters(n).unwrap();
+        let map = TempoMap::constant(rate, tempo).unwrap();
+        let section_frames = map.beat_to_frame(beat(1)).unwrap();
+        let files = BatchFiles::new();
+        let wav = files.wav(
+            "section-seam.wav",
+            rate,
+            u32::try_from(section_frames).unwrap(),
+        );
+        let path = wav.with_extension("hex");
+        let mut project = Editor::new(Project::new(rate).unwrap(), 16).unwrap();
+        for command in [
+            Command::SetTempoPoint {
+                beat: beat(0),
+                tempo,
+            },
+            Command::AddArrangementSection {
+                name: "source".into(),
+                color: ElementColor::Blue,
+                start: beat(0),
+                end: beat(1),
+            },
+        ] {
+            project.execute(command).unwrap();
+        }
+        let Created::Imported { clip, .. } = project
+            .execute(Command::ImportAudioTrack {
+                name: "audio".into(),
+                path: wav,
+                sample_rate: rate,
+                frames: section_frames,
+            })
+            .unwrap()
+        else {
+            panic!("audio import")
+        };
+        project
+            .execute(Command::SetAudioClipMusical {
+                clip,
+                enabled: true,
+            })
+            .unwrap();
+        let mut snapshot = project.project().snapshot();
+        snapshot.tracks[0].audio_clips_mut().unwrap()[0]
+            .edit
+            .as_mut()
+            .unwrap()
+            .view_end = beat(1).raw();
+        hex_storage::save_new(&path, &Project::from_snapshot(snapshot).unwrap()).unwrap();
+        let service = Service::new(rate, 32, 8_000_000).unwrap();
+        next(&service);
+        service.submit(Request::Open(path)).unwrap();
+        let opened = next(&service);
+        assert!(
+            opened.open_complete && opened.error.is_none(),
+            "{:?}",
+            opened.error
+        );
+        cx.update(super::super::bind_editor_keys);
+        let (handle, editor) = section_test_window(cx, service, opened.state);
+        editor.update(cx, |view, cx| {
+            view.viewport = Some(Viewport::fit(16_000));
+            cx.notify();
+        });
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        for index in 0..2 {
+            let x = bounds(&mut visual, index).center().x;
+            let y = editor.read_with(cx, |view, _| position(view, 0).y);
+            let down = point(x, y);
+            visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
+            visual.simulate_keystrokes("cmd-d");
+            let event = editor.update(cx, |view, _| next(&view.service));
+            assert!(
+                event.error.is_none(),
+                "cmd-d on section {index}: {:?}",
+                event.error
+            );
+            let project = &event.state.project;
+            assert_eq!(project.arrangement_sections().len(), index + 2);
+            let clips = project.tracks()[0].clips();
+            assert_eq!(clips.len(), index + 2);
+            assert!(
+                clips
+                    .windows(2)
+                    .all(|pair| pair[0].start() + pair[0].duration() <= pair[1].start())
+            );
+            editor.update(cx, |view, cx| {
+                view.receive(event);
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let _ = bounds(&mut visual, index + 1);
+        }
+        for (key, count) in [("cmd-z", 2), ("cmd-shift-z", 3)] {
+            visual.simulate_keystrokes(key);
+            let event = editor.update(cx, |view, _| next(&view.service));
+            assert!(event.error.is_none(), "{key}: {:?}", event.error);
+            assert_eq!(event.state.project.arrangement_sections().len(), count);
+            assert_eq!(event.state.project.tracks()[0].clips().len(), count);
+            editor.update(cx, |view, cx| {
+                view.receive(event);
+                cx.notify();
+            });
+            visual.run_until_parked();
+            assert_eq!(
+                visual.debug_bounds("arrangement-section-2").is_some(),
+                count == 3
+            );
+        }
+    }
+
     #[gpui::test]
     fn launch_action_geometry_matches_raw_exclusion_without_enlarging_tiny_sections(
         cx: &mut TestAppContext,
