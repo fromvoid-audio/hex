@@ -22,6 +22,7 @@ pub struct ResidentEffectPreparation<'a> {
     pub(in crate::service) preparing_edit: bool,
     pub(in crate::service) stopped_main_power_on: Option<ResidentMainPowerOn>,
     pub(in crate::service) running_main_power_off: Option<ResidentMainPowerOff>,
+    pub(in crate::service) hosted_instrument_move: Option<ResidentHostedInstrumentMove>,
 }
 
 /// Copied original source/binding for one explicit running Main Off command.
@@ -31,6 +32,17 @@ pub struct ResidentMainPowerOff {
     pub device: u64,
     pub source: ResidentGraphSubmission,
     pub binding: hex_lattice_contract::ForeignProcessorBinding,
+}
+
+/// The exact canonical receiver of a staged Resident command, with the
+/// original installed source stamp. This grants no native source custody.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidentHostedInstrumentMove {
+    pub donor: hex_project::TrackId,
+    pub receiver: hex_project::TrackId,
+    pub device: hex_project::DeviceId,
+    pub source: hex_project::SourceId,
+    pub predecessor: ResidentRuntimeLoop,
 }
 
 /// The explicit stopped PowerDevice command's original nonowning source fence.
@@ -235,6 +247,9 @@ impl<'a> ResidentEffectPreparation<'a> {
             && intent.source_context.editor_revision.checked_add(1)
                 == Some(self.context.editor_revision))
         .then_some(intent)
+    }
+    pub fn hosted_instrument_move(&self) -> Option<&ResidentHostedInstrumentMove> {
+        self.hosted_instrument_move.as_ref()
     }
     pub fn sample_rate(&self) -> u32 {
         self.project.sample_rate()
@@ -2390,6 +2405,7 @@ mod tests {
                 context,
                 preparing_edit,
                 running_main_power_off,
+                hosted_instrument_move: None,
                 restoring_plugin_state: false,
                 stopped_main_power_on: None,
             }
@@ -2477,6 +2493,7 @@ mod tests {
                 preparing_edit: true,
                 stopped_main_power_on,
                 running_main_power_off: None,
+                hosted_instrument_move: None,
             }
             .stopped_main_power_on()
         };
@@ -2536,6 +2553,7 @@ mod tests {
                 preparing_edit: false,
                 stopped_main_power_on: None,
                 running_main_power_off: None,
+                hosted_instrument_move: None,
             }
             .powered_off_main()
             .map(|(id, _)| id)
@@ -2597,6 +2615,7 @@ mod tests {
                 preparing_edit: false,
                 stopped_main_power_on: None,
                 running_main_power_off: None,
+                hosted_instrument_move: None,
             }
             .plugin_device_bypassed(device.value())
         };
@@ -2812,6 +2831,7 @@ mod tests {
                 preparing_edit: true,
                 stopped_main_power_on: None,
                 running_main_power_off: None,
+                hosted_instrument_move: None,
             }
         }
 
@@ -2921,6 +2941,7 @@ mod tests {
             preparing_edit: true,
             stopped_main_power_on: None,
             running_main_power_off: None,
+            hosted_instrument_move: None,
         };
         assert_eq!(
             input
@@ -2975,6 +2996,7 @@ mod tests {
                 preparing_edit: !reopen,
                 stopped_main_power_on: None,
                 running_main_power_off: None,
+                hosted_instrument_move: None,
             }
             .modulated_plugin_target(device.value())
             .unwrap()

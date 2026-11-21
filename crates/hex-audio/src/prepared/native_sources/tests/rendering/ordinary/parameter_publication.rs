@@ -100,6 +100,7 @@ pub(super) fn assert_guarded_continuation(
             &[f.binding],
             &[],
             std::slice::from_ref(&facts),
+            None,
             &mut |effects| {
                 effects.prepare_registered_revision(
                     f.editor.project(),

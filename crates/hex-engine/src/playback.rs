@@ -1552,6 +1552,27 @@ impl Playback {
         })
     }
 
+    /// Observe an instrument's physical identity at an exact canonical track
+    /// in this prepared graph. Neither identity grants native source custody.
+    pub fn foreign_instrument_binding_on_control(
+        &self,
+        track: hex_project::TrackId,
+        device: hex_project::DeviceId,
+    ) -> Option<(
+        hex_lattice::ProcessorChainOwner,
+        hex_lattice_contract::ForeignProcessorBinding,
+    )> {
+        let node = self
+            .project
+            .tracks()
+            .iter()
+            .find(|row| row.canonical_track_id() == Some(track))?
+            .foreign_instrument
+            .as_ref()
+            .filter(|node| node.device_id == device.value() && !node.bypassed)?;
+        Some((node.owner, node.foreign_processor()?.binding()?))
+    }
+
     /// Observe actual current and committed release-tail foreign bindings.
     /// The audio owner uses this bounded scalar visit before exposing a graph
     /// return; copied immutable revision facts alone omit migrated tails.
