@@ -2067,14 +2067,25 @@ impl SignalRuntime {
         track: usize,
         latency: u32,
     ) -> Option<hex_lattice::MainPassDelay> {
+        self.delays
+            .committed_main_pass_edge(self.resident_main_pass_edge(track)?, latency)
+    }
+
+    pub(crate) fn committed_hosted_return_pair(&self) -> Option<[(&[Frame; 512], usize); 2]> {
+        self.delays.committed_hosted_return_pair([
+            self.resident_main_pass_edge(0)?,
+            self.resident_main_pass_edge(1)?,
+        ])
+    }
+
+    fn resident_main_pass_edge(&self, track: usize) -> Option<usize> {
         if !Arc::ptr_eq(&self.graph, &self.delay_graph) {
             return None;
         }
         let (edge, 0) = self.graph.resident_main_alignment(track)? else {
             return None;
         };
-        self.delays
-            .committed_main_pass_edge(*self.delay_graph.pre_main_edges.get(edge)?, latency)
+        self.delay_graph.pre_main_edges.get(edge).copied()
     }
 
     pub(crate) fn horizon(&self) -> u32 {
