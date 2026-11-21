@@ -94,7 +94,8 @@ fn reverb_power_track_return_main_matches_wet_dry_and_fresh_room_references() {
             playback.apply(SessionPlaybackCommand::Play).unwrap();
             render(playback, 6000, 127);
         }
-        for bypassed in [true, false] {
+        // At 48 kHz, power-off fades for 5 ms and cold power-on de-clicks for 0.5 ms.
+        for (bypassed, fade_frames) in [(true, 240), (false, 24)] {
             if !bypassed {
                 editor
                     .execute(Command::ToggleDeviceBypass { device })
@@ -117,7 +118,7 @@ fn reverb_power_track_return_main_matches_wet_dry_and_fresh_room_references() {
                     .any(|(w, d)| (w[0] - d[0]).abs() > 0.001)
             );
             for (index, ((actual, wet), dry)) in actual.iter().zip(wet).zip(dry).enumerate() {
-                let progress = (index + 1).min(240) as f32 / 240.0;
+                let progress = (index + 1).min(fade_frames) as f32 / fade_frames as f32;
                 let mix = if bypassed { 1.0 - progress } else { progress };
                 for lane in 0..2 {
                     let expected = dry[lane] + (wet[lane] - dry[lane]) * mix;

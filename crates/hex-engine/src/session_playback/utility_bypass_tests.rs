@@ -111,11 +111,17 @@ fn utility_filter_bypass_track_return_main_matches_automated_wet_and_dry_referen
                 playback.apply(SessionPlaybackCommand::Play).unwrap();
                 render(playback, 6000, 127);
             }
-            for bypassed in [true, false] {
+            // At 48 kHz, power-off fades for 5 ms and cold power-on de-clicks for 0.5 ms.
+            for (bypassed, fade_frames) in [(true, 240), (false, 24)] {
                 if !bypassed {
                     editor
                         .execute(Command::ToggleDeviceBypass { device })
                         .unwrap();
+                    // Start the filter at the cut while the analytic note keeps its phase.
+                    wet = make(&source, None);
+                    wet.apply(SessionPlaybackCommand::Seek(candidate.arrangement_frame()))
+                        .unwrap();
+                    wet.apply(SessionPlaybackCommand::Play).unwrap();
                 }
                 let mut next = make(editor.project(), Some(candidate.revision.session()));
                 next.try_inherit_state_from(&mut candidate).unwrap();
@@ -131,7 +137,7 @@ fn utility_filter_bypass_track_return_main_matches_automated_wet_and_dry_referen
                     "oracle needs distinct wet/dry: location={location} dc={dc} bass={bass} muted={muted} automated={automated} bypassed={bypassed}"
                 );
                 for (index, ((actual, wet), dry)) in actual.iter().zip(wet).zip(dry).enumerate() {
-                    let progress = (index + 1).min(240) as f32 / 240.0;
+                    let progress = (index + 1).min(fade_frames) as f32 / fade_frames as f32;
                     let mix = if bypassed { 1.0 - progress } else { progress };
                     for lane in 0..2 {
                         let expected = dry[lane] + (wet[lane] - dry[lane]) * mix;
