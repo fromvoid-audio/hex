@@ -788,7 +788,27 @@ fn warped_drag_through_ack(cx: &mut TestAppContext, scoped: bool) {
             else {
                 panic!("signed placement")
             };
-            assert_eq!(start.unsigned_abs() % BeatTime::ONE.raw(), 0);
+            // A phased scope has its own processing origin. Check the ruler's
+            // project-frame grid instead of testing raw source beat ticks.
+            let state = v.state.as_ref().unwrap();
+            let tempo = state.project.tempo_map();
+            let clip = state.project.clip(clip).unwrap();
+            let root = clip.audio_event_root();
+            let anchor = root.root_frame_at(event_grid_origin(&root), tempo).unwrap();
+            let frame = i128::from(clip.start())
+                + root
+                    .signed_root_frame_at(i128::from(*start), tempo)
+                    .unwrap()
+                - i128::from(anchor);
+            assert_eq!(
+                SnapGrid::Quarter.snap_signed_frame(
+                    &state.project,
+                    frame,
+                    v.event_project_window(&root).unwrap(),
+                    f32::from(lane.size.width),
+                ),
+                Some(frame)
+            );
         });
         visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
         for _ in 0..3 {
