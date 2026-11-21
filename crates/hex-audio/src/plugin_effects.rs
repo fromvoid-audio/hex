@@ -28,7 +28,9 @@ mod bypass;
 mod definition;
 mod tail;
 mod transport;
-pub use definition::{NativeEffectDefinition, PoweredOffEffect, UnavailableEffect};
+pub use definition::{
+    NativeEffectDefinition, PoweredOffEffect, RetainedInstrumentSource, UnavailableEffect,
+};
 use transport::EffectTransport;
 mod hosting;
 mod offline_preparation;

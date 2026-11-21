@@ -2,6 +2,7 @@
 use super::*;
 mod detached_history;
 mod hosted_effect_history;
+mod hosted_instrument_move;
 mod main_history;
 mod stopped_power;
 
@@ -1028,6 +1029,7 @@ impl Session {
             preparing_edit: true,
             stopped_main_power_on: None,
             running_main_power_off: None,
+            hosted_instrument_move: None,
         };
         let prepared = if input.requires_plugin_profile() {
             sink.prepare_verified_effects(input, proposal, &mut |effects| {
@@ -1109,6 +1111,11 @@ impl Session {
             } else {
                 None
             };
+        let hosted_instrument_move = if self.audio_mode() == DocumentAudioMode::Resident {
+            hosted_instrument_move::Intent::from_command(&command)
+        } else {
+            None
+        };
         self.stage_resident_graph_change(
             context,
             sink,
@@ -1119,6 +1126,7 @@ impl Session {
             plugin,
             proposal_control,
             document_intent,
+            hosted_instrument_move,
             |session| {
                 crate::validate_command_media(&command)?;
                 let operation = if stopped_fence.is_some() || running_power_off.is_some() {
@@ -1181,6 +1189,7 @@ impl Session {
             None,
             None,
             document_intent,
+            None,
             |session| {
                 let hosted = match detached_history::stage(&mut session.editor, redo)? {
                     Some(edge) => Some(edge),
@@ -1210,6 +1219,7 @@ impl Session {
         plugin: Option<&PluginEffectControl>,
         proposal_control: Option<&PluginEffectControl>,
         document_intent: u64,
+        hosted_instrument_move: Option<hosted_instrument_move::Intent>,
         stage: impl FnOnce(&mut Self) -> Result<Option<(StagedChange, Operation)>, SessionError>,
     ) -> Result<Option<Pending>, SessionError> {
         let preparation_deadline = device_edit_preparation_deadline();
@@ -1266,6 +1276,9 @@ impl Session {
                 preparing_edit: plugin.is_none(),
                 stopped_main_power_on,
                 running_main_power_off: running_power_off,
+                hosted_instrument_move: hosted_instrument_move.and_then(|intent| {
+                    intent.preparation(self.project(), edit.project(), installed)
+                }),
                 device_insert_control: proposal_control,
                 ..self.resident_seek_inputs(admission, current, None)?
             };

@@ -5187,12 +5187,17 @@ impl SessionPlayback {
             &mut tail_runtime_bytes,
             &mut suffix_entry_count,
             continuation,
-            // The proved Main pass cut already ended this exact worker's
+            // The passive cut or exact approved restart ended this worker's
             // contribution. Off retains its authored ID, so the generic
             // same-ID policy would otherwise preserve its incompatible tail.
-            if main_pass_cut.is_some()
-                && matches!(new_main.as_ref(), [off]
+            if matches!(new_main.as_ref(), [off]
                     if off.bypassed && off.definition.as_ref().is_some_and(|factory| factory.is_powered_off()))
+                && (main_pass_cut.is_some()
+                    || (confirmed_insert
+                        && self
+                            .main_chain
+                            .main_pass_removal_from(&previous.main_chain)
+                            .is_some()))
             {
                 DeviceEditTailPolicy::Cut
             } else {
