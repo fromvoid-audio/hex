@@ -1,4 +1,4 @@
-//! Cached, view-only clip intervals for the Main lane's arrangement miniature.
+//! Cached, view-only clip intervals for the Main lane and section miniatures.
 //! Project owns time/identity; section, range and automation owners retain input.
 use super::{EditorView, viewport::Viewport};
 use crate::{section_surface::SectionCoverage, theme};
@@ -145,13 +145,29 @@ fn layer(
     coverage: Option<SectionCoverage>,
 ) -> Div {
     let data = view.state.as_ref().map(|state| {
+        // Section miniatures describe the project inside their own time spans.
+        // Only the Main underlay follows the track focus projection.
+        let (focus, revealed) = if chamfer.is_some() {
+            (None, None)
+        } else {
+            (
+                Some(view.arrangement_focus_ranges()),
+                view.arrangement_revealed_track(),
+            )
+        };
+        let ranges = focus.as_deref().unwrap_or_default();
+        let cache = if ranges.is_empty() && revealed.is_none() {
+            &view.arrangement_map_cache
+        } else {
+            &view.focused_arrangement_map_cache
+        };
         cached(
-            &view.arrangement_map_cache,
+            cache,
             view.project_generation,
             state.revision,
             &state.project,
-            view.arrangement_focus_ranges(),
-            view.arrangement_revealed_track(),
+            ranges,
+            revealed,
         )
     });
     div()
@@ -443,6 +459,80 @@ mod tests {
             scenes[0].1.each_ref().map(Vec::len),
             [1, 3, 2, 4, 6, 1, 1, 2]
         );
+    }
+
+    #[gpui::test]
+    fn section_previews_keep_their_clips_when_q_focus_moves_to_an_empty_section(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::{Modifiers, VisualTestContext};
+
+        let mut model = Editor::new(project(), 8).unwrap();
+        for (name, start, end) in [("populated", 0, 4), ("empty", 4, 8)] {
+            model
+                .execute(Command::AddArrangementSection {
+                    name: name.into(),
+                    color: hex_project::ElementColor::Orange,
+                    start: BeatTime::from_quarters(start).unwrap(),
+                    end: BeatTime::from_quarters(end).unwrap(),
+                })
+                .unwrap();
+        }
+        let before = model.project().snapshot();
+        let empty = model.project().arrangement_sections()[1].id();
+        let (handle, editor) = super::super::clip_drag_ui_test::editor_window(
+            cx,
+            model.project().clone(),
+            Default::default(),
+        );
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+
+        let header = visual.debug_bounds("arrangement-section-header-0").unwrap();
+        visual.simulate_click(header.center(), Modifiers::default());
+        editor.update(&mut visual, |view, cx| {
+            view.toggle_arrangement_focus();
+            cx.notify();
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.arrangement_track_indices(), &[0, 1]);
+        });
+
+        let ink = gpui::Background::from(rgb(theme::color(theme::PaletteRole::Background)));
+        let previews = |visual: &mut VisualTestContext, selector| {
+            let section = visual.debug_bounds(selector).unwrap();
+            let scale = visual.update(|window, _| window.scale_factor());
+            let body_top = point(
+                section.left(),
+                section.top() + px(super::super::clip_name::CLIP_NAME_HEIGHT),
+            )
+            .scale(scale)
+            .y;
+            let width = section.scale(scale).size.width;
+            visual
+                .rendered_filled_quads(selector)
+                .into_iter()
+                .filter_map(|(bounds, color)| {
+                    // Scene reads include ancestor backgrounds and the header.
+                    (color == ink && bounds.top() >= body_top && bounds.size.width < width)
+                        .then_some(bounds)
+                })
+                .collect::<Vec<_>>()
+        };
+        let populated = previews(&mut visual, "arrangement-section-0");
+        assert_eq!(populated.len(), 2, "populated section audio and MIDI ink");
+
+        let header = visual.debug_bounds("arrangement-section-header-1").unwrap();
+        visual.simulate_click(header.center(), Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.sections.selected, Some(empty));
+            assert!(view.arrangement_track_indices().is_empty());
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+        });
+        assert_eq!(previews(&mut visual, "arrangement-section-0"), populated);
+        assert!(previews(&mut visual, "arrangement-section-1").is_empty());
     }
 
     #[cfg(feature = "ui-test-support")]
