@@ -46,6 +46,220 @@ fn idle(editor: &Entity<EditorView>, cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn visible_native_controls_follow_applied_automation_without_writing_the_project(
+    cx: &mut TestAppContext,
+) {
+    use crate::editor::worker_ui_fixture;
+    use hex_engine::PlaybackCommand;
+    use hex_lattice_contract::{DeviceTypeId, ParameterId};
+    use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime};
+    use std::sync::atomic::Ordering::Acquire;
+
+    let effect = |id| {
+        hex_engine::default_native_device_state_for_class(
+            NativeDeviceClass::Effect,
+            DeviceTypeId::from_static(id),
+        )
+        .unwrap()
+    };
+    let rattle = Command::InsertTrackWithDevice {
+        name: "automation".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Effect,
+        state: effect("hex.rattle"),
+    };
+    let mut model =
+        hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track) = model.execute(rattle.clone()).unwrap() else {
+        panic!("rattle track");
+    };
+    let drive = ParameterKey {
+        device: model.project().track(track).unwrap().devices()[0].id(),
+        parameter: ParameterId::from_static(1),
+    };
+    let utility = Command::InsertDevice {
+        track,
+        before: None,
+        state: effect("hex.utility"),
+    };
+    let Created::Device(device) = model.execute(utility.clone()).unwrap() else {
+        panic!("utility device");
+    };
+    let mono = ParameterKey {
+        device,
+        parameter: utility_panel::MONO,
+    };
+    let channel = ParameterKey {
+        device,
+        parameter: utility_panel::CHANNEL,
+    };
+    let envelope = |key: ParameterKey, start, end, outgoing| Command::ReplaceDeviceAutomation {
+        device: key.device,
+        parameter: key.parameter,
+        points: [(BeatTime::ZERO, start), (BeatTime::ONE, end)]
+            .into_iter()
+            .map(|(beat, value)| AutomationPoint {
+                beat,
+                value: AutomationValue::new(value).unwrap(),
+                outgoing,
+            })
+            .collect(),
+    };
+    let mut fixture = worker_ui_fixture::open(
+        cx,
+        vec![
+            rattle,
+            utility,
+            envelope(drive, 0.2, 0.8, AutomationInterpolation::Linear),
+            envelope(mono, 0.0, 1.0, AutomationInterpolation::Step),
+            envelope(channel, 0.0, 1.0, AutomationInterpolation::Step),
+            Command::SetLoopRegion {
+                start: 0,
+                end: 96_000,
+                enabled: true,
+            },
+        ],
+    );
+    let editor = fixture.editor.clone();
+    let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    editor.update(&mut visual, |view, cx| {
+        view.selected_track = Some(track);
+        view.device_panel_active = true;
+        view.clip_view_open = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let painted = |visual: &VisualTestContext| {
+        editor.read_with(visual, |view, cx| {
+            let ParameterControl::Float { entity: knob, .. } = &view.device_panel.controls[&drive]
+            else {
+                panic!("drive knob");
+            };
+            let ParameterControl::Bool { entity: toggle, .. } = &view.device_panel.controls[&mono]
+            else {
+                panic!("mono toggle");
+            };
+            let ParameterControl::Choice {
+                entity: choice,
+                values,
+                ..
+            } = &view.device_panel.controls[&channel]
+            else {
+                panic!("channel selector");
+            };
+            (
+                knob.read(cx).value(),
+                toggle.read(cx).checked(),
+                values[choice.read(cx).selected()],
+            )
+        })
+    };
+    let base = painted(&visual);
+    let before = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.clone()
+    });
+    editor.update(&mut visual, |view, _| {
+        view.queue_audio_command(PlaybackCommand::PlayFrom(0));
+    });
+    for (blocks, expected) in [(1, 0.2), (187, 0.5), (188, 0.8)] {
+        for _ in 0..blocks {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        }
+        editor.update(&mut visual, |view, cx| {
+            if view.tick(cx) {
+                cx.notify();
+            }
+        });
+        visual.run_until_parked();
+        let (value, mono, channel) = painted(&visual);
+        assert!(
+            (value - expected).abs() < 0.01,
+            "drive knob: {value} at {expected}"
+        );
+        assert_eq!(mono, expected == 0.8);
+        assert_eq!(channel, if expected == 0.8 { 3 } else { 0 });
+        editor.read_with(&visual, |view, _| {
+            let (graph, _) = rattle_panel::displayed(view, drive.device).unwrap();
+            assert!((f64::from(graph) - value).abs() < 0.001);
+            assert_eq!(view.state.as_ref().unwrap().project, before);
+        });
+    }
+    let knob_text = |visual: &VisualTestContext| {
+        editor.read_with(visual, |view, cx| {
+            let ParameterControl::Float { entity, .. } = &view.device_panel.controls[&drive] else {
+                panic!("drive knob");
+            };
+            entity.read(cx).display_text().to_owned()
+        })
+    };
+    let automated_text = knob_text(&visual);
+    let from = visual
+        .debug_bounds(parameter(drive.device))
+        .unwrap()
+        .center();
+    let to = point(from.x, from.y + px(12.0));
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(to, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    assert_ne!(
+        knob_text(&visual),
+        automated_text,
+        "the active control keeps its draft"
+    );
+    editor.read_with(&visual, |view, _| {
+        let draft = view.device_gesture.snapshot().unwrap().value;
+        let (graph, _) = rattle_panel::displayed(view, drive.device).unwrap();
+        assert_eq!(ParameterValue::Float(graph), draft);
+        assert!((graph - 0.8).abs() > 0.01);
+    });
+    visual.simulate_keystrokes("escape");
+    let deadline = crate::test_wait::hang_deadline();
+    loop {
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        let settled = editor.update(&mut visual, |view, cx| {
+            if view.tick(cx) {
+                cx.notify();
+            }
+            view.device_gesture.snapshot().is_none() && view.device_gesture_barriers.is_empty()
+        });
+        if settled {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "gesture cancellation");
+        std::thread::yield_now();
+    }
+    visual.run_until_parked();
+    assert!((painted(&visual).0 - 0.8).abs() < 0.01);
+    assert_eq!(knob_text(&visual), automated_text);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, before)
+    });
+    editor.update(&mut visual, |view, _| {
+        view.queue_audio_command(PlaybackCommand::Pause);
+    });
+    let deadline = crate::test_wait::hang_deadline();
+    loop {
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        editor.update(&mut visual, |view, cx| {
+            if view.tick(cx) {
+                cx.notify();
+            }
+        });
+        if !fixture.backend.status().unwrap().playing.load(Acquire) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "pause acknowledgement"
+        );
+    }
+    visual.run_until_parked();
+    assert_eq!(painted(&visual), base);
+    fixture.finish(cx);
+}
+
+#[gpui::test]
 fn rattle_track_return_panel_fits_and_drive_draft_commits_one_undo(cx: &mut TestAppContext) {
     let (handle, editor, track, device) = window(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
