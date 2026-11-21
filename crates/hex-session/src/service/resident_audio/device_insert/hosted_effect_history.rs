@@ -1,6 +1,8 @@
-//! Confirm one top-level hosted effect history edge through the Resident callback.
+//! Compare exact history edges for one top-level hosted effect.
 use super::GraphEditOperation;
-use hex_project::{Command, Device, DeviceId, Editor, Invalid, Project, StagedProjectHistory};
+use hex_project::{
+    Command, Device, DeviceId, Editor, Invalid, Project, StagedProjectHistory, Track,
+};
 
 pub(super) fn stage(
     editor: &mut Editor,
@@ -33,6 +35,7 @@ fn effect_membership(before: &Project, after: &Project) -> Option<(DeviceId, Gra
 
 fn added_effect(before: &Project, after: &Project) -> Option<DeviceId> {
     added_track_effect(before, after)
+        .map(|(_, device)| device)
         .or_else(|| added_return_effect(before, after))
         .or_else(|| {
             let devices = after.main_devices();
@@ -43,7 +46,22 @@ fn added_effect(before: &Project, after: &Project) -> Option<DeviceId> {
         })
 }
 
-fn added_track_effect(before: &Project, after: &Project) -> Option<DeviceId> {
+/// The running Verified path may prepare an active Track worker only for
+/// this exact membership change. The audio owner decides cut compatibility.
+pub(super) fn restores_one_track(before: &Project, after: &Project) -> bool {
+    let Some((track, device)) = added_track_effect(before, after) else {
+        return false;
+    };
+    track.instrument().is_none()
+        && track
+            .devices()
+            .iter()
+            .any(|leaf| leaf.id() == device && !leaf.bypassed())
+        && super::hosted_replacement_history::without_effect(after, device)
+            .is_some_and(|without| without.project() == before)
+}
+
+fn added_track_effect<'a>(before: &Project, after: &'a Project) -> Option<(&'a Track, DeviceId)> {
     if before.tracks().len() != after.tracks().len() {
         return None;
     }
@@ -63,7 +81,7 @@ fn added_track_effect(before: &Project, after: &Project) -> Option<DeviceId> {
     if tracks.next().is_some() {
         return None;
     }
-    added_leaf(before, track.devices())
+    added_leaf(before, track.devices()).map(|device| (track, device))
 }
 
 fn added_return_effect(before: &Project, after: &Project) -> Option<DeviceId> {
@@ -141,6 +159,21 @@ mod tests {
             panic!("device");
         };
         assert_exact_removal_history(&mut editor, id);
+        let restored = editor.project().clone();
+
+        let mut deleted = Editor::new(restored.clone(), 1).unwrap();
+        deleted.execute(Command::RemoveDevice(id)).unwrap();
+        assert!(restores_one_track(deleted.project(), &restored));
+        assert!(!restores_one_track(&restored, deleted.project()));
+
+        let mut bypassed = Editor::new(restored.clone(), 1).unwrap();
+        bypassed
+            .execute(Command::SetDeviceBypass {
+                device: id,
+                bypassed: true,
+            })
+            .unwrap();
+        assert!(!restores_one_track(deleted.project(), bypassed.project()));
 
         editor
             .execute_many_prepared(
@@ -155,6 +188,7 @@ mod tests {
             )
             .unwrap();
         assert!(stage(&mut editor, false).unwrap().is_none());
+        assert!(!restores_one_track(editor.project(), &restored));
     }
 
     #[test]

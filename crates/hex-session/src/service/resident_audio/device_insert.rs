@@ -1159,12 +1159,20 @@ impl Session {
         let tempo_cut = matches!(operation, Operation::Tempo);
         let hosted_sources = match operation {
             Operation::HostedHistory(GraphEditOperation::InsertDevice)
-                if main_history::restores_one_main(self.project(), edit.project()) =>
+                if main_history::restores_one_main(self.project(), edit.project())
+                    || hosted_effect_history::restores_one_track(
+                        self.project(),
+                        edit.project(),
+                    ) =>
             {
                 HostedSources::RunningHistory
             }
             Operation::HostedHistory(GraphEditOperation::RemoveDevice)
-                if main_history::restores_one_main(edit.project(), self.project()) =>
+                if main_history::restores_one_main(edit.project(), self.project())
+                    || hosted_effect_history::restores_one_track(
+                        edit.project(),
+                        self.project(),
+                    ) =>
             {
                 HostedSources::RunningHistory
             }

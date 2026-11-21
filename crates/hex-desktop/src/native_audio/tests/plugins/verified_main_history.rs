@@ -195,7 +195,7 @@ fn assert_running_verified_history(track_effect: bool) {
             .error
             .as_deref()
             .is_some_and(|message| message.contains("saved vst3 binary or class is unavailable")),
-        "wrong provider was accepted: {:?}",
+        "unexpected wrong-provider result: {:?}",
         unavailable.error
     );
     assert_eq!(unavailable.state.project, removed.state.project);
