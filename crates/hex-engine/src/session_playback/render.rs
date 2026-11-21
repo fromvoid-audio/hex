@@ -3349,12 +3349,23 @@ fn render_mutable_instrument_inner<T: crate::prepared_tempo::MidiTempoBreaks + ?
                         if !span.admitted_at_interactive_start(interactive_onset_floor) {
                             return;
                         }
+                        let key = crate::mutable_instrument::MutableOccurrenceKey::new(
+                            track_id,
+                            span.clip,
+                            span.note,
+                            span.iteration,
+                            arrangement_loop_pass,
+                        );
+                        // A forward loop edit on pass > 0 can reach `region.start()`
+                        // linearly while an already-started span from this pass is
+                        // active; skip wrap-chase for any key already owned on this pass.
                         let is_wrap_chase = arrangement_loop_pass > 0
                             && loop_region.is_some_and(|region| {
                                 arrangement_frame == region.start()
                                     && span.start < region.start()
                                     && span.gate_end > region.start()
-                            });
+                            })
+                            && !runtime.proofs().any(|proof| proof.signature.key() == key);
                         let is_start_chase = chase_at_start
                             && span.start < arrangement_frame
                             && span.gate_end > arrangement_frame;
@@ -3377,13 +3388,7 @@ fn render_mutable_instrument_inner<T: crate::prepared_tempo::MidiTempoBreaks + ?
                         };
                         event_error |= onsets
                             .push(crate::mutable_instrument::MutableNoteOnset {
-                                key: crate::mutable_instrument::MutableOccurrenceKey::new(
-                                    track_id,
-                                    span.clip,
-                                    span.note,
-                                    span.iteration,
-                                    arrangement_loop_pass,
-                                ),
+                                key,
                                 onset_beat: span.onset_beat,
                                 gate_end_beat: span.gate_end_beat,
                                 source_start,

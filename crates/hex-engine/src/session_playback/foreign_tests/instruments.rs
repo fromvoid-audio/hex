@@ -3163,3 +3163,267 @@ fn loop_edit_accepts_inactive_linear_range_mixed_automation_and_silent_track() {
         .try_inherit_state_live_from(&mut silent_playing)
         .expect("unautomated vst3 instrument on a silent route must accept a live loop edit");
 }
+
+#[test]
+fn live_loop_edit_succeeds_with_both_vst3_and_native_mutable_instrument() {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(vst_track) = editor
+        .execute(Command::AddMidiTrack { name: "vst".into() })
+        .unwrap()
+    else {
+        panic!("vst track");
+    };
+    editor
+        .execute(Command::InsertInstrument {
+            track: vst_track,
+            state: NativeDeviceState::new(VST3, 1, vec![19]).unwrap(),
+        })
+        .unwrap();
+    let vst_device = editor
+        .project()
+        .track(vst_track)
+        .unwrap()
+        .instrument()
+        .unwrap();
+    let identity = ProcessorInstanceIdentity::new(
+        ProcessorChainOwner::Track(vst_track.value()),
+        vst_device.id().value(),
+    )
+    .unwrap();
+    let clip_length = BeatTime::from_ratio(1, 2).unwrap();
+    let Created::Clip(vst_clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track: vst_track,
+            start: BeatTime::ZERO,
+            length: clip_length,
+        })
+        .unwrap()
+    else {
+        panic!("vst clip");
+    };
+    // 0..1_500 frames at 48 kHz / 120 BPM.
+    editor
+        .execute(Command::AddMidiNote {
+            clip: vst_clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_ratio(1, 16).unwrap(),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+
+    let Created::Track(fm_track) = editor
+        .execute(Command::AddMidiTrack { name: "fm".into() })
+        .unwrap()
+    else {
+        panic!("fm track");
+    };
+    editor
+        .execute(Command::InsertInstrument {
+            track: fm_track,
+            state: hex_devices::fm4::device::Fm4Definition
+                .default_state()
+                .unwrap(),
+        })
+        .unwrap();
+    let Created::Clip(fm_clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track: fm_track,
+            start: BeatTime::ZERO,
+            length: clip_length,
+        })
+        .unwrap()
+    else {
+        panic!("fm clip");
+    };
+    // 0..3_000 frames: held at the pass-0 cut (frame 1_000).
+    editor
+        .execute(Command::AddMidiNote {
+            clip: fm_clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_ratio(1, 8).unwrap(),
+            pitch: 48,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    // 3_750..6_750 frames: held at the pass-1 cut (frame 4_500) and spans the moved loop start (6_000).
+    editor
+        .execute(Command::AddMidiNote {
+            clip: fm_clip,
+            start: BeatTime::from_ratio(5, 32).unwrap(),
+            duration: BeatTime::from_ratio(1, 8).unwrap(),
+            pitch: 52,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    // 7_500..8_250 frames: inside the moved loop (6_000..9_000), leaving a release tail at 8_300.
+    editor
+        .execute(Command::AddMidiNote {
+            clip: fm_clip,
+            start: BeatTime::from_ratio(5, 16).unwrap(),
+            duration: BeatTime::from_ratio(1, 32).unwrap(),
+            pitch: 55,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 3_000,
+            enabled: true,
+        })
+        .unwrap();
+
+    let mut playing = SessionPlayback::new(prepare(&editor, identity, true).unwrap()).unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    playing.apply(SessionPlaybackCommand::Play).unwrap();
+    endpoint
+        .render(&mut playing, &mut vec![[0.0; 2]; 1_000])
+        .unwrap();
+    let [(0, vst_onset)] = endpoint.notes.as_slice() else {
+        panic!("expected one held vst3 onset");
+    };
+    let vst_onset = *vst_onset;
+    assert!(vst_onset.on);
+    assert!(
+        playing.mutable_instruments[1]
+            .as_ref()
+            .unwrap()
+            .proofs()
+            .any(|proof| !proof.note_off_sent),
+        "native mutable instrument must have a held note at the pass-0 edit"
+    );
+
+    // Move loop forward to 3_000..5_500 on pass 0.
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 3_000,
+            end: 5_500,
+            enabled: true,
+        })
+        .unwrap();
+    let rev2 = prepare(&editor, identity, true).unwrap();
+    let mut strict = SessionPlayback::new(Arc::clone(&rev2)).unwrap();
+    assert_eq!(
+        strict.try_inherit_state_from(&mut playing),
+        Err(SessionPlaybackError::MutableInstrumentLoopBoundsActive)
+    );
+    let mut moved = SessionPlayback::new(rev2).unwrap();
+    moved
+        .preview_stream_handoff_with_scope(&mut playing, 256, None, &mut |_| Ok(()), true)
+        .expect("stream preflight must admit live loop edit");
+    moved
+        .try_inherit_state_live_from(&mut playing)
+        .expect("live loop edit must succeed with active vst3 + native mutable instruments");
+    assert_eq!(moved.arrangement_frame(), 1_000);
+    assert_eq!(
+        moved.loop_region(),
+        Some(hex_project::LoopRegion::new(3_000, 5_500, true).unwrap())
+    );
+
+    // VST3 note keeps its original note ID and releases at its authored deadline (1_500);
+    // the cut FM4 gate is released cleanly on the first candidate block.
+    endpoint
+        .render(&mut moved, &mut vec![[0.0; 2]; 600])
+        .unwrap();
+    assert_eq!(
+        endpoint.notes,
+        [(
+            500,
+            hex_lattice::ForeignNote {
+                on: false,
+                velocity: 0,
+                ..vst_onset
+            }
+        )]
+    );
+    assert!(
+        moved.mutable_instruments[1]
+            .as_ref()
+            .unwrap()
+            .proofs()
+            .all(|proof| proof.note_off_sent),
+        "cut native mutable gate must release cleanly"
+    );
+
+    // Advance past 5_500 (wrapping to 3_000 on pass 1) to frame 4_500.
+    endpoint
+        .render(&mut moved, &mut vec![[0.0; 2]; (5_500 - 1_600) + 1_500])
+        .unwrap();
+    assert_eq!(moved.arrangement_loop_state().pass, 1);
+    assert_eq!(moved.arrangement_frame(), 4_500);
+    assert!(
+        moved.mutable_instruments[1]
+            .as_ref()
+            .unwrap()
+            .proofs()
+            .any(|proof| !proof.note_off_sent),
+        "native mutable instrument must have a held note at the pass-1 edit"
+    );
+
+    // Move loop forward again to 6_000..9_000 while on pass 1 before 6_000.
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 6_000,
+            end: 9_000,
+            enabled: true,
+        })
+        .unwrap();
+    let mut moved2 = SessionPlayback::new(prepare(&editor, identity, true).unwrap()).unwrap();
+    moved2
+        .preview_stream_handoff_with_scope(&mut moved, 256, None, &mut |_| Ok(()), true)
+        .expect("stream preflight must admit pass-1 forward loop edit");
+    moved2
+        .try_inherit_state_live_from(&mut moved)
+        .expect("pass-1 live loop edit must succeed");
+    assert_eq!(moved2.arrangement_frame(), 4_500);
+    assert_eq!(
+        moved2.loop_region(),
+        Some(hex_project::LoopRegion::new(6_000, 9_000, true).unwrap())
+    );
+
+    // Render linearly past the old loop end (5_500), across the new loop start
+    // (6_000, spanned by the note at 3_750..6_750), to past the new loop end
+    // (9_000), verifying it respects the new scope bar and wraps to 6_000.
+    let mut rendered = vec![[0.0; 2]; 4_700];
+    for chunk in rendered.chunks_mut(256) {
+        endpoint.render(&mut moved2, chunk).unwrap();
+    }
+    assert_eq!(moved2.arrangement_loop_state().pass, 2);
+    assert_eq!(moved2.arrangement_frame(), 6_200);
+
+    // Advance into the release tail of the short note at 7_500..8_250 (no held note).
+    endpoint
+        .render(&mut moved2, &mut vec![[0.0; 2]; 2_100])
+        .unwrap();
+    assert_eq!(moved2.arrangement_frame(), 8_300);
+    let fm_runtime = moved2.mutable_instruments[1].as_ref().unwrap();
+    assert!(
+        !fm_runtime.committed_is_quiescent()
+            && fm_runtime.proofs().all(|proof| proof.note_off_sent),
+        "only a release tail should remain"
+    );
+
+    // Disabling the loop during a release tail must also succeed and play linearly past 9_000.
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 6_000,
+            end: 9_000,
+            enabled: false,
+        })
+        .unwrap();
+    let mut disabled = SessionPlayback::new(prepare(&editor, identity, true).unwrap()).unwrap();
+    disabled
+        .try_inherit_state_live_from(&mut moved2)
+        .expect("disabling loop during release tail must succeed");
+    endpoint
+        .render(&mut disabled, &mut vec![[0.0; 2]; 1_000])
+        .unwrap();
+    assert_eq!(disabled.arrangement_frame(), 9_300);
+}

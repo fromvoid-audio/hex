@@ -205,6 +205,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
         .checked_add(width)
         .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
     onsets.clear();
+    let receiver_runtime = runtimes.get(receiver).and_then(Option::as_ref);
     let mut has_program = false;
     for &contributor in revision.source_routing().contributors(receiver) {
         let index = usize::from(contributor);
@@ -228,12 +229,6 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
                         if !span.admitted_at_interactive_start(interactive_onset_floor) {
                             return;
                         }
-                        let chase = arrangement_loop_pass > 0
-                            && loop_region.is_some_and(|region| {
-                                arrangement_frame == region.start()
-                                    && span.start < region.start()
-                                    && span.gate_end > region.start()
-                            });
                         let key = crate::mutable_instrument::MutableOccurrenceKey::new(
                             track_id,
                             span.clip,
@@ -241,6 +236,17 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
                             span.iteration,
                             arrangement_loop_pass,
                         );
+                        // A forward loop edit on pass > 0 can reach `region.start()`
+                        // linearly while an already-started span from this pass is
+                        // active; skip wrap-chase for any key already owned on this pass.
+                        let chase = arrangement_loop_pass > 0
+                            && loop_region.is_some_and(|region| {
+                                arrangement_frame == region.start()
+                                    && span.start < region.start()
+                                    && span.gate_end > region.start()
+                            })
+                            && !receiver_runtime
+                                .is_some_and(|runtime| runtime.proofs().any(|proof| proof.signature.key() == key));
                         let pending = pending_shared_chase.is_some_and(|pending| {
                             pending.frame == performance_frame
                                 && pending.signature
