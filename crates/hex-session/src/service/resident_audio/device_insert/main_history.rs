@@ -4,7 +4,7 @@ use hex_lattice_contract::VST3_DEVICE_TYPE_ID;
 use hex_project::{DeviceId, Editor, Invalid, Project, StagedProjectHistory};
 
 /// Stage one exact substitution between two enabled Main workers. The caller
-/// must still obtain the stopped witness for the leaving worker.
+/// must still authenticate the leaving worker and its playback interval.
 pub(super) fn stage_enabled_main_replacement(
     editor: &mut Editor,
     redo: bool,

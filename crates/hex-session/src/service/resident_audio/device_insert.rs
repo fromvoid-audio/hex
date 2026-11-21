@@ -154,6 +154,11 @@ struct StagedResidentChange {
     hosted_instrument_move: Option<hosted_instrument_move::Intent>,
 }
 
+enum ResidentEditFence {
+    Stopped(ResidentFreshRuntimeFence),
+    RunningMainHistory(ResidentGraphSubmission),
+}
+
 impl StagedChange {
     fn project(&self) -> &Project {
         match self {
@@ -1357,7 +1362,7 @@ impl Session {
             sink,
             admission,
             current,
-            stopped_fence,
+            stopped_fence.map(ResidentEditFence::Stopped),
             power_on,
             running_power_off,
             plugin,
@@ -1425,7 +1430,15 @@ impl Session {
             let stopped = sink
                 .stopped_resident_power_fence(context, device.value())
                 .map_err(SessionError::NativeAudio)?;
-            Some((edge, stopped))
+            let fence = if let Some(stopped) = stopped {
+                Some(ResidentEditFence::Stopped(stopped))
+            } else if self.project().main_devices().len() == 1 {
+                sink.running_resident_main_history_source(context, device.value())
+                    .map(ResidentEditFence::RunningMainHistory)
+            } else {
+                None
+            };
+            Some((edge, fence))
         } else if let Some((edge, return_track, device)) =
             hosted_replacement_history::stage_enabled_return_replacement(&mut self.editor, redo)?
         {
@@ -1435,7 +1448,8 @@ impl Session {
                     context,
                     hex_engine::ProcessorChainOwner::Return(return_track.value()),
                     device.value(),
-                ),
+                )
+                .map(ResidentEditFence::Stopped),
             ))
         } else if let Some((edge, track, device)) =
             hosted_replacement_history::stage_enabled_track_replacement(&mut self.editor, redo)?
@@ -1446,15 +1460,16 @@ impl Session {
                     context,
                     hex_engine::ProcessorChainOwner::Track(track.value()),
                     device.value(),
-                ),
+                )
+                .map(ResidentEditFence::Stopped),
             ))
         } else {
             None
         };
-        let (replacement, stopped_fence) = match replacement {
-            Some((edge, stopped)) => (
+        let (replacement, fence) = match replacement {
+            Some((edge, fence)) => (
                 Some(edge),
-                Some(stopped.ok_or(SessionError::Invalid(
+                Some(fence.ok_or(SessionError::Invalid(
                     "stop playback to undo or redo this vst3 replacement",
                 ))?),
             ),
@@ -1465,7 +1480,7 @@ impl Session {
             sink,
             admission,
             current,
-            stopped_fence,
+            fence,
             None,
             None,
             None,
@@ -1510,7 +1525,7 @@ impl Session {
         sink: &mut dyn WorkerAudioSink,
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
-        stopped_fence: Option<ResidentFreshRuntimeFence>,
+        fence: Option<ResidentEditFence>,
         power_on: Option<ResidentPowerOn>,
         running_power_off: Option<ResidentRunningPowerOff>,
         plugin: Option<&PluginEffectControl>,
@@ -1552,6 +1567,19 @@ impl Session {
                         "device edit needs the current installed audio graph"
                     },
                 ))?;
+            let stopped_fence = match fence {
+                Some(ResidentEditFence::Stopped(stopped)) => Some(stopped),
+                Some(ResidentEditFence::RunningMainHistory(source)) => {
+                    if installed.output_identity != source.output_identity
+                        || installed.audio_revision != source.audio_revision
+                        || installed.source_context != Some(source.context)
+                    {
+                        return Err(SessionError::Invalid("running main history source changed"));
+                    }
+                    None
+                }
+                None => None,
+            };
             if let Some(power) = power_on
                 && let ResidentPowerOnInterval::Running(source) = power.interval()
                 && (installed.output_identity != source.output_identity

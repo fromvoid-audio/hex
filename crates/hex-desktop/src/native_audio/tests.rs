@@ -386,6 +386,15 @@ impl WorkerAudioSink for ObservedSink {
             .stopped_resident_effect_history_fence(context, owner, device)
     }
 
+    fn running_resident_main_history_source(
+        &mut self,
+        context: AudioSourceContext,
+        device: u64,
+    ) -> Option<hex_session::service::ResidentGraphSubmission> {
+        self.inner
+            .running_resident_main_history_source(context, device)
+    }
+
     fn resident_runtime_loop(
         &mut self,
         context: AudioSourceContext,
