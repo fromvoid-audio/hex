@@ -21,6 +21,8 @@ mod limiter_latency;
 
 #[path = "tests/eq_automation.rs"]
 mod eq_automation;
+#[path = "tests/return_pass_ring.rs"]
+mod return_pass_ring;
 #[path = "tests/shared_legacy.rs"]
 mod shared_legacy;
 #[path = "tests/shared_sources.rs"]

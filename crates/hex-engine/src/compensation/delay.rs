@@ -303,3 +303,21 @@ impl DelayPair {
         self.transaction_active = false;
     }
 }
+
+#[cfg(test)]
+impl CompensationRuntime {
+    pub(crate) fn test_committed_dry_pass(
+        &self,
+        edge: usize,
+    ) -> Option<hex_lattice::MainPassDelay> {
+        let pair = self.edges.get(edge)?;
+        let ring = &pair.ring;
+        if !self.is_closed()
+            || pair.transaction_active
+            || ring.committed_cursor.valid != ring.committed.len()
+        {
+            return None;
+        }
+        hex_lattice::MainPassDelay::copy_committed_ring(&ring.committed, ring.committed_cursor.next)
+    }
+}
