@@ -75,16 +75,6 @@ impl NativeEndpointBank {
             .settled_return_pass(identity, frame)
     }
 
-    /// The retained worker has accepted its last complete ordinary quantum.
-    pub(crate) fn settled_track_effect_move(
-        &self,
-        identity: hex_lattice::ProcessorInstanceIdentity,
-        binding: Binding,
-    ) -> Result<bool, DeviceContractError> {
-        self.active_endpoint(binding)?
-            .settled_track_effect_move(identity)
-    }
-
     fn active_endpoint(&self, binding: Binding) -> Result<&NativeEffectEntry, DeviceContractError> {
         if self.cycle.revoked() {
             return Err(DeviceContractError::ForeignProcessingUnavailable);
