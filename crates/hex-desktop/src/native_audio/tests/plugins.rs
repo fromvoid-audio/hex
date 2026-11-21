@@ -17,6 +17,7 @@ mod unlaned_effect_commit;
 mod unsealed_admission;
 mod verified_insert;
 mod verified_main_history;
+mod whole_return_removal;
 use super::resident_preview::ResidentHarness;
 use super::*;
 use hex_audio::plugin_effects::{EffectPresentation, Hosting};
