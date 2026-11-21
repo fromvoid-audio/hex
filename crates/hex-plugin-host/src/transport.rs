@@ -1065,6 +1065,14 @@ fn channel_with_policy(
 }
 
 impl Callback {
+    /// Whether the last accepted physical callback completed its processing
+    /// quantum and no speculative input is currently staged on this endpoint.
+    pub fn at_committed_quantum_boundary(&self) -> bool {
+        self.staged.is_none()
+            && self.committed_quantum == Some(CommittedQuantumState::Closed)
+            && !self.revoked.is_revoked()
+    }
+
     /// Committed request prefix for an exclusively owned offline endpoint.
     /// No observation or borrow of the device callback is permitted.
     pub fn dispatched_blocks_on_control(&self) -> u64 {

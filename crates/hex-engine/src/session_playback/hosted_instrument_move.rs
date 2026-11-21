@@ -1,6 +1,6 @@
 //! Exact paired cut of one hosted instrument and its existing authored gate.
 use super::{SessionPlayback, foreign_arrangement::FrameContext};
-use crate::playback::HostedInstrumentMove;
+use crate::playback::{HostedInstrumentMove, HostedMoveRequest};
 use hex_lattice::ProcessorChainOwner;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -12,7 +12,9 @@ pub(super) struct HostedTrackCut {
 
 impl SessionPlayback {
     pub(super) fn direct_hosted_track_cut_from(&self, previous: &Self) -> Option<HostedTrackCut> {
-        let request = self.hosted_instrument_move?;
+        let HostedMoveRequest::Instrument(request) = self.hosted_move? else {
+            return None;
+        };
         if !previous.playing
             || self.loop_region().is_some()
             || previous.loop_region().is_some()

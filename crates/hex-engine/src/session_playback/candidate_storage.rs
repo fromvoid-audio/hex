@@ -105,7 +105,7 @@ impl SessionPlayback {
             main_pass_delay,
             foreign_continuation,
             require_continuous_insert: _,
-            hosted_instrument_move: _,
+            hosted_move: _,
             return_fade: _,
             return_fade_scratch: _,
         } = self;

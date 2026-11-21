@@ -1,6 +1,6 @@
 use super::*;
 use crate::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
-use crate::playback::HostedInstrumentMove;
+use crate::playback::{HostedInstrumentMove, HostedMoveRequest};
 use hex_project::DeviceSelectionIds;
 use std::sync::atomic::AtomicBool;
 
@@ -151,14 +151,14 @@ fn hosted_track_fade_refuses_wrong_epoch_or_an_ended_donor_gate() {
         let mut candidate =
             SessionPlayback::new_with_device_resources(new.prepared, &new.resources).unwrap();
         candidate.require_continuous_insert = true;
-        candidate.hosted_instrument_move = Some(movement);
+        candidate.hosted_move = Some(HostedMoveRequest::Instrument(movement));
         assert_eq!(
             candidate.direct_hosted_track_cut_from(&original).is_some(),
             note_is_held
         );
         if note_is_held {
             movement.binding.epoch += 1;
-            candidate.hosted_instrument_move = Some(movement);
+            candidate.hosted_move = Some(HostedMoveRequest::Instrument(movement));
         }
         let clock = original.performance_frame();
         let gain = original.track_faders[0].current();
@@ -190,7 +190,7 @@ fn returning_to_the_physical_owner_requires_the_original_live_gate_and_binding()
             .unwrap();
     }
     moved.require_continuous_insert = true;
-    moved.hosted_instrument_move = Some(forward);
+    moved.hosted_move = Some(HostedMoveRequest::Instrument(forward));
     assert_eq!(
         moved.advance_native_removal_from(&mut original),
         Ok(NativeRemovalProgress::Fading)
@@ -212,13 +212,13 @@ fn returning_to_the_physical_owner_requires_the_original_live_gate_and_binding()
     let mut returned =
         SessionPlayback::new_with_device_resources(old.prepared, &old.resources).unwrap();
     returned.require_continuous_insert = true;
-    returned.hosted_instrument_move = Some(inverse);
+    returned.hosted_move = Some(HostedMoveRequest::Instrument(inverse));
     assert!(returned.direct_hosted_track_cut_from(&moved).is_some());
 
     let mut wrong = inverse;
     wrong.binding.epoch += 1;
     let assert_refused = |returned: &mut SessionPlayback, moved: &mut SessionPlayback, request| {
-        returned.hosted_instrument_move = Some(request);
+        returned.hosted_move = Some(HostedMoveRequest::Instrument(request));
         let faders = moved.track_faders;
         let frame = moved.performance_frame();
         assert_eq!(

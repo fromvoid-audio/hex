@@ -190,6 +190,18 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
         Ok(identity)
     }
 
+    /// Resolve an exact hosted effect receiver to its already prepared physical
+    /// identity. Ordinary definitions retain the authored identity. A compiler
+    /// borrow grants no endpoint, graph publication or retirement custody.
+    fn retained_foreign_effect_identity(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        _state: &NativeDeviceState,
+        _context: &DevicePreparationContext<'_>,
+    ) -> Result<ProcessorInstanceIdentity, DeviceContractError> {
+        Ok(identity)
+    }
+
     /// Control-side selection for one canonical chain/device. Instance-bound
     /// providers must validate this identity against their already prepared
     /// configuration and refuse missing instances. The identity alone grants
@@ -4760,6 +4772,19 @@ impl<'a> NativeDeviceRegistry<'a> {
         self.definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?
             .retained_foreign_instrument_identity(identity, state, context)
+    }
+
+    /// Read an exact hosted effect route from the selected runtime definition.
+    pub fn retained_foreign_effect_identity(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &DevicePreparationContext<'_>,
+    ) -> Result<ProcessorInstanceIdentity, DeviceContractError> {
+        context.validate_for(state)?;
+        self.definition(state.type_id())
+            .ok_or(DeviceContractError::WrongDeviceType)?
+            .retained_foreign_effect_identity(identity, state, context)
     }
 
     /// Validate instance-bound runtime state without changing canonical state.

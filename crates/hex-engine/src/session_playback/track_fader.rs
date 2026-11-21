@@ -22,8 +22,12 @@ impl TrackFader {
     pub(super) fn retarget(&mut self, target: Frame, sample_rate: u32) {
         if self.target != target {
             self.target = target;
-            self.remaining = sample_rate.div_ceil(200).max(1);
+            self.remaining = Self::fade_frames(sample_rate);
         }
+    }
+
+    pub(super) fn fade_frames(sample_rate: u32) -> u32 {
+        sample_rate.div_ceil(200).max(1)
     }
 
     pub(super) fn active(self) -> bool {
