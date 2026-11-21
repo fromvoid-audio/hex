@@ -311,3 +311,148 @@ fn running_resident_return_power_off_waits_for_the_exact_cut_and_returns_the_wor
         .unwrap();
     assert_aligned_bypass(&h, 0);
 }
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn saved_off_resident_return_reopens_without_a_worker_and_preserves_authored_state() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let RollingHostedReturn {
+        harness: mut original,
+        device,
+        ..
+    } = rolling_hosted_return(&files);
+    original.audio.as_ref().unwrap().control.stop();
+    render(&original);
+    let captured_path = files.0.join("captured-return.hex");
+    original
+        .service
+        .submit(Request::SaveNew(captured_path.clone()))
+        .unwrap();
+    let saved = state::edits::ordinary_terminal(&mut original);
+    assert!(
+        saved.save_complete && saved.error.is_none(),
+        "{:?}",
+        saved.error
+    );
+    let captured_project = hex_storage::load(&captured_path).unwrap();
+    let state = captured_project.device(device).unwrap().state().clone();
+    assert!(
+        hex_plugin_state::decode(&state)
+            .unwrap()
+            .component
+            .is_some()
+    );
+    drop(original);
+
+    let mut editor = hex_project::Editor::new(captured_project, 8).unwrap();
+    editor
+        .execute(Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        })
+        .unwrap();
+    let off_project = editor.project();
+    let off_path = files.0.join("saved-off-return.hex");
+    hex_storage::save_new(&off_path, off_project).unwrap();
+    let original_bytes = fs::read(&off_path).unwrap();
+
+    let mut reopened = ResidentHarness::with_plugins_at_rate_and_catalog(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: BRIDGE as u32,
+        }),
+        48_000,
+        files.0.canonicalize().unwrap().join("plugin-catalog.json"),
+        4 * u64::from(FRAMES),
+    );
+    assert!(reopened.next().error.is_none());
+    reopened.applied(0);
+    let old_output = reopened
+        .audio
+        .as_ref()
+        .unwrap()
+        .control
+        .output_identity()
+        .unwrap();
+    let opened = reopened.run(Request::Open(off_path.clone()));
+    assert!(
+        opened.open_complete && opened.error.is_none(),
+        "{:?}",
+        opened.error
+    );
+    assert_eq!(opened.state.project.as_ref(), off_project);
+    let source = opened.state.canonical_audio_source.as_ref().unwrap();
+    assert_eq!(
+        source.audio_mode(),
+        hex_session::DocumentAudioMode::Resident
+    );
+    let mut required = source.required_sources();
+    assert!(matches!(
+        required.next(),
+        Some((_, hex_session::AudioSourceBinding::Resident(_)))
+    ));
+    assert!(required.next().is_none());
+    let revision = super::super::super::resident_lifecycle::finish_replacement(
+        &mut reopened,
+        &opened,
+        old_output,
+    );
+    let applied = status(&reopened).recording_source().unwrap();
+    assert_eq!(
+        (applied.context, applied.audio_revision),
+        (source.context(), revision)
+    );
+    let observation = reopened.submitted_observation().unwrap();
+    let processing = observation.processor_status(device.value(), state.type_id());
+    assert_eq!(
+        processing,
+        Some(hex_engine::PreparedDeviceProcessing::PoweredOff),
+        "saved Return restored as {processing:?}, native records={}",
+        reopened.plugin_records.load(Acquire)
+    );
+    assert_eq!(
+        observation
+            .processor_latency(device.value(), state.type_id())
+            .unwrap()
+            .stage_frames,
+        0
+    );
+    assert_eq!(observation.main_latency().unwrap().arrival_frames, 0);
+    assert_eq!(fs::read(&off_path).unwrap(), original_bytes);
+    let assert_no_worker = |h: &ResidentHarness| {
+        assert!(status(h).native_effect_source().is_none());
+        assert_eq!(h.plugin_records.load(Acquire), 0);
+        assert_eq!(h.plugin_completed.load(Acquire), 0);
+        assert!(h.plugin_progress.lock().unwrap().newest_source.is_none());
+    };
+    assert_no_worker(&reopened);
+
+    assert_eq!(status(&reopened).position.load(Acquire), 0);
+    reopened
+        .audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert_aligned_bypass(&reopened, 0);
+    assert_no_worker(&reopened);
+    reopened.audio.as_ref().unwrap().control.stop();
+    render(&reopened);
+
+    reopened.service.submit(Request::SaveCurrent).unwrap();
+    let saved_off = state::edits::ordinary_terminal(&mut reopened);
+    assert!(
+        saved_off.save_complete && saved_off.error.is_none(),
+        "{:?}",
+        saved_off.error
+    );
+    let persisted = hex_storage::load(&off_path).unwrap();
+    assert_eq!(&persisted, off_project);
+    let kept = persisted.device(device).unwrap();
+    assert!(kept.bypassed());
+    assert_eq!(kept.state(), &state);
+    assert_no_worker(&reopened);
+}
