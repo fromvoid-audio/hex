@@ -635,7 +635,7 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +    group_members: Vec<(TreeBounds<U>, u32)>,
 @@ -32,0 +33 @@
 +        self.group_members.clear();
-@@ -36,11 +37,189 @@
+@@ -36,11 +37,190 @@
 -        // If the tree is empty, make the root the new leaf.
 -        if self.root.is_none() {
 -            let new_node = self.push_leaf(new_bounds, 1);
@@ -710,16 +710,17 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +        for (raw, order) in bounds.iter().zip(orders) {
 +            let rect = TreeBounds::from_bounds(raw);
 +            let mut local_max = 0;
-+            let mut identical_overlap = false;
++            let mut covered_by_prior_member = false;
 +            for (member, rank) in &self.group_members[start..] {
 +                if *rank > local_max && rect.intersects(member) {
 +                    local_max = *rank;
-+                    identical_overlap |= *member == rect;
++                    covered_by_prior_member = covered_by_prior_member || member.contains(&rect);
 +                }
 +            }
-+            // An overlapping identical member already follows every relevant
-+            // leaf in the main tree. Rounded-flat bounds can fail self-overlap.
-+            let before = if identical_overlap {
++            // The earlier containing member already follows every older leaf
++            // that can overlap this rectangle. Require intersection as well:
++            // rounded-flat bounds can contain each other without overlapping.
++            let before = if covered_by_prior_member {
 +                local_max
 +            } else {
 +                self.root
@@ -836,7 +837,7 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +        let a = &self.nodes[left];
 +        let b = &self.nodes[right];
 +        Node::Internal {
-@@ -49,60 +228,48 @@
+@@ -49,60 +229,48 @@
 -            bounds: node_bounds,
 -            ..
 -        } = &mut self.nodes[index]
@@ -945,7 +946,7 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +                self.rotate_left(left);
 +            }
 +            self.rotate_right(index);
-@@ -110,72 +277,2 @@
+@@ -110,72 +278,2 @@
 -            // If the old parent was the root, the new parent is the new root.
 -            self.root = Some(new_parent);
 -        }
@@ -1020,7 +1021,7 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 -        self.nodes.len() - 1
 +            self.set_internal(index, left, right);
 +        }
-@@ -194 +291,35 @@
+@@ -194 +292,41 @@
 -        }
 +            group_members: Vec::new(),
 +        }
@@ -1055,27 +1056,33 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +            && self.min.y < other.max.y
 +            && self.max.y > other.min.y
 +    }
++    fn contains(&self, other: &Self) -> bool {
++        self.min.x <= other.min.x
++            && self.min.y <= other.min.y
++            && self.max.x >= other.max.x
++            && self.max.y >= other.max.y
++    }
 +    fn half_perimeter(&self) -> U {
 +        (self.max.x.clone() - self.min.x.clone()) + (self.max.y.clone() - self.min.y.clone())
-@@ -204 +335 @@
+@@ -204 +342 @@
 -        bounds: Bounds<U>,
 +        bounds: TreeBounds<U>,
-@@ -205,0 +337,6 @@
+@@ -205,0 +344,6 @@
 +    },
 +    Group {
 +        bounds: TreeBounds<U>,
 +        start: usize,
 +        end: usize,
 +        max_order: u32,
-@@ -210 +347 @@
+@@ -210 +354 @@
 -        bounds: Bounds<U>,
 +        bounds: TreeBounds<U>,
-@@ -211,0 +349 @@
+@@ -211,0 +356 @@
 +        height: usize,
-@@ -219 +357 @@
+@@ -219 +364 @@
 -    fn bounds(&self) -> &Bounds<U> {
 +    fn bounds(&self) -> &TreeBounds<U> {
-@@ -222 +360,8 @@
+@@ -222 +367,8 @@
 -            Node::Internal { bounds, .. } => bounds,
 +            Node::Group { bounds, .. } | Node::Internal { bounds, .. } => bounds,
 +        }
@@ -1085,7 +1092,7 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +        match self {
 +            Self::Leaf { .. } | Self::Group { .. } => 0,
 +            Self::Internal { height, .. } => *height,
-@@ -231,5 +376,220 @@
+@@ -231,5 +383,246 @@
 -            Node::Internal {
 -                max_order: max_ordering,
 -                ..
@@ -1244,6 +1251,32 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +                .is_some()
 +                && orders == [2, 2],
 +            "rounded-flat group member lost its earlier cover",
++        )?;
++
++        // An inset member may reuse its cover's ordering proof. A member
++        // crossing outside the cover still needs an older-tree query.
++        let mut contained_group = BoundsTree::default();
++        let blocker = rect(1.0, 0.0, 2.0, 4.0);
++        for order in 1..=3 {
++            require(
++                contained_group.insert(blocker) == order,
++                "older overlap rank",
++            )?;
++        }
++        let frame = rect(4.0, 0.0, 4.0, 4.0);
++        let inset = rect(5.0, 1.0, 2.0, 2.0);
++        let crossing = rect(2.0, 1.0, 4.0, 2.0);
++        let mut orders = [0; 3];
++        require(
++            contained_group
++                .insert_group(&[frame, inset, crossing], &mut orders)
++                .is_some()
++                && orders == [1, 2, 4],
++            "contained group member changed the ordinary order of its crossing neighbor",
++        )?;
++        require(
++            contained_group.insert(rect(5.5, 1.25, 1.0, 0.5)) == 5,
++            "later draw lost the crossing member's rank",
 +        )?;
 +
 +        // A union represented as origin + size may round its far edge inward.

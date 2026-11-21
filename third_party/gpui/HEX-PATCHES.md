@@ -517,3 +517,9 @@ fresh paint and fallback. A rotated glyph can remain visible through a
 mask outside its original horizontal rectangle. The cached-scene oracle
 checks visible and clipped transformed sprites, unchanged ordinary glyphs,
 and their relative order against a translucent overlay at both scales.
+
+21 November ordered paint groups: an overlapping earlier member whose
+stored corners contain the new member already follows every older-tree
+overlap of that new member. The new member can use the group's running
+overlap result without a repeated tree query. Merely intersecting members
+still query the older tree; rounded-flat non-overlap remains distinct.
