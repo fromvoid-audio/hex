@@ -88,14 +88,17 @@ pub struct PoweredOffEffect<'a> {
 }
 
 impl<'a> NativeEffectDefinition<'a> {
-    /// Prepare one resource-free Main Off declaration. The output owner must
+    /// Prepare one resource-free Main or Return Off declaration. The output owner must
     /// separately prove the exact source, supported stopped or running timing
     /// policy, and graph installation through ordinary admission.
     pub fn powered_off(entries: &[PoweredOffEffect<'a>]) -> Result<Self, DeviceContractError> {
         let [entry] = entries else {
             return Err(DeviceContractError::InvalidId);
         };
-        if entry.owner != hex_lattice::ProcessorChainOwner::Main {
+        if !matches!(
+            entry.owner,
+            ProcessorChainOwner::Main | ProcessorChainOwner::Return(_)
+        ) {
             return Err(DeviceContractError::UnsupportedProcessingClass);
         }
         if entry.sample_rate == 0 {
@@ -324,16 +327,23 @@ impl<'a> NativeEffectDefinition<'a> {
         Err(DeviceContractError::ForeignProcessingUnavailable)
     }
 
-    /// Pure exact-source eligibility for the existing Main 512-frame passive cut.
+    /// Pure exact-source eligibility for a proved 512-frame passive Off cut.
     /// This borrows constructed metadata; it neither dispatches nor retires DSP.
-    pub fn matches_main_power_off_on_control(
+    pub fn matches_power_off_on_control(
         &self,
+        owner: ProcessorChainOwner,
         binding: Binding,
         device: u64,
         state: &NativeDeviceState,
         sample_rate: u32,
     ) -> Result<bool, DeviceContractError> {
-        let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, device)?;
+        if !matches!(
+            owner,
+            ProcessorChainOwner::Main | ProcessorChainOwner::Return(_)
+        ) {
+            return Ok(false);
+        }
+        let identity = ProcessorInstanceIdentity::new(owner, device)?;
         Ok(self
             .exact_configuration(identity, state, sample_rate)?
             .is_some_and(|effect| {

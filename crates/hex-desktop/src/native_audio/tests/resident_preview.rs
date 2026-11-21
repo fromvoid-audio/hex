@@ -2288,12 +2288,17 @@ impl WorkerAudioSink for ResidentSink {
             .resident_file_seek_storage_bytes(prepared, sources)
     }
 
-    fn running_resident_main_power_off(
+    fn running_resident_power_off(
         &mut self,
         context: AudioSourceContext,
+        owner: hex_engine::ProcessorChainOwner,
         device: u64,
-    ) -> Result<Option<hex_session::service::ResidentMainPowerOff>, String> {
-        self.inner.running_resident_main_power_off(context, device)
+    ) -> Result<Option<hex_session::service::ResidentRunningPowerOff>, String> {
+        self.inner
+            .running_resident_power_off(context, owner, device)
+    }
+    fn resident_playing(&mut self) -> bool {
+        self.inner.resident_playing()
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn running_resident_main_power_on(
@@ -2310,6 +2315,16 @@ impl WorkerAudioSink for ResidentSink {
         device: u64,
     ) -> Result<Option<hex_session::service::ResidentFreshRuntimeFence>, String> {
         self.inner.stopped_resident_power_fence(context, device)
+    }
+
+    fn stopped_resident_return_history_fence(
+        &mut self,
+        context: AudioSourceContext,
+        return_track: hex_engine::ReturnId,
+        device: u64,
+    ) -> Option<hex_session::service::ResidentFreshRuntimeFence> {
+        self.inner
+            .stopped_resident_return_history_fence(context, return_track, device)
     }
 
     fn resident_runtime_loop(

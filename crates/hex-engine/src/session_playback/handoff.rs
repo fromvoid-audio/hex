@@ -1528,6 +1528,10 @@ impl SessionPlayback {
             }
             if let Some(bus) = removal.faded_return() {
                 DeviceEditTailPolicy::FadedReturn(bus)
+            } else if let Some(off) =
+                main_pass_cut.filter(|cut| cut.foreign_return_pass().is_some())
+            {
+                DeviceEditTailPolicy::PoweredOffReturn(off.identity())
             } else {
                 removal
                     .faded_native_identity()
@@ -1779,7 +1783,11 @@ impl SessionPlayback {
             }
         } else if let Some(transition) = main_pass_cut {
             if demand.is_none() {
-                let settled = if let Some((_, frames)) = transition.foreign_main_pass() {
+                let foreign_frames = transition
+                    .foreign_main_pass()
+                    .map(|(_, frames)| frames)
+                    .or_else(|| transition.foreign_return_pass().map(|_| 512));
+                let settled = if let Some(frames) = foreign_frames {
                     self.main_pass_delay
                         .filter(|delay| delay.latency_frames() == frames)
                 } else {

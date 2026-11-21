@@ -311,7 +311,7 @@ impl CanonicalAudioSourceSnapshot {
             restoring_plugin_state: false,
             preparing_edit: false,
             main_power_on: None,
-            running_main_power_off: None,
+            running_power_off: None,
             hosted_instrument_move: None,
         }
     }

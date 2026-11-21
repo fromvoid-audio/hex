@@ -148,11 +148,17 @@ pub(super) struct Resident {
     observations: [Option<Arc<hex_engine::PreparedPlaybackObservation>>; RUNTIME_CELLS],
     // Nonowning identity beside each retained observation. Match the callback's
     // actual source, never the newest queued publication, before using Off.
-    powered_off_sources: [Option<(hex_audio::prepared::AppliedAudioSource, u64)>; RUNTIME_CELLS],
+    powered_off_sources: [Option<(
+        hex_audio::prepared::AppliedAudioSource,
+        hex_audio::prepared::NativeProcessorIdentity,
+    )>; RUNTIME_CELLS],
     // Only one exact applied Off fact survives after its projection is unshared.
     // It owns no graph, configuration, meter, source, worker or native receipt.
-    active_powered_off: Option<(hex_audio::prepared::AppliedAudioSource, u64)>,
-    /// Latest exact running Power Off and its pass's consumed Stop generation.
+    active_powered_off: Option<(
+        hex_audio::prepared::AppliedAudioSource,
+        hex_audio::prepared::NativeProcessorIdentity,
+    )>,
+    /// Latest exact running Main Power Off and its pass's consumed Stop generation.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) running_powered_off: Option<(hex_audio::prepared::AppliedAudioSource, u64)>,
 }
@@ -167,6 +173,15 @@ impl Resident {
         &self,
         actual: hex_audio::prepared::AppliedAudioSource,
     ) -> Option<u64> {
+        self.powered_off(actual)
+            .filter(|identity| identity.owner() == hex_engine::ProcessorChainOwner::Main)
+            .map(hex_audio::prepared::NativeProcessorIdentity::device_id)
+    }
+
+    fn powered_off(
+        &self,
+        actual: hex_audio::prepared::AppliedAudioSource,
+    ) -> Option<hex_audio::prepared::NativeProcessorIdentity> {
         self.powered_off_sources
             .iter()
             .flatten()
@@ -175,7 +190,7 @@ impl Resident {
     }
     fn retain_applied_off(&mut self, actual: Option<hex_audio::prepared::AppliedAudioSource>) {
         if let Some(source) = actual {
-            self.active_powered_off = self.powered_off_main(source).map(|device| (source, device));
+            self.active_powered_off = self.powered_off(source).map(|device| (source, device));
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             if self
                 .running_powered_off
@@ -249,12 +264,17 @@ impl Resident {
             .map_or(retired, |monitor| retired.with_paused_monitor(monitor))
     }
     fn observation_bytes(&self) -> Option<usize> {
-        self.observations.iter().flatten().try_fold(
-            std::mem::size_of_val(&self.observations)
-                .checked_add(std::mem::size_of_val(&self.powered_off_sources))?
-                .checked_add(std::mem::size_of_val(&self.active_powered_off))?,
-            |bytes, view| bytes.checked_add(view.retained_bytes_on_control()?),
-        )
+        let inline = std::mem::size_of_val(&self.observations)
+            .checked_add(std::mem::size_of_val(&self.powered_off_sources))?
+            .checked_add(std::mem::size_of_val(&self.active_powered_off))?;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let inline = inline.checked_add(std::mem::size_of_val(&self.running_powered_off))?;
+        self.observations
+            .iter()
+            .flatten()
+            .try_fold(inline, |bytes, view| {
+                bytes.checked_add(view.retained_bytes_on_control()?)
+            })
     }
 }
 /// Classify observations only when the submission belongs to this exact output.
@@ -316,6 +336,15 @@ impl NativeAudioSink {
         self.resident.reap_control_owners();
     }
     pub(super) fn applied_powered_off_main(&mut self, context: AudioSourceContext) -> Option<u64> {
+        self.applied_powered_off(context)
+            .filter(|identity| identity.owner() == hex_engine::ProcessorChainOwner::Main)
+            .map(hex_audio::prepared::NativeProcessorIdentity::device_id)
+    }
+
+    pub(super) fn applied_powered_off(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Option<hex_audio::prepared::NativeProcessorIdentity> {
         let actual = self
             .output
             .as_mut()?
@@ -327,7 +356,7 @@ impl NativeAudioSink {
             return None;
         }
         self.resident.retain_applied_off(Some(actual));
-        self.resident.powered_off_main(actual)
+        self.resident.powered_off(actual)
     }
 
     pub(super) fn offer_resident_device_insert_consent(
@@ -1127,11 +1156,12 @@ impl NativeAudioSink {
         };
         let powered_off = playback
             .prepared_revision()
-            .and_then(|revision| revision.sole_powered_off_main_device_on_control())
-            .filter(|device| {
-                observation
-                    .processor_status(*device, hex_engine::DeviceTypeId::from_static("hex.vst3"))
-                    == Some(hex_engine::PreparedDeviceProcessing::PoweredOff)
+            .and_then(|revision| revision.sole_powered_off_device_on_control())
+            .filter(|identity| {
+                observation.processor_status(
+                    identity.device_id(),
+                    hex_engine::DeviceTypeId::from_static("hex.vst3"),
+                ) == Some(hex_engine::PreparedDeviceProcessing::PoweredOff)
             });
         self.reap_resident_control_owners();
         let existing = self.resident.observations.iter().position(|row| {
@@ -1356,7 +1386,7 @@ impl NativeAudioSink {
                         return Err(ResidentPublicationRefusal {
                             kind: hex_session::service::ResidentPublicationFailure::Other,
                             playback,
-                            error: "stopped device power source changed during preparation".into(),
+                            error: "stopped audio source changed during preparation".into(),
                         });
                     }
                     hex_audio::prepared::PublicationPolicy::DeviceInsert { predecessor, fence }
@@ -1918,7 +1948,12 @@ mod powered_off_tests {
             output_identity: 5,
         };
         let mut resident = Resident::default();
-        resident.powered_off_sources[0] = Some((source, 7));
+        let main = hex_audio::prepared::NativeProcessorIdentity::new(
+            hex_engine::ProcessorChainOwner::Main,
+            7,
+        )
+        .unwrap();
+        resident.powered_off_sources[0] = Some((source, main));
         // A queued/refused On does not alter the still-applied predecessor's fact.
         assert_eq!(resident.powered_off_main(source), Some(7));
         for replaced in [

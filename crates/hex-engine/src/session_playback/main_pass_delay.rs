@@ -167,6 +167,105 @@ impl SessionPlayback {
         }
     }
 
+    /// Keep one unshifted Resident dry route and its exact static send when the
+    /// sole hosted Return switches to a workerless copy of its input.
+    pub(super) fn short_hosted_return_off_from(
+        &self,
+        old: &Self,
+    ) -> Option<NativeRemovalTransition> {
+        let before = old.revision.arrangement();
+        let after = self.revision.arrangement();
+        let ([track], [next_track]) = (before.tracks(), after.tracks()) else {
+            return None;
+        };
+        let ([bus], [next_bus]) = (before.return_buses(), after.return_buses()) else {
+            return None;
+        };
+        let ([send], [next_send]) = (track.sends(), next_track.sends()) else {
+            return None;
+        };
+        let ([chain], [next_chain]) = (old.return_chains.as_slice(), self.return_chains.as_slice())
+        else {
+            return None;
+        };
+        let origin = old.committed_return_pass_signal()?;
+        let next_graph = after.signal_graph.as_ref()?;
+        if before.main_latency_frames() != 512
+            || after.main_latency_frames() != 0
+            || !before.main_device_chain.is_empty()
+            || !after.main_device_chain.is_empty()
+            || before.master_mix() != after.master_mix()
+            || !before.return_feed_plan.is_empty()
+            || !after.return_feed_plan.is_empty()
+            || self.compensation.is_some()
+            || old.main_pass_delay.is_some()
+            || old.stopped_input.is_some()
+            || self.stopped_input.is_some()
+            || old.return_fade.is_some()
+            || old.live_gain.audible().is_some()
+            || old.track_faders.first().is_none_or(|fader| fader.active())
+            || old
+                .return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .any(|tail| tail.output_active)
+            || old.tail_output_active.iter().any(|active| *active)
+            || !old.releases.is_empty()
+            || bus.id != next_bus.id
+            || bus.muted
+            || next_bus.muted
+            || bus.gain <= 0.0
+            || bus.gain != next_bus.gain
+            || bus.matrix.is_some()
+            || next_bus.matrix.is_some()
+            || send.return_index != 0
+            || next_send.return_index != 0
+            || send.gain <= 0.0
+            || send.gain != next_send.gain
+            || origin.delays.latest_stamp()?.authored_clock_epoch != Some(old.authored_clock_epoch)
+            || !origin.graph.direct_return_send(bus.id, send.gain)
+            || origin.graph.return_latency(0)?.default_route_delay_frames != 0
+            || !next_graph.direct_return_send(bus.id, send.gain)
+            || next_graph.needs_runtime()
+            || track.canonical_track_id().is_none()
+            || track.canonical_track_id() != next_track.canonical_track_id()
+            || track.mix != next_track.mix
+            || !same_arrangement_pass_source(old, track)
+            || !same_arrangement_pass_source(self, next_track)
+            || !super::device_move::same_clip(&track.clips[0], &next_track.clips[0])
+        {
+            return None;
+        }
+        next_chain.return_power_off_from(chain, bus.id.value())
+    }
+
+    pub(super) fn committed_return_off_main_pass(
+        &self,
+        owner: hex_lattice::ProcessorChainOwner,
+    ) -> Option<hex_lattice::MainPassDelay> {
+        let arrangement = self.revision.arrangement();
+        let [track] = arrangement.tracks() else {
+            return None;
+        };
+        let [bus] = arrangement.return_buses() else {
+            return None;
+        };
+        let [send] = track.sends() else { return None };
+        if owner != hex_lattice::ProcessorChainOwner::Return(bus.id.value()) {
+            return None;
+        }
+        let signal = self.committed_return_pass_signal()?;
+        if signal.delays.latest_stamp()?.authored_clock_epoch != Some(self.authored_clock_epoch) {
+            return None;
+        }
+        let mut pass = signal.committed_resident_main_alignment(0, 512)?;
+        // Match the renderer's multiply/multiply/add order. The same fader
+        // produced both branches and neither the send nor Return output adds delay.
+        pass.map_frames(|frame| frame.map(|sample| sample + (sample * send.gain) * bus.gain));
+        Some(pass)
+    }
+
     fn committed_return_pass_signal(&self) -> Option<&crate::signal_graph::SignalRuntime> {
         let signal = self.compensation.as_ref()?;
         let stamp = signal.delays.latest_stamp()?;
@@ -224,6 +323,10 @@ impl SessionPlayback {
                     && super::device_move::same_clip(&left.clips[0], &right.clips[0])
             })
     }
+}
+
+fn same_arrangement_pass_source(playback: &SessionPlayback, track: &Track) -> bool {
+    playback.routes.len() == 1 && arrangement_pass_source_at(playback, track, 0)
 }
 
 fn arrangement_pass_source_at(playback: &SessionPlayback, track: &Track, index: usize) -> bool {
