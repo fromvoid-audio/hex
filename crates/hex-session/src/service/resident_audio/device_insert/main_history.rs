@@ -1,5 +1,6 @@
 //! Control-only membership proof; it grants no native or transport custody.
-use hex_project::{Command, Editor, Project};
+use hex_lattice_contract::VST3_DEVICE_TYPE_ID;
+use hex_project::{Command, Device, DeviceId, Editor, Project};
 
 /// Admit only one newly present Main VST3 whose removal reproduces every
 /// authored value of the incumbent Project, including IDs and automation.
@@ -15,15 +16,54 @@ pub(super) fn restores_one_main(before: &Project, after: &Project) -> bool {
     let Some(device) = added.next() else {
         return false;
     };
-    if added.next().is_some()
-        || device.state().type_id() != hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
+    if added.next().is_some() || device.state().type_id() != VST3_DEVICE_TYPE_ID {
+        return false;
+    }
+    without_effect(after, device.id()).is_some_and(|without| without.project() == before)
+}
+
+/// Compare a staged, normalized history target with its incumbent. Both must
+/// describe the same complete project once the exact substituted leaves are
+/// removed. The ordinal check also rules out an otherwise equal remove/insert
+/// at separate Main positions.
+pub(super) fn replaces_one_main(before: &Project, after: &Project) -> bool {
+    if before.main_devices().len() != after.main_devices().len() {
+        return false;
+    }
+    let Some((old, new)) = before
+        .main_devices()
+        .iter()
+        .zip(after.main_devices())
+        .find(|(old, new)| old.id() != new.id())
+    else {
+        return false;
+    };
+    if !is_hosted_leaf(before.main_devices(), old)
+        || !is_hosted_leaf(after.main_devices(), new)
+        || after.device(old.id()).is_some()
+        || before.device(new.id()).is_some()
     {
         return false;
     }
-    let Ok(mut without) = Editor::new(after.clone(), 1) else {
+    let Some(without_old) = without_effect(before, old.id()) else {
         return false;
     };
-    without.execute(Command::RemoveDevice(device.id())).is_ok() && without.project() == before
+    without_effect(after, new.id())
+        .is_some_and(|without| without.project() == without_old.project())
+}
+
+fn is_hosted_leaf(chain: &[Device], device: &Device) -> bool {
+    device.parent().is_none()
+        && device.state().type_id() == VST3_DEVICE_TYPE_ID
+        && !chain
+            .iter()
+            .any(|child| child.parent() == Some(device.id()))
+}
+
+fn without_effect(project: &Project, device: DeviceId) -> Option<Editor> {
+    let mut stripped = Editor::new(project.clone(), 1).ok()?;
+    stripped.execute(Command::RemoveDevice(device)).ok()?;
+    Some(stripped)
 }
 
 #[cfg(test)]
@@ -99,5 +139,50 @@ mod tests {
             })
             .unwrap();
         assert!(!restores_one_main(&removed, extra.project()));
+    }
+
+    #[test]
+    fn exact_main_swap_requires_the_same_slot_and_normalized_project_in_both_directions() {
+        let (mut editor, original, kept) = fixture();
+        let Created::Device(fresh) = editor
+            .execute(Command::ReplaceMainDevice {
+                replacing: original,
+                state: hex_lattice_contract::NativeDeviceState::new(
+                    VST3_DEVICE_TYPE_ID,
+                    1,
+                    vec![1],
+                )
+                .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("fresh Main effect");
+        };
+        let replaced = editor.project().clone();
+        let undo = editor.stage_history(false).unwrap().unwrap();
+        assert!(replaces_one_main(&replaced, undo.project()));
+        assert!(!restores_one_main(&replaced, undo.project()));
+
+        let mut moved = Editor::new(replaced.clone(), 1).unwrap();
+        moved
+            .execute(Command::MoveMainDevice {
+                device: fresh,
+                before: Some(kept),
+            })
+            .unwrap();
+        assert!(!replaces_one_main(undo.project(), moved.project()));
+
+        let mut changed = Editor::new(replaced, 1).unwrap();
+        changed
+            .execute(Command::SetDeviceBypass {
+                device: kept,
+                bypassed: true,
+            })
+            .unwrap();
+        assert!(!replaces_one_main(undo.project(), changed.project()));
+
+        editor.commit_staged_history(undo).unwrap();
+        let redo = editor.stage_history(true).unwrap().unwrap();
+        assert!(replaces_one_main(editor.project(), redo.project()));
     }
 }

@@ -240,7 +240,8 @@ impl VerifiedGraphEditAttempt {
     }
 
     /// Unsupported hosted history still requires its exact settled interval.
-    /// A single Main restore or removal uses an ordinary fenced install.
+    /// A single Main restore, removal or same-slot replacement uses an
+    /// ordinary fenced install.
     pub fn stages_hosted_history(&self) -> bool {
         self.0.hosted_sources == HostedSources::PausedHistory
     }
@@ -816,9 +817,13 @@ impl Session {
             .ok_or(SessionError::Invalid(
                 "verified device history target changed",
             ))?;
-        let operation = hosted_membership_operation(self.project(), edge.project()).ok_or(
-            SessionError::Invalid("verified device history target changed"),
-        )?;
+        let operation = if main_history::replaces_one_main(self.project(), edge.project()) {
+            GraphEditOperation::ReplaceDevice
+        } else {
+            hosted_membership_operation(self.project(), edge.project()).ok_or(
+                SessionError::Invalid("verified device history target changed"),
+            )?
+        };
         self.start_verified_graph_edit(
             StagedChange::History(edge),
             Operation::HostedHistory(operation),
@@ -946,6 +951,9 @@ impl Session {
             Operation::HostedHistory(GraphEditOperation::RemoveDevice)
                 if main_history::restores_one_main(edit.project(), self.project()) =>
             {
+                HostedSources::MainHistory
+            }
+            Operation::HostedHistory(GraphEditOperation::ReplaceDevice) => {
                 HostedSources::MainHistory
             }
             Operation::HostedHistory(_) => HostedSources::PausedHistory,
