@@ -565,9 +565,9 @@ fn prepared_hybrid_with_state_at_rate(
                 source_length: BeatTime::ONE,
                 source_start: BeatTime::ZERO,
                 loop_start: BeatTime::ZERO,
-                loop_end: BeatTime::ONE,
+                loop_end: BeatTime::from_ratio(1, 32).expect("source loop period"),
                 looping: true,
-                length: BeatTime::ONE,
+                length: BeatTime::from_ratio(1, 16).expect("two source loop periods"),
             })
             .expect("arrangement source loop");
     }
@@ -644,31 +644,37 @@ fn prepared_mutable_hybrid_export_matches_independent_ordered_pcm_oracle() {
 }
 
 #[test]
-fn linear_export_ignores_transport_and_unused_session_loops_but_refuses_arrangement_loop() {
+fn linear_export_renders_arrangement_source_repeats_without_transport_wrapping() {
     let dir = TestDir::new();
     let path = dir.0.join("linear.wav");
-    let (revision, _) = prepared_hybrid(true, true, false);
-    hex_export::render_prepared_new(&path, Arc::clone(&revision), 0, 300)
-        .expect("transport and Session loops do not wrap an Arrangement export");
-    let samples = pcm16(&fs::read(path).expect("read linear wav")[44..]);
-    assert_near(samples[150 * 2], 150.0 / 2048.0 + LEVEL * 0.5);
+    let (revision, _) = prepared_hybrid(true, true, true);
+    let report = hex_export::render_prepared_controlled(
+        &path,
+        revision,
+        0,
+        1_600,
+        hex_export::ExportSignal::Main,
+        &hex_export::ExportControl::default(),
+    )
+    .expect("export the two authored source passes");
+    assert_eq!(report.frames, 1_600);
 
-    let refused_path = dir.0.join("authored-loop.wav");
-    let (revision, _) = prepared_hybrid(false, false, true);
-    let error = hex_export::render_prepared_new(&refused_path, revision, 0, 16)
-        .expect_err("arrangement loop must be refused");
-    let hex_export::ExportError::StagingRetained { path: stage, cause } = error else {
-        panic!("failed preparation must report its retained stage");
-    };
-    assert!(matches!(
-        *cause,
-        hex_export::ExportError::SessionRender(
-            SessionPlaybackError::MutableInstrumentLoopUnsupported
-        )
-    ));
-    assert!(stage.is_file());
-    assert!(!refused_path.exists());
-    assert_eq!(fs::read_dir(&dir.0).expect("list files").count(), 2);
+    // At 120 BPM the clip repeats after 750 frames and ends at 1,500.
+    // The enabled 100-frame transport loop must not wrap the audio or MIDI.
+    let samples = pcm16(&fs::read(path).expect("read linear wav")[44..]);
+    assert_eq!(samples.len(), 3_200);
+    for (index, frame) in samples.chunks_exact(2).enumerate() {
+        let mutable = match index {
+            0..=254 | 750..=1004 => LEVEL,
+            255 | 1005 => LEVEL * 0.75,
+            256 | 1006 => LEVEL * 0.5,
+            257 | 1007 => LEVEL * 0.25,
+            _ => 0.0,
+        };
+        let audio = if index < 512 { index as f32 } else { 0.0 };
+        assert_near(frame[0], audio / 2048.0 + mutable * 0.5);
+        assert_near(frame[1], -audio / 4096.0 + mutable * 0.5);
+    }
 }
 
 #[test]

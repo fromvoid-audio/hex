@@ -196,7 +196,6 @@ pub enum SessionPlaybackError {
     SharedSourceVoiceCapacity,
     MutableInstrumentDiagnostic(&'static str),
     MutableInstrumentEvents,
-    MutableInstrumentLoopUnsupported,
     MutableInstrumentLoopDensity,
     MutableInstrumentActive,
     MutableInstrumentLoopBoundsActive,
@@ -257,9 +256,6 @@ impl SessionPlaybackError {
             Self::MutableInstrumentDiagnostic(message) => message,
             Self::MutableInstrumentEvents => {
                 "session playback mutable instrument event query is invalid"
-            }
-            Self::MutableInstrumentLoopUnsupported => {
-                "mutable instrument source loops are unsupported by this playback mode"
             }
             Self::MutableInstrumentLoopDensity => {
                 "mutable instrument transport loop exceeds bounded event or voice density"
@@ -1459,8 +1455,9 @@ impl SessionPlayback {
     /// Prepare the shared renderer for finite, linear Arrangement export.
     /// Session route actions are refused, Session-only tempo/loop inventory
     /// does not affect this owner, and the authored Arrangement tempo map is
-    /// used without transport-loop wrapping. Mutable Arrangement MIDI source loops
-    /// and seek destinations that require note chase remain unsupported.
+    /// used without transport-loop wrapping. Authored Arrangement MIDI source
+    /// loops use the bounded Arrangement scheduler. Seek destinations that
+    /// require mutable note chase must be reached through causal preroll.
     /// Graphs without compiled Arrangement instruments omit unused analytic
     /// release/suppression banks; their immutable routing cannot create voices.
     pub fn new_linear_arrangement_export(
@@ -1906,15 +1903,6 @@ impl SessionPlayback {
             None
         };
 
-        let mutable_arrangement_source_loop = matches!(
-            policy,
-            RenderConstruction::LinearExport | RenderConstruction::LinearForeignExport
-        ) && arrangement_tracks
-            .iter()
-            .any(|track| track.has_mutable_looping_source());
-        if mutable_arrangement_source_loop {
-            return Err(SessionPlaybackError::MutableInstrumentLoopUnsupported);
-        }
         let mut source_voice_envelopes = [0_u16; MAX_TRACKS];
         let source_routing = revision.source_routing();
         for (index, track) in arrangement_tracks.iter().enumerate() {
