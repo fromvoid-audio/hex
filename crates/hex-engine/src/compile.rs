@@ -1465,7 +1465,12 @@ pub fn test_retained_track_effect_alignment(
                 .default_route_delay_frames,
         ])
     };
-    Ok([alignment(old_graph)?, alignment(&next_graph)?])
+    let result = [alignment(old_graph)?, alignment(&next_graph)?];
+    crate::signal_graph::hosted_track_effect_move::probe_hosted_effect_clock(
+        crate::signal_graph::SignalRuntime::new(Arc::clone(old_graph))?,
+        crate::signal_graph::SignalRuntime::new(next_graph)?,
+    )?;
+    Ok(result)
 }
 
 /// Build at most one source-owned recipe per compiled receiver. Definitions
