@@ -6974,14 +6974,25 @@ impl SessionPlayback {
             true,
         );
         // A cancelled fade may still be ramping back up during an unrelated
-        // flat graph install. Carry it by stable bus ID rather than slot.
-        if self.compensation.is_none() && self.revision.arrangement().return_feed_plan.is_empty() {
+        // graph install. Match the stable bus ID and keep the same feed path.
+        if self.compensation.is_none() {
             self.return_fade = previous.return_fade.filter(|fade| {
-                self.revision
-                    .arrangement()
-                    .return_buses()
-                    .iter()
-                    .any(|bus| bus.id == fade.id)
+                let current = self.revision.arrangement();
+                let old = previous.revision.arrangement();
+                let same_feeds = if old.return_feed_plan.is_empty() {
+                    current.return_feed_plan.is_empty()
+                } else {
+                    current
+                        .return_buses()
+                        .iter()
+                        .map(|bus| bus.id)
+                        .eq(old.return_buses().iter().map(|bus| bus.id))
+                        && current
+                            .return_feed_plan
+                            .edges()
+                            .eq(old.return_feed_plan.edges())
+                };
+                same_feeds && current.return_buses().iter().any(|bus| bus.id == fade.id)
             });
         }
         self.main_pass_delay = main_pass_delay;

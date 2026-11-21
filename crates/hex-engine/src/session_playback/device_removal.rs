@@ -750,9 +750,7 @@ impl SessionPlayback {
         }
         let old = previous.revision.arrangement();
         let new = self.revision.arrangement();
-        if !old.return_feed_plan.is_empty()
-            || !new.return_feed_plan.is_empty()
-            || old.return_buses().len().checked_sub(1) != Some(new.return_buses().len())
+        if old.return_buses().len().checked_sub(1) != Some(new.return_buses().len())
             || !old
                 .tracks()
                 .iter()
@@ -762,16 +760,20 @@ impl SessionPlayback {
             return None;
         }
         let mut remaining = new.return_buses().iter().map(|bus| bus.id);
-        let removed = old
+        let (removed_index, removed) = old
             .return_buses()
             .iter()
-            .find(|bus| remaining.next() != Some(bus.id))?;
+            .enumerate()
+            .find(|(_, bus)| remaining.next() != Some(bus.id))?;
         if !old
             .return_buses()
             .iter()
             .filter(|bus| bus.id != removed.id)
             .map(|bus| bus.id)
             .eq(new.return_buses().iter().map(|bus| bus.id))
+            || !new
+                .return_feed_plan
+                .keeps_feeds_after_removal(&old.return_feed_plan, removed_index)
             || previous
                 .return_fade
                 .is_some_and(|fade| fade.id != removed.id)
