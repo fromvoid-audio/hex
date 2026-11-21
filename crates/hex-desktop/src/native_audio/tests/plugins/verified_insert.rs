@@ -21,7 +21,17 @@ fn verified_running_return_vst3_replacement_installs_at_its_exact_receipt() {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn verified_running_replacement_waits_for_native_definition_work() {
-    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::ReturnProjectionContention);
+    assert_verified_running_vst3_replacement(
+        VerifiedReplacementOwner::ReturnProjectionContention { cancel: false },
+    );
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_running_replacement_cancels_during_native_definition_contention() {
+    assert_verified_running_vst3_replacement(
+        VerifiedReplacementOwner::ReturnProjectionContention { cancel: true },
+    );
 }
 
 #[test]
@@ -76,7 +86,7 @@ enum VerifiedReplacementOwner {
     Main,
     Return,
     Track,
-    ReturnProjectionContention,
+    ReturnProjectionContention { cancel: bool },
     MainHistory { redo: bool },
     ReturnHistory { redo: bool },
     TrackHistory { redo: bool },
@@ -112,7 +122,10 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
     ));
     let records = Arc::new(AtomicUsize::new(0));
     let (busy_observer, busy) = mpsc::sync_channel(1);
-    let hold_projection = matches!(owner, VerifiedReplacementOwner::ReturnProjectionContention);
+    let hold_projection = matches!(
+        owner,
+        VerifiedReplacementOwner::ReturnProjectionContention { .. }
+    );
     let mut h = super::super::verified_gain::native_harness_with(|sink| {
         sink.plugins = crate::native_audio::plugins::Plugins::with_fixture(host(), None);
         sink.plugins.catalog = Some(directory.join("plugin-catalog.json"));
@@ -142,7 +155,7 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
         }
         VerifiedReplacementOwner::Return
         | VerifiedReplacementOwner::ReturnHistory { .. }
-        | VerifiedReplacementOwner::ReturnProjectionContention => {
+        | VerifiedReplacementOwner::ReturnProjectionContention { .. } => {
             let added = h.run(Request::Edit(Command::AddReturnTrack {
                 name: "replacement send".into(),
             }));
@@ -199,7 +212,7 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
             // receives half of it, so the measured ramp must be above dry.
             VerifiedReplacementOwner::Return
             | VerifiedReplacementOwner::ReturnHistory { .. }
-            | VerifiedReplacementOwner::ReturnProjectionContention => 0.25 + effect * 0.5,
+            | VerifiedReplacementOwner::ReturnProjectionContention { .. } => 0.25 + effect * 0.5,
         }
     };
     for block in 0..4 {
@@ -318,7 +331,7 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
 
     let candidate = replacement();
     let operation = Arc::clone(&candidate.control);
-    if hold_projection {
+    if let VerifiedReplacementOwner::ReturnProjectionContention { cancel } = owner {
         let (entered, at_projection) = mpsc::sync_channel(1);
         let (resume, resume_projection) = mpsc::sync_channel(1);
         h.observation
@@ -350,11 +363,31 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
         resume.send(()).unwrap();
         let refused_borrow = busy.recv_timeout(Duration::from_secs(2));
         let during_borrow = status.applied_audio_source();
+        let cancelled = cancel && operation.cancel();
         release.send(()).unwrap();
         assert_eq!(holder.join().unwrap(), Some(Ok(())));
         refused_borrow
             .expect("the exact native definition borrow must encounter Root Work contention");
         assert_eq!(during_borrow, Some(predecessor));
+        if cancel {
+            assert!(cancelled);
+            loop {
+                let event = next();
+                assert_predecessor(&event);
+                assert!(event.device_insert_confirmation.is_none());
+                assert!(event.device_insert_complete.is_none());
+                if let Some(terminal) = event.plugin_effect_complete.first() {
+                    assert!(Arc::ptr_eq(&terminal.control, &operation));
+                    assert!(!terminal.accepted);
+                    break;
+                }
+            }
+            wait(|| {
+                pump();
+                records.load(Acquire) == 1
+            });
+            return;
+        }
     } else {
         submit(&h, candidate);
     }

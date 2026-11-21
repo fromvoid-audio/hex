@@ -1169,12 +1169,13 @@ pub trait WorkerAudioSink: Send {
         Err("verified vst3 effects are unavailable".into())
     }
     /// Compile editor-facing Verified Streaming metadata against exact hosted
-    /// definitions for one synchronous borrow. The prepared graph and its
-    /// callback receipt still belong to the verified publication pipeline.
+    /// definitions for one synchronous borrow. An exact catalog proposal may
+    /// retry transient contention within its attempt's preparation budget.
+    /// Publication and callback receipts stay with the verified edit pipeline.
     fn prepare_verified_effects(
         &mut self,
         _input: ResidentEffectPreparation<'_>,
-        _proposal: Option<&Arc<PluginEffectControl>>,
+        _attempt: Option<&super::VerifiedGraphEditAttempt>,
         _prepare: &mut dyn FnMut(
             &hex_engine::AudioCandidateEffects<'_, '_>,
         )
