@@ -10,10 +10,11 @@
 //! loops and unwarped processing keep their source clock: source samples at a
 //! fixed input coordinate do not depend on the destination extent. Finite and
 //! directed frame views translate their crop coordinates with the events;
-//! their duration, direction and cycle phase remain fixed. Musical one-shots
-//! retain a source span at the original processing origin, even when the
-//! destination grows. One-shot frame roots have a separate sparse timeline
-//! horizon. Other transform roots keep the dense processing cap.
+//! their duration, direction and cycle phase remain fixed. Musical roots with
+//! a direct read retain a source span at the original processing origin, even
+//! when the destination grows beyond a finite or repeating scope. One-shot
+//! frame roots have a separate sparse horizon. Other transform roots keep the
+//! dense processing cap.
 use crate::{
     AudioClipEdit, AudioClipFadeClock, AudioClipTiming, AudioDomainClock, AudioEventEdit,
     AudioEvents, BeatTime, Clip, ClipFade, ClipGain, ClipId, Invalid, MusicalEventSource, Project,
@@ -190,13 +191,12 @@ fn placement_timeline(
     mut events: AudioEvents,
 ) -> Result<(AudioClipEdit, AudioEvents), Invalid> {
     if matches!(edit.domain.clock, AudioDomainClock::Beats(_)) {
-        if edit.placement.is_some()
-            || edit.content_view.is_some()
+        if edit.content_view.is_some()
             || !events.sources.is_empty()
             || project.clip_alias(clip.id()).is_some()
         {
             return Err(Invalid(
-                "musical event placement needs an unlinked one-shot root",
+                "musical event placement needs an unlinked direct root",
             ));
         }
         return Ok((edit, events));

@@ -390,6 +390,7 @@ impl DeviceTrait for Device {
             data_callback,
             error_callback,
             None,
+            false,
         )
     }
 }
@@ -978,6 +979,7 @@ impl Device {
             },
             error_callback,
             Some((device_rate, client_limit)),
+            false,
         )
     }
 
@@ -988,6 +990,7 @@ impl Device {
         mut data_callback: D,
         error_callback: E,
         bounds: Option<(SampleRate, u16)>,
+        pin_for_observation: bool,
     ) -> Result<Stream, BuildStreamError>
     where
         D: FnMut(&mut Data, &OutputCallbackInfo) + Send + 'static,
@@ -1008,7 +1011,8 @@ impl Device {
         };
         // Pin the verified stream to the device just negotiated. The host
         // lifecycle owns reopening it after a default route change.
-        let mut audio_unit = audio_unit_on_device(self, false, bounds.is_some())?;
+        let mut audio_unit =
+            audio_unit_on_device(self, false, bounds.is_some() || pin_for_observation)?;
         if bounds.is_some() {
             // CoreAudio derives the converted client limit when initialized.
             audio_unit.uninitialize()?;
@@ -1872,6 +1876,109 @@ fn output_timing_stream_count(size: usize) -> Result<usize, BuildStreamError> {
 #[cfg(test)]
 mod output_timing_regression {
     use super::*;
+
+    #[test]
+    #[ignore = "runs a silent pinned AUHAL stream on the unchanged default output"]
+    fn pinned_auhal_callback_clock_includes_one_device_buffer() {
+        use std::sync::atomic::{AtomicBool, AtomicU64};
+
+        let device = default_output_device().expect("current default CoreAudio output");
+        let supported = device.default_output_config().unwrap();
+        let config = supported.config();
+        let sample_format = supported.sample_format();
+        assert_eq!(config.buffer_size, BufferSize::Default);
+        assert!(matches!(
+            sample_format,
+            SampleFormat::F32 | SampleFormat::I16
+        ));
+        assert!(config.sample_rate > 0);
+        let buffer = device_buffer_frames(device.audio_device_id).unwrap();
+        assert!(buffer > 0);
+
+        #[derive(Default)]
+        struct Observation {
+            armed: AtomicBool,
+            callback_ns: AtomicU64,
+            playback_ns: AtomicU64,
+            failed: AtomicBool,
+        }
+        let observation = Arc::new(Observation::default());
+        let data_observation = Arc::clone(&observation);
+        let error_observation = Arc::clone(&observation);
+        let stream = device
+            .build_output_stream_with_limit(
+                &config,
+                sample_format,
+                move |data, info| {
+                    data.bytes_mut().fill(0);
+                    if data_observation.armed.swap(false, Ordering::AcqRel) {
+                        let pair = info.timestamp();
+                        let callback = u64::try_from(pair.callback.as_nanos());
+                        let playback = u64::try_from(pair.playback.as_nanos());
+                        if let (Ok(callback), Ok(playback)) = (callback, playback) {
+                            data_observation
+                                .callback_ns
+                                .store(callback, Ordering::Relaxed);
+                            data_observation
+                                .playback_ns
+                                .store(playback, Ordering::Release);
+                        } else {
+                            data_observation.failed.store(true, Ordering::Release);
+                        }
+                    }
+                },
+                move |_| error_observation.failed.store(true, Ordering::Release),
+                None,
+                true,
+            )
+            .expect("start silent pinned AUHAL with the existing device buffer");
+        let receipt = stream.watch_output_timing_on_control().unwrap();
+        let timing = stream.revalidate_output_timing_on_control(receipt).unwrap();
+        assert_eq!(timing.device_id, device.audio_device_id);
+        assert_eq!(timing.device_sample_rate, f64::from(config.sample_rate));
+        assert_eq!(timing.client_sample_rate, timing.device_sample_rate);
+        assert_eq!(timing.buffer_frames, buffer);
+
+        observation.armed.store(true, Ordering::Release);
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let playback_ns = loop {
+            assert!(!observation.failed.load(Ordering::Acquire));
+            let playback_ns = observation.playback_ns.load(Ordering::Acquire);
+            if playback_ns != 0 {
+                break playback_ns;
+            }
+            assert!(Instant::now() < deadline, "no pinned AUHAL callback");
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(
+            stream.revalidate_output_timing_on_control(receipt).unwrap(),
+            timing
+        );
+        let callback_ns = observation.callback_ns.load(Ordering::Relaxed);
+        let observed_ns = playback_ns.checked_sub(callback_ns).unwrap();
+        let buffer_ns = u64::from(buffer) * 1_000_000_000 / u64::from(config.sample_rate);
+        // CPAL converts the buffer duration through f64 before truncating to ns.
+        assert!(observed_ns.abs_diff(buffer_ns) <= 1);
+        assert!(observed_ns.abs_diff(2 * buffer_ns) > 1);
+        let fresh = stream.watch_output_timing_on_control().unwrap();
+        assert!(stream.revalidate_output_timing_on_control(receipt).is_err());
+        assert_eq!(
+            stream.revalidate_output_timing_on_control(fresh).unwrap(),
+            timing
+        );
+        drop(stream);
+        assert!(!fresh.current());
+        assert!(is_default_output_device(&device));
+        assert_eq!(
+            device_buffer_frames(device.audio_device_id).unwrap(),
+            buffer
+        );
+        assert_eq!(
+            device.default_output_config().unwrap().sample_rate(),
+            config.sample_rate
+        );
+        println!("pinned AUHAL {:?} callback_ns={callback_ns} playback_ns={playback_ns} delta_ns={observed_ns}", timing);
+    }
 
     fn timing() -> OutputTiming {
         OutputTiming {

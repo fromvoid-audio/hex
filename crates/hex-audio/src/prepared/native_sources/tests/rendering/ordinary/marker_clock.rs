@@ -4,7 +4,6 @@ use super::*;
 use crate::sample_recording::{End, OutputClock, OutputClockOrigin, Source};
 use std::path::PathBuf;
 
-const QUANTUM: usize = 8;
 const CALLBACK_NS: u128 = 2_000_000_000_000_000_000;
 const EXPECTED: Binding = Binding {
     root: 1,
@@ -19,8 +18,8 @@ impl Drop for Directory {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
-fn frame_ns(frames: u64) -> u128 {
-    u128::from(frames) * 1_000_000_000 / 48_000
+fn frame_ns(frames: u64, rate: u32) -> u128 {
+    u128::from(frames) * 1_000_000_000 / u128::from(rate)
 }
 fn instant(nanos: u128) -> cpal::StreamInstant {
     cpal::StreamInstant::new(
@@ -34,24 +33,25 @@ fn as_ns(instant: cpal::StreamInstant) -> u128 {
         .unwrap()
         .as_nanos()
 }
-fn marker_time(clock: OutputClock, local_frame: usize) -> Option<u128> {
+fn marker_time(clock: OutputClock, local_frame: usize, rate: u32) -> Option<u128> {
     (clock.origin == OutputClockOrigin::CoreAudioHostTime).then(|| {
-        as_ns(clock.playback) + frame_ns(u64::from(clock.offset_frames) + local_frame as u64)
+        as_ns(clock.playback) + frame_ns(u64::from(clock.offset_frames) + local_frame as u64, rate)
     })
 }
 
-fn recorded_block(
+fn recorded_block<const QUANTUM: usize>(
     f: &mut OrdinaryFixture,
     number: u64,
     origin: OutputClockOrigin,
+    rate: u32,
 ) -> [Frame; QUANTUM] {
     let mut output = [[0.0; 2]; QUANTUM];
-    let mut host = [0.0_f32; QUANTUM * 2];
+    let mut host = [[0.0_f32; 2]; QUANTUM];
     // Mirror CPAL's supported fixed-rate prediction: callback time plus one
     // device buffer. This is injected data, not a real Core Audio timestamp.
     let info = cpal::OutputCallbackInfo::new(cpal::OutputStreamTimestamp {
-        callback: instant(CALLBACK_NS + frame_ns(number * QUANTUM as u64)),
-        playback: instant(CALLBACK_NS + frame_ns((number + 1) * QUANTUM as u64)),
+        callback: instant(CALLBACK_NS + frame_ns(number * QUANTUM as u64, rate)),
+        playback: instant(CALLBACK_NS + frame_ns((number + 1) * QUANTUM as u64, rate)),
     });
     allocation_free(|| {
         f.data.owner_mut().unwrap().run(|callback, _| {
@@ -67,7 +67,7 @@ fn recorded_block(
             }));
             assert!(crate::device::finish_host_chunk(
                 callback,
-                &mut host,
+                host.as_flattened_mut(),
                 &mut output,
                 2,
                 &rendered,
@@ -83,6 +83,16 @@ fn recorded_block(
 #[test]
 #[ignore = "explicit signed slice-clock observation profile and original SDK receipts required"]
 fn installed_sdk_marker_joins_bound_main_pcm_with_an_injected_output_clock() {
+    verify_installed_marker::<8>(48_000);
+}
+
+#[test]
+#[ignore = "explicit signed slice-clock observation profile and original SDK receipts required"]
+fn installed_sdk_marker_uses_the_44100_hz_rate_and_256_frame_quantum() {
+    verify_installed_marker::<256>(44_100);
+}
+
+fn verify_installed_marker<const QUANTUM: usize>(rate: u32) {
     const CHILD: &str = "HEX_INSTALLED_SDK_MARKER_CLOCK_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let directory = Directory(std::env::temp_dir().join(
@@ -118,7 +128,7 @@ fn installed_sdk_marker_joins_bound_main_pcm_with_an_injected_output_clock() {
         return;
     }
     let _serial = serial();
-    let mut f = fixture_with_authored_mode("processing", 0, QUANTUM as u16, &[], true);
+    let mut f = fixture_with_rate("processing", 0, QUANTUM as u16, &[], true, 2, rate, None);
     // This isolated child has exactly one Root and one native source. Assert
     // the fully armed tuple; never infer identity from a matching waveform.
     assert_eq!(f.binding, EXPECTED);
@@ -128,11 +138,20 @@ fn installed_sdk_marker_joins_bound_main_pcm_with_an_injected_output_clock() {
     );
     let clip = &f.editor.project().tracks()[0].midi_clips()[0];
     let (clip_id, note) = (clip.id(), clip.notes()[0].id());
+    let bridge_delay = (2 * QUANTUM) as u32;
+    let second_onset = 4 * QUANTUM + 1;
+    let first_marker = bridge_delay as usize + 1;
+    let second_marker = bridge_delay as usize + second_onset;
+    // The authored project uses its default tempo of 120 BPM.
+    let beat_at_frame = |frame: usize| {
+        hex_project::BeatTime::from_ratio(2 * frame as u64, u64::from(rate)).unwrap()
+    };
+    let duration = beat_at_frame(2);
     f.editor
         .execute(Command::UpdateMidiNote {
             note,
-            start: hex_project::BeatTime::from_ratio(1, 24_000).unwrap(),
-            duration: hex_project::BeatTime::from_ratio(2, 24_000).unwrap(),
+            start: beat_at_frame(1),
+            duration,
             pitch: 60,
             channel: 0,
             velocity: 127,
@@ -141,8 +160,8 @@ fn installed_sdk_marker_joins_bound_main_pcm_with_an_injected_output_clock() {
     f.editor
         .execute(Command::AddMidiNote {
             clip: clip_id,
-            start: hex_project::BeatTime::from_ratio(33, 24_000).unwrap(),
-            duration: hex_project::BeatTime::from_ratio(2, 24_000).unwrap(),
+            start: beat_at_frame(second_onset),
+            duration,
             pitch: 60,
             channel: 0,
             velocity: 127,
@@ -155,7 +174,7 @@ fn installed_sdk_marker_joins_bound_main_pcm_with_an_injected_output_clock() {
             .unwrap()
             .arrangement()
             .main_latency_frames(),
-        16
+        bridge_delay
     );
     let revision = publish(
         &mut f.control,
@@ -185,11 +204,12 @@ fn installed_sdk_marker_joins_bound_main_pcm_with_an_injected_output_clock() {
         .start_bound_main_for_test(source)
         .unwrap();
     assert_eq!(reader.source_binding(), Some(source));
+    assert_eq!(reader.sample_rate(), rate);
     assert!(reader.ready());
     f.control.command(PlaybackCommand::Play).unwrap();
     let mut rendered = Vec::new();
     for number in 0..8 {
-        rendered.extend(recorded_block(
+        rendered.extend(recorded_block::<QUANTUM>(
             &mut f,
             number,
             if number == 6 {
@@ -197,20 +217,26 @@ fn installed_sdk_marker_joins_bound_main_pcm_with_an_injected_output_clock() {
             } else {
                 OutputClockOrigin::CoreAudioHostTime
             },
+            rate,
         ));
         assert_eq!(
             f.control.status.position.load(Acquire),
             (number + 1) * QUANTUM as u64
         );
     }
-    let mut expected = [[0.0; 2]; 64];
-    for frame in [17, 18, 49, 50] {
+    let mut expected = vec![[0.0; 2]; 8 * QUANTUM];
+    for frame in [
+        first_marker,
+        first_marker + 1,
+        second_marker,
+        second_marker + 1,
+    ] {
         expected[frame] = [1.0; 2];
     }
-    assert_eq!(rendered.as_slice(), expected);
+    assert_eq!(rendered, expected);
     assert_eq!(f.control.status.recording_source(), Some(source));
     reader.stop();
-    recorded_block(&mut f, 8, OutputClockOrigin::CoreAudioHostTime);
+    recorded_block::<QUANTUM>(&mut f, 8, OutputClockOrigin::CoreAudioHostTime, rate);
     let mut packets = 0;
     let mut marker_predictions = Vec::new();
     assert_eq!(
@@ -222,12 +248,13 @@ fn installed_sdk_marker_joins_bound_main_pcm_with_an_injected_output_clock() {
                 &expected[packets * QUANTUM..(packets + 1) * QUANTUM]
             );
             let clock = clock.unwrap();
-            assert_eq!(clock.graph_latency_frames, Some(16));
+            assert_eq!(clock.graph_latency_frames, Some(bridge_delay));
             // This join uses the source-bound output packet and its sample
             // offset. The playing cursor was checked for every block.
             for (local, frame) in pcm[..frames].iter().enumerate() {
                 if *frame == [1.0; 2] {
-                    marker_predictions.push((packets * QUANTUM + local, marker_time(clock, local)));
+                    marker_predictions
+                        .push((packets * QUANTUM + local, marker_time(clock, local, rate)));
                 }
             }
             packets += 1;
@@ -236,20 +263,21 @@ fn installed_sdk_marker_joins_bound_main_pcm_with_an_injected_output_clock() {
     );
     assert_eq!(packets, 8);
     assert_eq!(marker_predictions.len(), 4);
+    let expected_prediction = CALLBACK_NS + frame_ns(3 * QUANTUM as u64, rate) + frame_ns(1, rate);
     assert_eq!(
         marker_predictions[0],
-        (17, Some(CALLBACK_NS + frame_ns(24) + frame_ns(1)))
+        (first_marker, Some(expected_prediction))
     );
     assert_eq!(
         marker_predictions[2..],
-        [(49, None), (50, None)],
+        [(second_marker, None), (second_marker + 1, None)],
         "unknown clock has no join"
     );
     // PCM already traversed the graph and CPAL prediction already contains its
-    // buffer. Neither the graph's 16 nor another device buffer belongs here.
+    // buffer. Neither the graph delay nor another device buffer belongs here.
     assert_ne!(
         marker_predictions[0].1.unwrap(),
-        CALLBACK_NS + frame_ns(24) + frame_ns(1) + frame_ns(8)
+        expected_prediction + frame_ns(QUANTUM as u64, rate)
     );
     f.control.sample_recording.reclaim();
     let stale = AppliedAudioSource {
@@ -262,7 +290,7 @@ fn installed_sdk_marker_joins_bound_main_pcm_with_an_injected_output_clock() {
         .start_bound_main_for_test(stale)
         .unwrap();
     assert!(refused.ready());
-    recorded_block(&mut f, 9, OutputClockOrigin::CoreAudioHostTime);
+    recorded_block::<QUANTUM>(&mut f, 9, OutputClockOrigin::CoreAudioHostTime, rate);
     let mut refused_packets = 0;
     assert_eq!(
         refused.drain_with_output_clock(|_, _, _, _, _| refused_packets += 1),
@@ -305,7 +333,7 @@ fn installed_sdk_marker_joins_bound_main_pcm_with_an_injected_output_clock() {
             0,
             0,
             0,
-            8
+            QUANTUM as u64
         ]
     );
     assert!(fields[9] > 0 && fields[10] >= fields[9]);
@@ -319,6 +347,6 @@ fn installed_sdk_marker_joins_bound_main_pcm_with_an_injected_output_clock() {
     );
     assert!(bracket.0 <= bracket.1);
     println!(
-        "installed_sdk_marker,binding={EXPECTED:?},source={source:?},marker_frame=17,fields={fields:?},injected_bracket_ns={bracket:?},physical_route=false"
+        "installed_sdk_marker,binding={EXPECTED:?},source={source:?},rate_hz={rate},quantum={QUANTUM},marker_frame={first_marker},fields={fields:?},injected_bracket_ns={bracket:?},physical_route=false"
     );
 }

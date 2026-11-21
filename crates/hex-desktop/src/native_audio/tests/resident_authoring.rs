@@ -23,10 +23,12 @@ fn active_source_provider_change_applies_while_playing() {
         request_id: 1,
         project_generation: 0,
         revision: added.state.revision,
-        track,
-        slot: hex_session::service::SamplerLoadSlot::New(
-            hex_project::InstrumentLoadPlacement::First,
-        ),
+        target: hex_session::service::SamplerLoadTarget::Track {
+            track,
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
+        },
         path: file.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -263,10 +265,12 @@ fn loaded_resident_normal_authoring_history_and_noops_keep_exact_native_context(
         request_id: 1,
         project_generation: 0,
         revision: added.state.revision,
-        track,
-        slot: hex_session::service::SamplerLoadSlot::New(
-            hex_project::InstrumentLoadPlacement::First,
-        ),
+        target: hex_session::service::SamplerLoadTarget::Track {
+            track,
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
+        },
         path: sampler_file.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -681,10 +685,12 @@ fn sampler_note_fixture() -> SamplerNote {
         request_id: 1,
         project_generation: 0,
         revision: added.state.revision,
-        track,
-        slot: hex_session::service::SamplerLoadSlot::New(
-            hex_project::InstrumentLoadPlacement::First,
-        ),
+        target: hex_session::service::SamplerLoadTarget::Track {
+            track,
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
+        },
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -1099,10 +1105,12 @@ fn editing_a_sounding_sampler_note_applies_while_paused_or_playing() {
             request_id: 1,
             project_generation: 0,
             revision: added.state.revision,
-            track,
-            slot: hex_session::service::SamplerLoadSlot::New(
-                hex_project::InstrumentLoadPlacement::First,
-            ),
+            target: hex_session::service::SamplerLoadTarget::Track {
+                track,
+                slot: hex_session::service::SamplerLoadSlot::New(
+                    hex_project::InstrumentLoadPlacement::First,
+                ),
+            },
             path: file.wav(48_000, 8192),
             cancel: Arc::new(AtomicBool::new(false)),
         });
@@ -1180,10 +1188,12 @@ fn adding_a_latency_device_while_a_sampler_plays_applies_without_refusal() {
         request_id: 1,
         project_generation: 0,
         revision: added.state.revision,
-        track,
-        slot: hex_session::service::SamplerLoadSlot::New(
-            hex_project::InstrumentLoadPlacement::First,
-        ),
+        target: hex_session::service::SamplerLoadTarget::Track {
+            track,
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
+        },
         path: file.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });

@@ -392,7 +392,7 @@ impl Hosting {
         bindings: &[Binding],
         unavailable: &[super::UnavailableEffect<'_>],
         canonical: &[CapturedCanonicalBases],
-        retained: Option<RetainedInstrumentSource>,
+        retained: Option<RetainedTrackEffectSource>,
         prepare: &mut dyn FnMut(
             &AudioCandidateEffects<'_, '_>,
         )
@@ -408,12 +408,18 @@ impl Hosting {
                 .including_unavailable(unavailable)
                 .and_then(|definition| definition.including_canonical_bases(canonical))
                 .and_then(|definition| match retained {
-                    Some(retained) => definition.including_retained_instrument(retained),
+                    Some(route) => definition.including_retained_effect_source(route),
                     None => Ok(definition),
                 })
                 .map_err(|error| error.to_string())?;
-            AudioCandidateEffects::with_host_definitions(&[&definition], prepare)
-                .map_err(|error| error.to_string())
+            let candidate = AudioCandidateEffects::with_host_definitions(&[&definition], prepare)
+                .map_err(|error| error.to_string())?;
+            if let Some(route) = retained
+                && output.status.recording_source() != Some(route.predecessor)
+            {
+                return Err("original vst3 effect move source is no longer installed".into());
+            }
+            Ok(candidate)
         })
     }
 

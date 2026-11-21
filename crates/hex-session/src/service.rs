@@ -100,11 +100,11 @@ pub use audio_sink::{
     ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata, ResidentFilePitch,
     ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
     ResidentFreshRuntimeFence, ResidentGraphSubmission, ResidentHostedInstrumentMove,
-    ResidentMainPowerOn, ResidentMainPowerOnInterval, ResidentPublicationAcceptance,
-    ResidentPublicationFailure, ResidentPublicationInputs, ResidentPublicationMetadata,
-    ResidentPublicationPolicy, ResidentPublicationReadiness, ResidentPublicationRefusal,
-    ResidentRunningPowerOff, ResidentRuntimeLoop, ResidentSourceOrigin, ResidentTempoEdit,
-    ResidentTempoEditOutcome, WorkerAudioSink,
+    ResidentHostedTrackEffectMove, ResidentPowerOn, ResidentPowerOnInterval,
+    ResidentPublicationAcceptance, ResidentPublicationFailure, ResidentPublicationInputs,
+    ResidentPublicationMetadata, ResidentPublicationPolicy, ResidentPublicationReadiness,
+    ResidentPublicationRefusal, ResidentRunningPowerOff, ResidentRuntimeLoop, ResidentSourceOrigin,
+    ResidentTempoEdit, ResidentTempoEditOutcome, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -318,8 +318,31 @@ pub struct MidiTakeCompletion {
 pub struct SamplerLoadCompletion {
     pub request_id: u64,
     pub project_generation: u64,
-    pub track: hex_project::TrackId,
+    /// Existing track captured by the request. A new track has no captured ID.
+    pub track: Option<hex_project::TrackId>,
 }
+/// A captured existing instrument slot or an ordered insertion in the project.
+#[derive(Clone, Debug)]
+pub enum SamplerLoadTarget {
+    Track {
+        track: hex_project::TrackId,
+        slot: SamplerLoadSlot,
+    },
+    NewTrack {
+        before_track: Option<hex_project::TrackId>,
+    },
+}
+
+impl SamplerLoadTarget {
+    /// The existing track whose instrument the request owns, if any.
+    pub fn track(&self) -> Option<hex_project::TrackId> {
+        match self {
+            Self::Track { track, .. } => Some(*track),
+            Self::NewTrack { .. } => None,
+        }
+    }
+}
+
 /// The captured instrument slot for a prepared first sample load.
 #[derive(Clone, Debug)]
 pub enum SamplerLoadSlot {
@@ -331,6 +354,65 @@ pub enum SamplerLoadSlot {
         expected_state: hex_lattice_contract::NativeDeviceState,
     },
 }
+fn validate_sampler_load_target(
+    project: &hex_project::Project,
+    target: &SamplerLoadTarget,
+) -> Result<(), SessionError> {
+    let (track, slot) = match target {
+        SamplerLoadTarget::Track { track, slot } => (*track, slot),
+        SamplerLoadTarget::NewTrack { before_track } => {
+            return if before_track.is_none_or(|anchor| project.track(anchor).is_some()) {
+                Ok(())
+            } else {
+                Err(SessionError::Invalid(
+                    "sampler track insertion anchor changed",
+                ))
+            };
+        }
+    };
+    let track = project
+        .track(track)
+        .ok_or(SessionError::Invalid("sampler track no longer exists"))?;
+    let slot_current = match slot {
+        SamplerLoadSlot::New(placement) => {
+            track.instrument().map(hex_project::Device::id) == placement.replacement()
+        }
+        SamplerLoadSlot::Existing {
+            device,
+            expected_state,
+        } => track.instrument().is_some_and(|instrument| {
+            instrument.id() == *device
+                && instrument.state() == expected_state
+                && !instrument.bypassed()
+                && hex_engine::is_empty_sampler_state_on_control(expected_state)
+        }),
+    };
+    if !slot_current
+        || track.is_group()
+        || (track.instrument().is_some() && !track.receives_source_audio())
+    {
+        return Err(SessionError::Invalid(
+            "sampler load target changed or is ineligible",
+        ));
+    }
+    Ok(())
+}
+
+fn new_sampler_load_destination(
+    frames: usize,
+    destination: hex_project::InstrumentLoadDestination,
+) -> Result<crate::native_assets::NativeAssetDestination, SessionError> {
+    let (state, source_slot) =
+        hex_engine::native_device_resources::sampler_import_template_on_control(frames)?;
+    Ok(
+        crate::native_assets::NativeAssetDestination::NewInstrument {
+            destination,
+            state,
+            source_slot,
+        },
+    )
+}
+
 /// Captured owner of a sampler parameter edit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SamplerParameterOwner {
@@ -1180,8 +1262,7 @@ pub enum Request {
         request_id: u64,
         project_generation: u64,
         revision: u64,
-        track: hex_project::TrackId,
-        slot: SamplerLoadSlot,
+        target: SamplerLoadTarget,
         path: PathBuf,
         cancel: Arc<AtomicBool>,
     },
@@ -5637,12 +5718,12 @@ fn run_worker(
             Request::LoadFirstSampler {
                 request_id,
                 project_generation,
-                track,
+                target,
                 ..
             } => Some(SamplerLoadCompletion {
                 request_id: *request_id,
                 project_generation: *project_generation,
-                track: *track,
+                track: target.track(),
             }),
             _ => None,
         };
@@ -7340,8 +7421,7 @@ fn run_worker(
                     request_id: _,
                     project_generation: target_generation,
                     revision: target_revision,
-                    track,
-                    slot,
+                    target,
                     path,
                     cancel,
                 } => {
@@ -7350,33 +7430,7 @@ fn run_worker(
                         if target_generation != project_generation || target_revision != revision {
                             return Err(SessionError::Invalid("sampler load target changed"));
                         }
-                        let target = session
-                            .project()
-                            .track(track)
-                            .ok_or(SessionError::Invalid("sampler track no longer exists"))?;
-                        let target_current = match &slot {
-                            SamplerLoadSlot::New(placement) => {
-                                target.instrument().map(hex_project::Device::id)
-                                    == placement.replacement()
-                            }
-                            SamplerLoadSlot::Existing {
-                                device,
-                                expected_state,
-                            } => target.instrument().is_some_and(|instrument| {
-                                instrument.id() == *device
-                                    && instrument.state() == expected_state
-                                    && !instrument.bypassed()
-                                    && hex_engine::is_empty_sampler_state_on_control(expected_state)
-                            }),
-                        };
-                        if !target_current
-                            || target.is_group()
-                            || (target.instrument().is_some() && !target.receives_source_audio())
-                        {
-                            return Err(SessionError::Invalid(
-                                "sampler load target changed or is ineligible",
-                            ));
-                        }
+                        validate_sampler_load_target(session.project(), &target)?;
                         if private_sampler && !events.resident_publication_enabled() {
                             return Err(SessionError::Invalid(
                                 "first sampler load only; active sampler replacement is unavailable",
@@ -7406,19 +7460,29 @@ fn run_worker(
                             }
                         });
                         let frames = decoded.audio().frames().len();
-                        let destination = match slot {
-                            SamplerLoadSlot::New(placement) => {
-                                let (state, source_slot) = hex_engine::native_device_resources::sampler_import_template_on_control(frames)?;
-                                crate::native_assets::NativeAssetDestination::NewInstrument {
-                                    track,
-                                    placement,
-                                    state,
-                                    source_slot,
-                                }
+                        let destination = match target {
+                            SamplerLoadTarget::Track {
+                                track,
+                                slot: SamplerLoadSlot::New(placement),
+                            } => new_sampler_load_destination(
+                                frames,
+                                hex_project::InstrumentLoadDestination::Track { track, placement },
+                            )?,
+                            SamplerLoadTarget::NewTrack { before_track } => {
+                                new_sampler_load_destination(
+                                    frames,
+                                    hex_project::InstrumentLoadDestination::NewTrack {
+                                        before_track,
+                                    },
+                                )?
                             }
-                            SamplerLoadSlot::Existing {
-                                device,
-                                expected_state,
+                            SamplerLoadTarget::Track {
+                                track,
+                                slot:
+                                    SamplerLoadSlot::Existing {
+                                        device,
+                                        expected_state,
+                                    },
                             } => {
                                 let (state, source_slot) =
                                     hex_engine::sampler_replacement_template_on_control(
@@ -7738,7 +7802,7 @@ fn run_worker(
                                     sink,
                                 )
                                 .is_some()
-                                || resident_audio::device_insert::stopped_hosted_power_fence(
+                                || resident_audio::device_insert::stopped_hosted_power(
                                     session.project(),
                                     &command,
                                     hex_engine::AudioSourceContext {

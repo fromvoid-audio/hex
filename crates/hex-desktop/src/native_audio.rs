@@ -1839,7 +1839,7 @@ impl WorkerAudioSink for NativeAudioSink {
             {
                 self.resident.running_powered_off = Some(running_off);
             }
-            self.plugins.finish_hosted_move(context, accepted, applied);
+            self.plugins.finish_hosted_move(context);
         }
         self.plugins.finish_edit(context, accepted);
     }
@@ -2001,23 +2001,40 @@ impl WorkerAudioSink for NativeAudioSink {
             .as_ref()
             .map(|source| source.context())
             .and_then(|context| self.applied_powered_off(context));
-        if let Some(intent) = input.main_power_on() {
-            use hex_session::service::ResidentMainPowerOnInterval;
+        if let Some(intent) = input.power_on() {
+            use hex_engine::ProcessorChainOwner;
+            use hex_session::service::ResidentPowerOnInterval;
             let changed = match intent.interval() {
-                ResidentMainPowerOnInterval::Stopped { context, fence } => {
+                ResidentPowerOnInterval::Stopped {
+                    owner: ProcessorChainOwner::Main,
+                    context,
+                    fence,
+                } => {
                     powered_off.is_some_and(|identity| {
-                        identity.owner() == hex_engine::ProcessorChainOwner::Main
+                        identity.owner() == ProcessorChainOwner::Main
                             && identity.device_id() == intent.device()
                     }) && self.stopped_resident_power_fence(context, intent.device())?
                         != Some(fence)
                 }
-                ResidentMainPowerOnInterval::Running(source) => {
+                ResidentPowerOnInterval::Stopped {
+                    owner,
+                    context,
+                    fence,
+                } => {
+                    self.stopped_resident_return_power_on_fence(context, owner, intent.device())?
+                        != Some(fence)
+                }
+                ResidentPowerOnInterval::Running(source) => {
                     self.running_resident_main_power_on(source.context, intent.device())
                         != Some(source)
                 }
             };
             if changed {
-                return Err("main power-on source changed before preparation".into());
+                return Err(match intent.owner() {
+                    ProcessorChainOwner::Main => "main power-on source changed before preparation",
+                    _ => "return power-on source changed before preparation",
+                }
+                .into());
             }
         }
         self.plugins.compile(
@@ -2044,7 +2061,7 @@ impl WorkerAudioSink for NativeAudioSink {
     fn prepare_verified_effects(
         &mut self,
         input: hex_session::service::ResidentEffectPreparation<'_>,
-        proposal: Option<&Arc<hex_session::service::PluginEffectControl>>,
+        attempt: Option<&hex_session::service::VerifiedGraphEditAttempt>,
         prepare: &mut dyn FnMut(
             &hex_engine::AudioCandidateEffects<'_, '_>,
         )
@@ -2068,40 +2085,65 @@ impl WorkerAudioSink for NativeAudioSink {
                 Some(&cancellation),
                 true,
                 None,
-                None,
             )?;
             Some(cancellation)
         } else {
             None
         };
+        let proposal_attempt = attempt.filter(|attempt| attempt.proposal_control().is_some());
+        let proposal = proposal_attempt.and_then(|attempt| attempt.proposal_control());
         let bindings = self.plugins.verified_effect_bindings(
             input,
             proposal,
             staged_cancellation.is_some(),
         )?;
+        let projection_cancellation = if let Some(attempt) = proposal_attempt {
+            Some(
+                self.request_cancellation
+                    .clone()
+                    .ok_or("verified vst3 preparation request is unavailable")?
+                    .with_preparation_deadline(attempt.preparation_deadline()),
+            )
+        } else {
+            staged_cancellation
+        };
         let control = self
             .output
             .as_mut()
             .and_then(|output| output.publication.control())
             .ok_or("verified audio output is unavailable")?;
         loop {
-            if let Some(cancellation) = &staged_cancellation {
+            if let Some(cancellation) = &projection_cancellation {
                 if cancellation.preparation_expired() {
                     return Err("verified vst3 preparation timed out".into());
                 }
-                if cancellation.is_cancelled() {
+                if cancellation.is_cancelled()
+                    || proposal.is_some_and(|control| control.is_cancelled())
+                {
                     return Err("verified vst3 preparation cancelled".into());
                 }
             }
-            match control.with_native_effect_definition(&bindings, |definition| {
+            let projected = control.with_native_effect_definition(&bindings, |definition| {
                 hex_engine::AudioCandidateEffects::with_host_definitions(
                     &[definition],
                     &mut *prepare,
                 )
                 .map_err(|error| error.to_string())
-            }) {
+            });
+            #[cfg(all(test, feature = "allocation-probe"))]
+            if let Some(observer) = &self.native_graph_busy_observer
+                && projected.as_ref().is_err_and(|error| {
+                    matches!(
+                        error.as_str(),
+                        "native effect preparation is busy" | "native effect selection is busy"
+                    )
+                })
+            {
+                let _ = observer.try_send(());
+            }
+            match projected {
                 Err(error)
-                    if staged_cancellation.is_some()
+                    if projection_cancellation.is_some()
                         && matches!(
                             error.as_str(),
                             "native effect preparation is busy" | "native effect selection is busy"
@@ -2432,6 +2474,41 @@ impl WorkerAudioSink for NativeAudioSink {
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn stopped_resident_return_power_on_fence(
+        &mut self,
+        context: AudioSourceContext,
+        owner: hex_engine::ProcessorChainOwner,
+        device: u64,
+    ) -> Result<Option<hex_session::service::ResidentFreshRuntimeFence>, String> {
+        if !matches!(owner, hex_engine::ProcessorChainOwner::Return(_))
+            || self
+                .plugins
+                .has_accepted_effect_source(context, owner, device)
+        {
+            return Ok(None);
+        }
+        if self.output.is_none() {
+            return Ok(None);
+        }
+        let expected = hex_audio::prepared::NativeProcessorIdentity::new(owner, device)
+            .map_err(|error| error.to_string())?;
+        if self.applied_powered_off(context) != Some(expected) {
+            return Err("return power on requires the original applied off source".into());
+        }
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .ok_or("native output closed")?;
+        let resident = &self.resident;
+        let fence = settled_resident_effect_fence(control, context, |source| {
+            resident.powered_off(source) == Some(expected)
+        })
+        .ok_or("return power on requires the original settled off source")?;
+        Ok(Some(fence))
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn stopped_resident_effect_history_fence(
         &mut self,
         context: AudioSourceContext,
@@ -2450,6 +2527,34 @@ impl WorkerAudioSink for NativeAudioSink {
         }
         let control = self.output.as_mut()?.publication.control()?;
         settled_resident_effect_fence(control, context, |_| true)
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn running_resident_effect_history_source(
+        &mut self,
+        context: AudioSourceContext,
+        owner: hex_engine::ProcessorChainOwner,
+        device: u64,
+    ) -> Option<hex_session::service::ResidentGraphSubmission> {
+        if !self
+            .plugins
+            .has_accepted_effect_source(context, owner, device)
+        {
+            return None;
+        }
+        let control = self.output.as_mut()?.publication.control()?;
+        let actual = control.status.recording_source()?;
+        if actual.context != context
+            || control.status.native_effect_source() != Some(actual)
+            || !control.status.playing.load(Acquire)
+        {
+            return None;
+        }
+        Some(hex_session::service::ResidentGraphSubmission {
+            context,
+            audio_revision: actual.audio_revision,
+            output_identity: actual.output_identity,
+        })
     }
 
     fn resident_runtime_loop(

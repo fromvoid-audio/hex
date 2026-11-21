@@ -1548,24 +1548,35 @@ fn finite_bounce_preserves_mutable_source_phase_and_ignores_transport_wrapping()
 }
 
 #[test]
-fn mutable_transport_loops_admit_while_linear_export_still_refuses_source_loops() {
+fn linear_foreign_export_keeps_mutable_source_repeats_on_the_arrangement_clock() {
+    const FRAMES: u64 = 96_000;
     let mut snapshot = arrangement_loop_project().snapshot();
     snapshot.loop_region = Some(LoopRegion::new(0, 48_000, true).expect("valid transport loop"));
-    let transport_loop =
-        legacy_project_from_snapshot(snapshot).expect("valid transport loop project");
-    assert!(SessionPlayback::new(prepare_mutable(&transport_loop)).is_ok());
-    assert_eq!(
-        SessionPlayback::new_linear_arrangement_export(prepare_mutable(&transport_loop)).err(),
-        Some(SessionPlaybackError::MutableInstrumentLoopUnsupported)
-    );
-    assert_eq!(
-        SessionPlayback::new_linear_arrangement_export_with_foreign(
-            prepare_mutable(&transport_loop),
-            None
-        )
-        .err(),
-        Some(SessionPlaybackError::MutableInstrumentLoopUnsupported)
-    );
+    let project = legacy_project_from_snapshot(snapshot).expect("valid looped project");
+    let revision = prepare_mutable(&project);
+    let mut export =
+        SessionPlayback::new_linear_arrangement_export_with_foreign(Arc::clone(&revision), None)
+            .expect("admit the authored loops for foreign export");
+    let mut bounce = SessionPlayback::new_finite_arrangement_bounce(revision, None, FRAMES)
+        .expect("admit the same source for bounce");
+    export.apply(SessionPlaybackCommand::Play).unwrap();
+    bounce.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual = [[0.0; 2]; 256];
+    let mut expected = [[0.0; 2]; 256];
+    for start in (0..FRAMES).step_by(actual.len()) {
+        export
+            .render_with_foreign_processors(
+                &mut actual,
+                None,
+                None,
+                None,
+                &mut hex_lattice::RefuseForeign,
+            )
+            .expect("render foreign export block");
+        bounce.render(&mut expected).expect("render bounce block");
+        assert_eq!(actual, expected, "export block at frame {start}");
+    }
+    assert_eq!(export.arrangement_frame(), FRAMES);
 }
 
 #[test]

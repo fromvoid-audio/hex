@@ -30,8 +30,10 @@ fn load(service: &Service, path: &std::path::Path, request_id: u64, generation: 
             request_id,
             project_generation: generation,
             revision: added.state.revision,
-            track,
-            slot: SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::First),
+            target: crate::service::SamplerLoadTarget::Track {
+                track,
+                slot: SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::First),
+            },
             path: path.to_owned(),
             cancel: Arc::new(AtomicBool::new(false)),
         },

@@ -195,7 +195,9 @@ pub(crate) fn effective_parameter_value(
     key: ParameterKey,
     canonical_value: ParameterValue,
 ) -> ParameterValue {
-    parameter_display_override(view, key).unwrap_or(canonical_value)
+    parameter_display_override(view, key)
+        .or_else(|| view.device_panel.playback_values.native(key))
+        .unwrap_or(canonical_value)
 }
 
 /// The in-flight gesture value, else the admitted manual value awaiting its
@@ -284,10 +286,16 @@ pub(super) fn render_parameter(
     .is_some();
     let style = super::automation_tint::style(parameter_style(presentation), automated);
     let descriptor = parameter.descriptor;
-    let value = if identity.type_id == hex_engine::eq::EQ_TYPE_ID
-        || identity.type_id.as_str() == Ok("hex.eq8")
-    {
-        super::eq_automation::effective_value(view, key, identity.type_id, parameter)
+    let target = automation_target(key.parameter);
+    let value = if target.is_host() {
+        parameter_display_override(view, key)
+            .or_else(|| {
+                let owner = view.device_panel.owner?;
+                view.device_panel
+                    .playback_values
+                    .trim(owner, key, identity, target)
+            })
+            .unwrap_or(parameter.value)
     } else {
         effective_parameter_value(view, key, parameter.value)
     };

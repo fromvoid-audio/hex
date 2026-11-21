@@ -1,7 +1,10 @@
-//! Signed Resident effect replacement history at the real paused callback.
+//! Signed Resident effect replacement history at the real callback.
 use super::*;
 use hex_audio::plugin_effects::EffectBinding;
 use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
+use std::sync::atomic::Ordering::Release;
+
+mod rolling;
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
@@ -25,7 +28,7 @@ fn assert_stopped_undo(owner: ReplacementOwner) {
     let _native = native_fixture();
     let files = Files::new();
     let (mut h, original, installed, original_binding, destination) =
-        installed_replacement(&files, owner);
+        installed_replacement(&files, owner, 8192);
     assert_stopped_history(
         &mut h,
         &installed,
@@ -58,7 +61,7 @@ fn assert_stopped_redo(bus: ReplacementOwner) {
     let _native = native_fixture();
     let files = Files::new();
     let (mut h, original, installed, original_binding, destination) =
-        installed_replacement(&files, bus);
+        installed_replacement(&files, bus, 8192);
     let replaced_binding = binding(&h).unwrap().1;
     let restored = assert_stopped_history(
         &mut h,
@@ -80,28 +83,29 @@ fn assert_stopped_redo(bus: ReplacementOwner) {
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
-fn rolling_resident_main_vst3_replacement_undo_preserves_the_predecessor() {
+fn rolling_resident_main_vst3_replacement_undo_refuses_a_stale_source() {
     assert_rolling_refusal(ReplacementOwner::Main);
 }
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
-fn rolling_resident_return_vst3_replacement_undo_preserves_the_predecessor() {
+fn rolling_resident_return_vst3_replacement_undo_refuses_a_stale_source() {
     assert_rolling_refusal(ReplacementOwner::Return);
 }
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
-fn rolling_resident_track_vst3_replacement_undo_preserves_the_predecessor() {
+fn rolling_resident_track_vst3_replacement_undo_refuses_a_stale_source() {
     assert_rolling_refusal(ReplacementOwner::Track);
 }
 
 fn assert_rolling_refusal(bus: ReplacementOwner) {
     let _native = native_fixture();
     let files = Files::new();
-    let (mut h, _, installed, _, destination) = installed_replacement(&files, bus);
+    let (mut h, _, installed, _, destination) = installed_replacement(&files, bus, 8192);
     let predecessor = status(&h).recording_source().unwrap();
     let incumbent = binding(&h).unwrap();
+    let newest_before = h.plugin_progress.lock().unwrap().newest_source;
     let minimum = if matches!(destination, PluginEffectDestination::Return(_)) {
         0.251
     } else {
@@ -120,6 +124,9 @@ fn assert_rolling_refusal(bus: ReplacementOwner) {
             && pcm.iter().flatten().any(|sample| sample.abs() > minimum)
     });
 
+    // Change only the worker's read of the runtime revision. The actual
+    // native source and its accepted worker continue to render.
+    h.loop_witness_fault.store(2, Release);
     h.service.submit(Request::Undo).unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -133,7 +140,12 @@ fn assert_rolling_refusal(bus: ReplacementOwner) {
             if event.request_complete {
                 assert_eq!(
                     event.error.as_deref(),
-                    Some("stop playback to undo or redo this vst3 replacement"),
+                    Some("running replacement history source changed"),
+                );
+                assert_eq!(h.plugin_records.load(Acquire), 1);
+                assert_eq!(
+                    h.plugin_progress.lock().unwrap().newest_source,
+                    newest_before
                 );
                 break;
             }
@@ -152,6 +164,7 @@ enum ReplacementOwner {
 fn installed_replacement(
     files: &Files,
     bus: ReplacementOwner,
+    clip_frames: u32,
 ) -> (
     ResidentHarness,
     Event,
@@ -171,7 +184,7 @@ fn installed_replacement(
     );
     assert!(h.next().error.is_none());
     let (applied, _) = h.applied(0);
-    let imported = h.run(Request::Import(files.wav(48_000, 8192)));
+    let imported = h.run(Request::Import(files.wav(48_000, clip_frames)));
     let (mut applied, _) = h.applied(applied);
     let (document, destination) = match bus {
         ReplacementOwner::Main => (imported.state, PluginEffectDestination::Main),

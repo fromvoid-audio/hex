@@ -1,4 +1,4 @@
-//! Catalog Main history uses the existing exact Verified install receipts.
+//! Running catalog history uses the existing exact Verified install receipts.
 use super::verified_insert::{await_verified_retirement, render_hosted_quantum};
 use super::*;
 use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
@@ -10,11 +10,33 @@ fn status(h: &Harness) -> &hex_audio::prepared::Status {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn running_verified_main_history_restores_and_retires_the_exact_worker() {
+    assert_running_verified_history(HistoryOwner::Main);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn running_verified_track_history_restores_and_retires_the_exact_worker() {
+    assert_running_verified_history(HistoryOwner::Track);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn running_verified_return_history_restores_and_retires_the_exact_worker() {
+    assert_running_verified_history(HistoryOwner::Return);
+}
+
+enum HistoryOwner {
+    Main,
+    Track,
+    Return,
+}
+
+fn assert_running_verified_history(owner: HistoryOwner) {
     let _native = native_fixture();
     let files = Files::new();
     let directory = files.0.canonicalize().unwrap();
     let mut selection = selection();
-    let module = directory.join("history-main.vst3");
+    let module = directory.join("history.vst3");
     super::ui::copy_original_module(&selection.module, &module);
     selection.module = module;
     hex_ui::write_plugin_effect_test_catalog(&directory, &selection, "Fx", 0).unwrap();
@@ -37,7 +59,32 @@ fn running_verified_main_history_restores_and_retires_the_exact_worker() {
     let imported = h.run(Request::Import(files.wav(48_000, 1_048_576)));
     h.applied(h.context.unwrap());
     let submit = |h: &Harness, request| h.service.as_ref().unwrap().submit(request).unwrap();
-    let mut insertion = request(&imported.state, PluginEffectDestination::Main);
+    let track = imported.state.project.tracks()[0].id();
+    let (state, destination, removed_sample) = match owner {
+        HistoryOwner::Main => (imported.state, PluginEffectDestination::Main, 0.25),
+        HistoryOwner::Track => (imported.state, PluginEffectDestination::Track(track), 0.25),
+        HistoryOwner::Return => {
+            let added = h.run(Request::Edit(Command::AddReturnTrack {
+                name: "wet".into(),
+            }));
+            let Some(Created::ReturnTrack(return_track)) = added.created else {
+                panic!("return track");
+            };
+            h.applied(h.context.unwrap());
+            let routed = h.run(Request::Edit(Command::SetReturnSend {
+                track,
+                return_track,
+                gain: 0.5,
+            }));
+            h.applied(h.context.unwrap());
+            (
+                routed.state,
+                PluginEffectDestination::Return(return_track),
+                0.375,
+            )
+        }
+    };
+    let mut insertion = request(&state, destination);
     insertion.selection = selection.clone();
     submit(&h, Request::InsertPluginEffect(insertion));
     let inserted = loop {
@@ -69,7 +116,7 @@ fn running_verified_main_history_restores_and_retires_the_exact_worker() {
             sample = render_hosted_quantum(&h);
             status(&h).performance_frame.load(Acquire) == (block + 1) * 256
         });
-        assert_eq!(sample, 0.25);
+        assert_eq!(sample, removed_sample);
     }
     let approved = std::cell::Cell::new(false);
     let phase = std::cell::Cell::new("provider substitution");
@@ -92,7 +139,7 @@ fn running_verified_main_history_restores_and_retires_the_exact_worker() {
                 assert_eq!(status(h).applied_audio_source(), Some(predecessor));
                 assert_eq!(
                     sample,
-                    0.25,
+                    removed_sample,
                     "phase={} position={} performance={} playing={} paused={:?}",
                     phase.get(),
                     status(h).position.load(Acquire),
@@ -119,7 +166,7 @@ fn running_verified_main_history_restores_and_retires_the_exact_worker() {
         let event = next_event(h);
         assert!(
             event.error.is_none(),
-            "running Main history refused: {:?}",
+            "running {destination:?} history refused: {:?}",
             event.error
         );
         assert!(!event.request_complete);
@@ -180,7 +227,7 @@ fn running_verified_main_history_restores_and_retires_the_exact_worker() {
             .error
             .as_deref()
             .is_some_and(|message| message.contains("saved vst3 binary or class is unavailable")),
-        "wrong provider was accepted: {:?}",
+        "unexpected wrong-provider result: {:?}",
         unavailable.error
     );
     assert_eq!(unavailable.state.project, removed.state.project);
@@ -282,7 +329,7 @@ fn running_verified_main_history_restores_and_retires_the_exact_worker() {
             let event = next_event(&h);
             assert!(
                 event.error.is_none(),
-                "running Main removal history refused: {:?}",
+                "running {destination:?} removal history refused: {:?}",
                 event.error
             );
             assert!(!event.request_complete);

@@ -1,9 +1,9 @@
-//! Direct Sine transfer must carry donor notes and admit only new receiver onsets.
+//! Direct Sine moves end the donor voices at the cut and admit new receiver onsets.
 use super::*;
 use hex_project::{BeatTime, DeviceSelectionIds, TrackDeviceSlot};
 
 #[test]
-fn direct_sine_move_carries_the_donor_gate_and_never_chases_the_receiver() {
+fn direct_sine_move_cuts_the_donor_gate_and_only_plays_new_receiver_onsets() {
     const REQUEST: usize = 512;
     const FADE: usize = 240;
     const CUT: usize = REQUEST + FADE;
@@ -72,15 +72,10 @@ fn direct_sine_move_carries_the_donor_gate_and_never_chases_the_receiver() {
             gains: vec![(source, 0.25), (destination, 0.75)],
         })
         .unwrap();
-    // A reference keeps both lawful note streams continuously authored. The
-    // two identical Sines feed the same destination gain after the cut.
+    // A fresh reference has only the destination notes whose onsets are at
+    // or after the acknowledged cut. The predecessor render covers the fade.
     let mut reference = Editor::new(editor.project().clone(), 4).unwrap();
-    reference
-        .execute(Command::Gain {
-            track: source,
-            gain: 0.75,
-        })
-        .unwrap();
+    reference.execute(Command::RemoveTrack(source)).unwrap();
     reference
         .execute(Command::InsertInstrument {
             track: destination,
@@ -159,8 +154,8 @@ fn direct_sine_move_carries_the_donor_gate_and_never_chases_the_receiver() {
             predecessor.context.editor_revision + 1
         );
         let republished = (partition == BLOCK).then(|| {
-            // The donor is still held when an ordinary publication inherits
-            // the successor. Its audio receiver must stay on the destination.
+            // A same-project publication must preserve the fresh destination
+            // onset and must not reintroduce any pre-cut notes.
             control.reclaim();
             control
                 .publish(Playback::try_from_prepared_with_session(Arc::clone(&after)).unwrap())
@@ -210,7 +205,7 @@ fn direct_sine_move_carries_the_donor_gate_and_never_chases_the_receiver() {
 }
 
 #[test]
-fn reversing_a_sine_move_carries_the_already_banked_held_gate() {
+fn reversing_a_sine_move_does_not_revive_the_cut_gate() {
     const REQUEST: usize = 512;
     const FADE: usize = 240;
     const SETTLE: usize = 304;
@@ -294,6 +289,12 @@ fn reversing_a_sine_move_carries_the_already_banked_held_gate() {
     reference.apply(PlaybackCommand::Play);
     let mut expected = vec![[0.0; 2]; FRAMES];
     reference.render(&mut expected).unwrap();
+    assert!(
+        expected[INVERSE + FADE..1800]
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 1e-4)
+    );
 
     for partition in [1, BLOCK] {
         let (mut control, mut callback, _, forward) = begin_insert_with_pending_track(
@@ -302,19 +303,24 @@ fn reversing_a_sine_move_carries_the_already_banked_held_gate() {
             None,
             REQUEST,
         );
-        for block in [[0.0; 2]; FADE].chunks_mut(partition) {
+        let mut fade_out = [[0.0; 2]; FADE];
+        for block in fade_out.chunks_mut(partition) {
             render(&mut callback, block);
+        }
+        for (offset, (actual, expected)) in fade_out.iter().zip(&expected[REQUEST..]).enumerate() {
+            let gain = 1.0 - (offset + 1) as f32 / FADE as f32;
+            for (actual, expected) in actual.iter().zip(expected) {
+                assert!((actual - gain * expected).abs() < 2e-6);
+            }
         }
         let mut settled = [[0.0; 2]; SETTLE];
         for block in settled.chunks_mut(partition) {
             render(&mut callback, block);
         }
         assert_eq!(forward.state(), PublicationReceiptState::Installed);
-        assert!(
-            settled[FADE..]
-                .iter()
-                .zip(&expected[INVERSE - (SETTLE - FADE)..])
-                .all(|(actual, original)| (actual[0] - 3.0 * original[0]).abs() < 2e-6)
+        assert_eq!(
+            settled, [[0.0; 2]; SETTLE],
+            "forward cut carries no donor voice"
         );
         let predecessor = control.status.recording_source().unwrap();
         let fence = control.capture_fresh_runtime_fence().unwrap();
@@ -339,16 +345,11 @@ fn reversing_a_sine_move_carries_the_already_banked_held_gate() {
             assert_eq!(
                 inverse.state(),
                 PublicationReceiptState::Pending,
-                "the inverse must fade the still-held receiver"
+                "the inverse must use the same exact callback cut"
             );
             assert_eq!(control.status.recording_source(), Some(predecessor));
         }
-        for (offset, (actual, expected)) in fade.iter().zip(&expected[INVERSE..]).enumerate() {
-            let gain = 3.0 * (1.0 - (offset + 1) as f32 / FADE as f32);
-            for (actual, expected) in actual.iter().zip(expected) {
-                assert!((actual - gain * expected).abs() < 2e-6);
-            }
-        }
+        assert_eq!(fade, [[0.0; 2]; FADE]);
         let mut actual = vec![[0.0; 2]; FRAMES - INVERSE - FADE];
         let (first, rest) = actual.split_at_mut(BLOCK);
         for block in first.chunks_mut(partition) {
@@ -360,8 +361,7 @@ fn reversing_a_sine_move_carries_the_already_banked_held_gate() {
             inverse_revision
         );
         let republished = (partition == BLOCK).then(|| {
-            // The receiver is again the original MIDI track, but the running
-            // gate still comes from the transferred release bank.
+            // Republishing also must not chase the source clip's earlier note.
             control.reclaim();
             control
                 .publish(Playback::try_from_prepared_with_session(Arc::clone(&original)).unwrap())
@@ -373,16 +373,7 @@ fn reversing_a_sine_move_carries_the_already_banked_held_gate() {
         if let Some(revision) = republished {
             assert_eq!(control.status.applied_revision.load(Acquire), revision);
         }
-        for (offset, frame) in actual.iter().enumerate() {
-            let fade = (offset + 1).min(FADE) as f32 / FADE as f32;
-            for lane in 0..2 {
-                let expected = expected[INVERSE + FADE + offset][lane] * fade;
-                assert!(
-                    (frame[lane] - expected).abs() < 2e-6,
-                    "partition {partition} frame {offset} lane {lane}"
-                );
-            }
-        }
+        assert!(actual.iter().all(|frame| *frame == [0.0; 2]));
     }
 }
 

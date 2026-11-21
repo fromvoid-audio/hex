@@ -255,6 +255,7 @@ impl SharedSourceHandoff {
         timing_changed: bool,
         arrangement_tempo_remap: bool,
         arrangement_loop_continuity: bool,
+        retiring_source: Option<usize>,
         spans: &mut MidiSpanBuffer,
     ) -> Result<Self, SessionPlaybackError> {
         let mut plan = Self {
@@ -264,6 +265,11 @@ impl SharedSourceHandoff {
         let old_routing = previous.revision.source_routing();
         let new_routing = revision.source_routing();
         for (old_index, old_runtime) in previous.mutable_instruments.iter().enumerate() {
+            // An admitted direct instrument move leaves its faded runtime
+            // with the predecessor. The destination already owns a fresh one.
+            if retiring_source == Some(old_index) {
+                continue;
+            }
             let Some(old_runtime) = old_runtime else {
                 continue;
             };
@@ -627,15 +633,11 @@ pub(super) fn release_disconnected_contributors(
     disconnected: &[Option<TrackId>; MAX_TRACKS],
     retained: &[Option<TrackId>; MAX_TRACKS],
     retained_live: &[Option<TrackId>; MAX_TRACKS],
-    moved_authored: Option<TrackId>,
     frame: u64,
 ) {
     runtime.reconcile_gate_deadlines_at(frame, |signature| {
         let track = Some(signature.key().track);
-        // A proved direct move changes the sole MIDI contributor. The copied
-        // kernel still owes the old authored gates their original releases.
-        (track != moved_authored && disconnected.contains(&track) && !retained.contains(&track))
-            .then_some(frame)
+        (disconnected.contains(&track) && !retained.contains(&track)).then_some(frame)
     });
     for &track in disconnected.iter().flatten() {
         if !retained_live.contains(&Some(track)) {
@@ -836,21 +838,7 @@ pub(super) fn plan_release_audio_owner(
     // A compatible source effect stage has already verified the explicit
     // prepared generator. Keep its held voices on the new source input;
     // a dry detached copy would bypass the transferred effect history.
-    // A moved Sine's captured note follows its proven single-contributor
-    // source while that instrument continues in the same direct slot.
-    let retained_sine_move = origin.moved_sine
-        && current_receiver.is_some_and(|receiver| {
-            let old = &previous.revision.arrangement().tracks()[old_receiver];
-            let new = &candidate.arrangement().tracks()[receiver];
-            new.canonical_track_id() == Some(origin.receiver)
-                && !previous.revision.source_routing().is_shared(old_receiver)
-                && !candidate.source_routing().is_shared(receiver)
-                && old.direct_native_sine(old_receiver)
-                && new.direct_native_sine(receiver)
-                && old.instrument_config_matches(new)
-        });
     let follows = source_continues
-        || retained_sine_move
         || previous
             .revision
             .retained_source_configuration_matches(candidate, origin.source)

@@ -20,9 +20,9 @@ pub struct ResidentEffectPreparation<'a> {
     pub(in crate::service) context: hex_engine::AudioSourceContext,
     pub(in crate::service) restoring_plugin_state: bool,
     pub(in crate::service) preparing_edit: bool,
-    pub(in crate::service) main_power_on: Option<ResidentMainPowerOn>,
+    pub(in crate::service) power_on: Option<ResidentPowerOn>,
     pub(in crate::service) running_power_off: Option<ResidentRunningPowerOff>,
-    pub(in crate::service) hosted_instrument_move: Option<ResidentHostedInstrumentMove>,
+    pub(in crate::service) hosted_move: Option<ResidentHostedMove>,
 }
 
 /// Copied original source/binding for one explicit running hosted Off command.
@@ -46,33 +46,56 @@ pub struct ResidentHostedInstrumentMove {
     pub predecessor: ResidentRuntimeLoop,
 }
 
+/// An exact running direct Track effect move staged from the installed source.
+/// Desktop must prove the same physical worker before using this observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidentHostedTrackEffectMove {
+    pub donor: hex_project::TrackId,
+    pub receiver: hex_project::TrackId,
+    pub device: hex_project::DeviceId,
+    pub predecessor: ResidentRuntimeLoop,
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::service) enum ResidentHostedMove {
+    Instrument(ResidentHostedInstrumentMove),
+    TrackEffect(ResidentHostedTrackEffectMove),
+}
+
 /// The explicit PowerDevice command's nonowning Off predecessor.
 /// Desktop revalidates the observed interval before fresh SDK preparation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ResidentMainPowerOn {
+pub struct ResidentPowerOn {
     pub(in crate::service) device: u64,
-    pub(in crate::service) interval: ResidentMainPowerOnInterval,
+    pub(in crate::service) interval: ResidentPowerOnInterval,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ResidentMainPowerOnInterval {
+pub enum ResidentPowerOnInterval {
     Stopped {
+        owner: hex_engine::ProcessorChainOwner,
         context: hex_engine::AudioSourceContext,
         fence: ResidentFreshRuntimeFence,
     },
     Running(ResidentGraphSubmission),
 }
-impl ResidentMainPowerOn {
+impl ResidentPowerOn {
     pub fn device(&self) -> u64 {
         self.device
     }
-    pub fn source_context(&self) -> hex_engine::AudioSourceContext {
+    pub fn owner(&self) -> hex_engine::ProcessorChainOwner {
         match self.interval {
-            ResidentMainPowerOnInterval::Stopped { context, .. } => context,
-            ResidentMainPowerOnInterval::Running(source) => source.context,
+            ResidentPowerOnInterval::Stopped { owner, .. } => owner,
+            ResidentPowerOnInterval::Running(_) => hex_engine::ProcessorChainOwner::Main,
         }
     }
-    pub fn interval(&self) -> ResidentMainPowerOnInterval {
+    pub fn source_context(&self) -> hex_engine::AudioSourceContext {
+        match self.interval {
+            ResidentPowerOnInterval::Stopped { context, .. } => context,
+            ResidentPowerOnInterval::Running(source) => source.context,
+        }
+    }
+    pub fn interval(&self) -> ResidentPowerOnInterval {
         self.interval
     }
 }
@@ -235,8 +258,8 @@ impl<'a> ResidentEffectPreparation<'a> {
         let device = self.sole_played_main().filter(|device| device.bypassed())?;
         Some((device.id().value(), device.state()))
     }
-    /// The sole retained authored Return Off. This declaration grants no
-    /// preparation or installation authority without the exact applied marker.
+    /// The sole hosted Return authored Off on a playback route. This
+    /// declaration grants no preparation or installation authority.
     pub fn powered_off_return(
         &self,
     ) -> Option<(hex_engine::ProcessorChainOwner, u64, &'a NativeDeviceState)> {
@@ -269,9 +292,19 @@ impl<'a> ResidentEffectPreparation<'a> {
     }
     /// Only the explicit power command can prepare a fresh On worker.
     /// Generic history/moves and changed owner, bypass or context cannot use it.
-    pub fn main_power_on(&self) -> Option<ResidentMainPowerOn> {
-        let intent = self.main_power_on?;
-        let device = self.sole_played_main()?;
+    pub fn power_on(&self) -> Option<ResidentPowerOn> {
+        let intent = self.power_on?;
+        let device = match intent.owner() {
+            hex_engine::ProcessorChainOwner::Main => self.sole_played_main()?,
+            hex_engine::ProcessorChainOwner::Return(_) => {
+                let (owner, device) = sole_hosted_return(self.project)?;
+                if owner != intent.owner() {
+                    return None;
+                }
+                device
+            }
+            _ => return None,
+        };
         let source = intent.source_context();
         (self.preparing_edit
             && !device.bypassed()
@@ -281,7 +314,16 @@ impl<'a> ResidentEffectPreparation<'a> {
         .then_some(intent)
     }
     pub fn hosted_instrument_move(&self) -> Option<&ResidentHostedInstrumentMove> {
-        self.hosted_instrument_move.as_ref()
+        match self.hosted_move.as_ref()? {
+            ResidentHostedMove::Instrument(route) => Some(route),
+            ResidentHostedMove::TrackEffect(_) => None,
+        }
+    }
+    pub fn hosted_track_effect_move(&self) -> Option<&ResidentHostedTrackEffectMove> {
+        match self.hosted_move.as_ref()? {
+            ResidentHostedMove::Instrument(_) => None,
+            ResidentHostedMove::TrackEffect(route) => Some(route),
+        }
     }
     pub fn sample_rate(&self) -> u32 {
         self.project.sample_rate()
@@ -1152,12 +1194,13 @@ pub trait WorkerAudioSink: Send {
         Err("verified vst3 effects are unavailable".into())
     }
     /// Compile editor-facing Verified Streaming metadata against exact hosted
-    /// definitions for one synchronous borrow. The prepared graph and its
-    /// callback receipt still belong to the verified publication pipeline.
+    /// definitions for one synchronous borrow. An exact catalog proposal may
+    /// retry transient contention within its attempt's preparation budget.
+    /// Publication and callback receipts stay with the verified edit pipeline.
     fn prepare_verified_effects(
         &mut self,
         _input: ResidentEffectPreparation<'_>,
-        _proposal: Option<&Arc<PluginEffectControl>>,
+        _attempt: Option<&super::VerifiedGraphEditAttempt>,
         _prepare: &mut dyn FnMut(
             &hex_engine::AudioCandidateEffects<'_, '_>,
         )
@@ -1286,6 +1329,17 @@ pub trait WorkerAudioSink: Send {
         Ok(None)
     }
 
+    /// Observe the exact resource-free Return Off on a settled native output.
+    /// An installed Off source with a stale stop interval must refuse On.
+    fn stopped_resident_return_power_on_fence(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _owner: hex_engine::ProcessorChainOwner,
+        _device: u64,
+    ) -> Result<Option<ResidentFreshRuntimeFence>, String> {
+        Ok(None)
+    }
+
     /// Observe an accepted Track or Return worker on the exact stopped source.
     /// This grants no custody; publication must revalidate the same witness.
     fn stopped_resident_effect_history_fence(
@@ -1294,6 +1348,17 @@ pub trait WorkerAudioSink: Send {
         _owner: hex_engine::ProcessorChainOwner,
         _device: u64,
     ) -> Option<ResidentFreshRuntimeFence> {
+        None
+    }
+
+    /// Observe the exact playing Resident source with the accepted effect
+    /// that the staged history replaces. Grants no worker custody.
+    fn running_resident_effect_history_source(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _owner: hex_engine::ProcessorChainOwner,
+        _device: u64,
+    ) -> Option<ResidentGraphSubmission> {
         None
     }
 
@@ -2485,9 +2550,9 @@ mod tests {
                 context,
                 preparing_edit,
                 running_power_off,
-                hosted_instrument_move: None,
+                hosted_move: None,
                 restoring_plugin_state: false,
-                main_power_on: None,
+                power_on: None,
             }
             .running_power_off()
         };
@@ -2553,9 +2618,10 @@ mod tests {
             editor_revision: 3,
             ..source_context
         };
-        let intent = ResidentMainPowerOn {
+        let intent = ResidentPowerOn {
             device: device.value(),
-            interval: ResidentMainPowerOnInterval::Stopped {
+            interval: ResidentPowerOnInterval::Stopped {
+                owner: hex_engine::ProcessorChainOwner::Main,
                 context: source_context,
                 fence: ResidentFreshRuntimeFence {
                     output_identity: 1,
@@ -2567,25 +2633,25 @@ mod tests {
                 },
             },
         };
-        let selected = |project: &Project, context, main_power_on| {
+        let selected = |project: &Project, context, power_on| {
             ResidentEffectPreparation {
                 project,
                 context,
                 restoring_plugin_state: false,
                 preparing_edit: true,
-                main_power_on,
+                power_on,
                 running_power_off: None,
-                hosted_instrument_move: None,
+                hosted_move: None,
             }
-            .main_power_on()
+            .power_on()
         };
         assert_eq!(selected(editor.project(), candidate, None), None);
         assert_eq!(
             selected(editor.project(), candidate, Some(intent)),
             Some(intent)
         );
-        let running = ResidentMainPowerOn {
-            interval: ResidentMainPowerOnInterval::Running(ResidentGraphSubmission {
+        let running = ResidentPowerOn {
+            interval: ResidentPowerOnInterval::Running(ResidentGraphSubmission {
                 context: source_context,
                 audio_revision: 2,
                 output_identity: 1,
@@ -2608,7 +2674,7 @@ mod tests {
             selected(
                 editor.project(),
                 candidate,
-                Some(ResidentMainPowerOn {
+                Some(ResidentPowerOn {
                     device: device.value() + 1,
                     ..intent
                 })
@@ -2649,9 +2715,9 @@ mod tests {
                 },
                 restoring_plugin_state: false,
                 preparing_edit: false,
-                main_power_on: None,
+                power_on: None,
                 running_power_off: None,
-                hosted_instrument_move: None,
+                hosted_move: None,
             }
             .powered_off_main()
             .map(|(id, _)| id)
@@ -2711,9 +2777,9 @@ mod tests {
                 },
                 restoring_plugin_state: false,
                 preparing_edit: false,
-                main_power_on: None,
+                power_on: None,
                 running_power_off: None,
-                hosted_instrument_move: None,
+                hosted_move: None,
             }
             .plugin_device_bypassed(device.value())
         };
@@ -2927,9 +2993,9 @@ mod tests {
                 },
                 restoring_plugin_state: false,
                 preparing_edit: true,
-                main_power_on: None,
+                power_on: None,
                 running_power_off: None,
-                hosted_instrument_move: None,
+                hosted_move: None,
             }
         }
 
@@ -3037,9 +3103,9 @@ mod tests {
             },
             restoring_plugin_state: false,
             preparing_edit: true,
-            main_power_on: None,
+            power_on: None,
             running_power_off: None,
-            hosted_instrument_move: None,
+            hosted_move: None,
         };
         assert_eq!(
             input
@@ -3092,9 +3158,9 @@ mod tests {
                 },
                 restoring_plugin_state: reopen,
                 preparing_edit: !reopen,
-                main_power_on: None,
+                power_on: None,
                 running_power_off: None,
-                hosted_instrument_move: None,
+                hosted_move: None,
             }
             .modulated_plugin_target(device.value())
             .unwrap()

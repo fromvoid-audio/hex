@@ -916,15 +916,14 @@ pub(super) fn command(value: &Command) -> Description {
             describe!("import_device_asset"; ["path_redacted_bytes" => path.as_os_str().len(), "sample_rate" => sample_rate, "frames" => frames]; omitted="")
         }
         Command::ImportDeviceAssetIntoNewInstrument {
-            track,
-            placement,
+            destination,
             path,
             sample_rate,
             frames,
             state,
             ..
         } => {
-            describe!("import_device_asset_into_new_instrument"; ["track" => track.value(), "placement" => placement, "path_redacted_bytes" => path.as_os_str().len(), "sample_rate" => sample_rate, "frames" => frames, "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="source_slot")
+            describe!("import_device_asset_into_new_instrument"; ["destination" => destination, "path_redacted_bytes" => path.as_os_str().len(), "sample_rate" => sample_rate, "frames" => frames, "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="source_slot")
         }
         Command::ImportDeviceAssetReplacingInstrument {
             owner,
@@ -1926,12 +1925,11 @@ pub(super) fn request(value: &Request) -> Description {
             request_id,
             project_generation,
             revision,
-            track,
-            slot,
+            target,
             path,
             ..
         } => {
-            describe!("load_first_sampler"; ["request_id" => request_id, "project_generation" => project_generation, "revision" => revision, "track" => track.value(), "existing_sampler" => matches!(slot, super::super::SamplerLoadSlot::Existing { .. }), "path_redacted_bytes" => path.as_os_str().len()]; omitted="cancel,slot")
+            describe!("load_first_sampler"; ["request_id" => request_id, "project_generation" => project_generation, "revision" => revision, "track" => target.track().map(hex_project::TrackId::value), "existing_sampler" => matches!(target, super::super::SamplerLoadTarget::Track { slot: super::super::SamplerLoadSlot::Existing { .. }, .. }), "path_redacted_bytes" => path.as_os_str().len()]; omitted="cancel,target")
         }
         Request::AssignSampler { track, asset } => {
             describe!("assign_sampler"; ["track" => track.value(), "asset" => asset.value()]; omitted="")

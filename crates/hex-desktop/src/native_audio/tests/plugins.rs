@@ -10,9 +10,11 @@ mod live_stream;
 mod offline_bounce;
 mod paused_monitor;
 mod performance_profile;
+mod relative_catalog_history;
 mod resident_replacement_history;
 mod state;
 mod tempo;
+mod track_effect_move;
 mod ui;
 mod unlaned_effect_commit;
 mod unsealed_admission;
@@ -1138,10 +1140,12 @@ fn native_effect_coordinator_keeps_registered_sampler_and_file_pcm_across_stop()
         request_id: 1,
         project_generation: 0,
         revision: added.state.revision,
-        track,
-        slot: hex_session::service::SamplerLoadSlot::New(
-            hex_project::InstrumentLoadPlacement::First,
-        ),
+        target: hex_session::service::SamplerLoadTarget::Track {
+            track,
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
+        },
         path: sampler_files.wav(48_000, 4096),
         cancel: Arc::new(AtomicBool::new(false)),
     });

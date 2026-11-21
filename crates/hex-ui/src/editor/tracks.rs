@@ -2248,11 +2248,11 @@ impl EditorView {
                 .midi_trim_display(track_id, Some(clip.id()))
                 .filter(|(original, _)| original.id() == clip.id())
                 .map(|(_, preview)| preview);
-            let pixel_width = self
+            let lane_width = self
                 .drag_lanes
                 .get(&track_id)
-                .map(|lane| super::trim::rendered_clip_width(lane.width, width))
-                .unwrap_or(0.0);
+                .map_or(0.0, |lane| lane.width);
+            let pixel_width = super::trim::rendered_clip_width(lane_width, width);
             let trim_handles = self.midi_trim_handles(
                 state,
                 track_id,
@@ -2320,7 +2320,9 @@ impl EditorView {
                     .bg(gpui::transparent_black())
                     .border_color(gpui::transparent_black());
             }
-            if !narrow && self.track_body_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT
+            if !narrow
+                && narrow_clips::shows_body_detail(lane_width, end - start, viewport.length)
+                && self.track_body_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT
             {
                 midi = midi.children(
                     aligned_clip_grid_layer(
@@ -2961,9 +2963,8 @@ impl EditorView {
             },
         );
         let detail_opacity = theme::clip_detail_opacity(active);
-        let clip_pixel_width = self.drag_lanes.get(&track).map_or(0.0, |lane| {
-            super::trim::rendered_clip_width(lane.width, width)
-        });
+        let lane_width = self.drag_lanes.get(&track).map_or(0.0, |lane| lane.width);
+        let clip_pixel_width = super::trim::rendered_clip_width(lane_width, width);
         let stroke = 1.0 / scale_factor.max(1.0);
         let narrow = !active_trim_preview
             && !self.fade_curve_active(clip_id)
@@ -2999,6 +3000,7 @@ impl EditorView {
         let looping = loop_handles::audio_repeats(clip);
         if !narrow
             && !active_trim_preview
+            && narrow_clips::shows_body_detail(lane_width, display_clip.duration(), viewport.length)
             && self.track_height(track) > super::track_layout::HEADER_ONLY_HEIGHT
         {
             content = content.children(

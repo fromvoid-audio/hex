@@ -6367,12 +6367,14 @@ mod sampler_native_ui_protocol_tests {
                 .submit(Request::LoadFirstSampler {
                     request_id: 1,
                     project_generation: 0,
-                    track,
                     path: path.clone(),
                     revision: event.state.revision,
-                    slot: hex_session::service::SamplerLoadSlot::New(
-                        hex_project::InstrumentLoadPlacement::First,
-                    ),
+                    target: hex_session::service::SamplerLoadTarget::Track {
+                        track,
+                        slot: hex_session::service::SamplerLoadSlot::New(
+                            hex_project::InstrumentLoadPlacement::First,
+                        ),
+                    },
                     cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 })
                 .unwrap();

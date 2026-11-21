@@ -52,7 +52,10 @@ fn authored_target(
 }
 
 fn preview(view: &mut EditorView, device: &Device, base: ParameterValue) -> Option<PreviewCache> {
-    let beat = view.state.as_ref().and_then(|state| {
+    let playing = view
+        .audio_status()
+        .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire));
+    let beat = view.state.as_ref().filter(|_| !playing).and_then(|state| {
         state
             .project
             .tempo_map()

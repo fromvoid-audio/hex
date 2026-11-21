@@ -190,14 +190,7 @@ fn boundary_shell<T: gpui::IntoElement + gpui::Styled>(
         (0.0, 1.0, left, left + width)
     };
     let hoverable = native_leading && hover != color;
-    let mut outer = div()
-        .absolute()
-        .top_0()
-        .bottom_0()
-        .left(relative(outer_left))
-        .w(relative(outer_width))
-        .when(hoverable, |outer| outer.group("clip-boundary"))
-        .child(body);
+    let mut outer = boundary_frame(outer_left, outer_width, hoverable).child(body);
     if visible && !native_leading {
         outer = outer.child(
             div()
@@ -224,6 +217,16 @@ fn boundary_shell<T: gpui::IntoElement + gpui::Styled>(
         );
     }
     outer
+}
+
+fn boundary_frame(left: f32, width: f32, hoverable: bool) -> Div {
+    div()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left(relative(left))
+        .w(relative(width))
+        .when(hoverable, |outer| outer.group("clip-boundary"))
 }
 
 /// A passive pixel-positioned clip. Keep background, body and border columns
@@ -385,20 +388,9 @@ pub(super) fn backdrop_shell(
             .absolute()
             .inset_0(),
         );
-    let contents = div().absolute().inset_0().child(paint).child(body);
-    let framed = boundary_shell(
-        contents,
-        left,
-        width,
-        backdrop.stroke,
-        backdrop.outline,
-        backdrop.hover_outline,
-        false,
-        true,
-        0.0,
-        backdrop.notch,
-        String::new,
-    );
+    let framed = boundary_frame(left, width, backdrop.hover_outline != backdrop.outline)
+        .child(paint)
+        .child(body);
     #[cfg(any(test, feature = "ui-test-support"))]
     {
         if visible {

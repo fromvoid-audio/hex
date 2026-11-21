@@ -41,6 +41,7 @@ impl NativeEffectEntry {
         }
         self.callback.settled_return_pass(identity, frame)
     }
+
     pub(crate) fn new(callback: NativeEffectCallback) -> Self {
         Self {
             callback,

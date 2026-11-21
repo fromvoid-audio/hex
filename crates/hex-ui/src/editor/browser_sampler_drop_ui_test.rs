@@ -135,7 +135,7 @@ fn browser_sample_drop_loads_the_target_sampler_not_the_selected_track(cx: &mut 
                 Some(hex_session::service::SamplerLoadCompletion {
                     request_id: 1,
                     project_generation: generation,
-                    track: tracks[0],
+                    track: Some(tracks[0]),
                 }),
                 false,
             );
@@ -144,7 +144,7 @@ fn browser_sample_drop_loads_the_target_sampler_not_the_selected_track(cx: &mut 
                 Some(hex_session::service::SamplerLoadCompletion {
                     request_id: 1,
                     project_generation: generation,
-                    track: tracks[1],
+                    track: Some(tracks[1]),
                 }),
                 false,
             );
@@ -510,4 +510,150 @@ fn unassigned_sampler_real_browser_drop_loads_and_replaces_without_assignment(
         });
     }
     fixture.finish(cx);
+}
+
+#[gpui::test]
+fn browser_sample_header_gaps_insert_loaded_sampler_tracks(cx: &mut TestAppContext) {
+    use crate::editor::{EditorMode, worker_ui_fixture};
+    use hex_session::service::Request;
+    use std::time::{Duration, Instant};
+
+    let directory = PreferencesTestDirectory::new();
+    let path = directory.0.join("loop.wav");
+    std::fs::write(&path, mono_pcm_wav(480)).unwrap();
+    for (gap, expected_index) in [("top", 0), ("middle", 1), ("below", 2), ("empty", 0)] {
+        let mut fixture = worker_ui_fixture::open(
+            cx,
+            if gap == "empty" {
+                vec![]
+            } else {
+                ["first", "second"]
+                    .into_iter()
+                    .map(|name| Command::AddMidiTrack { name: name.into() })
+                    .collect()
+            },
+        );
+        let editor = fixture.editor.clone();
+        let before = editor.read_with(cx, |view, _| Arc::clone(view.state.as_ref().unwrap()));
+        let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+        visual.simulate_resize(gpui::size(px(1500.0), px(850.0)));
+        editor.update(&mut visual, |view, cx| {
+            view.mode = EditorMode::Arrangement;
+            view.browser.open = true;
+            view.browser.auto_audition = false;
+            view.browser.scans.generation += 1;
+            view.browser.places = vec![directory.0.clone()];
+            view.browser.directory = directory.0.clone();
+            view.browser.section = BrowserSection::Place(directory.0.clone());
+            view.browser.loading = false;
+            view.browser.error = None;
+            view.browser.listing = Some(DirectoryListing {
+                directory: directory.0.clone(),
+                entries: vec![LibraryEntry {
+                    name: "loop.wav".into(),
+                    path: path.clone(),
+                    kind: EntryKind::WaveAudio,
+                }],
+                enumerated_entries: 1,
+                truncated: false,
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let source = visual.debug_bounds("browser-entry-0").unwrap().center();
+        let body = visual.debug_bounds("arrangement-content").unwrap();
+        let header_width = editor.read_with(&visual, |view, _| view.track_header_width());
+        let destination_y = if gap == "empty" {
+            body.center().y
+        } else {
+            let track = &before.project.tracks()[usize::from(gap != "top")];
+            let selector = format!("arrangement-track-header-{}", track.id().value());
+            let header = visual
+                .debug_bounds(Box::leak(selector.into_boxed_str()))
+                .unwrap();
+            match gap {
+                "below" => header.bottom() + px(18.0),
+                _ => header.top() + px(1.0),
+            }
+        };
+        let destination = point(body.right() - px(header_width / 2.0), destination_y);
+        visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(source.x + px(12.0), source.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        visual.simulate_mouse_move(destination, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("sampler-track-insert-preview")
+                .is_some(),
+            "{gap}: the header should show the insertion line",
+        );
+        assert!(visual.debug_bounds("track-insert-preview").is_none());
+        visual.simulate_mouse_up(destination, MouseButton::Left, Modifiers::default());
+        assert!(
+            editor.read_with(&visual, |view, _| view.first_sampler_pending_matches(1)),
+            "{gap} header drop should queue a sampler load"
+        );
+
+        let wait_for_revision = |fixture: &mut worker_ui_fixture::WorkerUiFixture,
+                                 visual: &mut VisualTestContext,
+                                 revision: u64| {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+                let complete = editor.update(visual, |view, cx| {
+                    view.tick(cx);
+                    assert!(view.error.is_none(), "{gap}: {:?}", view.error);
+                    !view.first_sampler_pending_matches(1)
+                        && view.applied_project_revision() == Some(revision)
+                });
+                if complete {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "{gap}: revision {revision}");
+                std::thread::yield_now();
+            }
+        };
+        wait_for_revision(&mut fixture, &mut visual, before.revision + 1);
+        editor.read_with(&visual, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            let tracks = state.project.tracks();
+            assert_eq!(tracks.len(), before.project.tracks().len() + 1, "{gap}");
+            assert!(
+                tracks
+                    .iter()
+                    .take(expected_index)
+                    .chain(tracks.iter().skip(expected_index + 1))
+                    .eq(before.project.tracks()),
+                "{gap}: untouched tracks retain their order and state"
+            );
+            let track = &tracks[expected_index];
+            let sampler = track.instrument().unwrap();
+            assert_eq!(
+                sampler.state().type_id().as_str(),
+                Ok("hex.instrument.sampler")
+            );
+            let asset = state.project.assets().next().unwrap();
+            assert_eq!(asset.path(), path);
+            assert_eq!(
+                sampler.state().asset_references()[0].asset.value(),
+                asset.id().value()
+            );
+            assert!(track.clips().is_empty(), "{gap}: sample belongs to Sampler");
+        });
+        if gap == "middle" {
+            editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+            wait_for_revision(&mut fixture, &mut visual, before.revision + 2);
+            editor.read_with(&visual, |view, _| {
+                let project = &view.state.as_ref().unwrap().project;
+                assert_eq!(project.tracks(), before.project.tracks());
+                assert_eq!(project.assets().count(), before.project.assets().count());
+            });
+        }
+        fixture.finish(cx);
+    }
 }

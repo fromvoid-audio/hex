@@ -2,11 +2,12 @@
 //! Root bindings; Root retains every actual child, worker, pair and return.
 use super::*;
 use hex_audio::plugin_effects::EffectBinding as Binding;
+use hex_audio::prepared::NativeProcessorIdentity;
 use hex_audio::{
     NativeSourcePreparationProgress as Progress,
     plugin_effects::{
         AuthoredSelection, EffectPresentation, EffectPresentationPlan, EffectSelection,
-        EffectStartupTimings, Hosting, PluginProfile, RetainedInstrumentSource,
+        EffectStartupTimings, Hosting, PluginProfile,
     },
 };
 use hex_engine::{PreparedRevision, ProcessorChainOwner};
@@ -241,7 +242,7 @@ pub(super) struct Plugins {
     installed_removals_checked: Option<AudioSourceContext>,
     restore: Option<Restore>,
     reopen: Option<Reopen>,
-    saved_off_document: Option<(u64, u64)>,
+    saved_off_document: Option<(u64, NativeProcessorIdentity)>,
     // Original binding, candidate key and optional original Stop generation.
     // All worker returns stay in Root.
     power_off: Option<(
@@ -250,7 +251,6 @@ pub(super) struct Plugins {
         Option<u64>,
     )>,
     hosted_move: Option<hosted_move::MoveRoute>,
-    adopted_hosted_move: Option<hosted_move::AdoptedRoute>,
     edit: Option<AudioSourceContext>,
     pub(super) catalog: Option<std::path::PathBuf>,
     degraded: degraded::DegradedReport<Binding>,
@@ -280,6 +280,21 @@ pub(super) struct Plugins {
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(super) failure_observation: Option<Arc<std::sync::Mutex<Option<String>>>>,
 }
+
+pub(super) fn catalog_path_from_home(home: &std::path::Path) -> Option<std::path::PathBuf> {
+    let path = hex_preferences::browser_places_path(home).with_file_name("plugin-catalog.json");
+    if path.as_os_str().len() > 4096 {
+        return None;
+    }
+    if path.is_absolute() {
+        return Some(path);
+    }
+    // Browser opens this relative path from the same process directory.
+    // Preserve catalog storage's own existence and symlink checks.
+    let absolute = std::path::absolute(path).ok()?;
+    (absolute.as_os_str().len() <= 4096).then_some(absolute)
+}
+
 impl Plugins {
     pub fn set_diagnostics(&mut self, log: Option<hex_diagnostics::DiagnosticsHandle>) {
         self.diagnostics = log;
@@ -301,24 +316,28 @@ impl Plugins {
         if self.initialized {
             return;
         }
+        let home = std::env::var_os("HOME");
+        self.initialize_for_home(home.as_deref().map(std::path::Path::new));
+    }
+
+    pub(super) fn initialize_for_home(&mut self, home: Option<&std::path::Path>) {
         self.initialized = true;
-        self.catalog = std::env::var_os("HOME")
-            .map(|home| {
-                hex_preferences::browser_places_path(std::path::Path::new(&home))
-                    .with_file_name("plugin-catalog.json")
-            })
-            .filter(|path| path.is_absolute() && path.as_os_str().len() <= 4096);
-        let preferences = std::env::var_os("HOME")
-            .map(|home| hex_preferences::vst3_editor_preferences_path(std::path::Path::new(&home)))
-            .map_or_else(hex_preferences::Vst3EditorPreferences::default, |path| {
-                match hex_preferences::load_vst3_editor_preferences(&path) {
-                    Ok(preferences) => preferences,
-                    Err(error) => {
-                        eprintln!("could not load vst3 editor preferences: {error}");
-                        hex_preferences::Vst3EditorPreferences::default()
-                    }
-                }
-            });
+        let Some((home, catalog)) =
+            home.and_then(|home| catalog_path_from_home(home).map(|catalog| (home, catalog)))
+        else {
+            self.unavailable =
+                Some("vst3 catalog path unavailable · configure a valid home folder".into());
+            return;
+        };
+        self.catalog = Some(catalog);
+        let path = hex_preferences::vst3_editor_preferences_path(home);
+        let preferences = match hex_preferences::load_vst3_editor_preferences(&path) {
+            Ok(preferences) => preferences,
+            Err(error) => {
+                eprintln!("could not load vst3 editor preferences: {error}");
+                hex_preferences::Vst3EditorPreferences::default()
+            }
+        };
         self.transport_space = preferences.spacebar_controls_transport;
         match Hosting::current_on_control() {
             Ok(host) => {
@@ -1222,22 +1241,17 @@ impl Plugins {
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&hex_session::service::RequestCancellation>,
         fresh_hosted_sources: bool,
-        powering_on_main: Option<u64>,
-        retained: Option<hosted_move::MoveRoute>,
+        power_on: Option<NativeProcessorIdentity>,
     ) -> Result<(), String> {
         let previous = desired
             .filter(|_| fresh_hosted_sources)
             .map(CanonicalAudioSourceSnapshot::effect_preparation);
         input.visit_plugin_devices(|destination, device, state| {
-            if retained
-                .and_then(|route| route.binding_for(destination, device))
-                .is_some()
-            {
-                return Ok(());
-            }
             // History may carry the identity and state of a deleted device.
             // The predecessor's membership decides whether DSP can survive.
-            let powering_on = powering_on_main == Some(device);
+            let powering_on = power_on.is_some_and(|identity| {
+                identity.owner() == destination.owner() && identity.device_id() == device
+            });
             let fresh_source = previous
                 .as_ref()
                 .is_some_and(|source| source.plugin_device_bypassed(device).is_none());
@@ -1262,7 +1276,7 @@ impl Plugins {
         input: ResidentEffectPreparation<'_>,
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&hex_session::service::RequestCancellation>,
-        powered_off: Option<hex_audio::prepared::NativeProcessorIdentity>,
+        powered_off: Option<NativeProcessorIdentity>,
         prepare: &mut dyn FnMut(
             &hex_engine::AudioCandidateEffects<'_, '_>,
         ) -> Result<PreparedRevision, hex_engine::Invalid>,
@@ -1288,12 +1302,20 @@ impl Plugins {
             input.context(),
             desired.map(|source| source.context()),
         );
+        let saved_off = |owner, device| {
+            self.saved_off_document
+                .is_some_and(|(generation, identity)| {
+                    generation == input.context().project_generation
+                        && identity.owner() == owner
+                        && identity.device_id() == device
+                })
+        };
         let main_off = powered_off
             .filter(|identity| identity.owner() == ProcessorChainOwner::Main)
-            .map(hex_audio::prepared::NativeProcessorIdentity::device_id);
+            .map(NativeProcessorIdentity::device_id);
         if let Some((device, state)) = input.powered_off_main()
             && (incoming_document
-                || self.saved_off_document == Some((input.context().project_generation, device))
+                || saved_off(ProcessorChainOwner::Main, device)
                 || main_off == Some(device))
             && !self.has_accepted_main_source(input.context(), device)
         {
@@ -1309,7 +1331,9 @@ impl Plugins {
             .map(Some);
         }
         if let Some((owner, device, state)) = input.powered_off_return()
-            && powered_off.is_some_and(|off| off.owner() == owner && off.device_id() == device)
+            && (powered_off.is_some_and(|off| off.owner() == owner && off.device_id() == device)
+                || ((incoming_document || saved_off(owner, device))
+                    && !self.has_accepted_effect_source(input.context(), owner, device)))
         {
             return Hosting::prepare_powered_off_on_control(
                 hex_audio::plugin_effects::PoweredOffEffect {
@@ -1322,12 +1346,12 @@ impl Plugins {
             )
             .map(Some);
         }
-        let powering_on = input
-            .main_power_on()
-            .filter(|intent| main_off == Some(intent.device()))
-            .map(|intent| intent.device());
+        let powering_on = powered_off.filter(|identity| {
+            input.power_on().is_some_and(|intent| {
+                identity.owner() == intent.owner() && identity.device_id() == intent.device()
+            })
+        });
         let mut output = output;
-        let retained = self.retained_instrument_move(output.as_deref_mut(), &input, desired)?;
         if input.preparing_edit() {
             self.prepare_edit_sources(
                 output.as_deref_mut(),
@@ -1336,7 +1360,6 @@ impl Plugins {
                 cancellation,
                 false,
                 powering_on,
-                retained,
             )?;
         }
         let mut bindings = Vec::new();
@@ -1346,11 +1369,6 @@ impl Plugins {
         let context = input.context();
         let mut unavailable = Vec::new();
         input.visit_plugin_devices(|destination, device, state| {
-            if let Some(binding) = retained.and_then(|route| route.binding_for(destination, device))
-            {
-                bindings.push(binding);
-                return Ok(());
-            }
             let owner = destination.owner();
             let source = match output
                 .as_deref_mut()
@@ -1413,10 +1431,10 @@ impl Plugins {
         let control = output
             .and_then(|output| output.publication.control())
             .ok_or("native output closed")?;
-        let compiler_alias = match retained {
-            Some(route) => route.compiler_alias()?,
+        let movement = match self.fresh_instrument_move(control, &input, desired, &bindings)? {
+            Some(route) => Some(route),
             None => {
-                self.adopted_hosted_route(context, &bindings, control.status.recording_source())?
+                self.fresh_track_effect_move(control, &input, desired, &bindings, cancellation)?
             }
         };
         let mut canonical = Vec::new();
@@ -1475,7 +1493,7 @@ impl Plugins {
             }
         }
         loop {
-            if retained
+            if movement
                 .is_some_and(|route| control.status.recording_source() != Some(route.applied))
             {
                 return Err("original vst3 move source is no longer installed".into());
@@ -1485,7 +1503,7 @@ impl Plugins {
                 &bindings,
                 &unavailable,
                 &canonical,
-                compiler_alias,
+                None,
                 prepare,
             ) {
                 Err(error)
@@ -1501,7 +1519,7 @@ impl Plugins {
                     edits::poll_control(control);
                 }
                 Ok(prepared) => {
-                    if let Some(route) = retained {
+                    if let Some(route) = movement {
                         self.hosted_move = Some(route);
                     }
                     return Ok(Some(prepared));
@@ -1645,6 +1663,31 @@ fn advance_source_at_progress(
 #[cfg(test)]
 mod idle_tests {
     use super::*;
+
+    #[test]
+    fn unusable_catalog_configuration_precedes_host_initialization() {
+        let oversized = "a".repeat(4096);
+        for home in [None, Some(oversized.as_str())] {
+            let mut plugins = Plugins::default();
+            plugins.initialize_for_home(home.map(std::path::Path::new));
+            assert!(plugins.initialized);
+            assert!(!plugins.wants_profile());
+            assert!(!plugins.control_held());
+            assert!(plugins.catalog.is_none());
+            assert_eq!(
+                plugins.unavailable.as_deref(),
+                Some("vst3 catalog path unavailable · configure a valid home folder")
+            );
+        }
+    }
+
+    #[test]
+    fn absolute_catalog_configuration_keeps_the_browser_path() {
+        let home = std::path::Path::new("/temporary/hex-catalog-fixture");
+        let browser =
+            hex_preferences::browser_places_path(home).with_file_name("plugin-catalog.json");
+        assert_eq!(catalog_path_from_home(home), Some(browser));
+    }
 
     #[test]
     fn recording_source_observation_rejects_pending_retiring_and_replaced_bindings() {

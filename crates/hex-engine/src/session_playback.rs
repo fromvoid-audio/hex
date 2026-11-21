@@ -31,6 +31,7 @@ mod device_move;
 mod device_reorder;
 mod foreign_arrangement;
 mod hosted_instrument_move;
+mod hosted_track_effect_move;
 mod instrument_move;
 mod instrument_removal;
 mod main_pass_delay;
@@ -196,7 +197,6 @@ pub enum SessionPlaybackError {
     SharedSourceVoiceCapacity,
     MutableInstrumentDiagnostic(&'static str),
     MutableInstrumentEvents,
-    MutableInstrumentLoopUnsupported,
     MutableInstrumentLoopDensity,
     MutableInstrumentActive,
     MutableInstrumentLoopBoundsActive,
@@ -257,9 +257,6 @@ impl SessionPlaybackError {
             Self::MutableInstrumentDiagnostic(message) => message,
             Self::MutableInstrumentEvents => {
                 "session playback mutable instrument event query is invalid"
-            }
-            Self::MutableInstrumentLoopUnsupported => {
-                "mutable instrument source loops are unsupported by this playback mode"
             }
             Self::MutableInstrumentLoopDensity => {
                 "mutable instrument transport loop exceeds bounded event or voice density"
@@ -400,7 +397,6 @@ struct ReleaseSourceOrigin {
     source: hex_project::SourceId,
     receiver: TrackId,
     follows_current_configuration: bool,
-    moved_sine: bool,
 }
 impl ReleaseSourceOrigin {
     fn capture(revision: &PreparedRevision, contributor: usize) -> Option<Self> {
@@ -413,7 +409,6 @@ impl ReleaseSourceOrigin {
                 .get(routing.receiver_index(contributor)?)?
                 .canonical_track_id()?,
             follows_current_configuration: true,
-            moved_sine: false,
         })
     }
 }
@@ -671,7 +666,7 @@ pub struct SessionPlayback {
     route_state_generation: u64,
     candidate_admission_open: bool,
     pub(crate) require_continuous_insert: bool,
-    pub(crate) hosted_instrument_move: Option<crate::playback::HostedInstrumentMove>,
+    pub(crate) hosted_move: Option<crate::playback::HostedMoveRequest>,
     pub(crate) foreign_continuation: Option<Box<crate::playback::StoredForeignContinuation>>,
     // Control-side request that the live handoff restart at the cursor rather
     // than carry voices or detached tails the candidate already represents.
@@ -1106,7 +1101,7 @@ impl SessionPlayback {
             route_state_generation: _,
             candidate_admission_open: _,
             require_continuous_insert: _,
-            hosted_instrument_move: _,
+            hosted_move: _,
             foreign_continuation,
             live_restart: _,
             native_removal: _,
@@ -1459,8 +1454,9 @@ impl SessionPlayback {
     /// Prepare the shared renderer for finite, linear Arrangement export.
     /// Session route actions are refused, Session-only tempo/loop inventory
     /// does not affect this owner, and the authored Arrangement tempo map is
-    /// used without transport-loop wrapping. Mutable Arrangement MIDI source loops
-    /// and seek destinations that require note chase remain unsupported.
+    /// used without transport-loop wrapping. Authored Arrangement MIDI source
+    /// loops use the bounded Arrangement scheduler. Seek destinations that
+    /// require mutable note chase must be reached through causal preroll.
     /// Graphs without compiled Arrangement instruments omit unused analytic
     /// release/suppression banks; their immutable routing cannot create voices.
     pub fn new_linear_arrangement_export(
@@ -1906,15 +1902,6 @@ impl SessionPlayback {
             None
         };
 
-        let mutable_arrangement_source_loop = matches!(
-            policy,
-            RenderConstruction::LinearExport | RenderConstruction::LinearForeignExport
-        ) && arrangement_tracks
-            .iter()
-            .any(|track| track.has_mutable_looping_source());
-        if mutable_arrangement_source_loop {
-            return Err(SessionPlaybackError::MutableInstrumentLoopUnsupported);
-        }
         let mut source_voice_envelopes = [0_u16; MAX_TRACKS];
         let source_routing = revision.source_routing();
         for (index, track) in arrangement_tracks.iter().enumerate() {
@@ -2410,7 +2397,7 @@ impl SessionPlayback {
             route_state_generation: 0,
             candidate_admission_open: true,
             require_continuous_insert: false,
-            hosted_instrument_move: None,
+            hosted_move: None,
             foreign_continuation: None,
             live_restart: false,
             native_removal: None,

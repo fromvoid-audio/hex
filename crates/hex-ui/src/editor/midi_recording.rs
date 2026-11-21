@@ -779,7 +779,6 @@ mod lifecycle_tests {
         editor.update(&mut visual, |view, _| {
             view.audio = Some(audio(client));
             view.computer_keyboard.enabled = true;
-            view.set_input_quantization(hex_project::InputQuantization::Eighth);
             // This fixture authoring happened before it had an audio output.
             // Its offline candidate is redundant with the same canonical source
             // actually installed above; retire it on control, not as a fake ACK.
@@ -798,7 +797,7 @@ mod lifecycle_tests {
             view.set_input_quantization(hex_project::InputQuantization::Quarter);
             assert_eq!(
                 view.input_quantization,
-                hex_project::InputQuantization::Eighth
+                hex_project::InputQuantization::Sixteenth
             );
             let binding = Arc::clone(view.midi_recorder.binding.as_ref().unwrap());
             // Later display state cannot reinterpret the retained admission.
@@ -808,13 +807,13 @@ mod lifecycle_tests {
                 &project,
                 &binding,
                 &[RecordedMidiNote {
-                    start_frame: 13_000,
-                    end_frame: 14_000,
+                    start_frame: 17_000,
+                    end_frame: 18_000,
                     pitch: 60,
                     channel: 0,
                     velocity: 100,
                 }],
-                14_000,
+                20_000,
             )
             .unwrap()
             .unwrap();
@@ -828,7 +827,7 @@ mod lifecycle_tests {
             assert_eq!(target, clip);
             assert_eq!(
                 notes[0].start,
-                hex_project::BeatTime::from_ratio(1, 2).unwrap()
+                hex_project::BeatTime::from_ratio(3, 4).unwrap()
             );
             view.finish_midi_recording(); // cancel preparation, without a completed take
             view.cancel_computer_keyboard();

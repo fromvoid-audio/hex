@@ -68,8 +68,10 @@ mod tests {
         };
         let before = editor.project().snapshot();
         let command = || Command::ImportDeviceAssetIntoNewInstrument {
-            track,
-            placement: crate::InstrumentLoadPlacement::First,
+            destination: crate::InstrumentLoadDestination::Track {
+                track,
+                placement: crate::InstrumentLoadPlacement::First,
+            },
             path: "source.wav".into(),
             sample_rate: 8000,
             frames: 4,
@@ -127,6 +129,55 @@ mod tests {
             "one source+binding command makes one undo entry"
         );
     }
+
+    #[test]
+    fn prepared_instrument_import_does_not_leave_a_track_or_asset_on_refusal() {
+        let mut editor = Editor::new(Project::new(16000).unwrap(), 8).unwrap();
+        let Created::Track(anchor) = editor
+            .execute(Command::AddMidiTrack {
+                name: "existing".into(),
+            })
+            .unwrap()
+        else {
+            panic!("anchor");
+        };
+        let before = editor.project().snapshot();
+        let command = Command::ImportDeviceAssetIntoNewInstrument {
+            destination: crate::InstrumentLoadDestination::NewTrack {
+                before_track: Some(anchor),
+            },
+            path: "source.wav".into(),
+            sample_rate: 8000,
+            frames: 4,
+            state: NativeDeviceState::new(
+                DeviceTypeId::new("test.instrument.resource").unwrap(),
+                1,
+                vec![],
+            )
+            .unwrap(),
+            source_slot: DeviceAssetSlot::new(1).unwrap(),
+        };
+        let rejected: Result<_, Invalid> = editor.execute_prepared(command.clone(), |candidate| {
+            let [inserted, existing] = candidate.tracks() else {
+                panic!("candidate should have two tracks");
+            };
+            assert_eq!(existing.id(), anchor);
+            let instrument = inserted.instrument().unwrap();
+            let asset = candidate.assets().next().unwrap();
+            assert_eq!(
+                instrument.state().asset_references()[0].asset.value(),
+                asset.id().value()
+            );
+            Err::<(), _>(Invalid("prepared source refused"))
+        });
+        assert_eq!(rejected, Err(Invalid("prepared source refused")));
+        assert_eq!(editor.project().snapshot(), before);
+        editor.execute(command).unwrap();
+        assert!(editor.undo());
+        assert_eq!(editor.project().tracks().len(), 1);
+        assert_eq!(editor.project().tracks()[0].id(), anchor);
+        assert_eq!(editor.project().assets().count(), 0);
+    }
 }
 
 #[cfg(test)]
@@ -147,8 +198,10 @@ mod replacement_tests {
         let slot = DeviceAssetSlot::new(1).unwrap();
         editor
             .execute(Command::ImportDeviceAssetIntoNewInstrument {
-                track,
-                placement: crate::InstrumentLoadPlacement::First,
+                destination: crate::InstrumentLoadDestination::Track {
+                    track,
+                    placement: crate::InstrumentLoadPlacement::First,
+                },
                 path: "old.wav".into(),
                 sample_rate: 8000,
                 frames: 4,

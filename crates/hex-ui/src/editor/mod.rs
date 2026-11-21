@@ -1026,6 +1026,7 @@ pub(super) struct EditorView {
     failed_plugin_proposal: Option<plugin_effect::FailedPluginProposal>,
     proposed_plugin_action_focus: Option<gpui::FocusHandle>,
     export_control: Option<hex_session::service::ExportControl>,
+    export_progress: Option<hex_session::service::ExportProgress>,
     export_window: Option<gpui::AnyWindowHandle>,
     export_dialog_open: bool,
     saving_project: bool,
@@ -1085,6 +1086,7 @@ pub(super) struct EditorView {
     scrub: scrub::ScrubState,
     zoom_wheel_accum: f32,
     arrangement_map_cache: std::cell::RefCell<Option<Rc<arrangement_map::MapCache>>>,
+    focused_arrangement_map_cache: std::cell::RefCell<Option<Rc<arrangement_map::MapCache>>>,
     group_overview_cache: std::cell::RefCell<group_overview::Cache>,
     audio_point_page: usize,
     overview_waveform_cache: Rc<std::cell::RefCell<overview_waveform::Cache>>,
@@ -1513,9 +1515,10 @@ impl EditorView {
                 })
             {
                 entity.update(cx, |view, cx| {
+                    let cursor = view.focused_clip_editor_play_start(window);
                     view.focus.focus(window);
                     let _scope = crate::diagnostics::action_scope(cx, "hex_editor::TogglePlay");
-                    view.toggle_play();
+                    view.toggle_play_with_clip_cursor(cursor);
                     cx.notify();
                 });
                 cx.stop_propagation();
@@ -1737,7 +1740,7 @@ impl EditorView {
             session_track_start: 0,
             console_returns: console_returns::State::default(),
             session_visible_columns: 1,
-            session_quantization: hex_engine::LaunchQuantization::Immediate,
+            session_quantization: hex_engine::LaunchQuantization::OneBar,
             midi_selection: midi_selection::MidiSelection::default(),
             midi_note_gesture: None,
             midi_group_gesture: None,
@@ -1843,6 +1846,7 @@ impl EditorView {
             failed_plugin_proposal: None,
             proposed_plugin_action_focus: None,
             export_control: None,
+            export_progress: None,
             export_window: None,
             export_dialog_open: false,
             saving_project: false,
@@ -1902,6 +1906,7 @@ impl EditorView {
             scrub: scrub::ScrubState::default(),
             zoom_wheel_accum: 0.0,
             arrangement_map_cache: std::cell::RefCell::new(None),
+            focused_arrangement_map_cache: std::cell::RefCell::new(None),
             group_overview_cache: std::cell::RefCell::default(),
             audio_point_page: 0,
             overview_waveform_cache: Rc::new(std::cell::RefCell::new(
@@ -1962,7 +1967,7 @@ impl EditorView {
             #[cfg(test)]
             last_enqueued_import_to_new_track: None,
             snap_grid: musical_time::SnapGrid::default(),
-            input_quantization: hex_project::InputQuantization::Off,
+            input_quantization: hex_project::InputQuantization::Sixteenth,
             #[cfg(test)]
             test_environment,
             browser,
@@ -2075,6 +2080,10 @@ impl EditorView {
     }
 
     pub(super) fn toggle_play(&mut self) {
+        self.toggle_play_with_clip_cursor(None);
+    }
+
+    fn toggle_play_with_clip_cursor(&mut self, clip_cursor: Option<u64>) {
         self.escape_stop_armed = false;
         if self.opening_project || self.close_prompt_open {
             self.error = Some("project change pending · playback is paused".into());
@@ -2091,7 +2100,7 @@ impl EditorView {
             return;
         }
         if self.recovery.generation().is_some() {
-            self.queue_normal_play(self.playback_start_frame());
+            self.queue_normal_play(self.playback_start_frame_with_cursor(None, clip_cursor));
             return;
         }
         if self.section_install_pending() {
@@ -2108,7 +2117,7 @@ impl EditorView {
             }
             return;
         }
-        let start_frame = self.playback_start_frame();
+        let start_frame = self.playback_start_frame_with_cursor(None, clip_cursor);
         match self.play_toggle_action(device_playing, start_frame) {
             arrangement_seek::ToggleAction::Pause => self.pause_from_play_toggle(),
             arrangement_seek::ToggleAction::PlayFrom(frame) => {
@@ -2141,11 +2150,22 @@ impl EditorView {
     }
 
     fn playback_start_frame_with_section_override(&self, section: Option<u64>) -> u64 {
+        self.playback_start_frame_with_cursor(section, None)
+    }
+
+    fn playback_start_frame_with_cursor(
+        &self,
+        section: Option<u64>,
+        clip_cursor: Option<u64>,
+    ) -> u64 {
         if self.play_start_at_beginning {
             return 0;
         }
         if let Some(cursor) = self.valid_locked_play_start() {
             return cursor.frame;
+        }
+        if let Some(frame) = clip_cursor {
+            return frame;
         }
         if let Some((epoch, region)) = self.selection_loop_start
             && self.selection_intent_epoch == Some(epoch)

@@ -268,6 +268,7 @@ fn source_for_profile_with_authored_mode(
     } else {
         hosting
     };
+    let rate = control.rate;
     let binding = hosting
         .begin_on_control(
             control,
@@ -281,7 +282,7 @@ fn source_for_profile_with_authored_mode(
             identity.owner(),
             identity.device_id(),
             12,
-            48_000,
+            rate,
             mode,
             restore,
             None,

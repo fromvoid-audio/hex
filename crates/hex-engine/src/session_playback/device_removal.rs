@@ -1,14 +1,17 @@
 //! A short fade on the departing native stage or audio track. Preparation
 //! previews the existing handoff before changing the donor. Publication owns
 //! the outer source fence and restores the donor when it returns a candidate.
+use super::hosted_track_effect_move::HostedEffectCut;
 use super::{
     RouteOwner, SessionPlayback, SessionPlaybackError, device_move::NativeTrackMove,
     hosted_instrument_move::HostedTrackCut, instrument_move::InstrumentTrackMove,
 };
+use crate::playback::HostedMoveRequest;
 use crate::signal_graph::FreshHistory;
 use hex_lattice::{NativeRemovalTransition, NativeRuntimeChain, ProcessorChainOwner};
 use hex_lattice_contract::NativeDeviceMetadata;
 use hex_project::{ReturnId, TrackId};
+use std::num::NonZeroU64;
 
 #[derive(Clone, Copy)]
 pub(super) struct ReturnFade {
@@ -130,7 +133,7 @@ pub(super) struct PendingNativeRemoval {
     transition: RemovalTransition,
     runtime: u64,
     epoch: u64,
-    started: bool,
+    started_at: Option<NonZeroU64>,
 }
 
 #[derive(Clone, Copy)]
@@ -153,6 +156,7 @@ enum StagedTrackMove {
     Effect(NativeTrackMove),
     Instrument(InstrumentTrackMove),
     Hosted(HostedTrackCut),
+    HostedEffect(HostedEffectCut),
 }
 
 impl StagedTrackMove {
@@ -169,6 +173,11 @@ impl StagedTrackMove {
                 ..
             })
             | Self::Hosted(HostedTrackCut {
+                source,
+                destination,
+                ..
+            })
+            | Self::HostedEffect(HostedEffectCut {
                 source,
                 destination,
                 ..
@@ -217,9 +226,11 @@ impl PendingNativeRemoval {
         previous: &SessionPlayback,
     ) -> Option<hex_project::TrackId> {
         match self.transition {
-            RemovalTransition::Instrument(index) => {
-                previous.routes.get(index).map(|route| route.id)
-            }
+            RemovalTransition::Instrument(index)
+            | RemovalTransition::Move(StagedTrackMove::Instrument(InstrumentTrackMove {
+                source: index,
+                ..
+            })) => previous.routes.get(index).map(|route| route.id),
             _ => None,
         }
     }
@@ -259,10 +270,25 @@ impl PendingNativeRemoval {
         }
     }
 
+    pub(super) fn hosted_effect_move(self) -> Option<HostedEffectCut> {
+        match self.transition {
+            RemovalTransition::Move(StagedTrackMove::HostedEffect(movement)) => Some(movement),
+            _ => None,
+        }
+    }
+
     pub(super) fn faded_native_identity(self) -> Option<hex_lattice::ProcessorInstanceIdentity> {
         self.device_transition()
             .map(|transition| transition.identity())
             .or_else(|| self.track_move().map(|movement| movement.identity))
+            .or_else(|| {
+                let request = self.hosted_effect_move()?.request;
+                hex_lattice::ProcessorInstanceIdentity::new(
+                    ProcessorChainOwner::Track(request.donor.value()),
+                    request.device.value(),
+                )
+                .ok()
+            })
     }
 
     pub(super) fn faded_track(self, previous: &SessionPlayback, id: hex_project::TrackId) -> bool {
@@ -315,12 +341,19 @@ impl PendingNativeRemoval {
 
     pub(super) fn ready_on(self, previous: &SessionPlayback) -> bool {
         match self.transition {
-            RemovalTransition::Move(movement) => movement.indices().into_iter().all(|index| {
-                previous
-                    .track_faders
-                    .get(index)
-                    .is_some_and(|fader| fader.removal_ready())
-            }),
+            RemovalTransition::Move(movement) => {
+                movement.indices().into_iter().all(|index| {
+                    previous
+                        .track_faders
+                        .get(index)
+                        .is_some_and(|fader| fader.removal_ready())
+                }) && self.hosted_effect_move().is_none_or(|effect| {
+                    previous
+                        .compensation
+                        .as_ref()
+                        .is_some_and(|runtime| runtime.hosted_effect_clock_ready(effect.clock))
+                })
+            }
             RemovalTransition::Device(transition) | RemovalTransition::MainPass(transition) => {
                 previous.native_removal_ready(transition)
             }
@@ -406,11 +439,18 @@ impl SessionPlayback {
         }
         let same_latency = self.revision.arrangement().main_latency_frames()
             == previous.revision.arrangement().main_latency_frames();
-        let transition = if self.hosted_instrument_move.is_some() {
+        let transition = if matches!(self.hosted_move, Some(HostedMoveRequest::Instrument(_))) {
             let movement = self
                 .direct_hosted_track_cut_from(previous)
                 .ok_or(super::foreign_arrangement::INCOMPATIBLE_HANDOFF)?;
             Some(RemovalTransition::Move(StagedTrackMove::Hosted(movement)))
+        } else if matches!(self.hosted_move, Some(HostedMoveRequest::Effect(_))) {
+            let movement = self
+                .direct_hosted_effect_cut_from(previous)
+                .ok_or(SessionPlaybackError::DeviceInsertNeedsConfirmation)?;
+            Some(RemovalTransition::Move(StagedTrackMove::HostedEffect(
+                movement,
+            )))
         } else if same_latency {
             self.native_removal_transition_from(previous)
                 .map(RemovalTransition::Device)
@@ -465,7 +505,7 @@ impl SessionPlayback {
             transition,
             runtime: previous.capture_runtime,
             epoch: previous.capture_epoch,
-            started: false,
+            started_at: None,
         });
         Ok(true)
     }
@@ -480,7 +520,10 @@ impl SessionPlayback {
         if !pending.matches(previous) {
             return Err(SessionPlaybackError::InvalidCommand);
         }
-        if !pending.started {
+        if pending.started_at.is_none() {
+            let started_at = NonZeroU64::MIN
+                .checked_add(previous.performance_frame)
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
             let started = match pending.transition {
                 RemovalTransition::Move(movement) => {
                     let indices = movement.indices();
@@ -530,7 +573,7 @@ impl SessionPlayback {
                 self.native_removal = None;
                 return Err(SessionPlaybackError::DeviceRuntime);
             }
-            pending.started = true;
+            pending.started_at = Some(started_at);
         }
         Ok(if pending.ready_on(previous) {
             NativeRemovalProgress::Ready
@@ -540,18 +583,31 @@ impl SessionPlayback {
     }
 
     pub(crate) fn native_removal_started(&self) -> bool {
-        self.native_removal.is_some_and(|pending| pending.started)
+        self.native_removal
+            .is_some_and(|pending| pending.started_at.is_some())
     }
 
     pub(crate) fn native_removal_pending(&self) -> bool {
         self.native_removal.is_some()
     }
 
+    pub(crate) fn pending_hosted_track_effect_deadline(&self) -> Option<u64> {
+        let pending = self.native_removal?;
+        pending.hosted_effect_move()?;
+        let started = pending.started_at?.get() - 1;
+        let fade = u64::from(super::track_fader::TrackFader::fade_frames(
+            self.revision.arrangement().sample_rate(),
+        ));
+        // Bound the fade and the old dry alignment drain, including callback
+        // subdivision. Expiry restores both predecessor faders.
+        Some(started.saturating_add(fade + 512 + 2 * 1024))
+    }
+
     pub(crate) fn pending_foreign_main_pass(
         &self,
     ) -> Option<(hex_lattice_contract::ForeignProcessorBinding, u32)> {
         self.native_removal
-            .filter(|pending| pending.started)?
+            .filter(|pending| pending.started_at.is_some())?
             .main_pass_transition()?
             .foreign_main_pass()
     }
@@ -576,7 +632,7 @@ impl SessionPlayback {
     )> {
         let transition = self
             .native_removal
-            .filter(|pending| pending.started)?
+            .filter(|pending| pending.started_at.is_some())?
             .main_pass_transition()?;
         Some((transition.identity(), transition.foreign_return_pass()?))
     }
@@ -611,7 +667,7 @@ impl SessionPlayback {
             // A refused candidate must discard its uninstalled PCM snapshot.
             self.main_pass_delay = None;
         }
-        if pending.started && pending.runtime == previous.capture_runtime {
+        if pending.started_at.is_some() && pending.runtime == previous.capture_runtime {
             match pending.transition {
                 RemovalTransition::Move(movement) => {
                     let arrangement = previous.revision.arrangement();

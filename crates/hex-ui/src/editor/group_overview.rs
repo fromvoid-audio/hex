@@ -104,7 +104,7 @@ pub(super) fn view(view: &EditorView, state: &ViewState, track: &Track, viewport
                                 let edge = block
                                     .and_then(|block| {
                                         project_interval(*block, viewport, width).map(|(l, r)| {
-                                            l + crate::section_surface::miniature_right(
+                                            l + crate::section_surface::geometry::miniature_right(
                                                 r - l,
                                                 height,
                                                 if block.end <= limit {

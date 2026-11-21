@@ -5,6 +5,93 @@ use super::{AudioClipDomain, WarpSettings};
 use crate::{BeatTime, Invalid};
 
 impl WarpSettings {
+    /// Add an interior anchor at its current mapped beat, preserving the map
+    /// on both sides. Returns false when the source point is already pinned.
+    pub fn insert_marker(&mut self, source_frame: u64) -> Result<bool, Invalid> {
+        let index = match self
+            .markers
+            .binary_search_by_key(&source_frame, |m| m.source_frame)
+        {
+            Ok(_) => return Ok(false),
+            Err(index) if index > 0 && index < self.markers.len() => index,
+            Err(_) => return Err(Invalid("warp markers must be inside the source region")),
+        };
+        if self.markers.len() >= super::MAX_AUDIO_POINTS {
+            return Err(Invalid("warp is limited to 1024 markers"));
+        }
+        let beat = self.beat_for_source_frame(source_frame)?;
+        if !(self.markers[index - 1].beat < beat && beat < self.markers[index].beat) {
+            return Err(Invalid("warp marker is too close to a neighboring beat"));
+        }
+        self.markers
+            .try_reserve(1)
+            .map_err(|_| Invalid("could not allocate a warp marker"))?;
+        self.markers
+            .insert(index, super::WarpMarker { source_frame, beat });
+        Ok(true)
+    }
+
+    /// Move the authored beat of a pinned source frame between its neighbors.
+    /// The endpoints of the region stay fixed.
+    pub fn move_marker(&mut self, source_frame: u64, beat: BeatTime) -> Result<bool, Invalid> {
+        let index = self.interior_marker_index(source_frame)?;
+        let beat = self.marker_target_beat(source_frame, beat)?;
+        let changed = self.markers[index].beat != beat;
+        self.markers[index].beat = beat;
+        Ok(changed)
+    }
+
+    /// Resolve a drag for an existing or prospective interior source anchor.
+    /// Pointer previews and the committed move share the same neighboring bounds.
+    pub fn marker_target_beat(
+        &self,
+        source_frame: u64,
+        beat: BeatTime,
+    ) -> Result<BeatTime, Invalid> {
+        let (index, next) = match self
+            .markers
+            .binary_search_by_key(&source_frame, |m| m.source_frame)
+        {
+            Ok(index) => (index, index + 1),
+            Err(index) => (index, index),
+        };
+        let left = index
+            .checked_sub(1)
+            .and_then(|index| self.markers.get(index));
+        let right = self.markers.get(next);
+        let (Some(left), Some(right)) = (left, right) else {
+            return Err(Invalid("warp markers must be inside the source region"));
+        };
+        let first = left
+            .beat
+            .raw()
+            .checked_add(1)
+            .ok_or(Invalid("warp marker has no room to move"))?;
+        let last = right
+            .beat
+            .raw()
+            .checked_sub(1)
+            .filter(|last| *last >= first)
+            .ok_or(Invalid("warp marker has no room to move"))?;
+        Ok(BeatTime::from_raw(beat.raw().clamp(first, last)))
+    }
+
+    pub fn remove_marker(&mut self, source_frame: u64) -> Result<(), Invalid> {
+        let index = self.interior_marker_index(source_frame)?;
+        self.markers.remove(index);
+        Ok(())
+    }
+
+    fn interior_marker_index(&self, source_frame: u64) -> Result<usize, Invalid> {
+        self.markers
+            .binary_search_by_key(&source_frame, |m| m.source_frame)
+            .ok()
+            .filter(|index| *index > 0 && *index + 1 < self.markers.len())
+            .ok_or(Invalid(
+                "only interior warp markers can be moved or removed",
+            ))
+    }
+
     /// Local beat for an absolute project-rate source frame. The region's
     /// endpoint markers define the bounds; no PCM access or analysis occurs.
     pub fn beat_for_source_frame(&self, source: u64) -> Result<BeatTime, Invalid> {
@@ -122,5 +209,41 @@ impl AudioClipDomain {
                     .ok_or(Invalid("warp phase overflow"))?,
             )
             .map(BeatTime::raw)
+    }
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::*;
+    use crate::{WarpMarker, WarpMode};
+    #[test]
+    fn pins_retime_only_between_fixed_neighbors() {
+        let mut warp = WarpSettings {
+            mode: WarpMode::RePitch,
+            markers: vec![
+                WarpMarker {
+                    source_frame: 20,
+                    beat: BeatTime::ZERO,
+                },
+                WarpMarker {
+                    source_frame: 120,
+                    beat: BeatTime::ONE,
+                },
+            ],
+        };
+        let original = warp.clone();
+        assert!(warp.insert_marker(70).unwrap());
+        assert_eq!(warp.markers[1].beat, BeatTime::from_ratio(1, 2).unwrap());
+        assert!(!warp.insert_marker(70).unwrap());
+        assert!(warp.insert_marker(2).is_err());
+        let target = BeatTime::from_ratio(3, 4).unwrap();
+        assert!(warp.move_marker(70, target).unwrap());
+        assert_eq!(warp.beat_for_source_frame(70).unwrap(), target);
+        assert_eq!(warp.markers[0], original.markers[0]);
+        assert_eq!(warp.markers[2], original.markers[1]);
+        assert!(warp.move_marker(20, target).is_err());
+        assert!(warp.remove_marker(120).is_err());
+        warp.remove_marker(70).unwrap();
+        assert_eq!(warp, original);
     }
 }

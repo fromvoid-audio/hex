@@ -109,6 +109,15 @@ impl Controls {
     pub(crate) fn has_pending(&self) -> bool {
         self.pending.is_some()
     }
+    pub(crate) fn pending_warp_settings(&self, clip: ClipId) -> Option<&hex_project::WarpSettings> {
+        match &self.pending.as_ref()?.command {
+            Command::SetAudioClipWarp {
+                clip: target,
+                settings: Some(settings),
+            } if *target == clip => Some(settings),
+            _ => None,
+        }
+    }
     pub(crate) fn has_gain_preview(&self) -> bool {
         self.gain_preview.is_some()
     }

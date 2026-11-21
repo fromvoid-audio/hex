@@ -672,8 +672,10 @@ impl Session {
                 let (state, source_slot) =
                     resources::sampler_import_template_on_control(decoded.audio().frames().len())?;
                 crate::native_assets::NativeAssetDestination::NewInstrument {
-                    track,
-                    placement: hex_project::InstrumentLoadPlacement::First,
+                    destination: hex_project::InstrumentLoadDestination::Track {
+                        track,
+                        placement: hex_project::InstrumentLoadPlacement::First,
+                    },
                     state,
                     source_slot,
                 }

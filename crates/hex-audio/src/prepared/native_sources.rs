@@ -1680,6 +1680,43 @@ impl PublicationControl {
         self.candidate_root
             .with_native_effect_definition(bindings, prepare)
     }
+
+    /// Lend a single physical effect to one logical receiver for compilation.
+    /// The caller supplies the original graph node and exact applied source.
+    /// This view conveys no runtime ownership or permission to publish a cut.
+    pub fn with_retained_track_effect_definition<R>(
+        &self,
+        predecessor: AppliedAudioSource,
+        original: &hex_lattice::PreparedRuntimeInstance,
+        receiver: ProcessorInstanceIdentity,
+        prepare: impl FnOnce(&crate::plugin_effects::NativeEffectDefinition<'_>) -> Result<R, String>,
+    ) -> Result<R, String> {
+        let check_predecessor = || {
+            if predecessor.audio_revision == 0
+                || self.status.recording_source() != Some(predecessor)
+            {
+                Err("original vst3 effect move source is no longer installed".to_owned())
+            } else {
+                Ok(())
+            }
+        };
+        check_predecessor()?;
+        let binding = original
+            .foreign_processor()
+            .and_then(|facts| facts.binding())
+            .filter(|binding| binding.root == predecessor.output_identity)
+            .ok_or("original vst3 effect binding differs")?;
+        self.with_native_effect_definition(&[binding], |definition| {
+            check_predecessor()?;
+            let retained = definition
+                .including_retained_track_effect(predecessor, receiver, original)
+                .map_err(|error| error.to_string())?;
+            let compiled = prepare(&retained)?;
+            check_predecessor()?;
+            Ok(compiled)
+        })
+    }
+
     /// Borrow selected actual Root source definitions while preparing inside
     /// this same Root's reserved cell, alongside the built-in effect registry.
     /// One Work guard covers both the source borrow and candidate preparation.

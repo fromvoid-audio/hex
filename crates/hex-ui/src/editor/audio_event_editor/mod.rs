@@ -4,6 +4,7 @@
 mod fades;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod free_placement_tests;
+mod markers;
 mod navigation;
 mod paint;
 mod pending;
@@ -16,6 +17,7 @@ mod pointer;
 mod projection;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests;
+mod transients;
 mod view;
 mod waveform_preview;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -57,9 +59,9 @@ pub(in crate::editor) fn editor_bounds(root: &AudioClipEdit) -> (u64, u64) {
         (root.view_start, root.view_end)
     }
 }
-/// The event grid uses the frame cycle start as its project-time anchor.
+/// The event grid anchors direct reads to the scope start in project time.
 pub(in crate::editor) fn event_grid_origin(root: &AudioClipEdit) -> u64 {
-    if matches!(root.timing, hex_project::AudioClipTiming::Frames) {
+    if root.content_view.is_none() || matches!(root.timing, hex_project::AudioClipTiming::Frames) {
         root.view_start
     } else {
         editor_bounds(root).0
@@ -121,6 +123,7 @@ pub(super) struct State {
     pan: Option<navigation::Pan>,
     clipboard: Option<Clipboard>,
     pending: Option<pending::Pending>,
+    transients: Option<transients::Analysis>,
 }
 impl State {
     fn set_fade_hover(
@@ -206,6 +209,10 @@ enum Kind {
     FreeMove {
         event: AudioEvent,
         limits: (i64, i64),
+    },
+    WarpMarker {
+        source_frame: u64,
+        beat: hex_project::BeatTime,
     },
     Leading(AudioEvent),
     Trailing(AudioEvent),
@@ -675,6 +682,10 @@ impl EditorView {
                 } else {
                     self.sync_held_play_start_audition();
                 }
+            } else if let Kind::WarpMarker { source_frame, beat } = gesture.kind {
+                if gesture.moved {
+                    self.finish_event_warp_drag(source_frame, beat);
+                }
             } else if let Some(operation) = gesture.operation {
                 self.event_commit(operation);
             }
@@ -823,6 +834,13 @@ impl EditorView {
                     position,
                     recovery_attempted,
                 };
+            }
+            Kind::WarpMarker { source_frame, .. } => {
+                let Some(beat) = markers::drag_beat(&root, source_frame, gesture.anchor, position)
+                else {
+                    return;
+                };
+                gesture.kind = Kind::WarpMarker { source_frame, beat };
             }
             Kind::Select => {
                 self.audio_event_editor.range =

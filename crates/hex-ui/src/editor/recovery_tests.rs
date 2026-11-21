@@ -2057,10 +2057,12 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
             request_id: 1,
             project_generation: 0,
             revision: event.state.revision,
-            track,
-            slot: hex_session::service::SamplerLoadSlot::New(
-                hex_project::InstrumentLoadPlacement::First,
-            ),
+            target: hex_session::service::SamplerLoadTarget::Track {
+                track,
+                slot: hex_session::service::SamplerLoadSlot::New(
+                    hex_project::InstrumentLoadPlacement::First,
+                ),
+            },
             path: path.clone(),
             cancel: Arc::new(AtomicBool::new(false)),
         })

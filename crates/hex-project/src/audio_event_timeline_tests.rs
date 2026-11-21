@@ -201,6 +201,110 @@ fn placement_refuses_unsupported_roots_and_unbounded_timelines() {
 }
 
 #[test]
+fn signed_musical_moves_preserve_the_scope_and_its_read_phase() {
+    use crate::{AudioViewResizeOperation, BeatTime, WarpMode};
+
+    let beat = BeatTime::ONE.raw();
+    for (warped, looping) in [(false, false), (true, false), (true, true)] {
+        let (mut editor, clip) = imported(96_000);
+        if warped {
+            let project = editor.project();
+            let settings = crate::default_audio_warp(
+                project.clip(clip).unwrap(),
+                project.tempo_map(),
+                WarpMode::RePitch,
+            )
+            .unwrap();
+            editor
+                .execute(Command::SetAudioClipWarp {
+                    clip,
+                    settings: Some(settings),
+                })
+                .unwrap();
+        } else {
+            editor
+                .execute(Command::SetAudioClipMusical {
+                    clip,
+                    enabled: true,
+                })
+                .unwrap();
+        }
+        for operation in [
+            AudioViewResizeOperation::ScopeRange {
+                start: beat,
+                end: 3 * beat,
+                looping,
+            },
+            AudioViewResizeOperation::PlayStart {
+                position: beat + beat / 2,
+            },
+        ] {
+            editor
+                .execute(Command::ResizeAudioClipView { clip, operation })
+                .unwrap();
+        }
+        let before = editor.project().clone();
+        let original = before.clip(clip).unwrap();
+        let root = original.audio_event_root();
+        let events = original.editable_audio_events().unwrap();
+        let source = events
+            .events
+            .iter()
+            .find(|event| event.start == beat)
+            .unwrap();
+        let (first, last) = before
+            .audio_event_drag_bounds(clip, source.start, source.end)
+            .unwrap();
+        for destination in [-(beat as i64), (5 * beat) as i64] {
+            assert!((first..=last).contains(&destination));
+            let candidate = before
+                .preview_audio_event_placement(clip, source.id, destination)
+                .unwrap();
+            place(&mut editor, clip, source.id, destination).unwrap();
+            let placed = editor.project().clip(clip).unwrap();
+            assert_eq!(placed, candidate.clip());
+            assert_eq!(
+                (placed.start(), placed.duration()),
+                (original.start(), original.duration())
+            );
+            let next = placed.audio_event_root();
+            assert_eq!(next.placement, root.placement);
+            let translation = destination.min(0).unsigned_abs();
+            assert_eq!(
+                (next.view_start, next.view_end),
+                (root.view_start + translation, root.view_end + translation)
+            );
+            assert_eq!(
+                next.processing_origin().unwrap() + i128::from(translation),
+                root.processing_origin().unwrap()
+            );
+            let moved = placed
+                .audio_events()
+                .events
+                .into_iter()
+                .find(|event| event.id == source.id)
+                .unwrap();
+            assert_eq!(
+                i128::from(moved.start) - i128::from(translation),
+                i128::from(destination)
+            );
+            assert_eq!(
+                (moved.source_start, moved.length()),
+                (source.source_start, source.length())
+            );
+            assert_eq!(next.domain.warp, root.domain.warp);
+            let after = editor.project().clone();
+            assert_eq!(Project::from_snapshot(after.snapshot()).unwrap(), after);
+            assert!(editor.undo());
+            assert_eq!(editor.project(), &before);
+            assert!(editor.redo());
+            assert_eq!(editor.project(), &after);
+            assert!(editor.undo());
+        }
+    }
+}
+
+#[test]
 fn signed_range_moves_keep_whole_ids_split_sources_and_replace_through_gaps() {
     let (mut editor, clip) = imported(100);
     for operation in [

@@ -45,11 +45,14 @@ fn assert_loop_pcm(h: &ResidentHarness, level: f32) -> [hex_engine::Frame; 64] {
 // Native fixture parameters are uninhabited on targets without the host; the
 // portable harness can still use its ordinary constructor with None.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-type PluginFixture = (
-    hex_audio::plugin_effects::Hosting,
-    Option<hex_audio::plugin_effects::EffectPresentation>,
-    Option<hex_diagnostics::DiagnosticsHandle>,
-);
+enum PluginFixture {
+    Signed(
+        Box<hex_audio::plugin_effects::Hosting>,
+        Option<hex_audio::plugin_effects::EffectPresentation>,
+        Option<hex_diagnostics::DiagnosticsHandle>,
+    ),
+    MissingCatalog,
+}
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 enum PluginFixture {}
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -1614,14 +1617,29 @@ impl DeviceInsertProbe {
         &self,
         track: hex_project::TrackId,
         device: hex_project::DeviceId,
-    ) -> mpsc::Receiver<Option<PreparedInstrumentSource>> {
+    ) -> mpsc::Receiver<Option<PreparedForeignSource>> {
+        self.observe_foreign_binding(Some(track), device)
+    }
+
+    pub(super) fn observe_next_foreign_effect_binding(
+        &self,
+        device: hex_project::DeviceId,
+    ) -> mpsc::Receiver<Option<PreparedForeignSource>> {
+        self.observe_foreign_binding(None, device)
+    }
+
+    fn observe_foreign_binding(
+        &self,
+        instrument_track: Option<hex_project::TrackId>,
+        device: hex_project::DeviceId,
+    ) -> mpsc::Receiver<Option<PreparedForeignSource>> {
         let (ready, binding) = mpsc::sync_channel(1);
         let previous = self
             .foreign_binding
             .lock()
             .unwrap()
             .replace(ForeignDeviceInsertProbe {
-                track,
+                instrument_track,
                 device,
                 ready,
             });
@@ -1635,12 +1653,12 @@ struct DeviceInsertGate {
 }
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 struct ForeignDeviceInsertProbe {
-    track: hex_project::TrackId,
+    instrument_track: Option<hex_project::TrackId>,
     device: hex_project::DeviceId,
-    ready: SyncSender<Option<PreparedInstrumentSource>>,
+    ready: SyncSender<Option<PreparedForeignSource>>,
 }
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-type PreparedInstrumentSource = (
+type PreparedForeignSource = (
     hex_engine::ProcessorChainOwner,
     hex_audio::plugin_effects::EffectBinding,
 );
@@ -2215,10 +2233,19 @@ impl WorkerAudioSink for ResidentSink {
                 .unwrap()
                 .take()
         {
-            probe
-                .ready
-                .try_send(playback.foreign_instrument_binding_on_control(probe.track, probe.device))
-                .unwrap();
+            let binding = if let Some(track) = probe.instrument_track {
+                playback.foreign_instrument_binding_on_control(track, probe.device)
+            } else {
+                let mut nodes = playback
+                    .foreign_nodes_on_control()
+                    .filter(|node| node.device_id == probe.device.value());
+                let observed = nodes
+                    .next()
+                    .and_then(|node| Some((node.owner, node.foreign_processor()?.binding()?)));
+                assert!(nodes.next().is_none(), "duplicate prepared foreign device");
+                observed
+            };
+            probe.ready.try_send(binding).unwrap();
         }
         let refuse = self.refuse.load(Acquire);
         if let Some(probe) = self.publication_probe.lock().unwrap().take() {
@@ -2317,6 +2344,17 @@ impl WorkerAudioSink for ResidentSink {
         self.inner.stopped_resident_power_fence(context, device)
     }
 
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn stopped_resident_return_power_on_fence(
+        &mut self,
+        context: AudioSourceContext,
+        owner: hex_engine::ProcessorChainOwner,
+        device: u64,
+    ) -> Result<Option<hex_session::service::ResidentFreshRuntimeFence>, String> {
+        self.inner
+            .stopped_resident_return_power_on_fence(context, owner, device)
+    }
+
     fn stopped_resident_effect_history_fence(
         &mut self,
         context: AudioSourceContext,
@@ -2325,6 +2363,16 @@ impl WorkerAudioSink for ResidentSink {
     ) -> Option<hex_session::service::ResidentFreshRuntimeFence> {
         self.inner
             .stopped_resident_effect_history_fence(context, owner, device)
+    }
+
+    fn running_resident_effect_history_source(
+        &mut self,
+        context: AudioSourceContext,
+        owner: hex_engine::ProcessorChainOwner,
+        device: u64,
+    ) -> Option<hex_session::service::ResidentGraphSubmission> {
+        self.inner
+            .running_resident_effect_history_source(context, owner, device)
     }
 
     fn resident_runtime_loop(
@@ -2691,6 +2739,19 @@ impl ResidentHarness {
         )
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn without_plugin_catalog_configuration() -> Self {
+        Self::with_plugin_fixture(
+            8192,
+            Arc::new(AtomicBool::new(true)),
+            4,
+            48_000,
+            Some(PluginFixture::MissingCatalog),
+            None,
+            None,
+            None,
+        )
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn with_plugins(
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
@@ -2717,7 +2778,11 @@ impl ResidentHarness {
             Arc::new(AtomicBool::new(true)),
             4,
             rate,
-            Some((host, presentation, diagnostics)),
+            Some(PluginFixture::Signed(
+                Box::new(host),
+                presentation,
+                diagnostics,
+            )),
             None,
             None,
             None,
@@ -2735,7 +2800,7 @@ impl ResidentHarness {
             Arc::new(AtomicBool::new(true)),
             4,
             48_000,
-            Some((host, presentation, None)),
+            Some(PluginFixture::Signed(Box::new(host), presentation, None)),
             Some(facts),
             catalog,
             None,
@@ -2762,7 +2827,11 @@ impl ResidentHarness {
             Arc::new(AtomicBool::new(true)),
             4,
             rate,
-            Some((host, presentation, Some(diagnostics))),
+            Some(PluginFixture::Signed(
+                Box::new(host),
+                presentation,
+                Some(diagnostics),
+            )),
             None,
             Some(catalog),
             None,
@@ -2781,7 +2850,7 @@ impl ResidentHarness {
             Arc::new(AtomicBool::new(true)),
             4,
             rate,
-            Some((host, presentation, None)),
+            Some(PluginFixture::Signed(Box::new(host), presentation, None)),
             None,
             Some(catalog),
             None,
@@ -2801,7 +2870,7 @@ impl ResidentHarness {
             Arc::new(AtomicBool::new(true)),
             4,
             rate,
-            Some((host, presentation, None)),
+            Some(PluginFixture::Signed(Box::new(host), presentation, None)),
             None,
             Some(catalog),
             Some(recovery),
@@ -2820,7 +2889,10 @@ impl ResidentHarness {
     ) -> Self {
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         assert!(plugin.is_none() && facts_gate.is_none() && catalog.is_none());
-        let native_plugins = plugin.is_some();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let native_plugins = matches!(plugin, Some(PluginFixture::Signed(..)));
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let native_plugins = false;
         let allow_unavailable = !gate.load(Acquire);
         let (sender, events) = mpsc::sync_channel(capacity);
         let callback = Arc::new(Mutex::new(None));
@@ -2839,11 +2911,17 @@ impl ResidentHarness {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let plugin_failure = Arc::new(Mutex::new(None));
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        if let Some((host, presentation, diagnostics)) = plugin {
-            inner.plugins = crate::native_audio::plugins::Plugins::with_fixture(host, presentation);
-            inner.plugins.set_diagnostics(diagnostics);
-            inner.plugins.catalog = catalog;
-            inner.plugins.facts_gate = facts_gate;
+        if let Some(plugin) = plugin {
+            match plugin {
+                PluginFixture::Signed(host, presentation, diagnostics) => {
+                    inner.plugins =
+                        crate::native_audio::plugins::Plugins::with_fixture(*host, presentation);
+                    inner.plugins.set_diagnostics(diagnostics);
+                    inner.plugins.catalog = catalog;
+                    inner.plugins.facts_gate = facts_gate;
+                }
+                PluginFixture::MissingCatalog => inner.plugins.initialize_for_home(None),
+            }
             inner.plugins.progress = Some(Arc::clone(&plugin_progress));
             inner.plugins.failure_observation = Some(Arc::clone(&plugin_failure));
             // This optional Session-poll diagnostic can lag actual DSP replies.
@@ -3669,10 +3747,12 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
         request_id: 1,
         project_generation: 0,
         revision: added.state.revision,
-        track,
-        slot: hex_session::service::SamplerLoadSlot::New(
-            hex_project::InstrumentLoadPlacement::First,
-        ),
+        target: hex_session::service::SamplerLoadTarget::Track {
+            track,
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
+        },
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -3944,10 +4024,12 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
         request_id: 1,
         project_generation: 0,
         revision: added.state.revision,
-        track,
-        slot: hex_session::service::SamplerLoadSlot::New(
-            hex_project::InstrumentLoadPlacement::First,
-        ),
+        target: hex_session::service::SamplerLoadTarget::Track {
+            track,
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
+        },
         path: files.wav(48_000, 8192),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -5209,10 +5291,12 @@ fn assert_held_instrument_move_history(instrument: HeldMoveInstrument) {
             request_id: 1,
             project_generation: 0,
             revision: track.state.revision,
-            track: source,
-            slot: hex_session::service::SamplerLoadSlot::New(
-                hex_project::InstrumentLoadPlacement::First,
-            ),
+            target: hex_session::service::SamplerLoadTarget::Track {
+                track: source,
+                slot: hex_session::service::SamplerLoadSlot::New(
+                    hex_project::InstrumentLoadPlacement::First,
+                ),
+            },
             path: files.wav(48_000, 96_000),
             cancel: Arc::new(AtomicBool::new(false)),
         });

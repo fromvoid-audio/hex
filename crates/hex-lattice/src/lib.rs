@@ -178,10 +178,10 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
         self.migrate_state(state)
     }
 
-    /// Resolve a witnessed hosted instrument receiver to the physical source
-    /// identity whose facts the provider already owns. Ordinary preparation
-    /// keeps the canonical identity. This grants no endpoint or runtime access.
-    fn retained_foreign_instrument_identity(
+    /// Resolve an exact hosted effect receiver to its already prepared physical
+    /// identity. Ordinary definitions retain the authored identity. A compiler
+    /// borrow grants no endpoint, graph publication or retirement custody.
+    fn retained_foreign_effect_identity(
         &self,
         identity: ProcessorInstanceIdentity,
         _state: &NativeDeviceState,
@@ -4749,8 +4749,8 @@ impl<'a> NativeDeviceRegistry<'a> {
                 .with_host_metadata_from(state)?,
         )
     }
-    /// Read the provider's physical identity for a compiler-proven instrument route.
-    pub fn retained_foreign_instrument_identity(
+    /// Read an exact hosted effect route from the selected runtime definition.
+    pub fn retained_foreign_effect_identity(
         &self,
         identity: ProcessorInstanceIdentity,
         state: &NativeDeviceState,
@@ -4759,7 +4759,7 @@ impl<'a> NativeDeviceRegistry<'a> {
         context.validate_for(state)?;
         self.definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?
-            .retained_foreign_instrument_identity(identity, state, context)
+            .retained_foreign_effect_identity(identity, state, context)
     }
 
     /// Validate instance-bound runtime state without changing canonical state.

@@ -1262,6 +1262,7 @@ impl super::EditorView {
     pub(super) fn begin_browser_audio_drag(&mut self, drag: &BrowserAudioDrag) {
         self.retire_active_clip_drag();
         self.active_native_device_drag = None;
+        self.sampler_load.header_insertion_line_y = None;
         self.active_browser_audio_drag = Some(drag.clone());
     }
 
@@ -1405,11 +1406,40 @@ impl super::EditorView {
     fn painted_arrangement_timeline_at(&self, x: f32, y: f32) -> Option<LaneBounds> {
         self.painted_arrangement_timeline()
             .filter(|&lane| lane_contains_pointer(x, y, lane))
-            .filter(|_| {
-                self.arrangement_proposal_rows()
-                    .filter_map(|row| self.track_scroll.list.bounds_for_item(row))
-                    .all(|bounds| y < f32::from(bounds.top()) || y >= f32::from(bounds.bottom()))
-            })
+            .filter(|_| !self.painted_arrangement_proposal_at(y))
+    }
+
+    fn painted_arrangement_proposal_at(&self, y: f32) -> bool {
+        self.arrangement_proposal_rows()
+            .filter_map(|row| self.track_scroll.list.bounds_for_item(row))
+            .any(|bounds| y >= f32::from(bounds.top()) && y < f32::from(bounds.bottom()))
+    }
+
+    /// The same vertical insertion gaps as the timeline, restricted to the
+    /// scrollable header column. Main and Returns are outside this body.
+    pub(super) fn painted_sampler_track_gap(
+        &self,
+        pointer: gpui::Point<gpui::Pixels>,
+    ) -> Option<(Option<TrackId>, f32)> {
+        if self.mode != super::EditorMode::Arrangement {
+            return None;
+        }
+        let body = self
+            .arrangement_bounds
+            .filter(|_| self.arrangement_bounds_epoch == self.drag_layout_generation)?;
+        let width = self.track_header_width().min(body.width);
+        let headers = LaneBounds {
+            left: body.left + body.width - width,
+            width,
+            ..body
+        };
+        let y = f32::from(pointer.y);
+        if !lane_contains_pointer(f32::from(pointer.x), y, headers)
+            || self.painted_arrangement_proposal_at(y)
+        {
+            return None;
+        }
+        self.painted_track_insertion_at_y(y, body.top)
     }
 
     // Use the last painted full row, including attached automation lanes.
@@ -1458,15 +1488,24 @@ impl super::EditorView {
         pointer_y: f32,
     ) -> Option<(Option<TrackId>, LaneBounds, f32)> {
         let timeline = self.painted_arrangement_timeline_at(pointer_x, pointer_y)?;
+        self.painted_track_insertion_at_y(pointer_y, timeline.top)
+            .map(|(before, y)| (before, timeline, y))
+    }
+
+    fn painted_track_insertion_at_y(
+        &self,
+        pointer_y: f32,
+        body_top: f32,
+    ) -> Option<(Option<TrackId>, f32)> {
         let state = self.state.as_ref()?;
         let tracks = self.arrangement_track_indices();
         if self.track_scroll.list.item_count() == 0 {
-            return Some((None, timeline, pointer_y));
+            return Some((None, pointer_y));
         }
         if tracks.is_empty() {
             return self
                 .painted_arrangement_tail_boundary(pointer_y)
-                .map(|bottom| (None, timeline, bottom));
+                .map(|bottom| (None, bottom));
         }
 
         let first = state.project.tracks().get(*tracks.first()?)?;
@@ -1474,8 +1513,8 @@ impl super::EditorView {
             let first_lane = self.painted_track_drop_lane(first.id())?;
             // Reserve the same narrow insertion band at the first row's top,
             // without adding empty layout space above the tracks.
-            if first_lane.top >= timeline.top && pointer_y <= first_lane.top + 3.0 {
-                return Some((Some(first.id()), timeline, first_lane.top));
+            if first_lane.top >= body_top && pointer_y <= first_lane.top + 3.0 {
+                return Some((Some(first.id()), first_lane.top));
             }
         }
 
@@ -1491,12 +1530,12 @@ impl super::EditorView {
             let next_lane = self.painted_track_drop_lane(next.id())?;
             let boundary = (previous_lane.top + previous_lane.height + next_lane.top) * 0.5;
             if (pointer_y - boundary).abs() <= 3.0 {
-                return Some((Some(next.id()), timeline, boundary));
+                return Some((Some(next.id()), boundary));
             }
         }
 
         self.painted_arrangement_tail_boundary(pointer_y)
-            .map(|bottom| (None, timeline, bottom))
+            .map(|bottom| (None, bottom))
     }
 
     /// Resolve a captured insertion anchor using only the current painted rows.
@@ -1530,11 +1569,17 @@ impl super::EditorView {
     }
 
     pub(super) fn browser_audio_drop_position(
-        &self,
+        &mut self,
         drag: &BrowserAudioDrag,
         pointer_x: f32,
         pointer_y: f32,
     ) -> (Option<DropPreview>, bool) {
+        self.sampler_load.header_insertion_line_y = if drag.project_asset.is_none() {
+            self.painted_sampler_track_gap(gpui::point(gpui::px(pointer_x), gpui::px(pointer_y)))
+                .map(|(_, line)| line)
+        } else {
+            None
+        };
         if !self.browser_audio_drag_is_current(drag) {
             drag.destination.set(None);
             drag.insertion_line_y.set(None);
@@ -1650,6 +1695,7 @@ impl super::EditorView {
             .is_some_and(|active| Rc::ptr_eq(&active.destination, &drag.destination))
         {
             self.active_browser_audio_drag = None;
+            self.sampler_load.header_insertion_line_y = None;
         }
         drag.preview.set(None);
         drag.destination.set(None);

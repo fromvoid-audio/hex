@@ -26,6 +26,7 @@ use std::{
 };
 
 mod auto_pan_panel;
+mod automation_playback;
 mod automation_tint;
 mod bindings;
 mod bypass;
@@ -163,6 +164,7 @@ pub(super) struct DevicePanelState {
     pub(super) drag_selection: Option<DeviceDragSelection>,
     pub(super) pending_duplicate: Option<keyboard::PendingDuplicate>,
     controls: HashMap<ParameterKey, ParameterControl>,
+    playback_values: automation_playback::Values,
     meter_states: HashMap<DeviceId, device_meter::MeterState>,
     send_controls: HashMap<SendControlKey, SendControl>,
     views: HashMap<
@@ -889,6 +891,7 @@ fn render_owner(
     state: &ViewState,
     owner: DevicePanelOwner,
 ) -> Stateful<Div> {
+    automation_playback::begin(view);
     match owner {
         DevicePanelOwner::Main => {
             return_view::render(view, window, cx, state, EffectBusOwner::Main).on_drop(
@@ -971,6 +974,7 @@ fn render_source(
         class: NativeDeviceClass::Instrument,
         type_id: metadata.type_id,
     };
+    automation_playback::sample(view, device, identity.class, Some(&metadata));
     view.device_panel.views.insert(
         device.id(),
         (identity.class, device.state().clone(), Ok(metadata.clone())),
@@ -2657,6 +2661,12 @@ fn render_effect(
                     hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
                 })
         });
+    automation_playback::sample(
+        view,
+        device,
+        NativeDeviceClass::Effect,
+        device_view.as_ref().ok(),
+    );
     let leading = bypass_action(view, device, NativeDeviceClass::Effect, cx);
     let header_actions = device_actions(view, device, selected, device_view.is_ok(), cx);
     let rendered = match &device_view {
@@ -3395,6 +3405,12 @@ fn render_instrument(
                 hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
             })
     });
+    automation_playback::sample(
+        view,
+        device,
+        NativeDeviceClass::Instrument,
+        device_view.as_ref().ok(),
+    );
     let is_operator = device.state().type_id().as_str() == Ok("hex.instrument.operator");
     let is_sampler = device.state().type_id().as_str() == Ok("hex.instrument.sampler");
     let leading = bypass_action(view, device, NativeDeviceClass::Instrument, cx);

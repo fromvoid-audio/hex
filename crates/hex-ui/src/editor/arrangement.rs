@@ -137,6 +137,7 @@ impl EditorView {
         self.sync_track_layout(state.project.tracks());
         let viewport = self.visible_viewport(state.timeline_frames);
         let clip_move_guide = self.displayed_clip_move_guide_frame(viewport);
+        let clip_editor_start = self.focused_clip_editor_play_start(window);
         let guide_line = clip_move_guide
             .and_then(|frame| viewport.fraction(frame))
             .map(|position| {
@@ -175,7 +176,7 @@ impl EditorView {
                 .flex()
                 .flex_col()
                 .bg(rgb(theme::color(theme::PaletteRole::Background)))
-                .child(self.ruler(&state, ruler_width, clip_move_guide, cx))
+                .child(self.ruler(&state, ruler_width, clip_move_guide, clip_editor_start, cx))
                 .children(self.locator_strip(&locator_state, empty_viewport, ruler_width, cx))
                 .child(super::loop_rail::view(
                     self,
@@ -228,7 +229,12 @@ impl EditorView {
                                 self.track_header_width(),
                                 "locator-line",
                             )])
-                            .children(self.edit_cursor_layer(empty_viewport, clip_move_guide, cx)),
+                            .children(self.edit_cursor_layer(
+                                empty_viewport,
+                                clip_move_guide,
+                                clip_editor_start,
+                                cx,
+                            )),
                     ),
                     cx,
                 )]);
@@ -327,14 +333,19 @@ impl EditorView {
             self.track_header_width(),
             "locator-line",
         )]);
-        content = content.children(self.edit_cursor_layer(viewport, clip_move_guide, cx));
+        content = content.children(self.edit_cursor_layer(
+            viewport,
+            clip_move_guide,
+            clip_editor_start,
+            cx,
+        ));
         content = content.children(self.track_reorder_line());
         let upper = div()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
-            .child(self.ruler(&state, ruler_width, clip_move_guide, cx))
+            .child(self.ruler(&state, ruler_width, clip_move_guide, clip_editor_start, cx))
             .children(self.locator_strip(&locator_state, viewport, ruler_width, cx))
             .child(super::loop_rail::view(self, &state, viewport, &grid, cx))
             .children([self.arrangement_body(content, cx)])
@@ -765,6 +776,25 @@ impl EditorView {
             );
         }
         body = body.children(self.arrangement_device_drop_preview());
+        if let Some(drag) = self.active_browser_audio_drag.as_ref()
+            && self.browser_sampler_drop_ready(drag, cx).is_ok()
+            && let Some(line_y) = self.sampler_load.header_insertion_line_y
+            && let Some(bounds) = self.arrangement_bounds
+            && line_y >= bounds.top
+            && line_y < bounds.top + bounds.height
+        {
+            body = body.child(
+                div()
+                    .id("sampler-track-insert-preview")
+                    .debug_selector(|| "sampler-track-insert-preview".to_owned())
+                    .absolute()
+                    .right_0()
+                    .top(px((line_y - bounds.top - 1.0).max(0.0)))
+                    .w(px(header_width))
+                    .h(px(2.0))
+                    .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
+            );
+        }
         let insertion_line_y = if self
             .state()
             .is_some_and(|state| state.project.tracks().is_empty())
@@ -1020,7 +1050,13 @@ impl EditorView {
                 entity.update(cx, |_, cx| cx.notify());
             })
             .on_drop(cx.listener(|view, payload: &BrowserAudioDrag, window, cx| {
-                view.drop_browser_audio(payload, window, cx);
+                if let Some((before_track, _)) =
+                    view.painted_sampler_track_gap(window.mouse_position())
+                {
+                    view.drop_browser_sample_on_new_track(payload, before_track, cx);
+                } else {
+                    view.drop_browser_audio(payload, window, cx);
+                }
             }))
             // Continue the typed move once per input, even when the source
             // clip leaves the virtualized rows. Child receivers own release.
@@ -1079,6 +1115,12 @@ impl EditorView {
             )
         });
         let lane_entity = cx.entity();
+        let section_coverage = state
+            .as_ref()
+            .filter(|state| !state.project.arrangement_sections().is_empty())
+            .map(|_| crate::section_surface::SectionCoverage::default());
+        let section_elements =
+            self.section_elements(viewport, scale, window, cx, section_coverage.as_ref());
         let lane = div()
             .id("main-track-lane")
             .debug_selector(|| "main-track-lane".to_owned())
@@ -1087,9 +1129,13 @@ impl EditorView {
             .min_w_0()
             .h_full()
             .children([main_track_grid_layer(bands, lines, viewport, scale)])
-            .child(super::arrangement_map::view(self, viewport))
+            .child(super::arrangement_map::view(
+                self,
+                viewport,
+                section_coverage,
+            ))
             .children(self.main_time_selection_overlay(viewport))
-            .children(self.section_elements(viewport, scale, window, cx))
+            .children(section_elements)
             .children([self.section_pointer_events(cx)])
             .children(automation)
             .child(
@@ -1210,6 +1256,7 @@ impl EditorView {
         state: &ViewState,
         ruler_width: f32,
         clip_move_guide: Option<u64>,
+        clip_editor_start: Option<u64>,
         cx: &mut Context<Self>,
     ) -> Div {
         let viewport = self.visible_viewport(state.timeline_frames);
@@ -1387,6 +1434,7 @@ impl EditorView {
                 viewport,
                 hex_widgets::TimeMarkerEdge::Top,
                 clip_move_guide,
+                clip_editor_start,
                 cx,
             ));
         super::timeline_strip::ruler_surface()

@@ -324,3 +324,111 @@ fn delay_bypass_preserves_audible_continuity_on_track_return_and_main() {
         assert!(step < 0.003, "location {location}: bypass step {step:?}");
     }
 }
+
+#[test]
+fn pasted_delay_starts_empty_while_the_unchanged_source_track_keeps_its_echoes() {
+    use hex_project::{DeviceChainOwner, DeviceSelectionIds};
+
+    const RATE: u32 = 48_000;
+    const FRAMES: usize = 2_048;
+    const CUT: usize = 128;
+    const COPY_INPUT_FRAME: usize = 731;
+    const ECHO_FRAMES: usize = 480;
+    const ORIGINAL_INPUT: Frame = [0.25, -0.125];
+    const COPY_INPUT: Frame = [0.125, 0.0625];
+
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 4).unwrap();
+    let [(source_track, source_asset), (target_track, target_asset)] =
+        ["source input", "copy input"].map(|name| {
+            let Created::Imported { track, asset, .. } = editor
+                .execute(Command::ImportPreparedAudioTrack {
+                    name: name.into(),
+                    path: format!("memory/{name}.wav").into(),
+                    source_sample_rate: RATE,
+                    source_frames: FRAMES as u64,
+                    playback_frames: FRAMES as u64,
+                    conversion_version: hex_project::IDENTITY_CONVERSION,
+                })
+                .unwrap()
+            else {
+                panic!("delay copy input track");
+            };
+            (track, asset)
+        });
+    let state = delay_state();
+    let Created::Device(original) = editor
+        .execute(Command::InsertDevice {
+            track: source_track,
+            before: None,
+            state: state.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("original delay");
+    };
+    let impulse = |index, frame| {
+        let mut pcm = vec![[0.0; 2]; FRAMES];
+        pcm[index] = frame;
+        crate::Audio::new(RATE, pcm).unwrap()
+    };
+    let media = BTreeMap::from([
+        (source_asset, impulse(0, ORIGINAL_INPUT)),
+        (target_asset, impulse(COPY_INPUT_FRAME, COPY_INPUT)),
+    ]);
+    let table = Arc::new(hex_devices::SineTable::new());
+    let prepare = |project: &Project, previous: Option<&PreparedSessionInventory>| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), previous).unwrap())
+    };
+    let mut previous = SessionPlayback::new(prepare(editor.project(), None)).unwrap();
+    previous.apply(SessionPlaybackCommand::Play).unwrap();
+    assert_eq!(render(&mut previous, CUT), [[0.0; 2]; CUT]);
+
+    let clipboard = Arc::new(
+        editor
+            .project()
+            .capture_devices(
+                DeviceChainOwner::Track(source_track),
+                &DeviceSelectionIds::new(&[original]).unwrap(),
+            )
+            .unwrap(),
+    );
+    editor
+        .execute(Command::PasteDevices {
+            clipboard,
+            owner: DeviceChainOwner::Track(target_track),
+            before: None,
+        })
+        .unwrap();
+    let source = &editor.project().track(source_track).unwrap().devices()[0];
+    let copy = &editor.project().track(target_track).unwrap().devices()[0];
+    assert_eq!(source.id(), original);
+    assert_ne!(copy.id(), original);
+    assert_eq!(source.state(), &state);
+    assert_eq!(copy.state(), &state);
+
+    let revision = prepare(editor.project(), Some(previous.revision.session()));
+    let mut candidate = SessionPlayback::new(revision).unwrap();
+    candidate.try_inherit_state_from(&mut previous).unwrap();
+    assert_eq!(candidate.arrangement_frame(), CUT as u64);
+    let actual = render(&mut candidate, FRAMES - CUT);
+
+    // The two independent series have different input frames and stereo values.
+    let mut expected = [[0.0; 2]; FRAMES];
+    for (onset, mut echo) in [(0, ORIGINAL_INPUT), (COPY_INPUT_FRAME, COPY_INPUT)] {
+        for frame in (onset + ECHO_FRAMES..FRAMES).step_by(ECHO_FRAMES) {
+            expected[frame] = echo;
+            echo = echo.map(|sample| sample * 0.5);
+        }
+    }
+    for (offset, (actual, expected)) in actual.iter().zip(&expected[CUT..]).enumerate() {
+        assert!(
+            actual
+                .iter()
+                .zip(expected)
+                .all(|(a, e)| (a - e).abs() < 2.0e-6),
+            "frame {}: {actual:?} expected {expected:?}",
+            CUT + offset,
+        );
+    }
+    assert_eq!(candidate.arrangement_frame(), FRAMES as u64);
+}

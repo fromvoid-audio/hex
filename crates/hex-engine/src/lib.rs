@@ -36,6 +36,7 @@ pub use hex_devices::saturator::{
 pub use hex_lattice::ProcessorAuditionSelection;
 pub use hex_lattice::ProcessorChainOwner;
 pub use hex_lattice_contract::DeviceTypeId;
+pub use hex_warp::{Error as TransientDetectionError, detect_transients};
 pub mod compensation;
 pub mod foreign_automation;
 
@@ -1594,10 +1595,6 @@ impl Track {
         self.mutable_instrument = mutable;
         self.mutable_looping_source = mutable && looping_source;
         self
-    }
-
-    pub(crate) fn has_mutable_looping_source(&self) -> bool {
-        self.mutable_looping_source
     }
 
     pub(crate) fn has_mutable_instrument(&self) -> bool {

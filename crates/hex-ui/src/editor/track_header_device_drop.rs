@@ -123,6 +123,14 @@ impl EditorView {
         track: TrackId,
         cx: &App,
     ) -> Result<&hex_project::Track, &'static str> {
+        self.check_device_append_ready(cx)?;
+        self.state
+            .as_ref()
+            .and_then(|state| state.project.track(track))
+            .ok_or("device drop target is no longer available")
+    }
+
+    pub(super) fn check_device_append_ready(&self, cx: &App) -> Result<(), &'static str> {
         if self.save_dialog_open
             || self.export_dialog_open
             || self.export_pending
@@ -138,12 +146,7 @@ impl EditorView {
         {
             return Err("finish pending edits before dropping a device");
         }
-        let target = self
-            .state
-            .as_ref()
-            .and_then(|state| state.project.track(track))
-            .ok_or("device drop target is no longer available")?;
-        Ok(target)
+        Ok(())
     }
 
     pub(super) fn browser_device_append_request(
@@ -191,10 +194,13 @@ impl EditorView {
         let sample_owner = owner.clone();
         header
             .drag_over::<BrowserAudioDrag>(move |style, drag, _, cx| {
-                if sample_owner
-                    .read(cx)
-                    .browser_sampler_drop_track(drag, Some(track), cx)
-                    .is_ok()
+                let view = sample_owner.read(cx);
+                let is_gap = view.mode == super::EditorMode::Arrangement
+                    && view.sampler_load.header_insertion_line_y.is_some();
+                if !is_gap
+                    && view
+                        .browser_sampler_drop_track(drag, Some(track), cx)
+                        .is_ok()
                 {
                     let color = rgb(theme::color(theme::PaletteRole::Secondary));
                     style
@@ -204,11 +210,22 @@ impl EditorView {
                     style
                 }
             })
-            .on_drop(super::sampler_load::track_drop_listener(
-                cx,
-                Some(track),
-                hex_project::InstrumentLoadPlacement::First,
-            ))
+            .on_drop(
+                cx.listener(move |view, drag: &BrowserAudioDrag, window, cx| {
+                    if let Some((before_track, _)) =
+                        view.painted_sampler_track_gap(window.mouse_position())
+                    {
+                        view.drop_browser_sample_on_new_track(drag, before_track, cx);
+                    } else {
+                        view.drop_browser_sample_on_track(
+                            drag,
+                            Some(track),
+                            hex_project::InstrumentLoadPlacement::First,
+                            cx,
+                        );
+                    }
+                }),
+            )
             .drag_over::<NativeDeviceDrag>(move |style, drag, window, cx| {
                 let valid = owner
                     .read(cx)

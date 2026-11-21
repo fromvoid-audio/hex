@@ -1685,10 +1685,12 @@ fn catalog_empty_sampler_fills_same_device_and_reaches_native_current_from_ordin
         request_id: 9,
         project_generation: h.context.unwrap().project_generation,
         revision: before.state.revision,
-        track,
-        slot: hex_session::service::SamplerLoadSlot::Existing {
-            device: device.id(),
-            expected_state: device.state().clone(),
+        target: hex_session::service::SamplerLoadTarget::Track {
+            track,
+            slot: hex_session::service::SamplerLoadSlot::Existing {
+                device: device.id(),
+                expected_state: device.state().clone(),
+            },
         },
         path: wav(&files, false),
         cancel: Arc::new(AtomicBool::new(false)),
@@ -1745,10 +1747,12 @@ fn sampler_bypass_keeps_held_note_continuous_in_the_actual_callback() {
         request_id: 99,
         project_generation: 0,
         revision: added.state.revision,
-        track,
-        slot: hex_session::service::SamplerLoadSlot::New(
-            hex_project::InstrumentLoadPlacement::First,
-        ),
+        target: hex_session::service::SamplerLoadTarget::Track {
+            track,
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
+        },
         path: files.wav(48_000, 65_536),
         cancel: Arc::new(AtomicBool::new(false)),
     });
@@ -1868,10 +1872,12 @@ fn long_sampler_release(post_utility: bool, gain_db: f32) {
         request_id: 99,
         project_generation: 0,
         revision: added.state.revision,
-        track,
-        slot: hex_session::service::SamplerLoadSlot::New(
-            hex_project::InstrumentLoadPlacement::First,
-        ),
+        target: hex_session::service::SamplerLoadTarget::Track {
+            track,
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
+        },
         path: files.wav(48_000, 65_536),
         cancel: Arc::new(AtomicBool::new(false)),
     });

@@ -685,7 +685,16 @@ fn finite_frame_drag_preserves_the_cycle_markers_and_root_waveform(cx: &mut Test
 fn warped_event_drag_snaps_on_both_sides_and_keeps_the_waveform_through_ack(
     cx: &mut TestAppContext,
 ) {
-    use hex_project::{BeatTime, Command, Tempo, WarpMode};
+    warped_drag_through_ack(cx, false);
+}
+
+#[gpui::test]
+fn scoped_warped_event_drag_keeps_the_scope_and_waveform_through_ack(cx: &mut TestAppContext) {
+    warped_drag_through_ack(cx, true);
+}
+
+fn warped_drag_through_ack(cx: &mut TestAppContext, scoped: bool) {
+    use hex_project::{AudioViewResizeOperation, BeatTime, Command, Tempo, WarpMode};
     let (files, mut visual, editor, clip) = open(cx);
     let settings = editor.read_with(&visual, |v, _| {
         let project = &v.state.as_ref().unwrap().project;
@@ -722,6 +731,27 @@ fn warped_event_drag_snaps_on_both_sides_and_keeps_the_waveform_through_ack(
             at: root.domain.clock.length() / 4,
         },
     );
+    if scoped {
+        let length = root.domain.clock.length();
+        for operation in [
+            AudioViewResizeOperation::ScopeRange {
+                start: 0,
+                end: length * 3 / 4,
+                looping: true,
+            },
+            AudioViewResizeOperation::PlayStart {
+                position: length / 8,
+            },
+        ] {
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(Command::ResizeAudioClipView {
+                    clip,
+                    operation
+                })));
+            });
+            pump(&editor, &mut visual);
+        }
+    }
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
     for direction in [-0.26, 0.44] {
         editor.update(&mut visual, |v, cx| {
@@ -758,7 +788,27 @@ fn warped_event_drag_snaps_on_both_sides_and_keeps_the_waveform_through_ack(
             else {
                 panic!("signed placement")
             };
-            assert_eq!(start.unsigned_abs() % BeatTime::ONE.raw(), 0);
+            // A phased scope has its own processing origin. Check the ruler's
+            // project-frame grid instead of testing raw source beat ticks.
+            let state = v.state.as_ref().unwrap();
+            let tempo = state.project.tempo_map();
+            let clip = state.project.clip(clip).unwrap();
+            let root = clip.audio_event_root();
+            let anchor = root.root_frame_at(event_grid_origin(&root), tempo).unwrap();
+            let frame = i128::from(clip.start())
+                + root
+                    .signed_root_frame_at(i128::from(*start), tempo)
+                    .unwrap()
+                - i128::from(anchor);
+            assert_eq!(
+                SnapGrid::Quarter.snap_signed_frame(
+                    &state.project,
+                    frame,
+                    v.event_project_window(&root).unwrap(),
+                    f32::from(lane.size.width),
+                ),
+                Some(frame)
+            );
         });
         visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
         for _ in 0..3 {
@@ -780,6 +830,10 @@ fn warped_event_drag_snaps_on_both_sides_and_keeps_the_waveform_through_ack(
                 (previous.start(), previous.duration())
             );
             assert!(c.audio_event_root().domain.musical_event_source.is_some());
+            assert_eq!(
+                c.audio_event_root().placement,
+                previous.audio_event_root().placement
+            );
             project.clone()
         });
         editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));

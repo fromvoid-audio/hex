@@ -59,7 +59,8 @@ impl NativeEndpointBank {
         binding: Binding,
         frames: u32,
     ) -> Result<Option<hex_lattice::MainPassDelay>, DeviceContractError> {
-        self.pass_endpoint(binding)?.settled_main_pass_delay(frames)
+        self.active_endpoint(binding)?
+            .settled_main_pass_delay(frames)
     }
 
     /// Read the health and exact accepted Return bypass timestamp. Engine owns
@@ -70,11 +71,11 @@ impl NativeEndpointBank {
         binding: Binding,
         frame: u64,
     ) -> Result<bool, DeviceContractError> {
-        self.pass_endpoint(binding)?
+        self.active_endpoint(binding)?
             .settled_return_pass(identity, frame)
     }
 
-    fn pass_endpoint(&self, binding: Binding) -> Result<&NativeEffectEntry, DeviceContractError> {
+    fn active_endpoint(&self, binding: Binding) -> Result<&NativeEffectEntry, DeviceContractError> {
         if self.cycle.revoked() {
             return Err(DeviceContractError::ForeignProcessingUnavailable);
         }

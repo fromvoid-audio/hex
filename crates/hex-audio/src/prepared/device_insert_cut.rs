@@ -78,6 +78,13 @@ impl Callback {
             .playback
             .advance_native_removal_from(&mut active.playback)
             .map_err(PlaybackHandoffRejection::from_error)?;
+        if next
+            .playback
+            .pending_hosted_track_effect_deadline()
+            .is_some_and(|deadline| active.playback.performance_frame() > deadline)
+        {
+            return Err(PlaybackHandoffRejection::RuntimeFenceChanged);
+        }
         if progress == NativeRemovalProgress::Fading {
             return Ok(false);
         }

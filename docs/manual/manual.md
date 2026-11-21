@@ -316,7 +316,8 @@ in the top toolbar and click a section body to start and loop that section.
 pause even while the button has focus. the launch dropdown in the toolbar also
 sets quantization for console clip and scene launches: **none**, **8 bars**,
 **4 bars**, **2 bars**, **1 bar**, **1/2**, **1/2t**, **1/4**, **1/4t**, **1/8**,
-**1/8t**, **1/16**, **1/16t**, or **1/32**. **t** means triplet timing.
+**1/8t**, **1/16**, **1/16t**, or **1/32**. the default is **1 bar**.
+**t** means triplet timing.
 when a console launch replaces a playing audio clip, the outgoing clip fades
 briefly as the new one begins.
 
@@ -675,6 +676,22 @@ into a source-event container is currently unsupported.
 outside a focused audio time-selection context, **command+f** keeps browser search.
 plain **f** keeps its momentary fade-handle behavior.
 
+## warp markers in audio events
+
+choose **events** in the audio clip editor. a short muted tick marks a detected
+attack on the waveform. double-click a tick to pin that source frame to the
+timeline and enable warp. double-click the top edge of the event between ticks
+to pin a different position.
+
+drag a pin to move its source frame to a new beat. with warp enabled you can
+also drag a detected tick to pin and move it in one gesture. the adjacent pins
+stay in place. double-click an interior pin to remove it. the region endpoints
+are fixed. one undo restores the previous map, and saving the project keeps its
+authored pins.
+
+direct pin editing is available for a single complete, forward, unlooped event
+with neutral pitch. automatic ticks require resident source audio.
+
 ## audio event fades
 
 the **scope bar** at the top of each clip editor defines the clip's **scope**.
@@ -691,7 +708,11 @@ falls silent after the remaining audio ends. zooming or scrolling can move the
 marker out of view; it returns when that source position is visible again.
 
 select an audio clip and choose **events** in its detail area. focus the event
-waveform and select an event, then press **c** or **0** to change its activation.
+waveform and drag an event by its header to place it on either side of the scope.
+pan or zoom out to reach more of the timeline. the scope stays where it is, and
+events outside it stay available for editing. extend the scope to play them.
+
+select an event, then press **c** or **0** to change its activation.
 inactive events keep their source and position and contribute silence. hold **f**
 to show its fade controls. release **f** to hide default
 controls; edited fades remain visible. the computer midi keyboard must be off.
@@ -833,10 +854,11 @@ is currently resolved at audio-block boundaries; sustain and mpe are not include
 
 ## input quantization
 
-use **in off ▾** in the transport to choose off, quarter notes (1/4), eighth notes
+use **in 1/16 ▾** in the transport to choose off, quarter notes (1/4), eighth notes
 (1/8), sixteenth notes (1/16), or adaptive. the same setting controls recorded midi
-note starts and browser sample insertion with enter. the browser's grid button
-switches between off and adaptive; choose a fixed subdivision in the transport.
+note starts and browser sample insertion with enter. the default is **1/16**.
+the browser's grid button switches between off and adaptive; choose a fixed
+subdivision in the transport.
 
 fixed subdivisions work independently of the arrangement snap toggle. adaptive
 uses the arrangement's visible grid and density, so enable that grid first.

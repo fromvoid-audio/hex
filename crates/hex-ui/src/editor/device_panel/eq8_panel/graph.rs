@@ -581,14 +581,13 @@ fn effective_state(
 ) -> Option<NativeDeviceState> {
     let mut state = canonical_state.clone();
     for parameter in &device_view.parameters {
-        let effective = super::super::eq_automation::effective_value(
+        let effective = super::super::effective_parameter_value(
             view,
             ParameterKey {
                 device,
                 parameter: parameter.descriptor.id,
             },
-            device_view.type_id,
-            parameter,
+            parameter.value,
         );
         if effective != parameter.value {
             state = hex_engine::patch_native_device_parameter_for_class(
@@ -628,14 +627,13 @@ pub(super) fn value(
     parameter_id: ParameterId,
 ) -> Option<ParameterValue> {
     let parameter = parameter(device_view.parameters.as_slice(), parameter_id)?;
-    Some(super::super::eq_automation::effective_value(
+    Some(super::super::effective_parameter_value(
         view,
         ParameterKey {
             device,
             parameter: parameter_id,
         },
-        device_view.type_id,
-        parameter,
+        parameter.value,
     ))
 }
 

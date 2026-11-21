@@ -635,7 +635,7 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +    group_members: Vec<(TreeBounds<U>, u32)>,
 @@ -32,0 +33 @@
 +        self.group_members.clear();
-@@ -36,11 +37,189 @@
+@@ -36,11 +37,190 @@
 -        // If the tree is empty, make the root the new leaf.
 -        if self.root.is_none() {
 -            let new_node = self.push_leaf(new_bounds, 1);
@@ -710,16 +710,17 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +        for (raw, order) in bounds.iter().zip(orders) {
 +            let rect = TreeBounds::from_bounds(raw);
 +            let mut local_max = 0;
-+            let mut identical_overlap = false;
++            let mut covered_by_prior_member = false;
 +            for (member, rank) in &self.group_members[start..] {
 +                if *rank > local_max && rect.intersects(member) {
 +                    local_max = *rank;
-+                    identical_overlap |= *member == rect;
++                    covered_by_prior_member = covered_by_prior_member || member.contains(&rect);
 +                }
 +            }
-+            // An overlapping identical member already follows every relevant
-+            // leaf in the main tree. Rounded-flat bounds can fail self-overlap.
-+            let before = if identical_overlap {
++            // The earlier containing member already follows every older leaf
++            // that can overlap this rectangle. Require intersection as well:
++            // rounded-flat bounds can contain each other without overlapping.
++            let before = if covered_by_prior_member {
 +                local_max
 +            } else {
 +                self.root
@@ -836,7 +837,7 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +        let a = &self.nodes[left];
 +        let b = &self.nodes[right];
 +        Node::Internal {
-@@ -49,60 +228,48 @@
+@@ -49,60 +229,48 @@
 -            bounds: node_bounds,
 -            ..
 -        } = &mut self.nodes[index]
@@ -945,7 +946,7 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +                self.rotate_left(left);
 +            }
 +            self.rotate_right(index);
-@@ -110,72 +277,2 @@
+@@ -110,72 +278,2 @@
 -            // If the old parent was the root, the new parent is the new root.
 -            self.root = Some(new_parent);
 -        }
@@ -1020,7 +1021,7 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 -        self.nodes.len() - 1
 +            self.set_internal(index, left, right);
 +        }
-@@ -194 +291,35 @@
+@@ -194 +292,41 @@
 -        }
 +            group_members: Vec::new(),
 +        }
@@ -1055,27 +1056,33 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +            && self.min.y < other.max.y
 +            && self.max.y > other.min.y
 +    }
++    fn contains(&self, other: &Self) -> bool {
++        self.min.x <= other.min.x
++            && self.min.y <= other.min.y
++            && self.max.x >= other.max.x
++            && self.max.y >= other.max.y
++    }
 +    fn half_perimeter(&self) -> U {
 +        (self.max.x.clone() - self.min.x.clone()) + (self.max.y.clone() - self.min.y.clone())
-@@ -204 +335 @@
+@@ -204 +342 @@
 -        bounds: Bounds<U>,
 +        bounds: TreeBounds<U>,
-@@ -205,0 +337,6 @@
+@@ -205,0 +344,6 @@
 +    },
 +    Group {
 +        bounds: TreeBounds<U>,
 +        start: usize,
 +        end: usize,
 +        max_order: u32,
-@@ -210 +347 @@
+@@ -210 +354 @@
 -        bounds: Bounds<U>,
 +        bounds: TreeBounds<U>,
-@@ -211,0 +349 @@
+@@ -211,0 +356 @@
 +        height: usize,
-@@ -219 +357 @@
+@@ -219 +364 @@
 -    fn bounds(&self) -> &Bounds<U> {
 +    fn bounds(&self) -> &TreeBounds<U> {
-@@ -222 +360,8 @@
+@@ -222 +367,8 @@
 -            Node::Internal { bounds, .. } => bounds,
 +            Node::Group { bounds, .. } | Node::Internal { bounds, .. } => bounds,
 +        }
@@ -1085,7 +1092,7 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +        match self {
 +            Self::Leaf { .. } | Self::Group { .. } => 0,
 +            Self::Internal { height, .. } => *height,
-@@ -231,5 +376,220 @@
+@@ -231,5 +383,246 @@
 -            Node::Internal {
 -                max_order: max_ordering,
 -                ..
@@ -1244,6 +1251,32 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +                .is_some()
 +                && orders == [2, 2],
 +            "rounded-flat group member lost its earlier cover",
++        )?;
++
++        // An inset member may reuse its cover's ordering proof. A member
++        // crossing outside the cover still needs an older-tree query.
++        let mut contained_group = BoundsTree::default();
++        let blocker = rect(1.0, 0.0, 2.0, 4.0);
++        for order in 1..=3 {
++            require(
++                contained_group.insert(blocker) == order,
++                "older overlap rank",
++            )?;
++        }
++        let frame = rect(4.0, 0.0, 4.0, 4.0);
++        let inset = rect(5.0, 1.0, 2.0, 2.0);
++        let crossing = rect(2.0, 1.0, 4.0, 2.0);
++        let mut orders = [0; 3];
++        require(
++            contained_group
++                .insert_group(&[frame, inset, crossing], &mut orders)
++                .is_some()
++                && orders == [1, 2, 4],
++            "contained group member changed the ordinary order of its crossing neighbor",
++        )?;
++        require(
++            contained_group.insert(rect(5.5, 1.25, 1.0, 0.5)) == 5,
++            "later draw lost the crossing member's rank",
 +        )?;
 +
 +        // A union represented as origin + size may round its far edge inward.
@@ -5750,11 +5783,11 @@ diff --git a/src/view.rs b/src/view.rs
 diff --git a/src/window.rs b/src/window.rs
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -55,0 +56,3 @@
+@@ -55,0 +56,3 @@ use uuid::Uuid;
 +/// Shared threshold for pointer hover suppression and typed drag initiation.
 +pub(crate) const POINTER_DRAG_THRESHOLD: f64 = 2.;
 +
-@@ -464,0 +468,22 @@
+@@ -464,0 +468,22 @@ pub(crate) type AnyMouseListener =
 +type CapturedMouseListener = Box<dyn FnMut(&dyn Any, &mut Window, &mut App)>;
 +
 +// One control-side lease. The owner must witness its live held gesture in paint;
@@ -5777,18 +5810,18 @@ diff --git a/src/window.rs b/src/window.rs
 +    painted_hover: bool,
 +}
 +
-@@ -659 +684 @@
+@@ -659 +684 @@ pub(crate) struct DeferredDraw {
 -    element_id_stack: SmallVec<[ElementId; 32]>,
 +    element_id_stack: SmallVec<[ElementId; 8]>,
-@@ -667,0 +693 @@
+@@ -667,0 +693 @@ pub(crate) struct Frame {
 +    pub(crate) accessibility: crate::accessibility::AccessibilityFrame,
-@@ -680,0 +707,2 @@
+@@ -680,0 +707,2 @@ pub(crate) struct Frame {
 +    pointer_hover_observers: Vec<PointerHoverObserver>,
 +    pointer_capture_owners: Vec<EntityId>,
-@@ -682 +710 @@
+@@ -682 +710 @@ pub(crate) struct Frame {
 -    pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
 +    pub(crate) debug_bounds: DebugBounds,
-@@ -689,0 +718,33 @@
+@@ -689,0 +718,33 @@ pub(crate) struct Frame {
 +// Test selectors follow paint ordering, including cached and nested view replay.
 +// Retaining only the final map loses each cached view's insertion range and can
 +// incorrectly restore another view's later overwrite of the same selector.
@@ -5822,36 +5855,36 @@ diff --git a/src/window.rs b/src/window.rs
 +    }
 +}
 +
-@@ -691,0 +753 @@
+@@ -691,0 +753 @@ pub(crate) struct PrepaintStateIndex {
 +    accessibility_index: usize,
-@@ -705,0 +768,2 @@
+@@ -705,0 +768,2 @@ pub(crate) struct PaintIndex {
 +    pointer_hover_observers_index: usize,
 +    pointer_capture_owners_index: usize,
-@@ -708,0 +773,2 @@
+@@ -708,0 +773,2 @@ pub(crate) struct PaintIndex {
 +    #[cfg(any(test, feature = "test-support"))]
 +    debug_bounds_index: usize,
-@@ -713,0 +780 @@
+@@ -713,0 +780 @@ impl Frame {
 +            accessibility: Default::default(),
-@@ -726,0 +794,2 @@
+@@ -726,0 +794,2 @@ impl Frame {
 +            pointer_hover_observers: Vec::new(),
 +            pointer_capture_owners: Vec::new(),
-@@ -729 +798 @@
+@@ -729 +798 @@ impl Frame {
 -            debug_bounds: FxHashMap::default(),
 +            debug_bounds: DebugBounds::default(),
-@@ -740,0 +810 @@
+@@ -740,0 +810 @@ impl Frame {
 +        self.accessibility = Default::default();
-@@ -748,0 +819,2 @@
+@@ -748,0 +819,2 @@ impl Frame {
 +        self.pointer_hover_observers.clear();
 +        self.pointer_capture_owners.clear();
-@@ -754,0 +827,3 @@
+@@ -754,0 +827,3 @@ impl Frame {
 +        #[cfg(any(test, feature = "test-support"))]
 +        self.debug_bounds.clear();
 +
-@@ -762,0 +838,3 @@
+@@ -762,0 +838,3 @@ impl Frame {
 +        if let Some(capture) = &window.pointer_capture {
 +            return Some(capture.cursor);
 +        }
-@@ -817,0 +896,9 @@
+@@ -817,0 +896,9 @@ impl Frame {
 +// A frame-owned cursor override must restore even when its window is destroyed.
 +struct HiddenCursorRestore(Rc<dyn crate::Platform>);
 +
@@ -5861,17 +5894,17 @@ diff --git a/src/window.rs b/src/window.rs
 +    }
 +}
 +
-@@ -822,0 +910 @@
+@@ -822,0 +910 @@ pub struct Window {
 +    hidden_cursor_restore: Option<HiddenCursorRestore>,
-@@ -836 +924 @@
+@@ -836 +924 @@ pub struct Window {
 -    pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
 +    pub(crate) element_id_stack: SmallVec<[ElementId; 8]>,
-@@ -855,0 +944,4 @@
+@@ -855,0 +944,4 @@ pub struct Window {
 +    pointer_press: Option<(MouseButton, Point<Pixels>)>,
 +    pointer_dragging: bool,
 +    pointer_capture: Option<PointerCapture>,
 +    suppressed_pointer_ups: SmallVec<[MouseButton; 5]>,
-@@ -1037,6 +1129,5 @@
+@@ -1037,6 +1129,5 @@ impl Window {
 -                // Keep presenting the current scene for 1 extra second since the
 -                // last input to prevent the display from underclocking the refresh rate.
 -                let needs_present = request_frame_options.require_presentation
@@ -5883,24 +5916,24 @@ diff --git a/src/window.rs b/src/window.rs
 +                // Keep the display warm for one second after ordinary input.
 +                let keepalive = active.get()
 +                    && last_input_timestamp.get().elapsed() < Duration::from_secs(1);
-@@ -1055 +1146 @@
+@@ -1055 +1146 @@ impl Window {
 -                } else if needs_present {
 +                } else if presentation_required || keepalive {
-@@ -1057 +1148,5 @@
+@@ -1057 +1148,5 @@ impl Window {
 -                        .update(&mut cx, |_, window, _| window.present())
 +                        .update(&mut cx, |_, window, _| {
 +                            if window.should_present_drawn_scene(presentation_required, keepalive) {
 +                                window.present();
 +                            }
 +                        })
-@@ -1097,0 +1193,6 @@
+@@ -1097,0 +1193,6 @@ impl Window {
 +                        if !active {
 +                            window.cancel_pointer_capture(cx);
 +                            window.hidden_cursor_restore.take();
 +                            window.pointer_press = None;
 +                            window.pointer_dragging = false;
 +                        }
-@@ -1123,0 +1225,10 @@
+@@ -1123,0 +1225,10 @@ impl Window {
 +        platform_window.on_accessibility_action({
 +            let mut cx = cx.to_async();
 +            Box::new(move |request: crate::AccessibilityRequest| {
@@ -5911,14 +5944,14 @@ diff --git a/src/window.rs b/src/window.rs
 +                    .unwrap_or(false)
 +            })
 +        });
-@@ -1210,0 +1322 @@
+@@ -1210,0 +1322 @@ impl Window {
 +            hidden_cursor_restore: None,
-@@ -1238,0 +1351,4 @@
+@@ -1238,0 +1351,4 @@ impl Window {
 +            pointer_press: None,
 +            pointer_dragging: false,
 +            pointer_capture: None,
 +            suppressed_pointer_ups: SmallVec::new(),
-@@ -1373,0 +1490,7 @@
+@@ -1373,0 +1490,7 @@ impl Window {
 +    /// Whether this window currently owns an invisible cursor override.
 +    /// Test support only: this does not establish physical cursor appearance.
 +    #[cfg(any(test, feature = "test-support"))]
@@ -5926,10 +5959,10 @@ diff --git a/src/window.rs b/src/window.rs
 +        self.hidden_cursor_restore.is_some()
 +    }
 +
-@@ -1375,0 +1499,2 @@
+@@ -1375,0 +1499,2 @@ impl Window {
 +        self.platform_window.revoke_accessibility();
 +        self.hidden_cursor_restore.take();
-@@ -1910,0 +2036,55 @@
+@@ -1910,0 +2036,55 @@ impl Window {
 +    /// Current bounded, actually mounted semantic nodes in rendered order.
 +    pub fn accessibility_nodes(&self) -> impl Iterator<Item = &crate::AccessibilityNode> {
 +        self.rendered_frame
@@ -5985,12 +6018,12 @@ diff --git a/src/window.rs b/src/window.rs
 +        })
 +    }
 +
-@@ -1943,0 +2124,4 @@
+@@ -1943,0 +2124,4 @@ impl Window {
 +        self.platform_window.publish_accessibility(
 +            self.accessibility_nodes().cloned().collect(),
 +            self.rendered_frame.accessibility.invalid,
 +        );
-@@ -1977,0 +2162,11 @@
+@@ -1977,0 +2162,11 @@ impl Window {
 +        if self.pointer_capture.as_ref().is_some_and(|capture| {
 +            !self
 +                .rendered_frame
@@ -6002,24 +6035,24 @@ diff --git a/src/window.rs b/src/window.rs
 +            self.cancel_pointer_capture(cx);
 +            self.reset_cursor_style(cx);
 +        }
-@@ -2003,0 +2199,8 @@
-+    }
-+
+@@ -2005,0 +2201,8 @@ impl Window {
 +    pub(crate) fn should_present_drawn_scene(&self, required: bool, keepalive: bool) -> bool {
 +        // Snapping and held previews can leave a scene unchanged across many
 +        // display requests. On macOS, skip optional drawable acquisition while
 +        // the gesture is held. A new paint or required presentation still runs.
 +        required
 +            || (keepalive && (!cfg!(target_os = "macos") || !self.is_pointer_dragging()))
-@@ -2088,0 +2292,5 @@
++    }
++
+@@ -2088,0 +2292,5 @@ impl Window {
 +        // Hoverable tooltips may otherwise retain themselves or wait through a
 +        // hide delay even after their source stops being eligible.
 +        if self.is_pointer_dragging() {
 +            return None;
 +        }
-@@ -2222,0 +2431 @@
+@@ -2222,0 +2431 @@ impl Window {
 +            accessibility_index: self.next_frame.accessibility.nodes.len(),
-@@ -2232,0 +2442,8 @@
+@@ -2232,0 +2442,8 @@ impl Window {
 +        for (node, callback) in &self.rendered_frame.accessibility.nodes
 +            [range.start.accessibility_index..range.end.accessibility_index]
 +        {
@@ -6028,13 +6061,13 @@ diff --git a/src/window.rs b/src/window.rs
 +                .insert(node.clone(), callback.clone());
 +        }
 +        self.next_frame.accessibility.invalid |= self.rendered_frame.accessibility.invalid;
-@@ -2286,0 +2504,2 @@
+@@ -2286,0 +2504,2 @@ impl Window {
 +            pointer_hover_observers_index: self.next_frame.pointer_hover_observers.len(),
 +            pointer_capture_owners_index: self.next_frame.pointer_capture_owners.len(),
-@@ -2289,0 +2509,2 @@
+@@ -2289,0 +2509,2 @@ impl Window {
 +            #[cfg(any(test, feature = "test-support"))]
 +            debug_bounds_index: self.next_frame.debug_bounds.insertion_history.len(),
-@@ -2293,0 +2515,21 @@
+@@ -2293,0 +2515,21 @@ impl Window {
 +        #[cfg(any(test, feature = "test-support"))]
 +        self.next_frame.debug_bounds.replay(
 +            &self.rendered_frame.debug_bounds.insertion_history
@@ -6056,7 +6089,15 @@ diff --git a/src/window.rs b/src/window.rs
 +                    painted_hover: observer.painted_hover,
 +                }),
 +        );
-@@ -2802,0 +3045,13 @@
+@@ -2549,0 +2792,7 @@ impl Window {
++    /// Whether the active element and its ancestors apply no opacity attenuation.
++    /// Call during paint. Individual fills can still have their own transparency.
++    pub fn is_paint_fully_opaque(&self) -> bool {
++        self.invalidator.debug_assert_paint();
++        self.element_opacity() == 1.0
++    }
++
+@@ -2802,0 +3052,13 @@ impl Window {
 +    /// Submit consecutive primitives while sharing one draw-order traversal
 +    /// entry. Each primitive keeps its ordinary overlap order. Layers, scene
 +    /// replay and groups exceeding the internal bound use ordinary insertion.
@@ -6070,7 +6111,7 @@ diff --git a/src/window.rs b/src/window.rs
 +        result
 +    }
 +
-@@ -2954,0 +3210,25 @@
+@@ -2954,0 +3217,25 @@ impl Window {
 +    ) -> Result<()> {
 +        self.paint_oriented_glyph(origin, font_id, glyph_id, font_size, color, false)
 +    }
@@ -6096,7 +6137,7 @@ diff --git a/src/window.rs b/src/window.rs
 +        font_size: Pixels,
 +        color: Hsla,
 +        vertical: bool,
-@@ -2988,0 +3269,9 @@
+@@ -2988,0 +3276,9 @@ impl Window {
 +            let transformation = if vertical {
 +                let Point { x, y } = glyph_origin;
 +                TransformationMatrix {
@@ -6106,10 +6147,10 @@ diff --git a/src/window.rs b/src/window.rs
 +            } else {
 +                TransformationMatrix::unit()
 +            };
-@@ -2996 +3285 @@
+@@ -2996 +3292 @@ impl Window {
 -                transformation: TransformationMatrix::unit(),
 +                transformation,
-@@ -3527,7 +3816,11 @@
+@@ -3527,7 +3823,11 @@ impl Window {
 -    fn reset_cursor_style(&self, cx: &mut App) {
 -        // Set the cursor only if we're the active window.
 -        if self.is_window_hovered() {
@@ -6128,7 +6169,7 @@ diff --git a/src/window.rs b/src/window.rs
 +            if self.hidden_cursor_restore.is_none() {
 +                self.hidden_cursor_restore = Some(HiddenCursorRestore(cx.platform.clone()));
 +            }
-@@ -3534,0 +3828,10 @@
+@@ -3534,0 +3835,10 @@ impl Window {
 +        } else {
 +            self.hidden_cursor_restore.take();
 +            if self.is_window_hovered() {
@@ -6139,7 +6180,7 @@ diff --git a/src/window.rs b/src/window.rs
 +                        style
 +                    });
 +            }
-@@ -3578,0 +3882,182 @@
+@@ -3578,0 +3889,182 @@ impl Window {
 +    /// Record a paint dependency on pressed-pointer hover state. Entries retain
 +    /// their insertion ranges through cached/deferred paint replay.
 +    pub(crate) fn observe_pointer_hover(
@@ -6322,7 +6363,7 @@ diff --git a/src/window.rs b/src/window.rs
 +        self.dispatch_event(event, cx);
 +    }
 +
-@@ -3587,0 +4073,57 @@
+@@ -3587,0 +4080,57 @@ impl Window {
 +        let was_dragging = self.is_pointer_dragging();
 +        // Retain isolation for the entire terminal event, even if cancellation
 +        // or the owner clears its lease while handling it.
@@ -6380,7 +6421,7 @@ diff --git a/src/window.rs b/src/window.rs
 +            }
 +            _ => {}
 +        }
-@@ -3664,0 +4207,7 @@
+@@ -3664,0 +4214,7 @@ impl Window {
 +        let pointer_hover_transition = was_dragging != self.is_pointer_dragging();
 +        let keyboard_hover_transition =
 +            event.keyboard_event().is_some() && pointer_hover_transition;
@@ -6388,7 +6429,7 @@ diff --git a/src/window.rs b/src/window.rs
 +            self.invalidate_pointer_hover();
 +            self.dispatch_pointer_hover(cx);
 +        }
-@@ -3666 +4215,6 @@
+@@ -3666 +4222,6 @@ impl Window {
 -            self.dispatch_mouse_event(any_mouse_event, cx);
 +            self.dispatch_mouse_event(
 +                any_mouse_event,
@@ -6396,9 +6437,7 @@ diff --git a/src/window.rs b/src/window.rs
 +                isolated_mouse_event,
 +                cx,
 +            );
-@@ -3668,0 +4223,38 @@
-+        }
-+
+@@ -3670,0 +4232,38 @@ impl Window {
 +        if keyboard_hover_transition {
 +            self.dispatch_pointer_hover(cx);
 +            self.invalidate_pointer_hover();
@@ -6435,7 +6474,9 @@ diff --git a/src/window.rs b/src/window.rs
 +        }
 +        if isolated_mouse_event != self.pointer_capture.is_some() {
 +            self.reset_cursor_style(cx);
-@@ -3677 +4269,7 @@
++        }
++
+@@ -3677 +4276,7 @@ impl Window {
 -    fn dispatch_mouse_event(&mut self, event: &dyn Any, cx: &mut App) {
 +    fn dispatch_mouse_event(
 +        &mut self,
@@ -6444,17 +6485,14 @@ diff --git a/src/window.rs b/src/window.rs
 +        isolated: bool,
 +        cx: &mut App,
 +    ) {
-@@ -3683,0 +4282,6 @@
+@@ -3683,0 +4289,6 @@ impl Window {
 +        if hover_transition {
 +            // Use the updated hit test: both painted hover and newly eligible
 +            // hover must retire/restore even if capture consumes this event.
 +            self.invalidate_pointer_hover();
 +        }
 +
-@@ -3687,0 +4292,21 @@
-+            return;
-+        }
-+
+@@ -3690,0 +4302,21 @@ impl Window {
 +        if event.is::<MouseMoveEvent>() {
 +            self.dispatch_pointer_hover(cx);
 +        }
@@ -6473,7 +6511,10 @@ diff --git a/src/window.rs b/src/window.rs
 +            // No underlying action, wheel, raw listener or trailing click can
 +            // receive this input, even if the owner ignored this event type.
 +            cx.stop_propagation();
-@@ -5103,0 +5729,42 @@
++            return;
++        }
++
+@@ -5103,0 +5736,42 @@ pub fn outline(
 +
 +impl Window {
 +    /// Paint two retained paths at a logical-pixel offset. Visible paths at least
@@ -6516,6 +6557,7 @@ diff --git a/src/window.rs b/src/window.rs
 +        self.next_frame.scene.insert_primitive(scene_path);
 +    }
 +}
+
 diff --git a/src/element.rs b/src/element.rs
 --- a/src/element.rs
 +++ b/src/element.rs

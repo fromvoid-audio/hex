@@ -1213,7 +1213,6 @@ impl AudioClipEdit {
         if let Some(source) = domain.musical_event_source {
             let length = source.length.raw();
             if !matches!(domain.clock, AudioDomainClock::Beats(_))
-                || self.placement.is_some()
                 || self.content_view.is_some()
                 || length == 0
                 || source

@@ -107,6 +107,7 @@ pub(super) struct Observation {
     pause_poll: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
     pause_keyboard_activation: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
     pause_resident_publication: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
+    pause_verified_effect_projection: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
     blocked: Option<AudioSourceContext>,
     fresh_before_input: Option<(EditorAudio, Arc<Mutex<Option<HeadlessBackend>>>)>,
     fresh_before_input_checked: bool,
@@ -305,14 +306,26 @@ impl WorkerAudioSink for ObservedSink {
     fn prepare_verified_effects(
         &mut self,
         input: hex_session::service::ResidentEffectPreparation<'_>,
-        proposal: Option<&Arc<hex_session::service::PluginEffectControl>>,
+        attempt: Option<&hex_session::service::VerifiedGraphEditAttempt>,
         prepare: &mut dyn FnMut(
             &hex_engine::AudioCandidateEffects<'_, '_>,
         )
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<hex_engine::PreparedRevision, String> {
-        self.inner
-            .prepare_verified_effects(input, proposal, prepare)
+        let pause = attempt
+            .and_then(|attempt| attempt.proposal_control())
+            .and_then(|_| {
+                self.observation
+                    .lock()
+                    .unwrap()
+                    .pause_verified_effect_projection
+                    .take()
+            });
+        if let Some((entered, release)) = pause {
+            entered.send(()).unwrap();
+            release.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        self.inner.prepare_verified_effects(input, attempt, prepare)
     }
     fn confirms_verified_device_inserts(&self) -> bool {
         self.inner.confirms_verified_device_inserts()
@@ -371,6 +384,16 @@ impl WorkerAudioSink for ObservedSink {
     ) -> Option<hex_session::service::ResidentFreshRuntimeFence> {
         self.inner
             .stopped_resident_effect_history_fence(context, owner, device)
+    }
+
+    fn running_resident_effect_history_source(
+        &mut self,
+        context: AudioSourceContext,
+        owner: hex_engine::ProcessorChainOwner,
+        device: u64,
+    ) -> Option<hex_session::service::ResidentGraphSubmission> {
+        self.inner
+            .running_resident_effect_history_source(context, owner, device)
     }
 
     fn resident_runtime_loop(

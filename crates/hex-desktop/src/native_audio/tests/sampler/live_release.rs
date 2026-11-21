@@ -27,10 +27,12 @@ fn check(key_up: &str) {
         request_id: 99,
         project_generation: 0,
         revision: added.state.revision,
-        track,
-        slot: hex_session::service::SamplerLoadSlot::New(
-            hex_project::InstrumentLoadPlacement::First,
-        ),
+        target: hex_session::service::SamplerLoadTarget::Track {
+            track,
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
+        },
         path: files.wav(48_000, 65_536),
         cancel: Arc::new(AtomicBool::new(false)),
     });

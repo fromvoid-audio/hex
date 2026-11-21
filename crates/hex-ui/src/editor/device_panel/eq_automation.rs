@@ -1,68 +1,7 @@
-//! EQ parameter presentation and axis-aware automation touches.
+//! Axis-aware automation touches for EQ node drags.
 
-use super::{EditorView, ParameterKey, bindings::parameter_display_override};
 use gpui::{Bounds, Pixels};
-use hex_engine::NativeDeviceParameterView;
-use hex_lattice_contract::{DeviceAutomationTarget, DeviceTypeId, ParameterId, ParameterValue};
-use std::sync::atomic::Ordering::Acquire;
-
-pub(super) fn effective_value(
-    view: &mut EditorView,
-    key: ParameterKey,
-    device_type: DeviceTypeId,
-    parameter: &NativeDeviceParameterView,
-) -> ParameterValue {
-    parameter_display_override(view, key)
-        .or_else(|| playback_value(view, key, device_type, parameter))
-        .unwrap_or(parameter.value)
-}
-
-fn playback_value(
-    view: &EditorView,
-    key: ParameterKey,
-    device_type: DeviceTypeId,
-    parameter: &NativeDeviceParameterView,
-) -> Option<ParameterValue> {
-    let status = view.audio_status()?;
-    let source = view.audible_playback.as_ref()?;
-    let applied = status.applied_revision.load(Acquire);
-    // The callback can install a drag preview before its view metadata arrives,
-    // or while the pointer has already moved on to the next sequence. Keep
-    // reading the last acknowledged automation at the live playhead until the
-    // editor observes a successor. Held parameter values still win above.
-    if !status.playing.load(Acquire)
-        || source.project_generation != view.project_generation
-        || source.audio_revision > applied
-        || status.device_fault.load(Acquire)
-        || status.render_fault.load(Acquire)
-        || status.shutdown_complete.load(Acquire)
-        || (source.audio_revision < applied
-            && status
-                .recording_source()
-                .is_some_and(|active| active.context.project_generation != view.project_generation))
-    {
-        return None;
-    }
-    let project = &source.state.project;
-    let device = project.device(key.device)?;
-    if device.state().type_id() != device_type {
-        return None;
-    }
-    let lane = device.automation_target(DeviceAutomationTarget::Parameter(key.parameter))?;
-    if !lane.is_reading() {
-        return None;
-    }
-    let beat = project
-        .tempo_map()
-        .frame_to_beat(status.position.load(Acquire))
-        .ok()?;
-    let value = lane.value_at(beat)?;
-    parameter
-        .semantics?
-        .normalization
-        .denormalize(parameter.descriptor, value.get())
-        .ok()
-}
+use hex_lattice_contract::{DeviceAutomationTarget, ParameterId};
 
 #[derive(Clone, Copy)]
 pub(super) struct DragTouch {
