@@ -5263,3 +5263,112 @@ fn held_new_track_audition_uses_captured_defaults_for_release_and_undo(cx: &mut 
         fixture.finish(cx);
     }
 }
+
+#[gpui::test]
+fn typed_drag_factory_uses_original_press_and_refuses_gaps(cx: &mut TestAppContext) {
+    use gpui::{Context, IntoElement, Pixels, Point, Render, Window, div, prelude::*};
+    use std::{cell::Cell, rc::Rc};
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct Source {
+        clip: u64,
+        pressed_at: Point<Pixels>,
+    }
+
+    struct Ghost;
+    impl Render for Ghost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size(px(1.0))
+        }
+    }
+
+    struct Fixture {
+        created: Rc<Cell<Option<Source>>>,
+        dropped: Rc<Cell<Option<Source>>>,
+    }
+    impl Render for Fixture {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let created = self.created.clone();
+            let dropped = self.dropped.clone();
+            div()
+                .relative()
+                .size_full()
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(10.0))
+                        .left(px(10.0))
+                        .w(px(220.0))
+                        .h(px(14.0))
+                        .id("drag-lane")
+                        .on_drag_from_press(move |press, _, _, cx| {
+                            if press.position.x < px(10.0) || press.position.x >= px(30.0) {
+                                return None;
+                            }
+                            let source = Source {
+                                clip: 27,
+                                pressed_at: press.position,
+                            };
+                            created.set(Some(source));
+                            Some((source, cx.new(|_| Ghost)))
+                        }),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(160.0))
+                        .top(px(30.0))
+                        .w(px(90.0))
+                        .h(px(34.0))
+                        .on_drop(move |source: &Source, _, cx| {
+                            dropped.set(Some(*source));
+                            cx.stop_propagation();
+                        }),
+                )
+        }
+    }
+
+    let created = Rc::new(Cell::new(None));
+    let dropped = Rc::new(Cell::new(None));
+    let window = *cx.add_window(|_, _| Fixture {
+        created: created.clone(),
+        dropped: dropped.clone(),
+    });
+    let mut visual = VisualTestContext::from_window(window, cx);
+    visual.simulate_resize(gpui::size(px(300.0), px(100.0)));
+    visual.run_until_parked();
+
+    let clip = point(px(19.0), px(15.0));
+    let gap = point(px(121.0), px(15.0));
+    let drop_at = point(px(201.0), px(43.0));
+    for (start, expected) in [
+        (gap, None),
+        (
+            clip,
+            Some(Source {
+                clip: 27,
+                pressed_at: clip,
+            }),
+        ),
+    ] {
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(start.x + px(0.5), start.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        assert_eq!(created.get(), None);
+        visual.simulate_mouse_move(drop_at, MouseButton::Left, Modifiers::default());
+        assert_eq!(created.get(), expected);
+        assert_eq!(
+            visual.update(|_, cx| cx.has_active_drag()),
+            expected.is_some()
+        );
+
+        // The receiver handles release before an intervening repaint.
+        visual.simulate_mouse_up(drop_at, MouseButton::Left, Modifiers::default());
+        assert_eq!(dropped.get(), expected);
+        assert!(!visual.update(|_, cx| cx.has_active_drag()));
+        visual.run_until_parked();
+    }
+}
