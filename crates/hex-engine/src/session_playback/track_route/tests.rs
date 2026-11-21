@@ -230,6 +230,71 @@ fn group_reroute_refuses_a_delayed_leaf_to_group_edge_in_either_direction() {
 }
 
 #[test]
+fn aligned_group_entry_can_shift_only_the_leaf_row_downward() {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let (mut editor, media, leaf, group) = fixture();
+    let Created::Track(unrelated) = editor
+        .execute(Command::AddTrack {
+            name: "unrelated".into(),
+        })
+        .unwrap()
+    else {
+        panic!("unrelated track");
+    };
+    editor
+        .execute(Command::InsertDevice {
+            track: unrelated,
+            before: None,
+            state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::MoveTracksBefore {
+            tracks: TrackSelectionIds::new(&[leaf]).unwrap(),
+            before: Some(group),
+        })
+        .unwrap();
+    let prepare = |editor: &Editor| {
+        Arc::new(
+            PreparedRevision::prepare(
+                editor.project(),
+                &media,
+                Arc::new(crate::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let before = prepare(&editor);
+    editor
+        .execute(Command::ReparentTracks {
+            tracks: TrackSelectionIds::new(&[leaf]).unwrap(),
+            destination: TrackDestination {
+                parent_group: Some(group),
+                before: None,
+            },
+        })
+        .unwrap();
+    let after = prepare(&editor);
+    let latency = before.arrangement().main_latency_frames();
+    assert!(latency > 0);
+    assert_eq!(after.arrangement().main_latency_frames(), latency);
+    let old = SessionPlayback::new(before).unwrap();
+    let next = SessionPlayback::new(after).unwrap();
+    assert_eq!(next.resident_group_reroute_from(&old), Some(0));
+    assert_eq!(old.resident_group_reroute_from(&next), None);
+
+    editor
+        .execute(Command::MoveTracksBefore {
+            tracks: TrackSelectionIds::new(&[unrelated]).unwrap(),
+            before: Some(group),
+        })
+        .unwrap();
+    let compound = SessionPlayback::new(prepare(&editor)).unwrap();
+    assert_eq!(compound.resident_group_reroute_from(&old), None);
+}
+
+#[test]
 fn aligned_nested_group_reroute_requires_immediately_related_groups() {
     use hex_lattice_contract::NativeDeviceMetadata;
     let (mut editor, media, leaf, inner) = fixture();
