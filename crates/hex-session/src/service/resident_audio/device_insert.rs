@@ -19,7 +19,7 @@ pub enum GraphEditOperation {
     ReplaceDevice,
     RemoveDevice,
     MoveDevice,
-    /// A single Resident track reparent, confirmed by its exact graph receipt.
+    /// A single track reparent confirmed by its exact graph receipt.
     MoveTrack,
     /// One hosted Main power edit behind its exact graph receipt: an original
     /// settled Stop interval, or a proved running Off source and passive cut.
@@ -772,6 +772,88 @@ impl BrowserEdit {
 }
 
 impl Session {
+    /// Select the Verified Group entry whose leaf fade the audio owner supports.
+    /// The active source, page windows, and final candidate stay audio-owned.
+    pub(in crate::service) fn should_stage_verified_group_entry(
+        &self,
+        command: &Command,
+        previous: Option<&PreparedRevision>,
+    ) -> bool {
+        let (
+            Command::ReparentTracks {
+                tracks,
+                destination,
+            },
+            Some(previous),
+        ) = (command, previous)
+        else {
+            return false;
+        };
+        let ([leaf], Some(group)) = (tracks.ids(), destination.parent_group) else {
+            return false;
+        };
+        let project = self.project();
+        if destination.before.is_some()
+            || previous.arrangement().main_latency_frames() != 0
+            || !previous.contains_streamed_sources()
+            || previous.native_parameter_input_target().is_some()
+            || previous.gain_recording_track().is_some()
+            || previous.scalar_automation_binding().is_some()
+            || !project.session_cells().is_empty()
+            || !project.return_tracks().is_empty()
+            || !project.audio_feeds().is_empty()
+            || !project.midi_routes().is_empty()
+            || !project.sidechains().is_empty()
+        {
+            return false;
+        }
+        let (Some(leaf), Some(group)) = (project.track(*leaf), project.track(group)) else {
+            return false;
+        };
+        if leaf.is_group()
+            || leaf.parent_group().is_some()
+            || leaf.clips().is_empty()
+            || !group.is_group()
+            || group.parent_group().is_some()
+        {
+            return false;
+        }
+        let Ok(hierarchy) = project.track_hierarchy() else {
+            return false;
+        };
+        let (Some(leaf_row), Some(group_row)) =
+            (hierarchy.row(leaf.id()), hierarchy.row(group.id()))
+        else {
+            return false;
+        };
+        let subtree = group_row.subtree_range();
+        // Appending the next root row leaves every track at its current index.
+        if subtree.len() <= 1 || subtree.end != leaf_row.subtree_range().start {
+            return false;
+        }
+        let vst3 = hex_lattice_contract::DeviceTypeId::from_static("hex.vst3");
+        let plain_native_chain = |devices: &[hex_project::Device]| {
+            devices.iter().all(|device| {
+                device.state().type_id() != vst3
+                    && device.modulation().is_empty()
+                    && device.automation().is_empty()
+            })
+        };
+        plain_native_chain(project.main_devices())
+            && project.tracks().iter().all(|track| {
+                track.instrument().is_none()
+                    && track.midi_clips().is_empty()
+                    && !track.has_gain_automation()
+                    && track.sends().is_empty()
+                    && track.group_output_mutes().is_empty()
+                    && plain_native_chain(track.devices())
+                    && track.clips().iter().all(|clip| {
+                        clip.audio_edit().is_none()
+                            && self.verified_sources.contains_key(&clip.asset())
+                    })
+            })
+    }
+
     fn verified_graph_predecessor(
         &self,
         state: &ViewState,
@@ -864,6 +946,8 @@ impl Session {
             )
         {
             Operation::Device(GraphEditOperation::ReplaceDevice)
+        } else if self.should_stage_verified_group_entry(&command, previous) {
+            Operation::Device(GraphEditOperation::MoveTrack)
         } else {
             Operation::Device(
                 catalog_graph_edit_operation(&command, proposal_control.is_some())
