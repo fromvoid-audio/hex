@@ -1,6 +1,6 @@
 //! Focused local cursors participate in Arrangement's rendered play-start intent.
-use super::super::{self as editor, worker_ui_fixture};
-use gpui::{AppContext, Modifiers, TestAppContext, VisualTestContext, point, px};
+use crate::{editor, editor::worker_ui_fixture};
+use gpui::{Modifiers, TestAppContext, VisualTestContext, point, px};
 use hex_project::{BeatTime, Command, Tempo};
 use hex_session::service::Request;
 use std::sync::atomic::Ordering::Acquire;
