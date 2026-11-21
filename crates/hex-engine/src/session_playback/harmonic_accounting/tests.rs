@@ -163,6 +163,12 @@ fn independent_byte_count_and_overflow_boundaries_are_not_hidden() {
         proposed_header >= actual_header,
         "the proposed owner charges {proposed_header} bytes for the actual {actual_header}-byte header"
     );
+    let actual_tail_row = size_of::<Option<crate::mutable_instrument::MutableInstrumentTail>>();
+    let proposed_tail_row = size_of::<Option<payload::TailOwner>>();
+    assert!(
+        proposed_tail_row >= actual_tail_row,
+        "the proposed tail row charges {proposed_tail_row} bytes for the actual {actual_tail_row}-byte row"
+    );
     let pool = payload::PoolCapacity::allocated();
     let mut input = empty(pool);
     input.base = 32 * 1024 * 1024 - pool.bytes().unwrap();

@@ -205,6 +205,9 @@ pub(super) struct HostOwner {
 pub(super) struct TailOwner {
     track_id: hex_project::TrackId,
     owner: HostOwner,
+    // Mirror the actual tail row's detached send gains and power-off fade state.
+    sends: crate::mutable_instrument::DetachedSourceSends,
+    power_off: Option<crate::mutable_instrument::PowerOffFade>,
 }
 
 #[repr(C)]
