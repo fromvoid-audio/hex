@@ -501,10 +501,23 @@ mod tests {
 
         let ink = gpui::Background::from(rgb(theme::color(theme::PaletteRole::Background)));
         let previews = |visual: &mut VisualTestContext, selector| {
+            let section = visual.debug_bounds(selector).unwrap();
+            let scale = visual.update(|window, _| window.scale_factor());
+            let body_top = point(
+                section.left(),
+                section.top() + px(super::super::clip_name::CLIP_NAME_HEIGHT),
+            )
+            .scale(scale)
+            .y;
+            let width = section.scale(scale).size.width;
             visual
                 .rendered_filled_quads(selector)
                 .into_iter()
-                .filter_map(|(bounds, color)| (color == ink).then_some(bounds))
+                .filter_map(|(bounds, color)| {
+                    // Scene reads include ancestor backgrounds and the header.
+                    (color == ink && bounds.top() >= body_top && bounds.size.width < width)
+                        .then_some(bounds)
+                })
                 .collect::<Vec<_>>()
         };
         let populated = previews(&mut visual, "arrangement-section-0");
