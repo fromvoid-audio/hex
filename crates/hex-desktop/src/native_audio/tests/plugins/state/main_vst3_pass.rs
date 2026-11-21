@@ -586,7 +586,7 @@ fn verify_running_main_power_off(cancel_before_cut: bool) {
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
-fn two_resident_tracks_refuse_main_power_off_or_install_without_old_dsp() {
+fn confirmed_two_track_main_power_off_retires_the_original_worker() {
     let _native = native_fixture();
     let files = Files::new();
     let directory = files.0.canonicalize().unwrap();
@@ -677,18 +677,11 @@ fn two_resident_tracks_refuse_main_power_off_or_install_without_old_dsp() {
         if let Ok(event) = h.service.try_event() {
             assert_eq!(event.state.project, inserted.state.project);
             assert_eq!(event.state.revision, inserted.state.revision);
-            if event.request_complete {
-                assert!(
-                    event.error.is_some(),
-                    "unproved Off completed before publication"
-                );
-                eprintln!(
-                    "two-track off safely refused before staging: {:?}",
-                    event.error
-                );
-                old_wet(&h);
-                return;
-            }
+            assert!(
+                !event.request_complete,
+                "two-track Off completed before its required restart offer: {:?}",
+                event.error
+            );
         }
         old_wet(&h);
         assert!(Instant::now() < until, "two-track Off private preparation");
@@ -702,16 +695,7 @@ fn two_resident_tracks_refuse_main_power_off_or_install_without_old_dsp() {
         h.pump();
         if let Ok(event) = h.service.try_event() {
             if event.request_complete {
-                if event.error.is_some() {
-                    assert_eq!(event.state.project, inserted.state.project);
-                    assert_eq!(event.state.revision, inserted.state.revision);
-                    eprintln!(
-                        "two-track off safely refused after staging: {:?}",
-                        event.error
-                    );
-                    old_wet(&h);
-                    return;
-                }
+                assert!(event.error.is_none(), "{:?}", event.error);
                 break event;
             }
             assert!(event.error.is_none(), "{:?}", event.error);
@@ -762,9 +746,8 @@ fn two_resident_tracks_refuse_main_power_off_or_install_without_old_dsp() {
     };
     let completion = installed.device_insert_complete.unwrap();
     assert_eq!(completion.outcome, DeviceInsertOutcome::Installed);
-    if let Some(exact) = confirmed {
-        assert_eq!(completion.submission, exact);
-    }
+    let confirmed = confirmed.expect("two-track Off must offer and approve an exact restart");
+    assert_eq!(completion.submission, confirmed);
     assert_eq!(installed.state.revision, inserted.state.revision + 1);
     let off = installed.state.project.device(device_id).unwrap();
     assert!(off.bypassed());
@@ -790,14 +773,12 @@ fn two_resident_tracks_refuse_main_power_off_or_install_without_old_dsp() {
         )
     );
     let required_at_install = status(&h).native_effect_source();
-    // An approved restart may use the existing 128-frame resume envelope.
-    // This first 256-frame block is diagnostic; steady dry PCM below is
-    // checked after it, without relaxing the immediate binding assertion.
+    // The approved restart resumes this exact graph with no old Main delay.
+    // Check its first full block as well as steady playback below.
     let (start, after) = render_playing(&h);
     h.pump();
     eprintln!(
-        "two-track off installed: confirmed={} required_at_install={required_at_install:?} required_after={:?} frame={start} first_pcm={:?} nominal_dry={} worker={:?}",
-        confirmed.is_some(),
+        "two-track off installed: confirmed=true required_at_install={required_at_install:?} required_after={:?} frame={start} first_pcm={:?} nominal_dry={} worker={:?}",
         status(&h).native_effect_source(),
         &after[..4],
         2.0 * source_sample(start),
@@ -807,6 +788,9 @@ fn two_resident_tracks_refuse_main_power_off_or_install_without_old_dsp() {
         required_at_install.is_none(),
         "powered-off graph retained the original required worker after restart"
     );
+    for (offset, frame) in after.into_iter().enumerate() {
+        assert_eq!(frame, [2.0 * source_sample(start + offset); 2]);
+    }
     let retired_by = Instant::now() + Duration::from_secs(1);
     while h.plugin_records.load(Acquire) != 0 {
         render_playing(&h);
@@ -819,12 +803,10 @@ fn two_resident_tracks_refuse_main_power_off_or_install_without_old_dsp() {
         std::thread::sleep(Duration::from_millis(1));
     }
     assert!(h.plugin_progress.lock().unwrap().binding.is_none());
-    let latency = if confirmed.is_some() { 0 } else { BRIDGE };
     for _ in 0..4 {
         let (start, pcm) = render_playing(&h);
         for (offset, frame) in pcm.into_iter().enumerate() {
-            let origin = (start + offset).checked_sub(latency);
-            assert_eq!(frame, [2.0 * origin.map_or(0.0, source_sample); 2]);
+            assert_eq!(frame, [2.0 * source_sample(start + offset); 2]);
         }
     }
     h.audio.as_ref().unwrap().control.stop();
