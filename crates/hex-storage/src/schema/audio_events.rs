@@ -193,6 +193,7 @@ fn decode_version_value(
                     "audio events require a retained processing root",
                 ))?;
                 let events = AudioEvents {
+                    warp_sources: Vec::new(),
                     sources: Vec::new(),
                     next_id,
                     events: state

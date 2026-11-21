@@ -3082,7 +3082,7 @@ impl EditorView {
             super::waveform_musical_event::Projection::for_display(
                 &state.project,
                 clip,
-                event_source,
+                prepared,
                 events.clone(),
                 gain,
                 fade,
@@ -3248,7 +3248,7 @@ impl EditorView {
             super::waveform_musical_event::Projection::for_display(
                 &state.project,
                 clip,
-                event_source,
+                prepared,
                 events.clone(),
                 gain,
                 fade,

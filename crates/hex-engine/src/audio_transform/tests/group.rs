@@ -95,14 +95,14 @@ fn group_fixture() -> (
 fn child_peaks(
     revision: &crate::PreparedRevision,
     group: hex_project::ClipId,
-) -> &Arc<PreparedGroupEventSources> {
+) -> &Arc<PreparedEventSources> {
     revision
         .arrangement()
         .audio_clip_views()
         .iter()
         .find(|view| view.clip == group)
         .unwrap()
-        .group_event_sources
+        .event_sources
         .as_ref()
         .expect("the group must expose the children used in composition")
 }
@@ -121,7 +121,7 @@ fn assert_children_match_rendered_pcm(
 }
 
 fn assert_child_matches_rendered_pcm(
-    table: &PreparedGroupEventSources,
+    table: &PreparedEventSources,
     child: &hex_project::RetainedAudioRoot,
     original: &[crate::Frame],
 ) {
@@ -562,7 +562,7 @@ fn grouped_sources_preserve_exact_pcm_gaps_gains_fades_loops_offsets_and_undo() 
     let uncached = prepare(&editor, &media, &isolated(16 * 1024 * 1024, 0, 0));
     assert!(
         uncached.arrangement().audio_clip_views()[0]
-            .group_event_sources
+            .event_sources
             .is_none()
     );
     assert_eq!(render(&uncached, 0, 16_000, 127), expected);

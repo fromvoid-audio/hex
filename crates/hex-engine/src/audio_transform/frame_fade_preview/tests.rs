@@ -196,7 +196,7 @@ fn grouped_frame_queries_track_sparse_and_cropped_reflected_repeat_pcm() {
         let prepared = prepare(&editor, &media, &context);
         let view = &prepared.arrangement().audio_clip_views()[0];
         assert_eq!(view.sparse.is_some(), !directed);
-        let sources = view.group_event_sources.as_ref().unwrap();
+        let sources = view.event_sources.as_ref().unwrap();
         let pcm = render(&prepared, clip.start(), clip.duration() as usize, 127);
         if let Some(uncropped_tail) = uncropped_tail {
             assert_eq!(pcm, uncropped_tail);

@@ -93,6 +93,7 @@ fn dense_event_serialization_roundtrips_without_loss() {
     let mut root = editor.project().clip(clip).unwrap().audio_event_root();
     std::sync::Arc::make_mut(&mut root.domain).events =
         Some(std::sync::Arc::new(hex_project::AudioEvents {
+            warp_sources: Vec::new(),
             sources: Vec::new(),
             next_id: 1025,
             events: (0..1024)

@@ -198,6 +198,7 @@ fn retained_root_nesting_has_a_bounded_depth() {
         Arc::make_mut(&mut edit.domain).looping = false;
         Arc::make_mut(&mut edit.domain).source_phase = 0;
         Arc::make_mut(&mut edit.domain).events = Some(Arc::new(AudioEvents {
+            warp_sources: Vec::new(),
             next_id: 2,
             events: vec![AudioEvent {
                 active: true,

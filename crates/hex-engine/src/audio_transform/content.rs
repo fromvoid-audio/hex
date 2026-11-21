@@ -182,7 +182,7 @@ impl AudioTransformPreparation {
             prepared: audio.clone(),
             event_source_peaks: None,
             event_source_occurrences,
-            group_event_sources: None,
+            event_sources: None,
             bytes,
         })?;
         finish(audio)
