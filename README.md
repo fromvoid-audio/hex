@@ -18,10 +18,10 @@ cores and bounded render-ahead where it improves headroom while preserving
 timing, automation, project recall, and plug-in fault isolation.
 
 Audio fidelity is part of the performance target. Changes must preserve
-sample-accurate timing, surviving processors' effect history, and the selected
-processing quality. The [live track and device editing target](docs/design/live-repatching-brief.md)
-defines when edits deliberately end removed devices' output and how timing and
-running state should survive repatching; it is not a shipped-behavior claim.
+sample-accurate timing and the selected processing quality. The
+[live track and device editing target](docs/design/live-repatching-brief.md)
+defines de-click cuts for changed signal routes and continuity for unaffected
+routes during repatching.
 Performance comparisons use equivalent oversampling, interpolation, and
 plug-in quality settings.
 
