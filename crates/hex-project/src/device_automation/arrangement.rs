@@ -32,17 +32,32 @@ pub(crate) fn copy_section(
     end: BeatTime,
     insertion: BeatTime,
 ) -> Result<(), Invalid> {
+    assemble(
+        project,
+        &[
+            (BeatTime::ZERO, Some(insertion)),
+            (start, Some(end)),
+            (insertion, None),
+        ],
+    )
+}
+
+/// Cut the half-open section interval and ripple the surviving envelopes.
+pub(crate) fn delete_section(
+    project: &mut Project,
+    start: BeatTime,
+    end: BeatTime,
+) -> Result<(), Invalid> {
+    assemble(project, &[(BeatTime::ZERO, Some(start)), (end, None)])
+}
+
+fn assemble(project: &mut Project, slices: &[(BeatTime, Option<BeatTime>)]) -> Result<(), Invalid> {
     if !project.has_device_automation() {
         return Ok(());
     }
-    let slices = [
-        (BeatTime::ZERO, Some(insertion)),
-        (start, Some(end)),
-        (insertion, None),
-    ];
     let mut next = BeatTime::ZERO;
     let mut placements = Vec::with_capacity(slices.len());
-    for (start, end) in slices {
+    for &(start, end) in slices {
         if end == Some(start) {
             continue;
         }
@@ -61,6 +76,10 @@ pub(crate) fn copy_section(
         for lane in &mut device.automation {
             assemble_lane(lane, &placements)?;
         }
+        // Deleting an entire touch-only envelope leaves no lane to read.
+        device
+            .automation
+            .retain(|lane| !lane.points.is_empty() || !lane.touch.is_empty());
         Ok(())
     };
     for device in project
@@ -153,7 +172,7 @@ fn assemble_points(
     }
     if points.len() > MAX_DEVICE_AUTOMATION_POINTS_PER_LANE {
         return Err(Invalid(
-            "device automation section copy exceeds the lane point limit",
+            "device automation section edit exceeds the lane point limit",
         ));
     }
     Ok(points)
@@ -173,7 +192,7 @@ fn assemble_touches(
             }
             if spans.len() == MAX_DEVICE_AUTOMATION_TOUCH_SPANS {
                 return Err(Invalid(
-                    "device automation section copy exceeds the touch span limit",
+                    "device automation section edit exceeds the touch span limit",
                 ));
             }
             let mut fragment = span.fragment(start, end)?;

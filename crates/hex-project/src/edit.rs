@@ -214,7 +214,8 @@ pub enum Command {
         boundary: crate::BeatTime,
         marker_only: bool,
     },
-    /// Remove the section's entire half-open time interval and close the gap.
+    /// Remove the section's entire half-open time interval, including device
+    /// automation, and close the gap while preserving both sides of the splice.
     DeleteArrangementSection(crate::SectionId),
     /// Insert a song-wide copy, including device envelopes and touch spans,
     /// immediately after the source, allocating new IDs.

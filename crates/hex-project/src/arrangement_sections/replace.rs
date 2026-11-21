@@ -37,6 +37,9 @@ pub(super) fn apply(
     if source == target {
         return Ok(Created::None);
     }
+    if project.has_device_automation() {
+        return Err(Invalid(crate::AUTOMATION_EDIT_UNSUPPORTED));
+    }
     super::splice::delete(project, target)?;
     if copy {
         let Created::ArrangementSection(id) =
