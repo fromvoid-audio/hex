@@ -83,12 +83,61 @@ impl EditorView {
     }
 }
 
+/// The resting move surface keeps capture inputs. Shared gesture state is
+/// allocated by the pointer handlers, independently of per-frame layout.
+#[derive(Clone)]
+struct ClipDragSource {
+    project_generation: u64,
+    revision: u64,
+    track: hex_project::TrackId,
+    clip: hex_project::ClipId,
+    position: ClipPosition,
+    source_span: std::rc::Rc<std::cell::Cell<Option<(f32, f32)>>>,
+    viewport: Viewport,
+    snap_grid: super::musical_time::SnapGrid,
+    ghost_waveform: Option<std::sync::Arc<hex_session::CachedWaveform>>,
+}
+
+impl ClipDragSource {
+    fn payload(&self) -> ClipDrag {
+        let kind = match self.position {
+            ClipPosition::Audio { .. } => "audio",
+            ClipPosition::Midi { .. } => "midi",
+        };
+        ClipDrag {
+            project_generation: self.project_generation,
+            revision: self.revision,
+            source_track: self.track,
+            clip: self.clip,
+            group: Default::default(),
+            position: self.position,
+            grab_offset: Default::default(),
+            snap_edge: Default::default(),
+            source_span: self.source_span.clone(),
+            capture: Default::default(),
+            viewport_start: self.viewport.start,
+            viewport_length: self.viewport.length,
+            scroll: Default::default(),
+            snap_grid: self.snap_grid,
+            snap_modifier: Default::default(),
+            copy_modifier: Default::default(),
+            preview: Default::default(),
+            destination: Default::default(),
+            insertion_line_y: Default::default(),
+            ghost_label: format!("{kind} clip {}", self.clip.value()),
+            ghost_waveform: self.ghost_waveform.clone(),
+            lane_hovered: Default::default(),
+            last_pointer: Default::default(),
+        }
+    }
+}
+
 /// Observe the actual pixel-rounded resting clip rectangle. A clip's move hit
 /// strip excludes handles and cannot define its horizontal thirds. The canvas
 /// includes the parent's leading stroke; the trailing stroke belongs to the
 /// separate boundary shell, so there is no trailing layout border to expand.
-fn clip_drag_span(payload: &ClipDrag, leading_border: f32) -> impl IntoElement + use<> {
-    let span = std::rc::Rc::clone(&payload.source_span);
+fn clip_drag_span(source: &ClipDragSource, leading_border: f32) -> impl IntoElement + use<> {
+    let span = std::rc::Rc::clone(&source.source_span);
     canvas(
         move |bounds, _, _| {
             span.set(Some((
@@ -2211,8 +2260,8 @@ impl EditorView {
                 scale_factor,
                 cx,
             );
-            let midi_drag_payload =
-                self.midi_drag_payload(state, track_id, clip, start, end, viewport);
+            let midi_drag_source =
+                self.midi_drag_source(state, track_id, clip, start, end, viewport);
             let header_fill =
                 theme::clip_activity_fill(track.color(), clip.flavor(), false, active);
             let fill =
@@ -2383,7 +2432,7 @@ impl EditorView {
                     .opacity(detail_opacity),
                 )
             });
-            if let Some((payload, lane)) = midi_drag_payload {
+            if let Some((payload, lane)) = midi_drag_source {
                 let left_border = if border { stroke } else { 0.0 };
                 midi = midi.child(clip_drag_span(&payload, left_border));
                 let move_surface = self
@@ -2849,37 +2898,23 @@ impl EditorView {
             .flatten()
             .map(|lane| {
                 (
-                    ClipDrag {
-                        group: Default::default(),
+                    ClipDragSource {
                         project_generation: self.project_generation,
                         revision: state.revision,
-                        source_track: track,
+                        track,
                         clip: clip_id,
                         position: ClipPosition::Audio {
                             start: clip.start(),
                             duration: clip.duration(),
                         },
-                        grab_offset: std::rc::Rc::new(std::cell::Cell::new(None)),
-                        snap_edge: std::rc::Rc::new(std::cell::Cell::new(None)),
                         source_span: Default::default(),
-                        capture: std::rc::Rc::new(std::cell::Cell::new(None)),
-                        viewport_start: viewport.start,
-                        viewport_length: viewport.length,
-                        scroll: Default::default(),
+                        viewport,
                         snap_grid: self.snap_grid,
-                        snap_modifier: std::rc::Rc::new(std::cell::Cell::new(false)),
-                        copy_modifier: std::rc::Rc::new(std::cell::Cell::new(false)),
-                        preview: std::rc::Rc::new(std::cell::Cell::new(None)),
-                        destination: std::rc::Rc::new(std::cell::Cell::new(None)),
-                        insertion_line_y: std::rc::Rc::new(std::cell::Cell::new(None)),
-                        ghost_label: format!("audio clip {}", clip_id.value()),
                         ghost_waveform: if clip.audio_edit().is_none() {
                             state.waveforms.get(&clip.asset()).cloned()
                         } else {
                             None
                         },
-                        lane_hovered: std::rc::Rc::new(std::cell::Cell::new(false)),
-                        last_pointer: std::rc::Rc::new(std::cell::Cell::new(None)),
                     },
                     lane,
                 )
@@ -3402,7 +3437,7 @@ impl EditorView {
         ))
     }
 
-    fn midi_drag_payload(
+    fn midi_drag_source(
         &self,
         state: &ViewState,
         track: hex_project::TrackId,
@@ -3410,7 +3445,7 @@ impl EditorView {
         start_frame: u64,
         end_frame: u64,
         viewport: Viewport,
-    ) -> Option<(ClipDrag, LaneBounds)> {
+    ) -> Option<(ClipDragSource, LaneBounds)> {
         if !self.drag_available() || viewport.length == 0 {
             return None;
         }
@@ -3419,30 +3454,16 @@ impl EditorView {
         let length = clip.length();
         let _ = start.raw().checked_add(length.raw())?;
         (start_frame < end_frame).then_some((
-            ClipDrag {
-                group: Default::default(),
+            ClipDragSource {
                 project_generation: self.project_generation,
                 revision: state.revision,
-                source_track: track,
+                track,
                 clip: clip.id(),
                 position: ClipPosition::Midi { start, length },
-                grab_offset: std::rc::Rc::new(std::cell::Cell::new(None)),
-                snap_edge: std::rc::Rc::new(std::cell::Cell::new(None)),
                 source_span: Default::default(),
-                capture: std::rc::Rc::new(std::cell::Cell::new(None)),
-                viewport_start: viewport.start,
-                viewport_length: viewport.length,
-                scroll: Default::default(),
+                viewport,
                 snap_grid: self.snap_grid,
-                snap_modifier: std::rc::Rc::new(std::cell::Cell::new(false)),
-                copy_modifier: std::rc::Rc::new(std::cell::Cell::new(false)),
-                preview: std::rc::Rc::new(std::cell::Cell::new(None)),
-                destination: std::rc::Rc::new(std::cell::Cell::new(None)),
-                insertion_line_y: std::rc::Rc::new(std::cell::Cell::new(None)),
-                ghost_label: format!("midi clip {}", clip.id().value()),
                 ghost_waveform: None,
-                lane_hovered: std::rc::Rc::new(std::cell::Cell::new(false)),
-                last_pointer: std::rc::Rc::new(std::cell::Cell::new(None)),
             },
             lane,
         ))
@@ -3451,7 +3472,7 @@ impl EditorView {
     #[allow(clippy::too_many_arguments)]
     fn clip_drag_surface(
         &self,
-        payload: ClipDrag,
+        source: ClipDragSource,
         lane: LaneBounds,
         visible_start: u64,
         visible_end: u64,
@@ -3471,10 +3492,9 @@ impl EditorView {
         let mouse_down_entity = drag_entity.clone();
         let mouse_up_entity = drag_entity.clone();
         let move_entity = drag_entity.clone();
-        let source_track = payload.source_track;
-        let source_generation = payload.project_generation;
-        let mouse_down_payload = payload.clone();
-        let mouse_up_payload = payload.clone();
+        let source_track = source.track;
+        let source_generation = source.project_generation;
+        let mouse_down_source = source.clone();
         let border = hex_widgets::rectangle_border_width(element_width);
         let header_height = super::time_selection::header_hit_height(lane.height);
         hex_widgets::rectangle_body(-border, header_height)
@@ -3492,6 +3512,7 @@ impl EditorView {
             )
             .on_mouse_down(MouseButton::Left, move |event, _, cx| {
                 mouse_down_entity.update(cx, |view, _| {
+                    let mouse_down_payload = mouse_down_source.payload();
                     if view.drag_start_is_current(&mouse_down_payload) {
                         view.remember_pointer_down(
                             mouse_down_payload.project_generation,
@@ -3530,11 +3551,7 @@ impl EditorView {
             })
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 mouse_up_entity.update(cx, |view, _| {
-                    view.clear_pointer_down(
-                        mouse_up_payload.project_generation,
-                        mouse_up_payload.clip,
-                        None,
-                    );
+                    view.clear_pointer_down(source_generation, clip_id, None);
                     // Mouse-up may arrive before the next repaint removes
                     // this source header. The lane drop receiver still owns
                     // release; root cleanup handles drops outside a receiver.
@@ -3547,9 +3564,10 @@ impl EditorView {
             .on_drop(cx.listener(move |view, drag: &ClipDrag, window, cx| {
                 view.drop_clip(drag, source_track, window, cx);
             }))
-            .on_drag(payload, move |payload, _, window, cx| {
+            .on_drag_from_press(move |_, _, window, cx| {
+                let payload = source.payload();
                 let capture = drag_entity.update(cx, |view, _| {
-                    if view.drag_start_is_current(payload) {
+                    if view.drag_start_is_current(&payload) {
                         view.take_pointer_down(payload.project_generation, payload.clip, None)
                     } else {
                         view.clear_pointer_down(payload.project_generation, payload.clip, None);
@@ -3601,8 +3619,8 @@ impl EditorView {
                 let pointer = (f32::from(pointer.x), f32::from(pointer.y));
                 payload.last_pointer.set(Some(pointer));
                 let (preview, lane_hovered) = drag_entity.update(cx, |view, _| {
-                    view.begin_clip_drag(payload);
-                    view.clip_drag_drop_position(payload, pointer.0, pointer.1)
+                    view.begin_clip_drag(&payload);
+                    view.clip_drag_drop_position(&payload, pointer.0, pointer.1)
                 });
                 payload.preview.set(preview);
                 payload.lane_hovered.set(lane_hovered);
@@ -3610,7 +3628,7 @@ impl EditorView {
                     view.sync_held_clip_move_audition();
                     cx.notify();
                 });
-                cx.new(|_| ClipDragGhost)
+                Some((payload, cx.new(|_| ClipDragGhost)))
             })
             .on_drag_move::<ClipDrag>(move |event, window, cx| {
                 let Some(payload) = event.dragged_item().downcast_ref::<ClipDrag>() else {
