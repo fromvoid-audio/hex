@@ -524,9 +524,7 @@ fn reopen_saved_off_return() -> SavedOffHostedReturn {
     }
 }
 
-#[test]
-#[ignore = "explicit original SDK helper and source fixtures required"]
-fn saved_off_resident_return_installs_a_fresh_worker_on_stopped_power_on() {
+fn launch_restorable_return_fixture() -> bool {
     const CHILD: &str = "HEX_TEST_SAVED_OFF_RETURN_FRESH_ON_CHILD";
     if std::env::var_os(CHILD).is_none() {
         // Variant 37 captures restorable component and controller state.
@@ -549,6 +547,15 @@ fn saved_off_resident_return_installs_a_fresh_worker_on_stopped_power_on() {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+        return true;
+    }
+    false
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn saved_off_resident_return_installs_a_fresh_worker_on_stopped_power_on() {
+    if launch_restorable_return_fixture() {
         return;
     }
     let _native = native_fixture();
@@ -654,4 +661,125 @@ fn saved_off_resident_return_installs_a_fresh_worker_on_stopped_power_on() {
     }
     let wet = assert_aligned_wet(h);
     assert_eq!(assert_aligned_wet(h), wet + 0.0625);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn running_saved_off_return_power_on_waits_for_consent_and_the_exact_receipt() {
+    use hex_session::service::GraphEditOperation;
+
+    if launch_restorable_return_fixture() {
+        return;
+    }
+    let _native = native_fixture();
+    let mut off = reopen_saved_off_return();
+    let h = &mut off.harness;
+    let current = &off.saved_off.state;
+    let device = off.device;
+    h.enable_confirmed_device_inserts();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::PlayFrom(2048))
+        .unwrap();
+    render(h);
+    assert_aligned_bypass(h, 0);
+    let predecessor = status(h).recording_source().unwrap();
+    assert_eq!(predecessor.context.editor_revision, current.revision);
+    assert!(status(h).native_effect_source().is_none());
+    assert_eq!(h.plugin_records.load(Acquire), 0);
+
+    let command = Command::SetDeviceBypass {
+        device,
+        bypassed: false,
+    };
+    let mut expected = hex_project::Editor::new(current.project.as_ref().clone(), 8).unwrap();
+    expected.execute(command.clone()).unwrap();
+
+    for cancel in [true, false] {
+        h.service.submit(Request::Edit(command.clone())).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(800);
+        let offer = 'offer: loop {
+            h.pump();
+            while let Ok(event) = h.service.try_event() {
+                assert_original(&event, current);
+                assert!(
+                    !event.request_complete && event.error.is_none(),
+                    "running Return On ended without exact consent: {:?}, {:?}",
+                    event.error,
+                    event.device_insert_complete
+                );
+                if let Some(offer) = event.device_insert_confirmation {
+                    break 'offer offer;
+                }
+            }
+            assert!(Instant::now() < deadline, "no running Return On consent");
+            assert_aligned_bypass(h, 0);
+            assert_eq!(status(h).recording_source(), Some(predecessor));
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        assert_eq!(offer.operation(), GraphEditOperation::PowerDevice);
+        let refused = offer.submission();
+        assert_eq!(refused.output_identity, predecessor.output_identity);
+        assert_eq!(refused.context.editor_revision, current.revision + 1);
+        assert_eq!(status(h).recording_source(), Some(predecessor));
+        assert!(status(h).native_effect_source().is_none());
+        assert_aligned_bypass(h, 0);
+
+        if cancel {
+            assert!(offer.cancel());
+            let cancelled = terminal_at_cut(h, current, |h| assert_aligned_bypass(h, 0));
+            let receipt = cancelled.device_insert_complete.unwrap();
+            assert_eq!(receipt.submission, refused);
+            assert_eq!(receipt.outcome, DeviceInsertOutcome::Cancelled);
+            assert_original(&cancelled, current);
+            assert_eq!(status(h).recording_source(), Some(predecessor));
+            wait(|| {
+                h.pump();
+                assert_aligned_bypass(h, 0);
+                h.plugin_records.load(Acquire) == 0
+            });
+            continue;
+        }
+
+        let (submitted, resume) = h.probe_next_submitted_device_insert();
+        assert!(offer.proceed());
+        let exact = await_preparation(h, &submitted);
+        assert_eq!(exact.output_identity, refused.output_identity);
+        assert_eq!(exact.context, refused.context);
+        assert!(exact.audio_revision > refused.audio_revision);
+        assert_eq!(status(h).recording_source(), Some(predecessor));
+        resume.send(()).unwrap();
+
+        let frame_at_consent = status(h).position.load(Acquire);
+        let on = terminal_at_cut(h, current, |h| {
+            let _ = render_rolling(h);
+        });
+        assert!(on.error.is_none(), "{:?}", on.error);
+        let receipt = on.device_insert_complete.unwrap();
+        assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+        assert_eq!(receipt.submission, exact);
+        assert_eq!(on.state.project.as_ref(), expected.project());
+        assert_eq!(on.state.revision, exact.context.editor_revision);
+        let applied = status(h).recording_source().unwrap();
+        assert_eq!(applied.output_identity, exact.output_identity);
+        assert_eq!(applied.context, exact.context);
+        assert_eq!(applied.audio_revision, exact.audio_revision);
+        assert_eq!(status(h).native_effect_source(), Some(applied));
+        assert!(status(h).position.load(Acquire) > frame_at_consent);
+        for _ in 0..4 {
+            h.pump();
+            let _ = render_rolling(h);
+        }
+        wait(|| {
+            h.pump();
+            h.plugin_records.load(Acquire) == 1
+                && h.plugin_progress.lock().unwrap().source_bindings[0].is_some_and(
+                    |(id, binding, _)| id == device.value() && binding != off.retired_binding,
+                )
+        });
+        let wet = assert_aligned_wet(h);
+        assert_eq!(assert_aligned_wet(h), wet + 0.0625);
+    }
 }
