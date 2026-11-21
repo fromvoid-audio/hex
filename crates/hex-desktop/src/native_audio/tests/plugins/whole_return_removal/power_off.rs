@@ -480,6 +480,30 @@ fn reopen_saved_off_return() -> SavedOffHostedReturn {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn saved_off_resident_return_installs_a_fresh_worker_on_stopped_power_on() {
+    const CHILD: &str = "HEX_TEST_SAVED_OFF_RETURN_FRESH_ON_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        // Variant 37 captures restorable component and controller state.
+        // The original processing fixture puts a block counter in the
+        // component field that its startup restore reads as latency.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "37")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     let _native = native_fixture();
     let mut off = reopen_saved_off_return();
     let h = &mut off.harness;
