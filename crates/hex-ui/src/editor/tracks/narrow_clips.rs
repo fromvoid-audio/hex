@@ -4,7 +4,7 @@ use gpui::{Bounds, Div, Window, canvas, div, fill, point, prelude::*, px, rgb, s
 use std::{collections::BTreeMap, ops::Range};
 
 const MAX_BAR_WIDTH_DEVICE_PIXELS: f32 = 4.0;
-const MAX_HIDDEN_BODY_WIDTH: f64 = 16.0;
+const MAX_HIDDEN_BODY_WIDTH: f64 = 12.0;
 
 pub(super) fn is_narrow(width: f32, scale: f32) -> bool {
     width > 0.0 && width * scale <= MAX_BAR_WIDTH_DEVICE_PIXELS
@@ -98,12 +98,12 @@ mod tests {
     use super::shows_body_detail;
 
     #[test]
-    fn full_clip_body_detail_switches_after_sixteen_logical_pixels() {
+    fn full_clip_body_detail_switches_after_twelve_logical_pixels() {
         let lane = 512.5;
         let viewport = 20_500;
-        assert!(!shows_body_detail(lane, 639, viewport));
-        assert!(!shows_body_detail(lane, 640, viewport));
-        assert!(shows_body_detail(lane, 641, viewport));
-        assert!(shows_body_detail(0.0, 639, viewport));
+        assert!(!shows_body_detail(lane, 479, viewport));
+        assert!(!shows_body_detail(lane, 480, viewport));
+        assert!(shows_body_detail(lane, 481, viewport));
+        assert!(shows_body_detail(0.0, 479, viewport));
     }
 }
