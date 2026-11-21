@@ -860,6 +860,7 @@ fn native_move_history_waits_for_each_exact_install_and_can_retry_after_cancel()
         NativeMoveLayout::UtilityDelay,
         NativeMoveLayout::Sine,
         NativeMoveLayout::Vector,
+        NativeMoveLayout::Sampler,
     ] {
         assert_native_move_history(layout);
     }
@@ -870,6 +871,7 @@ enum NativeMoveLayout {
     UtilityDelay,
     Sine,
     Vector,
+    Sampler,
 }
 
 fn assert_native_move_history(layout: NativeMoveLayout) {
@@ -879,16 +881,14 @@ fn assert_native_move_history(layout: NativeMoveLayout) {
         receive(&service)
     };
     let add_track = |name: &str| {
-        let Created::Track(track) = run(Request::Edit(Command::AddTrack { name: name.into() }))
-            .created
-            .unwrap()
-        else {
+        let added = run(Request::Edit(Command::AddTrack { name: name.into() }));
+        let Created::Track(track) = added.created.unwrap() else {
             panic!("track");
         };
-        track
+        (track, added.state.revision)
     };
-    let source = add_track("source");
-    let destination = add_track("destination");
+    let (source, _) = add_track("source");
+    let (destination, setup_revision) = add_track("destination");
     if matches!(layout, NativeMoveLayout::UtilityDelay) {
         assert!(
             !run(Request::AddNativeDevice {
@@ -912,20 +912,40 @@ fn assert_native_move_history(layout: NativeMoveLayout) {
             hex_engine::NativeDeviceClass::Instrument,
             "hex.instrument.operator",
         ),
+        NativeMoveLayout::Sampler => (
+            hex_engine::NativeDeviceClass::Instrument,
+            "hex.instrument.sampler",
+        ),
         NativeMoveLayout::Delay | NativeMoveLayout::UtilityDelay => {
             (hex_engine::NativeDeviceClass::Effect, "hex.delay")
         }
     };
-    assert!(
-        !run(Request::AddNativeDevice {
+    let files = matches!(layout, NativeMoveLayout::Sampler)
+        .then(|| crate::service::sampler_export::tests::Files::new(false));
+    let original = if let Some(files) = files.as_ref() {
+        let loaded = run(Request::LoadFirstSampler {
+            request_id: 1,
+            project_generation: 0,
+            revision: setup_revision,
             track: source,
-            class,
-            type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(type_id)),
-            before: None,
-        })
-        .request_complete
-    );
-    let original = install_candidate(&service, &fixture).state;
+            slot: crate::service::SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::First),
+            path: files.source().to_owned(),
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+        assert!(loaded.request_complete);
+        loaded.state
+    } else {
+        assert!(
+            !run(Request::AddNativeDevice {
+                track: source,
+                class,
+                type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(type_id)),
+                before: None,
+            })
+            .request_complete
+        );
+        install_candidate(&service, &fixture).state
+    };
     let moved_device = |project: &hex_project::Project, track| {
         let track = project.track(track).unwrap();
         if class == hex_engine::NativeDeviceClass::Instrument {

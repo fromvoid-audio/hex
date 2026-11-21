@@ -836,7 +836,10 @@ impl Session {
         } else if clipboard {
             Operation::Device(GraphEditOperation::InsertDevice)
         } else if proposal_control.is_some()
-            && matches!(&command, Command::ReplaceMainDevice { .. })
+            && matches!(
+                &command,
+                Command::ReplaceMainDevice { .. } | Command::ReplaceReturnDevice { .. }
+            )
         {
             Operation::Device(GraphEditOperation::ReplaceDevice)
         } else {
