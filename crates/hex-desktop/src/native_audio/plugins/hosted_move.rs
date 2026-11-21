@@ -1,7 +1,7 @@
 //! Canonical route correlation. The original native source and worker stay in Root.
 use super::*;
 use hex_audio::prepared::AppliedAudioSource;
-use hex_engine::playback::{HostedInstrumentMove, Playback};
+use hex_engine::playback::{HostedMoveRequest, Playback};
 use hex_session::service::{
     ResidentGraphSubmission, ResidentPublicationAcceptance, ResidentPublicationPolicy,
     ResidentRuntimeLoop,
@@ -9,7 +9,7 @@ use hex_session::service::{
 
 #[derive(Clone, Copy)]
 pub(in crate::native_audio) struct MoveRoute {
-    request: HostedInstrumentMove,
+    request: HostedMoveRequest,
     predecessor: ResidentRuntimeLoop,
     pub(super) applied: AppliedAudioSource,
     context: AudioSourceContext,
@@ -18,7 +18,7 @@ pub(in crate::native_audio) struct MoveRoute {
 
 #[derive(Clone, Copy)]
 pub(super) struct AdoptedRoute {
-    pub(super) request: HostedInstrumentMove,
+    pub(super) request: HostedMoveRequest,
     project_generation: u64,
 }
 
@@ -26,7 +26,7 @@ impl MoveRoute {
     pub(super) fn prepare(
         context: AudioSourceContext,
         predecessor: ResidentRuntimeLoop,
-        request: HostedInstrumentMove,
+        request: HostedMoveRequest,
         applied: AppliedAudioSource,
     ) -> Self {
         Self {
@@ -43,26 +43,14 @@ impl MoveRoute {
         destination: PluginEffectDestination,
         device: u64,
     ) -> Option<Binding> {
-        (destination.is_instrument()
-            && destination.owner() == ProcessorChainOwner::Track(self.request.receiver.value())
-            && device == self.request.device.value())
-        .then_some(self.request.binding)
+        (destination.is_instrument() == matches!(self.request, HostedMoveRequest::Instrument(_))
+            && destination.owner() == ProcessorChainOwner::Track(self.request.receiver().value())
+            && device == self.request.device().value())
+        .then_some(self.request.binding())
     }
 
-    pub(super) fn compiler_alias(self) -> Result<Option<RetainedInstrumentSource>, String> {
-        let request = self.request;
-        if request.physical_owner == request.receiver {
-            return Ok(None);
-        }
-        RetainedInstrumentSource::for_track_move(
-            self.applied,
-            request.physical_owner.value(),
-            request.receiver.value(),
-            request.device.value(),
-            request.binding,
-        )
-        .map(Some)
-        .map_err(|error| error.to_string())
+    pub(super) fn compiler_alias(self) -> Result<Option<RetainedHostedSource>, String> {
+        compiler_alias(self.request, self.applied)
     }
 }
 
@@ -71,9 +59,9 @@ impl Plugins {
         self.adopted_hosted_move.filter(|route| {
             route.project_generation == context.project_generation
                 && self.sources.iter().any(|source| {
-                    source.binding == route.request.binding
+                    source.binding == route.request.binding()
                         && source.owner
-                            == ProcessorChainOwner::Track(route.request.receiver.value())
+                            == ProcessorChainOwner::Track(route.request.receiver().value())
                         && source.accepted
                         && !source.retiring
                 })
@@ -95,11 +83,17 @@ impl Plugins {
         };
         if !matches!(policy, ResidentPublicationPolicy::DeviceInsert { predecessor, confirmation: None, .. } if predecessor == route.predecessor)
         {
-            return Err("hosted instrument move predecessor differs".into());
+            return Err("hosted move predecessor differs".into());
         }
-        playback
-            .require_hosted_instrument_move(route.request)
-            .map_err(|error| error.0.into())
+        match route.request {
+            HostedMoveRequest::Instrument(movement) => {
+                playback.require_hosted_instrument_move(movement)
+            }
+            HostedMoveRequest::Effect(movement) => {
+                playback.require_hosted_track_effect_move(movement)
+            }
+        }
+        .map_err(|error| error.0.into())
     }
 
     pub(in crate::native_audio) fn hosted_move_submitted(
@@ -148,14 +142,14 @@ impl Plugins {
             return;
         }
         if let Some(source) = self.sources.iter_mut().find(|source| {
-            source.binding == route.request.binding
+            source.binding == route.request.binding()
                 && source.accepted
                 && !source.retiring
-                && source.owner == ProcessorChainOwner::Track(route.request.donor.value())
+                && source.owner == ProcessorChainOwner::Track(route.request.donor().value())
                 && source.project_generation == context.project_generation
         }) {
-            source.owner = ProcessorChainOwner::Track(route.request.receiver.value());
-            self.adopted_hosted_move = (route.request.receiver != route.request.physical_owner)
+            source.owner = ProcessorChainOwner::Track(route.request.receiver().value());
+            self.adopted_hosted_move = (route.request.receiver() != route.request.physical_owner())
                 .then_some(AdoptedRoute {
                     request: route.request,
                     project_generation: context.project_generation,
@@ -168,25 +162,45 @@ impl Plugins {
         context: AudioSourceContext,
         selected: &[Binding],
         active: Option<AppliedAudioSource>,
-    ) -> Result<Option<RetainedInstrumentSource>, String> {
+    ) -> Result<Option<RetainedHostedSource>, String> {
         let Some(route) = self
             .adopted_move(context)
-            .filter(|route| selected.contains(&route.request.binding))
+            .filter(|route| selected.contains(&route.request.binding()))
         else {
             return Ok(None);
         };
         let active = active
             .filter(|applied| applied.context.project_generation == context.project_generation)
-            .ok_or("adopted hosted instrument output changed")?;
-        let request = route.request;
-        RetainedInstrumentSource::for_track_move(
+            .ok_or("adopted hosted move output changed")?;
+        compiler_alias(route.request, active)
+    }
+}
+
+fn compiler_alias(
+    request: HostedMoveRequest,
+    active: AppliedAudioSource,
+) -> Result<Option<RetainedHostedSource>, String> {
+    if request.physical_owner() == request.receiver() {
+        return Ok(None);
+    }
+    match request {
+        HostedMoveRequest::Instrument(request) => RetainedInstrumentSource::for_track_move(
             active,
             request.physical_owner.value(),
             request.receiver.value(),
             request.device.value(),
             request.binding,
         )
-        .map(Some)
-        .map_err(|error| error.to_string())
+        .map(RetainedHostedSource::Instrument),
+        HostedMoveRequest::Effect(request) => RetainedTrackEffectSource::for_track_move(
+            active,
+            request.donor.value(),
+            request.receiver.value(),
+            request.device.value(),
+            request.binding,
+        )
+        .map(RetainedHostedSource::TrackEffect),
     }
+    .map(Some)
+    .map_err(|error| error.to_string())
 }

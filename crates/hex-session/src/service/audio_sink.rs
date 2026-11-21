@@ -22,7 +22,7 @@ pub struct ResidentEffectPreparation<'a> {
     pub(in crate::service) preparing_edit: bool,
     pub(in crate::service) power_on: Option<ResidentPowerOn>,
     pub(in crate::service) running_power_off: Option<ResidentRunningPowerOff>,
-    pub(in crate::service) hosted_instrument_move: Option<ResidentHostedInstrumentMove>,
+    pub(in crate::service) hosted_move: Option<ResidentHostedMove>,
 }
 
 /// Copied original source/binding for one explicit running hosted Off command.
@@ -44,6 +44,22 @@ pub struct ResidentHostedInstrumentMove {
     pub device: hex_project::DeviceId,
     pub source: hex_project::SourceId,
     pub predecessor: ResidentRuntimeLoop,
+}
+
+/// An exact running direct Track effect move staged from the installed source.
+/// Desktop must prove the same physical worker before using this observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidentHostedTrackEffectMove {
+    pub donor: hex_project::TrackId,
+    pub receiver: hex_project::TrackId,
+    pub device: hex_project::DeviceId,
+    pub predecessor: ResidentRuntimeLoop,
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::service) enum ResidentHostedMove {
+    Instrument(ResidentHostedInstrumentMove),
+    TrackEffect(ResidentHostedTrackEffectMove),
 }
 
 /// The explicit PowerDevice command's nonowning Off predecessor.
@@ -298,7 +314,16 @@ impl<'a> ResidentEffectPreparation<'a> {
         .then_some(intent)
     }
     pub fn hosted_instrument_move(&self) -> Option<&ResidentHostedInstrumentMove> {
-        self.hosted_instrument_move.as_ref()
+        match self.hosted_move.as_ref()? {
+            ResidentHostedMove::Instrument(route) => Some(route),
+            ResidentHostedMove::TrackEffect(_) => None,
+        }
+    }
+    pub fn hosted_track_effect_move(&self) -> Option<&ResidentHostedTrackEffectMove> {
+        match self.hosted_move.as_ref()? {
+            ResidentHostedMove::Instrument(_) => None,
+            ResidentHostedMove::TrackEffect(route) => Some(route),
+        }
     }
     pub fn sample_rate(&self) -> u32 {
         self.project.sample_rate()
@@ -2525,7 +2550,7 @@ mod tests {
                 context,
                 preparing_edit,
                 running_power_off,
-                hosted_instrument_move: None,
+                hosted_move: None,
                 restoring_plugin_state: false,
                 power_on: None,
             }
@@ -2616,7 +2641,7 @@ mod tests {
                 preparing_edit: true,
                 power_on,
                 running_power_off: None,
-                hosted_instrument_move: None,
+                hosted_move: None,
             }
             .power_on()
         };
@@ -2692,7 +2717,7 @@ mod tests {
                 preparing_edit: false,
                 power_on: None,
                 running_power_off: None,
-                hosted_instrument_move: None,
+                hosted_move: None,
             }
             .powered_off_main()
             .map(|(id, _)| id)
@@ -2754,7 +2779,7 @@ mod tests {
                 preparing_edit: false,
                 power_on: None,
                 running_power_off: None,
-                hosted_instrument_move: None,
+                hosted_move: None,
             }
             .plugin_device_bypassed(device.value())
         };
@@ -2970,7 +2995,7 @@ mod tests {
                 preparing_edit: true,
                 power_on: None,
                 running_power_off: None,
-                hosted_instrument_move: None,
+                hosted_move: None,
             }
         }
 
@@ -3080,7 +3105,7 @@ mod tests {
             preparing_edit: true,
             power_on: None,
             running_power_off: None,
-            hosted_instrument_move: None,
+            hosted_move: None,
         };
         assert_eq!(
             input
@@ -3135,7 +3160,7 @@ mod tests {
                 preparing_edit: !reopen,
                 power_on: None,
                 running_power_off: None,
-                hosted_instrument_move: None,
+                hosted_move: None,
             }
             .modulated_plugin_target(device.value())
             .unwrap()

@@ -184,7 +184,7 @@ fn private_compiler_borrows_original_root_binding_for_the_exact_receiver_chain()
                     };
                     assert!(
                         definition
-                            .including_retained_track_effect(logical, &node)
+                            .including_retained_track_effect(applied, logical, &node)
                             .is_err()
                     );
                 }

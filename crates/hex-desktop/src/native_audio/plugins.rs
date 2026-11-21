@@ -7,7 +7,8 @@ use hex_audio::{
     NativeSourcePreparationProgress as Progress,
     plugin_effects::{
         AuthoredSelection, EffectPresentation, EffectPresentationPlan, EffectSelection,
-        EffectStartupTimings, Hosting, PluginProfile, RetainedInstrumentSource,
+        EffectStartupTimings, Hosting, PluginProfile, RetainedHostedSource,
+        RetainedInstrumentSource, RetainedTrackEffectSource,
     },
 };
 use hex_engine::{PreparedRevision, ProcessorChainOwner};
@@ -1361,6 +1362,15 @@ impl Plugins {
         });
         let mut output = output;
         let retained = self.retained_instrument_move(output.as_deref_mut(), &input, desired)?;
+        let retained = match retained {
+            Some(route) => Some(route),
+            None => self.retained_track_effect_move(
+                output.as_deref_mut(),
+                &input,
+                desired,
+                cancellation,
+            )?,
+        };
         if input.preparing_edit() {
             self.prepare_edit_sources(
                 output.as_deref_mut(),
@@ -1487,6 +1497,11 @@ impl Plugins {
             Ok(())
         })?;
         for &binding in &bindings {
+            if retained.is_some()
+                && matches!(compiler_alias, Some(RetainedHostedSource::TrackEffect(route)) if route.binding() == binding)
+            {
+                continue;
+            }
             let revision = loop {
                 edits::check_cancel(cancellation)?;
                 match control.reserve_native_source_program_revision_on_control(binding) {
