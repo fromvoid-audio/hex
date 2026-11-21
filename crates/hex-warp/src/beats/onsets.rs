@@ -196,6 +196,27 @@ pub(super) fn detect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_transients_report_stereo_attacks_without_inventing_boundaries() {
+        let mut source = vec![[0.0; 2]; 16_000];
+        source[2_300] = [0.7, -0.7];
+        source[7_300] = [0.0, 0.5];
+        assert_eq!(
+            detect_transients(&source, 16_000, &mut || false).unwrap(),
+            [2_300, 7_300]
+        );
+        assert_eq!(
+            detect_transients(&source, 16_000, &mut || true),
+            Err(Error::Cancelled)
+        );
+        source[2_300][0] = f32::NAN;
+        assert!(matches!(
+            detect_transients(&source, 16_000, &mut || false),
+            Err(Error::Invalid(_))
+        ));
+    }
+
     fn physical(source: &[Frame], rate: u32) -> (Vec<u64>, u64) {
         let mut starts = Vec::with_capacity(MAX_DETECTED_TRANSIENTS);
         starts.push(0);

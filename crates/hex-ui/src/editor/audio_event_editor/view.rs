@@ -21,6 +21,13 @@ pub(in crate::editor) fn view(
 ) -> Option<gpui::Stateful<Div>> {
     let (clip_id, root, _) = view.event_context()?;
     view.sync_audio_navigation();
+    let analysis_source = view.state.as_ref().and_then(|state| {
+        let clip = state.project.clip(clip_id)?;
+        transients::supports_root(&root)
+            .then(|| state.waveforms.get(&clip.asset()).cloned())
+            .flatten()
+    });
+    view.sync_audio_event_transients(analysis_source, cx);
     let owner = (clip_id, view.project_generation);
     let state = view.state.as_ref()?;
     let revision = state.revision;
@@ -558,6 +565,49 @@ pub(in crate::editor) fn view(
             cx,
         ));
         body = body.child(element);
+    }
+    if let Some(analysis) = view.audio_event_editor.transients.as_ref()
+        && let Some(event) = preview.events.iter().copied().find(|event| {
+            event.active
+                && view
+                    .audio_event_editor
+                    .selected
+                    .is_none_or(|selected| event.id == selected)
+        })
+        && transients::supports_root(&root)
+    {
+        let mut next_x = 0.0;
+        let step = 3.0 / width.max(1.0);
+        let tempo = state.project.tempo_map();
+        for &source in analysis.frames() {
+            let Some(position) =
+                transients::event_position(&root, event, source, tempo).filter(|position| {
+                    *position >= content_bounds(&root).0 && *position < content_bounds(&root).1
+                })
+            else {
+                continue;
+            };
+            let Some(frame) =
+                frame_at(position).filter(|frame| root_window.contains(i128::from(*frame)))
+            else {
+                continue;
+            };
+            let x = frame_to_x(frame);
+            if x < next_x {
+                continue;
+            }
+            next_x = x + step;
+            body = body.child(
+                div()
+                    .debug_selector(|| "audio-event-transient".into())
+                    .absolute()
+                    .left(relative(x))
+                    .top(px(EVENT_TOP))
+                    .w(px(1.0))
+                    .h(px(6.0))
+                    .bg(rgb(theme::color(theme::PaletteRole::Muted))),
+            );
+        }
     }
     // One bounded grid above the opaque event bodies, using the same light
     // painter as Arrangement. It has no hit handlers and retains edge cursors.

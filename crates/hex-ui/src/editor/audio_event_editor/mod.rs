@@ -16,6 +16,7 @@ mod pointer;
 mod projection;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests;
+mod transients;
 mod view;
 mod waveform_preview;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -121,6 +122,7 @@ pub(super) struct State {
     pan: Option<navigation::Pan>,
     clipboard: Option<Clipboard>,
     pending: Option<pending::Pending>,
+    transients: Option<transients::Analysis>,
 }
 impl State {
     fn set_fade_hover(

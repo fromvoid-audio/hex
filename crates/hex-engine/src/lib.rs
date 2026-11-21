@@ -36,6 +36,7 @@ pub use hex_devices::saturator::{
 pub use hex_lattice::ProcessorAuditionSelection;
 pub use hex_lattice::ProcessorChainOwner;
 pub use hex_lattice_contract::DeviceTypeId;
+pub use hex_warp::{Error as TransientDetectionError, detect_transients};
 pub mod compensation;
 pub mod foreign_automation;
 
