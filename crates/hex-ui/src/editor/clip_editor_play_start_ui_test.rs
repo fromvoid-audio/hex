@@ -134,7 +134,7 @@ fn focused_piano_cursor_starts_playback_until_arrangement_focus_or_lock_wins(
 
     let play = |fixture: &mut worker_ui_fixture::WorkerUiFixture,
                 visual: &mut VisualTestContext,
-                expected| {
+                expected: u64| {
         visual.simulate_keystrokes("space");
         pass_audio(fixture, visual);
         editor.read_with(visual, |view, _| {
