@@ -46,17 +46,17 @@ fn added_effect(before: &Project, after: &Project) -> Option<DeviceId> {
         })
 }
 
-/// The running Verified path may prepare an active Track worker only for
-/// this exact membership change. The audio owner decides cut compatibility.
-pub(super) fn restores_one_track(before: &Project, after: &Project) -> bool {
-    let Some((track, device)) = added_track_effect(before, after) else {
+/// The running Verified path may prepare a worker for one enabled Return or
+/// direct Track effect. The audio owner decides cut compatibility.
+pub(super) fn restores_one_track_or_return(before: &Project, after: &Project) -> bool {
+    let added = added_track_effect(before, after)
+        .filter(|(track, _)| track.instrument().is_none())
+        .map(|(_, device)| device)
+        .or_else(|| added_return_effect(before, after));
+    let Some(device) = added else {
         return false;
     };
-    track.instrument().is_none()
-        && track
-            .devices()
-            .iter()
-            .any(|leaf| leaf.id() == device && !leaf.bypassed())
+    after.device(device).is_some_and(|leaf| !leaf.bypassed())
         && super::hosted_replacement_history::without_effect(after, device)
             .is_some_and(|without| without.project() == before)
 }
@@ -163,8 +163,8 @@ mod tests {
 
         let mut deleted = Editor::new(restored.clone(), 1).unwrap();
         deleted.execute(Command::RemoveDevice(id)).unwrap();
-        assert!(restores_one_track(deleted.project(), &restored));
-        assert!(!restores_one_track(&restored, deleted.project()));
+        assert!(restores_one_track_or_return(deleted.project(), &restored));
+        assert!(!restores_one_track_or_return(&restored, deleted.project()));
 
         let mut bypassed = Editor::new(restored.clone(), 1).unwrap();
         bypassed
@@ -173,7 +173,10 @@ mod tests {
                 bypassed: true,
             })
             .unwrap();
-        assert!(!restores_one_track(deleted.project(), bypassed.project()));
+        assert!(!restores_one_track_or_return(
+            deleted.project(),
+            bypassed.project()
+        ));
 
         editor
             .execute_many_prepared(
@@ -188,7 +191,7 @@ mod tests {
             )
             .unwrap();
         assert!(stage(&mut editor, false).unwrap().is_none());
-        assert!(!restores_one_track(editor.project(), &restored));
+        assert!(!restores_one_track_or_return(editor.project(), &restored));
     }
 
     #[test]
@@ -213,6 +216,11 @@ mod tests {
             panic!("device");
         };
         assert_exact_removal_history(&mut editor, id);
+        let restored = editor.project().clone();
+        let mut deleted = Editor::new(restored.clone(), 1).unwrap();
+        deleted.execute(Command::RemoveDevice(id)).unwrap();
+        assert!(restores_one_track_or_return(deleted.project(), &restored));
+        assert!(!restores_one_track_or_return(&restored, deleted.project()));
 
         editor
             .execute_many_prepared(
@@ -227,6 +235,7 @@ mod tests {
             )
             .unwrap();
         assert!(stage(&mut editor, false).unwrap().is_none());
+        assert!(!restores_one_track_or_return(editor.project(), &restored));
     }
 
     #[test]
