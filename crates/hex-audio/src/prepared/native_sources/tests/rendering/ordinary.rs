@@ -21,6 +21,7 @@ mod pressure;
 #[cfg(not(debug_assertions))]
 mod profile;
 mod sampler;
+mod track_effect_borrow;
 
 fn limits() -> hex_engine::AudioStorageLedgerReservation {
     hex_engine::AudioStorageLedgerReservation {

@@ -371,6 +371,58 @@ impl<'a> NativeEffectDefinition<'a> {
         Ok(self)
     }
 
+    /// Prototype the compiler identity selection without adding an effect
+    /// alias to the ordinary definition or granting publication authority.
+    #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn probe_retained_track_effect_identity(
+        &self,
+        applied: crate::prepared::AppliedAudioSource,
+        witnessed: (
+            crate::prepared::AppliedAudioSource,
+            ProcessorInstanceIdentity,
+        ),
+        requested: ProcessorInstanceIdentity,
+        original: &hex_lattice::PreparedRuntimeInstance,
+        state: &NativeDeviceState,
+        context: &DevicePreparationContext<'_>,
+    ) -> Result<ProcessorInstanceIdentity, DeviceContractError> {
+        let (predecessor, receiver) = witnessed;
+        let unavailable = DeviceContractError::ForeignProcessingUnavailable;
+        let identity = ProcessorInstanceIdentity::new(original.owner, original.device_id)?;
+        let prepared = original.foreign_processor().ok_or(unavailable)?;
+        let binding = prepared.binding().ok_or(unavailable)?;
+        if applied != predecessor
+            || applied.audio_revision == 0
+            || !binding.is_valid()
+            || binding.root != applied.output_identity
+            || binding.instance != identity.device_id()
+            || requested != receiver
+            || receiver.device_id() != identity.device_id()
+            || receiver.owner() == identity.owner()
+            || !matches!(receiver.owner(), ProcessorChainOwner::Track(_))
+            || !matches!(identity.owner(), ProcessorChainOwner::Track(_))
+            || prepared.is_instrument_profile()
+            || original.bypassed
+            || !original.automation.is_empty()
+            || original.modulation.is_some()
+            || original.sample_rate != context.sample_rate
+            || original
+                .configuration
+                .as_ref()
+                .is_none_or(|configuration| !configuration.processing_eq(state))
+        {
+            return Err(unavailable);
+        }
+        self.exact_configuration(identity, state, context.sample_rate)?
+            .filter(|effect| {
+                effect.binding == binding
+                    && effect.prepared == prepared
+                    && effect.state.processing_eq(state)
+            })
+            .map(|effect| effect.identity)
+            .ok_or(unavailable)
+    }
+
     /// Copy the processing declaration from a real source that matches this
     /// exact authored state and rate. This does not loan or publish an endpoint.
     pub fn prepared_processor_on_control(
