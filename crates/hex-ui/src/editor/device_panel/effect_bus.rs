@@ -1,6 +1,5 @@
-//! Finite effect-only owners reuse the existing Return rail and worker commands.
+//! Main and Return share the effect-bus rail and typed replacement in both audio modes.
 use super::*;
-use hex_session::DocumentAudioMode;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::editor) enum EffectBusOwner {
@@ -8,14 +7,6 @@ pub(in crate::editor) enum EffectBusOwner {
     Return(hex_project::ReturnId),
 }
 impl EffectBusOwner {
-    /// Keep the pad's presentation and captured drop on the same Session-supported route.
-    pub(super) fn allows_vst3_replacement(self, mode: DocumentAudioMode) -> bool {
-        match mode {
-            DocumentAudioMode::Resident => true,
-            DocumentAudioMode::VerifiedStreaming => self == Self::Main,
-        }
-    }
-
     pub(super) fn devices(self, project: &hex_project::Project) -> Option<&[hex_project::Device]> {
         match self {
             Self::Main => Some(project.main_devices()),
