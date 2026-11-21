@@ -114,7 +114,7 @@ impl EditorView {
         }
     }
 
-    fn toggle_play_start_lock(&mut self, cx: &mut Context<Self>) {
+    fn toggle_play_start_lock(&mut self, clip_editor_start: Option<u64>, cx: &mut Context<Self>) {
         if self.mode != EditorMode::Arrangement
             || self.context_menu.is_some()
             || self.track_name.is_editing()
@@ -151,15 +151,15 @@ impl EditorView {
         }
         if self.valid_locked_play_start().is_some() {
             self.locked_play_start = None;
-        } else if self.normalized_time_selection().is_none() {
-            // A clip's triangle locks its transport frame independently of
-            // the retained point cursor, without creating a clip edit target.
-            let point = self
-                .selected_clip
-                .and_then(|_| self.selected_arrangement_play_start())
-                .map(|_| {
-                    EditCursor::new(None, self.playback_start_frame(), self.project_generation)
-                })
+        } else if clip_editor_start.is_some() || self.normalized_time_selection().is_none() {
+            // Pin the active transport frame without editing the clip.
+            let clip_start = clip_editor_start.or_else(|| {
+                self.selected_clip
+                    .and_then(|_| self.selected_arrangement_play_start())
+                    .map(|_| self.playback_start_frame())
+            });
+            let point = clip_start
+                .map(|frame| EditCursor::new(None, frame, self.project_generation))
                 .or_else(|| {
                     self.edit_cursor
                         .filter(|cursor| self.cursor_is_current(*cursor))
@@ -479,6 +479,7 @@ impl EditorView {
         viewport: super::viewport::Viewport,
         edge: hex_widgets::TimeMarkerEdge,
         guide: Option<u64>,
+        clip_editor_start: Option<u64>,
         cx: &mut Context<Self>,
     ) -> Option<Div> {
         use hex_widgets::{TimeMarkerEndpoint as Endpoint, time_position_marker};
@@ -488,6 +489,8 @@ impl EditorView {
             .filter(|cursor| cursor.generation == self.project_generation);
         let cursor = cursor.or(locked);
         let reset = self.play_start_at_beginning && guide.is_none();
+        let clip_editor_start =
+            clip_editor_start.filter(|_| !reset && guide.is_none() && locked.is_none());
         let selection_start =
             if reset || guide.is_some() || (cursor.is_none() && self.selected_clip.is_none()) {
                 None
@@ -497,6 +500,7 @@ impl EditorView {
         let clip_start = selection_start.filter(|_| self.selected_clip.is_some());
         let cursor_frame = cursor
             .map(|cursor| cursor.frame)
+            .or(clip_editor_start)
             .or(guide)
             .or(reset.then_some(0))
             .or(clip_start)?;
@@ -512,7 +516,12 @@ impl EditorView {
             hex_widgets::TimeMarkerEdge::Top => "top",
             hex_widgets::TimeMarkerEdge::Bottom => "bottom",
         };
-        if locked.is_none() && start == end && selection_start.is_some() && clip_start.is_none() {
+        if locked.is_none()
+            && clip_editor_start.is_none()
+            && start == end
+            && selection_start.is_some()
+            && clip_start.is_none()
+        {
             return None;
         }
         let mut markers = Vec::new();
@@ -549,6 +558,8 @@ impl EditorView {
         }
         let point_frame = if let Some(locked) = locked {
             Some(locked.frame)
+        } else if clip_editor_start.is_some() {
+            clip_editor_start
         } else if guide.is_some() || start != end {
             None
         } else if selection_start.is_some() {
@@ -575,6 +586,8 @@ impl EditorView {
                 time_position_marker(
                     if locked.is_some() {
                         format!("locked-play-start-{edge_name}").into()
+                    } else if clip_editor_start.is_some() {
+                        format!("clip-editor-play-start-{edge_name}").into()
                     } else {
                         format!("time-marker-{edge_name}-start").into()
                     },
@@ -595,7 +608,7 @@ impl EditorView {
                     .cursor_pointer()
                     .on_mouse_down(
                         gpui::MouseButton::Left,
-                        cx.listener(|view, event: &gpui::MouseDownEvent, _, cx| {
+                        cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
                             if event.modifiers == gpui::Modifiers::default() {
                                 let point =
                                     (f32::from(event.position.x), f32::from(event.position.y));
@@ -606,7 +619,12 @@ impl EditorView {
                                 }) {
                                     view.time_selection_gesture = None;
                                 }
-                                view.toggle_play_start_lock(cx);
+                                let current = clip_editor_start.filter(|frame| {
+                                    view.focused_clip_editor_play_start(window) == Some(*frame)
+                                });
+                                if clip_editor_start.is_none() || current.is_some() {
+                                    view.toggle_play_start_lock(current, cx);
+                                }
                                 cx.stop_propagation();
                             }
                         }),
@@ -649,10 +667,16 @@ impl EditorView {
         &self,
         viewport: super::viewport::Viewport,
         guide: Option<u64>,
+        clip_editor_start: Option<u64>,
         cx: &mut Context<Self>,
     ) -> Option<Div> {
-        let markers =
-            self.edit_cursor_markers(viewport, hex_widgets::TimeMarkerEdge::Bottom, guide, cx);
+        let markers = self.edit_cursor_markers(
+            viewport,
+            hex_widgets::TimeMarkerEdge::Bottom,
+            guide,
+            clip_editor_start,
+            cx,
+        );
         let line = if guide.is_some() {
             None
         } else if self.play_start_at_beginning {

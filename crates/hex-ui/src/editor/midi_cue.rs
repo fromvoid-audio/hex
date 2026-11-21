@@ -10,6 +10,17 @@ use timing::arrangement_destination;
 pub(super) use timing::arrangement_elapsed;
 
 impl EditorView {
+    pub(super) fn midi_editor_cursor_play_start(&self) -> Option<u64> {
+        let clip = self.detail_clip_id()?;
+        if self.piano_view_clip != Some((self.project_generation, clip)) {
+            return None;
+        }
+        let project = &self.state.as_ref()?.project;
+        arrangement_destination(project, clip, BeatTime::from_raw(self.midi_marker?))
+            .ok()
+            .flatten()
+    }
+
     pub(super) fn request_midi_source_cue(&mut self, clip: ClipId, source_beat: u64) {
         if self.detail_clip_id() != Some(clip) || self.edit_pending() {
             return;

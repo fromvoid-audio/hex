@@ -13,6 +13,22 @@ fn cancel_eq8_audition(view: &mut EditorView) {
 }
 
 impl EditorView {
+    /// Only the focused, visible Arrangement editor lends its local cursor
+    /// to the project transport. The original-source view has a different clock.
+    pub(super) fn focused_clip_editor_play_start(&self, window: &gpui::Window) -> Option<u64> {
+        if self.mode != EditorMode::Arrangement || !self.clip_view_open || self.device_panel_active
+        {
+            return None;
+        }
+        if self.midi_focus.is_focused(window) {
+            self.midi_editor_cursor_play_start()
+        } else if self.audio_event_focus.is_focused(window) {
+            self.audio_editor_cursor_play_start()
+        } else {
+            None
+        }
+    }
+
     /// One shared picker in the status bar, leaving the editor surface for content.
     pub(super) fn clip_detail_controls(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         let open = self.clip_view_open;

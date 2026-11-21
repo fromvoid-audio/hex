@@ -936,7 +936,9 @@ impl Render for EditorView {
                 {
                     if !event.is_held {
                         let _scope = crate::diagnostics::action_scope(cx, "hex_editor::TogglePlay");
-                        view.toggle_play();
+                        view.toggle_play_with_clip_cursor(
+                            view.focused_clip_editor_play_start(window),
+                        );
                         cx.notify();
                     }
                     cx.stop_propagation();
@@ -1171,8 +1173,8 @@ impl Render for EditorView {
                     }
                 }),
             )
-            .on_action(cx.trace(|view, _: &TogglePlay, _, cx| {
-                view.toggle_play();
+            .on_action(cx.trace(|view, _: &TogglePlay, window, cx| {
+                view.toggle_play_with_clip_cursor(view.focused_clip_editor_play_start(window));
                 cx.notify();
             }))
             .on_action(cx.trace(|view, stop: &Stop, window, cx| {

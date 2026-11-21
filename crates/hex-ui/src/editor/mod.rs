@@ -1515,9 +1515,10 @@ impl EditorView {
                 })
             {
                 entity.update(cx, |view, cx| {
+                    let cursor = view.focused_clip_editor_play_start(window);
                     view.focus.focus(window);
                     let _scope = crate::diagnostics::action_scope(cx, "hex_editor::TogglePlay");
-                    view.toggle_play();
+                    view.toggle_play_with_clip_cursor(cursor);
                     cx.notify();
                 });
                 cx.stop_propagation();
@@ -2079,6 +2080,10 @@ impl EditorView {
     }
 
     pub(super) fn toggle_play(&mut self) {
+        self.toggle_play_with_clip_cursor(None);
+    }
+
+    fn toggle_play_with_clip_cursor(&mut self, clip_cursor: Option<u64>) {
         self.escape_stop_armed = false;
         if self.opening_project || self.close_prompt_open {
             self.error = Some("project change pending · playback is paused".into());
@@ -2095,7 +2100,7 @@ impl EditorView {
             return;
         }
         if self.recovery.generation().is_some() {
-            self.queue_normal_play(self.playback_start_frame());
+            self.queue_normal_play(self.playback_start_frame_with_cursor(None, clip_cursor));
             return;
         }
         if self.section_install_pending() {
@@ -2112,7 +2117,7 @@ impl EditorView {
             }
             return;
         }
-        let start_frame = self.playback_start_frame();
+        let start_frame = self.playback_start_frame_with_cursor(None, clip_cursor);
         match self.play_toggle_action(device_playing, start_frame) {
             arrangement_seek::ToggleAction::Pause => self.pause_from_play_toggle(),
             arrangement_seek::ToggleAction::PlayFrom(frame) => {
@@ -2145,11 +2150,22 @@ impl EditorView {
     }
 
     fn playback_start_frame_with_section_override(&self, section: Option<u64>) -> u64 {
+        self.playback_start_frame_with_cursor(section, None)
+    }
+
+    fn playback_start_frame_with_cursor(
+        &self,
+        section: Option<u64>,
+        clip_cursor: Option<u64>,
+    ) -> u64 {
         if self.play_start_at_beginning {
             return 0;
         }
         if let Some(cursor) = self.valid_locked_play_start() {
             return cursor.frame;
+        }
+        if let Some(frame) = clip_cursor {
+            return frame;
         }
         if let Some((epoch, region)) = self.selection_loop_start
             && self.selection_intent_epoch == Some(epoch)
