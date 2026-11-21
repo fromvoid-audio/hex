@@ -27,7 +27,15 @@ fn verified_running_track_vst3_replacement_installs_at_its_exact_receipt() {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn verified_running_track_vst3_replacement_undo_restores_a_fresh_worker() {
-    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::TrackHistory);
+    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::TrackHistory {
+        redo: false,
+    });
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_running_track_vst3_replacement_redo_restores_a_fresh_worker() {
+    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::TrackHistory { redo: true });
 }
 
 #[test]
@@ -64,7 +72,7 @@ enum VerifiedReplacementOwner {
     Track,
     MainHistory { redo: bool },
     ReturnHistory { redo: bool },
-    TrackHistory,
+    TrackHistory { redo: bool },
 }
 
 fn replacement_effects(
@@ -117,7 +125,7 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
         VerifiedReplacementOwner::Main | VerifiedReplacementOwner::MainHistory { .. } => {
             (imported.state, PluginEffectDestination::Main)
         }
-        VerifiedReplacementOwner::Track | VerifiedReplacementOwner::TrackHistory => {
+        VerifiedReplacementOwner::Track | VerifiedReplacementOwner::TrackHistory { .. } => {
             (imported.state, PluginEffectDestination::Track(track))
         }
         VerifiedReplacementOwner::Return | VerifiedReplacementOwner::ReturnHistory { .. } => {
@@ -172,7 +180,7 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
             VerifiedReplacementOwner::Main
             | VerifiedReplacementOwner::MainHistory { .. }
             | VerifiedReplacementOwner::Track
-            | VerifiedReplacementOwner::TrackHistory => effect,
+            | VerifiedReplacementOwner::TrackHistory { .. } => effect,
             // The same authored 0.25 reaches the dry and wet routes. Return
             // receives half of it, so the measured ramp must be above dry.
             VerifiedReplacementOwner::Return | VerifiedReplacementOwner::ReturnHistory { .. } => {
@@ -364,8 +372,8 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
     });
     let redo = match owner {
         VerifiedReplacementOwner::MainHistory { redo }
-        | VerifiedReplacementOwner::ReturnHistory { redo } => Some(redo),
-        VerifiedReplacementOwner::TrackHistory => Some(false),
+        | VerifiedReplacementOwner::ReturnHistory { redo }
+        | VerifiedReplacementOwner::TrackHistory { redo } => Some(redo),
         _ => None,
     };
     if let Some(redo) = redo {

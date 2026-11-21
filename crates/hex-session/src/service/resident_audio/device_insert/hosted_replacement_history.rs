@@ -12,15 +12,39 @@ pub(super) fn replaces_one_return(before: &Project, after: &Project) -> bool {
         .return_tracks()
         .iter()
         .zip(after.return_tracks())
-        .find(|(old, new)| {
-            old.devices()
-                .iter()
-                .map(Device::id)
-                .ne(new.devices().iter().map(Device::id))
-        })
+        .find(|(old, new)| effect_ids_differ(old.devices(), new.devices()))
         .is_some_and(|(old, new)| {
             old.id() == new.id() && replaces_chain_leaf(before, after, old.devices(), new.devices())
         })
+}
+
+/// A direct Track effect swap keeps the separately authored instrument gap.
+/// Removing the swapped leaf alone can collapse two different gaps.
+pub(super) fn replaces_one_track(before: &Project, after: &Project) -> bool {
+    if before.tracks().len() != after.tracks().len() {
+        return false;
+    }
+    before
+        .tracks()
+        .iter()
+        .zip(after.tracks())
+        .find(|(old, new)| effect_ids_differ(old.devices(), new.devices()))
+        .is_some_and(|(old, new)| {
+            old.id() == new.id()
+                && !old.is_group()
+                && !new.is_group()
+                && old.parent_group().is_none()
+                && new.parent_group().is_none()
+                && old.instrument_position() == new.instrument_position()
+                && replaces_chain_leaf(before, after, old.devices(), new.devices())
+        })
+}
+
+fn effect_ids_differ(before: &[Device], after: &[Device]) -> bool {
+    before
+        .iter()
+        .map(Device::id)
+        .ne(after.iter().map(Device::id))
 }
 
 /// The two leaf IDs must be absent from the opposite complete project.
@@ -73,7 +97,7 @@ pub(super) fn without_effect(project: &Project, device: DeviceId) -> Option<Edit
 mod tests {
     use super::*;
     use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
-    use hex_project::{Created, ReturnId};
+    use hex_project::{Created, ReturnId, TrackDeviceSlot, TrackSelectionIds};
 
     fn add_return(editor: &mut Editor, name: &str) -> ReturnId {
         let Created::ReturnTrack(id) = editor
@@ -168,5 +192,106 @@ mod tests {
         editor.commit_staged_history(undo).unwrap();
         let redo = editor.stage_history(true).unwrap().unwrap();
         assert!(replaces_one_return(editor.project(), redo.project()));
+    }
+
+    #[test]
+    fn exact_track_swap_requires_the_same_direct_slot_and_instrument_gap() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::InsertTrackWithDevice {
+                name: "instrument track".into(),
+                before_track: None,
+                slot: TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let instrument = editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        let utility =
+            hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.utility"))
+                .unwrap();
+        let insert = |state| Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        };
+        let Created::Device(neighbor) = editor.execute(insert(utility)).unwrap() else {
+            panic!("neighbor");
+        };
+        let hosted = |byte| NativeDeviceState::new(VST3_DEVICE_TYPE_ID, 1, vec![byte]).unwrap();
+        let Created::Device(original) = editor.execute(insert(hosted(1))).unwrap() else {
+            panic!("original effect");
+        };
+        let move_device = |device, before| Command::MoveTrackDevice {
+            device,
+            track,
+            before,
+        };
+        editor
+            .execute(move_device(instrument, Some(original)))
+            .unwrap();
+        let replace = || Command::ReplaceTrackDevice {
+            track,
+            replacing: original,
+            state: hosted(2),
+        };
+        let Created::Device(fresh) = editor.execute(replace()).unwrap() else {
+            panic!("replacement");
+        };
+        let replaced = editor.project().clone();
+        let undo = editor.stage_history(false).unwrap().unwrap();
+        assert!(replaces_one_track(&replaced, undo.project()));
+
+        let mut wrong_slot = Editor::new(replaced.clone(), 1).unwrap();
+        wrong_slot
+            .execute(move_device(fresh, Some(neighbor)))
+            .unwrap();
+        assert!(!replaces_one_track(undo.project(), wrong_slot.project()));
+
+        let mut wrong_gap = Editor::new(replaced, 1).unwrap();
+        wrong_gap.execute(move_device(instrument, None)).unwrap();
+        let original_track = undo.project().track(track).unwrap();
+        let wrong_track = wrong_gap.project().track(track).unwrap();
+        assert_ne!(
+            original_track.instrument_position(),
+            wrong_track.instrument_position()
+        );
+        assert!(replaces_chain_leaf(
+            undo.project(),
+            wrong_gap.project(),
+            original_track.devices(),
+            wrong_track.devices(),
+        ));
+        assert!(!replaces_one_track(undo.project(), wrong_gap.project()));
+
+        editor.commit_staged_history(undo).unwrap();
+        let redo = editor.stage_history(true).unwrap().unwrap();
+        assert!(replaces_one_track(editor.project(), redo.project()));
+
+        editor
+            .execute(Command::GroupTracks {
+                tracks: TrackSelectionIds::new(&[track]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap();
+        assert!(
+            editor
+                .project()
+                .track(track)
+                .unwrap()
+                .parent_group()
+                .is_some()
+        );
+        let grouped = editor.project().clone();
+        editor.execute(replace()).unwrap();
+        assert!(!replaces_one_track(&grouped, editor.project()));
     }
 }

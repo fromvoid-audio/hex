@@ -902,6 +902,7 @@ impl Session {
             ))?;
         let operation = if main_history::replaces_one_main(self.project(), edge.project())
             || hosted_replacement_history::replaces_one_return(self.project(), edge.project())
+            || hosted_replacement_history::replaces_one_track(self.project(), edge.project())
         {
             GraphEditOperation::ReplaceDevice
         } else {
