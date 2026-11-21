@@ -144,7 +144,9 @@ enum RemovalTransition {
     Reorder(usize),
     Route {
         leaf: usize,
-        old_group: Option<usize>,
+        outgoing: usize,
+        /// The flat boundary fades a different post-device output after the cut.
+        incoming: Option<usize>,
     },
     Instrument(usize),
     Move(StagedTrackMove),
@@ -203,15 +205,16 @@ impl PendingNativeRemoval {
         }
     }
 
-    pub(super) fn verified_last_child_exit(
+    pub(super) fn verified_flat_group_faders(
         self,
         previous: &SessionPlayback,
     ) -> Option<(usize, usize)> {
         match self.transition {
             RemovalTransition::Route {
-                leaf,
-                old_group: Some(group),
-            } if self.matches(previous) => Some((leaf, group)),
+                outgoing,
+                incoming: Some(incoming),
+                ..
+            } if self.matches(previous) => Some((outgoing, incoming)),
             _ => None,
         }
     }
@@ -308,8 +311,8 @@ impl PendingNativeRemoval {
     }
 
     pub(super) fn faded_track(self, previous: &SessionPlayback, id: hex_project::TrackId) -> bool {
-        matches!(self.transition, RemovalTransition::Route { leaf, old_group }
-            if previous.routes.get(old_group.unwrap_or(leaf)).is_some_and(|route| route.id == id))
+        matches!(self.transition, RemovalTransition::Route { outgoing, .. }
+            if previous.routes.get(outgoing).is_some_and(|route| route.id == id))
             || self.reordered_track(previous) == Some(id)
             || self.faded_instrument_track(previous) == Some(id)
             || self.track_move_indices().is_some_and(|indices| {
@@ -379,12 +382,7 @@ impl PendingNativeRemoval {
             RemovalTransition::Track(index)
             | RemovalTransition::Reorder(index)
             | RemovalTransition::Route {
-                leaf: index,
-                old_group: None,
-            }
-            | RemovalTransition::Route {
-                old_group: Some(index),
-                ..
+                outgoing: index, ..
             }
             | RemovalTransition::Instrument(index) => {
                 previous
@@ -486,11 +484,18 @@ impl SessionPlayback {
                         .map(RemovalTransition::Reorder)
                 })
                 .or_else(|| {
-                    self.group_reroute_from(previous)
-                        .map(|leaf| RemovalTransition::Route {
+                    self.group_reroute_from(previous).map(|leaf| {
+                        let (outgoing, incoming) = self
+                            .verified_flat_group_faders(previous, leaf)
+                            .map_or((leaf, None), |(outgoing, incoming)| {
+                                (outgoing, Some(incoming))
+                            });
+                        RemovalTransition::Route {
                             leaf,
-                            old_group: self.verified_last_child_exit_group(previous, leaf),
-                        })
+                            outgoing,
+                            incoming,
+                        }
+                    })
                 })
                 .or_else(|| {
                     self.direct_audio_track_move_from(previous)
@@ -587,12 +592,7 @@ impl SessionPlayback {
                 RemovalTransition::Track(index)
                 | RemovalTransition::Reorder(index)
                 | RemovalTransition::Route {
-                    leaf: index,
-                    old_group: None,
-                }
-                | RemovalTransition::Route {
-                    old_group: Some(index),
-                    ..
+                    outgoing: index, ..
                 }
                 | RemovalTransition::Instrument(index) => {
                     let rate = previous.revision.arrangement().sample_rate();
@@ -733,12 +733,7 @@ impl SessionPlayback {
                 RemovalTransition::Track(index)
                 | RemovalTransition::Reorder(index)
                 | RemovalTransition::Route {
-                    leaf: index,
-                    old_group: None,
-                }
-                | RemovalTransition::Route {
-                    old_group: Some(index),
-                    ..
+                    outgoing: index, ..
                 }
                 | RemovalTransition::Instrument(index) => {
                     let arrangement = previous.revision.arrangement();
