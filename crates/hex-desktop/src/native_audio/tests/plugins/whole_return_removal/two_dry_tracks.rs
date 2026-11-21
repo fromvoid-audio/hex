@@ -37,6 +37,13 @@ fn assert_both_dry(h: &ResidentHarness, latency: usize) {
     }
 }
 
+fn worker_identity(
+    h: &ResidentHarness,
+) -> Option<(u64, hex_lattice_contract::ForeignProcessorBinding)> {
+    h.plugin_progress.lock().unwrap().source_bindings[0]
+        .map(|(device, binding, _completed)| (device, binding))
+}
+
 fn assert_bed_with_wet(start: usize, pcm: &[hex_engine::Frame; BLOCK]) -> f32 {
     let scale = (pcm[0][0] - both_dry_at(start, BRIDGE)) / dry_at(start, BRIDGE);
     assert!(scale.is_finite() && scale > 0.0);
@@ -177,8 +184,8 @@ fn running_resident_whole_vst3_return_removal_keeps_two_dry_tracks_aligned() {
         observation.main_latency().unwrap().arrival_frames,
         BRIDGE as u32
     );
-    wait(|| h.plugin_progress.lock().unwrap().source_bindings[0].is_some());
-    let binding = h.plugin_progress.lock().unwrap().source_bindings[0];
+    wait(|| worker_identity(&h).is_some());
+    let original_worker = worker_identity(&h);
     let predecessor = status(&h).recording_source().unwrap();
     h.audio
         .as_mut()
@@ -221,10 +228,7 @@ fn running_resident_whole_vst3_return_removal_keeps_two_dry_tracks_aligned() {
         );
         let (start, pcm) = render_rolling(&h);
         assert_eq!(status(&h).recording_source(), Some(predecessor));
-        assert_eq!(
-            h.plugin_progress.lock().unwrap().source_bindings[0],
-            binding
-        );
+        assert_eq!(worker_identity(&h), original_worker);
         if pcm.iter().enumerate().all(|(offset, &sample)| {
             let at = start + offset;
             sample == [both_dry_at(at, BRIDGE) + dry_at(at, BRIDGE) * wet_scale; 2]
@@ -270,10 +274,7 @@ fn running_resident_whole_vst3_return_removal_keeps_two_dry_tracks_aligned() {
             render_rolling(&h);
             let (start, pcm) = render_rolling(&h);
             assert_bed_with_wet(start, &pcm);
-            assert_eq!(
-                h.plugin_progress.lock().unwrap().source_bindings[0],
-                binding
-            );
+            assert_eq!(worker_identity(&h), original_worker);
         } else {
             assert_eq!(
                 event.device_insert_complete.unwrap().outcome,
@@ -299,7 +300,7 @@ fn running_resident_whole_vst3_return_removal_keeps_two_dry_tracks_aligned() {
         h.pump();
         h.plugin_records.load(Acquire) == 0
     });
-    assert!(h.plugin_progress.lock().unwrap().source_bindings[0].is_none());
+    assert!(worker_identity(&h).is_none());
     h.audio.as_ref().unwrap().control.stop();
     render(&h);
     assert!(!status(&h).playing.load(Acquire));
