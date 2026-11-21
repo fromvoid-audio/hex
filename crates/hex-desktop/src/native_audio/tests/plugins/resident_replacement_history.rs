@@ -4,7 +4,7 @@ use hex_audio::plugin_effects::EffectBinding;
 use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
 use std::sync::atomic::Ordering::Release;
 
-mod rolling_main;
+mod rolling;
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
