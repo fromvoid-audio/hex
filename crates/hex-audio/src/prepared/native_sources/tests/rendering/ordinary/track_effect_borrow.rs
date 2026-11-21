@@ -394,6 +394,12 @@ fn verify_track_effect_cut(cancel_after_fade: bool) {
             .processing_eq(&saved)
     );
     f.control.publish_native_source_endpoint(fresh).unwrap();
+    allocation_free(|| {
+        f.data
+            .owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block())
+    });
     let deadline = Instant::now() + Duration::from_secs(3);
     let candidate = loop {
         match f

@@ -383,7 +383,10 @@ fn publish_in_context(
                 );
                 std::thread::yield_now();
             }
-            Err(_) => panic!("actual ordinary native publication"),
+            Err(AdmittedPublishError::Publication(refused)) => {
+                panic!("actual ordinary native publication: {}", refused.reason)
+            }
+            Err(_) => panic!("actual ordinary native publication admission"),
         }
     }
 }
