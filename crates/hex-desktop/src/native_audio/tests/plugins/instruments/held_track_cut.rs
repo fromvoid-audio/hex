@@ -182,12 +182,18 @@ fn verify_direct_vst3_cut(after_cut: AfterCut) {
                     prepared_worker.try_recv()
                 );
             });
+        let (owner, prepared) = prepared_worker
+            .try_recv()
+            .unwrap()
+            .expect("the candidate must contain a prepared SDK worker");
         assert_eq!(
-            prepared_worker.try_recv().unwrap(),
-            Some((
-                hex_engine::ProcessorChainOwner::Track(donor.value()),
-                worker
-            ))
+            owner,
+            hex_engine::ProcessorChainOwner::Track(receiver.value()),
+            "the prepared worker must belong to the destination track"
+        );
+        assert_ne!(
+            prepared, worker,
+            "a running move must prepare a fresh worker"
         );
         resume.send(()).unwrap();
         let pending = h.next();
