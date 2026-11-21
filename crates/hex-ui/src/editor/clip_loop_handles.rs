@@ -12,21 +12,21 @@ use crate::theme;
 use gpui::{CursorStyle, relative, rgb};
 
 /// Width of the first-boundary hit box.
-const WIDTH: f32 = 8.0;
+pub(in crate::editor) const WIDTH: f32 = 8.0;
 
 #[derive(Clone, Copy)]
-pub(super) struct LoopControl {
-    pub(super) kind: LoopHandleKind,
-    left: f32,
-    top: f32,
-    height: f32,
+pub(in crate::editor) struct LoopControl {
+    pub(in crate::editor) kind: LoopHandleKind,
+    pub(in crate::editor) left: f32,
+    pub(in crate::editor) top: f32,
+    pub(in crate::editor) height: f32,
 }
 pub(in crate::editor) struct LoopControls {
-    left: f32,
-    top: f32,
-    width: f32,
-    height: f32,
-    pub(super) handles: [Option<LoopControl>; 2],
+    pub(in crate::editor) left: f32,
+    pub(in crate::editor) top: f32,
+    pub(in crate::editor) width: f32,
+    pub(in crate::editor) height: f32,
+    pub(in crate::editor) handles: [Option<LoopControl>; 2],
 }
 impl LoopControls {
     pub(in crate::editor) fn hit(&self, x: f32, y: f32) -> bool {
@@ -381,4 +381,133 @@ pub(in crate::editor) fn midi_markers(
         frame(0),
         frame,
     )
+}
+
+fn paint_markers(
+    bounds: gpui::Bounds<gpui::Pixels>,
+    visible: std::ops::Range<u64>,
+    count: u64,
+    first: Option<u64>,
+    detail_opacity: f32,
+    frame: impl Fn(u64) -> Option<u64>,
+    window: &mut Window,
+) {
+    let (start, end) = (visible.start, visible.end);
+    if start >= end || bounds.size.width <= px(0.0) || bounds.size.height <= px(0.0) {
+        return;
+    }
+    let marker_top = bounds.top() + px(super::super::clip_name::CLIP_NAME_HEIGHT + 1.0);
+    if marker_top >= bounds.bottom() {
+        return;
+    }
+    let marker_height = bounds.bottom() - marker_top;
+    let mut lo = 0;
+    let mut hi = count;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        match frame(mid) {
+            Some(value) if value <= start => lo = mid + 1,
+            _ => hi = mid,
+        }
+    }
+    let first_visible = lo;
+    hi = count;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        match frame(mid) {
+            Some(value) if value < end => lo = mid + 1,
+            _ => hi = mid,
+        }
+    }
+    let last_visible = lo;
+    let stride = last_visible
+        .saturating_sub(first_visible)
+        .div_ceil(32)
+        .max(1);
+    let base_color = gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Text)));
+    for offset in 0_u64..32 {
+        let index = first_visible.saturating_add(offset.saturating_mul(stride));
+        if index >= last_visible {
+            break;
+        }
+        let Some(value) = frame(index).filter(|value| *value < end) else {
+            break;
+        };
+        let primary = Some(value) == first;
+        let frac = (value.saturating_sub(start) as f64 / (end - start) as f64) as f32;
+        let x = bounds.left() + bounds.size.width * frac;
+        let width = px(if primary { 1.0 } else { 0.5 });
+        let rect = gpui::Bounds::new(gpui::point(x, marker_top), gpui::size(width, marker_height));
+        let alpha = (if primary { 0.85 } else { 0.3 }) * detail_opacity;
+        window.paint_quad(gpui::fill(rect, base_color.opacity(alpha)));
+        #[cfg(any(test, feature = "ui-test-support"))]
+        window.record_debug_bounds(format!("clip-repeat-marker-{index}"), rect);
+    }
+}
+
+pub(in crate::editor) fn paint_audio_markers(
+    bounds: gpui::Bounds<gpui::Pixels>,
+    clip: &Clip,
+    project: &Project,
+    start: u64,
+    end: u64,
+    detail_opacity: f32,
+    window: &mut Window,
+) {
+    if !audio_repeats(clip) {
+        return;
+    }
+    let Ok(projection) = hex_project::AudioViewProjection::new(clip, project.tempo_map()) else {
+        return;
+    };
+    let Ok(plan) = projection.repeat_boundaries() else {
+        return;
+    };
+    let frame = |index| projection.frame_at_elapsed(plan?.boundary(index)?).ok();
+    paint_markers(
+        bounds,
+        start..end,
+        plan.map_or(0, |plan| plan.count()),
+        frame(0),
+        detail_opacity,
+        frame,
+        window,
+    );
+}
+
+pub(in crate::editor) fn paint_midi_markers(
+    bounds: gpui::Bounds<gpui::Pixels>,
+    clip: &MidiClip,
+    project: &Project,
+    start: u64,
+    end: u64,
+    detail_opacity: f32,
+    window: &mut Window,
+) {
+    if !clip.looping() {
+        return;
+    }
+    let Ok(playback) = clip.source_playback() else {
+        return;
+    };
+    let Ok(plan) = playback.repeat_boundaries() else {
+        return;
+    };
+    let origin = clip.start();
+    let frame = |index: u64| {
+        let beat = origin.raw().checked_add(plan?.boundary(index)?)?;
+        project
+            .tempo_map()
+            .beat_to_frame(BeatTime::from_raw(beat))
+            .ok()
+    };
+    paint_markers(
+        bounds,
+        start..end,
+        plan.map_or(0, |plan| plan.count()),
+        frame(0),
+        detail_opacity,
+        frame,
+        window,
+    );
 }

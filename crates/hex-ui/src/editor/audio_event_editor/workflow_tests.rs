@@ -3318,6 +3318,25 @@ fn dragging_a_split_event_warp_marker_retimes_only_the_selected_half(cx: &mut Te
         "marker edits preserve the selected interval, source window and fade"
     );
     assert_eq!(after.events[1..], before.events[1..]);
+    editor.read_with(&visual, |view, _| {
+        use crate::editor::waveform_geometry::WaveformMapping;
+
+        let state = view.state.as_ref().unwrap();
+        let clip = state.project.clip(clip).unwrap();
+        let waveform = view.resolve_audio_waveform_source(
+            state,
+            clip,
+            clip.start(),
+            clip.start() + clip.duration(),
+        );
+        assert!(
+            matches!(
+                waveform,
+                Some((_, WaveformMapping::MusicalEventFade { .. }))
+            ),
+            "the Arrangement lane paints the accepted musical event sources"
+        );
+    });
     for (request, expected) in [(Request::Undo, &before), (Request::Redo, &after)] {
         editor.update(&mut visual, |view, _| assert!(view.enqueue(request)));
         pump(&editor, &mut visual);
