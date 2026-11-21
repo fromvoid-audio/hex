@@ -3,6 +3,7 @@ use super::*;
 mod arrangement;
 mod effects;
 mod group;
+mod group_route;
 mod tempo_deadline;
 
 pub(in crate::native_audio) fn actual_native_harness() -> Harness {

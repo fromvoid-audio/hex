@@ -7644,7 +7644,11 @@ fn run_worker(
                     if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
                         && (matches!(&command, Command::PasteDevices { .. })
                             || resident_audio::device_insert::graph_edit_operation(&command)
-                                .is_some())
+                                .is_some()
+                            || session.should_stage_verified_group_entry(
+                                &command,
+                                compiled.as_ref().map(|(_, prepared)| prepared.as_ref()),
+                            ))
                         && events
                             .resident_audio()
                             .is_some_and(|sink| sink.confirms_verified_device_inserts()) =>
@@ -7667,9 +7671,17 @@ fn run_worker(
                         Ok(Some(mut staged)) => {
                             staged.cut_devices = cut_device_clipboard.take();
                             staged.cut_tracks = cut_clipboard.take();
+                            status = Some(
+                                if staged.operation.device() == Some(GraphEditOperation::MoveTrack)
+                                {
+                                    "track move pending · waiting for audio"
+                                } else {
+                                    "device edit pending · waiting for audio"
+                                }
+                                .into(),
+                            );
                             pending_device_insert = Some(staged);
                             request_complete = false;
-                            status = Some("device edit pending · waiting for audio".into());
                         }
                         Ok(None) => status = Some("no change".into()),
                         Err(reason) => error = Some(reason.to_string()),
