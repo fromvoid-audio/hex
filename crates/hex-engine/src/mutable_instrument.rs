@@ -308,7 +308,7 @@ pub(crate) struct MutableInstrumentTail {
     power_off: Option<PowerOffFade>,
 }
 
-struct PowerOffFade {
+pub(crate) struct PowerOffFade {
     frames: u32,
     remaining: u32,
     scratch: u32,
