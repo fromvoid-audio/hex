@@ -116,26 +116,34 @@ fn assert_children_match_rendered_pcm(
     let events = clip.audio_events();
     assert_eq!(table.sources().len(), events.sources.len());
     for child in &events.sources {
-        let peaks = &table.sources()[table.index_of(child.id).unwrap()].1;
-        assert_eq!(peaks.source_frames(), child.clip.duration() as usize);
-        let source_start = child.clip.start() as usize;
-        let frames = &original[source_start..source_start + peaks.source_frames()];
-        let bins = peaks.bins();
-        let width = frames.len() / bins.len();
-        let extra = frames.len() % bins.len();
-        let mut offset = 0;
-        for (index, bin) in bins.iter().enumerate() {
-            let end = offset + width + usize::from(index < extra);
-            for channel in 0..2 {
-                let values = frames[offset..end].iter().map(|frame| frame[channel]);
-                assert_eq!(
-                    bin.min[channel],
-                    values.clone().fold(f32::INFINITY, f32::min)
-                );
-                assert_eq!(bin.max[channel], values.fold(f32::NEG_INFINITY, f32::max));
-            }
-            offset = end;
+        assert_child_matches_rendered_pcm(table, child, original);
+    }
+}
+
+fn assert_child_matches_rendered_pcm(
+    table: &PreparedGroupEventSources,
+    child: &hex_project::RetainedAudioRoot,
+    original: &[crate::Frame],
+) {
+    let peaks = &table.sources()[table.index_of(child.id).unwrap()].1;
+    assert_eq!(peaks.source_frames(), child.clip.duration() as usize);
+    let source_start = child.clip.start() as usize;
+    let frames = &original[source_start..source_start + peaks.source_frames()];
+    let bins = peaks.bins();
+    let width = frames.len() / bins.len();
+    let extra = frames.len() % bins.len();
+    let mut offset = 0;
+    for (index, bin) in bins.iter().enumerate() {
+        let end = offset + width + usize::from(index < extra);
+        for channel in 0..2 {
+            let values = frames[offset..end].iter().map(|frame| frame[channel]);
+            assert_eq!(
+                bin.min[channel],
+                values.clone().fold(f32::INFINITY, f32::min)
+            );
+            assert_eq!(bin.max[channel], values.fold(f32::NEG_INFINITY, f32::max));
         }
+        offset = end;
     }
 }
 
@@ -761,6 +769,93 @@ fn grouped_warped_sources_keep_captured_tempo_and_resident_source_requirement() 
             .is_err()
     );
     assert_eq!(*editor.project(), before);
+}
+
+#[test]
+fn grouped_event_marker_move_changes_only_the_selected_retained_read() {
+    use hex_project::AudioEventEdit;
+
+    let (mut editor, ids, media) = group_fixture();
+    let first = ids[0];
+    let mut settings = default_audio_warp(
+        editor.project().clip(first).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    assert!(settings.insert_marker(3_000).unwrap());
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip: first,
+            settings: Some(settings.clone()),
+        })
+        .unwrap();
+    let mut independent = Editor::new(editor.project().clone(), 32).unwrap();
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group");
+    };
+    let split = 4_000usize;
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: group,
+            operation: AudioEventEdit::Split { at: split as u64 },
+        })
+        .unwrap();
+    let events = editor.project().clip(group).unwrap().audio_events();
+    assert_eq!(events.events[0].source, events.events[1].source);
+    let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);
+    let original = render(&prepare(&editor, &media, &context), 0, 16_000, 257);
+
+    let beat = settings.markers[1].beat.raw();
+    assert!(
+        settings
+            .move_marker(3_000, BeatTime::from_raw(beat + BeatTime::ONE.raw() / 32))
+            .unwrap()
+    );
+    independent
+        .execute(Command::SetAudioClipWarp {
+            clip: first,
+            settings: Some(settings.clone()),
+        })
+        .unwrap();
+    let independent = render(&prepare(&independent, &media, &context), 0, 16_000, 311);
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: group,
+            operation: AudioEventEdit::SetRetainedWarp {
+                event: events.events[0].id,
+                settings,
+            },
+        })
+        .unwrap();
+    let revision = prepare(&editor, &media, &context);
+    let changed = render(&revision, 0, 16_000, 127);
+    assert_ne!(changed[..split], original[..split]);
+    assert_eq!(changed[..split], independent[..split]);
+    assert_eq!(changed[split..], original[split..]);
+    let edited = editor.project().clip(group).unwrap().audio_events();
+    let fork = edited.events[0].source;
+    assert_ne!(fork, events.events[0].source);
+    let table = child_peaks(&revision, group);
+    assert_eq!(table.sources().len(), edited.sources.len());
+    for child in &edited.sources {
+        let reference = if child.id == fork {
+            &independent
+        } else {
+            &original
+        };
+        assert_child_matches_rendered_pcm(table, child, reference);
+    }
+    assert!(editor.undo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16_000, 311),
+        original
+    );
+    assert!(editor.redo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16_000, 311),
+        changed
+    );
 }
 
 #[test]

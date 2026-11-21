@@ -213,6 +213,7 @@ enum Kind {
     WarpMarker {
         source_frame: u64,
         beat: hex_project::BeatTime,
+        event: Option<u64>,
     },
     Leading(AudioEvent),
     Trailing(AudioEvent),
@@ -682,9 +683,18 @@ impl EditorView {
                 } else {
                     self.sync_held_play_start_audition();
                 }
-            } else if let Kind::WarpMarker { source_frame, beat } = gesture.kind {
+            } else if let Kind::WarpMarker {
+                source_frame,
+                beat,
+                event,
+            } = gesture.kind
+            {
                 if gesture.moved {
-                    self.finish_event_warp_drag(source_frame, beat);
+                    if let Some(event) = event {
+                        self.commit_grouped_marker(event, source_frame, Some(beat));
+                    } else {
+                        self.finish_event_warp_drag(source_frame, beat);
+                    }
                 }
             } else if let Some(operation) = gesture.operation {
                 self.event_commit(operation);
@@ -835,12 +845,24 @@ impl EditorView {
                     recovery_attempted,
                 };
             }
-            Kind::WarpMarker { source_frame, .. } => {
-                let Some(beat) = markers::drag_beat(&root, source_frame, gesture.anchor, position)
-                else {
+            Kind::WarpMarker {
+                source_frame,
+                event,
+                ..
+            } => {
+                let beat = if let Some(event) = event {
+                    self.drag_grouped_marker(event, source_frame, gesture.anchor, position)
+                } else {
+                    markers::drag_beat(&root, source_frame, gesture.anchor, position)
+                };
+                let Some(beat) = beat else {
                     return;
                 };
-                gesture.kind = Kind::WarpMarker { source_frame, beat };
+                gesture.kind = Kind::WarpMarker {
+                    source_frame,
+                    beat,
+                    event,
+                };
             }
             Kind::Select => {
                 self.audio_event_editor.range =

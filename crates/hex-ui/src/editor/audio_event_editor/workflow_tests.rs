@@ -3191,3 +3191,160 @@ fn event_warp_marker_drag_keeps_its_release_position_and_roundtrips(cx: &mut Tes
     }
     editor.read_with(&visual, |view, _| assert_eq!(map(view), after));
 }
+
+#[gpui::test]
+fn grouped_event_warp_marker_drag_forks_only_the_selected_source(cx: &mut TestAppContext) {
+    let (files, mut visual, editor, first) = open(cx);
+    let (track, asset, end, mut warp) = editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        let clip = project.clip(first).unwrap();
+        (
+            project.tracks()[0].id(),
+            clip.asset(),
+            clip.start() + clip.duration(),
+            project.audio_warp_settings_for_enable(first).unwrap(),
+        )
+    });
+    assert!(warp.insert_marker(24_000).unwrap());
+    for command in [
+        Command::SetAudioClipWarp {
+            clip: first,
+            settings: Some(warp.clone()),
+        },
+        Command::PlaceClip {
+            track,
+            asset,
+            start: end + 1_000,
+            duration: 1_000,
+            source_offset: 0,
+            source_length: 1_000,
+            looping: false,
+        },
+    ] {
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(command)));
+        });
+        pump(&editor, &mut visual);
+    }
+    let second = editor.read_with(&visual, |view, _| view.selected_clip.unwrap());
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::GroupClips {
+            project_generation: view.project_generation,
+            revision: view.state.as_ref().unwrap().revision,
+            clips: vec![first, second],
+        }));
+    });
+    pump(&editor, &mut visual);
+    let group = editor.read_with(&visual, |view, _| view.selected_clip.unwrap());
+    edit(
+        &mut visual,
+        &editor,
+        group,
+        AudioEventEdit::Split { at: 48_000 },
+    );
+    let events = |view: &EditorView| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .clip(group)
+            .unwrap()
+            .audio_events()
+    };
+    let before = editor.read_with(&visual, |view, _| events(view));
+    assert_eq!(before.events.len(), 3);
+    let selected = before.events[0];
+    let sibling = before.events[1];
+    assert_ne!(selected.source, 0);
+    assert_eq!(selected.source, sibling.source);
+    let source = |events: &hex_project::AudioEvents, id| {
+        events
+            .sources
+            .iter()
+            .find(|source| source.id == id)
+            .unwrap()
+            .clone()
+    };
+    let shared = source(&before, selected.source);
+    assert_eq!(
+        shared.clip.audio_edit().unwrap().domain.warp.as_ref(),
+        Some(&warp)
+    );
+    editor.update(&mut visual, |view, cx| {
+        view.selected_clip = Some(group);
+        view.clip_view_open = true;
+        view.audio_event_editor.selected = Some(selected.id);
+        view.audio_event_editor.grid = SnapGrid::Off;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let handle = visual
+        .debug_bounds("audio-event-warp-marker")
+        .expect("the selected grouped event must expose its authored warp marker");
+    let bounds = visual.debug_bounds("audio-event-1").unwrap();
+    let target = point(
+        handle.center().x + bounds.size.width * 0.10,
+        handle.center().y,
+    );
+    visual.simulate_mouse_down(handle.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let held = visual.debug_bounds("audio-event-warp-marker").unwrap();
+    assert!(held.center().x > handle.center().x + px(5.0));
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    let terminal = take_event_terminal(&mut visual, &editor, "grouped warp marker move");
+    assert!(terminal.error.is_none(), "{:?}", terminal.error);
+    for _ in 0..2 {
+        repaint(&mut visual, &editor);
+        assert_eq!(visual.debug_bounds("audio-event-warp-marker"), Some(held));
+        editor.read_with(&visual, |view, _| assert_eq!(events(view), before));
+    }
+    editor.update(&mut visual, |view, cx| {
+        view.receive(terminal);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(visual.debug_bounds("audio-event-warp-marker"), Some(held));
+    let after = editor.read_with(&visual, |view, _| events(view));
+    let edited = after.events[0];
+    assert_ne!(edited.source, selected.source);
+    assert_eq!(
+        hex_project::AudioEvent {
+            source: selected.source,
+            ..edited
+        },
+        selected
+    );
+    assert_eq!(after.events[1..], before.events[1..]);
+    assert_eq!(source(&after, shared.id), shared);
+    let fork = source(&after, edited.source);
+    assert_eq!(fork.tempo, shared.tempo);
+    assert_eq!(fork.clip.duration(), shared.clip.duration());
+    let updated = fork
+        .clip
+        .audio_edit()
+        .unwrap()
+        .domain
+        .warp
+        .as_ref()
+        .unwrap();
+    assert_eq!(updated.markers[0], warp.markers[0]);
+    assert_eq!(
+        updated.markers[1].source_frame,
+        warp.markers[1].source_frame
+    );
+    assert!(updated.markers[1].beat > warp.markers[1].beat);
+    assert_eq!(updated.markers[2], warp.markers[2]);
+
+    for (request, expected) in [(Request::Undo, &before), (Request::Redo, &after)] {
+        editor.update(&mut visual, |view, _| assert!(view.enqueue(request)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| assert_eq!(&events(view), expected));
+    }
+    let saved = files.root().join("grouped-event-warp-marker.hex");
+    for request in [Request::SaveNew(saved.clone()), Request::Open(saved)] {
+        editor.update(&mut visual, |view, _| assert!(view.enqueue(request)));
+        pump(&editor, &mut visual);
+    }
+    editor.read_with(&visual, |view, _| assert_eq!(events(view), after));
+}

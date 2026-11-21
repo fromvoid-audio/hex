@@ -1,10 +1,11 @@
-//! Waveform anchors edit the existing validated clip warp map for one direct
-//! event. The clip-detail receipt owns the frozen marker map after release.
+//! Waveform anchors edit the existing warp map, scoped to a direct clip or a
+//! selected grouped event. The edit receipt owns the marker map after release.
 use super::{EditorView, Gesture, Kind, transients};
 use crate::{editor::arrangement_audio_panel::controls, theme};
 use gpui::{Context, Div, MouseButton, Stateful, Window, div, prelude::*, px, relative, rgb};
 use hex_project::{
-    AudioClipEdit, AudioDomainClock, AudioEvent, BeatTime, Command, Invalid, TempoMap, WarpSettings,
+    AudioClipEdit, AudioDomainClock, AudioEvent, AudioEventEdit, AudioEvents, BeatTime, Command,
+    Invalid, RetainedAudioRoot, TempoMap, WarpSettings,
 };
 
 pub(super) fn direct_event(root: &AudioClipEdit, clip: &hex_project::Clip) -> Option<AudioEvent> {
@@ -45,8 +46,78 @@ pub(super) fn asset_frame_at(root: &AudioClipEdit, position: u64, tempo: &TempoM
     root.domain.source_offset.checked_add(offset)
 }
 
+/// The retained source's projected output frames map into just one grouped event.
+pub(super) struct GroupedWarp<'a> {
+    pub(super) event: AudioEvent,
+    pub(super) settings: &'a WarpSettings,
+    source: &'a RetainedAudioRoot,
+    edit: &'a AudioClipEdit,
+    view_origin: u64,
+}
+
+impl<'a> GroupedWarp<'a> {
+    pub(super) fn new(events: &'a AudioEvents, selected: u64) -> Option<Self> {
+        let event = *events
+            .events
+            .iter()
+            .find(|event| event.id == selected && event.active)?;
+        let source = events
+            .sources
+            .iter()
+            .find(|source| source.id == event.source)?;
+        let edit = source.clip.audio_edit()?;
+        if source.clip.looping()
+            || source.clip.has_retained_audio_roots()
+            || edit.content_view.is_some()
+            || edit.placement.is_some()
+            || edit.processing_projection.is_some()
+            || !edit.domain.warp_enabled
+        {
+            return None;
+        }
+        let settings = edit.domain.warp.as_ref()?;
+        let view_origin = edit.root_frame_at(edit.view_start, &source.tempo).ok()?;
+        Some(Self {
+            event,
+            settings,
+            source,
+            edit,
+            view_origin,
+        })
+    }
+
+    pub(super) fn position(&self, beat: BeatTime) -> Option<u64> {
+        let frame = self
+            .edit
+            .root_frame_at(beat.raw(), &self.source.tempo)
+            .ok()?;
+        let offset = frame.checked_sub(self.view_origin.checked_add(self.event.source_start)?)?;
+        (offset < self.event.length()).then(|| self.event.start + offset)
+    }
+
+    fn drag_beat(&self, source_frame: u64, anchor: u64, position: u64) -> Option<BeatTime> {
+        let original = self.settings.beat_for_source_frame(source_frame).ok()?;
+        let frame = (i128::from(self.position(original)?) + i128::from(position)
+            - i128::from(anchor))
+        .clamp(i128::from(self.event.start), i128::from(self.event.end - 1))
+            as u64;
+        let source_frame_position = self
+            .view_origin
+            .checked_add(self.event.source_start)?
+            .checked_add(frame - self.event.start)?;
+        let beat = self
+            .edit
+            .root_position_at(source_frame_position, &self.source.tempo)
+            .ok()?;
+        self.settings
+            .marker_target_beat(source_frame, BeatTime::from_raw(beat))
+            .ok()
+    }
+}
+
 pub(super) fn marker_handle(
     source_frame: u64,
+    event: Option<u64>,
     x: f32,
     top: f32,
     authored: bool,
@@ -109,10 +180,15 @@ pub(super) fn marker_handle(
                     return;
                 }
                 if down.click_count == 2 {
-                    view.edit_event_warp_marker(source_frame, authored);
+                    if let Some(event) = event {
+                        view.commit_grouped_marker(event, source_frame, None);
+                    } else {
+                        view.edit_event_warp_marker(source_frame, authored);
+                    }
                 } else {
                     view.begin_event_warp_drag(
                         source_frame,
+                        event,
                         f32::from(down.position.x),
                         window,
                         cx,
@@ -162,9 +238,57 @@ impl EditorView {
         }
     }
 
+    fn grouped_warp_events(&self) -> Option<AudioEvents> {
+        let state = self.state()?;
+        state
+            .project
+            .clip(self.detail_clip_id()?)?
+            .editable_audio_events()
+            .ok()
+    }
+
+    pub(super) fn drag_grouped_marker(
+        &self,
+        event: u64,
+        source_frame: u64,
+        anchor: u64,
+        position: u64,
+    ) -> Option<BeatTime> {
+        GroupedWarp::new(&self.grouped_warp_events()?, event)?.drag_beat(
+            source_frame,
+            anchor,
+            position,
+        )
+    }
+
+    pub(super) fn commit_grouped_marker(
+        &mut self,
+        event: u64,
+        source_frame: u64,
+        beat: Option<BeatTime>,
+    ) {
+        let Some(events) = self.grouped_warp_events() else {
+            return;
+        };
+        let Some(target) = GroupedWarp::new(&events, event) else {
+            return;
+        };
+        let mut settings = target.settings.clone();
+        let changed = match beat {
+            Some(beat) => settings.move_marker(source_frame, beat),
+            None => settings.remove_marker(source_frame).map(|()| true),
+        };
+        match changed {
+            Ok(true) => self.event_commit(AudioEventEdit::SetRetainedWarp { event, settings }),
+            Ok(false) => {}
+            Err(error) => self.error = Some(error.0.into()),
+        }
+    }
+
     fn begin_event_warp_drag(
         &mut self,
         source_frame: u64,
+        event: Option<u64>,
         x: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -175,24 +299,31 @@ impl EditorView {
         let Some(clip) = self.state().and_then(|s| s.project.clip(clip_id)) else {
             return;
         };
-        if direct_event(&root, clip).is_none()
-            || !root.domain.warp_enabled
-            || self.audio_clip_controls.has_pending()
-        {
+        if self.audio_clip_controls.has_pending() || self.audio_event_editor.pending.is_some() {
             return;
         }
-        let Some(beat) = root
-            .domain
-            .warp
-            .as_ref()
-            .and_then(|warp| warp.beat_for_source_frame(source_frame).ok())
-        else {
+        let beat = if let Some(event) = event {
+            clip.editable_audio_events().ok().and_then(|events| {
+                let target = GroupedWarp::new(&events, event)?;
+                target.settings.beat_for_source_frame(source_frame).ok()
+            })
+        } else {
+            direct_event(&root, clip)
+                .filter(|_| root.domain.warp_enabled)
+                .and(root.domain.warp.as_ref())
+                .and_then(|warp| warp.beat_for_source_frame(source_frame).ok())
+        };
+        let Some(beat) = beat else {
             return;
         };
         let Some(anchor) = self.event_hit_position(&root, x) else {
             return;
         };
-        let kind = Kind::WarpMarker { source_frame, beat };
+        let kind = Kind::WarpMarker {
+            source_frame,
+            beat,
+            event,
+        };
         self.audio_event_focus.focus(window);
         if self.capture_audio_event_pointer(kind, window, cx) {
             self.audio_event_editor.gesture = Some(Gesture {
