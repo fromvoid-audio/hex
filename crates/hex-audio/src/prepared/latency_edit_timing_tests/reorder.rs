@@ -1,22 +1,22 @@
-//! A single-route reorder with an independent continuous Delay oracle.
+//! Single-route reorder with independent Delay oracles for the old and new paths.
 use super::*;
 
 #[test]
-fn native_track_reorder_fades_only_its_track_and_carries_delay_repeats_once() {
-    reorder_keeps_delay_history(false, false);
+fn native_track_reorder_cuts_predecessor_delay_history_at_the_fade() {
+    assert_reorder(false, false);
 }
 
 #[test]
-fn session_audio_reorder_keeps_its_launch_origin_and_delay_history() {
-    reorder_keeps_delay_history(true, false);
+fn session_audio_reorder_cuts_delay_history_at_the_original_launch_clock() {
+    assert_reorder(true, false);
 }
 
 #[test]
-fn grouped_native_reorder_keeps_both_groups_delay_history_and_clocks() {
-    reorder_keeps_delay_history(false, true);
+fn grouped_native_reorder_cuts_only_the_edited_delay_history() {
+    assert_reorder(false, true);
 }
 
-fn reorder_keeps_delay_history(session: bool, grouped: bool) {
+fn assert_reorder(session: bool, grouped: bool) {
     use hex_devices::utility::{UTILITY_DEFINITION, parameter::INVERT_LEFT};
 
     const FRAMES: usize = 4096;
@@ -152,16 +152,39 @@ fn reorder_keeps_delay_history(session: bool, grouped: bool) {
     for frame in &mut shaped[..SWITCH] {
         frame[0] = -frame[0];
     }
-    let mut reference_media = media.clone();
-    reference_media.insert(asset, hex_engine::Audio::new(RATE, shaped).unwrap());
-    let mut oracle = Playback::try_from_prepared_with_session(prepare(
-        reference_editor.project(),
-        &reference_media,
-    ))
-    .unwrap();
-    oracle.apply(PlaybackCommand::Play);
-    let mut expected = vec![[0.0; 2]; FRAMES];
-    oracle.render(&mut expected).unwrap();
+    let render_reference = |input| {
+        let mut reference_media = media.clone();
+        reference_media.insert(asset, hex_engine::Audio::new(RATE, input).unwrap());
+        let mut oracle = Playback::try_from_prepared_with_session(prepare(
+            reference_editor.project(),
+            &reference_media,
+        ))
+        .unwrap();
+        oracle.apply(PlaybackCommand::Play);
+        let mut output = vec![[0.0; 2]; FRAMES];
+        oracle.render(&mut output).unwrap();
+        output
+    };
+    let mut expected = render_reference(shaped.clone());
+    shaped[..SWITCH].fill([0.0; 2]);
+    let clean = render_reference(shaped);
+    let middle_of_delay = SWITCH + 480;
+    assert!(
+        expected[SWITCH..middle_of_delay]
+            .iter()
+            .any(|frame| *frame != [0.0; 2])
+    );
+    assert!(
+        clean[SWITCH..middle_of_delay]
+            .iter()
+            .all(|frame| *frame == [0.0; 2])
+    );
+    assert!(
+        clean[middle_of_delay..]
+            .iter()
+            .any(|frame| *frame != [0.0; 2])
+    );
+    expected[SWITCH..].copy_from_slice(&clean[SWITCH..]);
     for (index, frame) in expected.iter_mut().enumerate() {
         if index >= SWITCH {
             frame[0] = -frame[0];

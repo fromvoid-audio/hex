@@ -1,7 +1,7 @@
 //! A same-track, zero-latency native permutation shares the staged track fade.
-//! The handoff moves actual processor history once at zero output; no old tail
-//! route is retained. Zero-delay Group routes use the existing typed-edge and
-//! stamp-copy proof; other compensated/receiver paths need separate proof.
+//! At zero output, the handoff activates the prepared chain with fresh DSP.
+//! Zero-delay Group routes use the existing typed-edge and stamp-copy proof.
+//! Other compensated/receiver paths need separate proof.
 use super::{RouteOwner, SessionPlayback};
 
 impl SessionPlayback {
