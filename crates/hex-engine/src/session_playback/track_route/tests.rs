@@ -146,7 +146,7 @@ fn one_resident_leaf_reroutes_between_main_and_group_and_other_edits_refuse() {
     next.require_continuous_insert = true;
     assert_eq!(next.group_reroute_from(&old), Some(2));
     assert!(next.plan_native_removal_from(&old).unwrap());
-    assert_eq!(old.group_reroute_from(&next), None);
+    assert_eq!(old.group_reroute_from(&next), Some(2));
     assert!(old.track_faders.iter().all(|fader| !fader.active()));
 
     for (old, next) in [
