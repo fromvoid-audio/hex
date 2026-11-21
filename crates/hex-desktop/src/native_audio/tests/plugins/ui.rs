@@ -492,9 +492,13 @@ fn save_and_install_with_pending_eq(
     fixture.resume.send(()).unwrap();
     until("the exact rebased hosted insertion installs", || {
         fixture.step(cx);
-        if let Some((title, _)) = cx.pending_prompt() {
-            assert_eq!(title, "interrupt playback to insert this device?");
-            cx.simulate_prompt_answer("proceed");
+        if let Some(button) = fixture
+            .visual
+            .debug_bounds("device-insert-confirmation-proceed")
+        {
+            fixture
+                .visual
+                .simulate_click(button.center(), gpui::Modifiers::default());
         }
         let view = fixture.view(cx);
         assert!(view.error.is_none(), "{:?}", view.error);

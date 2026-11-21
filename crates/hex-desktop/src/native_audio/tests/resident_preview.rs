@@ -6033,9 +6033,9 @@ fn confirmed_limiter_keeps_the_same_output(frame_limit: u64, streamed: bool, edi
 fn browser_limiter_insertion_waits_for_consent_and_installs_on_the_same_output(
     cx: &mut gpui::TestAppContext,
 ) {
-    // Exercise resident and verified-file playback, including Main and an
-    // ordinary audio track. Both use the stock browser action and real prompt.
-    for frame_limit in [262_144, 8_192] {
+    // Exercise resident and verified-file playback, including the reported
+    // browser drop on a playing Track's device chain.
+    for frame_limit in [8_192, 262_144] {
         for main in [false, true] {
             browser_limiter_insertion(&mut cx.new_app(), frame_limit, main);
         }
@@ -6150,56 +6150,94 @@ fn browser_limiter_insertion(cx: &mut gpui::TestAppContext, frame_limit: u64, ma
         .debug_bounds("browser-device-effect-hex.limiter")
         .expect("the built-in Limiter search result")
         .center();
-    if main {
-        visual.simulate_mouse_down(row, MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_move(
-            row + point(px(12.0), px(0.0)),
-            MouseButton::Left,
-            Modifiers::default(),
-        );
-        visual.run_until_parked();
-        let target = visual
-            .debug_bounds("main-device-drop-end")
-            .expect("the Main device chain")
-            .center();
-        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
-        visual.run_until_parked();
-        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    let track_drop = !main && frame_limit < 96_000;
+    let drop_selector = if main {
+        "main-device-drop-end"
     } else {
-        for count in [1, 2] {
-            visual.simulate_event(gpui::MouseDownEvent {
-                position: row,
-                button: MouseButton::Left,
-                click_count: count,
-                first_mouse: false,
-                modifiers: Modifiers::default(),
-            });
-            visual.simulate_mouse_up(row, MouseButton::Left, Modifiers::default());
+        Box::leak(format!("device-drop-end-{}", track.value()).into_boxed_str())
+    };
+    let insert = |visual: &mut gpui::VisualTestContext| {
+        if main || track_drop {
+            visual.simulate_mouse_down(row, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(
+                row + point(px(12.0), px(0.0)),
+                MouseButton::Left,
+                Modifiers::default(),
+            );
+            visual.run_until_parked();
+            let target = visual
+                .debug_bounds(drop_selector)
+                .expect("the selected device chain")
+                .center();
+            visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        } else {
+            for count in [1, 2] {
+                visual.simulate_event(gpui::MouseDownEvent {
+                    position: row,
+                    button: MouseButton::Left,
+                    click_count: count,
+                    first_mouse: false,
+                    modifiers: Modifiers::default(),
+                });
+                visual.simulate_mouse_up(row, MouseButton::Left, Modifiers::default());
+            }
         }
-    }
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while !cx.has_pending_prompt() {
-        assert_eq!(step(cx, &mut visual), [[0.25; 2]; 64]);
-        assert!(
-            Instant::now() < deadline,
-            "browser Limiter did not prompt for {owner:?} at frame limit {frame_limit}: {:?}",
-            read(cx).error
-        );
-    }
-    let (title, detail) = cx.pending_prompt().unwrap();
-    assert_eq!(title, "interrupt playback to insert this device?");
-    assert_eq!(
-        detail,
-        "playback will fade out briefly and resume from the same position. \
-         held notes and effect tails may reset."
-    );
-    let offered = read(cx);
-    assert_eq!(offered.state.unwrap().project, before.project);
-    assert_eq!(resident_source(), Some(previous));
-    assert!(offered.pending);
+    };
+    let wait_for_choice = |cx: &mut gpui::TestAppContext, visual: &mut gpui::VisualTestContext| {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while visual.debug_bounds("device-insert-confirmation").is_none() {
+            assert_eq!(step(cx, visual), [[0.25; 2]; 64]);
+            assert!(
+                !cx.has_pending_prompt(),
+                "device interruption consent should stay in the editor"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "browser Limiter did not present a choice for {owner:?}: {:?}",
+                read(cx).error
+            );
+        }
+        let offered = read(cx);
+        assert_eq!(offered.state.unwrap().project, before.project);
+        assert_eq!(resident_source(), Some(previous));
+        assert!(offered.pending);
+    };
+    insert(&mut visual);
+    wait_for_choice(cx, &mut visual);
+    visual.update(|window, _| {
+        window.blur();
+        window.activate_window();
+        window.refresh();
+    });
     assert_eq!(step(cx, &mut visual), [[0.25; 2]; 64]);
+    assert!(visual.debug_bounds("device-insert-confirmation").is_some());
 
-    cx.simulate_prompt_answer("proceed");
+    if track_drop {
+        let cancel = visual
+            .debug_bounds("device-insert-confirmation-cancel")
+            .unwrap()
+            .center();
+        visual.simulate_click(cancel, Modifiers::default());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while read(cx).pending {
+            assert_eq!(step(cx, &mut visual), [[0.25; 2]; 64]);
+            assert!(Instant::now() < deadline, "cancel did not settle");
+        }
+        assert!(visual.debug_bounds("device-insert-confirmation").is_none());
+        assert_eq!(read(cx).state.unwrap().project, before.project);
+        assert_eq!(resident_source(), Some(previous));
+        insert(&mut visual);
+        wait_for_choice(cx, &mut visual);
+    }
+
+    let proceed = visual
+        .debug_bounds("device-insert-confirmation-proceed")
+        .unwrap()
+        .center();
+    visual.simulate_click(proceed, Modifiers::default());
+    visual.simulate_click(proceed, Modifiers::default());
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         step(cx, &mut visual);
@@ -6225,7 +6263,7 @@ fn browser_limiter_insertion(cx: &mut gpui::TestAppContext, frame_limit: u64, ma
             assert_ne!(installed.audio_revision, previous.audio_revision);
             assert!(view.transport.is_some_and(|(_, playing)| playing));
             assert!(!view.pending);
-            assert!(!cx.has_pending_prompt());
+            assert!(visual.debug_bounds("device-insert-confirmation").is_none());
             break;
         }
         assert!(

@@ -641,7 +641,6 @@ impl Render for EditorView {
         self.reconcile_format_upgrade_prompt(window, cx);
         self.reconcile_leftover_recovery(window, cx);
         self.reconcile_truncated_import_offer(window, cx);
-        self.reconcile_device_insert_confirmation(window, cx);
         self.reconcile_track_resize(window, cx);
         self.reconcile_track_reorder(window);
         super::browser_input::restyle(&self.browser.search, cx);
@@ -1886,6 +1885,7 @@ impl Render for EditorView {
             }))
             .child(self.transport(window, cx))
             .child(workspace)
+            .children(self.device_insert_confirmation_bar(window, cx))
             .child(self.status_bar(cx))
             .children(self.return_send_menu_overlay(window, cx))
             .children(self.floating_browser_audio_drag_ghost(window.scale_factor()))

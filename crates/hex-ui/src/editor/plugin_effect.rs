@@ -4,8 +4,9 @@ use super::track_proposals::{Anchor, TrackProposal};
 use super::*;
 use gpui::{Div, div, prelude::*, rgb};
 use hex_session::service::{
-    ArrangementDeviceDestination, PluginEffectControl, PluginEffectDestination,
-    PluginEffectInsertion, PluginEffectSelection,
+    ArrangementDeviceDestination, DeviceInsertConfirmation, GraphEditOperation,
+    PluginEffectControl, PluginEffectDestination, PluginEffectInsertion, PluginEffectSelection,
+    ResidentGraphSubmission,
 };
 use std::rc::Rc;
 
@@ -99,6 +100,29 @@ pub(super) struct PendingPluginEffect {
     pub(super) proposal: PluginProposal,
     control: Arc<PluginEffectControl>,
     pub(super) trace: Option<Rc<crate::diagnostics::PluginLoad>>,
+}
+
+pub(super) struct DeviceConfirmation {
+    offer: DeviceInsertConfirmation,
+    action_focus: Option<[gpui::FocusHandle; 2]>,
+}
+
+impl DeviceConfirmation {
+    pub(super) fn new(offer: DeviceInsertConfirmation) -> Self {
+        Self {
+            offer,
+            action_focus: None,
+        }
+    }
+}
+
+impl Drop for DeviceConfirmation {
+    fn drop(&mut self) {
+        // Closing or replacing the editor discards an unanswered choice.
+        if self.offer.is_pending() {
+            self.offer.cancel();
+        }
+    }
 }
 impl Drop for PendingPluginEffect {
     fn drop(&mut self) {
@@ -418,53 +442,125 @@ impl EditorView {
         )
     }
 
-    pub(super) fn reconcile_device_insert_confirmation(
+    pub(super) fn device_insert_confirmation_bar(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        if self.opening_project || self.close_prompt_open || self.save_dialog_open {
-            return;
-        }
-        let Some(offer) = self.device_insert_confirmation.take() else {
-            return;
-        };
-        cx.defer_in(window, move |_, window, cx| {
-            if !offer.is_pending() {
-                return;
+    ) -> Option<Div> {
+        let confirmation = self.device_insert_confirmation.as_mut()?;
+        if !confirmation.offer.is_pending() {
+            if confirmation
+                .action_focus
+                .as_ref()
+                .is_some_and(|handles| handles.iter().any(|handle| handle.is_focused(window)))
+            {
+                self.focus.focus(window);
             }
-            use hex_session::service::GraphEditOperation;
-            let title = match offer.operation() {
-                GraphEditOperation::InsertDevice => "interrupt playback to insert this device?",
-                GraphEditOperation::ReplaceDevice => "interrupt playback to replace this device?",
-                GraphEditOperation::RemoveDevice => "interrupt playback to remove this device?",
-                GraphEditOperation::MoveDevice => "interrupt playback to move devices?",
-                GraphEditOperation::MoveTrack => "interrupt playback to move this track?",
-                GraphEditOperation::PowerDevice => "interrupt playback to change device power?",
-                GraphEditOperation::RemoveTrack => "interrupt playback to remove this track?",
-            };
-            let answer = window.prompt(
-                gpui::PromptLevel::Warning,
-                &theme::text(title),
-                Some(&theme::text(
-                    "playback will fade out briefly and resume from the same position. \
-                     held notes and effect tails may reset.",
-                )),
-                &[
-                    gpui::PromptButton::cancel(theme::text("cancel")),
-                    gpui::PromptButton::new(theme::text("proceed")),
-                ],
-                cx,
-            );
-            cx.spawn(async move |_, _| {
-                if answer.await.ok() == Some(1) {
-                    offer.proceed();
-                } else {
-                    offer.cancel();
-                }
-            })
-            .detach();
+            self.device_insert_confirmation = None;
+            return None;
+        }
+        if self.opening_project || self.close_prompt_open || self.save_dialog_open {
+            return None;
+        }
+        let title = match confirmation.offer.operation() {
+            GraphEditOperation::InsertDevice => "interrupt playback to insert this device?",
+            GraphEditOperation::ReplaceDevice => "interrupt playback to replace this device?",
+            GraphEditOperation::RemoveDevice => "interrupt playback to remove this device?",
+            GraphEditOperation::MoveDevice => "interrupt playback to move devices?",
+            GraphEditOperation::MoveTrack => "interrupt playback to move this track?",
+            GraphEditOperation::PowerDevice => "interrupt playback to change device power?",
+            GraphEditOperation::RemoveTrack => "interrupt playback to remove this track?",
+        };
+        // Keep the choice on the editor through repaint and native focus
+        // changes. Only the matching button action answers the worker's offer.
+        let submission = confirmation.offer.submission();
+        let [cancel_focus, proceed_focus] = confirmation.action_focus.get_or_insert_with(|| {
+            std::array::from_fn(|_| cx.focus_handle().tab_index(0).tab_stop(true))
         });
+        let actions = [false, true].map(|proceed| {
+            let (label, id, focus) = if proceed {
+                (
+                    "proceed",
+                    "device-insert-confirmation-proceed",
+                    &*proceed_focus,
+                )
+            } else {
+                (
+                    "cancel",
+                    "device-insert-confirmation-cancel",
+                    &*cancel_focus,
+                )
+            };
+            hex_widgets::action(theme::text(label), theme::action_style())
+                .id(id)
+                .debug_selector(move || id.into())
+                .h(px(22.0))
+                .px_2()
+                .track_focus(focus)
+                .key_context("hex_plugin_proposal")
+                .focus(|style| {
+                    style
+                        .border_1()
+                        .border_color(rgb(theme::color(theme::PaletteRole::Text)))
+                })
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    view.answer_device_confirmation(submission, proceed, cx);
+                }))
+                .on_action(cx.listener(move |view, _: &ActivatePluginProposal, _, cx| {
+                    view.answer_device_confirmation(submission, proceed, cx);
+                }))
+        });
+        Some(
+            div()
+                .debug_selector(|| "device-insert-confirmation".into())
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .border_t_1()
+                .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+                .bg(rgb(theme::color(theme::PaletteRole::Raised)))
+                .text_xs()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(theme::text(title))
+                        .child(
+                            div()
+                                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                                .child(theme::text(
+                                    "playback fades briefly and resumes from the same position. \
+                                     held notes and effect tails may reset.",
+                                )),
+                        ),
+                )
+                .children(actions),
+        )
+    }
+
+    fn answer_device_confirmation(
+        &mut self,
+        submission: ResidentGraphSubmission,
+        proceed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(confirmation) = self.device_insert_confirmation.as_ref()
+            && confirmation.offer.submission() == submission
+            && confirmation.offer.is_pending()
+        {
+            if proceed {
+                confirmation.offer.proceed();
+            } else {
+                confirmation.offer.cancel();
+            }
+            cx.notify();
+        }
+        cx.stop_propagation();
     }
 
     pub(super) fn cancel_plugin_effect(&self) {
