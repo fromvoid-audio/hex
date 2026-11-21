@@ -262,9 +262,9 @@ pub fn controlled_frame_count(
 
 /// Render a selected half-open frame range to a new dithered PCM16 WAV. Stateful history
 /// is reconstructed from zero without Seek, in cancellable 256-frame blocks.
-/// Preroll has the existing bounded engine work ceiling; transport loop metadata
-/// is ignored by the canonical linear export owner. Source-loop restrictions
-/// remain the engine's explicit refusals. No live/Session history is captured.
+/// Preroll has the existing bounded engine work ceiling. Authored Arrangement
+/// source loops render on the linear timeline without transport wrapping.
+/// No live/Session history is captured.
 pub fn render_prepared_controlled(
     path: &Path,
     revision: Arc<PreparedRevision>,

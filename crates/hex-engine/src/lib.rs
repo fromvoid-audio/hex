@@ -1596,10 +1596,6 @@ impl Track {
         self
     }
 
-    pub(crate) fn has_mutable_looping_source(&self) -> bool {
-        self.mutable_looping_source
-    }
-
     pub(crate) fn has_mutable_instrument(&self) -> bool {
         self.mutable_instrument
     }

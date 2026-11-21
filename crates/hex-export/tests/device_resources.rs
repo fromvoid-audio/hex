@@ -142,7 +142,7 @@ fn fixture(midi_loop: bool) -> Fixture {
                 loop_start: BeatTime::ZERO,
                 loop_end: BeatTime::ONE,
                 looping: true,
-                length: BeatTime::ONE,
+                length: BeatTime::from_ratio(2, 1).expect("two source loop periods"),
             })
             .unwrap();
     }
@@ -573,21 +573,42 @@ fn resource_scope_cancel_range_and_preroll_refusals_leave_no_output() {
                 ),
                 false,
             );
-            let looped = fixture(true);
-            assert_refused(
-                hex_export::render_prepared_controlled_with_device_resources(
-                    &path,
-                    looped.revision,
-                    &looped.resources,
-                    129,
-                    1,
-                    ExportSignal::Main,
-                    &ExportControl::default(),
-                ),
-                true,
-            );
         })
         .unwrap()
         .join()
         .unwrap();
+}
+
+#[test]
+fn registered_sampler_export_replays_to_a_range_inside_the_second_source_pass() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let directory = Directory::new();
+            let path = directory.0.join("looped.wav");
+            let fixture = fixture(true);
+            let report = hex_export::render_prepared_controlled_with_device_resources(
+                &path,
+                fixture.revision,
+                &fixture.resources,
+                4_129,
+                320,
+                ExportSignal::Main,
+                &ExportControl::default(),
+            )
+            .expect("export the sampler range within the second source pass");
+            assert_eq!(report.frames, 320);
+
+            // At 120 BPM the sampler repeats at frame 4,000, after the other
+            // tracks have ended. Its direct signal and Return feed Main.
+            let (_, sampler, _) = oracle(449);
+            let expected: Vec<_> = sampler[129..449]
+                .iter()
+                .map(|frame| frame.map(|sample| (sample + sample * 0.125) * 0.75 * 0.5))
+                .collect();
+            assert_near(pcm16(&path), &expected);
+        })
+        .expect("start registered export fixture")
+        .join()
+        .expect("complete registered export fixture");
 }
