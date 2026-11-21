@@ -19,7 +19,8 @@ impl NativeEffectEntry {
     pub(crate) fn is_fresh_return(&self, identity: ProcessorInstanceIdentity) -> bool {
         !self.staged
             && self.callback.identity() == identity
-            && self.callback.transport.is_unstarted()
+            && matches!(&self.callback.transport,
+                EffectTransport::Ordinary(callback) if callback.is_unstarted())
     }
 
     /// The next physical callback may be open before this endpoint stages any
