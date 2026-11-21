@@ -3,6 +3,7 @@ use super::*;
 mod detached_history;
 mod hosted_effect_history;
 mod hosted_instrument_move;
+mod hosted_replacement_history;
 mod main_history;
 mod stopped_power;
 
@@ -188,7 +189,7 @@ struct VerifiedAttempt {
 enum HostedSources {
     InstalledOnly,
     Clipboard,
-    MainHistory,
+    RunningHistory,
     PausedHistory,
 }
 
@@ -899,7 +900,9 @@ impl Session {
             .ok_or(SessionError::Invalid(
                 "verified device history target changed",
             ))?;
-        let operation = if main_history::replaces_one_main(self.project(), edge.project()) {
+        let operation = if main_history::replaces_one_main(self.project(), edge.project())
+            || hosted_replacement_history::replaces_one_return(self.project(), edge.project())
+        {
             GraphEditOperation::ReplaceDevice
         } else {
             hosted_membership_operation(self.project(), edge.project()).ok_or(
@@ -1030,15 +1033,15 @@ impl Session {
             Operation::HostedHistory(GraphEditOperation::InsertDevice)
                 if main_history::restores_one_main(self.project(), edit.project()) =>
             {
-                HostedSources::MainHistory
+                HostedSources::RunningHistory
             }
             Operation::HostedHistory(GraphEditOperation::RemoveDevice)
                 if main_history::restores_one_main(edit.project(), self.project()) =>
             {
-                HostedSources::MainHistory
+                HostedSources::RunningHistory
             }
             Operation::HostedHistory(GraphEditOperation::ReplaceDevice) => {
-                HostedSources::MainHistory
+                HostedSources::RunningHistory
             }
             Operation::HostedHistory(_) => HostedSources::PausedHistory,
             Operation::HostedClipboard => HostedSources::Clipboard,

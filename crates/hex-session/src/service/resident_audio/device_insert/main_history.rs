@@ -1,6 +1,7 @@
 //! Control-only membership proof; it grants no native or transport custody.
+use super::hosted_replacement_history::{replaces_chain_leaf, without_effect};
 use hex_lattice_contract::VST3_DEVICE_TYPE_ID;
-use hex_project::{Command, Device, DeviceId, Editor, Project};
+use hex_project::Project;
 
 /// Admit only one newly present Main VST3 whose removal reproduces every
 /// authored value of the incumbent Project, including IDs and automation.
@@ -27,49 +28,13 @@ pub(super) fn restores_one_main(before: &Project, after: &Project) -> bool {
 /// removed. The ordinal check also rules out an otherwise equal remove/insert
 /// at separate Main positions.
 pub(super) fn replaces_one_main(before: &Project, after: &Project) -> bool {
-    if before.main_devices().len() != after.main_devices().len() {
-        return false;
-    }
-    let Some((old, new)) = before
-        .main_devices()
-        .iter()
-        .zip(after.main_devices())
-        .find(|(old, new)| old.id() != new.id())
-    else {
-        return false;
-    };
-    if !is_hosted_leaf(before.main_devices(), old)
-        || !is_hosted_leaf(after.main_devices(), new)
-        || after.device(old.id()).is_some()
-        || before.device(new.id()).is_some()
-    {
-        return false;
-    }
-    let Some(without_old) = without_effect(before, old.id()) else {
-        return false;
-    };
-    without_effect(after, new.id())
-        .is_some_and(|without| without.project() == without_old.project())
-}
-
-fn is_hosted_leaf(chain: &[Device], device: &Device) -> bool {
-    device.parent().is_none()
-        && device.state().type_id() == VST3_DEVICE_TYPE_ID
-        && !chain
-            .iter()
-            .any(|child| child.parent() == Some(device.id()))
-}
-
-fn without_effect(project: &Project, device: DeviceId) -> Option<Editor> {
-    let mut stripped = Editor::new(project.clone(), 1).ok()?;
-    stripped.execute(Command::RemoveDevice(device)).ok()?;
-    Some(stripped)
+    replaces_chain_leaf(before, after, before.main_devices(), after.main_devices())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hex_project::Created;
+    use hex_project::{Command, Created, Editor};
 
     fn fixture() -> (Editor, hex_project::DeviceId, hex_project::DeviceId) {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
