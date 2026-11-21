@@ -36,7 +36,7 @@ mod mapping;
 mod preview_peaks;
 pub use preview_peaks::{
     PreparedDirectedEventRead, PreparedDirectedEventSpan, PreparedEventOccurrence,
-    PreparedEventOccurrences, PreparedEventSourcePeaks, PreparedGroupEventSources,
+    PreparedEventOccurrences, PreparedEventSourcePeaks, PreparedEventSources,
     PreparedMusicalEventSourceClock,
 };
 mod processing_root;
@@ -421,7 +421,7 @@ struct Entry {
     prepared: Audio,
     event_source_peaks: Option<Arc<PreparedEventSourcePeaks>>,
     event_source_occurrences: Option<Arc<PreparedEventOccurrences>>,
-    group_event_sources: Option<Arc<PreparedGroupEventSources>>,
+    event_sources: Option<Arc<PreparedEventSources>>,
     bytes: usize,
 }
 
@@ -807,11 +807,8 @@ impl AudioTransformPreparation {
         self.prepared_sidecar(audio, |entry| entry.event_source_occurrences.clone())
     }
 
-    pub(crate) fn group_event_sources(
-        &self,
-        audio: &Audio,
-    ) -> Option<Arc<PreparedGroupEventSources>> {
-        self.prepared_sidecar(audio, |entry| entry.group_event_sources.clone())
+    pub(crate) fn event_sources(&self, audio: &Audio) -> Option<Arc<PreparedEventSources>> {
+        self.prepared_sidecar(audio, |entry| entry.event_sources.clone())
     }
 
     fn capture_event_occurrence(
@@ -1033,16 +1030,23 @@ impl AudioTransformPreparation {
             (first, length)
         };
         let reservation = self.reserve_with_eviction(bytes)?;
-        let scratch_reservation = if edit.domain.events.is_some() {
+        let scratch_reservation = if let Some(events) = &edit.domain.events {
+            let has_live_fork = read_root.domain.warp_enabled
+                && !events.warp_sources.is_empty()
+                && events
+                    .events
+                    .iter()
+                    .any(|event| event.active && event.source != 0);
+            let buffers = 1 + usize::from(has_live_fork);
             let scratch_bytes = usize::try_from(read_length)
                 .ok()
                 .and_then(|length| length.checked_mul(std::mem::size_of::<crate::Frame>()))
+                .and_then(|length| length.checked_mul(buffers))
                 .ok_or(Invalid("audio event source byte count overflow"))?;
             Some(self.reserve_with_eviction(scratch_bytes)?)
         } else {
             None
         };
-        let (map, attacks) = mapping::prepare_map(read_root, tempo_map, &self.shutdown)?;
         let mut envelope = Vec::new();
         envelope
             .try_reserve_exact(edit.domain.source_gain.len())
@@ -1066,23 +1070,27 @@ impl AudioTransformPreparation {
             looping: domain.looping,
             envelope: &envelope,
         };
-        let request = hex_warp::Request {
-            attacks: &attacks,
-            input,
-            map: &map,
-            output_frames: read_length as usize,
-            pitch_cents: domain.pitch_cents,
-            mode,
-        };
-        let mut rendered =
+        let render_source = |root: &AudioClipEdit| {
+            let (map, attacks) = mapping::prepare_map(root, tempo_map, &self.shutdown)?;
+            let request = hex_warp::Request {
+                attacks: &attacks,
+                input,
+                map: &map,
+                output_frames: read_length as usize,
+                pitch_cents: domain.pitch_cents,
+                mode,
+            };
             hex_warp::render_with_resampler(&request, render_resampler(domain), &mut || {
                 self.cancelled()
             })
-            .map_err(warp_error)?;
+            .map(|rendered| rendered.frames)
+            .map_err(warp_error)
+        };
+        let mut rendered = render_source(read_root)?;
         let event_source_peaks = if cacheable && previews_event_source_peaks(edit) {
             let capture = |clock| {
                 PreparedEventSourcePeaks::capture(
-                    &rendered.frames,
+                    &rendered,
                     clock,
                     preview_peaks::event_source_budget(),
                     || self.cancelled(),
@@ -1105,10 +1113,41 @@ impl AudioTransformPreparation {
         } else {
             None
         };
+        let mut fork_peaks = if let Some(events) = &edit.domain.events
+            && !events.warp_sources.is_empty()
+            && read_root.domain.warp_enabled
+            && event_source_peaks
+                .as_ref()
+                .and_then(|peaks| peaks.musical_clock())
+                .is_some()
+        {
+            let count = events
+                .warp_sources
+                .iter()
+                .filter(|fork| {
+                    events
+                        .events
+                        .iter()
+                        .any(|event| event.active && event.source == fork.id)
+                })
+                .count();
+            if count > 0
+                && u64::try_from(count)
+                    .ok()
+                    .and_then(|count| count.checked_mul(read_length))
+                    .is_some_and(|frames| frames <= hex_project::MAX_AUDIO_DOMAIN_FRAMES)
+            {
+                PreparedEventSources::admit(count, preview_peaks::event_source_budget())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         if edit.domain.events.is_some() {
-            rendered.frames = events::compose(
+            rendered = events::compose(
                 events::EventSource {
-                    frames: &rendered.frames,
+                    frames: &rendered,
                     root: read_root,
                     zero_in_destination: edit
                         .domain
@@ -1118,11 +1157,37 @@ impl AudioTransformPreparation {
                 edit,
                 tempo_map,
                 &self.shutdown,
+                |fork| {
+                    let mut root = read_root.clone();
+                    Arc::make_mut(&mut root.domain)
+                        .warp
+                        .as_mut()
+                        .ok_or(Invalid("event warp source has no original warp"))?
+                        .markers = fork.markers.to_vec();
+                    let pcm = render_source(&root)?;
+                    if let Some(table) = &mut fork_peaks {
+                        let clock = event_source_peaks
+                            .as_ref()
+                            .and_then(|peaks| peaks.musical_clock())
+                            .cloned();
+                        if let Some(peaks) = PreparedEventSourcePeaks::capture(
+                            &pcm,
+                            clock,
+                            preview_peaks::event_source_budget(),
+                            || self.cancelled(),
+                        ) {
+                            table.push(fork.id, peaks);
+                        } else {
+                            fork_peaks = None;
+                        }
+                    }
+                    Ok(pcm)
+                },
             )?;
         }
         drop(scratch_reservation);
-        mapping::apply_fade(&mut rendered.frames, 0, edit, tempo_map, &self.shutdown)?;
-        let audio = Audio::from_derived(source.sample_rate(), rendered.frames, reservation)?;
+        mapping::apply_fade(&mut rendered, 0, edit, tempo_map, &self.shutdown)?;
+        let audio = Audio::from_derived(source.sample_rate(), rendered, reservation)?;
         self.retain(Entry {
             source: source.clone(),
             key: EntryKey::Root {
@@ -1136,7 +1201,7 @@ impl AudioTransformPreparation {
             prepared: audio.clone(),
             event_source_peaks,
             event_source_occurrences: None,
-            group_event_sources: None,
+            event_sources: fork_peaks.map(PreparedEventSources::finish),
             bytes,
         })?;
         Ok(audio)

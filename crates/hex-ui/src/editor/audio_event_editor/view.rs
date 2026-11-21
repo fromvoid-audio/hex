@@ -227,7 +227,7 @@ pub(in crate::editor) fn view(
             waveform_musical_event::Projection::for_display(
                 &state.project,
                 &clip,
-                event_source,
+                prepared,
                 None,
                 gain_preview,
                 None,
@@ -567,10 +567,11 @@ pub(in crate::editor) fn view(
         body = body.child(element);
     }
     let direct_warp_event = markers::direct_event(&root, &clip);
-    let grouped_warp = view
+    let scoped_warp = view
         .audio_event_editor
         .selected
-        .and_then(|event| markers::GroupedWarp::new(&preview, event));
+        .filter(|_| direct_warp_event.is_none())
+        .and_then(|event| markers::EventWarp::new(&preview, &root, event));
     let warp = view
         .audio_clip_controls
         .pending_warp_settings(clip_id)
@@ -635,14 +636,13 @@ pub(in crate::editor) fn view(
             }
         }
     }
-    if let Some(target) = &grouped_warp {
+    if let Some(target) = &scoped_warp {
         let event = Some(target.event.id);
         for marker in target
-            .settings
             .markers
             .iter()
             .skip(1)
-            .take(target.settings.markers.len().saturating_sub(2))
+            .take(target.markers.len().saturating_sub(2))
         {
             if held_marker.is_some_and(|(source, _, held_event)| {
                 held_event == event && source == marker.source_frame
@@ -667,7 +667,7 @@ pub(in crate::editor) fn view(
     }
     if let Some((source_frame, beat, event)) = held_marker {
         let position = if let Some(event) = event {
-            grouped_warp
+            scoped_warp
                 .as_ref()
                 .filter(|target| target.event.id == event)
                 .and_then(|target| target.position(beat))
@@ -699,16 +699,19 @@ pub(in crate::editor) fn view(
         && transients::supports_root(&root)
     {
         let mut next_x = 0.0;
-        let step = if direct_warp_event.is_some() {
-            8.0
-        } else {
-            3.0
-        } / width.max(1.0);
+        let scoped = scoped_warp
+            .as_ref()
+            .filter(|warp| warp.event.id == event.id);
+        let scoped_settings = scoped.map(markers::EventWarp::settings);
+        let editable = direct_warp_event.is_some() || scoped.is_some();
+        let marker_event = scoped.map(|warp| warp.event.id);
+        let step = if editable { 8.0 } else { 3.0 } / width.max(1.0);
         let tempo = state.project.tempo_map();
         for &source in analysis.frames() {
-            if direct_warp_event.is_some()
-                && (held_marker.is_some_and(|(frame, _, event)| event.is_none() && frame == source)
-                    || warp.is_some_and(|warp| {
+            if editable
+                && (held_marker
+                    .is_some_and(|(frame, _, event)| event == marker_event && frame == source)
+                    || scoped_settings.as_ref().or(warp).is_some_and(|warp| {
                         warp.markers
                             .binary_search_by_key(&source, |m| m.source_frame)
                             .is_ok()
@@ -717,11 +720,17 @@ pub(in crate::editor) fn view(
             {
                 continue;
             }
-            let Some(position) =
-                transients::event_position(&root, event, source, tempo).filter(|position| {
-                    *position >= content_bounds(&root).0 && *position < content_bounds(&root).1
-                })
-            else {
+            let position = if let Some((scoped, settings)) = scoped.zip(scoped_settings.as_ref()) {
+                settings
+                    .beat_for_source_frame(source)
+                    .ok()
+                    .and_then(|beat| scoped.position(beat))
+            } else {
+                transients::event_position(&root, event, source, tempo)
+            };
+            let Some(position) = position.filter(|position| {
+                *position >= content_bounds(&root).0 && *position < content_bounds(&root).1
+            }) else {
                 continue;
             };
             let Some(frame) =
@@ -734,9 +743,14 @@ pub(in crate::editor) fn view(
                 continue;
             }
             next_x = x + step;
-            if direct_warp_event.is_some() {
+            if editable {
                 body = body.children([markers::marker_handle(
-                    source, None, x, EVENT_TOP, false, cx,
+                    source,
+                    marker_event,
+                    x,
+                    EVENT_TOP,
+                    false,
+                    cx,
                 )]);
                 continue;
             }

@@ -207,19 +207,30 @@ pub struct AudioClipWaveform {
     pub neutral_musical: Option<AudioMusicalWaveform>,
     /// Peak-only transformed source before event composition and fades.
     pub event_source: Option<AudioEventSourceWaveform>,
-    /// Retained children before their events in this accepted group composition.
-    pub group_event_sources: Option<Arc<AudioGroupEventWaveforms>>,
+    /// Independent sources before composition, keyed by their accepted event source IDs.
+    pub event_sources: Option<Arc<AudioEventSourceWaveforms>>,
 }
 
-pub struct AudioGroupEventWaveforms {
-    pub(crate) prepared: Arc<hex_engine::audio_transform::PreparedGroupEventSources>,
+pub struct AudioEventSourceWaveforms {
+    pub(crate) prepared: Arc<hex_engine::audio_transform::PreparedEventSources>,
     pub(crate) waveforms: Vec<Arc<Waveform>>,
 }
 
-impl AudioGroupEventWaveforms {
-    /// Peak-only waveform in the retained child's compiled playback coordinates.
+impl AudioEventSourceWaveforms {
+    /// Peak-only waveform in the source's compiled playback coordinates.
     pub fn waveform(&self, source_id: u64) -> Option<&Arc<Waveform>> {
         self.waveforms.get(self.prepared.index_of(source_id)?)
+    }
+
+    pub fn musical_clock(
+        &self,
+        source_id: u64,
+    ) -> Option<&hex_engine::audio_transform::PreparedMusicalEventSourceClock> {
+        self.prepared
+            .sources()
+            .get(self.prepared.index_of(source_id)?)?
+            .1
+            .musical_clock()
     }
 }
 

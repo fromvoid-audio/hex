@@ -289,7 +289,7 @@ impl AudioTransformPreparation {
                 })
                 .is_some()
         {
-            PreparedGroupEventSources::admit(events.sources.len(), peak_budget)
+            PreparedEventSources::admit(events.sources.len(), peak_budget)
         } else {
             None
         };
@@ -489,7 +489,7 @@ impl AudioTransformPreparation {
             prepared: audio.clone(),
             event_source_peaks: None,
             event_source_occurrences: None,
-            group_event_sources: event_sources.map(PreparedGroupEventSources::finish),
+            event_sources: event_sources.map(PreparedEventSources::finish),
             bytes: std::mem::size_of_val(audio.frames()),
         })?;
         Ok(audio)

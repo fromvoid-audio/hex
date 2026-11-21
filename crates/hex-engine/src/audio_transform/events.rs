@@ -1,11 +1,12 @@
 //! Worker-side event composition before the container fade. No callback work.
 use crate::{Frame, Invalid};
-use hex_project::{AudioClipEdit, AudioDomainClock, AudioEvent, TempoMap};
+use hex_project::{AudioClipEdit, AudioDomainClock, AudioEvent, AudioEventWarpSource, TempoMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The finite PCM root and the authored destination coordinate corresponding
 /// to its source zero. Both clocks use the same units, but their extents and
 /// tempo origins may differ.
+#[derive(Clone, Copy)]
 pub(super) struct EventSource<'a> {
     pub(super) frames: &'a [Frame],
     pub(super) root: &'a AudioClipEdit,
@@ -32,6 +33,7 @@ pub(super) fn compose(
     edit: &AudioClipEdit,
     tempo: &TempoMap,
     cancelled: &AtomicBool,
+    mut prepare_fork: impl FnMut(&AudioEventWarpSource) -> Result<Vec<Frame>, Invalid>,
 ) -> Result<Vec<Frame>, Invalid> {
     let events = edit
         .domain
@@ -39,6 +41,16 @@ pub(super) fn compose(
         .as_ref()
         .ok_or(Invalid("audio event sequence missing"))?;
     events.validate(edit.domain.clock.length())?;
+    if !events.sources.is_empty()
+        || events.events.iter().any(|event| {
+            event
+                .source_start
+                .checked_add(event.length())
+                .is_none_or(|end| end > source.root.domain.clock.length())
+        })
+    {
+        return Err(Invalid("audio event exceeds its retained source clock"));
+    }
     let frames_clock = matches!(edit.domain.clock, AudioDomainClock::Frames(_));
     let (length, aligned_zero) =
         if std::ptr::eq(edit, source.root) && source.zero_in_destination == 0 {
@@ -73,18 +85,69 @@ pub(super) fn compose(
         .try_reserve_exact(length)
         .map_err(|_| Invalid("audio event composition allocation failed"))?;
     output.resize(length, [0.0, 0.0]);
-    for event in &events.events {
-        if event.source != 0
-            || event
-                .source_start
-                .checked_add(event.length())
-                .is_none_or(|end| end > source.root.domain.clock.length())
+    let warped = source.root.domain.warp_enabled;
+    let active = || events.events.iter().filter(|event| event.active);
+    write_events(
+        source,
+        edit,
+        tempo,
+        aligned_zero,
+        active().filter(|event| !warped || event.source == 0),
+        &mut output,
+        cancelled,
+    )?;
+    if warped {
+        let in_use = |id| active().any(|event| event.source == id);
+        let fork_count = events
+            .warp_sources
+            .iter()
+            .filter(|fork| in_use(fork.id))
+            .count();
+        if fork_count
+            .checked_mul(source.frames.len())
+            .and_then(|frames| frames.checked_mul(std::mem::size_of::<Frame>()))
+            .is_none_or(|bytes| bytes > super::MAX_RETAINED_DERIVED_BYTES)
         {
-            return Err(Invalid("audio event exceeds its retained source clock"));
+            return Err(Invalid(
+                "event warp sources exceed the prepared audio budget",
+            ));
         }
-        if !event.active {
-            continue;
+        for fork in events.warp_sources.iter().filter(|fork| in_use(fork.id)) {
+            if cancelled.load(Ordering::Relaxed) {
+                return Err(Invalid("audio event preparation cancelled"));
+            }
+            let frames = prepare_fork(fork)?;
+            if frames.len() != source.frames.len() {
+                return Err(Invalid("event warp source changed its output clock"));
+            }
+            write_events(
+                EventSource {
+                    frames: &frames,
+                    ..source
+                },
+                edit,
+                tempo,
+                aligned_zero,
+                active().filter(|event| event.source == fork.id),
+                &mut output,
+                cancelled,
+            )?;
         }
+    }
+    Ok(output)
+}
+
+fn write_events<'a>(
+    source: EventSource<'_>,
+    edit: &AudioClipEdit,
+    tempo: &TempoMap,
+    aligned_zero: Option<u64>,
+    events: impl Iterator<Item = &'a AudioEvent>,
+    output: &mut [Frame],
+    cancelled: &AtomicBool,
+) -> Result<(), Invalid> {
+    let frames_clock = matches!(edit.domain.clock, AudioDomainClock::Frames(_));
+    for event in events {
         let start = usize::try_from(edit.root_frame_at(event.start, tempo)?)
             .map_err(|_| Invalid("audio event start overflow"))?;
         let end = usize::try_from(edit.root_frame_at(event.end, tempo)?)
@@ -166,7 +229,7 @@ pub(super) fn compose(
             return Err(Invalid("audio event preparation cancelled"));
         }
     }
-    Ok(output)
+    Ok(())
 }
 
 #[cfg(test)]

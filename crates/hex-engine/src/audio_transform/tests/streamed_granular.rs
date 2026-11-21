@@ -233,6 +233,7 @@ fn granular_projection_refuses_unhandled_inputs_and_projects_long_root() {
     assert!(streamed_granular_root(&source, &invalid, tempo, &cancel).is_err());
     invalid = edit.clone();
     Arc::make_mut(&mut invalid.domain).events = Some(Arc::new(hex_project::AudioEvents {
+        warp_sources: Vec::new(),
         sources: vec![],
         next_id: 1,
         events: vec![],

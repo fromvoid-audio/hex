@@ -905,8 +905,10 @@ fn compile_project_inner<'a>(
                         event_source_peaks,
                         event_source_repeat,
                         event_source_occurrences,
-                        group_event_sources: clip.has_retained_audio_roots()
-                            .then(|| transforms.group_event_sources(audio)).flatten(),
+                        event_sources: (clip.has_retained_audio_roots()
+                            || clip.audio_edit().and_then(|edit| edit.domain.events.as_ref())
+                                .is_some_and(|events| !events.warp_sources.is_empty()))
+                            .then(|| transforms.event_sources(audio)).flatten(),
                         repeat,
                     });
                 }

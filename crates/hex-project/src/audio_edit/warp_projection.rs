@@ -1,8 +1,31 @@
 //! Pure canonical warp-coordinate projection shared by preparation and visual previews.
 //! Callers use validated canonical metadata; local arithmetic checks do not
 //! replace complete project validation.
-use super::{AudioClipDomain, WarpSettings};
+use super::{AudioClipDomain, WarpMarker, WarpSettings};
 use crate::{BeatTime, Invalid};
+
+pub(crate) fn validate_warp_markers(
+    markers: &[WarpMarker],
+    source_start: u64,
+    source_end: u64,
+) -> Result<(), Invalid> {
+    if !(2..=super::MAX_AUDIO_POINTS).contains(&markers.len())
+        || markers.first().is_none_or(|marker| {
+            marker.source_frame != source_start || marker.beat != BeatTime::ZERO
+        })
+        || markers
+            .last()
+            .is_none_or(|marker| marker.source_frame != source_end || marker.beat == BeatTime::ZERO)
+        || markers.windows(2).any(|pair| {
+            pair[0].source_frame >= pair[1].source_frame || pair[0].beat >= pair[1].beat
+        })
+    {
+        return Err(Invalid(
+            "warp markers need increasing source/beat positions and explicit region endpoints",
+        ));
+    }
+    Ok(())
+}
 
 impl WarpSettings {
     /// Add an interior anchor at its current mapped beat, preserving the map

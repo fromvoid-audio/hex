@@ -15,7 +15,7 @@ use hex_project::{
 };
 use hex_session::{
     CachedOverrange, CachedPeak, CachedWaveform,
-    service::{AudioClipWaveform, AudioGroupEventWaveforms},
+    service::{AudioClipWaveform, AudioEventSourceWaveforms},
 };
 use std::{ops::Range, sync::Arc};
 
@@ -34,7 +34,7 @@ pub(super) struct Key {
     gain: ClipGain,
 }
 
-struct GroupSources(Arc<AudioGroupEventWaveforms>);
+struct GroupSources(Arc<AudioEventSourceWaveforms>);
 
 impl std::fmt::Debug for GroupSources {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -74,8 +74,9 @@ impl Projection {
         events: Option<AudioEvents>,
         gain: Option<ClipGain>,
     ) -> Option<(Arc<CachedWaveform>, Arc<Self>)> {
-        if let Some(view) = prepared
-            && let Some(grouped) = &view.group_event_sources
+        if clip.has_retained_audio_roots()
+            && let Some(view) = prepared
+            && let Some(grouped) = &view.event_sources
         {
             if project.clip(clip.id())? != clip {
                 return None;
@@ -187,7 +188,7 @@ impl Projection {
         self.prepared_frames.is_none() && self.key.grouped.is_none()
     }
 
-    pub(super) fn grouped_sources(&self) -> Option<&AudioGroupEventWaveforms> {
+    pub(super) fn grouped_sources(&self) -> Option<&AudioEventSourceWaveforms> {
         self.key.grouped.as_ref().map(|grouped| grouped.0.as_ref())
     }
 
@@ -309,7 +310,7 @@ pub(super) fn detail(
 pub(super) fn coarse(
     query: &Read<'_, '_>,
     waveform: &CachedWaveform,
-    grouped: Option<&AudioGroupEventWaveforms>,
+    grouped: Option<&AudioEventSourceWaveforms>,
     range: Range<u64>,
     remaining: &mut usize,
 ) -> Option<[CachedPeak; 2]> {
@@ -325,16 +326,7 @@ pub(super) fn coarse(
     )
 }
 
-pub(super) fn coarse_peaks(
-    waveform: &CachedWaveform,
-    visit_ranges: impl FnOnce(
-        &mut dyn FnMut(FrameFadeRange),
-    ) -> Result<Option<FrameFadeCoverage>, Invalid>,
-) -> Option<[CachedPeak; 2]> {
-    coarse_peaks_from(|_| Some(waveform), visit_ranges)
-}
-
-fn coarse_peaks_from<'a>(
+pub(super) fn coarse_peaks_from<'a>(
     source: impl Fn(u64) -> Option<&'a CachedWaveform>,
     visit_ranges: impl FnOnce(
         &mut dyn FnMut(FrameFadeRange),

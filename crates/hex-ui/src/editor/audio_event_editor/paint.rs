@@ -82,6 +82,7 @@ mod tests {
     #[test]
     fn replacement_accents_follow_occupied_victims_and_range_overwrite_semantics() {
         let events = AudioEvents {
+            warp_sources: Vec::new(),
             sources: Vec::new(),
             next_id: 4,
             events: [(1, 0, 20), (2, 30, 40), (3, 60, 100)]

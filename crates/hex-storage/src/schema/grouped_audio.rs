@@ -479,6 +479,7 @@ fn decode_version(mut value: serde_json::Value, version: u64) -> Result<Project,
                 edit.view_end = geometry.view_end;
             }
             domain.events = Some(Arc::new(AudioEvents {
+                warp_sources: Vec::new(),
                 next_id: state.next_id,
                 sources,
                 events: state

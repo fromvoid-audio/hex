@@ -62,7 +62,8 @@ mod track_tags;
 pub use track_tags::{MAX_TRACK_TAG_BYTES, MAX_TRACK_TAG_CHARS, MAX_TRACK_TAGS, TrackTag};
 mod track_order;
 pub use audio_events::{
-    AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS, RetainedAudioRoot,
+    AudioEvent, AudioEventEdit, AudioEventWarpSource, AudioEvents, MAX_AUDIO_EVENTS,
+    RetainedAudioRoot,
 };
 pub use track_groups::{
     MAX_GROUP_DEPTH, TrackDestination, TrackHierarchy, TrackHierarchyRow, TrackKind,

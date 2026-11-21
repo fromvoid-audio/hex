@@ -139,7 +139,12 @@ impl<'a> MusicalEventFadePreview<'a> {
     ) -> Result<Option<Self>, Invalid> {
         if events.len() > MAX_AUDIO_EVENTS
             || events.iter().any(|event| {
-                event.source != 0
+                (event.source != 0
+                    && edit
+                        .domain
+                        .events
+                        .as_ref()
+                        .is_none_or(|events| events.warp_source(event.source).is_none()))
                     || event.start >= event.end
                     || event.end > edit.domain.clock.length()
             })
@@ -368,7 +373,11 @@ impl<'a> MusicalEventFadePreview<'a> {
                 source: [Some(source_first..source_end), None],
                 sample: FrameFadeSample {
                     source_frame,
-                    source_id: 0,
+                    source_id: if self.edit.domain.warp_enabled {
+                        span.event.source
+                    } else {
+                        0
+                    },
                     event: Some(span.event.id),
                     gains: [event_fade, span.gain, clip_fade, self.gain],
                 },
