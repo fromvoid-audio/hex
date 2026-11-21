@@ -6,7 +6,8 @@ use hex_project::{
 };
 
 /// Stage one exact substitution between two enabled workers on the same
-/// Return. Obtaining the stopped audio witness remains the caller's job.
+/// Return. Authenticating the leaving worker and playback interval remains
+/// the caller's job.
 pub(super) fn stage_enabled_return_replacement(
     editor: &mut Editor,
     redo: bool,
@@ -50,7 +51,8 @@ fn return_replacement_chains<'a>(
 }
 
 /// Stage one exact substitution between enabled workers on the same direct
-/// Track. Obtaining the stopped audio witness remains the caller's job.
+/// Track. Authenticating the leaving worker and playback interval remains
+/// the caller's job.
 pub(super) fn stage_enabled_track_replacement(
     editor: &mut Editor,
     redo: bool,

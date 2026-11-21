@@ -1,23 +1,35 @@
-//! Signed rolling Resident replacement Undo on one direct equal-latency Main slot.
+//! Signed rolling Resident replacement history on one direct equal-latency slot.
 use super::*;
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn rolling_resident_main_vst3_replacement_undo_waits_for_its_exact_receipt() {
-    assert_rolling_main_replacement(false);
+    assert_rolling_replacement(ReplacementOwner::Main, false);
 }
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn rolling_resident_main_vst3_replacement_redo_waits_for_its_exact_receipt() {
-    assert_rolling_main_replacement(true);
+    assert_rolling_replacement(ReplacementOwner::Main, true);
 }
 
-fn assert_rolling_main_replacement(redo: bool) {
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn rolling_resident_return_vst3_replacement_undo_and_redo_wait_for_exact_receipts() {
+    assert_rolling_replacement(ReplacementOwner::Return, true);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn rolling_resident_track_vst3_replacement_undo_and_redo_wait_for_exact_receipts() {
+    assert_rolling_replacement(ReplacementOwner::Track, true);
+}
+
+fn assert_rolling_replacement(owner: ReplacementOwner, redo: bool) {
     let _native = native_fixture();
     let files = Files::new();
     let (mut h, original, installed, original_binding, destination) =
-        installed_replacement(&files, ReplacementOwner::Main, 131_072);
+        installed_replacement(&files, owner, 131_072);
     let replaced_binding = binding(&h).unwrap().1;
     h.audio
         .as_mut()
@@ -69,7 +81,13 @@ fn assert_rolling_history(
         incumbent.0,
         occupied_effect(installed, destination).id().value()
     );
-    let ramp = 0.03125;
+    let ramp = if matches!(destination, PluginEffectDestination::Return(_)) {
+        // The real worker receives a 0.5 send. The aligned dry signal is
+        // unchanged, so only half of the effect ramp reaches Main.
+        0.015625
+    } else {
+        0.03125
+    };
     let sample = |h: &ResidentHarness| instruments::render_replay_block(h)[0][0];
     let mut last = settled_ramp(h, predecessor, incumbent, ramp);
     let assert_incumbent = |h: &ResidentHarness| {
@@ -96,7 +114,7 @@ fn assert_rolling_history(
             hear_incumbent(h, &mut last);
             if let Some(error) = event.error {
                 panic!(
-                    "rolling Resident Main replacement {direction} refused before its callback: {error}"
+                    "rolling Resident {destination:?} replacement {direction} refused before its callback: {error}"
                 );
             }
             assert!(!event.request_complete);
@@ -105,7 +123,7 @@ fn assert_rolling_history(
         hear_incumbent(h, &mut last);
         assert!(
             Instant::now() < deadline,
-            "rolling Main replacement {direction} did not prepare"
+            "rolling {destination:?} replacement {direction} did not prepare"
         );
         std::thread::yield_now();
     }
@@ -127,7 +145,7 @@ fn assert_rolling_history(
                 assert_history_unchanged(&event, installed);
                 assert_incumbent(h);
                 panic!(
-                    "rolling Resident Main replacement {direction} refused at publication: {error}"
+                    "rolling Resident {destination:?} replacement {direction} refused at publication: {error}"
                 );
             }
             if event.request_complete {
@@ -145,7 +163,7 @@ fn assert_rolling_history(
         sample(h);
         assert!(
             Instant::now() < deadline,
-            "rolling Main replacement {direction} missed its receipt"
+            "rolling {destination:?} replacement {direction} missed its receipt"
         );
         std::thread::yield_now();
     };
@@ -206,7 +224,7 @@ fn settled_ramp(
         }
         assert!(
             Instant::now() < deadline,
-            "signed Main ramp did not settle: playing={playing}, sample={sample}, source={applied:?}, binding={accepted:?}, fault={:?}",
+            "signed replacement ramp did not settle: playing={playing}, sample={sample}, source={applied:?}, binding={accepted:?}, fault={:?}",
             status(h).render_fault_snapshot(),
         );
     }
