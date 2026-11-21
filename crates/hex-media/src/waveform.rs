@@ -51,6 +51,23 @@ impl Waveform {
         self.source_frames
     }
 
+    /// Analyze this exact resident source in the same frame units as its
+    /// waveform. Derived repeats, sparse summaries and peak-only sources have
+    /// no direct PCM domain here. The caller schedules the bounded work off UI.
+    pub fn detect_source_transients(
+        &self,
+        cancel: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<Vec<u64>>, hex_engine::TransientDetectionError> {
+        let Some(source) = self
+            .samples
+            .as_ref()
+            .filter(|_| self.repeat.is_none() && self.sparse.is_none())
+        else {
+            return Ok(None);
+        };
+        hex_engine::detect_transients(source.frames(), source.sample_rate(), cancel).map(Some)
+    }
+
     /// Immutable leaf bins; mutation would invalidate their cached hierarchy.
     pub fn bins(&self) -> &[[Peak; 2]] {
         &self.bins

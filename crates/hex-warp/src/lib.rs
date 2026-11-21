@@ -8,6 +8,7 @@
 //! Does not own files, threads, canonical edits or realtime callback processing. Callers validate
 //! resource/work bounds and retain original source identity.
 mod beats;
+pub use beats::detect_transients;
 pub mod fft;
 mod granular;
 pub use granular::{GrainAnalysis, GrainDecision, GrainSynthesis, analyze_grain};
