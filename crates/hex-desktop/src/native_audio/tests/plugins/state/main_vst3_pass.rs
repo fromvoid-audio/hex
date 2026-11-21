@@ -583,3 +583,247 @@ fn verify_running_main_power_off(cancel_before_cut: bool) {
         assert_dry_timing(&h, 0);
     }
 }
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn confirmed_two_track_main_power_off_retires_the_original_worker() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let directory = files.0.canonicalize().unwrap();
+    hex_ui::write_plugin_effect_test_catalog(&directory, &selection(), "Fx", 0).unwrap();
+    let mut h = ResidentHarness::with_plugins_at_rate_and_catalog(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: BRIDGE as u32,
+        }),
+        48_000,
+        directory.join("plugin-catalog.json"),
+        u64::from(SOURCE_FRAMES),
+    );
+    assert!(h.next().error.is_none());
+    let (empty, _) = h.applied(0);
+    let wave = impulse_wav(&files);
+    h.run(Request::Import(wave.clone()));
+    let (first, _) = h.applied(empty);
+    let imported = h.run(Request::Import(wave));
+    let (dry, _) = h.applied(first);
+    assert_eq!(imported.state.project.tracks().len(), 2);
+    h.service
+        .submit(Request::InsertPluginEffect(request(
+            &imported.state,
+            PluginEffectDestination::Main,
+        )))
+        .unwrap();
+    assert!(h.next().error.is_none());
+    let inserted = terminal(&mut h);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    assert!(inserted.plugin_effect_complete[0].accepted);
+    h.applied(dry);
+    let [device] = inserted.state.project.main_devices() else {
+        panic!("sole Main effect");
+    };
+    let device_id = device.id();
+    let predecessor = status(&h).recording_source().unwrap();
+    let binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+    assert_eq!(h.plugin_records.load(Acquire), 1);
+    assert_eq!(
+        h.submitted_observation()
+            .unwrap()
+            .processor_latency(device_id.value(), device.state().type_id())
+            .unwrap()
+            .stage_frames,
+        BRIDGE as u32
+    );
+    h.enable_confirmed_device_inserts();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let old_wet = |h: &ResidentHarness| {
+        let (start, pcm) = render_playing(h);
+        for (offset, frame) in pcm.into_iter().enumerate() {
+            let (_, wet) = signed_output(start + offset);
+            assert_eq!(
+                frame,
+                [2.0 * wet; 2],
+                "two-track original wet frame={}",
+                start + offset
+            );
+        }
+        assert_eq!(status(h).recording_source(), Some(predecessor));
+        assert_eq!(status(h).native_effect_source(), Some(predecessor));
+        assert_eq!(h.plugin_progress.lock().unwrap().binding, Some(binding));
+        assert_eq!(h.plugin_records.load(Acquire), 1);
+    };
+    for _ in 0..4 {
+        old_wet(&h);
+    }
+
+    let (private, enqueue, _) = h.probe_next_native_publication();
+    h.service
+        .submit(Request::Edit(Command::ToggleDeviceBypass {
+            device: device_id,
+        }))
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(1);
+    loop {
+        h.pump();
+        if private.try_recv().is_ok() {
+            break;
+        }
+        if let Ok(event) = h.service.try_event() {
+            assert_eq!(event.state.project, inserted.state.project);
+            assert_eq!(event.state.revision, inserted.state.revision);
+            assert!(
+                !event.request_complete,
+                "two-track Off completed before its required restart offer: {:?}",
+                event.error
+            );
+        }
+        old_wet(&h);
+        assert!(Instant::now() < until, "two-track Off private preparation");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    old_wet(&h);
+    enqueue.send(()).unwrap();
+    let until = Instant::now() + Duration::from_secs(1);
+    let mut confirmed = None;
+    let installed = loop {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            if event.request_complete {
+                assert!(event.error.is_none(), "{:?}", event.error);
+                break event;
+            }
+            assert!(event.error.is_none(), "{:?}", event.error);
+            assert_eq!(event.state.project, inserted.state.project);
+            assert_eq!(event.state.revision, inserted.state.revision);
+            if let Some(offer) = event.device_insert_confirmation {
+                assert!(confirmed.is_none(), "second restart offer for the same Off");
+                assert_eq!(
+                    offer.operation(),
+                    hex_session::service::GraphEditOperation::PowerDevice
+                );
+                assert_eq!(
+                    offer.submission().output_identity,
+                    predecessor.output_identity
+                );
+                old_wet(&h);
+                let (submitted, resume) = h.probe_next_submitted_device_insert();
+                eprintln!("two-track off offered restart: {:?}", offer.submission());
+                assert!(offer.proceed());
+                let exact = submitted.recv_timeout(Duration::from_secs(1)).unwrap();
+                assert_eq!(exact.context, offer.submission().context);
+                assert_eq!(exact.output_identity, predecessor.output_identity);
+                assert!(exact.audio_revision > offer.submission().audio_revision);
+                assert_eq!(status(&h).recording_source(), Some(predecessor));
+                assert_eq!(h.plugin_progress.lock().unwrap().binding, Some(binding));
+                confirmed = Some(exact);
+                resume.send(()).unwrap();
+            }
+        }
+        if status(&h).recording_source() == Some(predecessor) {
+            if confirmed.is_some() {
+                // Consent permits the existing 128-frame fade prefix and
+                // frozen remainder before restart. This is not a live pass;
+                // wait for its exact terminal before checking steady clocks.
+                h.render_plugin_block();
+                edits::workers_idle(&h);
+            } else {
+                let (start, pcm) = render_playing(&h);
+                if status(&h).recording_source() == Some(predecessor) {
+                    for (offset, frame) in pcm.into_iter().enumerate() {
+                        assert_eq!(frame, [2.0 * signed_output(start + offset).1; 2]);
+                    }
+                }
+            }
+        }
+        assert!(Instant::now() < until, "two-track Off runtime terminal");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let completion = installed.device_insert_complete.unwrap();
+    assert_eq!(completion.outcome, DeviceInsertOutcome::Installed);
+    let confirmed = confirmed.expect("two-track Off must offer and approve an exact restart");
+    assert_eq!(completion.submission, confirmed);
+    assert_eq!(installed.state.revision, inserted.state.revision + 1);
+    let off = installed.state.project.device(device_id).unwrap();
+    assert!(off.bypassed());
+    assert_eq!(off.state(), device.state());
+    assert_eq!(installed.state.project.main_devices().len(), 1);
+    assert_eq!(
+        h.submitted_observation()
+            .unwrap()
+            .processor_status(device_id.value(), device.state().type_id()),
+        Some(hex_engine::PreparedDeviceProcessing::PoweredOff)
+    );
+    let actual = status(&h).recording_source().unwrap();
+    assert_eq!(
+        (
+            actual.context,
+            actual.audio_revision,
+            actual.output_identity
+        ),
+        (
+            completion.submission.context,
+            completion.submission.audio_revision,
+            predecessor.output_identity
+        )
+    );
+    let required_at_install = status(&h).native_effect_source();
+    // The approved restart resumes this exact graph with no old Main delay.
+    // Check its first full block as well as steady playback below.
+    let (start, after) = render_playing(&h);
+    h.pump();
+    eprintln!(
+        "two-track off installed: confirmed=true required_at_install={required_at_install:?} required_after={:?} frame={start} first_pcm={:?} nominal_dry={} worker={:?}",
+        status(&h).native_effect_source(),
+        &after[..4],
+        2.0 * source_sample(start),
+        h.plugin_progress.lock().unwrap()
+    );
+    assert!(
+        required_at_install.is_none(),
+        "powered-off graph retained the original required worker after restart"
+    );
+    for (offset, frame) in after.into_iter().enumerate() {
+        assert_eq!(frame, [2.0 * source_sample(start + offset); 2]);
+    }
+    let retired_by = Instant::now() + Duration::from_secs(1);
+    while h.plugin_records.load(Acquire) != 0 {
+        render_playing(&h);
+        h.pump();
+        assert!(
+            Instant::now() < retired_by,
+            "two-track Off worker not retired: {:?}",
+            h.plugin_progress.lock().unwrap()
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(h.plugin_progress.lock().unwrap().binding.is_none());
+    for _ in 0..4 {
+        let (start, pcm) = render_playing(&h);
+        for (offset, frame) in pcm.into_iter().enumerate() {
+            assert_eq!(frame, [2.0 * source_sample(start + offset); 2]);
+        }
+    }
+    h.audio.as_ref().unwrap().control.stop();
+    h.render_plugin_block();
+    assert!(!status(&h).playing.load(Acquire));
+    assert_eq!(status(&h).position.load(Acquire), 0);
+    assert!(status(&h).native_effect_source().is_none());
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..4 {
+        let (start, pcm) = render_playing(&h);
+        for (offset, frame) in pcm.into_iter().enumerate() {
+            assert_eq!(frame, [2.0 * source_sample(start + offset); 2]);
+        }
+    }
+}
