@@ -799,6 +799,7 @@ impl Session {
             || previous.native_parameter_input_target().is_some()
             || previous.gain_recording_track().is_some()
             || previous.scalar_automation_binding().is_some()
+            || project.has_gain_automation()
             || !project.session_cells().is_empty()
             || !project.return_tracks().is_empty()
             || !project.audio_feeds().is_empty()
@@ -843,7 +844,6 @@ impl Session {
             && project.tracks().iter().all(|track| {
                 track.instrument().is_none()
                     && track.midi_clips().is_empty()
-                    && !track.has_gain_automation()
                     && track.sends().is_empty()
                     && track.group_output_mutes().is_empty()
                     && plain_native_chain(track.devices())
