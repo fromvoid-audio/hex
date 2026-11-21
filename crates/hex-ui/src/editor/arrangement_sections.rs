@@ -4493,13 +4493,14 @@ pub(super) mod tests {
         service.submit(Request::Open(path)).unwrap();
         let opened = next(&service);
         assert!(
-            opened.open_complete && opened.error.is_none(),
+            opened.project_replaced && opened.open_complete && opened.error.is_none(),
             "{:?}",
             opened.error
         );
         cx.update(super::super::bind_editor_keys);
-        let (handle, editor) = section_test_window(cx, service, opened.state);
+        let (handle, editor) = section_test_window(cx, service, Arc::clone(&opened.state));
         editor.update(cx, |view, cx| {
+            view.receive(opened);
             view.viewport = Some(Viewport::fit(16_000));
             cx.notify();
         });
