@@ -108,19 +108,21 @@ fn project_spectrum_layers_preserve_all_members_colors_and_clear_replaced_contex
                 std::ptr::eq(layers.as_ptr(), unrelated.as_ptr()),
                 "unchanged colors preserve points across canonical revisions"
             );
+            let (min_db, max_db) = view.project_spectrum.options.range.bounds_dbfs();
+            let span_db = max_db - min_db;
             for (index, track) in project.tracks().iter().enumerate() {
                 assert_eq!(
                     layers[index].color,
                     theme::element_colors(track.color()).accent
                 );
-                assert!(
-                    (layers[index].points[0][1] - (96.0 - 6.0 - (index + 1) as f32 * 0.25) / 96.0)
-                        .abs()
-                        < 1e-6
-                );
+                let expected =
+                    ((-6.0 - (index + 1) as f32 * 0.25 - min_db) / span_db).clamp(0.0, 1.0);
+                assert!((layers[index].points[0][1] - expected).abs() < 1e-6);
             }
             assert!(
-                (layers.last().unwrap().points[0][1] - 90.0 / 96.0).abs() < 1e-6,
+                (layers.last().unwrap().points[0][1] - ((-6.0 - min_db) / span_db).clamp(0.0, 1.0))
+                    .abs()
+                    < 1e-6,
                 "master paints last"
             );
             if let Some(track) = ids.first() {
@@ -571,4 +573,139 @@ fn browser_and_spectrum_share_columns_in_both_workspaces(cx: &mut TestAppContext
             });
         }
     }
+}
+
+#[gpui::test]
+fn project_spectrum_display_controls_freeze_max_hold_and_crosshair_work_without_project_edits(
+    cx: &mut TestAppContext,
+) {
+    let (project, _, _, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1280.0), px(800.0)));
+    visual.run_until_parked();
+
+    let now = Instant::now();
+    let revision_before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
+
+    // Seed a master spectrum frame at -12 dBFS across all bands and verify
+    // slope, smoothing, range, max-hold peak, and freeze behavior.
+    editor.update(&mut visual, |view, cx| {
+        let mut published = result(view, now);
+        let mut frame = hex_audio::spectrum::SpectrumFrame::silent(48_000);
+        frame.bins_dbfs = [-12.0; hex_audio::spectrum::SPECTRUM_BANDS];
+        frame.peak_dbfs = [-10.0; hex_audio::spectrum::SPECTRUM_BANDS];
+        // Keep band 0 at silence floor to verify positive tilt never lifts silence.
+        frame.bins_dbfs[0] = hex_audio::spectrum::FLOOR_DBFS;
+        frame.peak_dbfs[0] = hex_audio::spectrum::FLOOR_DBFS;
+        published.frames = Arc::from([frame]);
+        published.selection = hex_audio::spectrum_worker::ProjectSelection::new(
+            &[],
+            view.project_generation,
+            1,
+            48_000,
+        )
+        .unwrap();
+        view.track_selection = Default::default();
+        view.project_spectrum.result = Some(published);
+        view.sync_project_spectrum_canvas(now, cx);
+
+        // Default range Mix78 (-72..+6): -12 dB maps to 60/78.
+        let base = view.project_spectrum_layers(now);
+        assert_eq!(base.len(), 1);
+        assert_eq!(base[0].points[0][1], 0.0, "floor stays at 0");
+        assert!((base[0].points[96][1] - 60.0 / 78.0).abs() < 1e-5);
+
+        // Switching to Wide96 (-96..0) maps -12 dB to 84/96.
+        view.cycle_project_spectrum_range(cx);
+        assert_eq!(view.project_spectrum.options.range, RangePreset::Wide96);
+        let wide = view.project_spectrum_layers(now);
+        assert!((wide[0].points[96][1] - 84.0 / 96.0).abs() < 1e-5);
+
+        // Cycling slope to Steep (6 dB/oct) lifts high frequencies relative to 1 kHz.
+        let prism_hi = wide[0].points.last().unwrap()[1];
+        view.cycle_project_spectrum_slope(cx);
+        assert_eq!(view.project_spectrum.options.slope, SlopePreset::Steep);
+        let steep = view.project_spectrum_layers(now);
+        assert!(steep[0].points.last().unwrap()[1] > prism_hi);
+        assert_eq!(
+            steep[0].points[0][1], 0.0,
+            "slope never lifts silence floor"
+        );
+
+        // Cycling smoothing through 1/6, 1/3, and ERB stays finite & bounded.
+        for expected in [
+            SmoothingPreset::Sixth,
+            SmoothingPreset::Third,
+            SmoothingPreset::Human,
+            SmoothingPreset::Fine,
+        ] {
+            view.cycle_project_spectrum_smoothing(cx);
+            assert_eq!(view.project_spectrum.options.smoothing, expected);
+            let smoothed = view.project_spectrum_layers(now);
+            assert!(
+                smoothed[0]
+                    .points
+                    .iter()
+                    .all(|[x, y]| x.is_finite() && y.is_finite() && (0.0..=1.0).contains(y))
+            );
+        }
+
+        // Peak hold mode retains high peaks across quieter frames and resets cleanly.
+        view.cycle_project_spectrum_peak_mode(cx);
+        assert_eq!(view.project_spectrum.options.peak_mode, PeakMode::Hold);
+        let held_peak_y = view.project_spectrum_layers(now)[0].peak.as_ref().unwrap()[96][1];
+        let mut quieter = hex_audio::spectrum::SpectrumFrame::silent(48_000);
+        quieter.bins_dbfs = [-48.0; hex_audio::spectrum::SPECTRUM_BANDS];
+        quieter.peak_dbfs = [-48.0; hex_audio::spectrum::SPECTRUM_BANDS];
+        view.update_max_peak_from(&quieter);
+        if let Some(res) = view.project_spectrum.result.as_mut() {
+            res.frames = Arc::from([quieter]);
+            res.processed_at += Duration::from_millis(1);
+        }
+        view.project_spectrum.plot_cache = None;
+        let still_held_y = view.project_spectrum_layers(now)[0].peak.as_ref().unwrap()[96][1];
+        assert!(
+            (still_held_y - held_peak_y).abs() < 1e-5,
+            "max-hold peak survives quieter frames"
+        );
+        view.reset_project_spectrum_peaks(cx);
+        let reset_y = view.project_spectrum_layers(now)[0].peak.as_ref().unwrap()[96][1];
+        assert!(
+            reset_y < still_held_y,
+            "reset clears retained max-hold peak"
+        );
+
+        // Peak Off removes peak curve cleanly.
+        view.cycle_project_spectrum_peak_mode(cx);
+        assert_eq!(view.project_spectrum.options.peak_mode, PeakMode::Off);
+        assert!(view.project_spectrum_layers(now)[0].peak.is_none());
+
+        // Freeze preserves snapshot past stale_after().
+        view.toggle_project_spectrum_freeze(cx);
+        assert!(view.project_spectrum.options.frozen);
+        let stale_time = now + Duration::from_secs(5);
+        assert!(
+            !view.project_spectrum_layers(stale_time).is_empty(),
+            "frozen snapshot stays visible after live freshness window expires"
+        );
+        view.toggle_project_spectrum_freeze(cx);
+        assert!(view.project_spectrum_layers(stale_time).is_empty());
+    });
+
+    // Hovering inside the plot paints a live crosshair readout on the isolated canvas.
+    visual.run_until_parked();
+    let plot_bounds = visual.debug_bounds("project-spectrum-plot").unwrap();
+    visual.simulate_mouse_move(plot_bounds.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, cx| {
+        let canvas = view.project_spectrum.canvas.as_ref().unwrap().read(cx);
+        let crosshair = canvas
+            .build_crosshair()
+            .expect("hover inside plot builds crosshair");
+        assert!(crosshair.primary_label.contains("hz"));
+        assert!(crosshair.secondary_label.as_ref().unwrap().contains("db"));
+        assert_eq!(view.state.as_ref().unwrap().revision, revision_before);
+        assert!(view.pending_requests.is_empty());
+    });
 }

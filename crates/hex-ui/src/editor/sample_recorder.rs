@@ -190,7 +190,7 @@ impl EditorView {
         )
         .on_click(cx.listener(|view, _, _, cx| {
             view.sample_recorder.visible = !view.sample_recorder.visible;
-            view.tick_project_spectrum();
+            view.tick_project_spectrum(cx);
             cx.notify();
         }))
     }
