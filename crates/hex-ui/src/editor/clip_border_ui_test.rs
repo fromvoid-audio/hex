@@ -367,12 +367,9 @@ fn narrow_audio_and_midi_clips_paint_as_joined_color_bars(cx: &mut TestAppContex
 
     let lane_width = editor.read_with(&visual, |view, _| view.drag_lanes[&track].width);
     let notes = Box::leak(format!("clip-notes-{}", midi.value()).into_boxed_str());
-    for (width, shows_detail) in [(12.0, false), (36.0, true), (12.0, false)] {
+    for (width, shows_detail) in [(8.0, false), (14.0, true), (8.0, false), (36.0, true)] {
         let length = (200.0 * lane_width / width).round() as u64;
         set_view(&mut visual, 24_000, length);
-        if shows_detail {
-            assert!(visual.debug_bounds(bars).is_none());
-        }
         assert!(visual.debug_bounds(audio_edge).is_some());
         assert!(visual.debug_bounds(midi_edge).is_some());
         let bounds = visual.debug_bounds(audio_visual).unwrap();
@@ -387,16 +384,17 @@ fn narrow_audio_and_midi_clips_paint_as_joined_color_bars(cx: &mut TestAppContex
             Some(first)
         );
     }
+    assert!(visual.debug_bounds(bars).is_none());
 
     let length = (200.0 * lane_width / 36.0).round() as u64;
     let clip_width = |visual: &mut VisualTestContext, selector| {
         f32::from(visual.debug_bounds(selector).unwrap().size.width)
     };
-    set_view(&mut visual, 24_067 - length, length);
-    assert!((clip_width(&mut visual, audio_visual) - 12.0).abs() < 1.0);
+    set_view(&mut visual, 24_044 - length, length);
+    assert!((clip_width(&mut visual, audio_visual) - 8.0).abs() < 1.0);
     assert!(visual.debug_bounds("clip-waveform-body").is_some());
-    set_view(&mut visual, 27_133, length);
-    assert!((clip_width(&mut visual, midi_visual) - 12.0).abs() < 1.0);
+    set_view(&mut visual, 27_156, length);
+    assert!((clip_width(&mut visual, midi_visual) - 8.0).abs() < 1.0);
     assert!(visual.debug_bounds(notes).is_some());
 }
 
