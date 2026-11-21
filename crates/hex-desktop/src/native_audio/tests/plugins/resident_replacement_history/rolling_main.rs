@@ -19,14 +19,7 @@ fn rolling_resident_main_vst3_replacement_undo_waits_for_its_exact_receipt() {
         .control
         .command(PlaybackCommand::Play)
         .unwrap();
-    for _ in 0..8 {
-        h.pump();
-        sample(&h);
-    }
-    let before = sample(&h);
-    let mut last = sample(&h);
-    assert!(before > 0.0);
-    assert_eq!(last - before, ramp);
+    let mut last = settled_ramp(&mut h, predecessor, incumbent, ramp);
     let assert_incumbent = |h: &ResidentHarness| {
         assert!(status(h).playing.load(Acquire));
         assert_eq!(status(h).recording_source(), Some(predecessor));
@@ -130,11 +123,35 @@ fn rolling_resident_main_vst3_replacement_undo_waits_for_its_exact_receipt() {
         sample(&h);
         h.plugin_records.load(Acquire) == 1 && binding(&h) == Some((target_id, fresh))
     });
-    for _ in 0..5 {
-        sample(&h);
+    settled_ramp(&mut h, current, (target_id, fresh), ramp);
+}
+
+fn settled_ramp(
+    h: &mut ResidentHarness,
+    source: hex_audio::prepared::AppliedAudioSource,
+    worker: (u64, EffectBinding),
+    step: f32,
+) -> f32 {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut previous = None;
+    loop {
+        h.pump();
+        let sample = instruments::render_completed_block(h)[0][0];
+        let playing = status(h).playing.load(Acquire);
+        let applied = status(h).recording_source();
+        let accepted = binding(h);
+        if playing && applied == Some(source) && accepted == Some(worker) && sample > 0.0 {
+            if previous.is_some_and(|prior| sample - prior == step) {
+                return sample;
+            }
+            previous = Some(sample);
+        } else {
+            previous = None;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "signed Main ramp did not settle: playing={playing}, sample={sample}, source={applied:?}, binding={accepted:?}, fault={:?}",
+            status(h).render_fault_snapshot(),
+        );
     }
-    let first_fresh = sample(&h);
-    assert!(first_fresh > 0.0);
-    assert_eq!(sample(&h) - first_fresh, ramp);
-    assert!(status(&h).playing.load(Acquire));
 }
