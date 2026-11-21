@@ -1351,6 +1351,69 @@ fn compile_device_effects(
     )
 }
 
+/// Exercise both Main alignment edges from ordinary compiled arrangements.
+#[cfg(feature = "instrument-test-support")]
+#[doc(hidden)]
+pub fn test_retained_track_effect_alignment(
+    before: &Project,
+    next: &Project,
+) -> Result<[[u32; 2]; 2], Invalid> {
+    let Some(old_graph) = before.signal_graph.as_ref() else {
+        return Err(Invalid("original signal graph is absent"));
+    };
+    let [old_donor, old_receiver] = before.tracks.as_slice() else {
+        return Err(Invalid("expected two direct audio rows"));
+    };
+    let [new_donor, new_receiver] = next.tracks.as_slice() else {
+        return Err(Invalid("expected two direct audio rows"));
+    };
+    let ([previous], [effect]) = (
+        old_donor.device_chain.as_ref(),
+        new_receiver.device_chain.as_ref(),
+    ) else {
+        return Err(Invalid("original effect chain differs"));
+    };
+    if previous.owner != effect.owner
+        || previous.device_id != effect.device_id
+        || previous.foreign_processor() != effect.foreign_processor()
+        || !old_receiver.device_chain.is_empty()
+        || !new_donor.device_chain.is_empty()
+        || [old_donor, old_receiver, new_donor, new_receiver]
+            .into_iter()
+            .any(|track| track.clips.is_empty())
+        || !old_graph.independent_main_routes()
+    {
+        return Err(Invalid("original effect route differs"));
+    }
+    let next_graph = next
+        .signal_graph
+        .as_ref()
+        .ok_or(Invalid("receiver signal graph is absent"))?;
+    if !next_graph.independent_main_routes()
+        || old_graph.main_input_arrival() != next_graph.main_input_arrival()
+    {
+        return Err(Invalid("moving the effect changes the Main clock"));
+    }
+    let alignment = |graph: &crate::signal_graph::SignalGraph| {
+        Ok::<_, Invalid>([
+            graph
+                .track_latency(0, 0)
+                .ok_or(Invalid("donor alignment is absent"))?
+                .default_route_delay_frames,
+            graph
+                .track_latency(1, 0)
+                .ok_or(Invalid("receiver alignment is absent"))?
+                .default_route_delay_frames,
+        ])
+    };
+    let result = [alignment(old_graph)?, alignment(next_graph)?];
+    crate::signal_graph::hosted_track_effect_move::probe_hosted_effect_clock(
+        crate::signal_graph::SignalRuntime::new(Arc::clone(old_graph))?,
+        crate::signal_graph::SignalRuntime::new(Arc::clone(next_graph))?,
+    )?;
+    Ok(result)
+}
+
 /// Build at most one source-owned recipe per compiled receiver. Definitions
 /// without a current receiver do not acquire DSP or resource custody.
 pub(crate) fn prepare_source_effect_recipes(
@@ -1495,8 +1558,29 @@ fn compile_effect_devices(
     let mut admission_matrix = hex_lattice::StereoMatrix::identity();
     for entry in source_devices {
         let (device, bypassed) = entry?;
-        let identity = hex_lattice::ProcessorInstanceIdentity::new(owner, device.id().value())
+        let authored = hex_lattice::ProcessorInstanceIdentity::new(owner, device.id().value())
             .map_err(|_| Invalid("invalid prepared device identity"))?;
+        let identity = if device.state().type_id() == hex_lattice_contract::VST3_DEVICE_TYPE_ID {
+            registry
+                .retained_foreign_effect_identity(authored, device.state(), context)
+                .map_err(|_| Invalid("vst3 effect route could not retain its original source"))?
+        } else {
+            authored
+        };
+        let retained = identity != authored;
+        if retained
+            && (identity.device_id() != authored.device_id()
+                || !matches!(owner, hex_lattice::ProcessorChainOwner::Track(_))
+                || !matches!(identity.owner(), hex_lattice::ProcessorChainOwner::Track(_))
+                || device.parent().is_some()
+                || bypassed
+                || !device.automation().is_empty()
+                || !device.modulation().is_empty())
+        {
+            return Err(Invalid(
+                "foreign effect route differs from its prepared source",
+            ));
+        }
         let migrated = registry
             .prepare_instance_state(identity, device.state(), context)
             .map_err(|_| Invalid("native device state is unsupported or malformed"))?;
@@ -1537,6 +1621,13 @@ fn compile_effect_devices(
             .prepare_runtime_instance_with_automation(identity, &migrated, context, parameters)
             .map_err(|_| Invalid("native device state or automation could not be prepared"))?;
         let processor = prepared_device.processor;
+        if retained
+            && !matches!(&processor, Some(hex_lattice::PreparedProcessorFactory::Foreign(facts))
+                if !facts.is_instrument_profile()
+                    && facts.binding().is_some_and(|binding| binding.instance == device.id().value()))
+        {
+            return Err(Invalid("retained effect has no matching foreign worker"));
+        }
         let modulation = match (modulation, processor.as_ref()) {
             (Some(plan), Some(hex_lattice::PreparedProcessorFactory::Foreign(facts))) => {
                 plan.prepare_foreign(device, identity, registry, *facts, sample_rate)?
@@ -1557,7 +1648,9 @@ fn compile_effect_devices(
         // An explicitly admitted unavailable effect has no factory. Keep its
         // canonical lanes through document staging; the restored foreign
         // worker must still prove its exact metadata before any playback.
-        if let Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) = processor.as_ref() {
+        if let Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) =
+            processor.as_ref().filter(|_| !retained)
+        {
             if let Some(program) = crate::foreign_automation::candidate::prepare_device(
                 device,
                 identity,
@@ -1600,7 +1693,7 @@ fn compile_effect_devices(
             modulation,
             automation,
             meter: Default::default(),
-            owner,
+            owner: identity.owner(),
             device_id: device.id().value(),
             device_type: migrated.type_id(),
             matrix: prepared,

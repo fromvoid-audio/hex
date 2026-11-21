@@ -78,6 +78,24 @@ impl Callback {
             .playback
             .advance_native_removal_from(&mut active.playback)
             .map_err(PlaybackHandoffRejection::from_error)?;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if let Some((movement, deadline)) = next.playback.pending_hosted_track_effect_move() {
+            if active.playback.performance_frame() > deadline {
+                return Err(PlaybackHandoffRejection::RuntimeFenceChanged);
+            }
+            if progress == NativeRemovalProgress::Fading {
+                return Ok(false);
+            }
+            let identity = hex_lattice::ProcessorInstanceIdentity::new(
+                hex_lattice::ProcessorChainOwner::Track(movement.donor.value()),
+                movement.device.value(),
+            )
+            .map_err(|_| PlaybackHandoffRejection::RuntimeFenceChanged)?;
+            return self
+                .native_sources
+                .settled_track_effect_move(identity, movement.binding)
+                .map_err(|_| PlaybackHandoffRejection::RuntimeFenceChanged);
+        }
         if progress == NativeRemovalProgress::Fading {
             return Ok(false);
         }

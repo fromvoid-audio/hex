@@ -1764,6 +1764,7 @@ fn committed_quantum_is_published_only_after_accepted_callback() {
     let (control, mut callback, _worker) = channel(BINDING, 8).unwrap();
     let (other, _, _) = channel(BINDING, 8).unwrap();
     assert_eq!(control.committed_quantum(), None);
+    assert!(!callback.at_committed_quantum_boundary());
     let mut output = [[0.0; 2]; 8];
     callback
         .stage(&[[0.0; 2]; 3], &[], &mut output[..3])
@@ -1774,6 +1775,7 @@ fn committed_quantum_is_published_only_after_accepted_callback() {
         "staging is not acceptance"
     );
     callback.finish(true).unwrap();
+    assert!(!callback.at_committed_quantum_boundary());
     assert_eq!(
         control.committed_quantum(),
         Some(CommittedQuantum {
@@ -1799,7 +1801,9 @@ fn committed_quantum_is_published_only_after_accepted_callback() {
     callback
         .stage(&[[0.0; 2]; 4], &[], &mut output[..4])
         .unwrap();
+    assert!(!callback.at_committed_quantum_boundary());
     callback.finish(true).unwrap();
+    assert!(callback.at_committed_quantum_boundary());
     assert_eq!(
         control.committed_quantum(),
         Some(CommittedQuantum {
@@ -1810,7 +1814,9 @@ fn committed_quantum_is_published_only_after_accepted_callback() {
     callback
         .stage(&[[0.0; 2]; 1], &[], &mut output[..1])
         .unwrap();
+    assert!(!callback.at_committed_quantum_boundary());
     assert!(callback.finish(false).is_err());
+    assert!(!callback.at_committed_quantum_boundary());
     assert_eq!(
         control.committed_quantum(),
         None,

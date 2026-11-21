@@ -1,5 +1,6 @@
 use super::*;
 use super::{instrument_move::InstrumentMoveKind, return_effect_tails::DeviceEditTailPolicy};
+use crate::playback::HostedMoveRequest;
 use crate::session_inventory::EffectiveSessionMidi;
 use crate::signal_graph::{FreshHistory, TrackOutput};
 use crate::{Invalid, MidiTiming, Track};
@@ -1601,7 +1602,7 @@ impl SessionPlayback {
         } else {
             foreign_arrangement::held_removal::candidate(self, previous)
         };
-        let hosted_move = if self.hosted_instrument_move.is_some() {
+        let hosted_move = if matches!(self.hosted_move, Some(HostedMoveRequest::Instrument(_))) {
             let staged = self
                 .native_removal
                 .and_then(|pending| pending.hosted_track_move())
@@ -1611,6 +1612,23 @@ impl SessionPlayback {
                 || self.direct_hosted_track_cut_from(previous) != Some(staged)
             {
                 return Err(foreign_arrangement::INCOMPATIBLE_HANDOFF);
+            }
+            Some(staged)
+        } else {
+            None
+        };
+        let hosted_effect_move = if matches!(self.hosted_move, Some(HostedMoveRequest::Effect(_))) {
+            let staged = self
+                .native_removal
+                .and_then(|pending| pending.hosted_effect_move())
+                .ok_or(SessionPlaybackError::LatencyLayoutChanged)?;
+            if !continuous_insert
+                || restart != Restart::None
+                || groups.is_some()
+                || demand.as_ref().is_some_and(|demand| !demand.ordinary)
+                || self.direct_hosted_effect_cut_from(previous) != Some(staged)
+            {
+                return Err(SessionPlaybackError::LatencyLayoutChanged);
             }
             Some(staged)
         } else {
@@ -2116,7 +2134,9 @@ impl SessionPlayback {
             });
         let planned_transfer = match (&self.compensation, &previous.compensation) {
             (None, Some(_)) if keeps_pass_clock => Some(0),
-            (Some(_), Some(_)) if hosted_move.is_some() => Some(HOSTED_MOVE_HISTORY_TRANSFER),
+            (Some(_), Some(_)) if hosted_move.is_some() || hosted_effect_move.is_some() => {
+                Some(HOSTED_MOVE_HISTORY_TRANSFER)
+            }
             (Some(_), Some(_)) if group_route_track.is_some() => Some(GROUP_ROUTE_HISTORY_TRANSFER),
             (Some(_), Some(_)) if removed_send_clock => Some(3_u8),
             (Some(candidate), Some(old))
@@ -2196,6 +2216,19 @@ impl SessionPlayback {
         let relocate = (planned_transfer.is_none() || force_restart)
             && !self.current_sampler_console
             && !self.revision.requires_control_sampler_sources();
+        if let Some(movement) = hosted_effect_move
+            && demand.is_none()
+            && !compensation_pair.is_some_and(|(next, old)| {
+                next.can_transfer_hosted_effect_clock_from(
+                    old,
+                    movement.source,
+                    movement.destination,
+                    movement.clock,
+                )
+            })
+        {
+            return Err(SessionPlaybackError::LatencyLayoutChanged);
+        }
         if let Some(movement) = hosted_move
             && demand.is_none()
         {
@@ -5442,6 +5475,11 @@ impl SessionPlayback {
         // chain inherits history under those new controls, without capturing
         // duplicate tails or consuming the finite retirement bank.
         for old_index in 0..previous.routes.len() {
+            // The paired receiver uses this exact original stage. Capturing a
+            // detached tail would ask the same worker to process twice.
+            if hosted_effect_move.is_some_and(|movement| old_index == movement.source) {
+                continue;
+            }
             let old_route = previous
                 .routes
                 .get(old_index)
@@ -5531,7 +5569,9 @@ impl SessionPlayback {
                 let moved_receiver = self
                     .native_removal
                     .and_then(|pending| pending.track_move())
-                    .is_some_and(|movement| movement.destination == candidate_index);
+                    .is_some_and(|movement| movement.destination == candidate_index)
+                    || hosted_effect_move
+                        .is_some_and(|movement| movement.destination == candidate_index);
                 let transition = (continuous_insert
                     && !moved_receiver
                     && !relocate
@@ -6575,6 +6615,27 @@ impl SessionPlayback {
             next.transfer_cross_track_native_from(old)
                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         }
+        if let Some(movement) = hosted_effect_move {
+            let (new_clock, old_clock) = self
+                .compensation
+                .as_mut()
+                .zip(previous.compensation.as_ref())
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            new_clock
+                .transfer_hosted_effect_clock_from(
+                    old_clock,
+                    movement.source,
+                    movement.destination,
+                    movement.clock,
+                )
+                .map_err(|_| SessionPlaybackError::LatencyLayoutChanged)?;
+            let (next, old) = self
+                .device_chains
+                .get_mut(movement.destination)
+                .zip(previous.device_chains.get_mut(movement.source))
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            next.transfer_history_from(old);
+        }
         // The bypassed track saw no instrument signal. Its ordinary history
         // transfer above cannot supply the detached suffix's committed state.
         for (slot, receiver) in reenabled_release_receivers.into_iter().enumerate() {
@@ -7032,7 +7093,7 @@ impl SessionPlayback {
         }
         self.main_pass_delay = main_pass_delay;
         self.native_removal = None;
-        self.hosted_instrument_move = None;
+        self.hosted_move = None;
         Ok(report)
     }
 
