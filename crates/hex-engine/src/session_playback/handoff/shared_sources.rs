@@ -255,6 +255,7 @@ impl SharedSourceHandoff {
         timing_changed: bool,
         arrangement_tempo_remap: bool,
         arrangement_loop_continuity: bool,
+        retiring_source: Option<usize>,
         spans: &mut MidiSpanBuffer,
     ) -> Result<Self, SessionPlaybackError> {
         let mut plan = Self {
@@ -264,6 +265,11 @@ impl SharedSourceHandoff {
         let old_routing = previous.revision.source_routing();
         let new_routing = revision.source_routing();
         for (old_index, old_runtime) in previous.mutable_instruments.iter().enumerate() {
+            // An admitted direct instrument move leaves its faded runtime
+            // with the predecessor. The destination already owns a fresh one.
+            if retiring_source == Some(old_index) {
+                continue;
+            }
             let Some(old_runtime) = old_runtime else {
                 continue;
             };
@@ -627,15 +633,11 @@ pub(super) fn release_disconnected_contributors(
     disconnected: &[Option<TrackId>; MAX_TRACKS],
     retained: &[Option<TrackId>; MAX_TRACKS],
     retained_live: &[Option<TrackId>; MAX_TRACKS],
-    moved_authored: Option<TrackId>,
     frame: u64,
 ) {
     runtime.reconcile_gate_deadlines_at(frame, |signature| {
         let track = Some(signature.key().track);
-        // A proved direct move changes the sole MIDI contributor. The copied
-        // kernel still owes the old authored gates their original releases.
-        (track != moved_authored && disconnected.contains(&track) && !retained.contains(&track))
-            .then_some(frame)
+        (disconnected.contains(&track) && !retained.contains(&track)).then_some(frame)
     });
     for &track in disconnected.iter().flatten() {
         if !retained_live.contains(&Some(track)) {

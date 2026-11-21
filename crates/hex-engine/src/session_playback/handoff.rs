@@ -2881,6 +2881,12 @@ impl SessionPlayback {
             previous,
             timing_changed || old_loop != new_loop,
         )?;
+        let instrument_move = self
+            .native_removal
+            .and_then(|pending| pending.instrument_track_move());
+        let retiring_mutable_source = instrument_move
+            .filter(|movement| matches!(movement.kind, InstrumentMoveKind::Mutable { .. }))
+            .map(|movement| movement.source);
         let source_handoff = SharedSourceHandoff::prepare(
             &self.revision,
             &self.mutable_instruments,
@@ -2892,18 +2898,9 @@ impl SessionPlayback {
             timing_changed,
             arrangement_tempo_remap,
             arrangement_loop_continuity,
+            retiring_mutable_source,
             &mut self.spans,
         )?;
-        let instrument_move = self
-            .native_removal
-            .and_then(|pending| pending.instrument_track_move());
-        let mutable_move = instrument_move
-            .filter(|movement| matches!(movement.kind, InstrumentMoveKind::Mutable { .. }));
-        if let Some(movement) = mutable_move
-            && source_handoff.new_for_old.get(movement.source) != Some(&movement.destination)
-        {
-            return Err(SessionPlaybackError::SourceHistoryUnavailable);
-        }
         let mut mutable_continuity_new_for_old = source_handoff.new_for_old;
         let mut mutable_retarget_new_for_old = source_handoff.retarget_for_old;
         // An edited base map keeps only Arrangement mutable runtimes: their
@@ -6926,25 +6923,13 @@ impl SessionPlayback {
                 });
                 (!preserved).then(|| old.source_input_id()).flatten()
             });
-        let moved_authored = mutable_move.and_then(|movement| {
-            previous
-                .routes
-                .get(movement.source)
-                .map(|route| (movement.destination, route.id))
-        });
-        for (receiver, runtime) in self
-            .mutable_instruments
-            .iter_mut()
-            .enumerate()
-            .filter_map(|(index, runtime)| runtime.as_mut().map(|runtime| (Some(index), runtime)))
-            .chain(
-                self.tail_mutable_instruments
-                    .iter_mut()
-                    .flatten()
-                    .filter(|tail| !tail.is_powering_off())
-                    .map(|tail| (None, &mut tail.runtime)),
-            )
-        {
+        for runtime in self.mutable_instruments.iter_mut().flatten().chain(
+            self.tail_mutable_instruments
+                .iter_mut()
+                .flatten()
+                .filter(|tail| !tail.is_powering_off())
+                .map(|tail| &mut tail.runtime),
+        ) {
             if let Some(input) = release_live_input {
                 runtime.request_live_input_release(input);
             }
@@ -6978,9 +6963,6 @@ impl SessionPlayback {
                 &disconnected,
                 &retained,
                 &retained_live,
-                moved_authored
-                    .filter(|(index, _)| Some(*index) == receiver)
-                    .map(|(_, donor)| donor),
                 previous.performance_frame,
             );
             runtime.reconcile_gate_deadlines_at(previous.performance_frame, |signature| {
