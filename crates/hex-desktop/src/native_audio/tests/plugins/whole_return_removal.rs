@@ -1,8 +1,11 @@
 //! Signed Resident removal of the whole wet bus and its exact worker.
+mod power_off;
 mod two_dry_tracks;
 
 use super::*;
-use hex_audio::prepared::FreshRuntimeCancellationResult;
+use hex_audio::plugin_effects::EffectBinding;
+use hex_audio::prepared::{AppliedAudioSource, FreshRuntimeCancellationResult};
+use hex_project::{DeviceId, ReturnId, TrackId};
 use hex_session::service::DeviceInsertOutcome;
 
 const BLOCK: usize = 256;
@@ -93,11 +96,17 @@ fn await_preparation<T>(h: &mut ResidentHarness, receiver: &mpsc::Receiver<T>) -
     }
 }
 
-#[test]
-#[ignore = "explicit original SDK helper and source fixtures required"]
-fn running_resident_whole_vst3_return_removal_keeps_the_dry_track_and_returns_the_worker() {
-    let _native = native_fixture();
-    let files = Files::new();
+struct RollingHostedReturn {
+    harness: ResidentHarness,
+    inserted: Event,
+    track: TrackId,
+    bus: ReturnId,
+    device: DeviceId,
+    predecessor: AppliedAudioSource,
+    binding: EffectBinding,
+}
+
+fn rolling_hosted_return(files: &Files) -> RollingHostedReturn {
     let directory = files.0.canonicalize().unwrap();
     hex_ui::write_plugin_effect_test_catalog(&directory, &selection(), "Fx", 0).unwrap();
     let mut h = ResidentHarness::with_plugins_at_rate_and_catalog(
@@ -112,7 +121,7 @@ fn running_resident_whole_vst3_return_removal_keeps_the_dry_track_and_returns_th
     );
     assert!(h.next().error.is_none());
     let (empty, _) = h.applied(0);
-    let imported = h.run(Request::Import(timed_wav(&files)));
+    let imported = h.run(Request::Import(timed_wav(files)));
     let track = imported.state.project.tracks()[0].id();
     let (dry, _) = h.applied(empty);
     let created = h.run(Request::Edit(Command::AddReturnTrack {
@@ -184,6 +193,32 @@ fn running_resident_whole_vst3_return_removal_keeps_the_dry_track_and_returns_th
     let prior = assert_aligned_wet(&h);
     assert_eq!(assert_aligned_wet(&h), prior + 0.0625);
     assert_eq!(status(&h).recording_source(), Some(predecessor));
+    RollingHostedReturn {
+        harness: h,
+        inserted,
+        track,
+        bus,
+        device,
+        predecessor,
+        binding,
+    }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn running_resident_whole_vst3_return_removal_keeps_the_dry_track_and_returns_the_worker() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let RollingHostedReturn {
+        harness: mut h,
+        inserted,
+        track,
+        bus,
+        device,
+        predecessor,
+        binding,
+    } = rolling_hosted_return(&files);
+    let incumbent = &inserted.state;
 
     let assert_predecessor = |h: &ResidentHarness, event: &Event| {
         assert_eq!(event.state.project, incumbent.project);

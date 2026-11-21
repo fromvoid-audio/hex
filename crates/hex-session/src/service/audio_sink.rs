@@ -21,14 +21,15 @@ pub struct ResidentEffectPreparation<'a> {
     pub(in crate::service) restoring_plugin_state: bool,
     pub(in crate::service) preparing_edit: bool,
     pub(in crate::service) main_power_on: Option<ResidentMainPowerOn>,
-    pub(in crate::service) running_main_power_off: Option<ResidentMainPowerOff>,
+    pub(in crate::service) running_power_off: Option<ResidentRunningPowerOff>,
     pub(in crate::service) hosted_instrument_move: Option<ResidentHostedInstrumentMove>,
 }
 
-/// Copied original source/binding for one explicit running Main Off command.
+/// Copied original source/binding for one explicit running hosted Off command.
 /// This is not custody; only Session can attach it to compiler preparation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ResidentMainPowerOff {
+pub struct ResidentRunningPowerOff {
+    pub owner: hex_engine::ProcessorChainOwner,
     pub device: u64,
     pub source: ResidentGraphSubmission,
     pub binding: hex_lattice_contract::ForeignProcessorBinding,
@@ -234,10 +235,30 @@ impl<'a> ResidentEffectPreparation<'a> {
         let device = self.sole_played_main().filter(|device| device.bypassed())?;
         Some((device.id().value(), device.state()))
     }
+    /// The sole retained authored Return Off. This declaration grants no
+    /// preparation or installation authority without the exact applied marker.
+    pub fn powered_off_return(
+        &self,
+    ) -> Option<(hex_engine::ProcessorChainOwner, u64, &'a NativeDeviceState)> {
+        let (owner, device) = sole_hosted_return(self.project)?;
+        device
+            .bypassed()
+            .then_some((owner, device.id().value(), device.state()))
+    }
     /// Only a staged running PowerDevice may replace the exact On source by Off.
-    pub fn running_main_power_off(&self) -> Option<ResidentMainPowerOff> {
-        let intent = self.running_main_power_off?;
-        let device = self.sole_played_main()?;
+    pub fn running_power_off(&self) -> Option<ResidentRunningPowerOff> {
+        let intent = self.running_power_off?;
+        let device = match intent.owner {
+            hex_engine::ProcessorChainOwner::Main => self.sole_played_main()?,
+            hex_engine::ProcessorChainOwner::Return(_) => {
+                let (owner, device) = sole_hosted_return(self.project)?;
+                if owner != intent.owner {
+                    return None;
+                }
+                device
+            }
+            _ => return None,
+        };
         (self.preparing_edit
             && device.bypassed()
             && device.id().value() == intent.device
@@ -443,6 +464,25 @@ fn authored_plugin_lanes(
 
 fn is_plugin_effect(device: &hex_project::Device) -> bool {
     device.state().type_id() == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
+}
+
+pub(super) fn sole_hosted_return(
+    project: &Project,
+) -> Option<(hex_engine::ProcessorChainOwner, &hex_project::Device)> {
+    let [bus] = project.return_tracks() else {
+        return None;
+    };
+    let [device] = bus.devices() else { return None };
+    let mut played = playback_plugin_devices(project);
+    let (destination, actual) = played.next()?;
+    let owner = hex_engine::ProcessorChainOwner::Return(bus.id().value());
+    (destination.owner() == owner
+        && actual.id() == device.id()
+        && played.next().is_none()
+        && device.automation().is_empty()
+        && device.modulation().sources().is_empty()
+        && device.modulation().routes().is_empty())
+    .then_some((owner, device))
 }
 
 fn playback_plugin_devices(
@@ -1246,12 +1286,13 @@ pub trait WorkerAudioSink: Send {
         Ok(None)
     }
 
-    /// Copy the exact currently playing Main source; no endpoint custody escapes.
-    fn running_resident_main_power_off(
+    /// Copy the exact currently playing hosted source; no endpoint custody escapes.
+    fn running_resident_power_off(
         &mut self,
         _context: hex_engine::AudioSourceContext,
+        _owner: hex_engine::ProcessorChainOwner,
         _device: u64,
-    ) -> Result<Option<ResidentMainPowerOff>, String> {
+    ) -> Result<Option<ResidentRunningPowerOff>, String> {
         Ok(None)
     }
 
@@ -1262,6 +1303,12 @@ pub trait WorkerAudioSink: Send {
         _device: u64,
     ) -> Option<ResidentGraphSubmission> {
         None
+    }
+
+    /// Shape-only Return eligibility never stages a running power command
+    /// while the sink's ordinary playback transport is stopped.
+    fn resident_playing(&mut self) -> bool {
+        false
     }
 
     /// Actual output/source/revision-bound loop, never the saved loop marker.
@@ -2400,7 +2447,8 @@ mod tests {
             editor_revision: 3,
             ..previous
         };
-        let intent = ResidentMainPowerOff {
+        let intent = ResidentRunningPowerOff {
+            owner: hex_engine::ProcessorChainOwner::Main,
             device: device.value(),
             source: ResidentGraphSubmission {
                 context: previous,
@@ -2420,17 +2468,17 @@ mod tests {
                 bypassed: true,
             })
             .unwrap();
-        let selected = |project: &Project, context, preparing_edit, running_main_power_off| {
+        let selected = |project: &Project, context, preparing_edit, running_power_off| {
             ResidentEffectPreparation {
                 project,
                 context,
                 preparing_edit,
-                running_main_power_off,
+                running_power_off,
                 hosted_instrument_move: None,
                 restoring_plugin_state: false,
                 main_power_on: None,
             }
-            .running_main_power_off()
+            .running_power_off()
         };
         assert_eq!(
             selected(editor.project(), candidate, true, Some(intent)),
@@ -2450,7 +2498,7 @@ mod tests {
                 editor.project(),
                 candidate,
                 true,
-                Some(ResidentMainPowerOff {
+                Some(ResidentRunningPowerOff {
                     device: device.value() + 1,
                     ..intent
                 })
@@ -2515,7 +2563,7 @@ mod tests {
                 restoring_plugin_state: false,
                 preparing_edit: true,
                 main_power_on,
-                running_main_power_off: None,
+                running_power_off: None,
                 hosted_instrument_move: None,
             }
             .main_power_on()
@@ -2591,7 +2639,7 @@ mod tests {
                 restoring_plugin_state: false,
                 preparing_edit: false,
                 main_power_on: None,
-                running_main_power_off: None,
+                running_power_off: None,
                 hosted_instrument_move: None,
             }
             .powered_off_main()
@@ -2653,7 +2701,7 @@ mod tests {
                 restoring_plugin_state: false,
                 preparing_edit: false,
                 main_power_on: None,
-                running_main_power_off: None,
+                running_power_off: None,
                 hosted_instrument_move: None,
             }
             .plugin_device_bypassed(device.value())
@@ -2869,7 +2917,7 @@ mod tests {
                 restoring_plugin_state: false,
                 preparing_edit: true,
                 main_power_on: None,
-                running_main_power_off: None,
+                running_power_off: None,
                 hosted_instrument_move: None,
             }
         }
@@ -2979,7 +3027,7 @@ mod tests {
             restoring_plugin_state: false,
             preparing_edit: true,
             main_power_on: None,
-            running_main_power_off: None,
+            running_power_off: None,
             hosted_instrument_move: None,
         };
         assert_eq!(
@@ -3034,7 +3082,7 @@ mod tests {
                 restoring_plugin_state: reopen,
                 preparing_edit: !reopen,
                 main_power_on: None,
-                running_main_power_off: None,
+                running_power_off: None,
                 hosted_instrument_move: None,
             }
             .modulated_plugin_target(device.value())

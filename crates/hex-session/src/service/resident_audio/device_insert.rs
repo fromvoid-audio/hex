@@ -23,7 +23,7 @@ pub enum GraphEditOperation {
     MoveDevice,
     /// A single track reparent confirmed by its exact graph receipt.
     MoveTrack,
-    /// One hosted Main power edit behind its exact graph receipt: an original
+    /// One hosted power edit behind its exact graph receipt: the Main's
     /// settled Stop interval, or a proved running Off source and passive cut.
     PowerDevice,
     RemoveTrack,
@@ -169,6 +169,7 @@ struct Resident {
     receipt: Receipt,
     predecessor: ResidentRuntimeLoop,
     stopped_fence: Option<ResidentFreshRuntimeFence>,
+    live_return_power_off: bool,
 }
 
 enum Prepared {
@@ -415,6 +416,10 @@ impl Pending {
         self.confirmation.is_some()
     }
 
+    pub(in crate::service) fn is_live_return_power_off(&self) -> bool {
+        matches!(&self.prepared, Prepared::Resident(resident) if resident.live_return_power_off)
+    }
+
     pub(in crate::service) fn cancel_confirmation(&self) {
         if let Some(offer) = self.confirmation.as_ref() {
             offer.cancel();
@@ -445,7 +450,7 @@ impl Pending {
         sink: &mut dyn WorkerAudioSink,
     ) -> Option<DeviceInsertConfirmation> {
         let operation = self.operation.device()?;
-        if self.confirmation.is_some() {
+        if self.confirmation.is_some() || self.is_live_return_power_off() {
             return None;
         }
         let submission = self.submission()?;
@@ -660,6 +665,27 @@ pub(in crate::service) fn running_main_power_on(
         device,
         interval: ResidentMainPowerOnInterval::Running(source),
     })
+}
+
+pub(in crate::service) fn running_return_power_target(
+    project: &Project,
+    command: &Command,
+    sink: &mut dyn WorkerAudioSink,
+) -> Option<(hex_engine::ProcessorChainOwner, u64)> {
+    if !sink.confirms_device_inserts() {
+        return None;
+    }
+    let target = match command {
+        Command::ToggleDeviceBypass { device }
+        | Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        } => *device,
+        _ => return None,
+    };
+    let (owner, device) = super::super::audio_sink::sole_hosted_return(project)?;
+    (device.id() == target && !device.bypassed() && sink.resident_playing())
+        .then_some((owner, target.value()))
 }
 
 pub(in crate::service) fn stopped_hosted_power_fence(
@@ -1188,7 +1214,7 @@ impl Session {
             restoring_plugin_state: false,
             preparing_edit: true,
             main_power_on: None,
-            running_main_power_off: None,
+            running_power_off: None,
             hosted_instrument_move: None,
         };
         let prepared = if input.requires_plugin_profile() {
@@ -1257,7 +1283,7 @@ impl Session {
         } else {
             None
         };
-        let running_power_off =
+        let running_power_target =
             if stopped_fence.is_none() && stages_main_power_off(self.project(), &command, sink) {
                 let device = self
                     .project()
@@ -1266,16 +1292,19 @@ impl Session {
                     .ok_or(SessionError::Invalid("main power target changed"))?
                     .id()
                     .value();
-                Some(
-                    sink.running_resident_main_power_off(context, device)
-                        .map_err(SessionError::NativeAudio)?
-                        .ok_or(SessionError::Invalid(
-                            "running main power off is unavailable for this source",
-                        ))?,
-                )
+                Some((hex_engine::ProcessorChainOwner::Main, device))
             } else {
-                None
+                running_return_power_target(self.project(), &command, sink)
             };
+        let running_power_off = running_power_target
+            .map(|(owner, device)| {
+                sink.running_resident_power_off(context, owner, device)
+                    .map_err(SessionError::NativeAudio)?
+                    .ok_or(SessionError::Invalid(
+                        "running power off is unavailable for this source",
+                    ))
+            })
+            .transpose()?;
         let hosted_instrument_move = if self.audio_mode() == DocumentAudioMode::Resident {
             hosted_instrument_move::Intent::from_command(&command)
         } else {
@@ -1413,7 +1442,7 @@ impl Session {
         current: Option<&Snapshot>,
         stopped_fence: Option<ResidentFreshRuntimeFence>,
         running_power_on: Option<ResidentMainPowerOn>,
-        running_power_off: Option<ResidentMainPowerOff>,
+        running_power_off: Option<ResidentRunningPowerOff>,
         plugin: Option<&PluginEffectControl>,
         proposal_control: Option<&PluginEffectControl>,
         document_intent: u64,
@@ -1488,7 +1517,7 @@ impl Session {
             let inputs = Inputs {
                 preparing_edit: plugin.is_none(),
                 main_power_on,
-                running_main_power_off: running_power_off,
+                running_power_off,
                 hosted_instrument_move: hosted_instrument_move.and_then(|intent| {
                     intent.preparation(self.project(), edit.project(), installed)
                 }),
@@ -1536,6 +1565,9 @@ impl Session {
                     receipt: Receipt(receipt),
                     predecessor: installed,
                     stopped_fence,
+                    live_return_power_off: running_power_off.is_some_and(|intent| {
+                        matches!(intent.owner, hex_engine::ProcessorChainOwner::Return(_))
+                    }),
                 })),
                 confirmation: None,
                 operation,

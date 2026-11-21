@@ -1,12 +1,13 @@
-//! One explicit Main Off source and its exact installed-source retirement.
+//! One explicit hosted Off source and its exact installed-source retirement.
 //! This control adapter holds only copied identity. Root owns every graph,
 //! endpoint, editor/native lease and the original worker through ordinary return.
 use super::*;
 
 impl Plugins {
-    pub(in crate::native_audio) fn main_power_off_binding(
+    pub(in crate::native_audio) fn power_off_binding(
         &self,
         context: AudioSourceContext,
+        owner: ProcessorChainOwner,
         device: u64,
     ) -> Option<Binding> {
         self.sources
@@ -16,7 +17,7 @@ impl Plugins {
                     && !source.retiring
                     && source.project_generation == context.project_generation
                     && source.device == device
-                    && source.owner == ProcessorChainOwner::Main
+                    && source.owner == owner
                     && !source.editor_open
                     && !source.editor_transfer
                     && !source.edit_backlog
@@ -32,14 +33,14 @@ impl Plugins {
             .map(|source| source.binding)
     }
 
-    /// Exact Off ends admission before the terminal. A proved pass stamp lets
-    /// the same callback pass stage Power On without granting worker custody.
+    /// Exact Off ends admission before the terminal. An exact Main Off pass
+    /// stamp can stage Main Power On without granting worker custody.
     pub(in crate::native_audio) fn finish_power_off(
         &mut self,
         context: AudioSourceContext,
         accepted: bool,
         applied: Option<hex_audio::prepared::AppliedAudioSource>,
-        off: Option<u64>,
+        off: Option<hex_audio::prepared::NativeProcessorIdentity>,
     ) -> Option<(hex_audio::prepared::AppliedAudioSource, u64)> {
         let (intent, candidate, stop_generation) = self
             .power_off
@@ -47,7 +48,8 @@ impl Plugins {
         self.power_off = None;
         let applied = applied?;
         if !accepted
-            || off != Some(intent.device)
+            || !off
+                .is_some_and(|off| off.owner() == intent.owner && off.device_id() == intent.device)
             || applied.context != candidate
             || applied.output_identity != intent.source.output_identity
             || applied.audio_revision == intent.source.audio_revision
@@ -57,15 +59,17 @@ impl Plugins {
         let source = self.sources.iter_mut().find(|source| {
             source.binding == intent.binding
                 && source.device == intent.device
-                && source.owner == ProcessorChainOwner::Main
+                && source.owner == intent.owner
                 && source.project_generation == candidate.project_generation
         })?;
         source.accepted = false;
         source.retiring = true;
-        stop_generation.map(|generation| (applied, generation))
+        stop_generation
+            .filter(|_| intent.owner == ProcessorChainOwner::Main)
+            .map(|generation| (applied, generation))
     }
 
-    pub(super) fn prepare_main_power_off(
+    pub(super) fn prepare_running_power_off(
         &mut self,
         mut output: Option<&mut WorkerPreparedOutput>,
         input: &ResidentEffectPreparation<'_>,
@@ -74,15 +78,15 @@ impl Plugins {
         ) -> Result<PreparedRevision, hex_engine::Invalid>,
     ) -> Result<PreparedRevision, String> {
         let intent = input
-            .running_main_power_off()
-            .ok_or("running main power intent changed")?;
+            .running_power_off()
+            .ok_or("running power intent changed")?;
         let output = output
             .as_mut()
-            .ok_or("running main output is unavailable")?;
+            .ok_or("running power output is unavailable")?;
         let control = output
             .publication
             .control()
-            .ok_or("running main output closed")?;
+            .ok_or("running power output closed")?;
         let actual = control.status.recording_source();
         if actual.is_none_or(|actual| {
             actual.context != intent.source.context
@@ -92,21 +96,34 @@ impl Plugins {
             .status
             .playing
             .load(std::sync::atomic::Ordering::Acquire)
-            || self.main_power_off_binding(intent.source.context, intent.device)
+            || actual != control.status.native_effect_source()
+            || self.power_off_binding(intent.source.context, intent.owner, intent.device)
                 != Some(intent.binding)
         {
-            return Err("running main power source changed".into());
+            return Err("running power source changed".into());
         }
-        let stop_generation = control
-            .capture_fresh_runtime_fence()
-            .filter(|fence| fence.expected_active_revision() == intent.source.audio_revision)
-            .map(hex_audio::prepared::FreshRuntimeFence::consumed_stop_generation);
-        let (device, state) = input
-            .powered_off_main()
-            .ok_or("main power target changed")?;
+        let stop_generation = if intent.owner == ProcessorChainOwner::Main {
+            control
+                .capture_fresh_runtime_fence()
+                .filter(|fence| fence.expected_active_revision() == intent.source.audio_revision)
+                .map(hex_audio::prepared::FreshRuntimeFence::consumed_stop_generation)
+        } else {
+            None
+        };
+        let target = match intent.owner {
+            ProcessorChainOwner::Main => input
+                .powered_off_main()
+                .map(|(device, state)| (intent.owner, device, state)),
+            ProcessorChainOwner::Return(_) => input.powered_off_return(),
+            _ => None,
+        };
+        let (owner, device, state) = target
+            .filter(|(owner, device, _)| (*owner, *device) == (intent.owner, intent.device))
+            .ok_or("power off target changed")?;
         let eligible = control.with_native_effect_definition(&[intent.binding], |definition| {
             definition
-                .matches_main_power_off_on_control(
+                .matches_power_off_on_control(
+                    owner,
                     intent.binding,
                     device,
                     state,
@@ -115,11 +132,11 @@ impl Plugins {
                 .map_err(|error| error.to_string())
         })?;
         if !eligible {
-            return Err("running main power requires the original 512-frame source".into());
+            return Err("running power off requires the original 512-frame source".into());
         }
         let prepared = Hosting::prepare_powered_off_on_control(
             hex_audio::plugin_effects::PoweredOffEffect {
-                owner: ProcessorChainOwner::Main,
+                owner,
                 device_id: device,
                 sample_rate: input.sample_rate(),
                 state,
@@ -180,7 +197,8 @@ mod tests {
             editor_revision: 3,
             ..previous
         };
-        let intent = hex_session::service::ResidentMainPowerOff {
+        let intent = hex_session::service::ResidentRunningPowerOff {
+            owner: ProcessorChainOwner::Main,
             device: 7,
             binding,
             source: hex_session::service::ResidentGraphSubmission {
@@ -194,15 +212,26 @@ mod tests {
             output_identity: 1,
             audio_revision: 9,
         };
-        for case in 0..6 {
+        for case in 0..7 {
             let mut plugins = Plugins::default();
-            plugins.sources.push(source(binding));
+            let owner = if case == 6 {
+                ProcessorChainOwner::Return(1)
+            } else {
+                intent.owner
+            };
+            let mut primary = source(binding);
+            primary.owner = owner;
+            plugins.sources.push(primary);
             let other = Binding {
                 instance: 5,
                 ..binding
             };
             plugins.sources.push(source(other));
-            plugins.power_off = Some((intent, candidate, (case != 5).then_some(17)));
+            plugins.power_off = Some((
+                hex_session::service::ResidentRunningPowerOff { owner, ..intent },
+                candidate,
+                (case != 5).then_some(17),
+            ));
             let exact_off = plugins.finish_power_off(
                 candidate,
                 case != 0,
@@ -217,7 +246,15 @@ mod tests {
                     },
                     _ => applied,
                 }),
-                if case == 3 { None } else { Some(7) },
+                hex_audio::prepared::NativeProcessorIdentity::new(
+                    if case == 3 {
+                        ProcessorChainOwner::Return(1)
+                    } else {
+                        owner
+                    },
+                    7,
+                )
+                .ok(),
             );
             assert_eq!(exact_off, (case == 4).then_some((applied, 17)));
             assert_eq!(plugins.sources[0].retiring, case >= 4);
@@ -227,8 +264,14 @@ mod tests {
         }
         let mut plugins = Plugins::default();
         plugins.sources.push(source(binding));
-        assert_eq!(plugins.main_power_off_binding(previous, 7), Some(binding));
+        assert_eq!(
+            plugins.power_off_binding(previous, ProcessorChainOwner::Main, 7),
+            Some(binding)
+        );
         plugins.sources[0].editor_open = true;
-        assert_eq!(plugins.main_power_off_binding(previous, 7), None);
+        assert_eq!(
+            plugins.power_off_binding(previous, ProcessorChainOwner::Main, 7),
+            None
+        );
     }
 }

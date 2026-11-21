@@ -1,6 +1,9 @@
-//! Control-only Main Off identity projection. No chain or resource owner escapes.
+//! Control-only Off identity projection. No chain or resource owner escapes.
 use super::PreparedRevision;
-use hex_lattice::{PreparedProcessorFactory, PreparedRuntimeInstance, ProcessorChainOwner};
+use hex_lattice::{
+    PreparedProcessorFactory, PreparedRuntimeInstance, ProcessorChainOwner,
+    ProcessorInstanceIdentity,
+};
 
 impl PreparedRevision {
     /// Copy the sole explicitly powered-off Main device ID. This declaration
@@ -9,13 +12,30 @@ impl PreparedRevision {
     pub fn sole_powered_off_main_device_on_control(&self) -> Option<u64> {
         sole_main(&self.arrangement.main_device_chain)
     }
+
+    /// Project the sole eligible resource-free Main or Return Off declaration.
+    /// The host must independently match the complete installed source.
+    pub fn sole_powered_off_device_on_control(&self) -> Option<ProcessorInstanceIdentity> {
+        if let Some(device) = self.sole_powered_off_main_device_on_control() {
+            return ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, device).ok();
+        }
+        let [bus] = self.arrangement.return_buses() else {
+            return None;
+        };
+        let owner = ProcessorChainOwner::Return(bus.id.value());
+        ProcessorInstanceIdentity::new(owner, sole_off(&bus.device_chain, owner)?).ok()
+    }
 }
 
 fn sole_main(nodes: &[PreparedRuntimeInstance]) -> Option<u64> {
+    sole_off(nodes, ProcessorChainOwner::Main)
+}
+
+fn sole_off(nodes: &[PreparedRuntimeInstance], owner: ProcessorChainOwner) -> Option<u64> {
     let [device] = nodes else {
         return None;
     };
-    (device.owner == ProcessorChainOwner::Main
+    (device.owner == owner
         && device.bypassed
         && device.device_type == hex_lattice_contract::VST3_DEVICE_TYPE_ID
         && device

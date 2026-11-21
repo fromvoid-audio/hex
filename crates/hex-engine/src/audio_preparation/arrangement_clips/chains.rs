@@ -548,7 +548,10 @@ impl ChainCustody {
                     }
                     Some(PreparedProcessorFactory::PoweredOff)
                         if bypassed
-                            && owner == ProcessorChainOwner::Main
+                            && matches!(
+                                owner,
+                                ProcessorChainOwner::Main | ProcessorChainOwner::Return(_)
+                            )
                             && migrated.type_id()
                                 == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
                             && device.automation().is_empty()

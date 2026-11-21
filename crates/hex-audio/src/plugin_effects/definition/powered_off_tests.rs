@@ -167,7 +167,7 @@ fn wrong_identity_rate_state_and_malformed_off_selection_refuse() {
     );
     assert!(
         NativeEffectDefinition::powered_off(&[PoweredOffEffect {
-            owner: ProcessorChainOwner::Return(1),
+            owner: ProcessorChainOwner::Track(1),
             ..entry
         }])
         .is_err()
@@ -236,11 +236,18 @@ fn running_main_off_requires_the_exact_real_512_frame_source_facts() {
         };
         let definition = NativeEffectDefinition::from_selected([(&configuration, true)]).unwrap();
         assert_eq!(
-            definition.matches_main_power_off_on_control(binding, 7, &state, 48_000),
+            definition.matches_power_off_on_control(
+                ProcessorChainOwner::Main,
+                binding,
+                7,
+                &state,
+                48_000
+            ),
             Ok(eligible)
         );
         assert_eq!(
-            definition.matches_main_power_off_on_control(
+            definition.matches_power_off_on_control(
+                ProcessorChainOwner::Main,
                 Binding {
                     epoch: 5,
                     ..binding

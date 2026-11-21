@@ -1081,6 +1081,32 @@ impl SignalGraph {
             && self.plan.edges()[self.pre_main_edges[track.audio_merge]].delay_frames == 0)
             .then_some((edge, self.plan.nodes()[track.fader].output_arrival_frames))
     }
+
+    /// One fader feeds both Main and a single Return input at the same origin.
+    pub(crate) fn direct_return_send(&self, id: ReturnId, gain: f32) -> bool {
+        let ([track], [bus]) = (self.tracks.as_slice(), self.returns.as_slice()) else {
+            return false;
+        };
+        let [send] = track.sends.as_slice() else {
+            return false;
+        };
+        bus.id == id
+            && send.target == 0
+            && send.gain == gain
+            && bus.feeds.is_empty()
+            && bus.audio_feeds.is_empty()
+            && track.audio_feeds.is_empty()
+            && !self.has_group_outputs
+            && self.key_stages.is_empty()
+            && self
+                .resident_main_alignment(0)
+                .is_some_and(|(_, arrival)| arrival == 0)
+            && self
+                .plan
+                .edges()
+                .get(send.edge)
+                .is_some_and(|edge| edge.delay_frames == 0)
+    }
     /// With no pre-Main latency or typed feeds, these graphs retain transport
     /// stamps only: every pre-Main edge has zero delay and owns no pending PCM.
     /// Inserting/removing zero-latency effects may change node/edge indices, but

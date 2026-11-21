@@ -560,7 +560,7 @@ fn bounce_capture_uses_the_live_receiver_and_projects_only_the_isolated_instrume
         restoring_plugin_state: false,
         preparing_edit: false,
         main_power_on: None,
-        running_main_power_off: None,
+        running_power_off: None,
         hosted_instrument_move: None,
     };
     let control = hex_export::ExportControl::default();
