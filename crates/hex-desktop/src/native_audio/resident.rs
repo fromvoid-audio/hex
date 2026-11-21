@@ -1356,7 +1356,7 @@ impl NativeAudioSink {
                         return Err(ResidentPublicationRefusal {
                             kind: hex_session::service::ResidentPublicationFailure::Other,
                             playback,
-                            error: "stopped device power source changed during preparation".into(),
+                            error: "stopped audio source changed during preparation".into(),
                         });
                     }
                     hex_audio::prepared::PublicationPolicy::DeviceInsert { predecessor, fence }

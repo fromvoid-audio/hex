@@ -1,4 +1,4 @@
-//! Signed Resident Main replacement history at the real paused callback.
+//! Signed Resident bus effect replacement history at the real paused callback.
 use super::*;
 use hex_audio::plugin_effects::EffectBinding;
 use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
@@ -8,12 +8,31 @@ use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
 fn stopped_resident_main_vst3_replacement_undo_waits_for_its_exact_receipt() {
     let _native = native_fixture();
     let files = Files::new();
-    let (mut h, original, installed, original_binding) = installed_replacement(&files);
+    let (mut h, original, installed, original_binding, destination) =
+        installed_replacement(&files, HistoryEffectBus::Main);
     assert_stopped_history(
         &mut h,
         &installed,
         &original,
         original_binding,
+        destination,
+        Request::Undo,
+    );
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn stopped_resident_return_vst3_replacement_undo_waits_for_its_exact_receipt() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let (mut h, original, installed, original_binding, destination) =
+        installed_replacement(&files, HistoryEffectBus::Return);
+    assert_stopped_history(
+        &mut h,
+        &installed,
+        &original,
+        original_binding,
+        destination,
         Request::Undo,
     );
 }
@@ -21,15 +40,27 @@ fn stopped_resident_main_vst3_replacement_undo_waits_for_its_exact_receipt() {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn stopped_resident_main_vst3_replacement_redo_waits_for_its_exact_receipt() {
+    assert_stopped_redo(HistoryEffectBus::Main);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn stopped_resident_return_vst3_replacement_redo_waits_for_its_exact_receipt() {
+    assert_stopped_redo(HistoryEffectBus::Return);
+}
+
+fn assert_stopped_redo(bus: HistoryEffectBus) {
     let _native = native_fixture();
     let files = Files::new();
-    let (mut h, original, installed, original_binding) = installed_replacement(&files);
+    let (mut h, original, installed, original_binding, destination) =
+        installed_replacement(&files, bus);
     let replaced_binding = binding(&h).unwrap().1;
     let restored = assert_stopped_history(
         &mut h,
         &installed,
         &original,
         original_binding,
+        destination,
         Request::Undo,
     );
     assert_stopped_history(
@@ -37,6 +68,7 @@ fn stopped_resident_main_vst3_replacement_redo_waits_for_its_exact_receipt() {
         &restored,
         &installed,
         replaced_binding,
+        destination,
         Request::Redo,
     );
 }
@@ -44,11 +76,26 @@ fn stopped_resident_main_vst3_replacement_redo_waits_for_its_exact_receipt() {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn rolling_resident_main_vst3_replacement_undo_preserves_the_predecessor() {
+    assert_rolling_refusal(HistoryEffectBus::Main);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn rolling_resident_return_vst3_replacement_undo_preserves_the_predecessor() {
+    assert_rolling_refusal(HistoryEffectBus::Return);
+}
+
+fn assert_rolling_refusal(bus: HistoryEffectBus) {
     let _native = native_fixture();
     let files = Files::new();
-    let (mut h, _, installed, _) = installed_replacement(&files);
+    let (mut h, _, installed, _, destination) = installed_replacement(&files, bus);
     let predecessor = status(&h).recording_source().unwrap();
     let incumbent = binding(&h).unwrap();
+    let minimum = if matches!(destination, PluginEffectDestination::Return(_)) {
+        0.251
+    } else {
+        0.001
+    };
     h.audio
         .as_mut()
         .unwrap()
@@ -58,7 +105,8 @@ fn rolling_resident_main_vst3_replacement_undo_preserves_the_predecessor() {
     wait(|| {
         h.pump();
         let pcm = h.render_plugin_block();
-        status(&h).playing.load(Acquire) && pcm.iter().flatten().any(|sample| sample.abs() > 0.001)
+        status(&h).playing.load(Acquire)
+            && pcm.iter().flatten().any(|sample| sample.abs() > minimum)
     });
 
     h.service.submit(Request::Undo).unwrap();
@@ -84,7 +132,16 @@ fn rolling_resident_main_vst3_replacement_undo_preserves_the_predecessor() {
     }
 }
 
-fn installed_replacement(files: &Files) -> (ResidentHarness, Event, Event, EffectBinding) {
+fn installed_replacement(
+    files: &Files,
+    bus: HistoryEffectBus,
+) -> (
+    ResidentHarness,
+    Event,
+    Event,
+    EffectBinding,
+    PluginEffectDestination,
+) {
     let directory = files.0.canonicalize().unwrap();
     hex_ui::write_plugin_effect_test_catalog(&directory, &selection(), "Fx", 0).unwrap();
     let mut h = ResidentHarness::with_plugins_and_catalog(
@@ -98,12 +155,35 @@ fn installed_replacement(files: &Files) -> (ResidentHarness, Event, Event, Effec
     assert!(h.next().error.is_none());
     let (applied, _) = h.applied(0);
     let imported = h.run(Request::Import(files.wav(48_000, 8192)));
-    let (applied, _) = h.applied(applied);
+    let (mut applied, _) = h.applied(applied);
+    let (document, destination) = match bus {
+        HistoryEffectBus::Main => (imported.state, PluginEffectDestination::Main),
+        HistoryEffectBus::Return => {
+            let track = imported.state.project.tracks()[0].id();
+            let added = h.run(Request::Edit(Command::AddReturnTrack {
+                name: "replacement return".into(),
+            }));
+            let Some(Created::ReturnTrack(return_track)) = added.created else {
+                panic!("return bus");
+            };
+            (applied, _) = h.applied(applied);
+            let routed = h.run(Request::Edit(Command::SetReturnSend {
+                track,
+                return_track,
+                gain: 0.5,
+            }));
+            assert!(routed.error.is_none(), "{:?}", routed.error);
+            let [send] = routed.state.project.track(track).unwrap().sends() else {
+                panic!("exact return send");
+            };
+            assert_eq!(send.return_track(), return_track);
+            assert_eq!(send.gain(), 0.5);
+            (applied, _) = h.applied(applied);
+            (routed.state, PluginEffectDestination::Return(return_track))
+        }
+    };
     h.service
-        .submit(Request::InsertPluginEffect(request(
-            &imported.state,
-            PluginEffectDestination::Main,
-        )))
+        .submit(Request::InsertPluginEffect(request(&document, destination)))
         .unwrap();
     let original = terminal(&mut h);
     assert!(
@@ -112,8 +192,18 @@ fn installed_replacement(files: &Files) -> (ResidentHarness, Event, Event, Effec
         original.error
     );
     let (applied, _) = h.applied(applied);
-    let [old] = original.state.project.main_devices() else {
-        panic!("original Main slot");
+    let old = occupied_effect(&original, destination);
+    let replace = match destination {
+        PluginEffectDestination::Main => PluginEffectDestination::ReplaceMainEffect {
+            replacing: old.id(),
+        },
+        PluginEffectDestination::Return(return_track) => {
+            PluginEffectDestination::ReplaceReturnEffect {
+                return_track,
+                replacing: old.id(),
+            }
+        }
+        _ => panic!("resident bus effect"),
     };
     let old_binding = binding(&h).unwrap().1;
 
@@ -121,9 +211,7 @@ fn installed_replacement(files: &Files) -> (ResidentHarness, Event, Event, Effec
     h.service
         .submit(Request::InsertPluginEffect(request(
             &original.state,
-            PluginEffectDestination::ReplaceMainEffect {
-                replacing: old.id(),
-            },
+            replace,
         )))
         .unwrap();
     let mut installed = None;
@@ -151,9 +239,7 @@ fn installed_replacement(files: &Files) -> (ResidentHarness, Event, Event, Effec
     let receipt = installed.device_insert_complete.unwrap();
     assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
     h.applied(applied);
-    let [replacement] = installed.state.project.main_devices() else {
-        panic!("replacement Main slot");
-    };
+    let replacement = occupied_effect(&installed, destination);
     assert_ne!(replacement.id(), old.id());
     let predecessor = status(&h).recording_source().unwrap();
     assert_eq!(predecessor.context, receipt.submission.context);
@@ -170,7 +256,7 @@ fn installed_replacement(files: &Files) -> (ResidentHarness, Event, Event, Effec
                 device == replacement.id().value() && worker != old_binding
             })
     });
-    (h, original, installed, old_binding)
+    (h, original, installed, old_binding, destination)
 }
 
 fn assert_stopped_history(
@@ -178,6 +264,7 @@ fn assert_stopped_history(
     installed: &Event,
     target: &Event,
     retired_target: EffectBinding,
+    destination: PluginEffectDestination,
     request: Request,
 ) -> Event {
     let (direction, can_redo) = match request {
@@ -193,7 +280,7 @@ fn assert_stopped_history(
     );
     assert_eq!(
         incumbent.0,
-        installed.state.project.main_devices()[0].id().value()
+        occupied_effect(installed, destination).id().value()
     );
 
     let assert_incumbent = |h: &ResidentHarness| {
@@ -205,12 +292,12 @@ fn assert_stopped_history(
         if let Some(error) = &event.error {
             assert_history_unchanged(event, installed);
             panic!(
-                "stopped Resident Main replacement {direction} refused before exact install: {error}"
+                "stopped Resident {destination:?} replacement {direction} refused before exact install: {error}"
             );
         }
         assert!(
             !event.request_complete,
-            "stopped Resident Main replacement {direction} completed before callback: revision {} -> {}, receipt {:?}",
+            "stopped Resident {destination:?} replacement {direction} completed before callback: revision {} -> {}, receipt {:?}",
             installed.state.revision, event.state.revision, event.device_insert_complete,
         );
         assert_history_unchanged(event, installed);
@@ -227,13 +314,13 @@ fn assert_stopped_history(
         h.render_plugin_block();
         assert!(
             Instant::now() < deadline,
-            "Main replacement {direction} did not prepare"
+            "{destination:?} replacement {direction} did not prepare"
         );
         std::thread::yield_now();
     }
     assert_incumbent(h);
     let (id, fresh, accepted) = h.plugin_progress.lock().unwrap().newest_source.unwrap();
-    assert_eq!(id, target.state.project.main_devices()[0].id().value());
+    assert_eq!(id, occupied_effect(target, destination).id().value());
     assert!(
         !accepted,
         "restored worker was accepted before the callback"
@@ -254,7 +341,7 @@ fn assert_stopped_history(
         }
         assert!(
             Instant::now() < deadline,
-            "Main replacement {direction} did not go pending"
+            "{destination:?} replacement {direction} did not go pending"
         );
         std::thread::yield_now();
     }
@@ -287,6 +374,24 @@ fn assert_stopped_history(
     });
     assert!(!status(h).playing.load(Acquire));
     restored
+}
+
+fn occupied_effect(event: &Event, destination: PluginEffectDestination) -> &hex_project::Device {
+    let project = &event.state.project;
+    let effects = match destination {
+        PluginEffectDestination::Main => project.main_devices(),
+        PluginEffectDestination::Return(return_track) => project
+            .return_tracks()
+            .iter()
+            .find(|bus| bus.id() == return_track)
+            .unwrap()
+            .devices(),
+        _ => panic!("resident bus effect"),
+    };
+    let [effect] = effects else {
+        panic!("exact occupied slot");
+    };
+    effect
 }
 
 fn assert_history_unchanged(event: &Event, incumbent: &Event) {
