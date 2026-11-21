@@ -567,6 +567,10 @@ pub(in crate::editor) fn view(
         body = body.child(element);
     }
     let direct_warp_event = markers::direct_event(&root, &clip);
+    let grouped_warp = view
+        .audio_event_editor
+        .selected
+        .and_then(|event| markers::GroupedWarp::new(&preview, event));
     let warp = view
         .audio_clip_controls
         .pending_warp_settings(clip_id)
@@ -581,10 +585,14 @@ pub(in crate::editor) fn view(
         .gesture
         .as_ref()
         .and_then(|gesture| {
-            if let Kind::WarpMarker { source_frame, beat } = gesture.kind
+            if let Kind::WarpMarker {
+                source_frame,
+                beat,
+                event,
+            } = gesture.kind
                 && gesture.moved
             {
-                Some((source_frame, beat))
+                Some((source_frame, beat, event))
             } else {
                 None
             }
@@ -598,7 +606,9 @@ pub(in crate::editor) fn view(
             .skip(1)
             .take(warp.markers.len().saturating_sub(2))
         {
-            if held_marker.is_some_and(|(source, _)| source == marker.source_frame) {
+            if held_marker
+                .is_some_and(|(source, _, event)| event.is_none() && source == marker.source_frame)
+            {
                 continue;
             }
             let position = match root.domain.clock {
@@ -616,6 +626,7 @@ pub(in crate::editor) fn view(
             {
                 body = body.children([markers::marker_handle(
                     marker.source_frame,
+                    None,
                     frame_to_x(frame),
                     EVENT_TOP,
                     true,
@@ -624,17 +635,58 @@ pub(in crate::editor) fn view(
             }
         }
     }
-    if let Some((source_frame, beat)) = held_marker
-        && let Some(frame) =
-            frame_at(beat.raw()).filter(|frame| root_window.contains(i128::from(*frame)))
-    {
-        body = body.children([markers::marker_handle(
-            source_frame,
-            frame_to_x(frame),
-            EVENT_TOP,
-            true,
-            cx,
-        )]);
+    if let Some(target) = &grouped_warp {
+        let event = Some(target.event.id);
+        for marker in target
+            .settings
+            .markers
+            .iter()
+            .skip(1)
+            .take(target.settings.markers.len().saturating_sub(2))
+        {
+            if held_marker.is_some_and(|(source, _, held_event)| {
+                held_event == event && source == marker.source_frame
+            }) {
+                continue;
+            }
+            if let Some(frame) = target
+                .position(marker.beat)
+                .and_then(frame_at)
+                .filter(|frame| root_window.contains(i128::from(*frame)))
+            {
+                body = body.children([markers::marker_handle(
+                    marker.source_frame,
+                    event,
+                    frame_to_x(frame),
+                    EVENT_TOP,
+                    true,
+                    cx,
+                )]);
+            }
+        }
+    }
+    if let Some((source_frame, beat, event)) = held_marker {
+        let position = if let Some(event) = event {
+            grouped_warp
+                .as_ref()
+                .filter(|target| target.event.id == event)
+                .and_then(|target| target.position(beat))
+        } else {
+            Some(beat.raw())
+        };
+        if let Some(frame) = position
+            .and_then(frame_at)
+            .filter(|frame| root_window.contains(i128::from(*frame)))
+        {
+            body = body.children([markers::marker_handle(
+                source_frame,
+                event,
+                frame_to_x(frame),
+                EVENT_TOP,
+                true,
+                cx,
+            )]);
+        }
     }
     if let Some(analysis) = view.audio_event_editor.transients.as_ref()
         && let Some(event) = preview.events.iter().copied().find(|event| {
@@ -655,7 +707,7 @@ pub(in crate::editor) fn view(
         let tempo = state.project.tempo_map();
         for &source in analysis.frames() {
             if direct_warp_event.is_some()
-                && (held_marker.is_some_and(|(frame, _)| frame == source)
+                && (held_marker.is_some_and(|(frame, _, event)| event.is_none() && frame == source)
                     || warp.is_some_and(|warp| {
                         warp.markers
                             .binary_search_by_key(&source, |m| m.source_frame)
@@ -683,7 +735,9 @@ pub(in crate::editor) fn view(
             }
             next_x = x + step;
             if direct_warp_event.is_some() {
-                body = body.children([markers::marker_handle(source, x, EVENT_TOP, false, cx)]);
+                body = body.children([markers::marker_handle(
+                    source, None, x, EVENT_TOP, false, cx,
+                )]);
                 continue;
             }
             body = body.child(
