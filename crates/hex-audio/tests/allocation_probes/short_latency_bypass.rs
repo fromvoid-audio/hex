@@ -22,6 +22,7 @@ use std::{
 
 const RATE: u32 = 48_000;
 const FADE: usize = RATE.div_ceil(200) as usize;
+const RESTART_FADE: usize = RATE.div_ceil(2_000) as usize;
 const WARMUP: usize = 2048;
 const EARLY_OFF: usize = 13;
 const REPEAT_OFF: usize = 5;
@@ -292,7 +293,12 @@ fn check(kind: &'static str, automated: bool, location: usize, block: usize) {
                     1 => 1.0 - progress(EARLY_OFF + phase_age),
                     2 => 1.0 - progress(early_off) + progress(early_off) * progress(phase_age),
                     3 => 1.0 - progress(phase_age),
-                    4 => progress(phase_age.saturating_sub(latency as usize)),
+                    // After a settled Off, keep the aligned dry lead before
+                    // the fresh wet de-click. Off and reversals still use FADE.
+                    4 => {
+                        let wet_age = phase_age.saturating_sub(latency as usize);
+                        wet_age.min(RESTART_FADE) as f32 / RESTART_FADE as f32
+                    }
                     _ => unreachable!("test publication phase"),
                 };
                 if mix == 0.0 {
