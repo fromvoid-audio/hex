@@ -2242,6 +2242,13 @@ impl WorkerAudioSink for ResidentSink {
             .resident_file_seek_storage_bytes(prepared, sources)
     }
 
+    fn running_resident_main_power_off(
+        &mut self,
+        context: AudioSourceContext,
+        device: u64,
+    ) -> Result<Option<hex_session::service::ResidentMainPowerOff>, String> {
+        self.inner.running_resident_main_power_off(context, device)
+    }
     fn stopped_resident_power_fence(
         &mut self,
         context: AudioSourceContext,
