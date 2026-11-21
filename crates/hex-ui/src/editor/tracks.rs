@@ -987,6 +987,31 @@ impl EditorView {
                     {
                         preview = preview.child(clip_waveform_body(waveform));
                     }
+                    let fade = preview_clip.retained_fade();
+                    if self.track_body_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT
+                        && !fade.is_neutral()
+                    {
+                        let samples = if preview_clip.audio_edit().is_some() {
+                            super::waveform::projected_fade_envelope_samples(
+                                &preview_clip,
+                                state.project.tempo_map(),
+                                visible_start,
+                                visible_end,
+                                None,
+                            )
+                            .unwrap_or_default()
+                        } else {
+                            fade_envelope_samples(fade, preview_start, visible_start, visible_end)
+                        };
+                        if samples.len() >= 2 {
+                            preview = preview.child(clip_fade_layer(
+                                preview_clip.id(),
+                                samples,
+                                self.fade_key_held,
+                                active,
+                            ));
+                        }
+                    }
                     preview = preview.child(self.clip_name_preview_header(
                         track_id,
                         original_clip.id(),

@@ -411,6 +411,63 @@ fn invalid_snapshot_phases_and_commands_are_rejected_without_history_changes() {
 }
 
 #[test]
+fn retained_edge_resize_reanchors_the_authored_fades_in_preview_and_history() {
+    use hex_project::{AudioEventEdit, ClipFade, FadeCurveLaw};
+    for (edge, frame, expected_start, expected_length) in [
+        (TrimEdge::Left, 106, 106, 34),
+        (TrimEdge::Right, 134, 100, 34),
+        (TrimEdge::Right, 108, 100, 8),
+    ] {
+        let (mut editor, clip) = editor_with_clip(false, 100, 40, 0, 40, 80);
+        editor
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::Split { at: 20 },
+            })
+            .unwrap();
+        let fade = ClipFade::new(40, 0, 9, 7)
+            .unwrap()
+            .with_shape(1, 2, 400, -300)
+            .unwrap()
+            .with_curve_positions(230, 710)
+            .unwrap()
+            .with_curve_laws([FadeCurveLaw::SmoothStep; 2]);
+        editor
+            .execute(Command::SetClipFadeEnvelope { clip, fade })
+            .unwrap();
+        let before = editor.project().clone();
+        let original = before.clip(clip).unwrap();
+        let preview = original
+            .preview_edge_trim_with_tempo(edge, frame, 80, before.tempo_map())
+            .unwrap();
+        assert_eq!(
+            (preview.start(), preview.duration()),
+            (expected_start, expected_length)
+        );
+        let expected = fade.reanchor(expected_length).unwrap();
+        assert_eq!(preview.retained_fade(), expected);
+        assert_eq!(
+            preview
+                .projected_outer_fade(before.tempo_map())
+                .unwrap()
+                .unwrap()
+                .frame_playback_envelope()
+                .unwrap(),
+            expected
+        );
+        assert_eq!(preview.audio_events(), original.audio_events());
+        editor
+            .execute(Command::TrimClipEdge { clip, edge, frame })
+            .unwrap();
+        assert_eq!(editor.project().clip(clip), Some(&preview));
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &before);
+        assert!(editor.redo());
+        assert_eq!(editor.project().clip(clip), Some(&preview));
+    }
+}
+
+#[test]
 fn lower_fade_resize_uses_source_trim_preserves_upper_samples_and_one_step_history() {
     use hex_project::ClipFade;
     for looping in [false, true] {

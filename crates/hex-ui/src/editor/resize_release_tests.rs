@@ -122,6 +122,78 @@ fn normal_resize_preserves_visible_extent_and_source_through_release_and_ack(
     }
 }
 
+#[gpui::test]
+fn retained_audio_trim_paints_fade_at_the_new_edge_through_ack(cx: &mut TestAppContext) {
+    let (_files, handle, editor, clip) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    for edit in [
+        Command::EditAudioEvents {
+            clip,
+            operation: hex_project::AudioEventEdit::Split { at: 48_000 },
+        },
+        Command::SetClipFadeEnvelope {
+            clip,
+            fade: hex_project::ClipFade::new(96_000, 0, 8_000, 12_000).unwrap(),
+        },
+    ] {
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(edit)))
+        });
+        pump(&editor, &mut visual);
+    }
+    let selector: &'static str =
+        Box::leak(format!("clip-trim-right-{}", clip.value()).into_boxed_str());
+    let shade: &'static str =
+        Box::leak(format!("clip-fade-shade-{}", clip.value()).into_boxed_str());
+    let before = visual.debug_bounds(shade).expect("original fade");
+    let down = visual.debug_bounds(selector).unwrap().center();
+    let target = point(down.x - px(63.0), down.y);
+    let mods = Modifiers::default();
+    visual.simulate_mouse_down(down, MouseButton::Left, mods);
+    visual.simulate_mouse_move(point(down.x - px(12.0), down.y), MouseButton::Left, mods);
+    visual.simulate_mouse_move(target, MouseButton::Left, mods);
+    visual.run_until_parked();
+    let preview = editor.read_with(&visual, |view, _| {
+        let track = view.state.as_ref().unwrap().project.tracks()[0].id();
+        let (_, preview) = view.audio_trim_display(track, Some(clip)).unwrap();
+        let fade = preview.retained_fade();
+        assert!(preview.duration() < 96_000);
+        assert_eq!(
+            fade.span(),
+            preview.duration(),
+            "fade must follow the resized edge"
+        );
+        assert_eq!(fade.fade_out(), 12_000);
+        preview
+    });
+    let held = visual
+        .debug_bounds(shade)
+        .expect("fade is painted while dragging");
+    assert!(
+        visual.debug_bounds("clip-waveform-body").is_some(),
+        "the fade edit keeps the retained waveform visible"
+    );
+    assert!(held.right() < before.right());
+    visual.simulate_mouse_up(target, MouseButton::Left, mods);
+    visual.run_until_parked();
+    let released = visual
+        .debug_bounds(shade)
+        .expect("fade is painted at release");
+    assert!((f32::from(released.right() - held.right())).abs() < 1.0);
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert_eq!(
+            view.state.as_ref().unwrap().project.clip(clip),
+            Some(&preview)
+        );
+    });
+    let committed = visual
+        .debug_bounds(shade)
+        .expect("fade is painted after acknowledgement");
+    assert!((f32::from(committed.right() - held.right())).abs() < 1.0);
+}
+
 fn check_audio_release(cx: &mut TestAppContext, edge: TrimEdge, stretch: bool) {
     let (_files, handle, editor, clip) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);

@@ -27,6 +27,28 @@ enum Author<'a> {
 }
 
 impl Clip {
+    /// Reauthor an instance fade at the resized clip's edges. A native root
+    /// fade on retained material stays in its source clock, including when a
+    /// clip repeats or reverses. An ordinary clip's fade is instance-owned.
+    pub(crate) fn with_resized_instance_fade(
+        self,
+        original: &Clip,
+        tempo: &TempoMap,
+    ) -> Result<Self, Invalid> {
+        let fade = original.retained_fade();
+        if self.audio_edit().is_none()
+            || fade.is_neutral()
+            || (self.start(), self.duration()) == (original.start(), original.duration())
+            || original
+                .audio_edit()
+                .is_some_and(|edit| edit.domain.fade_clock == AudioClipFadeClock::LegacyRoot)
+        {
+            return Ok(self);
+        }
+        let fade = fade.reanchor(self.duration())?;
+        self.with_authored_outer_fade(tempo, fade)
+    }
+
     /// Project an explicitly Outer instance fade.
     /// Legacy roots and ordinary clips return None; their existing fade paths
     /// remain unchanged. Callers must separately admit/prepare supported state.

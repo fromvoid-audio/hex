@@ -172,6 +172,21 @@ fn prefix_waveform_view(
     ))
 }
 
+/// An outer arrangement fade is applied after root processing. Its metadata
+/// can change while the same immutable processing samples remain reusable.
+pub(super) fn shares_audio_preview_root(
+    before: &hex_project::AudioClipEdit,
+    after: &hex_project::AudioClipEdit,
+) -> bool {
+    use hex_project::AudioClipFadeClock::Outer;
+    Arc::ptr_eq(&before.domain, &after.domain)
+        || (before.domain.fade_clock == Outer
+            && after.domain.fade_clock == Outer
+            && Arc::ptr_eq(&before.domain.content, &after.domain.content)
+            && before.domain.looping == after.domain.looping
+            && before.domain.source_phase == after.domain.source_phase)
+}
+
 fn preview_waveform_view_cached_inner(
     request: WaveformPreview<'_>,
     visible_start: u64,
@@ -193,7 +208,7 @@ fn preview_waveform_view_cached_inner(
     if let Some(edit) = preview.audio_edit() {
         let changed_root = original
             .audio_edit()
-            .is_none_or(|old| !Arc::ptr_eq(&old.domain, &edit.domain));
+            .is_none_or(|old| !shares_audio_preview_root(old, edit));
         if changed_root
             && let Some(prefix) =
                 prefix_waveform_view(request, visible_start, visible_end, Rc::clone(&cache), grid)
@@ -223,9 +238,6 @@ fn preview_waveform_view_cached_inner(
         let old = original.audio_edit()?;
         // A crop shares the immutable full processing root. A changed root must
         // supply its own validated preview projection, never raw-asset peaks.
-        if !Arc::ptr_eq(&old.domain, &edit.domain) {
-            return None;
-        }
         if let (Some(before), Some(after)) = (old.content_view, edit.content_view) {
             let prepared = prepared?;
             if prepared.offset != 0

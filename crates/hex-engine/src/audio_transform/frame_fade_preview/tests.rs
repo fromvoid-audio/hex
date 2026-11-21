@@ -57,6 +57,40 @@ fn prepare(
 }
 
 #[test]
+fn repeating_resize_keeps_the_fade_at_the_end_of_rendered_audio() {
+    use crate::audio_transform::tests::render;
+    let (mut editor, clip, media) = fixture(1_024, false);
+    let pristine = editor.project().clone();
+    let resize = |project_frame| Command::ResizeAudioClipView {
+        clip,
+        operation: AudioViewResizeOperation::RepeatOuterEnd { project_frame },
+    };
+    let fade = ClipFade::new(1_024, 0, 150, 275).unwrap();
+    editor
+        .execute(Command::SetClipFadeEnvelope { clip, fade })
+        .unwrap();
+    for end in [1_700, 2_700] {
+        editor.execute(resize(end)).unwrap();
+        let expected = fade.reanchor(end).unwrap();
+        assert_eq!(
+            editor.project().clip(clip).unwrap().retained_fade(),
+            expected
+        );
+        let context = AudioTransformPreparation::default();
+        let mut dry = Editor::new(pristine.clone(), 4).unwrap();
+        dry.execute(resize(end)).unwrap();
+        let mut samples = render(&prepare(&dry, &media, &context), 0, end as usize, 127);
+        for (frame, output) in samples.iter_mut().enumerate() {
+            *output = output.map(|value| value * expected.gain_at(frame as u64));
+        }
+        assert_eq!(
+            render(&prepare(&editor, &media, &context), 0, end as usize, 137),
+            samples
+        );
+    }
+}
+
+#[test]
 fn grouped_frame_queries_track_sparse_and_cropped_reflected_repeat_pcm() {
     use crate::audio_transform::tests::render;
 
@@ -122,7 +156,7 @@ fn grouped_frame_queries_track_sparse_and_cropped_reflected_repeat_pcm() {
 
     let context = AudioTransformPreparation::default();
     for directed in [false, true] {
-        let uncropped_tail = if directed {
+        let (group, uncropped_tail) = if directed {
             for command in [
                 Command::ResizeAudioClipView {
                     clip: group,
@@ -135,16 +169,19 @@ fn grouped_frame_queries_track_sparse_and_cropped_reflected_repeat_pcm() {
                 editor.execute(command).unwrap();
             }
             let pcm = render(&prepare(&editor, &media, &context), 73, 19_800 - 73, 127);
-            editor
-                .execute(Command::TrimClipEdge {
+            let Created::Clip(tail) = editor
+                .execute(Command::SplitClip {
                     clip: group,
-                    edge: hex_project::TrimEdge::Left,
                     frame: 73,
                 })
-                .unwrap();
-            Some(pcm)
+                .unwrap()
+            else {
+                panic!("group split");
+            };
+            editor.execute(Command::RemoveClip(group)).unwrap();
+            (tail, Some(pcm))
         } else {
-            None
+            (group, None)
         };
         let project = editor.project();
         let clip = project.clip(group).unwrap();
@@ -322,6 +359,14 @@ fn directed_legacy_once_envelope_intersects_both_silence_gates() {
 fn reversed_once_columns(legacy_fade: bool) {
     let (mut editor, clip, media) = fixture(1_024, false);
     if legacy_fade {
+        editor
+            .execute(Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: 1_024,
+                },
+            })
+            .unwrap();
         editor
             .execute(Command::SetClipFades {
                 clip,
