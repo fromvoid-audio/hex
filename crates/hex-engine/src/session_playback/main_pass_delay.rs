@@ -8,6 +8,9 @@ use hex_project::ReturnId;
 
 const HOSTED_RETURN_BRIDGE_FRAMES: u32 = 512;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone, Copy, Debug)]
 pub(super) enum MainPass {
     RequestedReturnOn(HostedReturnPowerOn),

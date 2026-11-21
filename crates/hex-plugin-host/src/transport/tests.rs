@@ -8,6 +8,29 @@ const BINDING: Binding = Binding {
 };
 
 #[test]
+fn only_a_live_untouched_pcm_endpoint_can_start_a_fresh_graph() {
+    let (_control, mut callback, _worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    assert!(callback.is_unstarted());
+    callback.begin_physical_callback(3).unwrap();
+    assert!(!callback.is_unstarted());
+    callback
+        .stage_segment(0, &[[0.25; 2]; 3], &[], &mut [[0.0; 2]; 3])
+        .unwrap();
+    callback.finish(true).unwrap();
+    assert_eq!(callback.dispatched_blocks_on_control(), 0);
+    assert!(!callback.is_unstarted());
+
+    let (_control, resumed, _worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 8, 1).unwrap();
+    assert!(!resumed.is_unstarted());
+    let (control, revoked, _worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
+    control.revoke();
+    assert!(!revoked.is_unstarted());
+}
+
+#[test]
 fn accepted_concealment_reports_exact_pair_and_bounded_overflow() {
     let (control, mut callback, mut worker) =
         native_pcm_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
