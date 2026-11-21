@@ -1,4 +1,4 @@
-//! Cached, view-only clip intervals for the Main lane's arrangement miniature.
+//! Cached, view-only clip intervals for the Main lane and section miniatures.
 //! Project owns time/identity; section, range and automation owners retain input.
 use super::{EditorView, viewport::Viewport};
 use crate::{section_surface::SectionCoverage, theme};
@@ -145,13 +145,29 @@ fn layer(
     coverage: Option<SectionCoverage>,
 ) -> Div {
     let data = view.state.as_ref().map(|state| {
+        // Section miniatures describe the project inside their own time spans.
+        // Only the Main underlay follows the track focus projection.
+        let (focus, revealed) = if chamfer.is_some() {
+            (None, None)
+        } else {
+            (
+                Some(view.arrangement_focus_ranges()),
+                view.arrangement_revealed_track(),
+            )
+        };
+        let ranges = focus.as_deref().unwrap_or_default();
+        let cache = if ranges.is_empty() && revealed.is_none() {
+            &view.arrangement_map_cache
+        } else {
+            &view.focused_arrangement_map_cache
+        };
         cached(
-            &view.arrangement_map_cache,
+            cache,
             view.project_generation,
             state.revision,
             &state.project,
-            view.arrangement_focus_ranges(),
-            view.arrangement_revealed_track(),
+            ranges,
+            revealed,
         )
     });
     div()

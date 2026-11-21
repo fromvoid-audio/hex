@@ -13,7 +13,7 @@ pub(in crate::editor) struct Interval {
 pub(in crate::editor) struct MapCache {
     generation: u64,
     revision: u64,
-    focus: Rc<[(u64, u64)]>,
+    focus: Box<[(u64, u64)]>,
     revealed: Option<TrackId>,
     pub(super) rows: Vec<Vec<Interval>>,
 }
@@ -93,14 +93,14 @@ pub(in crate::editor) fn cached(
     generation: u64,
     revision: u64,
     project: &Project,
-    focus: Rc<[(u64, u64)]>,
+    focus: &[(u64, u64)],
     revealed: Option<TrackId>,
 ) -> Rc<MapCache> {
     let mut slot = cache.borrow_mut();
     if let Some(current) = slot.as_ref().filter(|data| {
         data.generation == generation
             && data.revision == revision
-            && data.focus == focus
+            && data.focus.as_ref() == focus
             && data.revealed == revealed
     }) {
         return Rc::clone(current);
@@ -108,8 +108,8 @@ pub(in crate::editor) fn cached(
     let next = Rc::new(MapCache {
         generation,
         revision,
-        rows: project_rows(project, &focus, revealed),
-        focus,
+        rows: project_rows(project, focus, revealed),
+        focus: focus.into(),
         revealed,
     });
     *slot = Some(Rc::clone(&next));
@@ -307,17 +307,16 @@ pub(in crate::editor) mod tests {
     fn cache_reuses_pan_independent_data_and_invalidates_owner_context() {
         let project = project();
         let cache = RefCell::new(None);
-        let focus: Rc<[(u64, u64)]> = Rc::from([]);
-        let first = cached(&cache, 1, 1, &project, Rc::clone(&focus), None);
+        let first = cached(&cache, 1, 1, &project, &[], None);
         assert!(Rc::ptr_eq(
             &first,
-            &cached(&cache, 1, 1, &project, Rc::clone(&focus), None)
+            &cached(&cache, 1, 1, &project, &[], None)
         ));
-        let second = cached(&cache, 1, 2, &project, Rc::clone(&focus), None);
+        let second = cached(&cache, 1, 2, &project, &[], None);
         assert!(!Rc::ptr_eq(&first, &second));
-        let third = cached(&cache, 2, 2, &project, Rc::clone(&focus), None);
+        let third = cached(&cache, 2, 2, &project, &[], None);
         assert!(!Rc::ptr_eq(&second, &third));
-        let fourth = cached(&cache, 2, 2, &project, Rc::from([(0, 24_001)]), None);
+        let fourth = cached(&cache, 2, 2, &project, &[(0, 24_001)], None);
         assert!(!Rc::ptr_eq(&third, &fourth));
         assert!(project_rows(&Project::new(48_000).unwrap(), &[], None).is_empty());
     }
@@ -328,12 +327,12 @@ pub(in crate::editor) mod tests {
         let track = model.project().tracks()[0].id();
         let clip = model.project().tracks()[0].clips()[0].id();
         let cache = RefCell::new(None);
-        let original = cached(&cache, 1, 1, model.project(), Rc::from([]), None);
+        let original = cached(&cache, 1, 1, model.project(), &[], None);
         model.execute(Command::RemoveClip(clip)).unwrap();
-        let removed = cached(&cache, 1, 2, model.project(), Rc::from([]), None);
+        let removed = cached(&cache, 1, 2, model.project(), &[], None);
         assert!(removed.rows[0].is_empty());
         assert!(model.undo());
-        let restored = cached(&cache, 1, 3, model.project(), Rc::from([]), None);
+        let restored = cached(&cache, 1, 3, model.project(), &[], None);
         assert_eq!(restored.rows, original.rows);
         model
             .execute(Command::SetTrackColor {
@@ -341,7 +340,7 @@ pub(in crate::editor) mod tests {
                 color: hex_project::ElementColor::Violet,
             })
             .unwrap();
-        let recolored = cached(&cache, 1, 4, model.project(), Rc::from([]), None);
+        let recolored = cached(&cache, 1, 4, model.project(), &[], None);
         assert_eq!(recolored.rows, restored.rows);
         assert!(!Rc::ptr_eq(&recolored, &restored));
     }

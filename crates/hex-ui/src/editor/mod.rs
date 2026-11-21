@@ -1086,6 +1086,7 @@ pub(super) struct EditorView {
     scrub: scrub::ScrubState,
     zoom_wheel_accum: f32,
     arrangement_map_cache: std::cell::RefCell<Option<Rc<arrangement_map::MapCache>>>,
+    focused_arrangement_map_cache: std::cell::RefCell<Option<Rc<arrangement_map::MapCache>>>,
     group_overview_cache: std::cell::RefCell<group_overview::Cache>,
     audio_point_page: usize,
     overview_waveform_cache: Rc<std::cell::RefCell<overview_waveform::Cache>>,
@@ -1904,6 +1905,7 @@ impl EditorView {
             scrub: scrub::ScrubState::default(),
             zoom_wheel_accum: 0.0,
             arrangement_map_cache: std::cell::RefCell::new(None),
+            focused_arrangement_map_cache: std::cell::RefCell::new(None),
             group_overview_cache: std::cell::RefCell::default(),
             audio_point_page: 0,
             overview_waveform_cache: Rc::new(std::cell::RefCell::new(
