@@ -13,7 +13,7 @@ use hex_lattice_contract::{
 /// resources through the endpoint's actual return. Private offline preparation
 /// may borrow an actual stopped lease and reserved epoch; it must complete that
 /// epoch before rendering. Neither view grants live Root source admission.
-/// Intentional Off instead retains one exact saved-state declaration without
+/// Intentional Off instead retains one exact authored-state declaration without
 /// borrowing an SDK owner; it cannot construct active processing or an endpoint.
 pub struct NativeEffectDefinition<'a> {
     // Borrow only immutable configuration across pure compiler threads. The
@@ -32,7 +32,7 @@ pub struct UnavailableEffect<'a> {
     pub device_id: u64,
     pub state: &'a NativeDeviceState,
 }
-/// Exact saved Main metadata selected for an intentionally disabled stage.
+/// Exact authored Main metadata selected for an intentionally disabled stage.
 /// No source, factory, endpoint, SDK owner or publication authority is borrowed.
 #[derive(Clone, Copy)]
 pub struct PoweredOffEffect<'a> {
@@ -43,8 +43,9 @@ pub struct PoweredOffEffect<'a> {
 }
 
 impl<'a> NativeEffectDefinition<'a> {
-    /// Prepare one resource-free Main Off declaration. The output owner still
-    /// proves its stopped source and exact installation through ordinary admission.
+    /// Prepare one resource-free Main Off declaration. The output owner must
+    /// separately prove the exact source, supported stopped or running timing
+    /// policy, and graph installation through ordinary admission.
     pub fn powered_off(entries: &[PoweredOffEffect<'a>]) -> Result<Self, DeviceContractError> {
         let [entry] = entries else {
             return Err(DeviceContractError::InvalidId);
