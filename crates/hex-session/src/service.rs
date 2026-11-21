@@ -100,11 +100,11 @@ pub use audio_sink::{
     ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata, ResidentFilePitch,
     ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
     ResidentFreshRuntimeFence, ResidentGraphSubmission, ResidentHostedInstrumentMove,
-    ResidentMainPowerOff, ResidentMainPowerOn, ResidentPublicationAcceptance,
-    ResidentPublicationFailure, ResidentPublicationInputs, ResidentPublicationMetadata,
-    ResidentPublicationPolicy, ResidentPublicationReadiness, ResidentPublicationRefusal,
-    ResidentRuntimeLoop, ResidentSourceOrigin, ResidentTempoEdit, ResidentTempoEditOutcome,
-    WorkerAudioSink,
+    ResidentMainPowerOff, ResidentMainPowerOn, ResidentMainPowerOnInterval,
+    ResidentPublicationAcceptance, ResidentPublicationFailure, ResidentPublicationInputs,
+    ResidentPublicationMetadata, ResidentPublicationPolicy, ResidentPublicationReadiness,
+    ResidentPublicationRefusal, ResidentRuntimeLoop, ResidentSourceOrigin, ResidentTempoEdit,
+    ResidentTempoEditOutcome, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -7645,7 +7645,7 @@ fn run_worker(
                         && (matches!(&command, Command::PasteDevices { .. })
                             || resident_audio::device_insert::graph_edit_operation(&command)
                                 .is_some()
-                            || session.should_stage_verified_group_entry(
+                            || session.should_stage_verified_group_route(
                                 &command,
                                 compiled.as_ref().map(|(_, prepared)| prepared.as_ref()),
                             ))
@@ -7715,7 +7715,7 @@ fn run_worker(
                                 session.project(),
                                 &command,
                                 sink,
-                            ) || resident_audio::device_insert::stopped_hosted_power_fence(
+                            ) || resident_audio::device_insert::running_main_power_on(
                                 session.project(),
                                 &command,
                                 hex_engine::AudioSourceContext {
@@ -7723,8 +7723,18 @@ fn run_worker(
                                     editor_revision: revision,
                                 },
                                 sink,
-                            )?
+                            )
                             .is_some()
+                                || resident_audio::device_insert::stopped_hosted_power_fence(
+                                    session.project(),
+                                    &command,
+                                    hex_engine::AudioSourceContext {
+                                        project_generation,
+                                        editor_revision: revision,
+                                    },
+                                    sink,
+                                )?
+                                .is_some()
                             {
                                 let staged = session.stage_resident_device_insert(
                                     command,

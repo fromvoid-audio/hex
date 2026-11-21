@@ -620,6 +620,42 @@ pub(in crate::service) fn stages_main_power_off(
             .is_some_and(|device| !device.bypassed())
 }
 
+pub(in crate::service) fn running_main_power_on(
+    project: &Project,
+    command: &Command,
+    context: hex_engine::AudioSourceContext,
+    sink: &mut dyn WorkerAudioSink,
+) -> Option<ResidentMainPowerOn> {
+    if !sink.confirms_device_inserts() || !stopped_power::eligible(project, command) {
+        return None;
+    }
+    let [device] = project.main_devices() else {
+        return None;
+    };
+    let [track] = project.tracks() else {
+        return None;
+    };
+    if !device.bypassed()
+        || track.is_group()
+        || track.parent_group().is_some()
+        || track.clips().len() != 1
+        || !track.midi_clips().is_empty()
+        || !track.devices().is_empty()
+        || track.instrument().is_some()
+        || !track.sends().is_empty()
+        || !project.return_tracks().is_empty()
+        || project.has_gain_automation()
+    {
+        return None;
+    }
+    let device = device.id().value();
+    let source = sink.running_resident_main_power_on(context, device)?;
+    (source.context == context).then_some(ResidentMainPowerOn {
+        device,
+        interval: ResidentMainPowerOnInterval::Running(source),
+    })
+}
+
 pub(in crate::service) fn stopped_hosted_power_fence(
     project: &Project,
     command: &Command,
@@ -778,9 +814,9 @@ impl BrowserEdit {
 }
 
 impl Session {
-    /// Select the Verified Group entry whose leaf fade the audio owner supports.
+    /// Select the exact Verified Group reparent whose leaf fade Audio supports.
     /// The active source, page windows, and final candidate stay audio-owned.
-    pub(in crate::service) fn should_stage_verified_group_entry(
+    pub(in crate::service) fn should_stage_verified_group_route(
         &self,
         command: &Command,
         previous: Option<&PreparedRevision>,
@@ -792,12 +828,17 @@ impl Session {
         else {
             return false;
         };
-        let ([leaf], Some(group)) = (tracks.ids(), destination.parent_group) else {
+        let [leaf] = tracks.ids() else {
             return false;
         };
-        destination.before.is_none()
-            && group_history::fixed_entry(self.project(), *leaf, group)
-            && self.verified_group_route_inputs(previous)
+        let project = self.project();
+        let fixed_row = match destination.parent_group {
+            Some(group) => {
+                destination.before.is_none() && group_history::fixed_entry(project, *leaf, group)
+            }
+            None => group_history::fixed_exit(project, *leaf, destination.before),
+        };
+        fixed_row && self.verified_group_route_inputs(previous)
     }
 
     fn verified_group_route_inputs(&self, previous: Option<&PreparedRevision>) -> bool {
@@ -972,7 +1013,7 @@ impl Session {
             )
         {
             Operation::Device(GraphEditOperation::ReplaceDevice)
-        } else if self.should_stage_verified_group_entry(&command, previous) {
+        } else if self.should_stage_verified_group_route(&command, previous) {
             Operation::Device(GraphEditOperation::MoveTrack)
         } else {
             Operation::Device(
@@ -1140,7 +1181,7 @@ impl Session {
             context,
             restoring_plugin_state: false,
             preparing_edit: true,
-            stopped_main_power_on: None,
+            main_power_on: None,
             running_main_power_off: None,
             hosted_instrument_move: None,
         };
@@ -1204,7 +1245,12 @@ impl Session {
         proposal_control: Option<&PluginEffectControl>,
         document_intent: u64,
     ) -> Result<Option<Pending>, SessionError> {
-        let stopped_fence = stopped_hosted_power_fence(self.project(), &command, context, sink)?;
+        let running_power_on = running_main_power_on(self.project(), &command, context, sink);
+        let stopped_fence = if running_power_on.is_none() {
+            stopped_hosted_power_fence(self.project(), &command, context, sink)?
+        } else {
+            None
+        };
         let running_power_off =
             if stopped_fence.is_none() && stages_main_power_off(self.project(), &command, sink) {
                 let device = self
@@ -1235,6 +1281,7 @@ impl Session {
             admission,
             current,
             stopped_fence,
+            running_power_on,
             running_power_off,
             plugin,
             proposal_control,
@@ -1242,7 +1289,10 @@ impl Session {
             hosted_instrument_move,
             |session| {
                 crate::validate_command_media(&command)?;
-                let operation = if stopped_fence.is_some() || running_power_off.is_some() {
+                let operation = if stopped_fence.is_some()
+                    || running_power_on.is_some()
+                    || running_power_off.is_some()
+                {
                     GraphEditOperation::PowerDevice
                 } else if plugin.is_some() {
                     match &command {
@@ -1314,6 +1364,7 @@ impl Session {
             None,
             None,
             None,
+            None,
             document_intent,
             None,
             |session| {
@@ -1347,6 +1398,7 @@ impl Session {
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
         stopped_fence: Option<ResidentFreshRuntimeFence>,
+        running_power_on: Option<ResidentMainPowerOn>,
         running_power_off: Option<ResidentMainPowerOff>,
         plugin: Option<&PluginEffectControl>,
         proposal_control: Option<&PluginEffectControl>,
@@ -1383,18 +1435,29 @@ impl Session {
                         "device edit needs the current installed audio graph"
                     },
                 ))?;
-            let stopped_main_power_on = if matches!(
+            if let Some(power) = running_power_on
+                && let ResidentMainPowerOnInterval::Running(source) = power.interval()
+                && (installed.output_identity != source.output_identity
+                    || installed.audio_revision != source.audio_revision
+                    || installed.source_context != Some(source.context))
+            {
+                return Err(SessionError::Invalid(
+                    "running main power on source changed",
+                ));
+            }
+            let main_power_on = if matches!(
                 operation,
                 Operation::Device(GraphEditOperation::PowerDevice)
             ) {
-                stopped_fence.and_then(|fence| {
-                    let [device] = self.project().main_devices() else {
-                        return None;
-                    };
-                    device.bypassed().then_some(ResidentMainPowerOn {
-                        device: device.id().value(),
-                        source_context: context,
-                        fence,
+                running_power_on.or_else(|| {
+                    stopped_fence.and_then(|fence| {
+                        let [device] = self.project().main_devices() else {
+                            return None;
+                        };
+                        device.bypassed().then_some(ResidentMainPowerOn {
+                            device: device.id().value(),
+                            interval: ResidentMainPowerOnInterval::Stopped { context, fence },
+                        })
                     })
                 })
             } else {
@@ -1406,7 +1469,7 @@ impl Session {
             };
             let inputs = Inputs {
                 preparing_edit: plugin.is_none(),
-                stopped_main_power_on,
+                main_power_on,
                 running_main_power_off: running_power_off,
                 hosted_instrument_move: hosted_instrument_move.and_then(|intent| {
                     intent.preparation(self.project(), edit.project(), installed)

@@ -242,12 +242,15 @@ pub(super) struct Plugins {
     restore: Option<Restore>,
     reopen: Option<Reopen>,
     saved_off_document: Option<(u64, u64)>,
-    // Nonowning original binding and candidate key; actual returns stay in Root.
+    // Original binding, candidate key and optional original Stop generation.
+    // All worker returns stay in Root.
     power_off: Option<(
         hex_session::service::ResidentMainPowerOff,
         AudioSourceContext,
+        Option<u64>,
     )>,
     hosted_move: Option<hosted_move::MoveRoute>,
+    adopted_hosted_move: Option<hosted_move::AdoptedRoute>,
     edit: Option<AudioSourceContext>,
     pub(super) catalog: Option<std::path::PathBuf>,
     degraded: degraded::DegradedReport<Binding>,
@@ -1211,13 +1214,16 @@ impl Plugins {
         cancellation: Option<&hex_session::service::RequestCancellation>,
         fresh_hosted_sources: bool,
         powering_on_main: Option<u64>,
-        retained: Option<RetainedInstrumentSource>,
+        retained: Option<hosted_move::MoveRoute>,
     ) -> Result<(), String> {
         let previous = desired
             .filter(|_| fresh_hosted_sources)
             .map(CanonicalAudioSourceSnapshot::effect_preparation);
         input.visit_plugin_devices(|destination, device, state| {
-            if retained_instrument_for(retained, destination, device).is_some() {
+            if retained
+                .and_then(|route| route.binding_for(destination, device))
+                .is_some()
+            {
                 return Ok(());
             }
             // History may carry the identity and state of a deleted device.
@@ -1291,7 +1297,7 @@ impl Plugins {
             .map(Some);
         }
         let powering_on = input
-            .stopped_main_power_on()
+            .main_power_on()
             .filter(|intent| powered_off == Some(intent.device()))
             .map(|intent| intent.device());
         let mut output = output;
@@ -1314,8 +1320,9 @@ impl Plugins {
         let context = input.context();
         let mut unavailable = Vec::new();
         input.visit_plugin_devices(|destination, device, state| {
-            if let Some(retained) = retained_instrument_for(retained, destination, device) {
-                bindings.push(retained.binding());
+            if let Some(binding) = retained.and_then(|route| route.binding_for(destination, device))
+            {
+                bindings.push(binding);
                 return Ok(());
             }
             let owner = destination.owner();
@@ -1380,10 +1387,11 @@ impl Plugins {
         let control = output
             .and_then(|output| output.publication.control())
             .ok_or("native output closed")?;
-        let adopted = if retained.is_none() {
-            self.adopted_hosted_route(context, &bindings, control.status.recording_source())?
-        } else {
-            None
+        let compiler_alias = match retained {
+            Some(route) => route.compiler_alias()?,
+            None => {
+                self.adopted_hosted_route(context, &bindings, control.status.recording_source())?
+            }
         };
         let mut canonical = Vec::new();
         canonical
@@ -1441,12 +1449,17 @@ impl Plugins {
             }
         }
         loop {
+            if retained
+                .is_some_and(|route| control.status.recording_source() != Some(route.applied))
+            {
+                return Err("original vst3 move source is no longer installed".into());
+            }
             match Hosting::prepare_with_canonical_bases_on_control(
                 control,
                 &bindings,
                 &unavailable,
                 &canonical,
-                retained.or(adopted),
+                compiler_alias,
                 prepare,
             ) {
                 Err(error)
@@ -1462,12 +1475,8 @@ impl Plugins {
                     edits::poll_control(control);
                 }
                 Ok(prepared) => {
-                    if let Some((retained, route)) = retained.zip(input.hosted_instrument_move()) {
-                        self.hosted_move = Some(hosted_move::MoveRoute::prepare(
-                            context,
-                            *route,
-                            retained.binding(),
-                        ));
+                    if let Some(route) = retained {
+                        self.hosted_move = Some(route);
                     }
                     return Ok(Some(prepared));
                 }
@@ -1475,16 +1484,6 @@ impl Plugins {
             }
         }
     }
-}
-
-fn retained_instrument_for(
-    retained: Option<RetainedInstrumentSource>,
-    destination: PluginEffectDestination,
-    device: u64,
-) -> Option<RetainedInstrumentSource> {
-    retained.filter(|route| {
-        destination.is_instrument() && route.matches_receiver(destination.owner(), device)
-    })
 }
 
 fn hosting_profile(destination: PluginEffectDestination) -> PluginProfile {

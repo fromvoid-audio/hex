@@ -13,7 +13,7 @@ impl Plugins {
         output: Option<&mut WorkerPreparedOutput>,
         input: &ResidentEffectPreparation<'_>,
         desired: Option<&CanonicalAudioSourceSnapshot>,
-    ) -> Result<Option<RetainedInstrumentSource>, String> {
+    ) -> Result<Option<hosted_move::MoveRoute>, String> {
         let Some(route) = input.hosted_instrument_move() else {
             return Ok(None);
         };
@@ -60,8 +60,7 @@ impl Plugins {
         // the exact predecessor stays with the same physical worker. An
         // observed latency restart or a recovery read from another source
         // still needs to settle before the move.
-        if self.has_adopted_hosted_route(input.context())
-            || source.editor_open
+        if source.editor_open
             || source.open_editor_group.is_some()
             || source.edit_backlog
             || source
@@ -74,15 +73,33 @@ impl Plugins {
         {
             return Err("running vst3 move requires one settled instrument route".into());
         }
-        RetainedInstrumentSource::for_track_move(
+        let physical_owner = if let Some(adopted) = self.adopted_move(input.context()) {
+            let installed = adopted.request;
+            if installed.receiver != route.donor
+                || installed.physical_owner != route.receiver
+                || installed.device != route.device
+                || installed.binding != source.binding
+            {
+                return Err(
+                    "running vst3 move must return the original worker to its first track".into(),
+                );
+            }
+            installed.physical_owner
+        } else {
+            route.donor
+        };
+        Ok(Some(hosted_move::MoveRoute::prepare(
+            input.context(),
+            route.predecessor,
+            hex_engine::playback::HostedInstrumentMove {
+                donor: route.donor,
+                receiver: route.receiver,
+                physical_owner,
+                device: route.device,
+                binding: source.binding,
+            },
             predecessor,
-            route.donor.value(),
-            route.receiver.value(),
-            device,
-            source.binding,
-        )
-        .map(Some)
-        .map_err(|error| error.to_string())
+        )))
     }
 
     pub(in crate::native_audio) fn received_foreign_program_on_control(

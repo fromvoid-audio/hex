@@ -32,40 +32,37 @@ impl Plugins {
             .map(|source| source.binding)
     }
 
-    /// Exact Off ends admission before the terminal, but grants no reclamation.
+    /// Exact Off ends admission before the terminal. A proved pass stamp lets
+    /// the same callback pass stage Power On without granting worker custody.
     pub(in crate::native_audio) fn finish_power_off(
         &mut self,
         context: AudioSourceContext,
         accepted: bool,
         applied: Option<hex_audio::prepared::AppliedAudioSource>,
         off: Option<u64>,
-    ) {
-        let Some((intent, candidate)) = self
+    ) -> Option<(hex_audio::prepared::AppliedAudioSource, u64)> {
+        let (intent, candidate, stop_generation) = self
             .power_off
-            .filter(|(_, candidate)| *candidate == context)
-        else {
-            return;
-        };
+            .filter(|(_, candidate, _)| *candidate == context)?;
         self.power_off = None;
+        let applied = applied?;
         if !accepted
             || off != Some(intent.device)
-            || applied.is_none_or(|actual| {
-                actual.context != candidate
-                    || actual.output_identity != intent.source.output_identity
-                    || actual.audio_revision == intent.source.audio_revision
-            })
+            || applied.context != candidate
+            || applied.output_identity != intent.source.output_identity
+            || applied.audio_revision == intent.source.audio_revision
         {
-            return;
+            return None;
         }
-        if let Some(source) = self.sources.iter_mut().find(|source| {
+        let source = self.sources.iter_mut().find(|source| {
             source.binding == intent.binding
                 && source.device == intent.device
                 && source.owner == ProcessorChainOwner::Main
                 && source.project_generation == candidate.project_generation
-        }) {
-            source.accepted = false;
-            source.retiring = true;
-        }
+        })?;
+        source.accepted = false;
+        source.retiring = true;
+        stop_generation.map(|generation| (applied, generation))
     }
 
     pub(super) fn prepare_main_power_off(
@@ -100,6 +97,10 @@ impl Plugins {
         {
             return Err("running main power source changed".into());
         }
+        let stop_generation = control
+            .capture_fresh_runtime_fence()
+            .filter(|fence| fence.expected_active_revision() == intent.source.audio_revision)
+            .map(hex_audio::prepared::FreshRuntimeFence::consumed_stop_generation);
         let (device, state) = input
             .powered_off_main()
             .ok_or("main power target changed")?;
@@ -125,7 +126,7 @@ impl Plugins {
             },
             prepare,
         )?;
-        self.power_off = Some((intent, input.context()));
+        self.power_off = Some((intent, input.context(), stop_generation));
         self.edit = Some(input.context());
         Ok(prepared)
     }
@@ -193,7 +194,7 @@ mod tests {
             output_identity: 1,
             audio_revision: 9,
         };
-        for case in 0..5 {
+        for case in 0..6 {
             let mut plugins = Plugins::default();
             plugins.sources.push(source(binding));
             let other = Binding {
@@ -201,8 +202,8 @@ mod tests {
                 ..binding
             };
             plugins.sources.push(source(other));
-            plugins.power_off = Some((intent, candidate));
-            plugins.finish_power_off(
+            plugins.power_off = Some((intent, candidate, (case != 5).then_some(17)));
+            let exact_off = plugins.finish_power_off(
                 candidate,
                 case != 0,
                 Some(match case {
@@ -218,8 +219,9 @@ mod tests {
                 }),
                 if case == 3 { None } else { Some(7) },
             );
-            assert_eq!(plugins.sources[0].retiring, case == 4);
-            assert_eq!(plugins.sources[0].accepted, case != 4);
+            assert_eq!(exact_off, (case == 4).then_some((applied, 17)));
+            assert_eq!(plugins.sources[0].retiring, case >= 4);
+            assert_eq!(plugins.sources[0].accepted, case < 4);
             assert!(plugins.sources[1].accepted && !plugins.sources[1].retiring);
             assert!(plugins.power_off.is_none());
         }

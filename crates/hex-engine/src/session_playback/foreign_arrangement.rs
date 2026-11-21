@@ -243,7 +243,8 @@ impl ForeignArrangement {
     pub(super) fn has_direct_move_gate(
         &self,
         index: usize,
-        donor: &Track,
+        authored: &Track,
+        origin: TrackId,
         cut: FrameContext,
     ) -> bool {
         let Some(generator) = self.generators.get(index).and_then(Option::as_ref) else {
@@ -262,7 +263,7 @@ impl ForeignArrangement {
             && gate.gate_end_frame > cut.performance
             && cut.performance.saturating_sub(gate.onset_frame)
                 >= u64::from(generator.processor.total_latency_frames())
-            && validate_held_gates(donor, generator.track, ledger, &cut, None).is_ok()
+            && validate_held_gates(authored, origin, ledger, &cut, None).is_ok()
     }
 
     pub(super) fn prepare(revision: &PreparedRevision) -> Result<Self, SessionPlaybackError> {
@@ -663,10 +664,12 @@ impl ForeignArrangement {
                 let track = movement
                     .map_or_else(
                         || tracks.get(index),
-                        |movement| old_tracks.get(movement.source),
+                        |movement| movement.authored_track(tracks, old_tracks),
                     )
                     .ok_or(SessionPlaybackError::RevisionTrackMismatch)?;
-                validate_held_gates(track, donor.track, ledger, &cut, carried_origin)?;
+                let origin =
+                    movement.map_or(donor.track, |movement| movement.request.physical_owner);
+                validate_held_gates(track, origin, ledger, &cut, carried_origin)?;
             }
         }
         for (index, generator) in old.generators.iter().enumerate() {
