@@ -4576,7 +4576,7 @@ diff --git a/src/scene.rs b/src/scene.rs
 +            match operation {
 +                PaintOperation::Primitive(primitive) => {
 +                    if !primitive
-+                        .bounds()
++                        .painted_bounds()
 +                        .intersect(&primitive.content_mask().bounds)
 +                        .is_empty()
 +                    {
@@ -4722,7 +4722,7 @@ diff --git a/src/scene.rs b/src/scene.rs
 @@ -793 +1131 @@
 -        self.vertices.push(PathVertex {
 +        vertices.push(PathVertex {
-@@ -833,0 +1172,925 @@
+@@ -833,0 +1172,988 @@
 +
 +#[cfg(any(test, feature = "test-support"))]
 +pub(crate) fn verify_bulk_replay() -> Result<(), String> {
@@ -4948,7 +4948,7 @@ diff --git a/src/scene.rs b/src/scene.rs
 +            .map(|primitive| {
 +                (
 +                    primitive
-+                        .bounds()
++                        .painted_bounds()
 +                        .intersect(&primitive.content_mask().bounds),
 +                    describe(primitive, true),
 +                )
@@ -5368,7 +5368,70 @@ diff --git a/src/scene.rs b/src/scene.rs
 +        equivalent(&mut retained, &mut reference)
 +    }
 +
++    fn verify_transformed_sprite_coverage() -> Result<(), String> {
++        for scale in [1.0, 2.0] {
++            let mask = bounds(7.0, 4.0, 5.0, 8.0, scale);
++            let authored = bounds(14.0, 3.0, 10.0, 7.0, scale);
++            let Primitive::MonochromeSprite(mut sprite) = primitive(4, 41, authored, mask) else {
++                return Err("expected monochrome sprite".to_owned());
++            };
++            sprite.transformation = TransformationMatrix {
++                rotation_scale: [[0.0, 1.0], [-1.0, 0.0]],
++                translation: [8.0 * scale, 28.0 * scale],
++            };
++            require(
++                !authored.intersects(&mask),
++                "authored glyph should miss the mask",
++            )?;
++            require(
++                sprite.painted_bounds().intersects(&mask),
++                "rotated glyph lost fixture coverage",
++            )?;
++            let mut previous = Scene::default();
++            previous.insert_primitive(primitive(1, 40, mask, mask));
++            previous.insert_primitive(sprite.clone());
++            previous.insert_primitive(primitive(4, 42, mask, mask));
++            // A transformed-away saved record must be skipped, even if its
++            // authored rectangle intersects the mask.
++            let invisible = MonochromeSprite {
++                order: 0,
++                bounds: mask,
++                transformation: sprite
++                    .transformation
++                    .translate(point(40.0_f32.into(), 40.0_f32.into())),
++                ..sprite
++            };
++            previous
++                .paint_operations
++                .push(PaintOperation::Primitive(invisible.into()));
++            let range = 0..previous.len();
++            let cover = primitive(2, 43, mask, mask);
++            let mut fast = Scene::default();
++            let mut legacy = Scene::default();
++            require(
++                fast.try_bulk_replay(range.clone(), &previous),
++                "sprite range refused fast replay",
++            )?;
++            legacy.replay_legacy(range.clone(), &previous);
++            fast.insert_primitive(cover.clone());
++            legacy.insert_primitive(cover);
++            equivalent(&mut fast, &mut legacy)?;
++
++            let mut fallback = Scene::default();
++            let mut expected = Scene::default();
++            fallback.push_layer(mask);
++            expected.push_layer(mask);
++            fallback.replay(range.clone(), &previous);
++            expected.replay_legacy(range, &previous);
++            fallback.pop_layer();
++            expected.pop_layer();
++            equivalent(&mut fallback, &mut expected)?;
++        }
++        Ok(())
++    }
++
 +    pub(super) fn verify() -> Result<(), String> {
++        verify_transformed_sprite_coverage()?;
 +        verify_fresh_ordered_group()?;
 +        verify_path_clone_value_semantics()?;
 +        verify_disjoint_path_pair()?;

@@ -510,3 +510,10 @@ the completed triangles under the live clip mask.
 colors and widths of completed canvas quads at a logical point inside their
 content masks. Hex uses it to distinguish the idle, hover, and selected rounded
 note outlines. It is confined to the existing test-support context.
+
+21 November cached glyph clipping: Scene bulk replay uses each sprite's
+transformed painted bounds when copying the cached operations, matching
+fresh paint and fallback. A rotated glyph can remain visible through a
+mask outside its original horizontal rectangle. The cached-scene oracle
+checks visible and clipped transformed sprites, unchanged ordinary glyphs,
+and their relative order against a translucent overlay at both scales.
