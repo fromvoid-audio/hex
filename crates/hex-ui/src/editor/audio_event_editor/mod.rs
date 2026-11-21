@@ -59,9 +59,9 @@ pub(in crate::editor) fn editor_bounds(root: &AudioClipEdit) -> (u64, u64) {
         (root.view_start, root.view_end)
     }
 }
-/// The event grid uses the frame cycle start as its project-time anchor.
+/// The event grid anchors direct reads to the scope start in project time.
 pub(in crate::editor) fn event_grid_origin(root: &AudioClipEdit) -> u64 {
-    if matches!(root.timing, hex_project::AudioClipTiming::Frames) {
+    if root.content_view.is_none() || matches!(root.timing, hex_project::AudioClipTiming::Frames) {
         root.view_start
     } else {
         editor_bounds(root).0

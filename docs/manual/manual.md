@@ -708,7 +708,11 @@ falls silent after the remaining audio ends. zooming or scrolling can move the
 marker out of view; it returns when that source position is visible again.
 
 select an audio clip and choose **events** in its detail area. focus the event
-waveform and select an event, then press **c** or **0** to change its activation.
+waveform and drag an event by its header to place it on either side of the scope.
+pan or zoom out to reach more of the timeline. the scope stays where it is, and
+events outside it stay available for editing. extend the scope to play them.
+
+select an event, then press **c** or **0** to change its activation.
 inactive events keep their source and position and contribute silence. hold **f**
 to show its fade controls. release **f** to hide default
 controls; edited fades remain visible. the computer midi keyboard must be off.

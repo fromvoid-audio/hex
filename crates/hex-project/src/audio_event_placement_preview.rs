@@ -156,14 +156,13 @@ impl Project {
             }
             return clip.audio_event_range_placement_bounds(start, end);
         }
-        if root.placement.is_some()
-            || root.content_view.is_some()
+        if root.content_view.is_some()
             || self.clip_alias(clip.id()).is_some()
             || start >= end
             || end > root.domain.clock.length()
         {
             return Err(Invalid(
-                "musical event placement needs an unlinked one-shot root",
+                "musical event placement needs an unlinked direct root",
             ));
         }
         let (_, length, _, _) = root.projected_domain(self.tempo_map())?;
@@ -231,8 +230,9 @@ impl Clip {
     }
     /// Prove an authoring-origin translation in root clock units across Place or its
     /// history restoration. The Arrangement window and physical source window
-    /// stay equal; both clock length and container-fade origin translate by the
-    /// same amount. Pure crop, source replacement, processing and other clock
+    /// stay equal. Clock length and root-clock fades translate by the same
+    /// amount. Outer fades stay on the unchanged Arrangement gate.
+    /// Pure crop, source replacement, processing and other clock
     /// changes supply no such proof. This fact moves display coordinates only.
     pub fn audio_event_coordinate_shift_from(&self, previous: &Self) -> Option<i64> {
         if self.id() != previous.id()
@@ -259,7 +259,13 @@ impl Clip {
         };
         let shift =
             i128::from(after.domain.clock.length()) - i128::from(before.domain.clock.length());
-        if shift != i128::from(after.domain.fade_start) - i128::from(before.domain.fade_start)
+        let fade_shift = match before.domain.fade_clock {
+            crate::AudioClipFadeClock::LegacyRoot => shift,
+            crate::AudioClipFadeClock::Outer => 0,
+        };
+        if after.domain.fade_clock != before.domain.fade_clock
+            || fade_shift
+                != i128::from(after.domain.fade_start) - i128::from(before.domain.fade_start)
             || after.domain.fade != before.domain.fade
             || after.domain.source_offset != before.domain.source_offset
             || after.domain.source_length != before.domain.source_length

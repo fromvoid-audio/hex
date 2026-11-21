@@ -91,6 +91,76 @@ mod tests {
     };
 
     #[test]
+    fn warped_repeat_keeps_its_pcm_until_an_outside_event_is_revealed() {
+        let (mut editor, clip, media) = fixture(false);
+        let beat = BeatTime::ONE.raw();
+        let context = AudioTransformPreparation::default();
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        let project = editor.project();
+        let warp = default_audio_warp(
+            project.clip(clip).unwrap(),
+            project.tempo_map(),
+            WarpMode::RePitch,
+        )
+        .unwrap();
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(warp),
+            })
+            .unwrap();
+        let original = prepare(&editor, &media, &context);
+        let full = editor.project().clip(clip).unwrap().duration();
+        let full_pcm = render(&original, 0, full as usize, 83);
+        let scope = |end| Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::ScopeRange {
+                start: beat / 4,
+                end,
+                looping: true,
+            },
+        };
+        editor.execute(scope(beat * 3 / 4)).unwrap();
+        let current = editor.project().clip(clip).unwrap();
+        editor
+            .execute(Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: current.start() + 3 * current.duration(),
+                },
+            })
+            .unwrap();
+        let before = prepare(&editor, &media, &context);
+        let current = editor.project().clip(clip).unwrap();
+        let (start, length) = (current.start(), current.duration() as usize);
+        let expected = render(&before, start, length, 83);
+        let destination = beat * 5 / 4;
+        editor
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::Place {
+                    event: 1,
+                    start: destination as i64,
+                },
+            })
+            .unwrap();
+        let moved = prepare(&editor, &media, &context);
+        assert_eq!(render(&moved, start, length, 83), expected);
+
+        editor.execute(scope(destination + beat / 4)).unwrap();
+        let revealed = prepare(&editor, &media, &context);
+        let samples = &full_pcm[..full as usize / 4];
+        assert!(samples.iter().any(|sample| *sample != [0.0; 2]));
+        assert_eq!(render(&revealed, start + full, samples.len(), 83), samples);
+    }
+
+    #[test]
     fn phased_warped_event_preview_matches_shared_loop_and_finite_once() {
         let (mut editor, clip, media) = fixture(false);
         let track = editor.project().tracks()[0].id();
