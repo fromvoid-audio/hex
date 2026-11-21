@@ -405,7 +405,7 @@ fn run_track_effect_move(case: MoveCase) {
 
     if case == MoveCase::FreshHistory {
         verify_running_move_history(
-            &h,
+            &mut h,
             before,
             &terminal,
             [donor, receiver],
@@ -441,20 +441,20 @@ fn run_track_effect_move(case: MoveCase) {
 }
 
 fn verify_running_move_history(
-    h: &ResidentHarness,
+    h: &mut ResidentHarness,
     original: &ViewState,
     moved: &Event,
     tracks: [hex_project::TrackId; 2],
     device: hex_project::DeviceId,
     mut worker_start: u64,
 ) {
-    let binding = || {
+    let binding = |h: &ResidentHarness| {
         h.plugin_progress.lock().unwrap().source_bindings[0]
             .filter(|(id, _, _)| *id == device.value())
             .map(|(_, binding, _)| binding)
     };
     let mut current = moved.state.clone();
-    let mut prior_worker = binding().unwrap();
+    let mut prior_worker = binding(h).unwrap();
     for (index, (request, target)) in [
         (Request::Undo, original.project.as_ref()),
         (Request::Redo, moved.state.project.as_ref()),
@@ -500,7 +500,7 @@ fn verify_running_move_history(
         assert_eq!(submission.context.editor_revision, current.revision + 1);
         assert!(submission.audio_revision > predecessor.audio_revision);
         assert_eq!(status(h).recording_source(), Some(predecessor));
-        assert_eq!(binding(), Some(prior_worker));
+        assert_eq!(binding(h), Some(prior_worker));
         let (prepared_owner, fresh) = prepared
             .try_recv()
             .expect("prepared history binding before callback")
@@ -562,7 +562,7 @@ fn verify_running_move_history(
             h.pump();
             if h.control_polls.load(Acquire) > terminal_poll
                 && h.plugin_records.load(Acquire) == 1
-                && binding() == Some(fresh)
+                && binding(h) == Some(fresh)
             {
                 break;
             }

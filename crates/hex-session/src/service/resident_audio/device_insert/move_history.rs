@@ -1,7 +1,7 @@
-//! Prove that a history target is exactly one direct native device move.
-//! Match a Delay or Reverb with an optional retained Utility on one side, or
-//! an unchanged single-contributor instrument. Audio proves the actual cut
-//! and retains authority over a Sampler's backing or the original VST3 worker.
+//! Stage history only when one directed move reproduces the entire target.
+//! Native effects and instruments use their existing audio predicates. A
+//! playing hosted effect can lend the same direct two-row proof as its
+//! forward move. Audio retains authority over the cut and resource custody.
 use super::hosted_instrument_move::Intent;
 use hex_project::{
     Command, Device, DeviceSelectionIds, Editor, Invalid, Project, SourceId, StagedProjectHistory,
@@ -13,8 +13,17 @@ pub(super) struct StagedMove {
     pub(super) hosted_instrument_move: Option<Intent>,
 }
 
-pub(super) fn stage(editor: &mut Editor, redo: bool) -> Result<Option<StagedMove>, Invalid> {
-    let Some(command) = editor.inspect_history(redo, move_command).flatten() else {
+pub(super) fn stage(
+    editor: &mut Editor,
+    redo: bool,
+    running_hosted_effect: bool,
+) -> Result<Option<StagedMove>, Invalid> {
+    let Some(command) = editor
+        .inspect_history(redo, |before, after| {
+            move_command(before, after, running_hosted_effect)
+        })
+        .flatten()
+    else {
         return Ok(None);
     };
     let hosted_instrument_move = Intent::from_command(&command);
@@ -34,7 +43,7 @@ pub(super) fn stage(editor: &mut Editor, redo: bool) -> Result<Option<StagedMove
     )
 }
 
-fn move_command(before: &Project, after: &Project) -> Option<Command> {
+fn move_command(before: &Project, after: &Project, running_hosted_effect: bool) -> Option<Command> {
     if before.tracks().len() != after.tracks().len() {
         return None;
     }
@@ -99,22 +108,26 @@ fn move_command(before: &Project, after: &Project) -> Option<Command> {
     }
     let (source, device, source_id) = source?;
     let (destination, moved, destination_source_id) = destination?;
-    if device != moved
-        || source_id != destination_source_id
-        || device.bypassed()
-        || (source_id.is_none()
-            && !matches!(
-                device.state().type_id().as_str(),
-                Ok("hex.delay" | "hex.reverb")
-            ))
-    {
+    if device != moved || source_id != destination_source_id || device.bypassed() {
         return None;
     }
-    Some(Command::MoveTrackDevices {
+    let command = Command::MoveTrackDevices {
         source,
         destination,
         selected: DeviceSelectionIds::new(&[device.id()]).ok()?,
-    })
+    };
+    if source_id.is_none()
+        && !matches!(
+            device.state().type_id().as_str(),
+            Ok("hex.delay" | "hex.reverb")
+        )
+    {
+        if !running_hosted_effect {
+            return None;
+        }
+        Intent::from_command(&command)?.exact_track_effect_move(before, after)?;
+    }
+    Some(command)
 }
 
 fn solitary_move_instrument<'a>(
@@ -145,6 +158,110 @@ mod tests {
     use crate::service::{ResidentRuntimeLoop, ResidentSourceOrigin};
     use hex_project::Created;
 
+    fn hosted_state() -> hex_lattice_contract::NativeDeviceState {
+        hex_plugin_state::encode(hex_plugin_state::State {
+            identity: hex_plugin_state::Identity {
+                class: hex_plugin_state::ClassId::new([1; 16]).unwrap(),
+                binary: hex_plugin_state::BinaryIdentity {
+                    executable_sha256: [2; 32],
+                    info_sha256: [3; 32],
+                },
+            },
+            component: Some(b"original"),
+            controller: None,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn playing_hosted_effect_history_uses_only_the_direct_normalized_move() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let mut import = |name: &str| {
+            let Created::Imported { track, .. } = editor
+                .execute(Command::ImportAudioTrack {
+                    name: name.into(),
+                    path: format!("memory/{name}.wav").into(),
+                    sample_rate: 48_000,
+                    frames: 4096,
+                })
+                .unwrap()
+            else {
+                panic!("expected a direct audio row");
+            };
+            track
+        };
+        let donor = import("donor");
+        let receiver = import("receiver");
+        let Created::Device(device) = editor
+            .execute(Command::InsertDevice {
+                track: donor,
+                before: None,
+                state: hosted_state(),
+            })
+            .unwrap()
+        else {
+            panic!("expected one hosted effect");
+        };
+        let command = || Command::MoveTrackDevices {
+            source: donor,
+            destination: receiver,
+            selected: DeviceSelectionIds::new(&[device]).unwrap(),
+        };
+        let original = editor.project().clone();
+        editor.execute(command()).unwrap();
+        let moved = editor.project().clone();
+        assert!(stage(&mut editor, false, false).unwrap().is_none());
+        assert_eq!(editor.project(), &moved);
+        let source = ResidentRuntimeLoop {
+            output_identity: 5,
+            audio_revision: 11,
+            source_context: None,
+            source_origin: ResidentSourceOrigin::CanonicalCandidate,
+            section_loop: None,
+        };
+        for (redo, expected, [from, to]) in [
+            (false, &original, [receiver, donor]),
+            (true, &moved, [donor, receiver]),
+        ] {
+            let staged = stage(&mut editor, redo, true).unwrap().unwrap();
+            let route = staged
+                .hosted_instrument_move
+                .unwrap()
+                .track_effect_preparation(editor.project(), staged.edge.project(), source)
+                .unwrap();
+            assert_eq!(
+                (route.donor, route.receiver, route.device),
+                (from, to, device)
+            );
+            assert_eq!(route.predecessor, source);
+            assert_eq!(staged.edge.project(), expected);
+            editor.commit_staged_history(staged.edge).unwrap();
+        }
+
+        let mut compound = Editor::new(original.clone(), 8).unwrap();
+        compound
+            .execute_many_prepared::<(), Invalid>(
+                vec![
+                    command(),
+                    Command::SetTrackGains {
+                        gains: vec![(donor, 0.5)],
+                    },
+                ],
+                |_, _| Ok(()),
+            )
+            .unwrap();
+        assert!(stage(&mut compound, false, true).unwrap().is_none());
+
+        let mut extra_row = Editor::new(original, 8).unwrap();
+        extra_row
+            .execute(Command::AddTrack {
+                name: "third".into(),
+            })
+            .unwrap();
+        extra_row.execute(command()).unwrap();
+        assert!(stage(&mut extra_row, false, true).unwrap().is_none());
+    }
+
     #[test]
     fn hosted_history_lends_only_the_normalized_direct_move() {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
@@ -159,18 +276,7 @@ mod tests {
         };
         let donor = add_track("donor");
         let receiver = add_track("receiver");
-        let state = hex_plugin_state::encode(hex_plugin_state::State {
-            identity: hex_plugin_state::Identity {
-                class: hex_plugin_state::ClassId::new([1; 16]).unwrap(),
-                binary: hex_plugin_state::BinaryIdentity {
-                    executable_sha256: [2; 32],
-                    info_sha256: [3; 32],
-                },
-            },
-            component: Some(b"original"),
-            controller: None,
-        })
-        .unwrap();
+        let state = hosted_state();
         let Created::Device(device) = editor
             .execute(Command::InsertInstrument {
                 track: donor,
@@ -192,7 +298,7 @@ mod tests {
             (false, &before, [receiver, donor]),
             (true, &moved, [donor, receiver]),
         ] {
-            let staged = stage(&mut editor, redo).unwrap().unwrap();
+            let staged = stage(&mut editor, redo, false).unwrap().unwrap();
             assert_eq!(staged.edge.project(), expected);
             let route = staged
                 .hosted_instrument_move
@@ -228,7 +334,7 @@ mod tests {
                 |_, _| Ok(()),
             )
             .unwrap();
-        assert!(stage(&mut compound, false).unwrap().is_none());
+        assert!(stage(&mut compound, false, false).unwrap().is_none());
         assert!(compound.can_undo());
     }
 }

@@ -69,6 +69,16 @@ impl Intent {
         after: &Project,
         predecessor: ResidentRuntimeLoop,
     ) -> Option<ResidentHostedTrackEffectMove> {
+        self.exact_track_effect_move(before, after)?;
+        Some(ResidentHostedTrackEffectMove {
+            donor: self.donor,
+            receiver: self.receiver,
+            device: self.device,
+            predecessor,
+        })
+    }
+
+    pub(super) fn exact_track_effect_move(self, before: &Project, after: &Project) -> Option<()> {
         let direct_pair = |project: &Project| {
             project.tracks().len() == 2
                 && project.main_devices().is_empty()
@@ -112,12 +122,7 @@ impl Intent {
             && original.modulation().is_empty()
             && before.track(self.receiver)?.devices().is_empty()
             && after.track(self.donor)?.devices().is_empty())
-        .then_some(ResidentHostedTrackEffectMove {
-            donor: self.donor,
-            receiver: self.receiver,
-            device: self.device,
-            predecessor,
-        })
+        .then_some(())
     }
 }
 
