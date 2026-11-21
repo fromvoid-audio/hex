@@ -3,8 +3,8 @@
 //! still fences runtime/tails before the child's existing post-device fader moves.
 //! Group and Main processors stay on their existing clocks. A supported
 //! compensated route waits for the departing output's aligned PCM to drain.
-//! Verified streaming admits a fixed-row, zero-delay entry only. The caller
-//! must prove both page windows before starting the fade.
+//! Verified streaming admits fixed-row, zero-delay moves between Main and a
+//! Group that retains another child. Both page windows must be ready first.
 use super::{RouteOwner, SessionPlayback};
 use crate::signal_graph::{SignalGraph, TrackOutput};
 
@@ -120,15 +120,23 @@ impl SessionPlayback {
         }
         let (from, to) = changed?;
         if streamed {
-            if from != to || !matches!(old_graph.tracks.get(from)?.output, TrackOutput::Main { .. })
-            {
+            if from != to {
                 return None;
             }
-            let TrackOutput::Group { target, .. } = new_graph.tracks.get(to)?.output else {
-                return None;
+            let (direct, grouped, target) = match (
+                old_graph.tracks.get(from)?.output,
+                new_graph.tracks.get(to)?.output,
+            ) {
+                (TrackOutput::Main { .. }, TrackOutput::Group { target, .. }) => {
+                    (old_graph, new_graph, target)
+                }
+                (TrackOutput::Group { target, .. }, TrackOutput::Main { .. }) => {
+                    (new_graph, old_graph, target)
+                }
+                _ => return None,
             };
-            let group = old_graph.track_index(new_graph.tracks.get(target)?.id?)?;
-            if !old_graph.tracks.iter().any(|track| {
+            let group = direct.track_index(grouped.tracks.get(target)?.id?)?;
+            if !direct.tracks.iter().any(|track| {
                 matches!(track.output, TrackOutput::Group { target, .. } if target == group)
             }) {
                 return None;

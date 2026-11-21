@@ -7,6 +7,11 @@ use hex_project::{Created, TrackDestination, TrackSelectionIds};
 
 const FADE: usize = 240;
 
+enum RouteDirection {
+    Enter,
+    Exit,
+}
+
 #[derive(Clone, Copy)]
 enum RouteEnd {
     Install,
@@ -40,17 +45,32 @@ fn assert_frame(frame: u64, actual: Frame, gain: f32, grouped: bool) {
 fn verified_group_entry_fades_only_the_leaf_across_warm_file_pages() {
     let _serial = serial();
     for partition in [1, 257] {
-        check_group_entry(partition, RouteEnd::Install);
+        check_group_route(partition, RouteDirection::Enter, RouteEnd::Install);
     }
 }
 
 #[test]
 fn cancelling_a_verified_group_entry_restores_its_original_route() {
     let _serial = serial();
-    check_group_entry(257, RouteEnd::Cancel);
+    check_group_route(257, RouteDirection::Enter, RouteEnd::Cancel);
 }
 
-fn check_group_entry(partition: usize, end: RouteEnd) {
+#[test]
+fn verified_group_exit_keeps_the_original_until_the_exact_receipt() {
+    let _serial = serial();
+    for partition in [1, 257] {
+        check_group_route(partition, RouteDirection::Exit, RouteEnd::Install);
+    }
+}
+
+#[test]
+fn cancelling_a_verified_group_exit_restores_its_original_route() {
+    let _serial = serial();
+    check_group_route(257, RouteDirection::Exit, RouteEnd::Cancel);
+}
+
+fn check_group_route(partition: usize, direction: RouteDirection, end: RouteEnd) {
+    let predecessor_grouped = matches!(direction, RouteDirection::Exit);
     let (mut control, mut data, errors, mut retirement) = anchored();
     let page = hex_engine::STREAM_PAGE_FRAMES as u64;
     let frames = u32::try_from(3 * page).unwrap();
@@ -104,25 +124,37 @@ fn check_group_entry(partition: usize, end: RouteEnd) {
         project_generation: 2,
         editor_revision: 7,
     };
-    let mut first =
-        stream_fixture::owner_with_effects(editor.project(), metadata.clone(), Some(context));
-    editor
-        .execute(Command::ReparentTracks {
-            tracks: TrackSelectionIds::new(&[leaf]).unwrap(),
-            destination: TrackDestination {
-                parent_group: Some(group),
-                before: None,
-            },
-        })
-        .unwrap();
-    assert_eq!(
+    let reparent = |editor: &mut Editor, parent_group| {
+        editor
+            .execute(Command::ReparentTracks {
+                tracks: TrackSelectionIds::new(&[leaf]).unwrap(),
+                destination: TrackDestination {
+                    parent_group,
+                    before: None,
+                },
+            })
+            .unwrap();
+    };
+    if predecessor_grouped {
+        reparent(&mut editor, Some(group));
+    }
+    let rows = |editor: &Editor| {
         editor
             .project()
             .tracks()
             .iter()
             .map(|track| track.id())
-            .collect::<Vec<_>>(),
-        [group, sibling, leaf]
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(rows(&editor), [group, sibling, leaf]);
+    let mut first =
+        stream_fixture::owner_with_effects(editor.project(), metadata.clone(), Some(context));
+    let next_parent = (!predecessor_grouped).then_some(group);
+    reparent(&mut editor, next_parent);
+    assert_eq!(rows(&editor), [group, sibling, leaf]);
+    assert_eq!(
+        editor.project().track(leaf).unwrap().parent_group(),
+        next_parent
     );
     let quote = AudioCandidateEffects::with_host_definitions(&[], |effects| {
         Ok(effects.quote(editor.project(), 1).unwrap())
@@ -208,7 +240,7 @@ fn check_group_entry(partition: usize, end: RouteEnd) {
         if status.position.load(Acquire) != start {
             assert_eq!(status.position.load(Acquire), start + count as u64);
             for (offset, frame) in pcm[..count].iter().copied().enumerate() {
-                assert_frame(start + offset as u64, frame, 1.0, false);
+                assert_frame(start + offset as u64, frame, 1.0, predecessor_grouped);
             }
         }
         assert!(Instant::now() < deadline, "predecessor did not play");
@@ -250,7 +282,7 @@ fn check_group_entry(partition: usize, end: RouteEnd) {
                 cut + elapsed as u64,
                 frame,
                 (FADE - elapsed - 1) as f32 / FADE as f32,
-                false,
+                predecessor_grouped,
             );
         }
     }
@@ -262,14 +294,18 @@ fn check_group_entry(partition: usize, end: RouteEnd) {
                 audio_revision: receipt.revision(),
                 ..predecessor
             },
-            true,
+            !predecessor_grouped,
         ),
         RouteEnd::Cancel => {
             assert_eq!(
                 receipt.cancel(),
                 crate::prepared::FreshRuntimeCancellationResult::Cancelled
             );
-            (PublicationReceiptState::Cancelled, predecessor, false)
+            (
+                PublicationReceiptState::Cancelled,
+                predecessor,
+                predecessor_grouped,
+            )
         }
     };
     let starting_gain = (FADE - faded) as f32 / FADE as f32;
