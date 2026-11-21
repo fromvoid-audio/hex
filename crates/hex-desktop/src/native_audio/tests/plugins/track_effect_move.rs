@@ -1,4 +1,4 @@
-//! Signed direct Resident track-effect move with the original SDK worker.
+//! Signed direct Resident track-effect move with a fresh receiver SDK worker.
 use super::*;
 use hex_audio::plugin_effects::EffectBinding;
 use hex_audio::prepared::FreshRuntimeCancellationResult;
@@ -26,36 +26,37 @@ fn assert_project_retained(event: &Event, original: &ViewState) {
     assert_eq!(event.state.can_redo, original.can_redo);
 }
 
-fn assert_track_pcm(h: &ResidentHarness, moved: bool) {
-    assert_track_pcm_at_gain(h, moved, RECEIVER_GAIN);
+fn assert_donor_pcm(h: &ResidentHarness) {
+    assert_track_pcm_at_gain(h, None, RECEIVER_GAIN);
 }
 
-fn assert_track_pcm_at_gain(h: &ResidentHarness, moved: bool, receiver_gain: f32) {
+fn assert_track_pcm_at_gain(h: &ResidentHarness, receiver_start: Option<u64>, receiver_gain: f32) {
     let frame = status(h).position.load(Acquire);
-    assert!(frame >= BRIDGE);
+    let start = receiver_start.unwrap_or(0);
+    assert!(frame >= start + BRIDGE);
     let pcm = instruments::render_replay_block(h);
     assert_eq!(status(h).position.load(Acquire), frame + BLOCK);
-    // The original signed processing fixture advances its private gain once
-    // per input quantum. Both direct tracks align at the existing bridge.
-    let wet = 0.5 + ((frame - BRIDGE) / BLOCK) as f32 * 0.125;
+    // Each fresh SDK instance begins its private quantum ramp independently.
+    // Both direct tracks align at the existing bridge.
+    let wet = 0.5 + ((frame - start - BRIDGE) / BLOCK) as f32 * 0.125;
     let donor = f32::from(DONOR_INPUT) / 32768.0 * DONOR_GAIN;
     let receiver = f32::from(RECEIVER_INPUT) / 32768.0 * receiver_gain;
-    let expected = if moved {
+    let expected = if receiver_start.is_some() {
         donor + receiver * wet
     } else {
         donor * wet + receiver
     };
     assert!(
         pcm.iter().all(|sample| *sample == [expected; 2]),
-        "moved={moved} frame={frame}: first sample {:?}, expected {expected}",
+        "receiver_start={receiver_start:?} frame={frame}: first sample {:?}, expected {expected}",
         pcm[0],
     );
 }
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
-fn running_resident_track_vst3_effect_move_keeps_the_original_worker() {
-    run_track_effect_move(MoveCase::Retained);
+fn running_resident_track_vst3_effect_move_installs_a_fresh_receiver_worker() {
+    run_track_effect_move(MoveCase::Fresh);
 }
 
 #[test]
@@ -72,7 +73,7 @@ fn cancelling_a_running_track_effect_move_restores_the_original_wet_route() {
 
 #[derive(PartialEq, Eq)]
 enum MoveCase {
-    Retained,
+    Fresh,
     Confirmed,
     Cancelled,
 }
@@ -159,7 +160,7 @@ fn run_track_effect_move(case: MoveCase) {
     };
     wait(|| h.plugin_progress.lock().unwrap().source_bindings[0].is_some());
     let original = live_worker(&h);
-    let owner = hex_engine::ProcessorChainOwner::Track(donor.value());
+    let receiver_owner = hex_engine::ProcessorChainOwner::Track(receiver.value());
     let predecessor = status(&h).recording_source().unwrap();
     assert_eq!(original.root, predecessor.output_identity);
     assert_eq!(predecessor.context.editor_revision, before.revision);
@@ -180,7 +181,7 @@ fn run_track_effect_move(case: MoveCase) {
     for _ in 0..4 {
         instruments::render_replay_block(&h);
     }
-    assert_track_pcm(&h, false);
+    assert_donor_pcm(&h);
     assert_eq!(status(&h).recording_source(), Some(predecessor));
 
     let prepared = h
@@ -213,7 +214,7 @@ fn run_track_effect_move(case: MoveCase) {
             if event.request_complete {
                 assert_eq!(status(&h).recording_source(), Some(predecessor));
                 assert_eq!(live_worker(&h), original);
-                assert_track_pcm(&h, false);
+                assert_donor_pcm(&h);
                 panic!(
                     "hosted effect move ended before submission: error={:?}, receipt={:?}, prepared={:?}",
                     event.error,
@@ -227,14 +228,13 @@ fn run_track_effect_move(case: MoveCase) {
         // Fresh source preparation can wait for native mailbox progress on
         // Session. Pace the old worker only while publication is still gated.
         if !enqueued {
-            assert_track_pcm(&h, false);
+            assert_donor_pcm(&h);
         }
         std::thread::sleep(Duration::from_millis(2));
     };
     let candidate = prepared
         .try_recv()
         .expect("prepared binding before submission");
-    let fresh_worker = candidate.is_some_and(|(_, binding)| binding != original);
     assert_eq!(exact.output_identity, predecessor.output_identity);
     assert_eq!(exact.context.editor_revision, before.revision + 1);
     assert!(exact.audio_revision > predecessor.audio_revision);
@@ -248,9 +248,14 @@ fn run_track_effect_move(case: MoveCase) {
         "move did not wait for its callback"
     );
     assert_project_retained(&pending, before);
+    let (prepared_owner, fresh) = candidate.expect("prepared receiver worker");
+    assert_eq!(
+        prepared_owner, receiver_owner,
+        "receiver must own its processor"
+    );
+    assert_ne!(fresh, original, "the receiver must start with fresh DSP");
 
     if case == MoveCase::Cancelled {
-        assert_eq!(candidate, Some((owner, original)));
         let fading = instruments::render_replay_block(&h);
         let dry = f32::from(RECEIVER_INPUT) / 32768.0 * RECEIVER_GAIN;
         assert!(fading[0][0] > dry);
@@ -271,15 +276,10 @@ fn run_track_effect_move(case: MoveCase) {
                 }
             }
         });
-    } else if case == MoveCase::Retained {
-        for _ in 0..3 {
-            instruments::render_replay_block(&h);
-            assert_eq!(status(&h).recording_source(), Some(predecessor));
-            assert_eq!(live_worker(&h), original);
-        }
     }
 
     let deadline = Instant::now() + Duration::from_millis(800);
+    let mut receiver_start = None;
     let terminal = 'receipt: loop {
         h.pump();
         while let Ok(event) = h.service.try_event() {
@@ -290,7 +290,7 @@ fn run_track_effect_move(case: MoveCase) {
             if let Some(offer) = event.device_insert_confirmation {
                 assert!(
                     case != MoveCase::Cancelled,
-                    "pending retained move offered a restart"
+                    "pending fresh move offered a restart"
                 );
                 assert_eq!(offer.operation(), GraphEditOperation::MoveDevice);
                 assert_eq!(offer.submission(), exact);
@@ -310,7 +310,16 @@ fn run_track_effect_move(case: MoveCase) {
             }
         }
         assert!(Instant::now() < deadline, "no terminal for {exact:?}");
-        instruments::render_replay_block(&h);
+        let frame = status(&h).position.load(Acquire);
+        let pcm = instruments::render_replay_block(&h);
+        if receiver_start.is_none()
+            && status(&h)
+                .recording_source()
+                .is_some_and(|source| source.audio_revision == exact.audio_revision)
+        {
+            receiver_start = Some(frame);
+            assert_eq!(pcm, [[0.0; 2]; BLOCK as usize], "fresh bridge begins empty");
+        }
         std::thread::sleep(Duration::from_millis(2));
     };
     assert!(
@@ -330,7 +339,7 @@ fn run_track_effect_move(case: MoveCase) {
             instruments::render_replay_block(&h);
         }
         assert_eq!(live_worker(&h), original);
-        assert_track_pcm(&h, false);
+        assert_donor_pcm(&h);
         return;
     }
     let installed = completion.outcome == DeviceInsertOutcome::Installed;
@@ -357,26 +366,22 @@ fn run_track_effect_move(case: MoveCase) {
     }
     if !installed {
         assert_eq!(live_worker(&h), original);
-        assert_track_pcm(&h, false);
+        assert_donor_pcm(&h);
         panic!(
-            "running effect did not install: {:?} for {exact:?}, error={:?}. Prepared={candidate:?}, fresh provisional worker={fresh_worker}. Original {original:?} and donor PCM survived.",
+            "running effect did not install: {:?} for {exact:?}, error={:?}. Prepared={candidate:?}. Original {original:?} and donor PCM survived.",
             completion.outcome, terminal.error,
         );
     }
     assert!(terminal.error.is_none(), "{:?}", terminal.error);
-    assert_eq!(
-        candidate,
-        Some((owner, original)),
-        "portable worker required"
-    );
     assert_eq!(terminal.state.project.as_ref(), target.project());
     assert_eq!(terminal.state.revision, exact.context.editor_revision);
     let applied = status(&h).recording_source().unwrap();
     assert_eq!(applied.output_identity, exact.output_identity);
     assert_eq!(applied.audio_revision, exact.audio_revision);
     assert_eq!(applied.context, exact.context);
-    assert_eq!(live_worker(&h), original);
-    assert_track_pcm(&h, true);
+    assert_eq!(live_worker(&h), fresh);
+    let receiver_start = receiver_start.expect("exact callback cut frame");
+    assert_track_pcm_at_gain(&h, Some(receiver_start), RECEIVER_GAIN);
 
     const UPDATED_GAIN: f32 = RECEIVER_GAIN * 0.5;
     let refreshed = h.run(Request::Edit(Command::SetTrackGains {
@@ -399,8 +404,8 @@ fn run_track_effect_move(case: MoveCase) {
     for _ in 0..4 {
         instruments::render_replay_block(&h);
     }
-    assert_eq!(live_worker(&h), original);
-    assert_track_pcm_at_gain(&h, true, UPDATED_GAIN);
+    assert_eq!(live_worker(&h), fresh);
+    assert_track_pcm_at_gain(&h, Some(receiver_start), UPDATED_GAIN);
 }
 
 fn verify_confirmed_move(
@@ -468,7 +473,7 @@ fn verify_confirmed_move(
         for _ in 0..4 {
             instruments::render_replay_block(h);
         }
-        assert_track_pcm(h, false);
+        assert_donor_pcm(h);
         assert!(
             h.plugin_progress.lock().unwrap().source_bindings[0]
                 .is_some_and(|(id, binding, _)| id == device.value() && binding == original)
