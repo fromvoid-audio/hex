@@ -125,7 +125,7 @@ pub(super) fn fitted_pan_sweep_offset(iteration: usize) -> f32 {
     const LEG: usize = 12;
     let phase = iteration / LEG % 4;
     let index = iteration % LEG;
-    let step = if phase % 2 == 0 {
+    let step = if phase.is_multiple_of(2) {
         index + 1
     } else {
         LEG - index
