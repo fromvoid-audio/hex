@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Copy)]
 pub(super) struct PendingRead {
     pub(super) recovery: bool,
-    source: AppliedAudioSource,
+    pub(super) source: AppliedAudioSource,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

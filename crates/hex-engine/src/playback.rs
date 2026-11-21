@@ -293,6 +293,16 @@ pub enum PlaybackHandoffError {
     FreshRuntimeCancelled,
 }
 
+/// One requested logical route change for an already retained worker. The
+/// output owner fences the original publication and Engine revalidates the cut.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostedInstrumentMove {
+    pub donor: hex_project::TrackId,
+    pub receiver: hex_project::TrackId,
+    pub device: hex_project::DeviceId,
+    pub binding: hex_lattice_contract::ForeignProcessorBinding,
+}
+
 /// Compact truthful category for asynchronous callback handoff refusals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
@@ -2476,6 +2486,27 @@ impl Playback {
         if let Some(runtime) = self.session_runtime.as_mut() {
             runtime.require_continuous_insert = true;
         }
+    }
+
+    /// Mark an unpublished ordinary candidate for its exact hosted move proof.
+    pub fn require_hosted_instrument_move(
+        &mut self,
+        movement: HostedInstrumentMove,
+    ) -> Result<(), Invalid> {
+        let (_, binding) = self
+            .foreign_instrument_binding_on_control(movement.receiver, movement.device)
+            .ok_or(Invalid("hosted move receiver has no prepared worker"))?;
+        if movement.donor == movement.receiver || movement.binding != binding {
+            return Err(Invalid(
+                "hosted move receiver differs from the retained worker",
+            ));
+        }
+        let runtime = self
+            .session_runtime
+            .as_mut()
+            .ok_or(Invalid("hosted move has no session runtime"))?;
+        runtime.hosted_instrument_move = Some(movement);
+        Ok(())
     }
 
     /// Advance the Engine's stage-local fade for an exact staged resident
