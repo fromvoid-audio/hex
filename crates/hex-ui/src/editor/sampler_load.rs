@@ -2,7 +2,7 @@
 use super::*;
 use gpui::{App, Pixels, Point};
 use hex_project::InstrumentLoadPlacement;
-use hex_session::service::SamplerLoadSlot;
+use hex_session::service::{SamplerLoadSlot, SamplerLoadTarget};
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicBool, Ordering},
@@ -18,7 +18,8 @@ pub(super) struct Target {
 }
 struct Pending {
     id: u64,
-    target: Target,
+    generation: u64,
+    track: Option<TrackId>,
     cancel: Arc<AtomicBool>,
 }
 #[derive(Default)]
@@ -247,12 +248,11 @@ impl EditorView {
                 .is_some_and(|state| state.revision == drag.revision)
     }
 
-    pub(super) fn browser_sampler_drop_track(
+    pub(super) fn browser_sampler_drop_ready(
         &self,
         drag: &drag::BrowserAudioDrag,
-        track: Option<TrackId>,
         cx: &App,
-    ) -> Result<&hex_project::Track, &'static str> {
+    ) -> Result<(), &'static str> {
         if drag.project_asset.is_some() {
             return Err("project sample cannot be loaded into sampler yet");
         }
@@ -262,14 +262,28 @@ impl EditorView {
         if self.sampler_load.pending.is_some() || self.sampler_replacement_pending_id().is_some() {
             return Err("sampler load is already pending");
         }
-        let track = track.ok_or("drop the sample on an ordinary track")?;
-        let target = self.check_device_append_target(track, cx)?;
+        self.check_device_append_ready(cx)?;
         if self.edit_pending() {
             return Err("wait for the pending edit before loading a sampler");
         }
         if self.document_audio_mode != hex_session::DocumentAudioMode::Resident {
             return Err("sampler loading requires a resident project");
         }
+        Ok(())
+    }
+
+    pub(super) fn browser_sampler_drop_track(
+        &self,
+        drag: &drag::BrowserAudioDrag,
+        track: Option<TrackId>,
+        cx: &App,
+    ) -> Result<&hex_project::Track, &'static str> {
+        self.browser_sampler_drop_ready(drag, cx)?;
+        let target = self
+            .state
+            .as_ref()
+            .and_then(|state| state.project.track(track?))
+            .ok_or("drop the sample on an ordinary track")?;
         if target.is_group() || (target.instrument().is_some() && !target.receives_source_audio()) {
             return Err("drop the sample on an ordinary receiving track");
         }
@@ -297,6 +311,30 @@ impl EditorView {
                 })),
             });
         self.finish_browser_sampler_drop(drag, target, cx);
+    }
+
+    pub(super) fn drop_browser_sample_on_new_track(
+        &mut self,
+        drag: &drag::BrowserAudioDrag,
+        before_track: Option<TrackId>,
+        cx: &mut Context<Self>,
+    ) {
+        let ready = self.browser_sampler_drop_ready(drag, cx);
+        self.clear_browser_audio_drag(drag);
+        if let Err(reason) = ready {
+            self.error = Some(reason.into());
+            cx.notify();
+            return;
+        }
+        if self.queue_sampler_load(
+            drag.project_generation,
+            drag.revision,
+            SamplerLoadTarget::NewTrack { before_track },
+            drag.path.clone(),
+            cx,
+        ) {
+            self.stop_browser_preview_for_drop();
+        }
     }
 
     /// A sampler card edits the exact device and preserves its existing settings.
@@ -380,36 +418,53 @@ impl EditorView {
             cx.notify();
             return;
         }
-        let Some(id) = self.sampler_load.serial.checked_add(1) else {
-            self.error = Some("sampler load request id exhausted".into());
-            return;
-        };
-        let cancel = Arc::new(AtomicBool::new(false));
         let hex_project::InstrumentAssetOwner::Track(track) = target.owner else {
             self.error = Some("sampler load target changed".into());
             return;
         };
+        self.queue_sampler_load(
+            target.generation,
+            target.revision,
+            SamplerLoadTarget::Track { track, slot: target.slot },
+            target.path,
+            cx,
+        );
+    }
+
+    fn queue_sampler_load(
+        &mut self,
+        generation: u64,
+        revision: u64,
+        target: SamplerLoadTarget,
+        path: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(id) = self.sampler_load.serial.checked_add(1) else {
+            self.error = Some("sampler load request id exhausted".into());
+            cx.notify();
+            return false;
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let track = target.track();
+        let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+        let loading = format!("loading {name} into sampler");
         let request = Request::LoadFirstSampler {
             request_id: id,
-            project_generation: target.generation,
-            revision: target.revision,
-            track,
-            slot: target.slot.clone(),
-            path: target.path.clone(),
+            project_generation: generation,
+            revision,
+            target,
+            path,
             cancel: Arc::clone(&cancel),
         };
-        if self.enqueue(request) {
+        let queued = self.enqueue(request);
+        if queued {
             self.sampler_load.serial = id;
-            let name = target
-                .path
-                .file_name()
-                .map(|n| n.to_string_lossy())
-                .unwrap_or_default();
-            self.status = format!("loading {name} into sampler");
+            self.status = loading;
             self.error = None;
-            self.sampler_load.pending = Some(Pending { id, target, cancel });
+            self.sampler_load.pending = Some(Pending { id, generation, track, cancel });
         }
         cx.notify();
+        queued
     }
     pub(super) fn cancel_first_sampler_load(&mut self, request_id: Option<u64>) {
         self.cancel_sampler_replacement(request_id);
@@ -439,8 +494,8 @@ impl EditorView {
         let Some(done) = completion else { return };
         if !self.sampler_load.pending.as_ref().is_some_and(|p| {
             p.id == done.request_id
-                && p.target.generation == done.project_generation
-                && p.target.owner == hex_project::InstrumentAssetOwner::Track(done.track)
+                && p.generation == done.project_generation
+                && p.track == done.track
         }) {
             return;
         }
@@ -468,7 +523,7 @@ impl EditorView {
             .and_then(|s| {
                 let reference = s
                     .project
-                    .track(done.track)?
+                    .track(done.track?)?
                     .instrument()?
                     .state()
                     .asset_references()

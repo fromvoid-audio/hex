@@ -6250,7 +6250,7 @@ fn sampler_menu_captures_stale_target_and_correlates_cancel_without_duplicate_lo
                 Some(hex_session::service::SamplerLoadCompletion {
                     request_id: 2,
                     project_generation: generation,
-                    track: tracks[0],
+                    track: Some(tracks[0]),
                 }),
                 false,
             );
@@ -6262,7 +6262,7 @@ fn sampler_menu_captures_stale_target_and_correlates_cancel_without_duplicate_lo
                 Some(hex_session::service::SamplerLoadCompletion {
                     request_id: 1,
                     project_generation: generation,
-                    track: tracks[0],
+                    track: Some(tracks[0]),
                 }),
                 false,
             );

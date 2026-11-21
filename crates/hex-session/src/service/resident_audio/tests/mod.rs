@@ -895,8 +895,10 @@ fn default_worker_prepares_private_resident_graph_and_refuses_before_commit() {
             request_id: 1,
             project_generation: 0,
             revision: sampler_track.state.revision,
-            track: sampler_track_id,
-            slot: SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::First),
+            target: crate::service::SamplerLoadTarget::Track {
+                track: sampler_track_id,
+                slot: SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::First),
+            },
             path: files.source().to_owned(),
             cancel: Arc::new(AtomicBool::new(false)),
         })

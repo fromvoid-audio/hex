@@ -888,8 +888,10 @@ fn resident_worker_edits_unassigned_sampler_without_binding_a_track() {
             request_id: 2,
             project_generation: 0,
             revision: added.state.revision,
-            track,
-            slot: SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::First),
+            target: crate::service::SamplerLoadTarget::Track {
+                track,
+                slot: SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::First),
+            },
             path: files.source().to_owned(),
             cancel: Arc::new(AtomicBool::new(false)),
         })

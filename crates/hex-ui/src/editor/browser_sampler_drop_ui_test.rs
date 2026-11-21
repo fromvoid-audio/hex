@@ -135,7 +135,7 @@ fn browser_sample_drop_loads_the_target_sampler_not_the_selected_track(cx: &mut 
                 Some(hex_session::service::SamplerLoadCompletion {
                     request_id: 1,
                     project_generation: generation,
-                    track: tracks[0],
+                    track: Some(tracks[0]),
                 }),
                 false,
             );
@@ -144,7 +144,7 @@ fn browser_sample_drop_loads_the_target_sampler_not_the_selected_track(cx: &mut 
                 Some(hex_session::service::SamplerLoadCompletion {
                     request_id: 1,
                     project_generation: generation,
-                    track: tracks[1],
+                    track: Some(tracks[1]),
                 }),
                 false,
             );
@@ -583,8 +583,16 @@ fn browser_sample_header_gaps_insert_loaded_sampler_tracks(cx: &mut TestAppConte
             MouseButton::Left,
             Modifiers::default(),
         );
+        visual.run_until_parked();
         visual.simulate_mouse_move(destination, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("sampler-track-insert-preview")
+                .is_some(),
+            "{gap}: the header should show the insertion line",
+        );
+        assert!(visual.debug_bounds("track-insert-preview").is_none());
         visual.simulate_mouse_up(destination, MouseButton::Left, Modifiers::default());
         assert!(
             editor.read_with(&visual, |view, _| view.first_sampler_pending_matches(1)),

@@ -765,6 +765,24 @@ impl EditorView {
             );
         }
         body = body.children(self.arrangement_device_drop_preview());
+        if let Some(drag) = self.active_browser_audio_drag.as_ref()
+            && self.browser_sampler_drop_ready(drag, cx).is_ok()
+            && let Some((x, y)) = drag.last_pointer.get()
+            && let Some((_, line_y)) = self.painted_sampler_track_gap(point(px(x), px(y)))
+            && let Some(bounds) = self.arrangement_bounds
+        {
+            body = body.child(
+                div()
+                    .id("sampler-track-insert-preview")
+                    .debug_selector(|| "sampler-track-insert-preview".to_owned())
+                    .absolute()
+                    .right_0()
+                    .top(px((line_y - bounds.top - 1.0).max(0.0)))
+                    .w(px(header_width))
+                    .h(px(2.0))
+                    .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
+            );
+        }
         let insertion_line_y = if self
             .state()
             .is_some_and(|state| state.project.tracks().is_empty())
@@ -1020,7 +1038,13 @@ impl EditorView {
                 entity.update(cx, |_, cx| cx.notify());
             })
             .on_drop(cx.listener(|view, payload: &BrowserAudioDrag, window, cx| {
-                view.drop_browser_audio(payload, window, cx);
+                if let Some((before_track, _)) =
+                    view.painted_sampler_track_gap(window.mouse_position())
+                {
+                    view.drop_browser_sample_on_new_track(payload, before_track, cx);
+                } else {
+                    view.drop_browser_audio(payload, window, cx);
+                }
             }))
             // Continue the typed move once per input, even when the source
             // clip leaves the virtualized rows. Child receivers own release.

@@ -20,6 +20,18 @@ pub enum InstrumentLoadPlacement {
     Replace(DeviceId),
 }
 
+/// Destination for a new instrument loaded with an original asset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstrumentLoadDestination {
+    Track {
+        track: TrackId,
+        placement: InstrumentLoadPlacement,
+    },
+    NewTrack {
+        before_track: Option<TrackId>,
+    },
+}
+
 /// Owner captured for an atomic original-asset replacement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstrumentAssetOwner {
@@ -849,13 +861,12 @@ pub enum Command {
         sample_rate: u32,
         frames: u64,
     },
-    /// One prepared import creates source metadata and loads the track instrument.
-    /// An exact replacement uses the native instrument placement rule.
+    /// One prepared import binds the source to a new instrument on an existing
+    /// or newly inserted track. Exact replacements use the native placement rule.
     /// The unbound state template has no asset references; the new source
     /// ID is bound inside this candidate, never predicted by a UI caller.
     ImportDeviceAssetIntoNewInstrument {
-        track: TrackId,
-        placement: InstrumentLoadPlacement,
+        destination: InstrumentLoadDestination,
         path: PathBuf,
         sample_rate: u32,
         frames: u64,
@@ -3000,26 +3011,29 @@ impl Project {
                     .map(Created::Asset)
             }
             Command::ImportDeviceAssetIntoNewInstrument {
-                track,
-                placement,
+                destination,
                 path,
                 sample_rate,
                 frames,
                 state,
                 source_slot,
             } => {
-                let target = self
-                    .track(track)
-                    .ok_or(Invalid("instrument track no longer exists"))?;
-                let replacing = placement.replacement();
-                if target.is_group()
-                    || target.instrument().map(crate::Device::id) != replacing
-                    || (replacing.is_some() && !target.receives_source_audio())
-                    || !state.asset_references().is_empty()
-                {
-                    return Err(Invalid(
-                        "device source import target changed or is ineligible",
-                    ));
+                if !state.asset_references().is_empty() {
+                    return Err(Invalid("device source template is already bound"));
+                }
+                if let InstrumentLoadDestination::Track { track, placement } = destination {
+                    let target = self
+                        .track(track)
+                        .ok_or(Invalid("instrument track no longer exists"))?;
+                    let replacing = placement.replacement();
+                    if target.is_group()
+                        || target.instrument().map(crate::Device::id) != replacing
+                        || (replacing.is_some() && !target.receives_source_audio())
+                    {
+                        return Err(Invalid(
+                            "device source import target changed or is ineligible",
+                        ));
+                    }
                 }
                 let playback = converted_frame_count(frames, sample_rate, self.sample_rate)?;
                 let conversion = crate::import_conversion_version(sample_rate, self.sample_rate);
@@ -3032,8 +3046,20 @@ impl Project {
                             .map_err(|_| Invalid("invalid device source id"))?,
                     }])
                     .map_err(|_| Invalid("invalid device source binding"))?;
-                // Editor applies this composite command to one private candidate;
-                // preparation/refusal commits neither the asset nor instrument.
+                // Asset, instrument and any new track belong to one private candidate.
+                let (track, placement) = match destination {
+                    InstrumentLoadDestination::Track { track, placement } => (track, placement),
+                    InstrumentLoadDestination::NewTrack { before_track } => {
+                        self.apply(Command::InsertDefaultTrackWithDevice {
+                            before_track,
+                            slot: TrackDeviceSlot::Instrument,
+                            state,
+                            device_name: "sampler".into(),
+                        })?;
+                        return Ok(Created::Asset(asset));
+                    }
+                };
+                let replacing = placement.replacement();
                 if replacing.is_some() {
                     self.apply(Command::LoadInstrument {
                         track,

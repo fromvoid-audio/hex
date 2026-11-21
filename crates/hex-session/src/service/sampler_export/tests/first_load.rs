@@ -47,8 +47,10 @@ pub(super) fn request(before: &Event, track: hex_project::TrackId, path: PathBuf
             .context()
             .project_generation,
         revision: before.state.revision,
-        track,
-        slot: SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::First),
+        target: crate::service::SamplerLoadTarget::Track {
+            track,
+            slot: SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::First),
+        },
         path,
         cancel: Arc::new(AtomicBool::new(false)),
     }
@@ -87,7 +89,11 @@ fn empty_request(before: &Event, track: hex_project::TrackId, path: PathBuf) -> 
         .unwrap()
         .instrument()
         .unwrap();
-    if let Request::LoadFirstSampler { slot, .. } = &mut request {
+    if let Request::LoadFirstSampler {
+        target: crate::service::SamplerLoadTarget::Track { slot, .. },
+        ..
+    } = &mut request
+    {
         *slot = SamplerLoadSlot::Existing {
             device: device.id(),
             expected_state: device.state().clone(),
@@ -179,7 +185,7 @@ fn empty_sampler_load_refuses_stale_cancelled_bad_source_and_wrong_device_withou
         let mut load = empty_request(&before, track, files.source.clone());
         if let Request::LoadFirstSampler {
             revision,
-            slot,
+            target: crate::service::SamplerLoadTarget::Track { slot, .. },
             cancel,
             path,
             ..
@@ -242,7 +248,7 @@ fn first_load_worker_commits_one_source_and_binding_and_exports_original_pcm() {
         assert!(loaded.error.is_none(), "{:?}", loaded.error);
         assert_eq!(loaded.state.revision, before.state.revision + 1);
         let completion = loaded.sampler_load_complete.unwrap();
-        assert_eq!((completion.request_id, completion.track), (9, track));
+        assert_eq!((completion.request_id, completion.track), (9, Some(track)));
         let Some(Created::Asset(asset)) = loaded.created else {
             panic!("asset")
         };
@@ -556,7 +562,11 @@ fn new_sampler_drop_replaces_the_captured_instrument_and_reopens() {
         .unwrap()
         .id();
     let mut load = request(&before, track, files.source.clone());
-    if let Request::LoadFirstSampler { slot, .. } = &mut load {
+    if let Request::LoadFirstSampler {
+        target: crate::service::SamplerLoadTarget::Track { slot, .. },
+        ..
+    } = &mut load
+    {
         *slot = SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::Replace(instrument));
     }
     service.submit(load).unwrap();
@@ -579,7 +589,11 @@ fn new_sampler_drop_replaces_the_captured_instrument_and_reopens() {
     assert_eq!(loaded.state.project.assets().count(), 1);
     // A late duplicate still names the pre-import revision.
     let mut stale = request(&before, track, files.source.clone());
-    if let Request::LoadFirstSampler { slot, .. } = &mut stale {
+    if let Request::LoadFirstSampler {
+        target: crate::service::SamplerLoadTarget::Track { slot, .. },
+        ..
+    } = &mut stale
+    {
         *slot = SamplerLoadSlot::New(hex_project::InstrumentLoadPlacement::Replace(instrument));
     }
     service.submit(stale).unwrap();
@@ -606,4 +620,63 @@ fn new_sampler_drop_replaces_the_captured_instrument_and_reopens() {
         loaded.state.project.track(track)
     );
     assert_eq!(reopened.state.project.assets().count(), 1);
+}
+
+#[test]
+fn sampler_track_drop_refuses_bad_source_then_saves_and_reopens() {
+    use crate::service::SamplerLoadTarget;
+
+    let files = Files::new(false);
+    let service = Service::with_native_reservation(16000, 16, 1024, reservation()).unwrap();
+    let (anchor, before) = authored(&service);
+    let drop_before = |path| {
+        let mut load = request(&before, anchor, path);
+        let Request::LoadFirstSampler { target, .. } = &mut load else {
+            unreachable!();
+        };
+        *target = SamplerLoadTarget::NewTrack {
+            before_track: Some(anchor),
+        };
+        load
+    };
+    service
+        .submit(drop_before(files.source.with_file_name("missing.wav")))
+        .unwrap();
+    let refused = event(&service);
+    assert!(refused.error.is_some());
+    assert_eq!(refused.state.revision, before.state.revision);
+    assert_eq!(refused.state.project, before.state.project);
+    assert!(refused.created.is_none());
+    assert_eq!(refused.sampler_load_complete.unwrap().track, None);
+
+    service.submit(drop_before(files.source.clone())).unwrap();
+    let loaded = event(&service);
+    assert!(loaded.error.is_none(), "{:?}", loaded.error);
+    assert_eq!(loaded.state.revision, before.state.revision + 1);
+    let [inserted, original] = loaded.state.project.tracks() else {
+        panic!("expected exactly one new track");
+    };
+    assert_eq!(Some(original), before.state.project.track(anchor));
+    let sampler = inserted.instrument().unwrap().state();
+    let Some(Created::Asset(asset)) = loaded.created else {
+        panic!("expected the imported source identity");
+    };
+    assert_eq!(sampler.asset_references()[0].asset.value(), asset.value());
+
+    let saved = files.source.with_file_name("sampler-track.hex");
+    service.submit(Request::SaveNew(saved.clone())).unwrap();
+    let saved_event = event(&service);
+    assert!(
+        saved_event.save_complete && saved_event.error.is_none(),
+        "{:?}",
+        saved_event.error
+    );
+    service.submit(Request::Open(saved)).unwrap();
+    let reopened = event(&service);
+    assert!(
+        reopened.open_complete && reopened.error.is_none(),
+        "{:?}",
+        reopened.error
+    );
+    assert_eq!(reopened.state.project, loaded.state.project);
 }
