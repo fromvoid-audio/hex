@@ -264,7 +264,12 @@ fn assert_stopped_history(
         .device_insert_complete
         .expect("exact history receipt");
     assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
-    assert_eq!(restored.state.project, target.state.project);
+    let mut expected = target.state.project.snapshot();
+    // Undo restores authored values without reusing a retired device ID.
+    expected.next_id = expected
+        .next_id
+        .max(installed.state.project.next_identity());
+    assert_eq!(restored.state.project.snapshot(), expected);
     assert_eq!(restored.state.revision, installed.state.revision + 1);
     assert_eq!(restored.state.can_redo, can_redo);
     let actual = status(h).recording_source().unwrap();
