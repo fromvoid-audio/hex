@@ -10,6 +10,16 @@ const FRAMES: usize = 131_072;
 #[test]
 #[ignore = "explicit original SDK receipts and restorable variant 37 required"]
 fn running_return_power_on_preserves_the_pass_through_the_fresh_worker_prefix() {
+    verify_return_power_on(false);
+}
+
+#[test]
+#[ignore = "explicit original SDK receipts and restorable variant 37 required"]
+fn running_return_power_on_conceals_one_late_reply_with_the_fresh_aligned_input() {
+    verify_return_power_on(true);
+}
+
+fn verify_return_power_on(first_reply_held: bool) {
     let _serial = serial();
     let mut f = fixture_with_quantum("processing", 1, QUANTUM as u16);
     let root = f.control.native_candidate_root();
@@ -96,6 +106,7 @@ fn running_return_power_on_preserves_the_pass_through_the_fresh_worker_prefix() 
     return_original_worker(&mut f, original);
     assert_off_block(&mut f);
 
+    let mut release = first_reply_held.then(crate::plugin_worker::hold_next_test_transport);
     let fresh = source_for_profile(
         &mut f.control,
         identity,
@@ -210,18 +221,33 @@ fn running_return_power_on_preserves_the_pass_through_the_fresh_worker_prefix() 
     let on_source = f.control.status.recording_source().unwrap();
     assert_eq!(on_source.audio_revision, on_receipt.revision());
     assert_eq!(on_source.output_identity, off_source.output_identity);
-    assert_worker_input(&mut f, &root, fresh, PARTITION);
+    assert_host_input(&mut f, fresh, PARTITION);
+    assert_worker_blocks(&root, fresh, 0);
     // The third hardware-sized partition straddles frame 512. Check every
     // sample before and after it, including both initial signed wet replies.
     for partition in 1..5 {
         let (position, pcm) = render_with_clock::<PARTITION>(&mut f);
         assert_eq!(position, start + partition * PARTITION);
-        assert_fresh_pcm(start, position, pcm);
-        assert_worker_input(&mut f, &root, fresh, (partition + 1) * PARTITION);
+        assert_fresh_pcm(start, position, pcm, first_reply_held);
+        let frames = (partition + 1) * PARTITION;
+        assert_host_input(&mut f, fresh, frames);
+        if release.is_some() {
+            assert_worker_blocks(&root, fresh, 0);
+        }
+        if frames > BRIDGE
+            && let Some(release) = release.take()
+        {
+            // Output already crossed the first deadline while the real
+            // request was held. The late first reply must stay discarded.
+            release.send(()).unwrap();
+        }
+        if release.is_none() {
+            wait_for_worker_input(&root, fresh, frames);
+        }
     }
     let (position, pcm) = render_with_clock::<{ 4 * QUANTUM - 5 * PARTITION }>(&mut f);
     assert_eq!(position, start + 5 * PARTITION);
-    assert_fresh_pcm(start, position, pcm);
+    assert_fresh_pcm(start, position, pcm, first_reply_held);
     assert_worker_input(&mut f, &root, fresh, 4 * QUANTUM);
     assert_eq!(f.control.status.native_effect_source(), Some(on_source));
     let returned = dispose(f);
@@ -239,14 +265,34 @@ fn assert_worker_input(
     fresh: Binding,
     frames: usize,
 ) {
+    assert_host_input(f, fresh, frames);
+    wait_for_worker_input(root, fresh, frames);
+}
+
+fn assert_host_input(f: &mut OrdinaryFixture, fresh: Binding, frames: usize) {
     f.data.owner_mut().unwrap().run(|callback, _| {
         assert_eq!(
             callback.native_sources.test_committed_frames(fresh),
             Some(frames as u64)
         );
     });
+}
+
+fn wait_for_worker_input(
+    root: &crate::candidate_custody::CandidateRoot,
+    fresh: Binding,
+    frames: usize,
+) {
     let blocks = (frames / QUANTUM) as u64;
     replacement::wait_for_blocks(root, fresh, blocks);
+    assert_worker_blocks(root, fresh, blocks);
+}
+
+fn assert_worker_blocks(
+    root: &crate::candidate_custody::CandidateRoot,
+    fresh: Binding,
+    blocks: u64,
+) {
     assert_eq!(
         crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(
             root, fresh
@@ -255,13 +301,19 @@ fn assert_worker_input(
     );
 }
 
-fn assert_fresh_pcm<const FRAMES: usize>(start: usize, position: usize, pcm: [Frame; FRAMES]) {
+fn assert_fresh_pcm<const FRAMES: usize>(
+    start: usize,
+    position: usize,
+    pcm: [Frame; FRAMES],
+    first_reply_held: bool,
+) {
     assert_eq!(
         pcm,
         std::array::from_fn(|offset| {
             let frame = position + offset;
             let gain = match frame - start {
                 0..BRIDGE => 1.0,
+                BRIDGE..SECOND_WET if first_reply_held => 1.0,
                 BRIDGE..SECOND_WET => 0.5,
                 _ => 0.625,
             };

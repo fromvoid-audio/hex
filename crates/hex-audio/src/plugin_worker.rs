@@ -649,11 +649,56 @@ fn spawn_processor_with(
         }
     }
 }
+#[cfg(all(
+    test,
+    feature = "allocation-probe",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
+thread_local! {
+    static HELD_TEST_TRANSPORT: std::cell::RefCell<Option<std::sync::mpsc::Receiver<()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Hold the next actual worker constructed by this test's control thread.
+/// Use the ordinary paired transport, with a bounded gate before it runs.
+#[cfg(all(
+    test,
+    feature = "allocation-probe",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
+pub(crate) fn hold_next_test_transport() -> std::sync::mpsc::SyncSender<()> {
+    let (release, held) = std::sync::mpsc::sync_channel(1);
+    assert!(HELD_TEST_TRANSPORT.replace(Some(held)).is_none());
+    release
+}
+
 fn spawn_transport(
     guard: crate::native_callback_owner::Guard<State>,
     published: Arc<Signal>,
 ) -> std::io::Result<SpawnedTransport> {
     let run = transport_runner(guard, published);
+    #[cfg(all(
+        test,
+        feature = "allocation-probe",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ))]
+    if let Some(held) = HELD_TEST_TRANSPORT.take() {
+        let gated = move || {
+            let _ = held.recv_timeout(Duration::from_secs(2));
+            run()
+        };
+        let capture_data_bytes = std::mem::size_of_val(&gated);
+        return thread::Builder::new()
+            .name("hex-plugin-transport".into())
+            .spawn(gated)
+            .map(|join| SpawnedTransport {
+                join,
+                capture_data_bytes,
+            });
+    }
     let capture_data_bytes = std::mem::size_of_val(&run);
     thread::Builder::new()
         .name("hex-plugin-transport".into())
