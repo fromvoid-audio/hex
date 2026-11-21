@@ -559,10 +559,10 @@ pub(super) fn render_parameter(
                 let left = event.button == gpui::MouseButton::Left;
                 if (!left && event.button != gpui::MouseButton::Right)
                     || (left && !enabled)
-                    || !view
+                    || view
                         .state
                         .as_ref()
-                        .is_some_and(|state| state.revision == revision)
+                        .is_none_or(|state| state.revision != revision)
                     || !pointer_binding.accepts_event(view, left)
                 {
                     return;
