@@ -610,10 +610,13 @@ fn project_spectrum_display_controls_freeze_max_hold_and_crosshair_work_without_
         view.project_spectrum.result = Some(published);
         view.sync_project_spectrum_canvas(now, cx);
 
-        // Default range Mix78 (-72..+6): -12 dB maps to 60/78.
+        // Default smoothing is ERB (Human); constant -12 dB maps cleanly to 60/78.
+        assert_eq!(
+            view.project_spectrum.options.smoothing,
+            SmoothingPreset::Human
+        );
         let base = view.project_spectrum_layers(now);
         assert_eq!(base.len(), 1);
-        assert_eq!(base[0].points[0][1], 0.0, "floor stays at 0");
         assert!((base[0].points[96][1] - 60.0 / 78.0).abs() < 1e-5);
 
         // Switching to Wide96 (-96..0) maps -12 dB to 84/96.
@@ -628,21 +631,24 @@ fn project_spectrum_display_controls_freeze_max_hold_and_crosshair_work_without_
         assert_eq!(view.project_spectrum.options.slope, SlopePreset::Steep);
         let steep = view.project_spectrum_layers(now);
         assert!(steep[0].points.last().unwrap()[1] > prism_hi);
-        assert_eq!(
-            steep[0].points[0][1], 0.0,
-            "slope never lifts silence floor"
-        );
 
-        // Cycling smoothing through 1/6, 1/3, and ERB stays finite & bounded.
+        // Cycling smoothing through Fine (1/12), 1/6, 1/3, and back to ERB stays
+        // finite & bounded, and Fine keeps band 0 floor at 0 even under Steep slope.
         for expected in [
+            SmoothingPreset::Fine,
             SmoothingPreset::Sixth,
             SmoothingPreset::Third,
             SmoothingPreset::Human,
-            SmoothingPreset::Fine,
         ] {
             view.cycle_project_spectrum_smoothing(cx);
             assert_eq!(view.project_spectrum.options.smoothing, expected);
             let smoothed = view.project_spectrum_layers(now);
+            if expected == SmoothingPreset::Fine {
+                assert_eq!(
+                    smoothed[0].points[0][1], 0.0,
+                    "slope never lifts silence floor"
+                );
+            }
             assert!(
                 smoothed[0]
                     .points
@@ -650,6 +656,25 @@ fn project_spectrum_display_controls_freeze_max_hold_and_crosshair_work_without_
                     .all(|[x, y]| x.is_finite() && y.is_finite() && (0.0..=1.0).contains(y))
             );
         }
+
+        // Gaussian ERB smoothing rounds an isolated spike into a smooth bell
+        // with strictly decreasing flanks (no flat-topped boxcar plateau).
+        let mut spike = [hex_audio::spectrum::FLOOR_DBFS; hex_audio::spectrum::SPECTRUM_BANDS];
+        spike.fill(-48.0);
+        spike[96] = -12.0;
+        let bell =
+            process_display_bands(&spike, 48_000, SlopePreset::Prism, SmoothingPreset::Human);
+        assert!(bell[96] > bell[95] && bell[95] > bell[94] && bell[94] > bell[93]);
+        assert!(bell[96] > bell[97] && bell[97] > bell[98] && bell[98] > bell[99]);
+        // All-silent frame stays exact silence floor under ERB + Steep slope.
+        let silent = [hex_audio::spectrum::FLOOR_DBFS; hex_audio::spectrum::SPECTRUM_BANDS];
+        let silent_out =
+            process_display_bands(&silent, 48_000, SlopePreset::Steep, SmoothingPreset::Human);
+        assert!(
+            silent_out
+                .iter()
+                .all(|&v| v == hex_audio::spectrum::FLOOR_DBFS)
+        );
 
         // Peak hold mode retains high peaks across quieter frames and resets cleanly.
         view.cycle_project_spectrum_peak_mode(cx);

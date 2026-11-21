@@ -6,8 +6,8 @@
 //! any held-peak curve, then the crisp [`Pass::Trace`] line. Optional
 //! [`paint_peak_ribbon`] renders a translucent fill between held-peak and live
 //! curves. Geometry is built directly into [`gpui::Path`] triangle meshes from
-//! conservative monotone Hermite splines so live 60+ fps updates avoid per-frame
-//! Lyon tessellation overhead while staying calibrated at every plot size.
+//! Fritsch-Carlson monotone Hermite splines with rounded stroke joins so live
+//! 60+ fps updates render smooth curves without per-frame Lyon tessellation.
 use gpui::{
     Bounds, ContentMask, Hsla, Path, Pixels, Point, Window, linear_color_stop, linear_gradient,
     point, px, rgb,
@@ -122,10 +122,13 @@ fn tangent(points: &[[f32; 2]], i: usize) -> f32 {
     }
     let left = secant(points[i - 1], points[i]);
     let right = secant(points[i], points[i + 1]);
-    if left.signum() != right.signum() {
+    if left * right <= 0.0 {
         0.0
     } else {
-        left.signum() * left.abs().min(right.abs())
+        // Fritsch-Carlson harmonic mean: strictly monotone with zero overshoot
+        // at extrema while rounding slope transitions smoothly without elbows.
+        let mean = (2.0 * left * right) / (left + right);
+        if mean.is_finite() { mean } else { 0.0 }
     }
 }
 
@@ -166,26 +169,33 @@ fn eval_cubic(start: [f32; 2], seg: Segment, t: f32) -> [f32; 2] {
     ]
 }
 
-/// Adaptive screen-space sampling of the monotone Hermite curve into `out`.
-/// Keeps smooth spline fidelity on wide segments while avoiding oversampling
-/// sub-pixel bands.
+/// Curvature-adaptive screen-space sampling of the monotone Hermite curve.
+/// Keeps flat floor spans at 1 step while subdividing curved shoulders and
+/// peaks into 4–6 cubic steps so no polygonal corners remain at any DPI.
 fn sample_curve(points: &[[f32; 2]], plot: Bounds<Pixels>, out: &mut Vec<Point<Pixels>>) {
     out.clear();
     let Some(&first) = points.first() else {
         return;
     };
     let plot_w = f32::from(plot.size.width);
+    let plot_h = f32::from(plot.size.height);
     out.push(map_point(plot, first));
     for i in 0..points.len() - 1 {
         let start = points[i];
         let seg = segment(points, i);
         let dx_px = (seg.end[0] - start[0]) * plot_w;
-        let steps: usize = if dx_px <= 3.0 {
+        let dy_px = (seg.end[1] - start[1]).abs() * plot_h;
+        let chord_a_y = start[1] + (seg.end[1] - start[1]) / 3.0;
+        let chord_b_y = start[1] + (seg.end[1] - start[1]) * (2.0 / 3.0);
+        let bend_px = ((seg.a[1] - chord_a_y).abs() + (seg.b[1] - chord_b_y).abs()) * plot_h;
+        let steps: usize = if dy_px < 0.35 && bend_px < 0.25 {
             1
-        } else if dx_px <= 10.0 {
+        } else if dx_px <= 2.0 && dy_px <= 2.0 {
             2
-        } else {
+        } else if dx_px <= 6.0 && dy_px <= 12.0 {
             4
+        } else {
+            6
         };
         if steps == 1 {
             out.push(map_point(plot, seg.end));
@@ -223,20 +233,30 @@ fn build_fill_path(samples: &[Point<Pixels>], baseline_y: Pixels) -> Option<Path
     path
 }
 
-/// Direct O(N) miter-clamped stroke mesh along a sampled polyline.
+#[inline]
+fn normalize_or(x: f32, y: f32, fallback: (f32, f32)) -> (f32, f32) {
+    let len = (x * x + y * y).sqrt();
+    if len > 1e-6 && len.is_finite() {
+        (x / len, y / len)
+    } else {
+        fallback
+    }
+}
+
+/// Direct O(N) stroke mesh with rounded outer joins so sharp bends never emit
+/// spiky miter corners.
 fn build_stroke_path(samples: &[Point<Pixels>], width: Pixels) -> Option<Path<Pixels>> {
     let half = f32::from(width) * 0.5;
     if samples.len() < 2 || !half.is_finite() || half <= 0.0 {
         return None;
     }
-    // Filter consecutive duplicate points so segment normals stay well-defined.
     let mut pts: Vec<(f32, f32)> = Vec::with_capacity(samples.len());
     for &p in samples {
         let xy = (f32::from(p.x), f32::from(p.y));
         if let Some(&prev) = pts.last() {
             let dx = xy.0 - prev.0;
             let dy = xy.1 - prev.1;
-            if dx * dx + dy * dy < 1e-6 {
+            if dx * dx + dy * dy < 1e-4 {
                 continue;
             }
         }
@@ -250,85 +270,84 @@ fn build_stroke_path(samples: &[Point<Pixels>], width: Pixels) -> Option<Path<Pi
     for i in 0..seg_count {
         let dx = pts[i + 1].0 - pts[i].0;
         let dy = pts[i + 1].1 - pts[i].1;
-        let len = (dx * dx + dy * dy).sqrt();
-        if len > 1e-6 {
-            normals.push((-dy / len, dx / len));
-        } else {
-            normals.push((0.0, -1.0));
-        }
-    }
-    let max_miter = half * 2.0;
-    let mut upper: Vec<Point<Pixels>> = Vec::with_capacity(pts.len());
-    let mut lower: Vec<Point<Pixels>> = Vec::with_capacity(pts.len());
-    for i in 0..pts.len() {
-        let (ox, oy) = if i == 0 {
-            let n = normals[0];
-            (n.0 * half, n.1 * half)
-        } else if i == seg_count {
-            let n = normals[seg_count - 1];
-            (n.0 * half, n.1 * half)
-        } else {
-            let n0 = normals[i - 1];
-            let n1 = normals[i];
-            let mx = n0.0 + n1.0;
-            let my = n0.1 + n1.1;
-            let mlen = (mx * mx + my * my).sqrt();
-            if mlen < 1e-4 {
-                (n1.0 * half, n1.1 * half)
-            } else {
-                let ux = mx / mlen;
-                let uy = my / mlen;
-                let denom = (ux * n1.0 + uy * n1.1).max(0.5);
-                let scale = (half / denom).min(max_miter);
-                (ux * scale, uy * scale)
-            }
-        };
-        let (x, y) = pts[i];
-        upper.push(point(px(x + ox), px(y + oy)));
-        lower.push(point(px(x - ox), px(y - oy)));
+        normals.push(normalize_or(-dy, dx, (0.0, -1.0)));
     }
     let uvs = (SOLID_CONTENT_UV, SOLID_CONTENT_UV, SOLID_CONTENT_UV);
-    let mut path = Path::new(upper[0]);
+    let mut path: Option<Path<Pixels>> = None;
+    let mut push_tri = |a: Point<Pixels>, b: Point<Pixels>, c: Point<Pixels>| {
+        path.get_or_insert_with(|| Path::new(a))
+            .push_triangle((a, b, c), uvs);
+    };
+
+    // Emit one clean rectangle per segment plus a rounded outer fan at every
+    // interior vertex. Eliminates pointy miters completely at negligible cost.
     for i in 0..seg_count {
-        let u0 = upper[i];
-        let u1 = upper[i + 1];
-        let l0 = lower[i];
-        let l1 = lower[i + 1];
-        path.push_triangle((u0, u1, l0), uvs);
-        path.push_triangle((u1, l1, l0), uvs);
+        let (x0, y0) = pts[i];
+        let (x1, y1) = pts[i + 1];
+        let (nx, ny) = normals[i];
+        let ox = nx * half;
+        let oy = ny * half;
+        let u0 = point(px(x0 + ox), px(y0 + oy));
+        let l0 = point(px(x0 - ox), px(y0 - oy));
+        let u1 = point(px(x1 + ox), px(y1 + oy));
+        let l1 = point(px(x1 - ox), px(y1 - oy));
+        push_tri(u0, u1, l0);
+        push_tri(u1, l1, l0);
+
+        if i + 1 < seg_count {
+            let n0 = normals[i];
+            let n1 = normals[i + 1];
+            let cross = n0.0 * n1.1 - n0.1 * n1.0;
+            if cross.abs() > 1e-4 {
+                let sign = if cross > 0.0 { 1.0 } else { -1.0 };
+                let a_start = (n0.0 * sign, n0.1 * sign);
+                let a_end = (n1.0 * sign, n1.1 * sign);
+                let center = point(px(x1), px(y1));
+                let dot = (a_start.0 * a_end.0 + a_start.1 * a_end.1).clamp(-1.0, 1.0);
+                let mid = normalize_or(a_start.0 + a_end.0, a_start.1 + a_end.1, a_start);
+                let p_start = point(px(x1 + a_start.0 * half), px(y1 + a_start.1 * half));
+                let p_end = point(px(x1 + a_end.0 * half), px(y1 + a_end.1 * half));
+                if dot >= 0.85 {
+                    push_tri(center, p_start, p_end);
+                } else {
+                    let p_mid = point(px(x1 + mid.0 * half), px(y1 + mid.1 * half));
+                    push_tri(center, p_start, p_mid);
+                    push_tri(center, p_mid, p_end);
+                }
+            }
+        }
     }
-    Some(path)
+    path
 }
 
-/// Evaluate a monotone X-ordered curve linearly at normalized `x`.
-fn eval_linear_y(points: &[[f32; 2]], x: f32) -> f32 {
-    if points.is_empty() {
-        return 0.0;
+/// Evaluate an X-ordered sampled curve at pixel coordinate `x` using a
+/// monotonic cursor `idx` for O(1) amortized lookup.
+#[inline]
+fn sample_y_at_x(samples: &[Point<Pixels>], x: Pixels, cursor: &mut usize) -> Pixels {
+    let last = samples.len() - 1;
+    if x <= samples[0].x {
+        return samples[0].y;
     }
-    if x <= points[0][0] {
-        return points[0][1];
+    if x >= samples[last].x {
+        return samples[last].y;
     }
-    let last = points.len() - 1;
-    if x >= points[last][0] {
-        return points[last][1];
+    while *cursor + 1 < last && samples[*cursor + 1].x < x {
+        *cursor += 1;
     }
-    let idx = points.partition_point(|p| p[0] < x);
-    if idx == 0 {
-        return points[0][1];
-    }
-    let a = points[idx - 1];
-    let b = points[idx];
-    let dx = b[0] - a[0];
+    let a = samples[*cursor];
+    let b = samples[*cursor + 1];
+    let dx = f32::from(b.x - a.x);
     if dx <= f32::EPSILON {
-        b[1]
+        b.y
     } else {
-        let t = ((x - a[0]) / dx).clamp(0.0, 1.0);
-        a[1] + (b[1] - a[1]) * t
+        let t = (f32::from(x - a.x) / dx).clamp(0.0, 1.0);
+        px(f32::from(a.y) + (f32::from(b.y) - f32::from(a.y)) * t)
     }
 }
 
 /// Paint a translucent ribbon strictly between a layer's held-peak curve and
-/// its live curve (`peak_y < live_y`), highlighting transient headroom.
+/// its live curve (`peak_y < live_y`), highlighting transient headroom with
+/// smooth cubic boundaries on both edges.
 pub(super) fn paint_peak_ribbon(plot: Bounds<Pixels>, layer: &Layer<'_>, window: &mut Window) {
     let Some(peak) = layer.peak else {
         return;
@@ -340,28 +359,25 @@ pub(super) fn paint_peak_ribbon(plot: Bounds<Pixels>, layer: &Layer<'_>, window:
     {
         return;
     }
-    let mut peak_samples = Vec::with_capacity(peak.len() * 2);
+    let mut peak_samples = Vec::with_capacity(peak.len() * 4);
+    let mut live_samples = Vec::with_capacity(layer.points.len() * 4);
     sample_curve(peak, plot, &mut peak_samples);
-    if peak_samples.len() < 2 {
+    sample_curve(layer.points, plot, &mut live_samples);
+    if peak_samples.len() < 2 || live_samples.len() < 2 {
         return;
     }
-    let plot_left = f32::from(plot.left());
-    let inv_w = 1.0 / f32::from(plot.size.width);
-    let plot_top = f32::from(plot.top());
-    let plot_h = f32::from(plot.size.height);
     let uvs = (SOLID_CONTENT_UV, SOLID_CONTENT_UV, SOLID_CONTENT_UV);
     let mut path: Option<Path<Pixels>> = None;
+    let mut cursor = 0usize;
     let mut prev_top = peak_samples[0];
-    let prev_x_norm = ((f32::from(prev_top.x) - plot_left) * inv_w).clamp(0.0, 1.0);
     let mut prev_bot = point(
         prev_top.x,
-        px(plot_top + plot_h * (1.0 - eval_linear_y(layer.points, prev_x_norm))).max(prev_top.y),
+        sample_y_at_x(&live_samples, prev_top.x, &mut cursor).max(prev_top.y),
     );
     for &top in &peak_samples[1..] {
-        let x_norm = ((f32::from(top.x) - plot_left) * inv_w).clamp(0.0, 1.0);
         let bot = point(
             top.x,
-            px(plot_top + plot_h * (1.0 - eval_linear_y(layer.points, x_norm))).max(top.y),
+            sample_y_at_x(&live_samples, top.x, &mut cursor).max(top.y),
         );
         if top.x > prev_top.x && (prev_top.y < prev_bot.y || top.y < bot.y) {
             let target = path.get_or_insert_with(|| Path::new(prev_top));
