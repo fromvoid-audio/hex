@@ -5515,6 +5515,82 @@ fn utility_prefix_move_undo_and_redo_wait_for_the_running_audio_cut() {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
+fn resident_discontiguous_reorder_history_restores_exact_order_at_each_audio_cut() {
+    use hex_project::{Command, Created, DeviceChainOwner, DeviceSelectionIds};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let mut applied = h.applied(0).0;
+    let imported = h.run(Request::Import(files.wav(48_000, 32_768)));
+    applied = h.applied(applied).0;
+    let track = imported.state.project.tracks()[0].id();
+    let state = |kind| {
+        hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(kind))
+            .unwrap()
+    };
+    let mut original = imported;
+    let mut order = Vec::with_capacity(4);
+    for kind in ["hex.utility", "hex.delay", "hex.utility", "hex.delay"] {
+        original = h.run(Request::Edit(Command::InsertDevice {
+            track,
+            before: None,
+            state: state(kind),
+        }));
+        let Some(Created::Device(id)) = original.created else {
+            panic!("one inserted device");
+        };
+        order.push(id);
+        applied = h.applied(applied).0;
+    }
+    let [first, second, third, fourth]: [hex_project::DeviceId; 4] = order.try_into().unwrap();
+    h.enable_confirmed_device_inserts();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..8 {
+        h.render();
+    }
+    assert!(h.render().iter().flatten().any(|sample| *sample != 0.0));
+
+    let reordered = install_running_device_move_for_history(
+        &mut h,
+        "reorder",
+        Request::ReorderDevices {
+            project_generation: 0,
+            revision: original.state.revision,
+            owner: DeviceChainOwner::Track(track),
+            selected: DeviceSelectionIds::new(&[first, third]).unwrap(),
+            before: None,
+        },
+        &original.state,
+    );
+    let devices = reordered.state.project.track(track).unwrap().devices();
+    let order: Vec<_> = devices.iter().map(hex_project::Device::id).collect();
+    assert_eq!(order, [second, fourth, first, third]);
+    // This order cannot restore the original interleaving with a single reorder.
+    let undone = install_running_device_move_for_history(
+        &mut h,
+        "undo reorder",
+        Request::Undo,
+        &reordered.state,
+    );
+    assert_eq!(undone.state.project, original.state.project);
+    let redone = install_running_device_move_for_history(
+        &mut h,
+        "redo reorder",
+        Request::Redo,
+        &undone.state,
+    );
+    assert_eq!(redone.state.project, reordered.state.project);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
 fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_running() {
     use hex_project::{Command, Created};
     use hex_session::service::{DeviceInsertOutcome, ViewState};

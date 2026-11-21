@@ -693,6 +693,60 @@ impl Editor {
         }))
     }
 
+    /// Stage a normalized history edge that changes only one Track's device
+    /// order. Use the stored target because a multi-device reorder may have
+    /// no inverse expressible by one selection and insertion point.
+    pub fn stage_track_device_reorder_history(
+        &mut self,
+        redo: bool,
+    ) -> Result<Option<(crate::TrackId, StagedProjectHistory)>, Invalid> {
+        let Some(track) = self
+            .inspect_history(redo, |current, target| {
+                if current.tracks().len() != target.tracks().len() {
+                    return None;
+                }
+                let mut changed = None;
+                for (old, new) in current.tracks().iter().zip(target.tracks()) {
+                    if old.id() != new.id() {
+                        return None;
+                    }
+                    let (old_devices, new_devices) = (old.devices(), new.devices());
+                    if old_devices == new_devices {
+                        continue;
+                    }
+                    if changed.replace(old.id()).is_some()
+                        || old_devices.len() != new_devices.len()
+                        || old_devices
+                            .iter()
+                            .any(|device| !new_devices.contains(device))
+                    {
+                        return None;
+                    }
+                }
+                changed
+            })
+            .flatten()
+        else {
+            return Ok(None);
+        };
+        let Some(mut edge) = self.stage_history(redo)? else {
+            return Ok(None);
+        };
+        let current = self
+            .project
+            .track(track)
+            .ok_or(Invalid("reordered track changed"))?;
+        // Temporarily mask only the order on the private target, then put
+        // back the exact history payload before giving it to the caller.
+        let reordered = std::mem::replace(
+            &mut edge.project.track_mut(track)?.devices,
+            current.devices().to_vec(),
+        );
+        let exact = edge.project == self.project;
+        edge.project.track_mut(track)?.devices = reordered;
+        Ok(exact.then_some((track, edge)))
+    }
+
     /// Commit the same staged history target after external approval. Prevent
     /// intervening edits once its external publication may install.
     pub fn commit_staged_history(&mut self, history: StagedProjectHistory) -> Result<(), Invalid> {
@@ -788,6 +842,93 @@ mod staged_edit_tests {
         editor.commit_staged_history(redo).unwrap();
         assert_eq!(editor.project(), &before);
         assert!(editor.can_undo() && !editor.can_redo());
+    }
+
+    #[test]
+    fn staged_reorder_history_restores_interleaved_order_and_excludes_compound_edits() {
+        use crate::{DeviceChainOwner, DeviceSelectionIds};
+
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "track".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let mut devices = Vec::new();
+        for _ in 0..4 {
+            let Created::Device(device) = editor
+                .execute(Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: crate::default_instrument_state().unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("device");
+            };
+            devices.push(device);
+        }
+        let reorder = || Command::ReorderDevices {
+            owner: DeviceChainOwner::Track(track),
+            selected: DeviceSelectionIds::new(&[devices[0], devices[2]]).unwrap(),
+            before: None,
+        };
+        let original = editor.project().clone();
+        editor.execute(reorder()).unwrap();
+        let reordered = editor.project().clone();
+        let reordered_ids: Vec<_> = reordered
+            .track(track)
+            .unwrap()
+            .devices()
+            .iter()
+            .map(crate::Device::id)
+            .collect();
+        assert_eq!(
+            reordered_ids,
+            [devices[1], devices[3], devices[0], devices[2]]
+        );
+
+        let (owner, undo) = editor
+            .stage_track_device_reorder_history(false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(owner, track);
+        assert_eq!(undo.project(), &original);
+        assert_eq!(editor.project(), &reordered);
+        editor.commit_staged_history(undo).unwrap();
+        let (owner, redo) = editor
+            .stage_track_device_reorder_history(true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(owner, track);
+        assert_eq!(redo.project(), &reordered);
+        assert_eq!(editor.project(), &original);
+        drop(redo);
+        assert!(editor.can_redo());
+        editor
+            .execute_many_prepared::<(), Invalid>(
+                vec![
+                    reorder(),
+                    Command::SetTrackGains {
+                        gains: vec![(track, 0.5)],
+                    },
+                ],
+                |_, _| Ok(()),
+            )
+            .unwrap();
+        let compound = editor.project().clone();
+        assert!(
+            editor
+                .stage_track_device_reorder_history(false)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(editor.project(), &compound);
+        assert!(editor.can_undo());
+        assert!(!editor.can_redo());
     }
 
     #[test]
