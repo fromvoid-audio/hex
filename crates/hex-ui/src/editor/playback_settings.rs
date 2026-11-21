@@ -113,6 +113,34 @@ impl EditorView {
                 None
             }
         });
+        if source.is_none()
+            && let Start::Play { frame } = &start
+        {
+            if self.paused_republish_waiting_for_current() {
+                self.tick_paused_republish();
+            }
+            if !self.playback_settings.loading && self.paused_republish_blocks_play() {
+                let note_chase = self.playback_settings.policy();
+                self.deferred_play = Some((
+                    hex_engine::PlaybackAction::Transport(
+                        hex_engine::PlaybackCommand::PlayFromWithNoteChase {
+                            frame: *frame,
+                            note_chase,
+                        },
+                    ),
+                    None,
+                    self.project_generation,
+                ));
+                self.status = "applying audio update · playback starts when ready".into();
+                self.error = None;
+                self.wake_poll();
+                return;
+            }
+            if self.paused_republish_exhausted_for_current() {
+                self.error = Some("stop playback to apply edit before playing".into());
+                return;
+            }
+        }
         let Some(source) = source else {
             self.error =
                 Some("playback source is unavailable · retry playback when audio is ready".into());

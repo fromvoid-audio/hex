@@ -2876,3 +2876,290 @@ fn selected_session_off_hosted_events_match_source_start_oracle_without_orphan_o
         "raw On retains its authored remaining gate"
     );
 }
+
+#[test]
+fn loop_edit_accepts_inactive_linear_range_mixed_automation_and_silent_track() {
+    use hex_project::LoopRegion;
+    use std::collections::BTreeMap;
+
+    const CLASS: [u8; 16] = [1; 16];
+    const PARAMS: [hex_lattice::ForeignParameterCapability; 1] =
+        [hex_lattice::ForeignParameterCapability {
+            id: 7,
+            steps: 0,
+            normalized_base_bits: 0.5_f64.to_bits(),
+        }];
+
+    struct AutomatedInstrumentDefinition {
+        inner: InstrumentDefinition,
+        automated: ProcessorInstanceIdentity,
+    }
+    impl NativeDeviceMetadata for AutomatedInstrumentDefinition {
+        fn type_id(&self) -> DeviceTypeId {
+            self.inner.type_id()
+        }
+        fn state_version(&self) -> u32 {
+            self.inner.state_version()
+        }
+        fn descriptors(&self) -> &'static [ParameterDescriptor] {
+            self.inner.descriptors()
+        }
+        fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+            self.inner.default_state()
+        }
+        fn migrate_state(
+            &self,
+            state: &NativeDeviceState,
+        ) -> Result<NativeDeviceState, DeviceContractError> {
+            self.inner.migrate_state(state)
+        }
+        fn read_parameter(
+            &self,
+            state: &NativeDeviceState,
+            id: ParameterId,
+        ) -> Result<ParameterValue, DeviceContractError> {
+            self.inner.read_parameter(state, id)
+        }
+        fn patch_parameter(
+            &self,
+            state: &NativeDeviceState,
+            id: ParameterId,
+            value: ParameterValue,
+        ) -> Result<NativeDeviceState, DeviceContractError> {
+            self.inner.patch_parameter(state, id, value)
+        }
+    }
+    impl NativeDeviceDefinition for AutomatedInstrumentDefinition {
+        fn prepare_matrix(
+            &self,
+            state: &NativeDeviceState,
+        ) -> Result<StereoMatrix, DeviceContractError> {
+            self.inner.prepare_matrix(state)
+        }
+        fn prepare_instance_runtime_factory(
+            &self,
+            identity: ProcessorInstanceIdentity,
+            state: &NativeDeviceState,
+            context: &DevicePreparationContext<'_>,
+        ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
+            self.inner
+                .prepare_instance_runtime_factory(identity, state, context)
+        }
+        fn foreign_automation_source(
+            &self,
+            identity: ProcessorInstanceIdentity,
+            _: &NativeDeviceState,
+            context: &DevicePreparationContext<'_>,
+        ) -> Result<Option<hex_lattice::ForeignAutomationSource<'_>>, DeviceContractError> {
+            if identity != self.automated {
+                return Ok(None);
+            }
+            Ok(Some(hex_lattice::ForeignAutomationSource {
+                binding: hex_lattice_contract::ForeignProcessorBinding {
+                    root: 1,
+                    instance: identity.device_id(),
+                    graph: 1,
+                    epoch: self.inner.epoch,
+                },
+                revision: std::num::NonZeroU64::MIN,
+                class: CLASS,
+                sample_rate: context.sample_rate,
+                quantum_frames: 8,
+                dense_parameter: None,
+                parameters: &PARAMS,
+            }))
+        }
+    }
+
+    let prepare_automated =
+        |ed: &Editor,
+         first: ProcessorInstanceIdentity,
+         second: Option<ProcessorInstanceIdentity>| {
+            let definition = AutomatedInstrumentDefinition {
+                inner: InstrumentDefinition {
+                    identity: first,
+                    second,
+                    paired_move_timing: false,
+                    instrument_profile: true,
+                    epoch: 1,
+                },
+                automated: first,
+            };
+            let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+            let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+            let prepared = Arc::new(
+                PreparedRevision::prepare_with_effect_registry(
+                    ed.project(),
+                    &BTreeMap::new(),
+                    Arc::new(SineTable::new()),
+                    None,
+                    &registry,
+                )
+                .unwrap(),
+            );
+            assert!(
+                prepared.arrangement().tracks()[0]
+                    .foreign_instrument
+                    .as_ref()
+                    .and_then(|node| node.automation.foreign())
+                    .is_some(),
+                "first instrument must carry authored foreign automation"
+            );
+            prepared
+        };
+
+    // Case 1: Automated VST3 instrument playing linearly past a loop's end
+    // (as in ToggleLoopRegion after frame 404480 > loop.end). Neither old nor
+    // new loop is active at the cursor, so zero wraps occur and handoff succeeds.
+    let (mut editor, first) = fixture();
+    let mut playing = SessionPlayback::new(prepare_automated(&editor, first, None)).unwrap();
+    playing.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    let mut block = [[0.0; 2]; 32];
+    for _ in 0..4 {
+        endpoint.next_offset = 0;
+        playing
+            .render_with_foreign_processors(&mut block, None, None, None, &mut endpoint)
+            .unwrap();
+    }
+    assert_eq!(playing.arrangement_frame(), 128);
+    let behind_cursor = LoopRegion::new(0, 64, true).unwrap();
+    editor
+        .execute(Command::SetLoopRegion {
+            start: behind_cursor.start(),
+            end: behind_cursor.end(),
+            enabled: true,
+        })
+        .unwrap();
+    let mut candidate = SessionPlayback::new(prepare_automated(&editor, first, None)).unwrap();
+    candidate
+        .try_inherit_state_live_from(&mut playing)
+        .expect("enabling a loop behind the linear first-pass cursor must succeed");
+    assert_eq!(candidate.arrangement_frame(), 128);
+    assert_eq!(candidate.active_loop_region(), None);
+
+    // Case 2: An active offset loop (start > 0, cursor < end) on an automated
+    // VST3 instrument still refuses because keeps_instrument_epoch requires
+    // bounded wrap distance from zero.
+    let active_offset = LoopRegion::new(64, 512, true).unwrap();
+    editor
+        .execute(Command::SetLoopRegion {
+            start: active_offset.start(),
+            end: active_offset.end(),
+            enabled: true,
+        })
+        .unwrap();
+    let mut offset_candidate =
+        SessionPlayback::new(prepare_automated(&editor, first, None)).unwrap();
+    assert!(matches!(
+        offset_candidate.try_inherit_state_live_from(&mut candidate),
+        Err(super::super::foreign_arrangement::INCOMPATIBLE_HANDOFF)
+    ));
+
+    // Case 3: Mixed automated + unautomated VST3 instruments enabling a
+    // compatible first-pass loop (start == 0, cursor < end) must succeed.
+    let (mut mixed_editor, automated_id) = fixture();
+    let Created::Track(second_track) = mixed_editor
+        .execute(Command::AddMidiTrack { name: "pad".into() })
+        .unwrap()
+    else {
+        panic!("second track");
+    };
+    mixed_editor
+        .execute(Command::InsertInstrument {
+            track: second_track,
+            state: NativeDeviceState::new(VST3, 1, vec![19]).unwrap(),
+        })
+        .unwrap();
+    let second_device = mixed_editor
+        .project()
+        .track(second_track)
+        .unwrap()
+        .instrument()
+        .unwrap();
+    let unautomated_id = ProcessorInstanceIdentity::new(
+        ProcessorChainOwner::Track(second_track.value()),
+        second_device.id().value(),
+    )
+    .unwrap();
+    struct MultiEndpoint;
+    impl hex_lattice::ForeignProcessors for MultiEndpoint {
+        fn process_segment(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            frames.fill([0.0; 2]);
+            Ok(())
+        }
+        fn process_segment_with_notes(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [Frame],
+            _: &[hex_lattice_contract::ForeignParameterPoint],
+            _: &[hex_lattice::ForeignNote],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            frames.fill([0.0; 2]);
+            Ok(())
+        }
+        fn reject_callback(&mut self) {}
+    }
+    let mut mixed_playing = SessionPlayback::new(prepare_automated(
+        &mixed_editor,
+        automated_id,
+        Some(unautomated_id),
+    ))
+    .unwrap();
+    mixed_playing.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut multi = MultiEndpoint;
+    mixed_playing
+        .render_with_foreign_processors(&mut block, None, None, None, &mut multi)
+        .unwrap();
+    let compatible = LoopRegion::new(0, 512, true).unwrap();
+    mixed_editor
+        .execute(Command::SetLoopRegion {
+            start: compatible.start(),
+            end: compatible.end(),
+            enabled: true,
+        })
+        .unwrap();
+    let mut mixed_next = SessionPlayback::new(prepare_automated(
+        &mixed_editor,
+        automated_id,
+        Some(unautomated_id),
+    ))
+    .unwrap();
+    mixed_next
+        .try_inherit_state_live_from(&mut mixed_playing)
+        .expect(
+            "mixed automated + unautomated vst3 instruments must accept a compatible loop edit",
+        );
+
+    // Case 4: Unautomated VST3 instrument on RouteOwner::Silence must accept
+    // a live loop toggle.
+    let (mut silent_editor, silent_id) = fixture();
+    let silent_initial = prepare(&silent_editor, silent_id, true).unwrap();
+    let mut silent_playing = SessionPlayback::new(silent_initial).unwrap();
+    silent_playing.routes[0].owner = super::super::RouteOwner::Silence;
+    silent_playing.apply(SessionPlaybackCommand::Play).unwrap();
+    endpoint.next_offset = 0;
+    silent_playing
+        .render_with_foreign_processors(&mut block, None, None, None, &mut endpoint)
+        .unwrap();
+    silent_editor
+        .execute(Command::SetLoopRegion {
+            start: 64,
+            end: 512,
+            enabled: true,
+        })
+        .unwrap();
+    let mut silent_next =
+        SessionPlayback::new(prepare(&silent_editor, silent_id, true).unwrap()).unwrap();
+    silent_next
+        .try_inherit_state_live_from(&mut silent_playing)
+        .expect("unautomated vst3 instrument on a silent route must accept a live loop edit");
+}
