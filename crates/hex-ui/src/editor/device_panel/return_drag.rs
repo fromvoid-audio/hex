@@ -151,8 +151,7 @@ fn render_return_drop_target(
     };
     let replacement = device
         .filter(|device| {
-            owner.allows_vst3_replacement(view.document_audio_mode)
-                && device.state().type_id() == hex_lattice_contract::VST3_DEVICE_TYPE_ID
+            device.state().type_id() == hex_lattice_contract::VST3_DEVICE_TYPE_ID
                 && device.parent().is_none()
                 && next.is_none_or(|next| next.parent() != Some(device.id()))
         })

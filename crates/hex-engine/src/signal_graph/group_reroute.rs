@@ -10,7 +10,8 @@ use std::sync::Arc;
 
 impl SignalGraph {
     /// An upstream-aligned cut swaps a delayed direct-to-Main edge and an
-    /// unbuffered input to an existing Group, in either direction.
+    /// unbuffered Group input in either direction. It can also move an
+    /// undelayed leaf to the immediate enclosing Group.
     pub(crate) fn aligned_group_reroute_edges_from(
         &self,
         previous: &Self,
@@ -18,26 +19,42 @@ impl SignalGraph {
     ) -> Option<(usize, usize)> {
         let next = self.tracks.get(self.track_index(track)?)?;
         let old = previous.tracks.get(previous.track_index(track)?)?;
-        let (next, old, next_is_direct) = match (next.output, old.output) {
+        let (next, old, expected_delays) = match (next.output, old.output) {
             (TrackOutput::Group { edge: next, .. }, TrackOutput::Main { edge: old }) => {
-                (next, old, false)
+                (next, old, (false, true))
             }
             (TrackOutput::Main { edge: next }, TrackOutput::Group { edge: old, .. }) => {
-                (next, old, true)
+                (next, old, (true, false))
+            }
+            (
+                TrackOutput::Group {
+                    edge: next,
+                    target: next_parent,
+                },
+                TrackOutput::Group {
+                    edge: old,
+                    target: old_parent,
+                },
+            ) => {
+                let TrackOutput::Group {
+                    target: enclosing, ..
+                } = previous.tracks.get(old_parent)?.output
+                else {
+                    return None;
+                };
+                if self.tracks.get(next_parent)?.id? != previous.tracks.get(enclosing)?.id? {
+                    return None;
+                }
+                (next, old, (false, false))
             }
             _ => return None,
         };
-        let next_delay = self.plan.edges().get(*self.pre_main_edges.get(next)?)?;
-        let old_delay = previous
-            .plan
-            .edges()
-            .get(*previous.pre_main_edges.get(old)?)?;
-        let (main, group) = if next_is_direct {
-            (next_delay, old_delay)
-        } else {
-            (old_delay, next_delay)
+        let has_delay = |graph: &Self, output: usize| {
+            let index = *graph.pre_main_edges.get(output)?;
+            Some(graph.plan.edges().get(index)?.delay_frames != 0)
         };
-        (main.delay_frames != 0 && group.delay_frames == 0).then_some((next, old))
+        ((has_delay(self, next)?, has_delay(previous, old)?) == expected_delays)
+            .then_some((next, old))
     }
 
     fn retained_group_route_edges(
