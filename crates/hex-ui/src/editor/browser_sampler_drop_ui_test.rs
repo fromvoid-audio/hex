@@ -514,7 +514,7 @@ fn unassigned_sampler_real_browser_drop_loads_and_replaces_without_assignment(
 
 #[gpui::test]
 fn browser_sample_header_gaps_insert_loaded_sampler_tracks(cx: &mut TestAppContext) {
-    use super::worker_ui_fixture;
+    use crate::editor::{EditorMode, worker_ui_fixture};
     use hex_session::service::Request;
     use std::time::{Duration, Instant};
 
