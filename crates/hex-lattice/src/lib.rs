@@ -1366,7 +1366,7 @@ pub struct NativeRemovalTransition {
     position: usize,
     identity: ProcessorInstanceIdentity,
     authored_bypass: bool,
-    foreign_main_pass: Option<(hex_lattice_contract::ForeignProcessorBinding, NonZeroU32)>,
+    foreign_pass: Option<(hex_lattice_contract::ForeignProcessorBinding, NonZeroU32)>,
 }
 
 impl NativeRemovalTransition {
@@ -1376,16 +1376,23 @@ impl NativeRemovalTransition {
 
     /// The exact endpoint and frame count of this Main stage's aligned history.
     pub fn foreign_main_pass(self) -> Option<(hex_lattice_contract::ForeignProcessorBinding, u32)> {
-        self.foreign_main_pass
-            .map(|(binding, frames)| (binding, frames.get()))
+        let (binding, frames) = self.foreign_pass?;
+        (self.identity.owner() == ProcessorChainOwner::Main).then_some((binding, frames.get()))
+    }
+
+    /// The exact original binding for the sole 512-frame hosted Return going Off.
+    pub fn foreign_return_pass(self) -> Option<hex_lattice_contract::ForeignProcessorBinding> {
+        let (binding, frames) = self.foreign_pass?;
+        (matches!(self.identity.owner(), ProcessorChainOwner::Return(_)) && frames.get() == 512)
+            .then_some(binding)
     }
 
     fn matches(self, entry: &RuntimeEntry) -> bool {
         entry.owner == self.identity.owner() && entry.device_id == self.identity.device_id()
-            && self.foreign_main_pass().is_none_or(|(binding, frames)| {
+            && self.foreign_pass.is_none_or(|(binding, frames)| {
                 matches!(&entry.runtime,
                     RuntimeOwnership::Foreign(runtime) if runtime.prepared.binding() == Some(binding)
-                        && runtime.prepared.total_latency_frames() == frames)
+                        && runtime.prepared.total_latency_frames() == frames.get())
             })
     }
 }
@@ -1540,8 +1547,10 @@ impl NativeRuntimeChain {
                 .as_ref()
                 .is_some_and(PreparedProcessorFactory::is_powered_off);
             if powered_off
-                && (instance.owner != ProcessorChainOwner::Main
-                    || !instance.bypassed
+                && (!matches!(
+                    instance.owner,
+                    ProcessorChainOwner::Main | ProcessorChainOwner::Return(_)
+                ) || !instance.bypassed
                     || instance.device_type
                         != hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
                     || !instance.matrix.is_identity()
@@ -2818,17 +2827,39 @@ impl NativeRuntimeChain {
                 position,
                 identity,
                 authored_bypass: removed.bypassed,
-                foreign_main_pass: None,
+                foreign_pass: None,
             })
     }
 
     /// One outgoing Main stage whose delayed dry history can be copied by
     /// value. The host separately proves the unchanged upstream signal clock.
     pub fn main_pass_removal_from(&self, previous: &Self) -> Option<NativeRemovalTransition> {
+        self.pass_removal_from(previous, ProcessorChainOwner::Main)
+    }
+
+    /// Exactly one unchanged hosted Return stage becomes resource-free Off.
+    /// The host separately proves the original binding and both route clocks.
+    pub fn return_power_off_from(
+        &self,
+        previous: &Self,
+        return_id: u64,
+    ) -> Option<NativeRemovalTransition> {
+        self.pass_removal_from(previous, ProcessorChainOwner::Return(return_id))
+    }
+
+    fn pass_removal_from(
+        &self,
+        previous: &Self,
+        owner: ProcessorChainOwner,
+    ) -> Option<NativeRemovalTransition> {
         let [entry] = previous.entries.as_slice() else {
             return None;
         };
-        let (latency_frames, foreign_main_pass) = match &entry.runtime {
+        if entry.owner != owner {
+            return None;
+        }
+        let main = owner == ProcessorChainOwner::Main;
+        let (latency_frames, foreign_pass) = match &entry.runtime {
             RuntimeOwnership::Memoryless => return None,
             RuntimeOwnership::Foreign(runtime) => {
                 let prepared = runtime.prepared;
@@ -2842,19 +2873,20 @@ impl NativeRuntimeChain {
                 match prepared.processor_latency_frames() {
                     0 => {}
                     // Only deletion has been admitted for the seven-frame profile.
-                    7 if self.is_empty() => {}
+                    7 if main && self.is_empty() => {}
                     _ => return None,
                 }
                 let frames = NonZeroU32::new(prepared.total_latency_frames())?;
                 (frames.get(), Some((prepared.binding()?, frames)))
             }
-            _ => (
+            _ if main => (
                 entry
                     .committed_aligned_dry
                     .as_ref()?
                     .main_pass_latency_frames()?,
                 None,
             ),
+            _ => return None,
         };
         // A genuine hosted Off keeps authored identity but owns no runtime.
         // Its live-pass timing is the same separately copied passive delay as
@@ -2879,8 +2911,7 @@ impl NativeRuntimeChain {
             }
             _ => false,
         };
-        if !(self.is_empty() || off)
-            || entry.owner != ProcessorChainOwner::Main
+        if !(off || (main && self.is_empty()))
             || entry.algorithmic_latency_frames != Some(latency_frames)
             || entry.bypassed
             || entry.removal_bypassing
@@ -2900,7 +2931,7 @@ impl NativeRuntimeChain {
             position: 0,
             identity: ProcessorInstanceIdentity::new(entry.owner, entry.device_id).ok()?,
             authored_bypass: false,
-            foreign_main_pass,
+            foreign_pass,
         })
     }
 
@@ -2998,7 +3029,7 @@ impl NativeRuntimeChain {
             return false;
         }
         // The foreign endpoint already mixes against its aligned dry ring.
-        let ramp = if transition.foreign_main_pass.is_some() {
+        let ramp = if transition.foreign_pass.is_some() {
             bypass_ramp::BypassRamp::INACTIVE
         } else {
             bypass_ramp::BypassRamp::inherited(

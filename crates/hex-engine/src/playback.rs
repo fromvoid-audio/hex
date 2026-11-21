@@ -2596,6 +2596,33 @@ impl Playback {
             .is_some_and(|next| next.stage_foreign_main_pass_delay(binding, delay))
     }
 
+    /// Identity and binding of the active Return whose input-aligned bypass
+    /// must settle before the original worker and graph can be returned.
+    pub fn pending_foreign_return_pass(
+        &self,
+    ) -> Option<(
+        hex_lattice::ProcessorInstanceIdentity,
+        hex_lattice_contract::ForeignProcessorBinding,
+    )> {
+        self.session_runtime
+            .as_deref()?
+            .pending_foreign_return_pass()
+    }
+
+    /// Stage Main PCM for the matching live Return cut after its exact endpoint
+    /// settles. Uses the donor's current committed route stamp and inline copy.
+    pub fn stage_foreign_return_pass_delay(
+        &mut self,
+        previous: &Self,
+        identity: hex_lattice::ProcessorInstanceIdentity,
+        binding: hex_lattice_contract::ForeignProcessorBinding,
+    ) -> bool {
+        self.session_runtime
+            .as_deref_mut()
+            .zip(previous.session_runtime.as_deref())
+            .is_some_and(|(next, old)| next.stage_foreign_return_pass_delay(old, identity, binding))
+    }
+
     /// Ordinary publication may rebind a fresh monitor to the same physical input client in
     /// the same explicitly known project generation. This carries no voice/DSP history or
     /// source compatibility. Unknown generations (including legacy defaults) authorize nothing.

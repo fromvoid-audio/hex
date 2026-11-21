@@ -483,7 +483,7 @@ mod tests {
         let binding = original.binding;
         plugins.sources.push(original);
         assert_eq!(
-            plugins.main_power_off_binding(active.context, 7),
+            plugins.power_off_binding(active.context, ProcessorChainOwner::Main, 7),
             Some(binding)
         );
         plugins.sources[0].edit_recovery = Some(PendingRead {
@@ -491,7 +491,10 @@ mod tests {
             source: active,
         });
         assert!(plugins.sources[0].editor_retirement.lease.is_none());
-        assert_eq!(plugins.main_power_off_binding(active.context, 7), None);
+        assert_eq!(
+            plugins.power_off_binding(active.context, ProcessorChainOwner::Main, 7),
+            None
+        );
         let retained = plugins.sources[0].edit_recovery.unwrap();
         assert_eq!(retained.source, active);
         assert!(retained.recovery);

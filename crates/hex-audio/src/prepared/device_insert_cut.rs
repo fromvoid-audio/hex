@@ -94,6 +94,22 @@ impl Callback {
                 return Err(PlaybackHandoffRejection::RuntimeFenceChanged);
             }
         }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if let Some((identity, binding)) = next.playback.pending_foreign_return_pass() {
+            if !self
+                .native_sources
+                .settled_return_pass(identity, binding, active.playback.performance_frame())
+                .map_err(|_| PlaybackHandoffRejection::RuntimeFenceChanged)?
+            {
+                return Ok(false);
+            }
+            if !next
+                .playback
+                .stage_foreign_return_pass_delay(&active.playback, identity, binding)
+            {
+                return Err(PlaybackHandoffRejection::RuntimeFenceChanged);
+            }
+        }
         Ok(true)
     }
 

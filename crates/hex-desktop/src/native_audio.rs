@@ -1827,7 +1827,7 @@ impl WorkerAudioSink for NativeAudioSink {
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            let off = self.applied_powered_off_main(context);
+            let off = self.applied_powered_off(context);
             let applied = self
                 .output
                 .as_mut()
@@ -2000,14 +2000,16 @@ impl WorkerAudioSink for NativeAudioSink {
             .desired
             .as_ref()
             .map(|source| source.context())
-            .and_then(|context| self.applied_powered_off_main(context));
+            .and_then(|context| self.applied_powered_off(context));
         if let Some(intent) = input.main_power_on() {
             use hex_session::service::ResidentMainPowerOnInterval;
             let changed = match intent.interval() {
                 ResidentMainPowerOnInterval::Stopped { context, fence } => {
-                    powered_off == Some(intent.device())
-                        && self.stopped_resident_power_fence(context, intent.device())?
-                            != Some(fence)
+                    powered_off.is_some_and(|identity| {
+                        identity.owner() == hex_engine::ProcessorChainOwner::Main
+                            && identity.device_id() == intent.device()
+                    }) && self.stopped_resident_power_fence(context, intent.device())?
+                        != Some(fence)
                 }
                 ResidentMainPowerOnInterval::Running(source) => {
                     self.running_resident_main_power_on(source.context, intent.device())
@@ -2312,12 +2314,13 @@ impl WorkerAudioSink for NativeAudioSink {
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    fn running_resident_main_power_off(
+    fn running_resident_power_off(
         &mut self,
         context: AudioSourceContext,
+        owner: hex_engine::ProcessorChainOwner,
         device: u64,
-    ) -> Result<Option<hex_session::service::ResidentMainPowerOff>, String> {
-        let binding = match self.plugins.main_power_off_binding(context, device) {
+    ) -> Result<Option<hex_session::service::ResidentRunningPowerOff>, String> {
+        let binding = match self.plugins.power_off_binding(context, owner, device) {
             Some(binding) => binding,
             None => return Ok(None),
         };
@@ -2325,7 +2328,7 @@ impl WorkerAudioSink for NativeAudioSink {
             .output
             .as_mut()
             .and_then(|output| output.publication.control())
-            .ok_or("running main output unavailable")?;
+            .ok_or("running power output unavailable")?;
         let Some(actual) = control
             .status
             .recording_source()
@@ -2341,7 +2344,8 @@ impl WorkerAudioSink for NativeAudioSink {
         {
             return Ok(None);
         }
-        Ok(Some(hex_session::service::ResidentMainPowerOff {
+        Ok(Some(hex_session::service::ResidentRunningPowerOff {
+            owner,
             device,
             binding,
             source: hex_session::service::ResidentGraphSubmission {
@@ -2380,6 +2384,18 @@ impl WorkerAudioSink for NativeAudioSink {
             audio_revision: actual.audio_revision,
             output_identity: actual.output_identity,
         })
+    }
+
+    fn resident_playing(&mut self) -> bool {
+        self.output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .is_some_and(|control| {
+                control
+                    .status
+                    .playing
+                    .load(std::sync::atomic::Ordering::Acquire)
+            })
     }
 
     fn stopped_resident_power_fence(

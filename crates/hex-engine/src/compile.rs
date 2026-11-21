@@ -1112,7 +1112,9 @@ fn compile_project_inner<'a>(
             external_inputs,
         )?;
         for device in &effect_plan.device_chain {
-            if let Some(definition) = &device.definition {
+            if let Some(definition) = &device.definition
+                && !definition.is_powered_off()
+            {
                 stateful_count = stateful_count
                     .checked_add(1)
                     .ok_or(Invalid("stateful device count overflow"))?;

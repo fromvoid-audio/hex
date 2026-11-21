@@ -326,6 +326,7 @@ pub(super) enum DeviceEditTailPolicy {
     Cut,
     FadedNative(hex_lattice::ProcessorInstanceIdentity),
     FadedReturn(ReturnId),
+    PoweredOffReturn(hex_lattice::ProcessorInstanceIdentity),
 }
 
 impl DeviceEditTailPolicy {
@@ -347,7 +348,7 @@ impl DeviceEditTailPolicy {
                     Self::RequireConfirmation
                 }
             }
-            Self::FadedReturn(_) => Self::RequireConfirmation,
+            Self::FadedReturn(_) | Self::PoweredOffReturn(_) => Self::RequireConfirmation,
             _ => self,
         };
         if policy != Self::Preserve
@@ -365,9 +366,10 @@ impl DeviceEditTailPolicy {
     pub(super) fn cut_obsolete_tail(self) -> Result<bool, SessionPlaybackError> {
         match self {
             Self::Preserve => Ok(false),
-            Self::RequireConfirmation | Self::FadedNative(_) | Self::FadedReturn(_) => {
-                Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
-            }
+            Self::RequireConfirmation
+            | Self::FadedNative(_)
+            | Self::FadedReturn(_)
+            | Self::PoweredOffReturn(_) => Err(SessionPlaybackError::DeviceInsertNeedsConfirmation),
             Self::Cut => Ok(true),
         }
     }
@@ -534,6 +536,34 @@ impl ReturnEffectTailPlan {
                 .get(old_index)
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
             let new_index = new_buses.iter().position(|bus| bus.id == old_bus.id);
+            if let DeviceEditTailPolicy::PoweredOffReturn(identity) = tail_policy
+                && identity.owner() == hex_lattice::ProcessorChainOwner::Return(old_bus.id.value())
+            {
+                // The original now has its temporary removal bypass, so the
+                // preflighted cut cannot be reclassified on that mutated chain.
+                let exact = new_index.is_some_and(|index| {
+                    let ([old], [off]) = (
+                        old_bus.device_chain.as_ref(),
+                        new_buses[index].device_chain.as_ref(),
+                    ) else {
+                        return false;
+                    };
+                    old.owner == identity.owner()
+                        && off.owner == identity.owner()
+                        && old.device_id == identity.device_id()
+                        && off.device_id == identity.device_id()
+                        && off.bypassed
+                        && off
+                            .definition
+                            .as_ref()
+                            .is_some_and(|factory| factory.is_powered_off())
+                });
+                if !exact {
+                    return Err(SessionPlaybackError::DeviceRuntime);
+                }
+                // The original chain stays with the returned donor.
+                continue;
+            }
             if new_index.is_none() && tail_policy == DeviceEditTailPolicy::FadedReturn(old_bus.id) {
                 // The old post-DSP output is already inaudible at the cut.
                 // Leave the original chain with the returned donor.

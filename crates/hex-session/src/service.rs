@@ -100,10 +100,10 @@ pub use audio_sink::{
     ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata, ResidentFilePitch,
     ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
     ResidentFreshRuntimeFence, ResidentGraphSubmission, ResidentHostedInstrumentMove,
-    ResidentMainPowerOff, ResidentMainPowerOn, ResidentMainPowerOnInterval,
-    ResidentPublicationAcceptance, ResidentPublicationFailure, ResidentPublicationInputs,
-    ResidentPublicationMetadata, ResidentPublicationPolicy, ResidentPublicationReadiness,
-    ResidentPublicationRefusal, ResidentRuntimeLoop, ResidentSourceOrigin, ResidentTempoEdit,
+    ResidentMainPowerOn, ResidentMainPowerOnInterval, ResidentPublicationAcceptance,
+    ResidentPublicationFailure, ResidentPublicationInputs, ResidentPublicationMetadata,
+    ResidentPublicationPolicy, ResidentPublicationReadiness, ResidentPublicationRefusal,
+    ResidentRunningPowerOff, ResidentRuntimeLoop, ResidentSourceOrigin, ResidentTempoEdit,
     ResidentTempoEditOutcome, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
@@ -6652,6 +6652,13 @@ fn run_worker(
                                     }
                                 }
                             }
+                            DeviceInsertAudioState::Refused(reason)
+                                if pending.is_live_return_power_off()
+                                    && reason == hex_engine::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation =>
+                            {
+                                error = Some("running return power off cannot keep this route aligned".into());
+                                DeviceInsertOutcome::Refused(reason)
+                            }
                             DeviceInsertAudioState::Refused(reason) => {
                                 if reason == hex_engine::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation {
                                     error = Some(match operation.device() {
@@ -7715,16 +7722,22 @@ fn run_worker(
                                 session.project(),
                                 &command,
                                 sink,
-                            ) || resident_audio::device_insert::running_main_power_on(
+                            ) || resident_audio::device_insert::running_return_power_target(
                                 session.project(),
                                 &command,
-                                hex_engine::AudioSourceContext {
-                                    project_generation,
-                                    editor_revision: revision,
-                                },
                                 sink,
                             )
                             .is_some()
+                                || resident_audio::device_insert::running_main_power_on(
+                                    session.project(),
+                                    &command,
+                                    hex_engine::AudioSourceContext {
+                                        project_generation,
+                                        editor_revision: revision,
+                                    },
+                                    sink,
+                                )
+                                .is_some()
                                 || resident_audio::device_insert::stopped_hosted_power_fence(
                                     session.project(),
                                     &command,
