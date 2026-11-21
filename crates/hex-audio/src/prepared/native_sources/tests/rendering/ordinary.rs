@@ -20,6 +20,7 @@ mod paused_monitor;
 mod pressure;
 #[cfg(not(debug_assertions))]
 mod profile;
+mod return_power_on;
 mod sampler;
 
 fn limits() -> hex_engine::AudioStorageLedgerReservation {
