@@ -501,6 +501,111 @@ pub(super) fn waveform_summary_view_cached(
     waveform_source_segment_view_cached(waveform, 0, 0, end, cache, ink)
 }
 
+/// Paint a cached timeline waveform directly into `bounds` inside a custom
+/// canvas/element without wrapping it in extra `Div` or `canvas` nodes.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn paint_timeline_waveform_cached(
+    bounds: gpui::Bounds<gpui::Pixels>,
+    waveform: &Arc<CachedWaveform>,
+    mapping: &WaveformMapping,
+    visible_start: u64,
+    visible_end: u64,
+    cache: &Rc<WaveformViewCache>,
+    grid: Option<WaveformGrid>,
+    ink: u32,
+    active: bool,
+    window: &mut Window,
+) {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    if grid.is_some() && super::navigation_metrics::waveforms_suppressed() {
+        return;
+    }
+    #[cfg(all(test, feature = "ui-test-support"))]
+    let _navigation_timer =
+        super::navigation_metrics::Timer::start(super::navigation_metrics::Stage::WaveformProvider);
+    let width = f32::from(bounds.size.width);
+    let height = f32::from(bounds.size.height);
+    let scale = window.scale_factor();
+    if visible_start >= visible_end
+        || !width.is_finite()
+        || width <= 0.0
+        || !height.is_finite()
+        || height <= 0.0
+        || !scale.is_finite()
+        || scale <= 0.0
+    {
+        return;
+    }
+    let colors = WaveformColors {
+        waveform: ink,
+        inactive: ink,
+        centerline: theme::color(theme::PaletteRole::Border),
+        overrange: theme::color(theme::PaletteRole::Error),
+    };
+    let columns = waveform_column_count(width, scale);
+    let request = WaveformGeometryRequest {
+        amplitude_scale: cache.amplitude_scale(),
+        mapping,
+        visible_start,
+        visible_end,
+        bounds,
+        scale,
+        columns,
+        grid,
+    };
+    let geometry_for = |source: &Arc<CachedWaveform>, request: &WaveformGeometryRequest<'_>| {
+        if matches!(
+            request.mapping,
+            WaveformMapping::Frame { .. } | WaveformMapping::MusicalEventFade { .. }
+        ) {
+            return cached_waveform_geometry(cache, source, request);
+        }
+        if let Some(geometry) = cached_waveform_geometry(cache, source, request) {
+            return Some(geometry);
+        }
+        prepare_waveform_geometry_with_scale(source, request)
+            .map(|geometry| (Arc::new(geometry), gpui::Point::default()))
+    };
+    let geometry = geometry_for(waveform, &request).or_else(|| {
+        let fallback = match mapping {
+            WaveformMapping::Frame { fallback, .. }
+            | WaveformMapping::MusicalEventFade { fallback, .. } => fallback.as_ref()?,
+            _ => return None,
+        };
+        geometry_for(
+            &fallback.waveform,
+            &WaveformGeometryRequest {
+                mapping: &fallback.mapping,
+                visible_start: fallback.visible.start,
+                visible_end: fallback.visible.end,
+                ..request
+            },
+        )
+    });
+    let Some((geometry, offset)) = geometry else {
+        return;
+    };
+    let clipped = bounds.intersect(&window.content_mask().bounds);
+    if clipped.is_empty() {
+        return;
+    }
+    #[cfg(all(test, feature = "ui-test-support"))]
+    if let Ok(mut guard) = cache.try_borrow_mut() {
+        guard.record_paint(bounds, clipped, &geometry, offset, colors);
+    }
+    window.with_content_mask(Some(gpui::ContentMask { bounds: clipped }), |window| {
+        hex_widgets::paint_waveform_geometry_with_offset(
+            geometry.as_ref().as_ref(),
+            bounds,
+            offset,
+            colors,
+            WaveformEmphasis::Uniform,
+            theme::clip_detail_opacity(active),
+            window,
+        );
+    });
+}
+
 pub(super) fn waveform_canvas(
     waveform: Arc<CachedWaveform>,
     mapping: WaveformMapping,

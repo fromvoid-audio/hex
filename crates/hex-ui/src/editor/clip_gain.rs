@@ -105,6 +105,9 @@ impl State {
     pub(super) fn held(&self) -> bool {
         self.held.is_some()
     }
+    pub(super) fn has_displayed(&self) -> bool {
+        self.held.is_some() || self.pending.is_some()
+    }
 }
 impl EditorView {
     pub(super) fn set_held_gain_audition(&mut self, edit: Option<GainEdit>) {
@@ -312,6 +315,90 @@ impl EditorView {
         }
         cx.notify();
     }
+    /// Start a clip gain Option-drag directly from an analytic lane hit without
+    /// instantiating a per-clip gain handle `Div`.
+    pub(super) fn begin_clip_gain_mouse_down(
+        &mut self,
+        track: TrackId,
+        clip_id: ClipId,
+        viewport: Viewport,
+        event: &gpui::MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !event.modifiers.alt {
+            return false;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let Some(clip) = state.project.clip(clip_id).cloned() else {
+            return false;
+        };
+        let Some(&lane) = self.drag_lanes.get(&track) else {
+            return false;
+        };
+        let generation = self.project_generation;
+        let revision = state.revision;
+        let original = GainTarget(Rc::new(clip));
+        let drag = Drag {
+            generation,
+            revision,
+            clip: original.clone(),
+            track,
+            viewport,
+            lane,
+            origin_y: f32::from(event.position.y),
+            last_y: f32::from(event.position.y),
+            moved: false,
+            value: f64::from(original.gain().millidb()),
+            preview: original.gain(),
+        };
+        if !drag.current(self)
+            || self.clip_gain.held.is_some()
+            || self.clip_gain.pending.is_some()
+            || self.fade_key_held
+            || self.time_selection_key_held
+            || !drag.origin_y.is_finite()
+        {
+            return false;
+        }
+        let owner = cx.entity().downgrade();
+        let cancelled = owner.clone();
+        if window.capture_pointer(
+            cx.entity_id(),
+            MouseButton::Left,
+            gpui::CursorStyle::ResizeUpDown,
+            move |event, window, cx| {
+                let moved = event.downcast_ref::<MouseMoveEvent>();
+                let released = event
+                    .downcast_ref::<MouseUpEvent>()
+                    .filter(|e| e.button == MouseButton::Left);
+                if let Some((position, fine)) = moved
+                    .map(|e| (e.position, e.modifiers.shift))
+                    .or_else(|| released.map(|e| (e.position, e.modifiers.shift)))
+                {
+                    let _ = owner.update(cx, |view, cx| {
+                        view.update_clip_gain(position, fine, window, cx);
+                        if released.is_some() {
+                            view.finish_clip_gain(cx);
+                        }
+                    });
+                }
+            },
+            move |_, cx| {
+                let _ = cancelled.update(cx, |view, cx| view.cancel_clip_gain(cx));
+            },
+            cx,
+        ) {
+            self.focus.focus(window);
+            self.clip_gain.held = Some(drag);
+            cx.notify();
+            return true;
+        }
+        false
+    }
+
     pub(super) fn clip_gain_handle(
         &self,
         state: &ViewState,

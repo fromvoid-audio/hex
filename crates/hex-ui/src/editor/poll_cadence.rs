@@ -205,7 +205,7 @@ impl EditorView {
             .try_borrow_mut()
             .is_ok_and(|mut cache| cache.poll_overrange());
         if overrange_changed {
-            window.refresh();
+            self.waveform_overrange_epoch = self.waveform_overrange_epoch.wrapping_add(1);
         }
         let changed = self.tick(cx) | overrange_changed;
         if changed {

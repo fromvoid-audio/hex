@@ -171,9 +171,12 @@ mod user_errors;
 pub(crate) use midi_recording::pressure_fixture::exercise as midi_pressure_fixture;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod arrangement_chrome_ui_test;
+mod arrangement_clip_index;
 mod arrangement_map;
+mod clip_title_cache;
 mod console_mixer;
 mod console_returns;
+mod frame_timing;
 mod group_overview;
 mod midi_loop_notes;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -181,6 +184,8 @@ mod midi_loop_profile;
 mod midi_pitch_viewport;
 mod midi_ruler;
 mod midi_scene;
+mod track_header_cache;
+mod track_lane_canvas;
 use midi_pitch_viewport::PitchViewport;
 
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -1075,6 +1080,8 @@ pub(super) struct EditorView {
     section_launch_after_loop: Option<section_launch::SectionLaunchAfterLoop>,
     loop_rail_cursor: gpui::CursorStyle,
     clip_content_cache: clip_content_cache::TrackCache,
+    track_header_cache: track_header_cache::TrackHeaderCache,
+    waveform_overrange_epoch: u64,
     drag_lanes: std::collections::HashMap<TrackId, drag::LaneBounds>,
     track_drop_lanes: std::collections::HashMap<TrackId, drag::LaneBounds>,
     drag_lane_epochs: std::collections::HashMap<TrackId, u64>,
@@ -1088,6 +1095,9 @@ pub(super) struct EditorView {
     zoom_wheel_accum: f32,
     arrangement_map_cache: std::cell::RefCell<Option<Rc<arrangement_map::MapCache>>>,
     focused_arrangement_map_cache: std::cell::RefCell<Option<Rc<arrangement_map::MapCache>>>,
+    arrangement_clip_index: std::cell::RefCell<arrangement_clip_index::ArrangementClipIndex>,
+    clip_title_cache: Rc<std::cell::RefCell<clip_title_cache::ClipTitleCache>>,
+    hovered_arrangement_clip: Option<track_lane_canvas::HoveredArrangementClip>,
     group_overview_cache: std::cell::RefCell<group_overview::Cache>,
     audio_point_page: usize,
     overview_waveform_cache: Rc<std::cell::RefCell<overview_waveform::Cache>>,
@@ -1896,6 +1906,8 @@ impl EditorView {
             section_launch_after_loop: None,
             loop_rail_cursor: gpui::CursorStyle::Crosshair,
             clip_content_cache: clip_content_cache::TrackCache::default(),
+            track_header_cache: track_header_cache::TrackHeaderCache::default(),
+            waveform_overrange_epoch: 0,
             drag_lanes: std::collections::HashMap::new(),
             track_drop_lanes: std::collections::HashMap::new(),
             drag_lane_epochs: std::collections::HashMap::new(),
@@ -1909,6 +1921,9 @@ impl EditorView {
             zoom_wheel_accum: 0.0,
             arrangement_map_cache: std::cell::RefCell::new(None),
             focused_arrangement_map_cache: std::cell::RefCell::new(None),
+            arrangement_clip_index: std::cell::RefCell::new(Default::default()),
+            clip_title_cache: Rc::new(std::cell::RefCell::new(Default::default())),
+            hovered_arrangement_clip: None,
             group_overview_cache: std::cell::RefCell::default(),
             audio_point_page: 0,
             overview_waveform_cache: Rc::new(std::cell::RefCell::new(
