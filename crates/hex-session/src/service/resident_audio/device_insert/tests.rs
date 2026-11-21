@@ -61,6 +61,8 @@ struct Fixture {
     candidate: Option<Arc<FixtureReceipt>>,
     offer_deadline: Option<Instant>,
     revision: u64,
+    pending_parameters: Option<PluginParameterResult>,
+    pending_conversion: Option<PluginParameterConversionResult>,
 }
 
 impl WorkerAudioSink for Arc<Mutex<Fixture>> {
@@ -205,6 +207,22 @@ impl WorkerAudioSink for Arc<Mutex<Fixture>> {
             output_identity: observation.output_identity,
             audio_revision: observation.audio_revision,
         })
+    }
+
+    fn plugin_parameters_ready(&self) -> bool {
+        self.lock().unwrap().pending_parameters.is_some()
+    }
+
+    fn take_plugin_parameters(&mut self) -> Option<PluginParameterResult> {
+        self.lock().unwrap().pending_parameters.take()
+    }
+
+    fn plugin_parameter_conversion_ready(&self) -> bool {
+        self.lock().unwrap().pending_conversion.is_some()
+    }
+
+    fn take_plugin_parameter_conversion(&mut self) -> Option<PluginParameterConversionResult> {
+        self.lock().unwrap().pending_conversion.take()
     }
 }
 
@@ -1309,6 +1327,231 @@ fn cancelled_or_stale_consent_leaves_audio_and_history_at_the_predecessor() {
         assert_eq!(terminal.state.project, initial.state.project);
         assert_eq!(fixture.lock().unwrap().active, predecessor);
     }
+}
+
+fn confirm_and_install(
+    service: &Service,
+    fixture: &Mutex<Fixture>,
+    offer: &DeviceInsertConfirmation,
+) -> Event {
+    assert!(offer.is_pending());
+    assert!(offer.proceed());
+    let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
+    let submission = loop {
+        let mut fixture = fixture.lock().unwrap();
+        let candidate = fixture.candidate.as_ref().unwrap();
+        if candidate.submission != offer.submission() {
+            let submission = candidate.submission;
+            assert_eq!(
+                candidate.state.compare_exchange(
+                    PENDING,
+                    INSTALLED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire
+                ),
+                Ok(PENDING)
+            );
+            fixture.active = Some(ResidentRuntimeLoop {
+                output_identity: submission.output_identity,
+                audio_revision: submission.audio_revision,
+                source_context: Some(submission.context),
+                source_origin: ResidentSourceOrigin::CanonicalCandidate,
+                section_loop: None,
+            });
+            break submission;
+        }
+        drop(fixture);
+        assert!(
+            Instant::now() < deadline,
+            "confirmed candidate was not submitted"
+        );
+        thread::sleep(Duration::from_millis(1));
+    };
+    let committed = receive(service);
+    assert_eq!(
+        committed.device_insert_complete,
+        Some(DeviceInsertCompletion {
+            submission,
+            outcome: DeviceInsertOutcome::Installed,
+        })
+    );
+    committed
+}
+
+#[test]
+fn read_only_observations_do_not_cancel_pending_or_confirmed_device_insert() {
+    let (service, fixture, _) = service();
+    let stage_utility = || {
+        let state = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+        )
+        .unwrap();
+        service
+            .submit(Request::Edit(Command::InsertMainDevice {
+                before: None,
+                state,
+            }))
+            .unwrap();
+        let pending = receive(&service);
+        assert!(!pending.request_complete);
+        pending
+    };
+    stage_utility();
+    let baseline = install_candidate(&service, &fixture).state;
+    let existing_device = baseline.project.main_devices()[0].id();
+    let sample_query = |revision, request_id| PluginParameterQuery {
+        context: hex_engine::AudioSourceContext {
+            project_generation: 0,
+            editor_revision: revision,
+        },
+        device: existing_device,
+        output_identity: 51,
+        request_id,
+        page_first: Some(0),
+    };
+    let sample_conversion = |revision, request_id| PluginParameterConversionQuery {
+        context: hex_engine::AudioSourceContext {
+            project_generation: 0,
+            editor_revision: revision,
+        },
+        device: existing_device,
+        output_identity: 51,
+        request_id,
+        source: hex_lattice_contract::ForeignProcessorBinding {
+            root: 1,
+            instance: 1,
+            graph: 1,
+            epoch: 1,
+        },
+        parameter: 7,
+        operation: PluginParameterConversion::Format(0.5),
+    };
+
+    // Part A: Periodic VST3 parameter queries, their continuations, and other
+    // read-only observations arriving while awaiting confirmation must not
+    // cancel the offer.
+    stage_utility();
+    let refused = {
+        let mut fixture = fixture.lock().unwrap();
+        fixture.offer_deadline = Some(Instant::now() + Duration::from_secs(30));
+        fixture.candidate.clone().unwrap()
+    };
+    refused.state.store(REFUSED, Ordering::Release);
+    let offer = receive(&service).device_insert_confirmation.unwrap();
+
+    let query = sample_query(baseline.revision, 1);
+    service
+        .submit(Request::QueryPluginParameters(query))
+        .unwrap();
+    let observed = receive(&service);
+    assert!(observed.plugin_parameter_observation);
+    assert_eq!(observed.plugin_parameters.unwrap().query, query);
+    assert!(offer.is_pending());
+
+    let async_query = sample_query(baseline.revision, 2);
+    fixture.lock().unwrap().pending_parameters = Some(PluginParameterResult {
+        query: async_query,
+        source: None,
+        total: 0,
+        descriptor_signature: None,
+        rows: Ok(Vec::new()),
+    });
+    let continued = receive(&service);
+    assert!(continued.plugin_parameter_observation);
+    assert_eq!(continued.plugin_parameters.unwrap().query, async_query);
+    assert!(offer.is_pending());
+
+    let conversion = sample_conversion(baseline.revision, 3);
+    service
+        .submit(Request::QueryPluginParameterConversion(conversion.clone()))
+        .unwrap();
+    let observed = receive(&service);
+    assert!(observed.plugin_parameter_observation);
+    assert_eq!(
+        observed.plugin_parameter_conversion.unwrap().query,
+        conversion
+    );
+    assert!(offer.is_pending());
+
+    let async_conversion = sample_conversion(baseline.revision, 4);
+    fixture.lock().unwrap().pending_conversion = Some(PluginParameterConversionResult {
+        query: async_conversion.clone(),
+        value: Ok(PluginParameterConvertedValue {
+            normalized: 0.5,
+            display: Some("0.5".into()),
+        }),
+    });
+    let continued = receive(&service);
+    assert!(continued.plugin_parameter_observation);
+    assert_eq!(
+        continued.plugin_parameter_conversion.unwrap().query,
+        async_conversion
+    );
+    assert!(offer.is_pending());
+
+    service
+        .submit(Request::QueryFailedPluginAutomation { request_id: 5 })
+        .unwrap();
+    let automation = receive(&service);
+    assert!(automation.plugin_parameter_observation);
+    assert!(automation.device_automation_take_complete.is_some());
+    assert!(offer.is_pending());
+
+    let committed = confirm_and_install(&service, &fixture, &offer);
+    assert_eq!(committed.state.project.main_devices().len(), 2);
+
+    // Part B: A read-only query arriving before audio refuses for confirmation
+    // must be served immediately rather than parked in device_insert_deferred
+    // (which would cancel the confirmation as soon as it is offered).
+    stage_utility();
+    let pre_offer_query = sample_query(committed.state.revision, 6);
+    service
+        .submit(Request::QueryPluginParameters(pre_offer_query))
+        .unwrap();
+    let observed = receive(&service);
+    assert!(observed.plugin_parameter_observation);
+    assert_eq!(observed.plugin_parameters.unwrap().query, pre_offer_query);
+
+    let refused = {
+        let mut fixture = fixture.lock().unwrap();
+        fixture.offer_deadline = Some(Instant::now() + Duration::from_secs(30));
+        fixture.candidate.clone().unwrap()
+    };
+    refused.state.store(REFUSED, Ordering::Release);
+    let offered = receive(&service);
+    let offer = offered.device_insert_confirmation.unwrap();
+    let committed = confirm_and_install(&service, &fixture, &offer);
+    assert_eq!(committed.state.project.main_devices().len(), 3);
+
+    // Part C: A competing mutating edit still cancels an unanswered
+    // confirmation offer and then executes in FIFO order.
+    stage_utility();
+    let refused = {
+        let mut fixture = fixture.lock().unwrap();
+        fixture.offer_deadline = Some(Instant::now() + Duration::from_secs(30));
+        fixture.candidate.clone().unwrap()
+    };
+    refused.state.store(REFUSED, Ordering::Release);
+    let offer = receive(&service).device_insert_confirmation.unwrap();
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "after".into(),
+        }))
+        .unwrap();
+    let cancelled = receive(&service);
+    assert_eq!(
+        cancelled.device_insert_complete,
+        Some(DeviceInsertCompletion {
+            submission: offer.submission(),
+            outcome: DeviceInsertOutcome::Cancelled,
+        })
+    );
+    assert!(!offer.is_pending());
+    let added = receive(&service);
+    assert!(added.request_complete);
+    assert_eq!(added.state.project.tracks().len(), 1);
+    assert_eq!(added.state.project.tracks()[0].name(), "after");
 }
 
 mod track_routes;

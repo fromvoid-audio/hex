@@ -2207,6 +2207,26 @@ impl WorkerEvents {
             thread::sleep(super::stopped_arrangement::FENCE_POLL);
         }
     }
+    /// Requests that observe or save the committed predecessor without mutating
+    /// project, history, transport or graph state, and without cancelling a
+    /// pending device-insert confirmation. Window-close preflights stay out of
+    /// this set so closing cancels an unanswered confirmation.
+    fn served_during_device_insert(request: &Request) -> bool {
+        matches!(
+            request,
+            Request::SaveNew(_)
+                | Request::SaveProjectAs { .. }
+                | Request::SaveCurrent
+                | Request::SaveCurrentWithFormatUpgrade { .. }
+                | Request::QueryPluginParameters(_)
+                | Request::ContinuePluginParameters
+                | Request::QueryPluginParameterConversion(_)
+                | Request::ContinuePluginParameterConversion
+                | Request::QueryFailedPluginAutomation { .. }
+                | Request::InspectSealedAutomationRecovery { .. }
+                | Request::PreparePausedInputMonitor { .. }
+        )
+    }
     #[allow(clippy::too_many_arguments)] // Each continuation has one worker owner.
     pub(super) fn next_request_with_control_poll(
         &mut self,
@@ -2239,16 +2259,28 @@ impl WorkerEvents {
                     thread::sleep(BUSY_POLL_INTERVAL);
                     continue;
                 }
+                if self
+                    .audio
+                    .as_ref()
+                    .is_some_and(|audio| audio.plugin_parameters_ready())
+                {
+                    return Some(QueuedRequest::continuation(
+                        Request::ContinuePluginParameters,
+                        document_intent,
+                    ));
+                }
+                if self
+                    .audio
+                    .as_ref()
+                    .is_some_and(|audio| audio.plugin_parameter_conversion_ready())
+                {
+                    return Some(QueuedRequest::continuation(
+                        Request::ContinuePluginParameterConversion,
+                        document_intent,
+                    ));
+                }
                 match requests.recv_timeout(BUSY_POLL_INTERVAL) {
-                    Ok(queued)
-                        if matches!(
-                            queued.request,
-                            Request::SaveNew(_)
-                                | Request::SaveProjectAs { .. }
-                                | Request::SaveCurrent
-                                | Request::SaveCurrentWithFormatUpgrade { .. }
-                        ) =>
-                    {
+                    Ok(queued) if Self::served_during_device_insert(&queued.request) => {
                         return Some(queued);
                     }
                     Ok(queued) => {
