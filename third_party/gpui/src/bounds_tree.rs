@@ -97,16 +97,16 @@ where
         for (raw, order) in bounds.iter().zip(orders) {
             let rect = TreeBounds::from_bounds(raw);
             let mut local_max = 0;
-            let mut repeat = false;
+            let mut identical_overlap = false;
             for (member, rank) in &self.group_members[start..] {
                 if *rank > local_max && rect.intersects(member) {
                     local_max = *rank;
+                    identical_overlap |= *member == rect;
                 }
-                repeat |= *member == rect;
             }
-            // The earlier identical primitive ordered itself after every
-            // overlapping member already in the main tree.
-            let before = if repeat {
+            // An overlapping identical member already follows every relevant
+            // leaf in the main tree. Rounded-flat bounds can fail self-overlap.
+            let before = if identical_overlap {
                 local_max
             } else {
                 self.root
@@ -509,6 +509,23 @@ mod ordering_verification {
         require(
             repeated.insert(separate) == 1,
             "disjoint geometry lost order reuse",
+        )?;
+
+        let mut flat_group = BoundsTree::default();
+        let cover = rect(0.0, 0.0, 2.0, 1.0);
+        let flat = rect(1.0, 0.0, f32::EPSILON / 4.0, 1.0);
+        require(
+            flat.intersects(&cover) && !flat.intersects(&flat),
+            "expected a rounded-flat clip with an earlier overlap",
+        )?;
+        let mut orders = [0; 2];
+        require(flat_group.insert(cover) == 1, "cover order")?;
+        require(
+            flat_group
+                .insert_group(&[flat, flat], &mut orders)
+                .is_some()
+                && orders == [2, 2],
+            "rounded-flat group member lost its earlier cover",
         )?;
 
         // A union represented as origin + size may round its far edge inward.
