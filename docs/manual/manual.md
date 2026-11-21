@@ -691,6 +691,10 @@ authored pins.
 direct pin editing is available for a single complete, forward, unlooped event
 with neutral pitch. automatic ticks require resident source audio.
 
+in a grouped clip, select an event whose retained source is forward, unlooped
+and already warped. drag or remove its existing interior pins. the other
+events keep their original sound, including events that share the same source.
+
 ## audio event fades
 
 the **scope bar** at the top of each clip editor defines the clip's **scope**.
