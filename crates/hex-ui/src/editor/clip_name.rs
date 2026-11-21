@@ -261,7 +261,7 @@ impl EditorView {
         self.clip_name_strip(
             track,
             clip,
-            self.clip_name_label(clip, name),
+            Some(self.clip_name_label(clip, name)),
             fill,
             true,
             false,
@@ -305,14 +305,8 @@ impl EditorView {
         label_clipped: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let label = if notched && label_clipped && !self.clip_name_is_editing(clip) {
-            clip_name_text_surface()
-                .h(px(CLIP_NAME_HEIGHT))
-                .debug_selector(move || format!("clip-name-label-{}", clip.value()))
-                .into_any_element()
-        } else {
-            self.clip_name_label(clip, name)
-        };
+        let omit_label = notched && label_clipped && !self.clip_name_is_editing(clip);
+        let label = (!omit_label).then(|| self.clip_name_label(clip, name));
         self.clip_name_strip(track, clip, label, fill, true, true, notched, cx)
     }
 
@@ -330,7 +324,7 @@ impl EditorView {
         self.clip_name_strip(
             track,
             clip,
-            self.clip_name_label(clip, name),
+            Some(self.clip_name_label(clip, name)),
             fill,
             false,
             on_backdrop,
@@ -355,7 +349,7 @@ impl EditorView {
         &self,
         track: hex_project::TrackId,
         clip: ClipId,
-        content: gpui::AnyElement,
+        label: Option<gpui::AnyElement>,
         fill: u32,
         interactive: bool,
         on_backdrop: bool,
@@ -373,7 +367,7 @@ impl EditorView {
             .when(self.clip_has_alias(clip), |header| {
                 header.pr(px(if notched { 20.0 } else { 15.0 }))
             })
-            .child(content)
+            .children(label)
             .children(
                 self.clip_alias_indicator(clip, fill)
                     .map(|indicator| indicator.when(notched, |indicator| indicator.right(px(7.0)))),
@@ -502,15 +496,15 @@ mod tests {
         zoom(&mut visual, compact);
         let compact_body = visual.debug_bounds(body).expect("detailed compact clip");
         assert!(compact_body.size.width > px(2.0) && compact_body.size.width <= px(6.0));
-        assert_eq!(
+        assert!(visual.debug_bounds(name).is_none());
+        let header = Box::leak(format!("clip-name-{}", clip.value()).into_boxed_str());
+        assert!(
             visual
-                .debug_bounds(name)
-                .expect("clipped title slot")
-                .size
-                .width,
-            px(0.0)
+                .debug_bounds(header)
+                .unwrap()
+                .intersects(&compact_body)
         );
-        assert!(visual.rendered_monochrome_colors(name).is_empty());
+        assert!(visual.rendered_monochrome_colors(header).is_empty());
 
         zoom(&mut visual, wide);
         assert_eq!(visual.debug_bounds(name), Some(wide_bounds));
