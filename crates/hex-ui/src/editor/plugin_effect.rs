@@ -104,16 +104,14 @@ pub(super) struct PendingPluginEffect {
 
 pub(super) struct DeviceConfirmation {
     offer: DeviceInsertConfirmation,
-    cancel_focus: gpui::FocusHandle,
-    proceed_focus: gpui::FocusHandle,
+    action_focus: Option<[gpui::FocusHandle; 2]>,
 }
 
 impl DeviceConfirmation {
-    pub(super) fn new(offer: DeviceInsertConfirmation, cx: &App) -> Self {
+    pub(super) fn new(offer: DeviceInsertConfirmation) -> Self {
         Self {
             offer,
-            cancel_focus: cx.focus_handle().tab_index(0).tab_stop(true),
-            proceed_focus: cx.focus_handle().tab_index(0).tab_stop(true),
+            action_focus: None,
         }
     }
 }
@@ -449,10 +447,12 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Div> {
-        let confirmation = self.device_insert_confirmation.as_ref()?;
+        let confirmation = self.device_insert_confirmation.as_mut()?;
         if !confirmation.offer.is_pending() {
-            if confirmation.cancel_focus.is_focused(window)
-                || confirmation.proceed_focus.is_focused(window)
+            if confirmation
+                .action_focus
+                .as_ref()
+                .is_some_and(|handles| handles.iter().any(|handle| handle.is_focused(window)))
             {
                 self.focus.focus(window);
             }
@@ -474,18 +474,21 @@ impl EditorView {
         // Keep the choice on the editor through repaint and native focus
         // changes. Only the matching button action answers the worker's offer.
         let submission = confirmation.offer.submission();
+        let [cancel_focus, proceed_focus] = confirmation.action_focus.get_or_insert_with(|| {
+            std::array::from_fn(|_| cx.focus_handle().tab_index(0).tab_stop(true))
+        });
         let actions = [false, true].map(|proceed| {
             let (label, id, focus) = if proceed {
                 (
                     "proceed",
                     "device-insert-confirmation-proceed",
-                    &confirmation.proceed_focus,
+                    &*proceed_focus,
                 )
             } else {
                 (
                     "cancel",
                     "device-insert-confirmation-cancel",
-                    &confirmation.cancel_focus,
+                    &*cancel_focus,
                 )
             };
             hex_widgets::action(theme::text(label), theme::action_style())

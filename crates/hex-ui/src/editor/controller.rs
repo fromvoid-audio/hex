@@ -2514,7 +2514,7 @@ impl EditorView {
         self.observe_automation_close(&event);
         let sampler_edit_complete = event.sampler_edit_complete;
         if let Some(offer) = event.device_insert_confirmation.take() {
-            self.device_insert_confirmation = Some(DeviceConfirmation::new(offer, cx));
+            self.device_insert_confirmation = Some(DeviceConfirmation::new(offer));
         }
         self.plugin_effect_complete(&event);
         self.native_automation_take_completion(&event);
