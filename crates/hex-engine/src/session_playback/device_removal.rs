@@ -3,8 +3,10 @@
 //! the outer source fence and restores the donor when it returns a candidate.
 use super::hosted_track_effect_move::HostedEffectCut;
 use super::{
-    RouteOwner, SessionPlayback, SessionPlaybackError, device_move::NativeTrackMove,
-    hosted_instrument_move::HostedTrackCut, instrument_move::InstrumentTrackMove,
+    RouteOwner, SessionPlayback, SessionPlaybackError,
+    device_move::NativeTrackMove,
+    hosted_instrument_move::HostedTrackCut,
+    instrument_move::{InstrumentMoveKind, InstrumentTrackMove},
 };
 use crate::playback::HostedMoveRequest;
 use crate::signal_graph::FreshHistory;
@@ -226,9 +228,12 @@ impl PendingNativeRemoval {
         previous: &SessionPlayback,
     ) -> Option<hex_project::TrackId> {
         match self.transition {
-            RemovalTransition::Instrument(index) => {
-                previous.routes.get(index).map(|route| route.id)
-            }
+            RemovalTransition::Instrument(index)
+            | RemovalTransition::Move(StagedTrackMove::Instrument(InstrumentTrackMove {
+                source: index,
+                kind: InstrumentMoveKind::AnalyticSine,
+                ..
+            })) => previous.routes.get(index).map(|route| route.id),
             _ => None,
         }
     }

@@ -397,7 +397,6 @@ struct ReleaseSourceOrigin {
     source: hex_project::SourceId,
     receiver: TrackId,
     follows_current_configuration: bool,
-    moved_sine: bool,
 }
 impl ReleaseSourceOrigin {
     fn capture(revision: &PreparedRevision, contributor: usize) -> Option<Self> {
@@ -410,7 +409,6 @@ impl ReleaseSourceOrigin {
                 .get(routing.receiver_index(contributor)?)?
                 .canonical_track_id()?,
             follows_current_configuration: true,
-            moved_sine: false,
         })
     }
 }
