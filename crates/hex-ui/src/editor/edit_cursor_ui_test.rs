@@ -175,12 +175,23 @@ fn double_stop_starts_at_zero_and_preserves_each_arrangement_selection(cx: &mut 
 
 #[gpui::test]
 fn two_effective_escape_stops_reset_the_start_until_the_next_placement(cx: &mut TestAppContext) {
-    use hex_engine::PlaybackCommand::PlayFrom;
+    use super::worker_ui_fixture::{self, WorkerUiFixture};
+    use std::sync::atomic::Ordering::Acquire;
 
     cx.update(super::bind_editor_keys);
-    let (project, _, track, _) = audio_project();
-    let (handle, editor) = editor_window(cx, project, Arc::default());
-    let mut visual = VisualTestContext::from_window(handle, cx);
+    let mut fixture = worker_ui_fixture::open_with_section_support(
+        cx,
+        vec![Command::AddMidiTrack {
+            name: "midi".into(),
+        }],
+        false,
+        true,
+    );
+    let editor = fixture.editor.clone();
+    let track = editor.read_with(cx, |view, _| {
+        view.state.as_ref().unwrap().project.tracks()[0].id()
+    });
+    let mut visual = VisualTestContext::from_window(fixture.handle, cx);
     visual.run_until_parked();
     let lane = editor.read_with(&visual, |view, _| view.drag_lanes[&track]);
     let at = |fraction| point(px(lane.left + lane.width * fraction), px(lane.top + 20.0));
@@ -193,11 +204,30 @@ fn two_effective_escape_stops_reset_the_start_until_the_next_placement(cx: &mut 
         assert_eq!(view.valid_locked_play_start().unwrap().frame, placed);
     });
 
-    visual.simulate_keystrokes("escape space");
-    editor.read_with(&visual, |view, _| {
-        assert_eq!(view.last_transport_command, Some(PlayFrom(placed)));
-    });
+    let render = |fixture: &mut WorkerUiFixture, visual: &mut VisualTestContext| {
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        editor.update(visual, |view, cx| {
+            if view.tick(cx) {
+                cx.notify();
+            }
+        });
+        visual.run_until_parked();
+    };
+    let play = |fixture: &mut WorkerUiFixture, visual: &mut VisualTestContext, frame| {
+        visual.simulate_keystrokes("space");
+        render(fixture, visual);
+        editor.read_with(visual, |view, _| {
+            let status = view.audio_status().unwrap();
+            assert!(status.playing.load(Acquire), "{:?}", view.error);
+            assert_eq!(status.position.load(Acquire), frame + 64);
+        });
+    };
+
     visual.simulate_keystrokes("escape");
+    render(&mut fixture, &mut visual);
+    play(&mut fixture, &mut visual, placed);
+    visual.simulate_keystrokes("escape");
+    render(&mut fixture, &mut visual);
     editor.read_with(&visual, |view, _| {
         assert_eq!(
             view.playback_start_frame(),
@@ -205,9 +235,10 @@ fn two_effective_escape_stops_reset_the_start_until_the_next_placement(cx: &mut 
             "Play disarms the previous Escape"
         );
     });
-    visual.simulate_keystrokes("escape space");
+    visual.simulate_keystrokes("escape");
+    render(&mut fixture, &mut visual);
+    play(&mut fixture, &mut visual, 0);
     editor.read_with(&visual, |view, _| {
-        assert_eq!(view.last_transport_command, Some(PlayFrom(0)));
         assert_eq!(view.valid_locked_play_start().unwrap().frame, placed);
     });
     assert!(visual.debug_bounds("transport-start-top").is_some());
@@ -215,12 +246,23 @@ fn two_effective_escape_stops_reset_the_start_until_the_next_placement(cx: &mut 
 
     visual.simulate_click(at(0.7), Modifiers::default());
     visual.run_until_parked();
-    editor.read_with(&visual, |view, _| {
-        let new_start = view.edit_cursor.unwrap().frame;
-        assert!(new_start > placed);
-        assert_eq!(view.playback_start_frame(), new_start);
+    let cursor = editor.read_with(&visual, |view, _| {
+        let cursor = view.edit_cursor.unwrap().frame;
+        assert!(cursor > placed);
+        assert_eq!(view.playback_start_frame(), placed);
+        cursor
     });
     assert!(visual.debug_bounds("transport-start-top").is_none());
+    let lock = visual.debug_bounds("locked-play-start-top").unwrap();
+    visual.simulate_keystrokes("escape");
+    render(&mut fixture, &mut visual);
+    play(&mut fixture, &mut visual, placed);
+
+    visual.simulate_click(lock.center(), Modifiers::default());
+    visual.simulate_keystrokes("escape");
+    render(&mut fixture, &mut visual);
+    play(&mut fixture, &mut visual, cursor);
+    fixture.finish(cx);
 }
 
 #[gpui::test]
@@ -3250,9 +3292,7 @@ fn either_cursor_triangle_locks_play_start_across_selection_and_unlocks(cx: &mut
 }
 
 #[gpui::test]
-fn locked_point_moves_on_click_but_not_range_or_loop_and_invalidates_on_replacement(
-    cx: &mut TestAppContext,
-) {
+fn locked_play_start_stays_pinned_across_cursor_click_range_and_loop(cx: &mut TestAppContext) {
     use hex_session::service::Request;
     let (handle, editor, _, _, _environment) = super::loop_selection_ui_test::fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -3295,19 +3335,36 @@ fn locked_point_moves_on_click_but_not_range_or_loop_and_invalidates_on_replacem
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.playback_start_frame(), original)
     });
+    let locked_marker_x = ["locked-play-start-top", "locked-play-start-bottom"]
+        .map(|selector| visual.debug_bounds(selector).unwrap().center().x);
     visual.simulate_click(at(0.75), Modifiers::default());
     visual.run_until_parked();
     let moved = editor.read_with(&visual, |v, _| {
         let moved = v.edit_cursor.unwrap().frame;
         assert_ne!(moved, original);
-        assert_eq!(v.valid_locked_play_start().unwrap().frame, moved);
-        assert_eq!(v.playback_start_frame(), moved);
+        assert_eq!(
+            v.valid_locked_play_start().unwrap().frame,
+            original,
+            "moving the edit cursor must leave the play start pinned",
+        );
+        assert_eq!(v.playback_start_frame(), original);
         moved
     });
+    for ((locked, cursor), expected_x) in [
+        ("locked-play-start-top", "time-marker-top-start"),
+        ("locked-play-start-bottom", "time-marker-bottom-start"),
+    ]
+    .into_iter()
+    .zip(locked_marker_x)
+    {
+        assert_eq!(visual.debug_bounds(locked).unwrap().center().x, expected_x);
+        assert!(visual.debug_bounds(cursor).unwrap().center().x > expected_x);
+    }
     let top = visual.debug_bounds("locked-play-start-top").unwrap();
     visual.simulate_click(top.center(), Modifiers::default());
     editor.read_with(&visual, |v, _| {
-        assert!(v.valid_locked_play_start().is_none())
+        assert!(v.valid_locked_play_start().is_none());
+        assert_eq!(v.playback_start_frame(), moved);
     });
     visual.run_until_parked();
     let top = visual.debug_bounds("time-marker-top-start").unwrap();
