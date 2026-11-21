@@ -1351,6 +1351,70 @@ fn compile_device_effects(
     )
 }
 
+/// Compile the staged receiver's real solitary effect chain with the original
+/// physical factory identity. This fixture seam creates no playback or admission.
+#[cfg(feature = "instrument-test-support")]
+#[doc(hidden)]
+pub fn test_compile_retained_track_effect_receiver(
+    project: &hex_project::Project,
+    receiver: hex_project::TrackId,
+    physical: hex_lattice::ProcessorInstanceIdentity,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+) -> Result<Vec<hex_lattice::PreparedRuntimeInstance>, Invalid> {
+    use hex_lattice::ProcessorChainOwner::Track;
+    let row = project
+        .track(receiver)
+        .ok_or(Invalid("staged effect receiver is missing"))?;
+    let [effect] = row.devices() else {
+        return Err(Invalid("staged effect receiver must have one device"));
+    };
+    let Track(donor) = physical.owner() else {
+        return Err(Invalid("physical effect source must be a track"));
+    };
+    if donor == receiver.value()
+        || row.is_group()
+        || row.parent_group().is_some()
+        || row.source_id().is_some()
+        || !row.sends().is_empty()
+        || effect.id().value() != physical.device_id()
+        || effect.parent().is_some()
+        || effect.bypassed()
+        || !effect.automation().is_empty()
+        || !effect.modulation().is_empty()
+        || effect.state().type_id() != hex_lattice_contract::VST3_DEVICE_TYPE_ID
+    {
+        return Err(Invalid("staged effect receiver geometry differs"));
+    }
+    let tuning = hex_lattice::TuningTable::default();
+    let context = hex_lattice::DevicePreparationContext {
+        sample_rate: project.sample_rate(),
+        tuning: &tuning,
+        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    };
+    let chain = compile_effect_devices(
+        EffectPower::new(row.devices())?,
+        physical.owner(),
+        project,
+        &context,
+        registry,
+        None,
+        &[],
+    )?
+    .device_chain;
+    let [node] = chain.as_slice() else {
+        return Err(Invalid("compiled effect receiver chain differs"));
+    };
+    if node.owner != physical.owner()
+        || node.device_id != physical.device_id()
+        || node
+            .foreign_processor()
+            .is_none_or(|facts| facts.is_instrument_profile())
+    {
+        return Err(Invalid("compiled effect receiver physical owner differs"));
+    }
+    Ok(chain)
+}
+
 /// Build at most one source-owned recipe per compiled receiver. Definitions
 /// without a current receiver do not acquire DSP or resource custody.
 pub(crate) fn prepare_source_effect_recipes(

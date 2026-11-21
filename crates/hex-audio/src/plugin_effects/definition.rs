@@ -373,7 +373,12 @@ impl<'a> NativeEffectDefinition<'a> {
 
     /// Prototype the compiler identity selection without adding an effect
     /// alias to the ordinary definition or granting publication authority.
-    #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(all(
+        test,
+        feature = "allocation-probe",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ))]
     pub(crate) fn probe_retained_track_effect_identity(
         &self,
         applied: crate::prepared::AppliedAudioSource,
