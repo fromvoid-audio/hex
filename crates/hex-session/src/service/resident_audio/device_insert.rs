@@ -156,7 +156,7 @@ struct StagedResidentChange {
 
 enum ResidentEditFence {
     Stopped(ResidentFreshRuntimeFence),
-    RunningMainHistory(ResidentGraphSubmission),
+    RunningHistory(ResidentGraphSubmission),
 }
 
 impl StagedChange {
@@ -1416,6 +1416,8 @@ impl Session {
         current: Option<&Snapshot>,
         document_intent: u64,
     ) -> Result<Option<Pending>, SessionError> {
+        use hex_engine::ProcessorChainOwner;
+
         if !sink.confirms_device_inserts()
             || matches!(
                 sink.resident_publication_readiness(),
@@ -1427,53 +1429,64 @@ impl Session {
         let replacement = if let Some((edge, device)) =
             main_history::stage_enabled_main_replacement(&mut self.editor, redo)?
         {
-            let stopped = sink
-                .stopped_resident_power_fence(context, device.value())
-                .map_err(SessionError::NativeAudio)?;
-            let fence = if let Some(stopped) = stopped {
-                Some(ResidentEditFence::Stopped(stopped))
-            } else if self.project().main_devices().len() == 1 {
-                sink.running_resident_main_history_source(context, device.value())
-                    .map(ResidentEditFence::RunningMainHistory)
-            } else {
-                None
-            };
-            Some((edge, fence))
+            Some((
+                edge,
+                ProcessorChainOwner::Main,
+                device.value(),
+                self.project().main_devices().len() == 1,
+            ))
         } else if let Some((edge, return_track, device)) =
             hosted_replacement_history::stage_enabled_return_replacement(&mut self.editor, redo)?
         {
+            let sole_effect = self
+                .project()
+                .return_tracks()
+                .iter()
+                .find(|bus| bus.id() == return_track)
+                .is_some_and(|bus| bus.devices().len() == 1);
             Some((
                 edge,
-                sink.stopped_resident_effect_history_fence(
-                    context,
-                    hex_engine::ProcessorChainOwner::Return(return_track.value()),
-                    device.value(),
-                )
-                .map(ResidentEditFence::Stopped),
+                ProcessorChainOwner::Return(return_track.value()),
+                device.value(),
+                sole_effect,
             ))
         } else if let Some((edge, track, device)) =
             hosted_replacement_history::stage_enabled_track_replacement(&mut self.editor, redo)?
         {
+            let sole_effect = self
+                .project()
+                .track(track)
+                .is_some_and(|track| track.devices().len() == 1 && track.instrument().is_none());
             Some((
                 edge,
-                sink.stopped_resident_effect_history_fence(
-                    context,
-                    hex_engine::ProcessorChainOwner::Track(track.value()),
-                    device.value(),
-                )
-                .map(ResidentEditFence::Stopped),
+                ProcessorChainOwner::Track(track.value()),
+                device.value(),
+                sole_effect,
             ))
         } else {
             None
         };
-        let (replacement, fence) = match replacement {
-            Some((edge, fence)) => (
-                Some(edge),
-                Some(fence.ok_or(SessionError::Invalid(
-                    "stop playback to undo or redo this vst3 replacement",
-                ))?),
-            ),
-            None => (None, None),
+        let (replacement, fence) = if let Some((edge, owner, device, sole_effect)) = replacement {
+            let stopped = if owner == ProcessorChainOwner::Main {
+                sink.stopped_resident_power_fence(context, device)
+                    .map_err(SessionError::NativeAudio)?
+            } else {
+                sink.stopped_resident_effect_history_fence(context, owner, device)
+            };
+            let fence = if let Some(stopped) = stopped {
+                Some(ResidentEditFence::Stopped(stopped))
+            } else if sole_effect {
+                sink.running_resident_effect_history_source(context, owner, device)
+                    .map(ResidentEditFence::RunningHistory)
+            } else {
+                None
+            }
+            .ok_or(SessionError::Invalid(
+                "stop playback to undo or redo this vst3 replacement",
+            ))?;
+            (Some(edge), Some(fence))
+        } else {
+            (None, None)
         };
         self.stage_resident_graph_change(
             context,
@@ -1569,12 +1582,14 @@ impl Session {
                 ))?;
             let stopped_fence = match fence {
                 Some(ResidentEditFence::Stopped(stopped)) => Some(stopped),
-                Some(ResidentEditFence::RunningMainHistory(source)) => {
+                Some(ResidentEditFence::RunningHistory(source)) => {
                     if installed.output_identity != source.output_identity
                         || installed.audio_revision != source.audio_revision
                         || installed.source_context != Some(source.context)
                     {
-                        return Err(SessionError::Invalid("running main history source changed"));
+                        return Err(SessionError::Invalid(
+                            "running replacement history source changed",
+                        ));
                     }
                     None
                 }

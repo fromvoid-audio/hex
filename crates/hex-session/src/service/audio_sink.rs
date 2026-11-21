@@ -1326,11 +1326,12 @@ pub trait WorkerAudioSink: Send {
         None
     }
 
-    /// Observe the exact playing Resident source with the accepted Main
-    /// effect that the staged history replaces. Grants no worker custody.
-    fn running_resident_main_history_source(
+    /// Observe the exact playing Resident source with the accepted effect
+    /// that the staged history replaces. Grants no worker custody.
+    fn running_resident_effect_history_source(
         &mut self,
         _context: hex_engine::AudioSourceContext,
+        _owner: hex_engine::ProcessorChainOwner,
         _device: u64,
     ) -> Option<ResidentGraphSubmission> {
         None

@@ -89,23 +89,23 @@ fn rolling_resident_main_vst3_replacement_undo_refuses_a_stale_source() {
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
-fn rolling_resident_return_vst3_replacement_undo_preserves_the_predecessor() {
+fn rolling_resident_return_vst3_replacement_undo_refuses_a_stale_source() {
     assert_rolling_refusal(ReplacementOwner::Return);
 }
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
-fn rolling_resident_track_vst3_replacement_undo_preserves_the_predecessor() {
+fn rolling_resident_track_vst3_replacement_undo_refuses_a_stale_source() {
     assert_rolling_refusal(ReplacementOwner::Track);
 }
 
 fn assert_rolling_refusal(bus: ReplacementOwner) {
     let _native = native_fixture();
     let files = Files::new();
-    let stale_main = matches!(bus, ReplacementOwner::Main);
     let (mut h, _, installed, _, destination) = installed_replacement(&files, bus, 8192);
     let predecessor = status(&h).recording_source().unwrap();
     let incumbent = binding(&h).unwrap();
+    let newest_before = h.plugin_progress.lock().unwrap().newest_source;
     let minimum = if matches!(destination, PluginEffectDestination::Return(_)) {
         0.251
     } else {
@@ -124,11 +124,9 @@ fn assert_rolling_refusal(bus: ReplacementOwner) {
             && pcm.iter().flatten().any(|sample| sample.abs() > minimum)
     });
 
-    if stale_main {
-        // Change only the worker's read of the runtime revision. The actual
-        // native source and its accepted worker continue to render.
-        h.loop_witness_fault.store(2, Release);
-    }
+    // Change only the worker's read of the runtime revision. The actual
+    // native source and its accepted worker continue to render.
+    h.loop_witness_fault.store(2, Release);
     h.service.submit(Request::Undo).unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -142,13 +140,13 @@ fn assert_rolling_refusal(bus: ReplacementOwner) {
             if event.request_complete {
                 assert_eq!(
                     event.error.as_deref(),
-                    Some(if stale_main {
-                        "running main history source changed"
-                    } else {
-                        "stop playback to undo or redo this vst3 replacement"
-                    }),
+                    Some("running replacement history source changed"),
                 );
                 assert_eq!(h.plugin_records.load(Acquire), 1);
+                assert_eq!(
+                    h.plugin_progress.lock().unwrap().newest_source,
+                    newest_before
+                );
                 break;
             }
         }

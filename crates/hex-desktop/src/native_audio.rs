@@ -2531,12 +2531,16 @@ impl WorkerAudioSink for NativeAudioSink {
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    fn running_resident_main_history_source(
+    fn running_resident_effect_history_source(
         &mut self,
         context: AudioSourceContext,
+        owner: hex_engine::ProcessorChainOwner,
         device: u64,
     ) -> Option<hex_session::service::ResidentGraphSubmission> {
-        if !self.plugins.has_accepted_main_source(context, device) {
+        if !self
+            .plugins
+            .has_accepted_effect_source(context, owner, device)
+        {
             return None;
         }
         let control = self.output.as_mut()?.publication.control()?;

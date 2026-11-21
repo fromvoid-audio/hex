@@ -2341,13 +2341,14 @@ impl WorkerAudioSink for ResidentSink {
             .stopped_resident_effect_history_fence(context, owner, device)
     }
 
-    fn running_resident_main_history_source(
+    fn running_resident_effect_history_source(
         &mut self,
         context: AudioSourceContext,
+        owner: hex_engine::ProcessorChainOwner,
         device: u64,
     ) -> Option<hex_session::service::ResidentGraphSubmission> {
         self.inner
-            .running_resident_main_history_source(context, device)
+            .running_resident_effect_history_source(context, owner, device)
     }
 
     fn resident_runtime_loop(
