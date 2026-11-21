@@ -141,6 +141,7 @@ impl EditorView {
             || self.time_selection_gesture.is_some()
             || self.time_range_move_gesture.is_some()
             || self.loop_rail_gesture.is_some()
+            || self.locked_play_start_drag_active()
             || self.scrub_active()
         {
             return false;

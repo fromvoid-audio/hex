@@ -101,6 +101,7 @@ impl EditorView {
             || self.arrangement_pan.is_some()
             || self.time_selection_gesture.is_some()
             || self.time_range_move_gesture.is_some()
+            || self.locked_play_start_drag_active()
             || modifiers.alt
             || modifiers.control
             || !x.is_finite()

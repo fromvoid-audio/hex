@@ -1181,6 +1181,8 @@ pub(super) struct EditorView {
     edit_cursor: Option<edit_cursor::EditCursor>,
     /// Transient Arrangement play-start lock; never seeks the active transport.
     locked_play_start: Option<edit_cursor::EditCursor>,
+    locked_play_start_drag: Option<edit_cursor::LockedPlayStartDrag>,
+    bottom_play_start_marker_bounds: std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>,
     selected_clip_play_start: std::cell::Cell<Option<selection_play_start::SelectedClipPlayStart>>,
     play_start_at_beginning: bool,
     escape_stop_armed: bool,
@@ -1627,7 +1629,8 @@ impl EditorView {
                     | view.cancel_clip_paint()
                     | view.cancel_section_pointer()
                     | view.cancel_track_reorder()
-                    | view.locators.cancel_drag();
+                    | view.locators.cancel_drag()
+                    | view.cancel_locked_play_start_drag();
                 if let Some(audio) = view.audio.as_mut() {
                     let _ = audio.control.audition_cancel();
                 }
@@ -1659,6 +1662,7 @@ impl EditorView {
                 | view.cancel_audio_loop_gesture()
                 | view.cancel_track_reorder()
                 | view.cancel_scrub()
+                | view.cancel_locked_play_start_drag()
                 | view.cancel_clip_paint()
                 | view.cancel_section_pointer()
             {
@@ -2003,6 +2007,8 @@ impl EditorView {
             context_menu: None,
             edit_cursor: None,
             locked_play_start: None,
+            locked_play_start_drag: None,
+            bottom_play_start_marker_bounds: Default::default(),
             selected_clip_play_start: Default::default(),
             play_start_at_beginning: false,
             escape_stop_armed: false,
