@@ -97,6 +97,52 @@ pub(super) struct TrimDrag {
     resolution: Rc<RefCell<stretch_preview::Resolution>>,
 }
 
+/// An audio trim surface retains only the source and geometry it rendered.
+#[derive(Clone)]
+struct AudioTrimSource {
+    loop_kind: Option<LoopHandleKind>,
+    repeat_available: bool,
+    generation: u64,
+    revision: u64,
+    track: TrackId,
+    clip: Rc<Clip>,
+    asset_playback_frames: u64,
+    edge: TrimEdge,
+    lane: LaneBounds,
+    viewport: Viewport,
+    snap_grid: super::musical_time::SnapGrid,
+}
+
+impl AudioTrimSource {
+    fn payload(&self) -> TrimDrag {
+        TrimDrag {
+            loop_kind: self.loop_kind,
+            repeat_available: self.repeat_available,
+            repeat: Rc::new(Cell::new(false)),
+            canceled: Rc::new(Cell::new(false)),
+            capture: Rc::new(Cell::new(None)),
+            stretch_modifier: Rc::new(Cell::new(false)),
+            project_generation: self.generation,
+            revision: self.revision,
+            source_track: self.track,
+            clip: self.clip.as_ref().clone(),
+            asset_playback_frames: self.asset_playback_frames,
+            edge: self.edge,
+            source_lane: self.lane,
+            viewport_start: self.viewport.start,
+            viewport_length: self.viewport.length,
+            scroll: Default::default(),
+            snap_grid: self.snap_grid,
+            snap_modifier: Rc::new(Cell::new(false)),
+            last_pointer_x: Rc::new(Cell::new(None)),
+            valid_pointer_x: Rc::new(Cell::new(None)),
+            grab_delta: Rc::new(RefCell::new(None)),
+            preview: Rc::new(RefCell::new(None)),
+            resolution: Default::default(),
+        }
+    }
+}
+
 /// Metadata-only Arrangement MIDI edge gesture. The authored notes are shared
 /// through one `Rc`; pointer updates and previews never clone the note list.
 #[derive(Clone, Debug)]
@@ -755,22 +801,33 @@ impl EditorView {
             return Vec::new();
         };
         let mut handles = Vec::with_capacity(4);
-        let payload =
-            self.audio_trim_payload(state, track, clip, lane, viewport, asset.playback_frames());
+        let source = AudioTrimSource {
+            loop_kind: None,
+            repeat_available: false,
+            generation: self.project_generation,
+            revision: state.revision,
+            track,
+            clip: Rc::new(clip.clone()),
+            asset_playback_frames: asset.playback_frames(),
+            edge: TrimEdge::Left,
+            lane,
+            viewport,
+            snap_grid: self.snap_grid,
+        };
         if visible_start == clip.start() {
-            handles.push(self.trim_handle(state, payload.clone(), clip_width, None, scale, cx));
+            handles.push(self.trim_handle(state, source.clone(), clip_width, None, scale, cx));
         }
         if let Some(end) = clip.start().checked_add(clip.duration())
             && visible_end == end
         {
-            let mut right = payload.clone();
+            let mut right = source.clone();
             right.edge = TrimEdge::Right;
             right.repeat_available = loop_handles::audio_repeat_available(clip, &state.project);
             handles.push(self.trim_handle(state, right, clip_width, None, scale, cx));
         }
         if let Some(controls) = loop_handles::audio_controls(clip, &state.project, lane, viewport) {
             for control in controls.handles.into_iter().flatten() {
-                let mut drag = payload.clone();
+                let mut drag = source.clone();
                 drag.edge = TrimEdge::Right;
                 drag.loop_kind = Some(control.kind);
                 handles.push(self.trim_handle(state, drag, clip_width, Some(control), scale, cx));
@@ -978,64 +1035,28 @@ impl EditorView {
             })
     }
 
-    fn audio_trim_payload(
-        &self,
-        state: &ViewState,
-        track: TrackId,
-        clip: &Clip,
-        lane: LaneBounds,
-        viewport: Viewport,
-        asset_playback_frames: u64,
-    ) -> TrimDrag {
-        TrimDrag {
-            loop_kind: None,
-            repeat_available: false,
-            repeat: Rc::new(Cell::new(false)),
-            canceled: Rc::new(Cell::new(false)),
-            capture: Rc::new(Cell::new(None)),
-            stretch_modifier: Rc::new(Cell::new(false)),
-            project_generation: self.project_generation,
-            revision: state.revision,
-            source_track: track,
-            clip: clip.clone(),
-            asset_playback_frames,
-            edge: TrimEdge::Left,
-            source_lane: lane,
-            viewport_start: viewport.start,
-            viewport_length: viewport.length,
-            scroll: Default::default(),
-            snap_grid: self.snap_grid,
-            snap_modifier: Rc::new(Cell::new(false)),
-            last_pointer_x: Rc::new(Cell::new(None)),
-            valid_pointer_x: Rc::new(Cell::new(None)),
-            grab_delta: Rc::new(RefCell::new(None)),
-            preview: Rc::new(RefCell::new(None)),
-            resolution: Default::default(),
-        }
-    }
-
     fn trim_handle(
         &self,
         state: &ViewState,
-        payload: TrimDrag,
+        source: AudioTrimSource,
         clip_width: f32,
         control: Option<loop_handles::LoopControl>,
         scale: f32,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let clip_id = payload.clip.id();
-        let edge = payload.edge;
-        let lane = payload.source_lane;
-        let viewport = payload.viewport();
+        let clip_id = source.clip.id();
+        let generation = source.generation;
+        let edge = source.edge;
+        let lane = source.lane;
+        let viewport = source.viewport;
         let project = state.project.clone();
         let drag_entity = cx.entity();
         let preview_owner_entity = drag_entity.clone();
         let mouse_down_entity = drag_entity.clone();
         let drag_start_entity = drag_entity.clone();
-        let pointer_payload = payload.clone();
-        let clear_payload = payload.clone();
+        let press_source = source.clone();
         let clear_entity = drag_entity.clone();
-        let (element_prefix, debug_prefix) = match payload.loop_kind {
+        let (element_prefix, debug_prefix) = match source.loop_kind {
             Some(LoopHandleKind::Outer) => ("loop-outer", "clip-loop-outer"),
             Some(LoopHandleKind::FirstBoundary) => ("loop-cycle", "clip-loop-cycle"),
             None => match edge {
@@ -1045,40 +1066,37 @@ impl EditorView {
         };
         let repeat_hover = control.is_none()
             && edge == TrimEdge::Right
-            && payload.repeat_available
+            && source.repeat_available
             && self.option_held;
-        let repeat_available = payload.repeat_available;
+        let repeat_available = source.repeat_available;
         loop_handles::base(edge, clip_width, lane.height, control, repeat_hover, scale)
             .id((element_prefix, clip_id.value()))
             .debug_selector(move || format!("{debug_prefix}-{}", clip_id.value()))
             .map(|surface| loop_handles::decorate(surface, control, edge, repeat_available))
             .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                 mouse_down_entity.update(cx, |view, _| {
-                    if view.trim_drag_current(&pointer_payload) {
+                    if view.trim_drag_current(&press_source.payload()) {
                         view.focus.focus(window);
                         view.remember_pointer_down(
-                            pointer_payload.project_generation,
+                            generation,
                             clip_id,
                             Some(edge),
                             f32::from(event.position.x),
                         );
                     } else {
-                        view.clear_pointer_down(
-                            pointer_payload.project_generation,
-                            clip_id,
-                            Some(edge),
-                        );
+                        view.clear_pointer_down(generation, clip_id, Some(edge));
                     }
                 });
             })
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 clear_entity.update(cx, |view, _| {
-                    view.clear_pointer_down(clear_payload.project_generation, clip_id, Some(edge));
+                    view.clear_pointer_down(generation, clip_id, Some(edge));
                 });
             })
-            .on_drag(payload, move |payload, _cursor_offset, window, cx| {
+            .on_drag_from_press(move |_, _, window, cx| {
+                let payload = source.payload();
                 let capture = drag_start_entity.update(cx, |view, _| {
-                    if view.trim_drag_current(payload) {
+                    if view.trim_drag_current(&payload) {
                         view.take_pointer_down(
                             payload.project_generation,
                             payload.clip.id(),
@@ -1097,7 +1115,7 @@ impl EditorView {
                 let original_down_x = capture.map(|capture| capture.origin_x());
                 let pointer_frame = original_down_x.and_then(|x| frame_at_x(x, lane, viewport));
                 let delta = pointer_frame
-                    .zip(audio_grab_frame(payload, &project))
+                    .zip(audio_grab_frame(&payload, &project))
                     .map(|(pointer, edge)| i128::from(pointer) - i128::from(edge));
                 *payload.grab_delta.borrow_mut() = delta;
                 let pointer_x = f32::from(window.mouse_position().x);
@@ -1116,12 +1134,13 @@ impl EditorView {
                     });
                 }
                 preview_owner_entity.update(cx, |view, cx| {
-                    view.begin_trim_drag(payload);
-                    view.update_trim_preview(payload, pointer_x, cx);
+                    view.begin_trim_drag(&payload);
+                    view.update_trim_preview(&payload, pointer_x, cx);
                 });
-                cx.new(|_| TrimPreview {
+                let ghost = cx.new(|_| TrimPreview {
                     data: payload.preview.clone(),
-                })
+                });
+                Some((payload, ghost))
             })
     }
 
