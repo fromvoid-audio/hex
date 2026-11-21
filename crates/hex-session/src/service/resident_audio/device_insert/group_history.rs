@@ -5,11 +5,27 @@ use hex_project::{
 };
 use std::ops::Range;
 
-/// The root audio leaf immediately follows an already populated root Group.
-/// Appending the leaf to that Group preserves every canonical row.
-pub(super) fn fixed_entry(project: &Project, leaf: TrackId, group: TrackId) -> bool {
-    fixed_rows(project, leaf, group, None)
-        .is_some_and(|(leaf, group)| group.len() > 1 && group.end == leaf.start)
+pub(super) enum EntryShape {
+    Populated,
+    FirstChild,
+}
+
+/// Appending the next root audio leaf preserves every canonical row. The
+/// first child of an empty root Group requires a flat predecessor.
+pub(super) fn fixed_entry(project: &Project, leaf: TrackId, group: TrackId) -> Option<EntryShape> {
+    let (leaf, group) = fixed_rows(project, leaf, group, None)?;
+    if group.end != leaf.start {
+        return None;
+    }
+    if group.len() > 1 {
+        Some(EntryShape::Populated)
+    } else {
+        project
+            .tracks()
+            .iter()
+            .all(|track| track.parent_group().is_none())
+            .then_some(EntryShape::FirstChild)
+    }
 }
 
 /// Moving the final direct leaf immediately outside its still-populated Group
@@ -73,7 +89,10 @@ pub(super) fn command(current: &Project, target: &Project) -> Option<Command> {
         ),
         _ => return None,
     };
-    if !fixed_entry(direct, old.id(), group) {
+    if !matches!(
+        fixed_entry(direct, old.id(), group),
+        Some(EntryShape::Populated)
+    ) {
         return None;
     }
     Some(Command::ReparentTracks {
@@ -257,5 +276,40 @@ mod tests {
             })
             .unwrap();
         assert!(!fixed_exit(editor.project(), leaf, None));
+    }
+
+    #[test]
+    fn first_child_entry_requires_flat_rows_and_keeps_inverse_history_outside() {
+        let (mut editor, leaf, group) = fixture();
+        let sibling = editor.project().tracks()[1].id();
+        editor
+            .execute(Command::ReparentTracks {
+                tracks: TrackSelectionIds::new(&[sibling]).unwrap(),
+                destination: TrackDestination {
+                    parent_group: None,
+                    before: Some(group),
+                },
+            })
+            .unwrap();
+        assert!(matches!(
+            fixed_entry(editor.project(), leaf, group),
+            Some(EntryShape::FirstChild)
+        ));
+
+        let mut routed = Editor::new(editor.project().clone(), 8).unwrap();
+        routed
+            .execute(Command::GroupTracks {
+                tracks: TrackSelectionIds::new(&[sibling]).unwrap(),
+                name: "other group".into(),
+            })
+            .unwrap();
+        assert!(fixed_entry(routed.project(), leaf, group).is_none());
+
+        let following = editor.project().tracks().last().unwrap().id();
+        editor.execute(entry(leaf, group)).unwrap();
+        assert!(!fixed_exit(editor.project(), leaf, Some(following)));
+        assert!(editor.inspect_history(false, command).flatten().is_none());
+        assert!(editor.undo());
+        assert!(editor.inspect_history(true, command).flatten().is_none());
     }
 }

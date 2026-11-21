@@ -866,7 +866,8 @@ impl Session {
         let project = self.project();
         let fixed_row = match destination.parent_group {
             Some(group) => {
-                destination.before.is_none() && group_history::fixed_entry(project, *leaf, group)
+                destination.before.is_none()
+                    && group_history::fixed_entry(project, *leaf, group).is_some()
             }
             None => group_history::fixed_exit(project, *leaf, destination.before),
         };
@@ -1389,7 +1390,22 @@ impl Session {
         {
             Some((
                 edge,
-                sink.stopped_resident_return_history_fence(context, return_track, device.value()),
+                sink.stopped_resident_effect_history_fence(
+                    context,
+                    hex_engine::ProcessorChainOwner::Return(return_track.value()),
+                    device.value(),
+                ),
+            ))
+        } else if let Some((edge, track, device)) =
+            hosted_replacement_history::stage_enabled_track_replacement(&mut self.editor, redo)?
+        {
+            Some((
+                edge,
+                sink.stopped_resident_effect_history_fence(
+                    context,
+                    hex_engine::ProcessorChainOwner::Track(track.value()),
+                    device.value(),
+                ),
             ))
         } else {
             None

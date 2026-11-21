@@ -1286,12 +1286,12 @@ pub trait WorkerAudioSink: Send {
         Ok(None)
     }
 
-    /// Observe an accepted Return worker on the exact settled stopped source.
+    /// Observe an accepted Track or Return worker on the exact stopped source.
     /// This grants no custody; publication must revalidate the same witness.
-    fn stopped_resident_return_history_fence(
+    fn stopped_resident_effect_history_fence(
         &mut self,
         _context: hex_engine::AudioSourceContext,
-        _return_track: hex_engine::ReturnId,
+        _owner: hex_engine::ProcessorChainOwner,
         _device: u64,
     ) -> Option<ResidentFreshRuntimeFence> {
         None
