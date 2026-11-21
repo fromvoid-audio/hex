@@ -24,10 +24,23 @@ fn verified_running_track_vst3_replacement_installs_at_its_exact_receipt() {
     assert_verified_running_vst3_replacement(VerifiedReplacementOwner::Track);
 }
 
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_running_main_vst3_replacement_undo_restores_a_fresh_worker() {
+    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::MainHistory { redo: false });
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_running_main_vst3_replacement_redo_restores_a_fresh_worker() {
+    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::MainHistory { redo: true });
+}
+
 enum VerifiedReplacementOwner {
     Main,
     Return,
     Track,
+    MainHistory { redo: bool },
 }
 
 fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
@@ -77,7 +90,9 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
     h.applied(h.context.unwrap());
     let track = imported.state.project.tracks()[0].id();
     let (state, destination) = match owner {
-        VerifiedReplacementOwner::Main => (imported.state, PluginEffectDestination::Main),
+        VerifiedReplacementOwner::Main | VerifiedReplacementOwner::MainHistory { .. } => {
+            (imported.state, PluginEffectDestination::Main)
+        }
         VerifiedReplacementOwner::Track => (imported.state, PluginEffectDestination::Track(track)),
         VerifiedReplacementOwner::Return => {
             let added = h.run(Request::Edit(Command::AddReturnTrack {
@@ -128,7 +143,9 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
     let expected = |block| {
         let effect = 0.125 + block as f32 * 0.03125;
         match owner {
-            VerifiedReplacementOwner::Main | VerifiedReplacementOwner::Track => effect,
+            VerifiedReplacementOwner::Main
+            | VerifiedReplacementOwner::MainHistory { .. }
+            | VerifiedReplacementOwner::Track => effect,
             // The same authored 0.25 reaches the dry and wet routes. Return
             // receives half of it, so the measured ramp must be above dry.
             VerifiedReplacementOwner::Return => 0.25 + effect * 0.5,
@@ -316,6 +333,199 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
                 device == fresh.id().value() && binding != old_binding
             })
     });
+    if let VerifiedReplacementOwner::MainHistory { redo } = owner {
+        let retired_on_undo = binding().unwrap().1;
+        let restored = assert_verified_main_replacement_history(
+            &h,
+            &original,
+            &installed,
+            &progress,
+            &records,
+            old_binding,
+            ReplacementHistoryDirection::Undo,
+        );
+        if redo {
+            assert_verified_main_replacement_history(
+                &h,
+                &installed,
+                &restored,
+                &progress,
+                &records,
+                retired_on_undo,
+                ReplacementHistoryDirection::Redo,
+            );
+        }
+    }
+}
+
+enum ReplacementHistoryDirection {
+    Undo,
+    Redo,
+}
+
+fn assert_verified_main_replacement_history(
+    h: &Harness,
+    target: &Event,
+    incumbent: &Event,
+    progress: &Mutex<crate::native_audio::plugins::PreparationObservation>,
+    records: &std::sync::atomic::AtomicUsize,
+    retired_target_binding: hex_audio::plugin_effects::EffectBinding,
+    direction: ReplacementHistoryDirection,
+) -> Event {
+    use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
+
+    let (request, name, can_redo) = match direction {
+        ReplacementHistoryDirection::Undo => (Request::Undo, "Undo", true),
+        ReplacementHistoryDirection::Redo => (Request::Redo, "Redo", false),
+    };
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    let predecessor = status.applied_audio_source().unwrap();
+    let accepted = || progress.lock().unwrap().source_bindings[0].unwrap();
+    let (incumbent_device, incumbent_binding, _) = accepted();
+    assert_ne!(incumbent_binding, retired_target_binding);
+    let [effect] = incumbent.state.project.main_devices() else {
+        panic!("replacement in the occupied Main slot");
+    };
+    assert_eq!(effect.id().value(), incumbent_device);
+    let [target_effect] = target.state.project.main_devices() else {
+        panic!("original Main effect");
+    };
+    let preparing_target = || {
+        progress
+            .lock()
+            .unwrap()
+            .newest_source
+            .is_some_and(|(device, binding, accepted)| {
+                device == target_effect.id().value()
+                    && binding != retired_target_binding
+                    && binding != incumbent_binding
+                    && !accepted
+            })
+    };
+    let assert_canonical = |event: &Event| {
+        assert_eq!(event.state.project, incumbent.state.project);
+        assert_eq!(event.state.revision, incumbent.state.revision);
+        assert_eq!(event.state.can_undo, incumbent.state.can_undo);
+        assert_eq!(event.state.can_redo, incumbent.state.can_redo);
+    };
+    let assert_predecessor = |event: &Event| {
+        assert_canonical(event);
+        assert_eq!(status.applied_audio_source(), Some(predecessor));
+        assert_eq!(accepted().1, incumbent_binding);
+        assert!(status.playing.load(Acquire));
+    };
+    let pump = || {
+        let frame = status.performance_frame.load(Acquire);
+        let sample = render_hosted_quantum(h);
+        wait(|| {
+            h.backend
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .native_workers_idle_on_control()
+                == Some(true)
+        });
+        (status.performance_frame.load(Acquire) == frame + 256).then_some(sample)
+    };
+    // Clear the bridge fill and one cut fade, then measure the replacement's
+    // own signed block ramp rather than accepting its dry input as evidence.
+    let mut warmup = [0.0; 5];
+    for slot in &mut warmup {
+        wait(|| {
+            let Some(sample) = pump() else {
+                return false;
+            };
+            *slot = sample;
+            true
+        });
+    }
+    assert_eq!(warmup[4] - warmup[3], 0.03125);
+    let mut last = warmup[4];
+    assert_predecessor(incumbent);
+
+    let service = h.service.as_ref().unwrap();
+    service.submit(request).unwrap();
+    let mut offer = None;
+    let mut heard_predecessor = false;
+    let mut pending = false;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let restored =
+        'terminal: loop {
+            assert!(
+                Instant::now() < deadline,
+                "running Main replacement {name} stalled"
+            );
+            while let Ok(event) = service.try_event() {
+                if let Some(error) = event.error.as_deref() {
+                    assert_predecessor(&event);
+                    assert!(event.device_insert_complete.is_none_or(|receipt| {
+                        receipt.outcome != DeviceInsertOutcome::Installed
+                    }));
+                    panic!("running Verified Main replacement {name} refused: {error}");
+                }
+                if event.request_complete {
+                    break 'terminal event;
+                }
+                assert_canonical(&event);
+                pending = true;
+                if let Some(confirmation) = &event.device_insert_confirmation {
+                    assert_predecessor(&event);
+                    assert_eq!(confirmation.operation(), GraphEditOperation::ReplaceDevice);
+                    let sample = pump().expect("predecessor block before replacement consent");
+                    assert_eq!(sample - last, 0.03125);
+                    heard_predecessor |= preparing_target();
+                    assert!(offer.replace(confirmation.submission()).is_none());
+                    assert!(confirmation.proceed());
+                }
+            }
+            if let Some(sample) = pump()
+                && offer.is_none()
+                && status.applied_audio_source() == Some(predecessor)
+            {
+                assert_eq!(accepted().1, incumbent_binding);
+                assert_eq!(sample - last, 0.03125);
+                heard_predecessor |= pending && preparing_target();
+                last = sample;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+    assert!(pending && heard_predecessor);
+    let receipt = restored.device_insert_complete.unwrap();
+    let exact = status.applied_audio_source().unwrap();
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+    assert_eq!(receipt.submission.context, exact.context);
+    assert_eq!(receipt.submission.audio_revision, exact.audio_revision);
+    assert_eq!(receipt.submission.output_identity, exact.output_identity);
+    assert_eq!(exact.output_identity, predecessor.output_identity);
+    assert_ne!(exact, predecessor);
+    if let Some(consented) = offer {
+        assert_eq!(receipt.submission.context, consented.context);
+        assert_ne!(receipt.submission.audio_revision, consented.audio_revision);
+    }
+    assert_eq!(restored.state.revision, incumbent.state.revision + 1);
+    assert_eq!(
+        restored.state.project.main_devices(),
+        std::slice::from_ref(target_effect)
+    );
+    assert_eq!(
+        restored.state.project.tracks(),
+        incumbent.state.project.tracks()
+    );
+    assert_eq!(restored.state.can_redo, can_redo);
+    assert!(restored.state.can_undo);
+    wait(|| {
+        let _ = pump();
+        let Some((device, binding, _)) = progress.lock().unwrap().source_bindings[0] else {
+            return false;
+        };
+        records.load(Acquire) == 1
+            && device == target_effect.id().value()
+            && binding != retired_target_binding
+            && binding != incumbent_binding
+    });
+    assert!(status.playing.load(Acquire));
+    restored
 }
 
 #[test]

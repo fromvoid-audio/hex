@@ -2025,6 +2025,7 @@ impl WorkerAudioSink for NativeAudioSink {
                 Some(&cancellation),
                 true,
                 None,
+                None,
             )?;
             Some(cancellation)
         } else {

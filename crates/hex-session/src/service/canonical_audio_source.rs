@@ -312,6 +312,7 @@ impl CanonicalAudioSourceSnapshot {
             preparing_edit: false,
             stopped_main_power_on: None,
             running_main_power_off: None,
+            hosted_instrument_move: None,
         }
     }
     /// Prepare inside the native host's reserved cell without extracting its
