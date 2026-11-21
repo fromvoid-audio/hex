@@ -279,9 +279,8 @@ fn render_with_clock(f: &mut OrdinaryFixture) -> (usize, [Frame; QUANTUM]) {
             callback
                 .active
                 .as_ref()
-                .unwrap()
-                .playback
-                .main_output_latency_frames(),
+                .and_then(ActivePublication::current)
+                .and_then(|active| active.playback.main_output_latency_frames()),
             Some(BRIDGE as u32)
         );
     });
@@ -303,7 +302,7 @@ fn input(frame: usize) -> Frame {
     }
     [
         (frame % 109) as f32 / 1024.0 + 0.03125,
-        -(frame % 71) as f32 / 512.0 - 0.0625,
+        -((frame % 71) as f32) / 512.0 - 0.0625,
     ]
 }
 
