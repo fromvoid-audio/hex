@@ -244,6 +244,23 @@ impl Panel {
             .map_or(row.normalized, |live| live.value.normalized())
     }
 
+    fn painted_value(&self, view: &EditorView, device: DeviceId, row: &PluginParameterRow) -> f64 {
+        if let Some(live) = self.live_value(row) {
+            return live.value.normalized();
+        }
+        if self.source.is_some()
+            && row.metadata_revision != 0
+            && let Some(class) = row.automation_class
+            && let Some(value) = view
+                .device_panel
+                .playback_values
+                .vst3(device, row.id, class, row.steps)
+        {
+            return value;
+        }
+        row.normalized
+    }
+
     fn display_text<'a>(&'a self, row: &'a PluginParameterRow) -> &'a str {
         // Only the SDK page formats values. Hold its last text while the
         // immediate knob preview is ahead of the controller observation.
@@ -2501,7 +2518,10 @@ fn knob(
         return knob.renew(
             query,
             row,
-            (panel.display_value(row), panel.display_text(row)),
+            (
+                panel.painted_value(view, device, row),
+                panel.display_text(row),
+            ),
             enabled,
             active,
             cx,
@@ -2537,7 +2557,10 @@ fn follow_knob(
         return knob.renew(
             query,
             row,
-            (panel.display_value(row), panel.display_text(row)),
+            (
+                panel.painted_value(view, device, row),
+                panel.display_text(row),
+            ),
             enabled,
             active,
             cx,
@@ -2579,18 +2602,18 @@ fn create_knob(
     } else {
         format!("vst3-follow-knob-{}-{}", query.device.value(), row.id)
     };
+    let initial_value = panel.painted_value(view, device, row);
     let config = NumericControlConfig::new(
         control_id,
         theme::text(hex_session::service::text::verbatim(&row.name)),
         NumericControlPresentation::MicroDial,
         spec,
-        panel.display_value(row),
+        initial_value,
         theme::control_style(),
     )
     .ok()?;
     let availability =
         ControlAvailability::for_edit(enabled, view.device_gesture.snapshot().is_some());
-    let initial_value = panel.display_value(row);
     let initial_display = panel.display_text(row).to_owned();
     let has_current_display = initial_value == row.normalized;
     let control = cx.new(|cx| {

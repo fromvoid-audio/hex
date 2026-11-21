@@ -239,6 +239,12 @@ pub(super) fn render_return_effect(
                     hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
                 })
         });
+    super::automation_playback::sample(
+        view,
+        device,
+        NativeDeviceClass::Effect,
+        device_view.as_ref().ok(),
+    );
     let leading = bypass_action(view, device, NativeDeviceClass::Effect, cx);
     let mut actions = div().flex().flex_col().items_center().gap(px(2.0));
     if device_view.is_ok() {
