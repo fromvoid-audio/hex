@@ -282,17 +282,23 @@ and color. option preserves the source and gives the replacement a new identity.
 dropping on the source body does nothing. option-command marker edits do not
 replace content. the indicator stays with a pending edit until its result arrives.
 
-with the section lane focused, select one section and press **command+c**, then click
-the lane to place the edit cursor and press **command+v**. paste inserts at the nearest
-section boundary before or within the song. after the last marker, it lands at the
-cursor and gives any intervening marker gap a new section. all tracks are copied,
-and one undo removes the whole paste. the section cursor keeps the snapping chosen
-when you clicked it; command+v does not invert the grid again.
+click anywhere in the section lane (header or lower body) to place the section
+edit cursor; dragging the lower body still paints an all-track time selection.
+with the section lane focused, select one section and press **command+c** to copy
+or **command+x** to cut, then click the lane to place the cursor and press
+**command+v**. paste inserts the section at the exact cursor beat and ripples
+later music right, splitting an existing section if the cursor is inside one.
+past the last section (or after zero in an empty section lane), any intervening
+gap receives a new section marker. all tracks, tempo, meter, gain, locators and
+device automation follow the section, and one undo restores the edit. the cursor
+keeps the snapping chosen when you clicked it and advances to the pasted section's
+end for repeated pastes.
 
-the section clipboard stays available after successful copies of the same section. place the
-cursor again for another paste. other project edits, undo or redo make the reference
-stale; copy the section again before pasting. opening another project clears it.
-right-click a section for **copy section** and **paste section at cursor**.
+the section clipboard stays available across subsequent edits, cuts and repeated
+pastes within the same open project; opening another project clears it.
+right-click a section for **cut section**, **copy section** and **paste section
+at cursor**, or right-click empty space in the section lane to place the cursor
+and paste there.
 
 section edits apply while playing. when an edit changes the tempo, a sampler's held
 notes or a device's latency, audio briefly restarts at the playhead: effect tails

@@ -722,9 +722,9 @@ fn main_cursor_keeps_track_overlays_but_section_lane_gap_refuses_e(cx: &mut Test
     let before = editor.read_with(cx, |view, _| {
         view.state.as_ref().unwrap().project.snapshot()
     });
-    assert!(visual.debug_bounds("section-edit-cursor").is_none());
-    // The lower body owns Main's all-track cursor/range. Section cursor and
-    // gap-split refusal belong to the header after the shared range split.
+    // Plain lower-body clicks in the section lane place the section cursor
+    // while keeping track overlays; dragging the lower body still selects time.
+    assert!(visual.debug_bounds("section-edit-cursor").is_some());
     let header = point(
         click.x,
         main_lane.top()

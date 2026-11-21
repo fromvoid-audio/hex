@@ -14,6 +14,9 @@ impl MeterEdit {
     pub(super) fn original(&mut self, at: BeatTime, source: MeterPoint) {
         self.insert(at, source.meter(), source.beat() != BeatTime::ZERO);
     }
+    pub(super) fn captured(&mut self, at: BeatTime, meter: Meter, authored: bool) {
+        self.insert(at, meter, authored);
+    }
     pub(super) fn seam(&mut self, at: BeatTime, meter: Meter) {
         self.insert(at, meter, false);
     }

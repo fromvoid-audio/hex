@@ -1125,6 +1125,20 @@ impl EditorView {
             .flex_1()
             .min_w_0()
             .h_full()
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|view, event: &MouseDownEvent, window, cx| {
+                    view.section_lane_menu(
+                        f32::from(event.position.x),
+                        f32::from(event.position.y),
+                        event.position,
+                        event.modifiers,
+                        window,
+                        cx,
+                    );
+                    cx.stop_propagation();
+                }),
+            )
             .children([main_track_grid_layer(bands, lines, viewport, scale)])
             .child(super::arrangement_map::view(
                 self,

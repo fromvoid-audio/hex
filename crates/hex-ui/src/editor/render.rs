@@ -1497,7 +1497,9 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &CutTimeSelection, window, cx| {
-                if !view.edit_automation_range(RangeEdit::Cut, window, cx) {
+                if !view.edit_automation_range(RangeEdit::Cut, window, cx)
+                    && !view.cut_section(window)
+                {
                     view.copy_time_selection(true, window);
                 }
                 cx.notify();

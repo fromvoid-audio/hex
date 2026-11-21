@@ -397,6 +397,14 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("replace_arrangement_section"; ["source" => source.value(), "target" => target.value(), "copy" => copy]; omitted="")
         }
+        Command::PasteArrangementSection {
+            clipboard,
+            at,
+            gap_name,
+            ..
+        } => {
+            describe!("paste_arrangement_section"; ["at_beats_q32" => at.raw(), "length_beats_q32" => clipboard.length().raw(), "gap_name_redacted_bytes" => gap_name.len()]; omitted="clipboard,gap_color")
+        }
         Command::SplitArrangementSection { section, at } => {
             describe!("split_arrangement_section"; ["section" => section.value(), "at_beats_q32" => at.raw()]; omitted="")
         }

@@ -26,6 +26,7 @@ pub(super) fn is_command(command: &Command) -> bool {
             | Command::AppendArrangementSectionCopy { .. }
             | Command::MoveArrangementSectionBeyondEnd { .. }
             | Command::ReplaceArrangementSection { .. }
+            | Command::PasteArrangementSection { .. }
             | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_)
     )
@@ -468,5 +469,94 @@ mod replace_tests {
             service.submit(Request::Redo).unwrap();
             assert_eq!(next(&service).state.project.snapshot(), after);
         }
+    }
+}
+
+#[cfg(test)]
+mod paste_tests {
+    use super::*;
+    fn next(service: &Service) -> Event {
+        service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap()
+    }
+    #[test]
+    fn stamped_section_paste_uses_structural_publication_and_one_history_edge() {
+        let service = Service::new(48_000, 8, 0).unwrap();
+        let initial = next(&service);
+        service
+            .submit(Request::EditArrangementSection {
+                project_generation: 0,
+                revision: initial.state.revision,
+                command: Command::AddArrangementSection {
+                    name: "verse".into(),
+                    color: hex_project::ElementColor::Blue,
+                    start: hex_project::BeatTime::ZERO,
+                    end: hex_project::BeatTime::from_quarters(4).unwrap(),
+                },
+            })
+            .unwrap();
+        let added = next(&service);
+        let Some(Created::ArrangementSection(section)) = added.created else {
+            panic!("verse");
+        };
+        let clipboard = Arc::new(
+            added
+                .state
+                .project
+                .capture_arrangement_section(section)
+                .unwrap(),
+        );
+        // Cut (DeleteArrangementSection) then Paste at beat 4 in an empty lane.
+        service
+            .submit(Request::EditArrangementSection {
+                project_generation: 0,
+                revision: added.state.revision,
+                command: Command::DeleteArrangementSection(section),
+            })
+            .unwrap();
+        let cut = next(&service);
+        assert!(cut.error.is_none(), "{:?}", cut.error);
+        assert!(cut.state.project.arrangement_sections().is_empty());
+        let before = cut.state.project.snapshot();
+        let command = Command::PasteArrangementSection {
+            clipboard,
+            at: hex_project::BeatTime::from_quarters(4).unwrap(),
+            gap_name: "gap".into(),
+            gap_color: hex_project::ElementColor::Rose,
+        };
+        assert!(is_command(&command));
+        assert!(command.requires_section_publication());
+        service
+            .submit(Request::EditArrangementSection {
+                project_generation: 0,
+                revision: cut.state.revision,
+                command,
+            })
+            .unwrap();
+        let pasted = next(&service);
+        assert!(pasted.error.is_none(), "{:?}", pasted.error);
+        let Some(Created::ArrangementSection(pasted_id)) = pasted.created else {
+            panic!("pasted section id");
+        };
+        assert_eq!(pasted.state.project.arrangement_sections().len(), 2);
+        assert_eq!(
+            pasted
+                .state
+                .project
+                .arrangement_section(pasted_id)
+                .unwrap()
+                .start(),
+            hex_project::BeatTime::from_quarters(4).unwrap()
+        );
+        let after = pasted.state.project.snapshot();
+        service.submit(Request::Undo).unwrap();
+        let mut restored = next(&service).state.project.snapshot();
+        assert!(restored.next_id >= after.next_id);
+        restored.next_id = before.next_id;
+        assert_eq!(restored, before);
+        service.submit(Request::Redo).unwrap();
+        assert_eq!(next(&service).state.project.snapshot(), after);
     }
 }
