@@ -36,6 +36,7 @@ struct ContentKey {
     time_selection_key_held: bool,
     automation_view: bool,
     focus_ranges: std::rc::Rc<[(u64, u64)]>,
+    waveform_overrange_epoch: u64,
 }
 
 #[derive(Default)]
@@ -231,6 +232,7 @@ impl EditorView {
             time_selection_key_held: self.time_selection_key_held,
             automation_view: self.automation_view.enabled,
             focus_ranges: self.arrangement_focus_ranges(),
+            waveform_overrange_epoch: self.waveform_overrange_epoch,
             // Match clip_view admission, including physically held track sizing.
             // Otherwise a body painted without controls can survive release.
             drag_available: self.drag_available(),

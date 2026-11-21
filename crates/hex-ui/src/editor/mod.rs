@@ -176,6 +176,7 @@ mod arrangement_map;
 mod clip_title_cache;
 mod console_mixer;
 mod console_returns;
+mod frame_timing;
 mod group_overview;
 mod midi_loop_notes;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -183,6 +184,7 @@ mod midi_loop_profile;
 mod midi_pitch_viewport;
 mod midi_ruler;
 mod midi_scene;
+mod track_header_cache;
 mod track_lane_canvas;
 use midi_pitch_viewport::PitchViewport;
 
@@ -1078,6 +1080,8 @@ pub(super) struct EditorView {
     section_launch_after_loop: Option<section_launch::SectionLaunchAfterLoop>,
     loop_rail_cursor: gpui::CursorStyle,
     clip_content_cache: clip_content_cache::TrackCache,
+    track_header_cache: track_header_cache::TrackHeaderCache,
+    waveform_overrange_epoch: u64,
     drag_lanes: std::collections::HashMap<TrackId, drag::LaneBounds>,
     track_drop_lanes: std::collections::HashMap<TrackId, drag::LaneBounds>,
     drag_lane_epochs: std::collections::HashMap<TrackId, u64>,
@@ -1902,6 +1906,8 @@ impl EditorView {
             section_launch_after_loop: None,
             loop_rail_cursor: gpui::CursorStyle::Crosshair,
             clip_content_cache: clip_content_cache::TrackCache::default(),
+            track_header_cache: track_header_cache::TrackHeaderCache::default(),
+            waveform_overrange_epoch: 0,
             drag_lanes: std::collections::HashMap::new(),
             track_drop_lanes: std::collections::HashMap::new(),
             drag_lane_epochs: std::collections::HashMap::new(),
