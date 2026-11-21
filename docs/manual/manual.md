@@ -705,9 +705,10 @@ events keep their original sound, including events that share the same source.
 
 the **scope bar** at the top of each clip editor defines the clip's **scope**.
 in the audio editor, drag the scope bar to move both ends together, or drag an
-end to resize the scope. both edits update the clip's bounds in the arranger. an existing play start stays at its source position while
-it remains inside the new scope; otherwise it moves to the scope start. looping
-controls whether playback repeats within the scope.
+end to resize the scope. with looping on, the edited scope repeats within the
+clip's existing arranger bounds. with looping off, the arranger bounds follow
+the scope. an existing play start stays at its source position while it remains
+inside the new scope; otherwise it moves to the scope start.
 
 the audio event editor marks playback start with a vertical line and a small
 right-pointing arrow at the top. drag this marker to shift the audio inside the

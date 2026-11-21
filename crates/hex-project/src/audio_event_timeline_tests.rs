@@ -201,6 +201,132 @@ fn placement_refuses_unsupported_roots_and_unbounded_timelines() {
 }
 
 #[test]
+fn looping_audio_scope_preserves_the_arrangement_gate_in_each_clock() {
+    use crate::{AudioClipTiming, AudioViewMode, AudioViewResizeOperation, BeatTime, Tempo};
+
+    for (musical, frozen) in [(false, false), (true, false), (true, true)] {
+        let (mut editor, clip) = imported(96_000);
+        if musical {
+            editor
+                .execute(Command::SetAudioClipMusical {
+                    clip,
+                    enabled: true,
+                })
+                .unwrap();
+            editor
+                .execute(Command::SetTempoPoint {
+                    beat: BeatTime::ONE,
+                    tempo: Tempo::new(160_000_000).unwrap(),
+                })
+                .unwrap();
+        }
+        let length = editor
+            .project()
+            .clip(clip)
+            .unwrap()
+            .audio_event_root()
+            .domain
+            .clock
+            .length();
+        let cursor = length / 2;
+        for operation in [
+            AudioViewResizeOperation::ScopeRange {
+                start: length / 4,
+                end: length * 3 / 4,
+                looping: true,
+            },
+            AudioViewResizeOperation::PlayStart { position: cursor },
+        ] {
+            editor
+                .execute(Command::ResizeAudioClipView { clip, operation })
+                .unwrap();
+        }
+        if frozen {
+            editor
+                .execute(Command::DuplicateAliasClips(vec![clip]))
+                .unwrap();
+            editor
+                .execute(Command::SetAudioClipMusical {
+                    clip,
+                    enabled: false,
+                })
+                .unwrap();
+            assert!(matches!(
+                editor
+                    .project()
+                    .clip(clip)
+                    .unwrap()
+                    .audio_event_root()
+                    .timing,
+                AudioClipTiming::Frozen { .. }
+            ));
+        }
+        let before = editor.project().clone();
+        let original = before.clip(clip).unwrap();
+        let gate = (original.start(), original.duration());
+        for (start, end, expected_cursor) in [
+            (length * 3 / 8, length * 3 / 4, cursor),
+            (length * 5 / 8, length, length * 5 / 8),
+        ] {
+            let operation = AudioViewResizeOperation::ScopeRange {
+                start,
+                end,
+                looping: true,
+            };
+            let preview =
+                crate::preview_audio_view_resize(original, before.tempo_map(), 96_000, operation)
+                    .unwrap();
+            assert_eq!((preview.start(), preview.duration()), gate);
+            let root = preview.audio_event_root();
+            assert_eq!((root.view_start, root.view_end), (start, end));
+            let placement = root.placement.unwrap();
+            assert_eq!(placement.mode, AudioViewMode::Repeat);
+            assert_eq!(start + placement.cycle_phase, expected_cursor);
+            assert_eq!(root.domain, original.audio_event_root().domain);
+            editor
+                .execute(Command::ResizeAudioClipView { clip, operation })
+                .unwrap();
+            assert_eq!(editor.project().clip(clip), Some(&preview));
+            let after = editor.project().clone();
+            assert!(editor.undo());
+            assert_eq!(editor.project(), &before);
+            assert!(editor.redo());
+            assert_eq!(editor.project(), &after);
+            assert!(editor.undo());
+        }
+    }
+}
+
+#[test]
+fn legacy_looping_audio_scope_captures_a_cycle_without_resizing() {
+    let (mut editor, clip) = imported(96_000);
+    editor
+        .execute(Command::SetClipLooping {
+            clip,
+            looping: true,
+        })
+        .unwrap();
+    let original = editor.project().clip(clip).unwrap();
+    assert!(original.audio_edit().is_none());
+    let gate = (original.start(), original.duration());
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip,
+            operation: crate::AudioViewResizeOperation::ScopeRange {
+                start: 24_000,
+                end: 48_000,
+                looping: true,
+            },
+        })
+        .unwrap();
+    let changed = editor.project().clip(clip).unwrap();
+    assert_eq!((changed.start(), changed.duration()), gate);
+    let projection =
+        crate::AudioViewProjection::new(changed, editor.project().tempo_map()).unwrap();
+    assert_eq!(projection.occurrence_count(), 4);
+}
+
+#[test]
 fn signed_musical_moves_preserve_the_scope_and_its_read_phase() {
     use crate::{AudioViewResizeOperation, BeatTime, WarpMode};
 

@@ -192,15 +192,13 @@ fn clip_editor_audio_w_l_and_brace_align_scope_and_keep_released_paint(cx: &mut 
     });
     visual.simulate_keystrokes("w");
     clip_drag_ui_test::pump_move(&editor, &mut visual);
+    let arrangement = (before.start() + selected.0, selected.1 - selected.0);
     editor.read_with(&visual, |v, _| {
         assert!(v.error.is_none(), "{:?}", v.error);
         let p = &v.state.as_ref().unwrap().project;
         let c = p.clip(clip).unwrap();
         let r = c.audio_event_root();
-        assert_eq!(
-            (c.start(), c.duration()),
-            (before.start() + selected.0, selected.1 - selected.0)
-        );
+        assert_eq!((c.start(), c.duration()), arrangement);
         assert_eq!((r.view_start, r.view_end), selected);
         assert_eq!(r.domain, before.audio_event_root().domain);
         assert_eq!(
@@ -219,6 +217,8 @@ fn clip_editor_audio_w_l_and_brace_align_scope_and_keep_released_paint(cx: &mut 
         "painted end boundary matches its canonical edge"
     );
     let edge = visual.debug_bounds("audio-loop-start").unwrap();
+    let clip_visual = Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
+    let arrangement_bounds = visual.debug_bounds(clip_visual).unwrap();
     let bar = visual.debug_bounds("audio-loop-ruler").unwrap();
     let down = edge.center();
     let up = point(down.x + bar.size.width * 0.25, down.y);
@@ -228,6 +228,7 @@ fn clip_editor_audio_w_l_and_brace_align_scope_and_keep_released_paint(cx: &mut 
     visual.run_until_parked();
     let held = visual.debug_bounds("audio-loop-start").unwrap();
     assert!(held.left() > edge.left() + px(5.0));
+    assert_eq!(visual.debug_bounds(clip_visual), Some(arrangement_bounds));
     visual.simulate_mouse_up(up, MouseButton::Left, free);
     let event = hold(&editor, &mut visual);
     assert!(
@@ -238,6 +239,7 @@ fn clip_editor_audio_w_l_and_brace_align_scope_and_keep_released_paint(cx: &mut 
     for _ in 0..3 {
         editor.update(&mut visual, |_, cx| cx.notify());
         visual.run_until_parked();
+        assert_eq!(visual.debug_bounds(clip_visual), Some(arrangement_bounds));
         assert_eq!(
             visual.debug_bounds("audio-loop-start").unwrap(),
             held,
@@ -249,6 +251,7 @@ fn clip_editor_audio_w_l_and_brace_align_scope_and_keep_released_paint(cx: &mut 
         cx.notify();
     });
     visual.run_until_parked();
+    assert_eq!(visual.debug_bounds(clip_visual), Some(arrangement_bounds));
     assert_eq!(
         visual.debug_bounds("audio-loop-start").unwrap(),
         held,
@@ -259,7 +262,7 @@ fn clip_editor_audio_w_l_and_brace_align_scope_and_keep_released_paint(cx: &mut 
         let r = c.audio_event_root();
         assert!(r.view_start > selected.0);
         assert_eq!(r.view_end, selected.1);
-        assert_eq!((c.start(), c.duration()), (48_000, 24_000));
+        assert_eq!((c.start(), c.duration()), arrangement);
     });
     // Expanding the opposite marker stays inside the same retained-source view.
     let end = visual.debug_bounds("audio-loop-end").unwrap().center();
@@ -270,18 +273,11 @@ fn clip_editor_audio_w_l_and_brace_align_scope_and_keep_released_paint(cx: &mut 
     visual.simulate_mouse_up(expanded, MouseButton::Left, free);
     clip_drag_ui_test::pump_move(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert!(
-            v.state
-                .as_ref()
-                .unwrap()
-                .project
-                .clip(clip)
-                .unwrap()
-                .audio_event_root()
-                .view_end
-                > selected.1
-        )
+        let c = v.state.as_ref().unwrap().project.clip(clip).unwrap();
+        assert!(c.audio_event_root().view_end > selected.1);
+        assert_eq!((c.start(), c.duration()), arrangement);
     });
+    assert_eq!(visual.debug_bounds(clip_visual), Some(arrangement_bounds));
     visual.simulate_keystrokes("cmd-z");
     clip_drag_ui_test::pump_move(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {

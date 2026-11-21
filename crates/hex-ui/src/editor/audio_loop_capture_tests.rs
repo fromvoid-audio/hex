@@ -82,6 +82,15 @@ fn open(cx: &mut TestAppContext, start_edge: bool) -> Fixture {
 }
 #[gpui::test]
 fn dragging_audio_scope_body_moves_both_edges_and_keeps_released_gate(cx: &mut TestAppContext) {
+    assert_scope_body(cx, false);
+}
+
+#[gpui::test]
+fn dragging_looping_audio_scope_body_keeps_arrangement_bounds(cx: &mut TestAppContext) {
+    assert_scope_body(cx, true);
+}
+
+fn assert_scope_body(cx: &mut TestAppContext, looping: bool) {
     let Fixture {
         mut visual,
         editor,
@@ -95,7 +104,7 @@ fn dragging_audio_scope_body_moves_both_edges_and_keeps_released_gate(cx: &mut T
             operation: AudioViewResizeOperation::ScopeRange {
                 start: 24_000,
                 end: 72_000,
-                looping: false,
+                looping,
             },
         })));
     });
@@ -111,10 +120,14 @@ fn dragging_audio_scope_body_moves_both_edges_and_keeps_released_gate(cx: &mut T
         visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         let held = visual.debug_bounds(selector).unwrap();
-        assert!(held.left() > original.left());
-        assert!(held.right() > original.right());
-        // The painted edges can round to different half-pixel positions.
-        assert!(f32::from(held.size.width - original.size.width).abs() <= 1.0);
+        if looping {
+            assert_eq!(held, original);
+        } else {
+            assert!(held.left() > original.left());
+            assert!(held.right() > original.right());
+            // The painted edges can round to different half-pixel positions.
+            assert!(f32::from(held.size.width - original.size.width).abs() <= 1.0);
+        }
         editor.read_with(&visual, |v, _| {
             let g = v.clip_loop.audio_gesture.as_ref().unwrap();
             assert_eq!(g.preview, (48_000, 96_000));
@@ -151,7 +164,10 @@ fn dragging_audio_scope_body_moves_both_edges_and_keeps_released_gate(cx: &mut T
     let after = editor.read_with(&visual, |v, _| {
         let project = &v.state.as_ref().unwrap().project;
         let clip = project.clip(clip).unwrap();
-        assert_eq!((clip.start(), clip.duration()), (48_000, 48_000));
+        let start = if looping { 24_000 } else { 48_000 };
+        assert_eq!((clip.start(), clip.duration()), (start, 48_000));
+        let scope = clip.audio_event_root();
+        assert_eq!((scope.view_start, scope.view_end), (48_000, 96_000));
         project.snapshot()
     });
     assert_ne!(after, before);

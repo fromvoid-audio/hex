@@ -1382,7 +1382,9 @@ pub enum AudioViewResizeOperation {
         end: u64,
         looping: bool,
     },
-    /// Set the arrangement gate to the selected processing-root cycle.
+    /// Set the scope to the selected processing-root cycle. A clip that stays
+    /// in Repeat keeps its arrangement gate; other scope edits align the gate
+    /// with the new range.
     /// Scope movement is independent of the first read cursor. Keep an
     /// existing play start inside the new scope, otherwise use the scope start.
     /// Frozen processing keeps its original source clock and exact gate frames.
@@ -1645,7 +1647,8 @@ pub fn preview_view_resize(
         };
         let unchanged_range = (first, last) == (view_start, view_end);
         let aligns_scope = matches!(operation, AudioViewResizeOperation::ScopeRange { .. });
-        let moves_gate = aligns_scope && !unchanged_range;
+        let was_looping = old.map_or(clip.looping(), |p| p.mode == AudioViewMode::Repeat);
+        let moves_gate = aligns_scope && !unchanged_range && !(was_looping && looping);
         let old_phase = old.map_or(0, |p| p.cycle_phase);
         let phase = if !aligns_scope {
             if unchanged_range {
@@ -1665,7 +1668,7 @@ pub fn preview_view_resize(
                 .filter(|cursor| (first..last).contains(cursor))
                 .map_or(0, |cursor| cursor - first)
         };
-        // Scope coordinates own gate geometry; read phase only selects audio.
+        // For an active repeat, only the cycle and read phase change.
         let shift = if moves_gate {
             i128::from(first) - i128::from(view_start)
         } else {
@@ -1698,7 +1701,8 @@ pub fn preview_view_resize(
             displacement,
         )?;
         let (frame_start, frame_end) = projected.outer_frame_bounds();
-        if moves_gate
+        if aligns_scope
+            && !unchanged_range
             && let Some(edit) = clip.audio_edit()
             && matches!(edit.timing, AudioClipTiming::Frozen { .. })
         {
