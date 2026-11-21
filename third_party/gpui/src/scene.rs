@@ -206,7 +206,7 @@ impl Scene {
             return false;
         }
         let mut depth = 0_usize;
-        let mut union = None::<Bounds<ScaledPixels>>;
+        let mut envelope = None::<(Point<ScaledPixels>, Point<ScaledPixels>)>;
         let mut min_order = u32::MAX;
         let mut max_order = 0_u32;
         let mut visible = false;
@@ -249,18 +249,24 @@ impl Scene {
             if !finite_scene_bounds(&bounds) {
                 return false;
             }
-            let combined = union.map_or(bounds, |union| union.union(&bounds));
-            if !finite_scene_bounds(&combined) {
-                return false;
-            }
-            union = Some(combined);
+            let bottom_right = bounds.bottom_right();
+            envelope = Some(match envelope {
+                Some((min, max)) => (min.min(&bounds.origin), max.max(&bottom_right)),
+                None => (bounds.origin, bottom_right),
+            });
         }
         if depth != 0 || !visible {
             return false;
         }
-        let Some(bounds) = union else {
+        let Some((min, max)) = envelope else {
             return false;
         };
+        // Converting corners to an origin and size can round a far edge
+        // inward. Such an envelope could hide an overlap from a later draw.
+        let bounds = Bounds::from_corners(min, max);
+        if !finite_scene_bounds(&bounds) || bounds.right() < max.x || bounds.bottom() < max.y {
+            return false;
+        }
         let span = max_order - min_order;
         let Some(base) = self.primitive_bounds.reserve(bounds, span) else {
             return false;
@@ -1655,9 +1661,29 @@ mod replay_verification {
         Ok(())
     }
 
+    fn verify_rounded_replay_envelope() -> Result<(), String> {
+        let near_path = bounds(0.1, 0.0, 0.18, 1.0, 1.0);
+        let far_quad = bounds(-1_000_000.0, 0.0, 1.0, 1.0, 1.0);
+        let cover = bounds(0.26, 0.0, 0.005, 1.0, 1.0);
+        let mut previous = Scene::default();
+        previous.insert_primitive(primitive(2, 20, near_path, near_path));
+        previous.insert_primitive(primitive(1, 21, far_quad, far_quad));
+
+        let mut fast = Scene::default();
+        let mut legacy = Scene::default();
+        refused(&mut fast, 0..previous.len(), &previous)?;
+        fast.replay(0..previous.len(), &previous);
+        legacy.replay_legacy(0..previous.len(), &previous);
+        let cover = primitive(1, 22, cover, cover);
+        fast.insert_primitive(cover.clone());
+        legacy.insert_primitive(cover);
+        equivalent(&mut fast, &mut legacy)
+    }
+
     pub(super) fn verify() -> Result<(), String> {
         verify_path_clone_value_semantics()?;
         verify_disjoint_path_pair()?;
+        verify_rounded_replay_envelope()?;
         for scale in [1.0, 2.0] {
             for seed in 1..=12 {
                 let (previous, range) = source(scale, seed);
