@@ -295,10 +295,12 @@ pub enum PlaybackHandoffError {
 
 /// One requested logical route change for an already retained worker. The
 /// output owner fences the original publication and Engine revalidates the cut.
+/// The physical owner stays at the worker's first track in either direction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HostedInstrumentMove {
     pub donor: hex_project::TrackId,
     pub receiver: hex_project::TrackId,
+    pub physical_owner: hex_project::TrackId,
     pub device: hex_project::DeviceId,
     pub binding: hex_lattice_contract::ForeignProcessorBinding,
 }
@@ -2493,10 +2495,13 @@ impl Playback {
         &mut self,
         movement: HostedInstrumentMove,
     ) -> Result<(), Invalid> {
-        let (_, binding) = self
+        let (owner, binding) = self
             .foreign_instrument_binding_on_control(movement.receiver, movement.device)
             .ok_or(Invalid("hosted move receiver has no prepared worker"))?;
-        if movement.donor == movement.receiver || movement.binding != binding {
+        if movement.donor == movement.receiver
+            || owner != crate::ProcessorChainOwner::Track(movement.physical_owner.value())
+            || movement.binding != binding
+        {
             return Err(Invalid(
                 "hosted move receiver differs from the retained worker",
             ));
