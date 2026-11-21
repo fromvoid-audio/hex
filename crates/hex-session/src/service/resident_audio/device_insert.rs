@@ -1342,12 +1342,25 @@ impl Session {
         {
             return Ok(None);
         }
+        let main_replacement =
+            main_history::stage_enabled_main_replacement(&mut self.editor, redo)?;
+        let stopped_fence = if let Some((_, device)) = &main_replacement {
+            Some(
+                sink.stopped_resident_power_fence(context, device.value())
+                    .map_err(SessionError::NativeAudio)?
+                    .ok_or(SessionError::Invalid(
+                        "stop playback to undo or redo this vst3 replacement",
+                    ))?,
+            )
+        } else {
+            None
+        };
         self.stage_resident_graph_change(
             context,
             sink,
             admission,
             current,
-            None,
+            stopped_fence,
             None,
             None,
             None,
@@ -1355,6 +1368,12 @@ impl Session {
             document_intent,
             None,
             |session| {
+                if let Some((edge, _)) = main_replacement {
+                    return Ok(Some((
+                        StagedChange::History(edge),
+                        Operation::HostedHistory(GraphEditOperation::ReplaceDevice),
+                    )));
+                }
                 let hosted = match detached_history::stage(&mut session.editor, redo)? {
                     Some(edge) => Some(edge),
                     None => hosted_effect_history::stage(&mut session.editor, redo)?,
