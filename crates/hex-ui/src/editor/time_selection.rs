@@ -1573,8 +1573,6 @@ impl EditorView {
         }
         if gesture.moved {
             self.fit_clip_editor_to_time_selection();
-        } else {
-            self.update_locked_play_start_from_point();
         }
         true
     }

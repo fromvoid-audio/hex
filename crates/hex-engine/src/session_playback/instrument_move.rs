@@ -6,7 +6,6 @@ use crate::Track;
 pub(super) struct InstrumentTrackMove {
     pub(super) source: usize,
     pub(super) destination: usize,
-    pub(super) source_id: hex_project::SourceId,
     pub(super) kind: InstrumentMoveKind,
 }
 
@@ -80,21 +79,13 @@ impl SessionPlayback {
         {
             return None;
         }
-        // An earlier cut may still own a held gate. Only transfer releases
-        // already carried by this exact generator on its current output.
+        // A release already on either current output needs a separate proof
+        // before this direct cut can retire it.
         if previous.releases.iter().any(|release| {
             let output = release.location.track_index();
             release.end_frame() > previous.performance_frame
                 && release.location.tail_group().is_none()
                 && [source, destination].contains(&output)
-                && !(kind == InstrumentMoveKind::AnalyticSine
-                    && output == source
-                    && release.source_origin.is_some_and(|origin| {
-                        origin.source == source_id
-                            && origin.receiver == donor_track
-                            && origin.moved_sine
-                            && origin.follows_current_configuration
-                    }))
         }) {
             return None;
         }
@@ -103,7 +94,7 @@ impl SessionPlayback {
         } = kind
         {
             let receiver_track = receiver.canonical_track_id()?;
-            if !self.direct_mutable_move_preserves_occurrences(
+            if !self.direct_mutable_move_matches_resources_and_routes(
                 previous,
                 source,
                 destination,
@@ -116,12 +107,11 @@ impl SessionPlayback {
         Some(InstrumentTrackMove {
             source,
             destination,
-            source_id,
             kind,
         })
     }
 
-    fn direct_mutable_move_preserves_occurrences(
+    fn direct_mutable_move_matches_resources_and_routes(
         &self,
         previous: &Self,
         source: usize,
@@ -149,13 +139,12 @@ impl SessionPlayback {
             .revision
             .source_routing()
             .arrangement_voice_envelope(destination);
-        let authored = proofs.len().saturating_add(next_input);
         previous.loop_region().is_none()
             && self.loop_region().is_none()
             && donor.is_source_owner()
             && !donor.has_committed_live_occurrences()
-            // Sampler's existing inheritance also compares the actual
-            // backing owners. The move must have both original PCM leases.
+            // Validate both Sampler leases and their backing owners. Fresh
+            // playback still needs the same admitted original media.
             && (!requires_original_sample
                 || (donor.resources.is_some() && receiver.resources.is_some()))
             && receiver.can_inherit_from(donor)
@@ -171,8 +160,6 @@ impl SessionPlayback {
                         .instrument_automation(tracks[1], device)
                         .is_none()
             })
-            // An inverse finds the original contributor's dispatched gates
-            // in the current donor's kernel, alongside gates it added there.
             && proofs
                 .iter()
                 .all(|proof| tracks.contains(&proof.signature.key().track))
@@ -183,19 +170,15 @@ impl SessionPlayback {
                     MAX_UNCHANGED_CLIPS,
                 )
             })
-            && authored
+            && next_input
                 <= receiver
                     .max_active_occurrences()
                     .min(receiver.transition_proof_capacity())
-            && authored.saturating_mul(2).saturating_add(3) <= receiver.max_events_per_block()
+            && next_input.saturating_mul(2).saturating_add(3) <= receiver.max_events_per_block()
     }
 }
 
 impl Track {
-    pub(super) fn direct_native_sine(&self, index: usize) -> bool {
-        self.direct_instrument_move_kind(index) == Some(InstrumentMoveKind::AnalyticSine)
-    }
-
     fn direct_instrument_move_kind(&self, index: usize) -> Option<InstrumentMoveKind> {
         let direct = self.instrument_slot_enabled()
             && self.source_receiver_index == Some(index)

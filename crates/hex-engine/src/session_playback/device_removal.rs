@@ -226,9 +226,11 @@ impl PendingNativeRemoval {
         previous: &SessionPlayback,
     ) -> Option<hex_project::TrackId> {
         match self.transition {
-            RemovalTransition::Instrument(index) => {
-                previous.routes.get(index).map(|route| route.id)
-            }
+            RemovalTransition::Instrument(index)
+            | RemovalTransition::Move(StagedTrackMove::Instrument(InstrumentTrackMove {
+                source: index,
+                ..
+            })) => previous.routes.get(index).map(|route| route.id),
             _ => None,
         }
     }
