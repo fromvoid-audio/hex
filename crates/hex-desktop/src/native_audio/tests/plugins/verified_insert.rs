@@ -36,33 +36,40 @@ fn verified_running_main_vst3_replacement_redo_restores_a_fresh_worker() {
     assert_verified_running_vst3_replacement(VerifiedReplacementOwner::MainHistory { redo: true });
 }
 
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_running_return_vst3_replacement_undo_restores_a_fresh_worker() {
+    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::ReturnHistory);
+}
+
 enum VerifiedReplacementOwner {
     Main,
     Return,
     Track,
     MainHistory { redo: bool },
+    ReturnHistory,
+}
+
+fn replacement_effects(
+    project: &hex_project::Project,
+    destination: PluginEffectDestination,
+) -> &[hex_project::Device] {
+    match destination {
+        PluginEffectDestination::Main => project.main_devices(),
+        PluginEffectDestination::Track(id) => project.track(id).unwrap().devices(),
+        PluginEffectDestination::Return(id) => project
+            .return_tracks()
+            .iter()
+            .find(|track| track.id() == id)
+            .unwrap()
+            .devices(),
+        _ => panic!("effect fixture destination"),
+    }
 }
 
 fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
     use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
     use std::sync::atomic::AtomicUsize;
-
-    fn effects(
-        project: &hex_project::Project,
-        destination: PluginEffectDestination,
-    ) -> &[hex_project::Device] {
-        match destination {
-            PluginEffectDestination::Main => project.main_devices(),
-            PluginEffectDestination::Track(id) => project.track(id).unwrap().devices(),
-            PluginEffectDestination::Return(id) => project
-                .return_tracks()
-                .iter()
-                .find(|track| track.id() == id)
-                .unwrap()
-                .devices(),
-            _ => panic!("effect fixture destination"),
-        }
-    }
 
     let _native = native_fixture();
     let files = Files::new();
@@ -94,7 +101,7 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
             (imported.state, PluginEffectDestination::Main)
         }
         VerifiedReplacementOwner::Track => (imported.state, PluginEffectDestination::Track(track)),
-        VerifiedReplacementOwner::Return => {
+        VerifiedReplacementOwner::Return | VerifiedReplacementOwner::ReturnHistory => {
             let added = h.run(Request::Edit(Command::AddReturnTrack {
                 name: "replacement send".into(),
             }));
@@ -129,7 +136,7 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
         }
     };
     let predecessor = h.applied(h.context.unwrap());
-    let old = effects(&original.state.project, destination)[0].id();
+    let old = replacement_effects(&original.state.project, destination)[0].id();
     let binding = || progress.lock().unwrap().source_bindings[0];
     wait(|| binding().is_some());
     let (_, old_binding, _) = binding().unwrap();
@@ -148,7 +155,9 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
             | VerifiedReplacementOwner::Track => effect,
             // The same authored 0.25 reaches the dry and wet routes. Return
             // receives half of it, so the measured ramp must be above dry.
-            VerifiedReplacementOwner::Return => 0.25 + effect * 0.5,
+            VerifiedReplacementOwner::Return | VerifiedReplacementOwner::ReturnHistory => {
+                0.25 + effect * 0.5
+            }
         }
     };
     for block in 0..4 {
@@ -309,7 +318,7 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
         assert_ne!(receipt.submission.audio_revision, consented.audio_revision);
     }
     assert_eq!(installed.state.revision, original.state.revision + 1);
-    let [fresh] = effects(&installed.state.project, destination) else {
+    let [fresh] = replacement_effects(&installed.state.project, destination) else {
         panic!("fresh effect in the original slot");
     };
     assert_eq!(fresh.id().value(), original.state.project.next_identity());
@@ -333,11 +342,16 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
                 device == fresh.id().value() && binding != old_binding
             })
     });
-    if let VerifiedReplacementOwner::MainHistory { redo } = owner {
+    let redo = match owner {
+        VerifiedReplacementOwner::MainHistory { redo } => Some(redo),
+        VerifiedReplacementOwner::ReturnHistory => Some(false),
+        _ => None,
+    };
+    if let Some(redo) = redo {
         let retired_on_undo = binding().unwrap().1;
-        let restored = assert_verified_main_replacement_history(
+        let restored = assert_verified_replacement_history(
             &h,
-            &original,
+            (&original, destination),
             &installed,
             &progress,
             &records,
@@ -345,9 +359,9 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
             ReplacementHistoryDirection::Undo,
         );
         if redo {
-            assert_verified_main_replacement_history(
+            assert_verified_replacement_history(
                 &h,
-                &installed,
+                (&installed, destination),
                 &restored,
                 &progress,
                 &records,
@@ -363,9 +377,9 @@ enum ReplacementHistoryDirection {
     Redo,
 }
 
-fn assert_verified_main_replacement_history(
+fn assert_verified_replacement_history(
     h: &Harness,
-    target: &Event,
+    (target, destination): (&Event, PluginEffectDestination),
     incumbent: &Event,
     progress: &Mutex<crate::native_audio::plugins::PreparationObservation>,
     records: &std::sync::atomic::AtomicUsize,
@@ -378,17 +392,22 @@ fn assert_verified_main_replacement_history(
         ReplacementHistoryDirection::Undo => (Request::Undo, "Undo", true),
         ReplacementHistoryDirection::Redo => (Request::Redo, "Redo", false),
     };
+    let ramp_increment = if matches!(destination, PluginEffectDestination::Return(_)) {
+        0.015625
+    } else {
+        0.03125
+    };
     let status = h.audio.as_ref().unwrap().status().unwrap();
     let predecessor = status.applied_audio_source().unwrap();
     let accepted = || progress.lock().unwrap().source_bindings[0].unwrap();
     let (incumbent_device, incumbent_binding, _) = accepted();
     assert_ne!(incumbent_binding, retired_target_binding);
-    let [effect] = incumbent.state.project.main_devices() else {
-        panic!("replacement in the occupied Main slot");
+    let [effect] = replacement_effects(&incumbent.state.project, destination) else {
+        panic!("replacement in the occupied effect slot");
     };
     assert_eq!(effect.id().value(), incumbent_device);
-    let [target_effect] = target.state.project.main_devices() else {
-        panic!("original Main effect");
+    let [target_effect] = replacement_effects(&target.state.project, destination) else {
+        panic!("original effect");
     };
     let preparing_target = || {
         progress
@@ -440,7 +459,7 @@ fn assert_verified_main_replacement_history(
             true
         });
     }
-    assert_eq!(warmup[4] - warmup[3], 0.03125);
+    assert_eq!(warmup[4] - warmup[3], ramp_increment);
     let mut last = warmup[4];
     assert_predecessor(incumbent);
 
@@ -454,7 +473,7 @@ fn assert_verified_main_replacement_history(
         'terminal: loop {
             assert!(
                 Instant::now() < deadline,
-                "running Main replacement {name} stalled"
+                "running {destination:?} replacement {name} stalled"
             );
             while let Ok(event) = service.try_event() {
                 if let Some(error) = event.error.as_deref() {
@@ -462,7 +481,7 @@ fn assert_verified_main_replacement_history(
                     assert!(event.device_insert_complete.is_none_or(|receipt| {
                         receipt.outcome != DeviceInsertOutcome::Installed
                     }));
-                    panic!("running Verified Main replacement {name} refused: {error}");
+                    panic!("running Verified {destination:?} replacement {name} refused: {error}");
                 }
                 if event.request_complete {
                     break 'terminal event;
@@ -473,7 +492,7 @@ fn assert_verified_main_replacement_history(
                     assert_predecessor(&event);
                     assert_eq!(confirmation.operation(), GraphEditOperation::ReplaceDevice);
                     let sample = pump().expect("predecessor block before replacement consent");
-                    assert_eq!(sample - last, 0.03125);
+                    assert_eq!(sample - last, ramp_increment);
                     heard_predecessor |= preparing_target();
                     assert!(offer.replace(confirmation.submission()).is_none());
                     assert!(confirmation.proceed());
@@ -484,7 +503,7 @@ fn assert_verified_main_replacement_history(
                 && status.applied_audio_source() == Some(predecessor)
             {
                 assert_eq!(accepted().1, incumbent_binding);
-                assert_eq!(sample - last, 0.03125);
+                assert_eq!(sample - last, ramp_increment);
                 heard_predecessor |= pending && preparing_target();
                 last = sample;
             }
@@ -505,7 +524,7 @@ fn assert_verified_main_replacement_history(
     }
     assert_eq!(restored.state.revision, incumbent.state.revision + 1);
     assert_eq!(
-        restored.state.project.main_devices(),
+        replacement_effects(&restored.state.project, destination),
         std::slice::from_ref(target_effect)
     );
     assert_eq!(
