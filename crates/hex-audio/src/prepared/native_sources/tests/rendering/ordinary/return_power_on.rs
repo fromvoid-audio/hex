@@ -7,19 +7,32 @@ const SECOND_WET: usize = BRIDGE + QUANTUM;
 const PARTITION: usize = 200;
 const FRAMES: usize = 131_072;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OffPredecessor {
+    Original,
+    OriginalWithLateReply,
+    Republished,
+}
+
 #[test]
 #[ignore = "explicit original SDK receipts and restorable variant 37 required"]
 fn running_return_power_on_preserves_the_pass_through_the_fresh_worker_prefix() {
-    verify_return_power_on(false);
+    verify_return_power_on(OffPredecessor::Original);
 }
 
 #[test]
 #[ignore = "explicit original SDK receipts and restorable variant 37 required"]
 fn running_return_power_on_conceals_one_late_reply_with_the_fresh_aligned_input() {
-    verify_return_power_on(true);
+    verify_return_power_on(OffPredecessor::OriginalWithLateReply);
 }
 
-fn verify_return_power_on(first_reply_held: bool) {
+#[test]
+#[ignore = "explicit original SDK receipts and restorable variant 37 required"]
+fn running_return_power_on_refuses_pass_inherited_by_another_off_source() {
+    verify_return_power_on(OffPredecessor::Republished);
+}
+
+fn verify_return_power_on(off_predecessor: OffPredecessor) {
     let _serial = serial();
     let mut f = fixture_with_quantum("processing", 1, QUANTUM as u16);
     let root = f.control.native_candidate_root();
@@ -106,6 +119,24 @@ fn verify_return_power_on(first_reply_held: bool) {
     return_original_worker(&mut f, original);
     assert_off_block(&mut f);
 
+    let off_source = if off_predecessor == OffPredecessor::Republished {
+        let off = compile_off(&f, identity, &state);
+        let revision = publish_in_context(
+            &mut f.control,
+            off,
+            PublicationPolicy::InheritRuntime,
+            successor_context(off_source),
+        );
+        assert_off_block(&mut f);
+        let republished = f.control.status.recording_source().unwrap();
+        assert_eq!(republished.audio_revision, revision);
+        assert_ne!(republished, off_source);
+        assert!(f.control.status.native_effect_source().is_none());
+        republished
+    } else {
+        off_source
+    };
+    let first_reply_held = off_predecessor == OffPredecessor::OriginalWithLateReply;
     let mut release = first_reply_held.then(crate::plugin_worker::hold_next_test_transport);
     let fresh = source_for_profile(
         &mut f.control,
@@ -137,6 +168,24 @@ fn verify_return_power_on(first_reply_held: bool) {
     };
     let mut candidate = compile(&f, true);
     candidate.require_hosted_return_power_on(request).unwrap();
+    if off_predecessor == OffPredecessor::Republished {
+        let receipt = submit(&mut f, candidate, off_source);
+        assert_off_block(&mut f);
+        assert_eq!(
+            receipt.state(),
+            PublicationReceiptState::Refused(
+                hex_engine::playback::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation,
+            )
+        );
+        assert_eq!(f.control.status.recording_source(), Some(off_source));
+        assert_worker_input(&mut f, &root, fresh, 0);
+        let returned = dispose(f);
+        assert!(
+            matches!(returned.disposal, native::PreparationDisposal::Reaped(retired)
+            if retired.status.success() && retired.terminal.is_some_and(|terminal| terminal.blocks == 0))
+        );
+        return;
+    }
     let fence = f.control.capture_fresh_runtime_fence().unwrap();
     match f.control.publish_with_admission_and_source_on_control(
         candidate,
