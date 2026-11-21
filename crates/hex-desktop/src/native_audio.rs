@@ -1971,12 +1971,24 @@ impl WorkerAudioSink for NativeAudioSink {
             .as_ref()
             .map(|source| source.context())
             .and_then(|context| self.applied_powered_off_main(context));
-        if let Some(intent) = input.stopped_main_power_on()
-            && powered_off == Some(intent.device())
-            && self.stopped_resident_power_fence(intent.source_context(), intent.device())?
-                != Some(intent.fence())
-        {
-            return Err("stopped power-on source changed before preparation".into());
+        if let Some(intent) = input.main_power_on() {
+            use hex_session::service::ResidentMainPowerOnInterval;
+            let changed = match intent.interval() {
+                ResidentMainPowerOnInterval::Stopped(fence) => {
+                    powered_off == Some(intent.device())
+                        && self.stopped_resident_power_fence(
+                            intent.source_context(),
+                            intent.device(),
+                        )? != Some(fence)
+                }
+                ResidentMainPowerOnInterval::Running(source) => {
+                    self.running_resident_main_power_on(intent.source_context(), intent.device())
+                        != Some(source)
+                }
+            };
+            if changed {
+                return Err("main power-on source changed before preparation".into());
+            }
         }
         self.plugins.compile(
             self.output.as_mut(),
@@ -2310,6 +2322,31 @@ impl WorkerAudioSink for NativeAudioSink {
                 output_identity: actual.output_identity,
             },
         }))
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn running_resident_main_power_on(
+        &mut self,
+        context: AudioSourceContext,
+        device: u64,
+    ) -> Option<hex_session::service::ResidentGraphSubmission> {
+        let control = self.output.as_mut()?.publication.control()?;
+        let actual = control.status.recording_source()?;
+        if actual.context != context
+            || self.resident.powered_off_main(actual) != Some(device)
+            || !control
+                .status
+                .playing
+                .load(std::sync::atomic::Ordering::Acquire)
+            || control.status.native_effect_source().is_some()
+        {
+            return None;
+        }
+        Some(hex_session::service::ResidentGraphSubmission {
+            context,
+            audio_revision: actual.audio_revision,
+            output_identity: actual.output_identity,
+        })
     }
 
     fn stopped_resident_power_fence(

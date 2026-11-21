@@ -2295,6 +2295,15 @@ impl WorkerAudioSink for ResidentSink {
     ) -> Result<Option<hex_session::service::ResidentMainPowerOff>, String> {
         self.inner.running_resident_main_power_off(context, device)
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn running_resident_main_power_on(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+        device: u64,
+    ) -> Option<hex_session::service::ResidentGraphSubmission> {
+        self.inner.running_resident_main_power_on(context, device)
+    }
+
     fn stopped_resident_power_fence(
         &mut self,
         context: AudioSourceContext,

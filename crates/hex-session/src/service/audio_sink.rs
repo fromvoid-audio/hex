@@ -20,7 +20,7 @@ pub struct ResidentEffectPreparation<'a> {
     pub(in crate::service) context: hex_engine::AudioSourceContext,
     pub(in crate::service) restoring_plugin_state: bool,
     pub(in crate::service) preparing_edit: bool,
-    pub(in crate::service) stopped_main_power_on: Option<ResidentMainPowerOn>,
+    pub(in crate::service) main_power_on: Option<ResidentMainPowerOn>,
     pub(in crate::service) running_main_power_off: Option<ResidentMainPowerOff>,
     pub(in crate::service) hosted_instrument_move: Option<ResidentHostedInstrumentMove>,
 }
@@ -45,14 +45,19 @@ pub struct ResidentHostedInstrumentMove {
     pub predecessor: ResidentRuntimeLoop,
 }
 
-/// The explicit stopped PowerDevice command's original nonowning source fence.
-/// Only Session creates this input. Desktop must match its actual Off predecessor
-/// and revalidate the original fence before SDK preparation and publication.
+/// The explicit PowerDevice command's nonowning Off predecessor.
+/// Desktop revalidates the observed interval before fresh SDK preparation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResidentMainPowerOn {
     pub(in crate::service) device: u64,
     pub(in crate::service) source_context: hex_engine::AudioSourceContext,
-    pub(in crate::service) fence: ResidentFreshRuntimeFence,
+    pub(in crate::service) interval: ResidentMainPowerOnInterval,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResidentMainPowerOnInterval {
+    Stopped(ResidentFreshRuntimeFence),
+    Running(ResidentGraphSubmission),
 }
 impl ResidentMainPowerOn {
     pub fn device(&self) -> u64 {
@@ -61,8 +66,8 @@ impl ResidentMainPowerOn {
     pub fn source_context(&self) -> hex_engine::AudioSourceContext {
         self.source_context
     }
-    pub fn fence(&self) -> ResidentFreshRuntimeFence {
-        self.fence
+    pub fn interval(&self) -> ResidentMainPowerOnInterval {
+        self.interval
     }
 }
 
@@ -236,16 +241,23 @@ impl<'a> ResidentEffectPreparation<'a> {
                 == Some(self.context.editor_revision))
         .then_some(intent)
     }
-    /// Only the explicit stopped power command can prepare a fresh On worker.
+    /// Only the explicit power command can prepare a fresh On worker.
     /// Generic history/moves and changed owner, bypass or context cannot use it.
-    pub fn stopped_main_power_on(&self) -> Option<ResidentMainPowerOn> {
-        let intent = self.stopped_main_power_on?;
+    pub fn main_power_on(&self) -> Option<ResidentMainPowerOn> {
+        let intent = self.main_power_on?;
         let device = self.sole_played_main()?;
-        (!device.bypassed()
+        (self.preparing_edit
+            && !device.bypassed()
             && device.id().value() == intent.device
             && intent.source_context.project_generation == self.context.project_generation
             && intent.source_context.editor_revision.checked_add(1)
-                == Some(self.context.editor_revision))
+                == Some(self.context.editor_revision)
+            && match intent.interval {
+                ResidentMainPowerOnInterval::Stopped(_) => true,
+                ResidentMainPowerOnInterval::Running(source) => {
+                    source.context == intent.source_context
+                }
+            })
         .then_some(intent)
     }
     pub fn hosted_instrument_move(&self) -> Option<&ResidentHostedInstrumentMove> {
@@ -1241,6 +1253,15 @@ pub trait WorkerAudioSink: Send {
         _device: u64,
     ) -> Result<Option<ResidentMainPowerOff>, String> {
         Ok(None)
+    }
+
+    /// Observe the exact workerless Off graph of a playing Resident output.
+    fn running_resident_main_power_on(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _device: u64,
+    ) -> Option<ResidentGraphSubmission> {
+        None
     }
 
     /// Actual output/source/revision-bound loop, never the saved loop marker.
@@ -2407,7 +2428,7 @@ mod tests {
                 running_main_power_off,
                 hosted_instrument_move: None,
                 restoring_plugin_state: false,
-                stopped_main_power_on: None,
+                main_power_on: None,
             }
             .running_main_power_off()
         };
@@ -2476,31 +2497,47 @@ mod tests {
         let intent = ResidentMainPowerOn {
             device: device.value(),
             source_context,
-            fence: ResidentFreshRuntimeFence {
+            interval: ResidentMainPowerOnInterval::Stopped(ResidentFreshRuntimeFence {
                 output_identity: 1,
                 active_audio_revision: 2,
                 route_generation: 3,
                 admitted_command_ticket: 4,
                 output_fault_epoch: 5,
                 consumed_stop_generation: 6,
-            },
+            }),
         };
-        let selected = |project: &Project, context, stopped_main_power_on| {
+        let selected = |project: &Project, context, main_power_on| {
             ResidentEffectPreparation {
                 project,
                 context,
                 restoring_plugin_state: false,
                 preparing_edit: true,
-                stopped_main_power_on,
+                main_power_on,
                 running_main_power_off: None,
                 hosted_instrument_move: None,
             }
-            .stopped_main_power_on()
+            .main_power_on()
         };
         assert_eq!(selected(editor.project(), candidate, None), None);
         assert_eq!(
             selected(editor.project(), candidate, Some(intent)),
             Some(intent)
+        );
+        let running = ResidentMainPowerOn {
+            interval: ResidentMainPowerOnInterval::Running(ResidentGraphSubmission {
+                context: source_context,
+                audio_revision: 2,
+                output_identity: 1,
+            }),
+            ..intent
+        };
+        assert_eq!(
+            selected(editor.project(), candidate, Some(running)),
+            Some(running)
+        );
+        assert_eq!(
+            selected(editor.project(), source_context, Some(running)),
+            None
         );
         assert_eq!(
             selected(editor.project(), source_context, Some(intent)),
@@ -2551,7 +2588,7 @@ mod tests {
                 },
                 restoring_plugin_state: false,
                 preparing_edit: false,
-                stopped_main_power_on: None,
+                main_power_on: None,
                 running_main_power_off: None,
                 hosted_instrument_move: None,
             }
@@ -2613,7 +2650,7 @@ mod tests {
                 },
                 restoring_plugin_state: false,
                 preparing_edit: false,
-                stopped_main_power_on: None,
+                main_power_on: None,
                 running_main_power_off: None,
                 hosted_instrument_move: None,
             }
@@ -2829,7 +2866,7 @@ mod tests {
                 },
                 restoring_plugin_state: false,
                 preparing_edit: true,
-                stopped_main_power_on: None,
+                main_power_on: None,
                 running_main_power_off: None,
                 hosted_instrument_move: None,
             }
@@ -2939,7 +2976,7 @@ mod tests {
             },
             restoring_plugin_state: false,
             preparing_edit: true,
-            stopped_main_power_on: None,
+            main_power_on: None,
             running_main_power_off: None,
             hosted_instrument_move: None,
         };
@@ -2994,7 +3031,7 @@ mod tests {
                 },
                 restoring_plugin_state: reopen,
                 preparing_edit: !reopen,
-                stopped_main_power_on: None,
+                main_power_on: None,
                 running_main_power_off: None,
                 hosted_instrument_move: None,
             }

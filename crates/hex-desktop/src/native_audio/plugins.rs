@@ -1295,7 +1295,7 @@ impl Plugins {
             .map(Some);
         }
         let powering_on = input
-            .stopped_main_power_on()
+            .main_power_on()
             .filter(|intent| powered_off == Some(intent.device()))
             .map(|intent| intent.device());
         let mut output = output;

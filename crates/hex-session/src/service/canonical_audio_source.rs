@@ -310,7 +310,7 @@ impl CanonicalAudioSourceSnapshot {
             context: self.context,
             restoring_plugin_state: false,
             preparing_edit: false,
-            stopped_main_power_on: None,
+            main_power_on: None,
             running_main_power_off: None,
             hosted_instrument_move: None,
         }
