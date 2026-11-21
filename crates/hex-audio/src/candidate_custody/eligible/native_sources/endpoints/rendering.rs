@@ -57,6 +57,7 @@ impl NativeEndpointBank {
     pub(crate) fn settled_main_pass_delay(
         &self,
         binding: Binding,
+        frames: u32,
     ) -> Result<Option<hex_lattice::MainPassDelay>, DeviceContractError> {
         if self.cycle.revoked() {
             return Err(DeviceContractError::ForeignProcessingUnavailable);
@@ -70,7 +71,7 @@ impl NativeEndpointBank {
             .as_ref()
             .and_then(|entry| entry.0.callback.as_ref())
             .ok_or(DeviceContractError::ForeignProcessingUnavailable)?;
-        endpoint.settled_main_pass_delay()
+        endpoint.settled_main_pass_delay(frames)
     }
     pub(crate) fn begin_rendering(&mut self, frames: usize) -> Result<(), Fault> {
         let Some(quantum) = self.quantum_frames() else {

@@ -95,6 +95,7 @@ pub use resources::{
 use runtime_ownership::RuntimeOwnership;
 use std::any::Any as StdAny;
 use std::fmt;
+use std::num::NonZeroU32;
 
 mod analytic_continuation;
 pub use analytic_continuation::{
@@ -175,6 +176,18 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
         _context: &DevicePreparationContext<'_>,
     ) -> Result<NativeDeviceState, DeviceContractError> {
         self.migrate_state(state)
+    }
+
+    /// Resolve a witnessed hosted instrument receiver to the physical source
+    /// identity whose facts the provider already owns. Ordinary preparation
+    /// keeps the canonical identity. This grants no endpoint or runtime access.
+    fn retained_foreign_instrument_identity(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        _state: &NativeDeviceState,
+        _context: &DevicePreparationContext<'_>,
+    ) -> Result<ProcessorInstanceIdentity, DeviceContractError> {
+        Ok(identity)
     }
 
     /// Control-side selection for one canonical chain/device. Instance-bound
@@ -1353,7 +1366,7 @@ pub struct NativeRemovalTransition {
     position: usize,
     identity: ProcessorInstanceIdentity,
     authored_bypass: bool,
-    foreign_main_pass: Option<hex_lattice_contract::ForeignProcessorBinding>,
+    foreign_main_pass: Option<(hex_lattice_contract::ForeignProcessorBinding, NonZeroU32)>,
 }
 
 impl NativeRemovalTransition {
@@ -1361,18 +1374,18 @@ impl NativeRemovalTransition {
         self.identity
     }
 
-    /// The exact endpoint that owns this Main stage's aligned fade and history.
-    pub fn foreign_main_pass_binding(
-        self,
-    ) -> Option<hex_lattice_contract::ForeignProcessorBinding> {
+    /// The exact endpoint and frame count of this Main stage's aligned history.
+    pub fn foreign_main_pass(self) -> Option<(hex_lattice_contract::ForeignProcessorBinding, u32)> {
         self.foreign_main_pass
+            .map(|(binding, frames)| (binding, frames.get()))
     }
 
     fn matches(self, entry: &RuntimeEntry) -> bool {
         entry.owner == self.identity.owner() && entry.device_id == self.identity.device_id()
-            && self.foreign_main_pass.is_none_or(|binding| {
+            && self.foreign_main_pass().is_none_or(|(binding, frames)| {
                 matches!(&entry.runtime,
-                    RuntimeOwnership::Foreign(runtime) if runtime.prepared.binding() == Some(binding))
+                    RuntimeOwnership::Foreign(runtime) if runtime.prepared.binding() == Some(binding)
+                        && runtime.prepared.total_latency_frames() == frames)
             })
     }
 }
@@ -2823,11 +2836,17 @@ impl NativeRuntimeChain {
                     || prepared.is_instrument_profile()
                     || prepared.quantum_frames() != 256
                     || prepared.bridge_latency_frames() != 512
-                    || prepared.processor_latency_frames() != 0
                 {
                     return None;
                 }
-                (512, Some(prepared.binding()?))
+                match prepared.processor_latency_frames() {
+                    0 => {}
+                    // Only deletion has been admitted for the seven-frame profile.
+                    7 if self.is_empty() => {}
+                    _ => return None,
+                }
+                let frames = NonZeroU32::new(prepared.total_latency_frames())?;
+                (frames.get(), Some((prepared.binding()?, frames)))
             }
             _ => (
                 entry
@@ -4699,6 +4718,19 @@ impl<'a> NativeDeviceRegistry<'a> {
                 .with_host_metadata_from(state)?,
         )
     }
+    /// Read the provider's physical identity for a compiler-proven instrument route.
+    pub fn retained_foreign_instrument_identity(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &DevicePreparationContext<'_>,
+    ) -> Result<ProcessorInstanceIdentity, DeviceContractError> {
+        context.validate_for(state)?;
+        self.definition(state.type_id())
+            .ok_or(DeviceContractError::WrongDeviceType)?
+            .retained_foreign_instrument_identity(identity, state, context)
+    }
+
     /// Validate instance-bound runtime state without changing canonical state.
     pub fn prepare_instance_state(
         &self,

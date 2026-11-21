@@ -82,10 +82,10 @@ impl Callback {
             return Ok(false);
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        if let Some(binding) = next.playback.pending_foreign_main_pass_binding() {
+        if let Some((binding, frames)) = next.playback.pending_foreign_main_pass() {
             let Some(delay) = self
                 .native_sources
-                .settled_main_pass_delay(binding)
+                .settled_main_pass_delay(binding, frames)
                 .map_err(|_| PlaybackHandoffRejection::RuntimeFenceChanged)?
             else {
                 return Ok(false);

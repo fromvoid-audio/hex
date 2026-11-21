@@ -159,6 +159,7 @@ enum Reroute {
     EnterWithUpstreamDelay,
     EnterFromAboveWithUpstreamDelay,
     ExitWithUpstreamDelay,
+    ExitAboveWithUpstreamDelay,
     MoveToEnclosingGroupWithUpstreamDelay,
     MoveIntoNestedGroupWithUpstreamDelay,
 }
@@ -346,6 +347,19 @@ fn group_exit_preserves_pending_group_alignment_while_the_direct_edge_starts_emp
 }
 
 #[test]
+fn shifting_a_leaf_up_out_of_a_group_preserves_its_old_aligned_sum() -> Result {
+    for partition in [1, 257] {
+        route_cut(
+            partition,
+            Terminal::Install,
+            true,
+            Reroute::ExitAboveWithUpstreamDelay,
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
 fn moving_a_nested_leaf_to_its_enclosing_group_preserves_pending_alignment() -> Result {
     for partition in [1, 257] {
         route_cut(
@@ -380,10 +394,14 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
             | Reroute::ExitNested
             | Reroute::ExitAbove
             | Reroute::ExitWithUpstreamDelay
+            | Reroute::ExitAboveWithUpstreamDelay
     );
     let moves_from_above = matches!(
         reroute,
-        Reroute::EnterFromAbove | Reroute::ExitAbove | Reroute::EnterFromAboveWithUpstreamDelay
+        Reroute::EnterFromAbove
+            | Reroute::ExitAbove
+            | Reroute::EnterFromAboveWithUpstreamDelay
+            | Reroute::ExitAboveWithUpstreamDelay
     );
     let between_groups = matches!(reroute, Reroute::BetweenGroups);
     let moves_to_enclosing = matches!(reroute, Reroute::MoveToEnclosingGroupWithUpstreamDelay);
@@ -397,6 +415,7 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
         Reroute::EnterWithUpstreamDelay
             | Reroute::EnterFromAboveWithUpstreamDelay
             | Reroute::ExitWithUpstreamDelay
+            | Reroute::ExitAboveWithUpstreamDelay
             | Reroute::MoveToEnclosingGroupWithUpstreamDelay
             | Reroute::MoveIntoNestedGroupWithUpstreamDelay
     );

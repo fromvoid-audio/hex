@@ -1552,6 +1552,27 @@ impl Playback {
         })
     }
 
+    /// Observe an instrument's physical identity at an exact canonical track
+    /// in this prepared graph. Neither identity grants native source custody.
+    pub fn foreign_instrument_binding_on_control(
+        &self,
+        track: hex_project::TrackId,
+        device: hex_project::DeviceId,
+    ) -> Option<(
+        hex_lattice::ProcessorChainOwner,
+        hex_lattice_contract::ForeignProcessorBinding,
+    )> {
+        let node = self
+            .project
+            .tracks()
+            .iter()
+            .find(|row| row.canonical_track_id() == Some(track))?
+            .foreign_instrument
+            .as_ref()
+            .filter(|node| node.device_id == device.value() && !node.bypassed)?;
+        Some((node.owner, node.foreign_processor()?.binding()?))
+    }
+
     /// Observe actual current and committed release-tail foreign bindings.
     /// The audio owner uses this bounded scalar visit before exposing a graph
     /// return; copied immutable revision facts alone omit migrated tails.
@@ -2520,13 +2541,11 @@ impl Playback {
             .is_some_and(crate::SessionPlayback::native_removal_pending)
     }
 
-    /// Exact ordinary endpoint whose settled dry PCM is needed at this cut.
-    pub fn pending_foreign_main_pass_binding(
+    /// Exact active endpoint and settled dry PCM length needed at this cut.
+    pub fn pending_foreign_main_pass(
         &self,
-    ) -> Option<hex_lattice_contract::ForeignProcessorBinding> {
-        self.session_runtime
-            .as_deref()?
-            .pending_foreign_main_pass_binding()
+    ) -> Option<(hex_lattice_contract::ForeignProcessorBinding, u32)> {
+        self.session_runtime.as_deref()?.pending_foreign_main_pass()
     }
 
     /// Supply a value-only snapshot from the active endpoint after host acceptance.
