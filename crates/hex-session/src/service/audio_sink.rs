@@ -593,7 +593,7 @@ pub enum ResidentPublicationPolicy {
     DeviceInsert {
         predecessor: ResidentRuntimeLoop,
         hosted: bool,
-        /// A power receipt is restricted to this original settled Stop interval.
+        /// A stopped-only edit must retain this original settled Stop interval.
         stopped_fence: Option<ResidentFreshRuntimeFence>,
         /// Exact seamless refusal whose interruption the user approved.
         confirmation: Option<ResidentGraphSubmission>,
@@ -1224,7 +1224,8 @@ pub trait WorkerAudioSink: Send {
     fn resident_publication_readiness(&mut self) -> ResidentPublicationReadiness {
         ResidentPublicationReadiness::NoOutput
     }
-    /// Observe the exact installed source only in a settled Stop interval.
+    /// Observe the exact Main device and source in a settled Stop interval for
+    /// stopped power or replacement history.
     /// This grants no custody; publication must revalidate the complete witness.
     fn stopped_resident_power_fence(
         &mut self,

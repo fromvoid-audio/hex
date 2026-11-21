@@ -55,21 +55,10 @@ pub(super) fn replaces_chain_leaf(
     before_chain: &[Device],
     after_chain: &[Device],
 ) -> bool {
-    if before_chain.len() != after_chain.len() {
-        return false;
-    }
-    let Some((old, new)) = before_chain
-        .iter()
-        .zip(after_chain)
-        .find(|(old, new)| old.id() != new.id())
-    else {
+    let Some((old, new)) = replacement_leaves(before_chain, after_chain) else {
         return false;
     };
-    if !is_hosted_leaf(before_chain, old)
-        || !is_hosted_leaf(after_chain, new)
-        || after.device(old.id()).is_some()
-        || before.device(new.id()).is_some()
-    {
+    if after.device(old.id()).is_some() || before.device(new.id()).is_some() {
         return false;
     }
     let Some(without_old) = without_effect(before, old.id()) else {
@@ -77,6 +66,22 @@ pub(super) fn replaces_chain_leaf(
     };
     without_effect(after, new.id())
         .is_some_and(|without| without.project() == without_old.project())
+}
+
+/// Find a candidate at the first changed ordinal without cloning either project.
+/// Callers must still prove whole-project equivalence before admitting history.
+pub(super) fn replacement_leaves<'a>(
+    before: &'a [Device],
+    after: &'a [Device],
+) -> Option<(&'a Device, &'a Device)> {
+    if before.len() != after.len() {
+        return None;
+    }
+    let (old, new) = before
+        .iter()
+        .zip(after)
+        .find(|(old, new)| old.id() != new.id())?;
+    (is_hosted_leaf(before, old) && is_hosted_leaf(after, new)).then_some((old, new))
 }
 
 fn is_hosted_leaf(chain: &[Device], device: &Device) -> bool {
