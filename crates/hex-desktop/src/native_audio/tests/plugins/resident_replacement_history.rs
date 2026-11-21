@@ -37,8 +37,10 @@ fn stopped_resident_main_vst3_replacement_undo_waits_for_its_exact_receipt() {
     let [old] = original.state.project.main_devices() else {
         panic!("original Main slot");
     };
-    let binding =
-        |h: &ResidentHarness| h.plugin_progress.lock().unwrap().source_bindings[0].unwrap();
+    let binding = |h: &ResidentHarness| {
+        let (device, binding, _) = h.plugin_progress.lock().unwrap().source_bindings[0].unwrap();
+        (device, binding)
+    };
     let old_binding = binding(&h).1;
     let source = |h: &ResidentHarness| status(h).recording_source().unwrap();
 
@@ -137,7 +139,10 @@ fn stopped_resident_main_vst3_replacement_undo_waits_for_its_exact_receipt() {
     assert_incumbent(&h);
     let (id, fresh, accepted) = h.plugin_progress.lock().unwrap().newest_source.unwrap();
     assert_eq!(id, old.id().value());
-    assert!(!accepted);
+    assert!(
+        !accepted,
+        "restored worker was accepted before the callback"
+    );
     assert_ne!(fresh, old_binding);
     assert_ne!(fresh, incumbent.1);
     enqueue.send(()).unwrap();
