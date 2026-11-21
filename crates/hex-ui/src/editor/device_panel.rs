@@ -1579,7 +1579,6 @@ fn render_track(
                     && device.state().type_id().as_str() == Ok("hex.instrument.sampler"),
                 replace_vst3: class == NativeDeviceClass::Effect
                     && device.state().type_id() == hex_lattice_contract::VST3_DEVICE_TYPE_ID
-                    && view.document_audio_mode == hex_session::DocumentAudioMode::Resident
                     && view
                         .active_native_device_drag
                         .as_ref()
@@ -3221,7 +3220,6 @@ impl EditorView {
             let (valid_target, message) = if drag.source.is_catalog_vst3_effect() {
                 (
                     track == drop_target.track
-                        && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
                         && is_track_vst3_replacement_leaf(target_track, replacement),
                     "effect replacement target changed · drag again",
                 )
