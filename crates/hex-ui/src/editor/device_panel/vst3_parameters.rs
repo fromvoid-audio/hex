@@ -1944,6 +1944,11 @@ fn render_body(view: &mut EditorView, device: DeviceId, cx: &mut Context<EditorV
                 }),
         )
         .child(field);
+    let follow_target = follow
+        .as_ref()
+        .and(row)
+        .filter(|_| panel.pending_touch.is_none() && panel.queued_touch.is_none())
+        .map(|row| (panel.query, row.id));
     let control = follow.or_else(|| panel.placeholder_knob.clone());
     let control = control.map_or_else(
         || {
@@ -1966,6 +1971,15 @@ fn render_body(view: &mut EditorView, device: DeviceId, cx: &mut Context<EditorV
                 .flex_shrink_0()
                 .child(control)
                 .when(follow_automated, automation_tint::mark)
+                .when_some(follow_target, |item, (query, parameter)| {
+                    item.capture_any_mouse_down(cx.listener(
+                        move |view, event: &gpui::MouseDownEvent, _, cx| {
+                            if event.button == gpui::MouseButton::Left {
+                                select_host_automation_lane(view, query, parameter, cx);
+                            }
+                        },
+                    ))
+                })
         },
     );
     let controls = div()
@@ -2132,7 +2146,14 @@ fn render_body(view: &mut EditorView, device: DeviceId, cx: &mut Context<EditorV
                                                     .children(mapping)
                                                     .when(automated, automation_tint::mark)
                                                     .when(row.automation_class.is_some(), |item| {
-                                                        item.on_mouse_down(
+                                                        let press_editor = row_editor.clone();
+                                                        item.capture_any_mouse_down(move |event, _, app| {
+                                                            if event.button == gpui::MouseButton::Left {
+                                                                let _ = press_editor.update(app, |view, cx| {
+                                                                    select_host_automation_lane(view, query, row_id, cx);
+                                                                });
+                                                            }
+                                                        }).on_mouse_down(
                                                             gpui::MouseButton::Right,
                                                             move |event, window, app| {
                                                                 let _ = row_editor.update(
@@ -2257,6 +2278,42 @@ fn follow_display(
         Some(row),
         status,
     )
+}
+
+fn select_host_automation_lane(
+    view: &mut EditorView,
+    query: PluginParameterQuery,
+    parameter: u32,
+    cx: &mut Context<EditorView>,
+) {
+    if view.stopped_playback_restore.is_some() || current_context(view) != Some(query.context) {
+        return;
+    }
+    let Some(panel) = view.device_panel.vst3_parameters.panels.get(&query.device) else {
+        return;
+    };
+    if Some(panel.owner) != view.device_panel.owner
+        || panel.query.context != query.context
+        || panel.query.output_identity != query.output_identity
+        || !panel.source.is_some_and(|source| source.is_valid())
+    {
+        return;
+    }
+    let Some(row) = panel.rows().and_then(|rows| {
+        rows.iter().find(|row| {
+            row.id == parameter
+                && row.editable
+                && row.metadata_revision != 0
+                && row.automation_class.is_some()
+        })
+    }) else {
+        return;
+    };
+    // A copied row can select the lane, while parameter edits still require
+    // the active host gesture and applied source.
+    let owner = panel.owner;
+    let row = row.clone();
+    view.select_vst3_automation_parameter(owner, query.device, &row, cx);
 }
 
 fn show_automation_menu(

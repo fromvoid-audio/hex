@@ -764,20 +764,21 @@ impl EditorView {
         &mut self,
         device: DeviceId,
         kind: DeviceAutomationTarget,
-    ) {
+    ) -> bool {
         let Some(owner) = self.device_panel.owner else {
-            return;
+            return false;
         };
         let Some(state) = &self.state else {
-            return;
+            return false;
         };
         let Some(entry) = Entry::read(&state.project, self.project_generation, owner, device, kind)
         else {
-            return;
+            return false;
         };
         let main = &mut self.automation_view.devices.main;
         main.retain(|old| old.target.owner != owner);
         main.push(entry);
+        true
     }
 
     pub(super) fn open_parameter_automation_menu(

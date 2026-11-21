@@ -63,9 +63,30 @@ impl EditorView {
             cx.notify();
             return false;
         };
+        self.install_vst3_lane(entry, cx);
+        true
+    }
+
+    /// Select a valid hosted parameter from the device panel without clearing
+    /// the current lane if the captured row no longer resolves.
+    pub(in crate::editor) fn select_vst3_automation_parameter(
+        &mut self,
+        owner: Owner,
+        device: DeviceId,
+        row: &PluginParameterRow,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(entry) = self.state.as_ref().and_then(|state| {
+            Entry::vst3(&state.project, self.project_generation, owner, device, row)
+        }) {
+            self.install_vst3_lane(entry, cx);
+        }
+    }
+
+    fn install_vst3_lane(&mut self, entry: Entry, cx: &mut Context<Self>) {
         let target = entry.target;
         let lanes = &mut self.automation_view.devices;
-        lanes.main.retain(|old| old.target.owner != owner);
+        lanes.main.retain(|old| old.target.owner != target.owner);
         lanes.main.push(entry.clone());
         for extra in lanes
             .extra
@@ -83,7 +104,6 @@ impl EditorView {
             self.track_scroll.remeasure();
         }
         cx.notify();
-        true
     }
 
     /// Install an accepted plugin commit into existing transient lane entries.
