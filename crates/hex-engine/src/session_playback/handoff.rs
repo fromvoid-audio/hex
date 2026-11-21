@@ -5460,6 +5460,7 @@ impl SessionPlayback {
             release.location = ReleaseLocation::new(usize::MAX, Some(group))?;
         }
 
+        let mut native_reorder_cut = None;
         // A source can be silent while its committed effect suffix still has
         // delayed or recursive output. Retain a detached old suffix even when
         // no MIDI release owner is available to carry it. Track gain, balance,
@@ -5521,6 +5522,9 @@ impl SessionPlayback {
                     .and_then(|pending| pending.reordered_track(previous))
                     == Some(old_route.id)
                     && candidate_chain.is_exact_native_reorder_from(old_chain);
+                if staged_reorder {
+                    native_reorder_cut = Some(old_index);
+                }
                 let exact_chain_configuration = old_chain.len() == candidate_chain.len()
                     && configuration_matches_continuation(
                         old_chain,
@@ -6553,7 +6557,9 @@ impl SessionPlayback {
             }
         }
         for (old_index, _) in previous.routes.iter().enumerate() {
-            if ends_verified_group_history(old_index) {
+            // These staged cuts end the predecessor DSP. Keep its history
+            // with the old graph for control-side retirement.
+            if ends_verified_group_history(old_index) || native_reorder_cut == Some(old_index) {
                 continue;
             }
             let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
