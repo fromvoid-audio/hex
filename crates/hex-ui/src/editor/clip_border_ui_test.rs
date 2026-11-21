@@ -274,6 +274,21 @@ fn narrow_audio_and_midi_clips_paint_as_joined_color_bars(cx: &mut TestAppContex
         let Created::Clip(clip) = canonical.execute(command).unwrap() else {
             panic!("clip");
         };
+        if i == 15 {
+            let tempo = canonical.project().tempo_map();
+            let start = tempo.frame_to_beat(frame).unwrap();
+            let end = tempo.frame_to_beat(frame + 190).unwrap();
+            canonical
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start: BeatTime::ZERO,
+                    duration: BeatTime::from_raw(end.raw() - start.raw()),
+                    pitch: 60,
+                    channel: 0,
+                    velocity: 100,
+                })
+                .unwrap();
+        }
         canonical
             .execute(Command::SetClipFlavor {
                 clip,
@@ -326,7 +341,7 @@ fn narrow_audio_and_midi_clips_paint_as_joined_color_bars(cx: &mut TestAppContex
         "keep the gap visible"
     );
     let first = clips[0];
-    let midi = clips[8];
+    let midi = clips[15];
     let audio_visual = Box::leak(format!("clip-visual-{}", first.value()).into_boxed_str());
     let midi_visual = Box::leak(format!("midi-clip-visual-{}", midi.value()).into_boxed_str());
     let audio_edge = Box::leak(format!("clip-trailing-{}", first.value()).into_boxed_str());
@@ -350,10 +365,39 @@ fn narrow_audio_and_midi_clips_paint_as_joined_color_bars(cx: &mut TestAppContex
             .any(|(_, fill)| { *fill == gpui::rgb(selected).into() })
     );
 
-    set_view(&mut visual, 23_000, 10_000);
-    assert!(visual.debug_bounds(bars).is_none());
-    assert!(visual.debug_bounds(audio_edge).is_some());
-    assert!(visual.debug_bounds(midi_edge).is_some());
+    let lane_width = editor.read_with(&visual, |view, _| view.drag_lanes[&track].width);
+    let notes = Box::leak(format!("clip-notes-{}", midi.value()).into_boxed_str());
+    for (width, shows_detail) in [(12.0, false), (36.0, true), (12.0, false)] {
+        let length = (200.0 * lane_width / width).round() as u64;
+        set_view(&mut visual, 24_000, length);
+        if shows_detail {
+            assert!(visual.debug_bounds(bars).is_none());
+        }
+        assert!(visual.debug_bounds(audio_edge).is_some());
+        assert!(visual.debug_bounds(midi_edge).is_some());
+        let bounds = visual.debug_bounds(audio_visual).unwrap();
+        assert!((f32::from(bounds.size.width) - width).abs() < 1.0);
+        assert_eq!(
+            visual.debug_bounds("clip-waveform-body").is_some(),
+            shows_detail
+        );
+        assert_eq!(visual.debug_bounds(notes).is_some(), shows_detail);
+        assert_eq!(
+            editor.read_with(&visual, |view, _| view.selected_clip()),
+            Some(first)
+        );
+    }
+
+    let length = (200.0 * lane_width / 36.0).round() as u64;
+    let clip_width = |visual: &mut VisualTestContext, selector| {
+        f32::from(visual.debug_bounds(selector).unwrap().size.width)
+    };
+    set_view(&mut visual, 24_067 - length, length);
+    assert!((clip_width(&mut visual, audio_visual) - 12.0).abs() < 1.0);
+    assert!(visual.debug_bounds("clip-waveform-body").is_some());
+    set_view(&mut visual, 27_133, length);
+    assert!((clip_width(&mut visual, midi_visual) - 12.0).abs() < 1.0);
+    assert!(visual.debug_bounds(notes).is_some());
 }
 
 #[gpui::test]
