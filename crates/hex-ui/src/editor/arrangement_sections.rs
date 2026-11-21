@@ -5013,6 +5013,117 @@ pub(super) mod tests {
         assert_eq!(midi_clip_bounds(&mut visual, &committed), released);
     }
     #[gpui::test]
+    fn backspace_deletes_section_with_device_automation_and_undo_restores_it(
+        cx: &mut TestAppContext,
+    ) {
+        use hex_lattice_contract::{DeviceAutomationTarget, DeviceTypeId};
+        use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue};
+
+        let (handle, editor, [intro, chorus]) = fixture(cx);
+        let beat = |n| BeatTime::from_quarters(n).unwrap();
+        let automation_point = |at, value| AutomationPoint {
+            beat: beat(at),
+            value: AutomationValue::new(value).unwrap(),
+            outgoing: AutomationInterpolation::Step,
+        };
+        let target = DeviceAutomationTarget::HostInputGain;
+        let (device, mut before) = editor.update(cx, |v, cx| {
+            let track = v.state.as_ref().unwrap().project.tracks()[0].id();
+            let state =
+                hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.utility"))
+                    .unwrap();
+            v.service
+                .submit(Request::Edit(Command::InsertDevice {
+                    track,
+                    before: None,
+                    state,
+                }))
+                .unwrap();
+            let event = next(&v.service);
+            assert!(event.error.is_none(), "{:?}", event.error);
+            let Some(Created::Device(device)) = event.created else {
+                panic!("device result")
+            };
+            v.receive(event);
+            v.service
+                .submit(Request::Edit(Command::ReplaceDeviceAutomationTarget {
+                    device,
+                    target,
+                    points: vec![
+                        automation_point(0, 0.25),
+                        automation_point(9, 0.5),
+                        automation_point(12, 0.75),
+                        automation_point(14, 1.0),
+                    ],
+                }))
+                .unwrap();
+            let event = next(&v.service);
+            assert!(event.error.is_none(), "{:?}", event.error);
+            let before = event.state.project.snapshot();
+            v.receive(event);
+            cx.notify();
+            (device, before)
+        });
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let _ = bounds(&mut visual, 1);
+        let down = editor.read_with(cx, |v, _| position(v, 10));
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("backspace");
+        let event = editor.update(cx, |v, _| next(&v.service));
+        assert!(
+            event.error.is_none(),
+            "section Backspace: {:?}",
+            event.error
+        );
+        let project = &event.state.project;
+        assert!(project.arrangement_section(chorus).is_none());
+        assert!(project.arrangement_section(intro).is_some());
+        assert_eq!(
+            project.tracks()[0]
+                .midi_clips()
+                .iter()
+                .map(|clip| clip.start().raw() + clip.length().raw())
+                .max(),
+            Some(beat(12).raw()),
+        );
+        let lane = project
+            .device(device)
+            .unwrap()
+            .automation_target(target)
+            .unwrap();
+        assert_eq!(
+            lane.points,
+            [
+                automation_point(0, 0.25),
+                automation_point(8, 0.75),
+                automation_point(10, 1.0),
+            ]
+        );
+        editor.update(cx, |v, cx| {
+            v.receive(event);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("arrangement-section-1").is_none());
+
+        visual.simulate_keystrokes("cmd-z");
+        let event = editor.update(cx, |v, _| next(&v.service));
+        assert!(event.error.is_none(), "{:?}", event.error);
+        let restored = event.state.project.snapshot();
+        assert!(restored.next_id >= before.next_id);
+        before.next_id = restored.next_id;
+        assert_eq!(restored, before);
+        editor.update(cx, |v, cx| {
+            v.receive(event);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let _ = bounds(&mut visual, 1);
+    }
+
+    #[gpui::test]
     fn section_name_palette_delete_and_text_focus_are_guarded(cx: &mut TestAppContext) {
         let (handle, editor, ids) = fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
