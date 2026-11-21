@@ -45,11 +45,14 @@ fn assert_loop_pcm(h: &ResidentHarness, level: f32) -> [hex_engine::Frame; 64] {
 // Native fixture parameters are uninhabited on targets without the host; the
 // portable harness can still use its ordinary constructor with None.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-type PluginFixture = (
-    hex_audio::plugin_effects::Hosting,
-    Option<hex_audio::plugin_effects::EffectPresentation>,
-    Option<hex_diagnostics::DiagnosticsHandle>,
-);
+enum PluginFixture {
+    Signed(
+        Box<hex_audio::plugin_effects::Hosting>,
+        Option<hex_audio::plugin_effects::EffectPresentation>,
+        Option<hex_diagnostics::DiagnosticsHandle>,
+    ),
+    MissingCatalog,
+}
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 enum PluginFixture {}
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -2691,6 +2694,19 @@ impl ResidentHarness {
         )
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn without_plugin_catalog_configuration() -> Self {
+        Self::with_plugin_fixture(
+            8192,
+            Arc::new(AtomicBool::new(true)),
+            4,
+            48_000,
+            Some(PluginFixture::MissingCatalog),
+            None,
+            None,
+            None,
+        )
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn with_plugins(
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
@@ -2717,7 +2733,11 @@ impl ResidentHarness {
             Arc::new(AtomicBool::new(true)),
             4,
             rate,
-            Some((host, presentation, diagnostics)),
+            Some(PluginFixture::Signed(
+                Box::new(host),
+                presentation,
+                diagnostics,
+            )),
             None,
             None,
             None,
@@ -2735,7 +2755,7 @@ impl ResidentHarness {
             Arc::new(AtomicBool::new(true)),
             4,
             48_000,
-            Some((host, presentation, None)),
+            Some(PluginFixture::Signed(Box::new(host), presentation, None)),
             Some(facts),
             catalog,
             None,
@@ -2762,7 +2782,11 @@ impl ResidentHarness {
             Arc::new(AtomicBool::new(true)),
             4,
             rate,
-            Some((host, presentation, Some(diagnostics))),
+            Some(PluginFixture::Signed(
+                Box::new(host),
+                presentation,
+                Some(diagnostics),
+            )),
             None,
             Some(catalog),
             None,
@@ -2781,7 +2805,7 @@ impl ResidentHarness {
             Arc::new(AtomicBool::new(true)),
             4,
             rate,
-            Some((host, presentation, None)),
+            Some(PluginFixture::Signed(Box::new(host), presentation, None)),
             None,
             Some(catalog),
             None,
@@ -2801,7 +2825,7 @@ impl ResidentHarness {
             Arc::new(AtomicBool::new(true)),
             4,
             rate,
-            Some((host, presentation, None)),
+            Some(PluginFixture::Signed(Box::new(host), presentation, None)),
             None,
             Some(catalog),
             Some(recovery),
@@ -2820,7 +2844,10 @@ impl ResidentHarness {
     ) -> Self {
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         assert!(plugin.is_none() && facts_gate.is_none() && catalog.is_none());
-        let native_plugins = plugin.is_some();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let native_plugins = matches!(plugin, Some(PluginFixture::Signed(..)));
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let native_plugins = false;
         let allow_unavailable = !gate.load(Acquire);
         let (sender, events) = mpsc::sync_channel(capacity);
         let callback = Arc::new(Mutex::new(None));
@@ -2839,11 +2866,17 @@ impl ResidentHarness {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let plugin_failure = Arc::new(Mutex::new(None));
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        if let Some((host, presentation, diagnostics)) = plugin {
-            inner.plugins = crate::native_audio::plugins::Plugins::with_fixture(host, presentation);
-            inner.plugins.set_diagnostics(diagnostics);
-            inner.plugins.catalog = catalog;
-            inner.plugins.facts_gate = facts_gate;
+        if let Some(plugin) = plugin {
+            match plugin {
+                PluginFixture::Signed(host, presentation, diagnostics) => {
+                    inner.plugins =
+                        crate::native_audio::plugins::Plugins::with_fixture(*host, presentation);
+                    inner.plugins.set_diagnostics(diagnostics);
+                    inner.plugins.catalog = catalog;
+                    inner.plugins.facts_gate = facts_gate;
+                }
+                PluginFixture::MissingCatalog => inner.plugins.initialize_for_home(None),
+            }
             inner.plugins.progress = Some(Arc::clone(&plugin_progress));
             inner.plugins.failure_observation = Some(Arc::clone(&plugin_failure));
             // This optional Session-poll diagnostic can lag actual DSP replies.

@@ -281,6 +281,21 @@ pub(super) struct Plugins {
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(super) failure_observation: Option<Arc<std::sync::Mutex<Option<String>>>>,
 }
+
+pub(super) fn catalog_path_from_home(home: &std::path::Path) -> Option<std::path::PathBuf> {
+    let path = hex_preferences::browser_places_path(home).with_file_name("plugin-catalog.json");
+    if path.as_os_str().len() > 4096 {
+        return None;
+    }
+    if path.is_absolute() {
+        return Some(path);
+    }
+    // Browser opens this relative path from the same process directory.
+    // Preserve catalog storage's own existence and symlink checks.
+    let absolute = std::path::absolute(path).ok()?;
+    (absolute.as_os_str().len() <= 4096).then_some(absolute)
+}
+
 impl Plugins {
     pub fn set_diagnostics(&mut self, log: Option<hex_diagnostics::DiagnosticsHandle>) {
         self.diagnostics = log;
@@ -302,24 +317,28 @@ impl Plugins {
         if self.initialized {
             return;
         }
+        let home = std::env::var_os("HOME");
+        self.initialize_for_home(home.as_deref().map(std::path::Path::new));
+    }
+
+    pub(super) fn initialize_for_home(&mut self, home: Option<&std::path::Path>) {
         self.initialized = true;
-        self.catalog = std::env::var_os("HOME")
-            .map(|home| {
-                hex_preferences::browser_places_path(std::path::Path::new(&home))
-                    .with_file_name("plugin-catalog.json")
-            })
-            .filter(|path| path.is_absolute() && path.as_os_str().len() <= 4096);
-        let preferences = std::env::var_os("HOME")
-            .map(|home| hex_preferences::vst3_editor_preferences_path(std::path::Path::new(&home)))
-            .map_or_else(hex_preferences::Vst3EditorPreferences::default, |path| {
-                match hex_preferences::load_vst3_editor_preferences(&path) {
-                    Ok(preferences) => preferences,
-                    Err(error) => {
-                        eprintln!("could not load vst3 editor preferences: {error}");
-                        hex_preferences::Vst3EditorPreferences::default()
-                    }
-                }
-            });
+        let Some((home, catalog)) =
+            home.and_then(|home| catalog_path_from_home(home).map(|catalog| (home, catalog)))
+        else {
+            self.unavailable =
+                Some("vst3 catalog path unavailable · configure a valid home folder".into());
+            return;
+        };
+        self.catalog = Some(catalog);
+        let path = hex_preferences::vst3_editor_preferences_path(home);
+        let preferences = match hex_preferences::load_vst3_editor_preferences(&path) {
+            Ok(preferences) => preferences,
+            Err(error) => {
+                eprintln!("could not load vst3 editor preferences: {error}");
+                hex_preferences::Vst3EditorPreferences::default()
+            }
+        };
         self.transport_space = preferences.spacebar_controls_transport;
         match Hosting::current_on_control() {
             Ok(host) => {
@@ -1656,6 +1675,31 @@ fn advance_source_at_progress(
 #[cfg(test)]
 mod idle_tests {
     use super::*;
+
+    #[test]
+    fn unusable_catalog_configuration_precedes_host_initialization() {
+        let oversized = "a".repeat(4096);
+        for home in [None, Some(oversized.as_str())] {
+            let mut plugins = Plugins::default();
+            plugins.initialize_for_home(home.map(std::path::Path::new));
+            assert!(plugins.initialized);
+            assert!(!plugins.wants_profile());
+            assert!(!plugins.control_held());
+            assert!(plugins.catalog.is_none());
+            assert_eq!(
+                plugins.unavailable.as_deref(),
+                Some("vst3 catalog path unavailable · configure a valid home folder")
+            );
+        }
+    }
+
+    #[test]
+    fn absolute_catalog_configuration_keeps_the_browser_path() {
+        let home = std::path::Path::new("/temporary/hex-catalog-fixture");
+        let browser =
+            hex_preferences::browser_places_path(home).with_file_name("plugin-catalog.json");
+        assert_eq!(catalog_path_from_home(home), Some(browser));
+    }
 
     #[test]
     fn recording_source_observation_rejects_pending_retiring_and_replaced_bindings() {
