@@ -241,6 +241,11 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             and suffix.startswith(('canvas)', 'inner)', 'with_audio_trim)',
                                    'with_midi_trim)', 'with_clip_move)'))
         )
+        # The Arrangement timeline and Main track share a text-free grid canvas.
+        header_mixer_component = header_mixer_component or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/arrangement.rs'
+            and suffix.startswith('paint_timeline_grid_canvas(')
+        )
         # Track meters compose a text-free shared gauge and its rendered fixture.
         # Tooltip text still passes through MiniTooltip's theme::text boundary.
         header_mixer_component = header_mixer_component or (
