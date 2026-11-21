@@ -95,8 +95,8 @@ impl SessionPlayback {
                 return None;
             }
         }
-        // The direct Arrangement route can process the transferred effect on
-        // silence. A track with no clips may also donate a tail from an earlier cut.
+        // An empty receiver can start its fresh effect on silence. Pending
+        // Arrangement ownership and earlier route releases use their own cuts.
         for playback in [self, previous] {
             for index in [source, destination] {
                 let track = playback.revision.arrangement().tracks().get(index)?;
