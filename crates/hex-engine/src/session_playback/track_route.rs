@@ -4,7 +4,8 @@
 //! Group and Main processors stay on their existing clocks. A supported
 //! compensated route waits for the departing output's aligned PCM to drain.
 //! Verified streaming admits fixed-row, zero-delay moves between Main and a
-//! Group that retains another child. Both page windows must be ready first.
+//! Group that retains another child, or entry into the first running Group.
+//! Both page windows must be ready first.
 use super::{RouteOwner, SessionPlayback};
 use crate::signal_graph::{SignalGraph, TrackOutput};
 
@@ -32,9 +33,12 @@ impl SessionPlayback {
         }
         let old_graph = previous.group_cut_graph()?;
         let new_graph = self.group_cut_graph()?;
+        // A flat predecessor has no upstream route or latency history. The
+        // existing zero-delay Group handoff can install the first Group stamps.
+        let flat_verified_predecessor = streamed && !old_graph.needs_runtime();
         if streamed
-            && (!old_graph.supports_closed_group_stream()
-                || !new_graph.supports_closed_group_stream())
+            && (!new_graph.supports_closed_group_stream()
+                || (!flat_verified_predecessor && !old_graph.supports_closed_group_stream()))
         {
             return None;
         }
@@ -136,9 +140,11 @@ impl SessionPlayback {
                 _ => return None,
             };
             let group = direct.track_index(grouped.tracks.get(target)?.id?)?;
-            if !direct.tracks.iter().any(|track| {
-                matches!(track.output, TrackOutput::Group { target, .. } if target == group)
-            }) {
+            if !flat_verified_predecessor
+                && !direct.tracks.iter().any(|track| {
+                    matches!(track.output, TrackOutput::Group { target, .. } if target == group)
+                })
+            {
                 return None;
             }
         }
