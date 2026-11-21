@@ -519,7 +519,7 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::InvalidCommand);
         }
         if pending.started_at.is_none() {
-            let started = NonZeroU64::MIN
+            let started_at = NonZeroU64::MIN
                 .checked_add(previous.performance_frame)
                 .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
             let started = match pending.transition {
@@ -571,7 +571,7 @@ impl SessionPlayback {
                 self.native_removal = None;
                 return Err(SessionPlaybackError::DeviceRuntime);
             }
-            pending.started_at = Some(started);
+            pending.started_at = Some(started_at);
         }
         Ok(if pending.ready_on(previous) {
             NativeRemovalProgress::Ready
