@@ -1296,6 +1296,7 @@ impl SessionPlayback {
                 previous,
                 None,
                 demand,
+                true,
                 if fenced_restart {
                     Restart::Baked
                 } else {
@@ -1314,6 +1315,7 @@ impl SessionPlayback {
                 previous,
                 groups,
                 demand,
+                live,
                 Restart::None,
                 None,
                 None,
@@ -1325,6 +1327,7 @@ impl SessionPlayback {
             previous,
             groups,
             demand.as_deref_mut(),
+            live,
             if confirmed_insert {
                 Restart::ConfirmedInsert { force: false }
             } else {
@@ -1359,6 +1362,7 @@ impl SessionPlayback {
                     previous,
                     None,
                     demand,
+                    true,
                     if confirmed_insert {
                         Restart::ConfirmedInsert { force: true }
                     } else {
@@ -1461,6 +1465,7 @@ impl SessionPlayback {
         previous: &mut Self,
         mut groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
         demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
+        live: bool,
         restart: Restart,
         source_transfer: Option<&crate::source_effect_stage::SourceEffectTransfer>,
         continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
@@ -2727,11 +2732,23 @@ impl SessionPlayback {
             && old_loop != new_loop
             && old_beat == new_beat
             && first_pass_arrangement_loop_continuity(self, previous);
+        // When a running VST3 instrument requires clock continuity across a
+        // compatible loop edit, the live fallback cannot restart the graph.
+        // Cut held Arrangement native mutable gates at the cut (same contract
+        // as `arrangement_tempo_remap`, Pulse #4117) so playback adopts the
+        // new scope bar without restarting or stalling on the old loop bounds.
+        let arrangement_loop_cut = live
+            && same_base
+            && old_loop != new_loop
+            && !arrangement_loop_continuity
+            && foreign_handoff.requires_clock_continuity
+            && compatible_instrument_loop_edit;
         // An edited base map cuts every held mutable Arrangement gate at the
         // donor's cut (`arrangement_tempo_remap` below), so a retimed loop
         // has no active gate deadline left to prove.
         if same_base
             && !arrangement_loop_continuity
+            && !arrangement_loop_cut
             && old_loop != new_loop
             && previous.routes.iter().enumerate().any(|(index, _)| {
                 effective_midi_route(&previous.revision, &previous.routes, index)
@@ -2764,12 +2781,13 @@ impl SessionPlayback {
         // suppressed until they end, so nothing is chased or retriggered.
         // Released proofs keep their sample-timed tails.
         let arrangement_tempo_remap = !same_base;
-        let arrangement_query_cut = if arrangement_tempo_remap {
+        let cut_arrangement_mutable_gates = arrangement_tempo_remap || arrangement_loop_cut;
+        let arrangement_query_cut = if cut_arrangement_mutable_gates {
             ArrangementQueryCut {
                 frame: arrangement_cut,
                 loop_pass: arrangement_cut_pass,
                 wrapped_loop_start: new_loop
-                    .filter(|_| arrangement_cut_pass > 0)
+                    .filter(|region| arrangement_cut_pass > 0 && arrangement_cut >= region.start())
                     .map(hex_project::LoopRegion::start),
             }
         } else {
@@ -2795,7 +2813,7 @@ impl SessionPlayback {
         }
         if timing_changed
             && !arrangement_loop_continuity
-            && !arrangement_tempo_remap
+            && !cut_arrangement_mutable_gates
             && old_loop.is_some()
             && previous.routes.iter().enumerate().any(|(index, _)| {
                 effective_midi_route(&previous.revision, &previous.routes, index)
@@ -2903,16 +2921,17 @@ impl SessionPlayback {
             self.loop_region().is_some(),
             previous,
             timing_changed,
-            arrangement_tempo_remap,
+            cut_arrangement_mutable_gates,
             arrangement_loop_continuity,
             retiring_mutable_source,
             &mut self.spans,
         )?;
         let mut mutable_continuity_new_for_old = source_handoff.new_for_old;
         let mut mutable_retarget_new_for_old = source_handoff.retarget_for_old;
-        // An edited base map keeps only Arrangement mutable runtimes: their
-        // held gates are cut at the cut, so no stale frame deadline survives.
-        if !timing_changed || arrangement_tempo_remap || arrangement_loop_continuity {
+        // An edited base map or continuous loop cut keeps only Arrangement
+        // mutable runtimes: their held gates are cut at the cut, so no stale
+        // frame deadline survives.
+        if !timing_changed || cut_arrangement_mutable_gates || arrangement_loop_continuity {
             for (old_index, _) in previous.routes.iter().enumerate() {
                 if source_handoff.handles_old(old_index) {
                     continue;
@@ -3622,7 +3641,7 @@ impl SessionPlayback {
                 &candidate_timing,
                 &mut self.spans,
             )?;
-            if arrangement_tempo_remap && matches!(candidate_owner, RouteOwner::Arrangement) {
+            if cut_arrangement_mutable_gates && matches!(candidate_owner, RouteOwner::Arrangement) {
                 // Every pre-cut onset is suppressed below; none is chased.
                 continue;
             }
@@ -4684,7 +4703,7 @@ impl SessionPlayback {
                 &mut self.spans,
             )?;
             for candidate in candidates[..candidate_count].iter().flatten().copied() {
-                if arrangement_tempo_remap && matches!(route.owner, RouteOwner::Arrangement) {
+                if cut_arrangement_mutable_gates && matches!(route.owner, RouteOwner::Arrangement) {
                     // Its donor voice, if any, is released at the cut below.
                     if candidate.source_frame < source_frame {
                         add_or_extend_suppression(
@@ -7014,7 +7033,7 @@ impl SessionPlayback {
                 };
                 if revision.midi_clip_inactive(key.track, key.clip)
                     || revision.midi_note_inactive(key.clip, key.note)
-                    || (arrangement_tempo_remap && arrangement_key())
+                    || (cut_arrangement_mutable_gates && arrangement_key())
                     || (!timing_changed
                         && old_loop == new_loop
                         && !midi_layout_changed
