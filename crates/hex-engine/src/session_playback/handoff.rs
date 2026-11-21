@@ -5187,7 +5187,17 @@ impl SessionPlayback {
             &mut tail_runtime_bytes,
             &mut suffix_entry_count,
             continuation,
-            tail_policy.for_chain(old_main, new_main),
+            // The proved Main pass cut already ended this exact worker's
+            // contribution. Off retains its authored ID, so the generic
+            // same-ID policy would otherwise preserve its incompatible tail.
+            if main_pass_cut.is_some()
+                && matches!(new_main.as_ref(), [off]
+                    if off.bypassed && off.definition.as_ref().is_some_and(|factory| factory.is_powered_off()))
+            {
+                DeviceEditTailPolicy::Cut
+            } else {
+                tail_policy.for_chain(old_main, new_main)
+            },
         )?;
         if clock_transfer == 2
             && self.compensation.is_none()
