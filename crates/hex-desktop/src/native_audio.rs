@@ -1839,7 +1839,7 @@ impl WorkerAudioSink for NativeAudioSink {
             {
                 self.resident.running_powered_off = Some(running_off);
             }
-            self.plugins.finish_hosted_move(context, accepted, applied);
+            self.plugins.finish_hosted_move(context);
         }
         self.plugins.finish_edit(context, accepted);
     }
@@ -2084,7 +2084,6 @@ impl WorkerAudioSink for NativeAudioSink {
                 self.desired.as_deref(),
                 Some(&cancellation),
                 true,
-                None,
                 None,
             )?;
             Some(cancellation)

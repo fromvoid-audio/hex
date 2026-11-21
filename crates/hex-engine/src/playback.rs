@@ -293,16 +293,16 @@ pub enum PlaybackHandoffError {
     FreshRuntimeCancelled,
 }
 
-/// One requested logical route change for an already retained worker. The
-/// output owner fences the original publication and Engine revalidates the cut.
-/// The physical owner stays at the worker's first track in either direction.
+/// One direct Track instrument cut with a fresh worker at the receiver.
+/// The output owner fences the original publication and Engine checks both
+/// bindings against the two prepared graphs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HostedInstrumentMove {
     pub donor: hex_project::TrackId,
     pub receiver: hex_project::TrackId,
-    pub physical_owner: hex_project::TrackId,
     pub device: hex_project::DeviceId,
-    pub binding: hex_lattice_contract::ForeignProcessorBinding,
+    pub donor_binding: hex_lattice_contract::ForeignProcessorBinding,
+    pub receiver_binding: hex_lattice_contract::ForeignProcessorBinding,
 }
 
 /// An exact direct Track effect cut with a fresh SDK endpoint at the receiver.
@@ -321,39 +321,6 @@ pub struct HostedTrackEffectMove {
 pub enum HostedMoveRequest {
     Instrument(HostedInstrumentMove),
     Effect(HostedTrackEffectMove),
-}
-
-impl HostedMoveRequest {
-    pub fn donor(self) -> hex_project::TrackId {
-        match self {
-            Self::Instrument(movement) => movement.donor,
-            Self::Effect(movement) => movement.donor,
-        }
-    }
-    pub fn receiver(self) -> hex_project::TrackId {
-        match self {
-            Self::Instrument(movement) => movement.receiver,
-            Self::Effect(movement) => movement.receiver,
-        }
-    }
-    pub fn physical_owner(self) -> hex_project::TrackId {
-        match self {
-            Self::Instrument(movement) => movement.physical_owner,
-            Self::Effect(movement) => movement.receiver,
-        }
-    }
-    pub fn device(self) -> hex_project::DeviceId {
-        match self {
-            Self::Instrument(movement) => movement.device,
-            Self::Effect(movement) => movement.device,
-        }
-    }
-    pub fn binding(self) -> hex_lattice_contract::ForeignProcessorBinding {
-        match self {
-            Self::Instrument(movement) => movement.binding,
-            Self::Effect(movement) => movement.binding,
-        }
-    }
 }
 
 /// Compact truthful category for asynchronous callback handoff refusals.
@@ -2550,11 +2517,13 @@ impl Playback {
             .foreign_instrument_binding_on_control(movement.receiver, movement.device)
             .ok_or(Invalid("hosted move receiver has no prepared worker"))?;
         if movement.donor == movement.receiver
-            || owner != crate::ProcessorChainOwner::Track(movement.physical_owner.value())
-            || movement.binding != binding
+            || owner != crate::ProcessorChainOwner::Track(movement.receiver.value())
+            || movement.receiver_binding != binding
+            || movement.donor_binding == binding
+            || movement.donor_binding.root != binding.root
         {
             return Err(Invalid(
-                "hosted move receiver differs from the retained worker",
+                "hosted instrument receiver differs from its fresh worker",
             ));
         }
         let runtime = self

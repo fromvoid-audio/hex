@@ -1,30 +1,30 @@
-//! Actual SDK witness for moving an authored gate between two bare MIDI lanes.
+//! Signed SDK witness for cutting a hosted instrument to a fresh Track worker.
 use super::*;
-use hex_audio::prepared::FreshRuntimeCancellationResult;
+use hex_audio::plugin_effects::EffectBinding;
+use hex_audio::prepared::{AppliedAudioSource, FreshRuntimeCancellationResult};
 use hex_project::{ClipId, DeviceSelectionIds, TrackId};
-use hex_session::service::DeviceInsertOutcome;
+use hex_session::service::{DeviceInsertOutcome, ResidentGraphSubmission, ViewState};
 
 const BRIDGE: u64 = 512;
 const BLOCK: u64 = 256;
 const DONOR_GAIN: f32 = 0.25;
 const RECEIVER_GAIN: f32 = 0.75;
-const REFRESHED_DONOR_GAIN: f32 = 0.5;
 
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts"]
-fn direct_vst3_cut_preserves_original_gate_release_and_new_receiver_onset() {
+fn direct_vst3_cut_ends_the_old_gate_and_starts_a_fresh_receiver() {
     verify_direct_vst3_cut(AfterCut::Refresh);
 }
 
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts"]
-fn second_live_vst3_move_returns_the_original_worker_and_held_gate() {
+fn second_live_vst3_move_back_prepares_a_third_worker() {
     verify_direct_vst3_cut(AfterCut::MoveBack);
 }
 
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts"]
-fn undo_and_redo_a_held_vst3_cut_wait_for_the_exact_callback_receipts() {
+fn undo_and_redo_a_vst3_cut_install_fresh_workers_on_their_exact_receipts() {
     verify_direct_vst3_cut(AfterCut::History);
 }
 
@@ -32,12 +32,6 @@ enum AfterCut {
     Refresh,
     MoveBack,
     History,
-}
-
-#[derive(Clone, Copy)]
-struct HeldGate {
-    worker: hex_audio::plugin_effects::EffectBinding,
-    release: u64,
 }
 
 fn verify_direct_vst3_cut(after_cut: AfterCut) {
@@ -65,7 +59,7 @@ fn verify_direct_vst3_cut(after_cut: AfterCut) {
     let mut selected = selection();
     let module = directory.join("original.vst3");
     super::super::ui::copy_original_module(&selected.module, &module);
-    selected.module = module;
+    selected.module = module.clone();
     hex_ui::write_plugin_effect_test_catalog(&directory, &selected, "Instrument|Synth", 0).unwrap();
     let mut h = ResidentHarness::with_plugins_and_catalog(
         host(),
@@ -80,7 +74,7 @@ fn verify_direct_vst3_cut(after_cut: AfterCut) {
     let (donor, donor_clip) = add_lane(&mut h, &mut applied, "held source");
     let (receiver, receiver_clip) = add_lane(&mut h, &mut applied, "destination");
     let donor_gate = BeatTime::from_quarters(1).unwrap();
-    let new_onset = BeatTime::from_ratio(3, 2).unwrap();
+    let new_onset = BeatTime::from_quarters(3).unwrap();
     let new_gate = BeatTime::from_ratio(1, 8).unwrap();
     for (clip, start, duration, velocity) in [
         (donor_clip, BeatTime::ZERO, donor_gate, 63),
@@ -140,15 +134,8 @@ fn verify_direct_vst3_cut(after_cut: AfterCut) {
         BRIDGE as u32
     );
 
-    let binding = |h: &ResidentHarness| {
-        let observation = h.plugin_progress.lock().unwrap();
-        let [Some((id, binding, _)), None] = observation.source_bindings else {
-            panic!("one accepted SDK worker");
-        };
-        assert_eq!(id, device.value());
-        binding
-    };
-    let worker = binding(&h);
+    let authored = instrument.state().clone();
+    let worker = live_binding(&h, device);
     h.enable_confirmed_device_inserts();
     let control = &mut h.audio.as_mut().unwrap().control;
     control.set_audio_diagnostics(hex_audio::audio_diagnostics::AudioDiagnosticsFlags::ALL);
@@ -156,54 +143,46 @@ fn verify_direct_vst3_cut(after_cut: AfterCut) {
     for _ in 0..5 {
         render_completed_block(&h);
     }
-    assert_sample_level(&render_completed_block(&h), DONOR_GAIN * 63.0 / 127.0);
+    let wet = DONOR_GAIN * 63.0 / 127.0;
+    assert_sample_level(&render_completed_block(&h), wet);
     let predecessor = status(&h).recording_source().unwrap();
-
-    let stage = |h: &mut ResidentHarness, attempt: &str| {
-        let prepared_worker = h
-            .device_insert_probe()
-            .observe_next_foreign_binding(receiver, device);
-        let (submitted, resume) = h.probe_next_submitted_device_insert();
-        h.service
-            .submit(Request::MoveTrackDevices {
-                project_generation: 0,
-                revision: before.state.revision,
-                source: donor,
-                selected: DeviceSelectionIds::new(&[device]).unwrap(),
-                destination: receiver,
-            })
-            .unwrap();
-        let exact = submitted
-            .recv_timeout(Duration::from_millis(800))
-            .unwrap_or_else(|timeout| {
-                let failure = h.service.try_event().ok().and_then(|event| event.error);
-                panic!(
-                    "held VST3 move {attempt} was not submitted: {timeout}; session error={failure:?}; prepared worker={:?}",
-                    prepared_worker.try_recv()
-                );
-            });
-        let (owner, prepared) = prepared_worker
-            .try_recv()
-            .unwrap()
-            .expect("the candidate must contain a prepared SDK worker");
-        assert_eq!(
-            owner,
-            hex_engine::ProcessorChainOwner::Track(receiver.value()),
-            "the prepared worker must belong to the destination track"
-        );
-        assert_ne!(
-            prepared, worker,
-            "a running move must prepare a fresh worker"
-        );
-        resume.send(()).unwrap();
-        let pending = h.next();
-        assert!(pending.error.is_none(), "{:?}", pending.error);
-        assert!(!pending.request_complete);
-        assert_eq!(pending.state.project, before.state.project);
-        assert_eq!(status(h).recording_source(), Some(predecessor));
-        exact
+    let forward = || Request::MoveTrackDevices {
+        project_generation: predecessor.context.project_generation,
+        revision: before.state.revision,
+        source: donor,
+        selected: DeviceSelectionIds::new(&[device]).unwrap(),
+        destination: receiver,
     };
-    let cancelled = stage(&mut h, "before cancellation");
+    if matches!(after_cut, AfterCut::Refresh) {
+        // The running worker has already loaded this private fixture. Hide
+        // the module briefly so the fresh worker cannot pass file inspection.
+        let parked = directory.join("parked.vst3");
+        std::fs::rename(&module, &parked).unwrap();
+        h.service.submit(forward()).unwrap();
+        let failure = h.next();
+        std::fs::rename(parked, &module).unwrap();
+        assert!(failure.request_complete && failure.error.is_some());
+        assert_eq!(failure.state.project, before.state.project);
+        assert_eq!(failure.state.revision, before.state.revision);
+        assert_eq!(status(&h).recording_source(), Some(predecessor));
+        assert_eq!(live_binding(&h, device), worker);
+        assert_sample_level(&render_continuous_block(&h).1, wet);
+    }
+    let mut expected = hex_project::Editor::new(before.state.project.as_ref().clone(), 8).unwrap();
+    expected
+        .execute(Command::MoveTrackDevices {
+            source: donor,
+            selected: DeviceSelectionIds::new(&[device]).unwrap(),
+            destination: receiver,
+        })
+        .unwrap();
+
+    let route = ObservedRoute {
+        destination: receiver,
+        device,
+        incumbent: worker,
+    };
+    let (cancelled, abandoned) = stage_move(&mut h, &before.state, forward(), route, wet);
     wait(|| {
         match h
             .audio
@@ -221,10 +200,11 @@ fn verify_direct_vst3_cut(after_cut: AfterCut) {
     });
     let deadline = Instant::now() + Duration::from_millis(800);
     loop {
-        assert_sample_level(&render_continuous_block(&h).1, DONOR_GAIN * 63.0 / 127.0);
+        assert_sample_level(&render_continuous_block(&h).1, wet);
         h.pump();
         if let Ok(event) = h.service.try_event() {
             assert_eq!(event.state.project, before.state.project);
+            assert_eq!(event.state.revision, before.state.revision);
             if event.request_complete {
                 let completion = event.device_insert_complete.unwrap();
                 assert_eq!(completion.submission, cancelled);
@@ -234,398 +214,283 @@ fn verify_direct_vst3_cut(after_cut: AfterCut) {
         }
         assert!(
             Instant::now() < deadline,
-            "cancelled held move receipt timed out"
+            "cancelled move receipt timed out"
         );
     }
     assert_eq!(status(&h).recording_source(), Some(predecessor));
-    assert_eq!(binding(&h), worker);
+    assert_eq!(live_binding(&h, device), worker);
 
-    let exact = stage(&mut h, "after cancellation");
-
-    let mut cut = None;
-    let mut pcm_after_cut = Vec::new();
-    let deadline = Instant::now() + Duration::from_millis(800);
-    let installed = loop {
-        let (frame, pcm) = render_continuous_block(&h);
-        if status(&h)
-            .recording_source()
-            .is_some_and(|source| source.audio_revision == exact.audio_revision)
-        {
-            cut.get_or_insert(frame);
-            pcm_after_cut.extend(pcm);
-        }
-        h.pump();
-        if let Ok(event) = h.service.try_event() {
-            if let Some(error) = event.error.as_ref() {
-                assert_eq!(status(&h).recording_source(), Some(predecessor));
-                assert_eq!(binding(&h), worker);
-                while let Some(row) = h.audio.as_mut().unwrap().control.take_audio_diagnostic() {
-                    eprintln!("held VST3 cut diagnostic {row:?}");
-                }
-                panic!("prepared original VST3 worker was refused by callback: {error}");
-            }
-            assert!(event.device_insert_confirmation.is_none());
-            if event.request_complete {
-                break event;
-            }
-            assert_eq!(event.state.project, before.state.project);
-        }
-        assert!(
-            Instant::now() < deadline,
-            "exact held move receipt timed out"
-        );
-    };
-    let completion = installed.device_insert_complete.unwrap();
-    assert_eq!(completion.submission, exact);
-    assert_eq!(completion.outcome, DeviceInsertOutcome::Installed);
-    assert_eq!(
-        status(&h).recording_source(),
-        Some(hex_audio::prepared::AppliedAudioSource {
-            audio_revision: exact.audio_revision,
-            context: exact.context,
-            output_identity: exact.output_identity,
-        })
+    let (installed, fresh) = install_move(
+        &mut h,
+        &before.state,
+        forward(),
+        expected.project(),
+        route,
+        wet,
     );
-    assert_eq!(binding(&h), worker);
-    assert!(
-        installed
-            .state
-            .project
-            .track(donor)
-            .unwrap()
-            .instrument()
-            .is_none()
-    );
+    assert_ne!(fresh, abandoned);
     assert_eq!(
         installed
-            .state
             .project
             .track(receiver)
             .unwrap()
             .instrument()
             .unwrap()
-            .id(),
-        device
+            .state(),
+        &authored
     );
-
-    let map = installed.state.project.tempo_map();
+    let map = installed.project.tempo_map();
     let donor_off = map.beat_to_frame(donor_gate).unwrap() + BRIDGE;
     let receiver_on = map.beat_to_frame(new_onset).unwrap() + BRIDGE;
     let receiver_off = map
         .beat_to_frame(BeatTime::from_raw(new_onset.raw() + new_gate.raw()))
         .unwrap()
         + BRIDGE;
-    let cut = cut.expect("installed callback frame");
-    assert!(cut + BLOCK < donor_off);
-    let gate = HeldGate {
-        worker,
-        release: donor_off,
-    };
-    match after_cut {
-        AfterCut::Refresh => {}
-        AfterCut::MoveBack => {
-            let selected = DeviceSelectionIds::new(&[device]).unwrap();
-            let request = |revision| Request::MoveTrackDevices {
-                project_generation: exact.context.project_generation,
-                revision,
-                source: receiver,
-                selected: selected.clone(),
-                destination: donor,
-            };
-            let refreshed = cancel_or_refuse_inverse_and_refresh(
-                &mut h,
-                request(installed.state.revision),
-                &installed.state,
-                donor,
-                worker,
-                donor_off,
-            );
-            let mut expected =
-                hex_project::Editor::new(refreshed.project.as_ref().clone(), 8).unwrap();
-            expected
-                .execute(Command::MoveTrackDevices {
-                    source: receiver,
-                    selected: selected.clone(),
-                    destination: donor,
-                })
-                .unwrap();
-            install_held_move(
-                &mut h,
-                request(refreshed.revision),
-                expected.project(),
-                &refreshed,
-                gate,
-                [RECEIVER_GAIN, REFRESHED_DONOR_GAIN],
-            );
-            assert_authored_release(&h, gate.release, REFRESHED_DONOR_GAIN);
-            return;
-        }
-        AfterCut::History => {
-            let undone = install_held_move(
-                &mut h,
-                Request::Undo,
-                &before.state.project,
-                &installed.state,
-                gate,
-                [RECEIVER_GAIN, DONOR_GAIN],
-            );
-            install_held_move(
-                &mut h,
-                Request::Redo,
-                &installed.state.project,
-                &undone,
-                gate,
-                [DONOR_GAIN, RECEIVER_GAIN],
-            );
-            assert_authored_release(&h, gate.release, RECEIVER_GAIN);
-            return;
-        }
-    }
-
-    let refreshed = h.run(Request::Edit(Command::SetTrackGains {
-        gains: vec![(donor, 0.5)],
-    }));
-    assert!(refreshed.request_complete);
-    let refresh_deadline = Instant::now() + Duration::from_millis(800);
-    loop {
-        pcm_after_cut.extend(render_continuous_block(&h).1);
-        if let Some(source) = status(&h).recording_source()
-            && source.audio_revision > exact.audio_revision
-        {
-            assert_eq!(source.context.editor_revision, refreshed.state.revision);
-            assert_eq!(source.output_identity, predecessor.output_identity);
-            break;
-        }
-        assert!(cursor(&h) < donor_off && Instant::now() < refresh_deadline);
-    }
     assert!(
         cursor(&h) < donor_off,
-        "refresh must keep the original gate held"
+        "the original note must have been held at the cut"
     );
-    assert_eq!(binding(&h), worker);
+
+    let destination_binding = match after_cut {
+        AfterCut::Refresh => {
+            let previous = status(&h).recording_source().unwrap();
+            let refreshed = h.run(Request::Edit(Command::SetTrackGains {
+                gains: vec![(donor, 0.5)],
+            }));
+            assert!(refreshed.request_complete && refreshed.error.is_none());
+            let deadline = Instant::now() + Duration::from_millis(800);
+            loop {
+                assert_sample_level(&render_continuous_block(&h).1, 0.0);
+                if let Some(source) = status(&h).recording_source()
+                    && source.audio_revision > previous.audio_revision
+                {
+                    assert_eq!(source.context.editor_revision, refreshed.state.revision);
+                    assert_eq!(source.output_identity, predecessor.output_identity);
+                    break;
+                }
+                assert!(Instant::now() < deadline && cursor(&h) < receiver_on);
+            }
+            fresh
+        }
+        AfterCut::MoveBack | AfterCut::History => {
+            let undo = if matches!(after_cut, AfterCut::History) {
+                Request::Undo
+            } else {
+                Request::MoveTrackDevices {
+                    project_generation: predecessor.context.project_generation,
+                    revision: installed.revision,
+                    source: receiver,
+                    selected: DeviceSelectionIds::new(&[device]).unwrap(),
+                    destination: donor,
+                }
+            };
+            let (undone, returned) = install_move(
+                &mut h,
+                &installed,
+                undo,
+                &before.state.project,
+                ObservedRoute {
+                    destination: donor,
+                    device,
+                    incumbent: fresh,
+                },
+                0.0,
+            );
+            assert_ne!(returned, worker);
+            if matches!(after_cut, AfterCut::MoveBack) {
+                assert_eq!(
+                    undone
+                        .project
+                        .track(donor)
+                        .unwrap()
+                        .instrument()
+                        .unwrap()
+                        .state(),
+                    &authored
+                );
+                return;
+            }
+            let (_, redone) = install_move(
+                &mut h,
+                &undone,
+                Request::Redo,
+                &installed.project,
+                ObservedRoute {
+                    destination: receiver,
+                    device,
+                    incumbent: returned,
+                },
+                0.0,
+            );
+            assert_ne!(redone, fresh);
+            redone
+        }
+    };
+    assert_eq!(live_binding(&h, device), destination_binding);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    assert!(
+        cursor(&h) < receiver_on,
+        "the new onset must still be in the future"
+    );
     while cursor(&h) < receiver_off + BLOCK {
-        assert!(Instant::now() < deadline + Duration::from_secs(2));
-        pcm_after_cut.extend(render_continuous_block(&h).1);
-    }
-    // The first callback's final sample has cleared the short paired fader.
-    // It must already carry the original voice from the retained SDK bridge.
-    for (offset, frame) in pcm_after_cut
-        .into_iter()
-        .enumerate()
-        .skip(BLOCK as usize - 1)
-    {
-        let at = cut + offset as u64;
-        let velocity = if at < donor_off {
-            63.0
-        } else if at >= receiver_on && at < receiver_off {
-            85.0
-        } else {
-            0.0
-        };
-        let expected = RECEIVER_GAIN * velocity / 127.0;
-        assert!(
-            frame
-                .into_iter()
-                .all(|sample| (sample - expected).abs() < 1e-5),
-            "frame {at} after cut {cut}: {frame:?}, expected {expected}"
-        );
+        assert!(Instant::now() < deadline);
+        let (start, output) = render_continuous_block(&h);
+        for (offset, frame) in output.into_iter().enumerate() {
+            let at = start + offset as u64;
+            let expected = if (receiver_on..receiver_off).contains(&at) {
+                RECEIVER_GAIN * 85.0 / 127.0
+            } else {
+                0.0
+            };
+            assert!(
+                frame
+                    .into_iter()
+                    .all(|sample| (sample - expected).abs() < 1e-5),
+                "frame {at}: {frame:?}, expected {expected}"
+            );
+        }
     }
     assert_eq!(status(&h).render_fault_snapshot(), None);
 }
 
-fn cancel_or_refuse_inverse_and_refresh(
+#[derive(Clone, Copy)]
+struct ObservedRoute {
+    destination: TrackId,
+    device: hex_project::DeviceId,
+    incumbent: EffectBinding,
+}
+
+fn live_binding(h: &ResidentHarness, device: hex_project::DeviceId) -> EffectBinding {
+    let [Some((id, binding, _)), None] = h.plugin_progress.lock().unwrap().source_bindings else {
+        panic!("one accepted SDK worker");
+    };
+    assert_eq!(id, device.value());
+    binding
+}
+
+fn stage_move(
     h: &mut ResidentHarness,
+    before: &ViewState,
     request: Request,
-    moved: &hex_session::service::ViewState,
-    donor: TrackId,
-    worker: hex_audio::plugin_effects::EffectBinding,
-    donor_off: u64,
-) -> Arc<hex_session::service::ViewState> {
+    route: ObservedRoute,
+    before_sample: f32,
+) -> (ResidentGraphSubmission, EffectBinding) {
     let predecessor = status(h).recording_source().unwrap();
+    let prepared_worker = h
+        .device_insert_probe()
+        .observe_next_foreign_binding(route.destination, route.device);
+    let (publication_ready, enqueue, _) = h.probe_next_native_publication();
     let (submitted, resume) = h.probe_next_submitted_device_insert();
     h.service.submit(request).unwrap();
     let deadline = Instant::now() + Duration::from_millis(800);
-    let terminal = loop {
+    let mut enqueued = false;
+    let exact = loop {
+        h.pump();
         if let Ok(exact) = submitted.try_recv() {
-            resume.send(()).unwrap();
-            let pending = h.next();
-            assert!(!pending.request_complete && pending.error.is_none());
-            assert_eq!(pending.state.project, moved.project);
-            wait(|| {
-                match h
-                    .audio
-                    .as_ref()
-                    .unwrap()
-                    .control
-                    .cancel_fresh_runtime_publication(exact.audio_revision)
-                {
-                    FreshRuntimeCancellationResult::Busy => false,
-                    state => {
-                        assert_eq!(state, FreshRuntimeCancellationResult::Cancelled);
-                        true
-                    }
-                }
-            });
-            let cancelled = loop {
-                assert_sample_level(&render_continuous_block(h).1, RECEIVER_GAIN * 63.0 / 127.0);
-                h.pump();
-                if let Ok(event) = h.service.try_event()
-                    && event.request_complete
-                {
-                    break event;
-                }
-                assert!(Instant::now() < deadline && cursor(h) < donor_off);
-            };
-            let receipt = cancelled.device_insert_complete.unwrap();
-            assert_eq!(receipt.submission, exact);
-            assert_eq!(receipt.outcome, DeviceInsertOutcome::Cancelled);
-            break cancelled;
+            break exact;
         }
-        if let Ok(refused) = h.service.try_event() {
-            assert!(refused.request_complete);
-            assert!(refused.error.is_some());
-            eprintln!(
-                "first inverse refused before submission: {:?}",
-                refused.error
+        if !enqueued && publication_ready.try_recv().is_ok() {
+            enqueue.send(()).unwrap();
+            enqueued = true;
+        }
+        if let Ok(event) = h.service.try_event() {
+            assert!(
+                !event.request_complete && event.error.is_none(),
+                "{:?}",
+                event.error
             );
-            break refused;
+            assert_eq!(event.state.project, before.project);
         }
-        assert!(
-            Instant::now() < deadline,
-            "first inverse never reached admission"
-        );
-        std::thread::yield_now();
+        assert!(Instant::now() < deadline, "move did not reach submission");
+        if !enqueued {
+            assert_sample_level(&render_continuous_block(h).1, before_sample);
+        }
+        std::thread::sleep(Duration::from_millis(5));
     };
-    assert_eq!(terminal.state.project, moved.project);
-    assert_eq!(terminal.state.revision, moved.revision);
-    assert_eq!(status(h).recording_source(), Some(predecessor));
-    assert_sample_level(&render_continuous_block(h).1, RECEIVER_GAIN * 63.0 / 127.0);
-
-    let refreshed = h.run(Request::Edit(Command::SetTrackGains {
-        gains: vec![(donor, REFRESHED_DONOR_GAIN)],
-    }));
-    assert!(refreshed.request_complete);
-    let deadline = Instant::now() + Duration::from_millis(800);
-    loop {
-        assert_sample_level(&render_continuous_block(h).1, RECEIVER_GAIN * 63.0 / 127.0);
-        if let Some(source) = status(h).recording_source()
-            && source.audio_revision > predecessor.audio_revision
-        {
-            assert_eq!(source.context.editor_revision, refreshed.state.revision);
-            assert_eq!(source.output_identity, predecessor.output_identity);
-            break;
-        }
-        assert!(Instant::now() < deadline && cursor(h) < donor_off);
-    }
-    let bindings = h.plugin_progress.lock().unwrap().source_bindings;
-    assert!(
-        matches!(bindings, [Some((id, binding, _)), None] if id == worker.instance && binding == worker)
+    let (owner, fresh) = prepared_worker
+        .try_recv()
+        .unwrap()
+        .expect("prepared worker");
+    assert_eq!(
+        owner,
+        hex_engine::ProcessorChainOwner::Track(route.destination.value()),
+        "the prepared worker must belong to the destination track"
     );
-    refreshed.state
+    assert_ne!(
+        fresh, route.incumbent,
+        "a running move must prepare a fresh worker"
+    );
+    assert_eq!(exact.output_identity, predecessor.output_identity);
+    assert_eq!(exact.context.editor_revision, before.revision + 1);
+    assert_eq!(live_binding(h, route.device), route.incumbent);
+    resume.send(()).unwrap();
+    let pending = h.next();
+    assert!(pending.error.is_none(), "{:?}", pending.error);
+    assert!(!pending.request_complete);
+    assert_eq!(pending.state.project, before.project);
+    assert_eq!(pending.state.revision, before.revision);
+    assert_eq!(status(h).recording_source(), Some(predecessor));
+    (exact, fresh)
 }
 
-fn install_held_move(
+fn install_move(
     h: &mut ResidentHarness,
+    before: &ViewState,
     request: Request,
     expected: &hex_project::Project,
-    moved: &hex_session::service::ViewState,
-    gate: HeldGate,
-    [before_gain, after_gain]: [f32; 2],
-) -> Arc<hex_session::service::ViewState> {
-    let predecessor = status(h).recording_source().unwrap();
-    assert_sample_level(&render_continuous_block(h).1, before_gain * 63.0 / 127.0);
-    let (preparing, resume, _) = h.probe_next_native_publication();
-    h.service.submit(request).unwrap();
-    let deadline = Instant::now() + Duration::from_millis(800);
-    loop {
-        match preparing.try_recv() {
-            Ok(()) => break,
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(error) => panic!("held-move publication observation closed: {error}"),
-        }
-        if let Ok(event) = h.service.try_event() {
-            panic!(
-                "held move returned before preparing its cut: error={:?}, status={:?}, complete={}",
-                event.error, event.status, event.request_complete
-            );
-        }
-        assert!(Instant::now() < deadline && cursor(h) + BLOCK < gate.release);
-        assert_sample_level(&render_continuous_block(h).1, before_gain * 63.0 / 127.0);
-        h.pump();
-    }
-    assert_eq!(status(h).recording_source(), Some(predecessor));
-    resume.send(()).unwrap();
-    let pending = loop {
-        h.pump();
-        if let Ok(event) = h.service.try_event() {
-            break event;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "held move published no Pending event"
-        );
-        std::thread::yield_now();
+    route: ObservedRoute,
+    before_sample: f32,
+) -> (Arc<ViewState>, EffectBinding) {
+    let (exact, fresh) = stage_move(h, before, request, route, before_sample);
+    let applied = AppliedAudioSource {
+        audio_revision: exact.audio_revision,
+        context: exact.context,
+        output_identity: exact.output_identity,
     };
-    assert_eq!(status(h).recording_source(), Some(predecessor));
-    assert!(pending.error.is_none(), "{:?}", pending.error);
-    assert!(
-        !pending.request_complete,
-        "held move completed before Audio rendered its receipt: {:?}",
-        pending.status
-    );
-    assert_eq!(pending.state.project, moved.project);
-    assert_eq!(pending.state.revision, moved.revision);
-
     let deadline = Instant::now() + Duration::from_millis(800);
-    loop {
-        let (_, output) = render_continuous_block(h);
+    let mut heard_fade = false;
+    let mut saw_cut = false;
+    let finished = loop {
+        let (_, pcm) = render_continuous_block(h);
+        if status(h).recording_source() == Some(applied) {
+            saw_cut = true;
+            assert_sample_level(&pcm, 0.0);
+        } else if before_sample > 0.0 && pcm[0][0] > 0.0 && pcm[BLOCK as usize - 1][0] == 0.0 {
+            heard_fade = true;
+        }
         h.pump();
         if let Ok(event) = h.service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
+            assert!(event.device_insert_confirmation.is_none());
             if event.request_complete {
-                let completion = event.device_insert_complete.unwrap();
-                assert_eq!(completion.outcome, DeviceInsertOutcome::Installed);
-                assert_eq!(
-                    status(h).recording_source(),
-                    Some(hex_audio::prepared::AppliedAudioSource {
-                        output_identity: completion.submission.output_identity,
-                        audio_revision: completion.submission.audio_revision,
-                        context: completion.submission.context,
-                    })
-                );
-                assert_eq!(event.state.project.as_ref(), expected);
-                assert_eq!(event.state.revision, moved.revision + 1);
-                assert!(
-                    cursor(h) < gate.release,
-                    "the move must complete while the note is held"
-                );
-                let bindings = h.plugin_progress.lock().unwrap().source_bindings;
-                assert!(
-                    matches!(bindings, [Some((id, binding, _)), None] if id == gate.worker.instance && binding == gate.worker)
-                );
-                assert_sample_level(&output[output.len() - 1..], after_gain * 63.0 / 127.0);
-                return event.state;
+                break event;
             }
-            assert_eq!(event.state.project, moved.project);
+            assert_eq!(event.state.project, before.project);
         }
-        assert!(Instant::now() < deadline && cursor(h) + BLOCK < gate.release);
-    }
-}
-
-fn assert_authored_release(h: &ResidentHarness, release: u64, track_gain: f32) {
+        assert!(
+            Instant::now() < deadline,
+            "move did not reach its exact callback receipt"
+        );
+    };
+    let completion = finished.device_insert_complete.unwrap();
+    assert_eq!(completion.submission, exact);
+    assert_eq!(completion.outcome, DeviceInsertOutcome::Installed);
+    assert!(saw_cut);
+    assert!(heard_fade || before_sample == 0.0);
+    assert_eq!(finished.state.project.as_ref(), expected);
+    assert_eq!(finished.state.revision, before.revision + 1);
+    assert_eq!(live_binding(h, route.device), fresh);
+    let terminal_poll = h.control_polls.load(Acquire);
     let deadline = Instant::now() + Duration::from_millis(800);
-    while cursor(h) < release + BLOCK {
-        let (frame, output) = render_continuous_block(h);
-        for (offset, sample) in output.into_iter().enumerate() {
-            let gain = if frame + (offset as u64) < release {
-                track_gain * 63.0 / 127.0
-            } else {
-                0.0
-            };
-            assert_sample_level(&[sample], gain);
+    loop {
+        h.pump();
+        if h.control_polls.load(Acquire) > terminal_poll && h.plugin_records.load(Acquire) == 1 {
+            break;
         }
-        assert!(Instant::now() < deadline, "original release did not settle");
+        assert!(Instant::now() < deadline, "old worker did not return");
+        assert_sample_level(&render_continuous_block(h).1, 0.0);
     }
+    (finished.state, fresh)
 }
 
 fn add_lane(h: &mut ResidentHarness, applied: &mut u64, name: &str) -> (TrackId, ClipId) {
@@ -641,7 +506,7 @@ fn add_lane(h: &mut ResidentHarness, applied: &mut u64, name: &str) -> (TrackId,
         .run(Request::Edit(Command::PlaceMidiClip {
             track,
             start: BeatTime::ZERO,
-            length: BeatTime::from_quarters(2).unwrap(),
+            length: BeatTime::from_quarters(4).unwrap(),
         }))
         .created
         .unwrap()
@@ -652,13 +517,14 @@ fn add_lane(h: &mut ResidentHarness, applied: &mut u64, name: &str) -> (TrackId,
     (track, clip)
 }
 
+#[track_caller]
 fn assert_sample_level(frames: &[hex_engine::Frame], expected: f32) {
-    assert!(
-        frames
-            .iter()
-            .flatten()
-            .all(|sample| (*sample - expected).abs() < 1e-5)
-    );
+    for (index, frame) in frames.iter().enumerate() {
+        assert!(
+            frame.iter().all(|sample| (*sample - expected).abs() < 1e-5),
+            "frame {index}: {frame:?}, expected {expected}"
+        );
+    }
 }
 
 fn status(h: &ResidentHarness) -> &hex_audio::prepared::Status {

@@ -1,5 +1,5 @@
-//! Exact paired cut of one hosted instrument and its existing authored gate.
-use super::{SessionPlayback, foreign_arrangement::FrameContext};
+//! Exact paired cut of one hosted instrument to a fresh receiver.
+use super::SessionPlayback;
 use crate::playback::{HostedInstrumentMove, HostedMoveRequest};
 use hex_lattice::ProcessorChainOwner;
 
@@ -51,10 +51,7 @@ impl SessionPlayback {
             .tracks()
             .iter()
             .position(|row| row.canonical_track_id() == Some(request.receiver))?;
-        if source == destination
-            || (request.physical_owner != request.donor
-                && request.physical_owner != request.receiver)
-        {
+        if source == destination {
             return None;
         }
         for (index, (a, b)) in old.tracks().iter().zip(new.tracks()).enumerate() {
@@ -80,6 +77,7 @@ impl SessionPlayback {
         let from = donor.foreign_instrument.as_ref()?;
         let to = receiver.foreign_instrument.as_ref()?;
         let processor = from.foreign_processor()?;
+        let successor = to.foreign_processor()?;
         if old_empty.instrument_id.is_some()
             || new_empty.instrument_id.is_some()
             || old_empty.source_id().is_some()
@@ -89,8 +87,8 @@ impl SessionPlayback {
             || !donor.instrument_config_matches(receiver)
             || donor.source_receiver_index() != Some(source)
             || receiver.source_receiver_index() != Some(destination)
-            || from.owner != ProcessorChainOwner::Track(request.physical_owner.value())
-            || to.owner != from.owner
+            || from.owner != ProcessorChainOwner::Track(request.donor.value())
+            || to.owner != ProcessorChainOwner::Track(request.receiver.value())
             || from.device_id != request.device.value()
             || to.device_id != from.device_id
             || from.configuration != to.configuration
@@ -100,11 +98,16 @@ impl SessionPlayback {
             || !to.automation.is_empty()
             || from.modulation.is_some()
             || to.modulation.is_some()
-            || processor.quantum_frames() != 256
-            || processor.processor_latency_frames() != 0
-            || processor.bridge_latency_frames() != 512
-            || processor.binding() != Some(request.binding)
-            || to.foreign_processor() != Some(processor)
+            || [processor, successor].into_iter().any(|facts| {
+                !facts.is_instrument_profile()
+                    || facts.quantum_frames() != 256
+                    || facts.processor_latency_frames() != 0
+                    || facts.bridge_latency_frames() != 512
+            })
+            || processor.binding() != Some(request.donor_binding)
+            || successor.binding() != Some(request.receiver_binding)
+            || request.donor_binding == request.receiver_binding
+            || request.donor_binding.root != request.receiver_binding.root
         {
             return None;
         }
@@ -112,47 +115,15 @@ impl SessionPlayback {
             .compensation
             .as_ref()
             .zip(previous.compensation.as_ref())?;
-        let movement = HostedTrackCut {
-            source,
-            destination,
-            request,
-        };
         if !next.can_copy_hosted_move_from(old, request.donor, request.receiver)
-            || !previous.foreign_arrangement.has_direct_move_gate(
-                source,
-                movement.authored_track(
-                    self.revision.arrangement().tracks(),
-                    previous.revision.arrangement().tracks(),
-                )?,
-                request.physical_owner,
-                FrameContext {
-                    performance: previous.performance_frame,
-                    arrangement: previous.arrangement_frame,
-                    loop_pass: previous.arrangement_loop_pass,
-                    playing: true,
-                    chase: false,
-                    interactive_onset_floor: None,
-                },
-            )
+            || !previous.foreign_arrangement.can_retire_direct_move(source)
         {
             return None;
         }
-        Some(movement)
-    }
-}
-
-impl HostedTrackCut {
-    // The original note must still be authored by the physical worker's first
-    // track. On return that track's MIDI program is compiled on the successor.
-    pub(super) fn authored_track<'a>(
-        self,
-        next: &'a [crate::Track],
-        previous: &'a [crate::Track],
-    ) -> Option<&'a crate::Track> {
-        if self.request.physical_owner == self.request.receiver {
-            next.get(self.destination)
-        } else {
-            previous.get(self.source)
-        }
+        Some(HostedTrackCut {
+            source,
+            destination,
+            request,
+        })
     }
 }

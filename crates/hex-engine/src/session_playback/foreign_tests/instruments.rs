@@ -9,7 +9,7 @@ const VST3: DeviceTypeId = DeviceTypeId::from_static("hex.vst3");
 struct InstrumentDefinition {
     identity: ProcessorInstanceIdentity,
     second: Option<ProcessorInstanceIdentity>,
-    retained_receiver: Option<ProcessorInstanceIdentity>,
+    paired_move_timing: bool,
     instrument_profile: bool,
     epoch: u64,
 }
@@ -60,22 +60,6 @@ impl NativeDeviceMetadata for InstrumentDefinition {
 }
 
 impl NativeDeviceDefinition for InstrumentDefinition {
-    fn retained_foreign_instrument_identity(
-        &self,
-        identity: ProcessorInstanceIdentity,
-        state: &NativeDeviceState,
-        context: &DevicePreparationContext<'_>,
-    ) -> Result<ProcessorInstanceIdentity, DeviceContractError> {
-        if self.retained_receiver != Some(identity) {
-            return Ok(identity);
-        }
-        self.migrate_state(state)?;
-        if context.sample_rate != 48_000 {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        Ok(self.identity)
-    }
-
     fn prepare_matrix(
         &self,
         state: &NativeDeviceState,
@@ -96,7 +80,7 @@ impl NativeDeviceDefinition for InstrumentDefinition {
         {
             return Err(DeviceContractError::InvalidId);
         }
-        let (quantum, latency, bridge) = if self.retained_receiver.is_some() {
+        let (quantum, latency, bridge) = if self.paired_move_timing {
             (256, 0, 512)
         } else {
             (8, 3, 16)
@@ -210,7 +194,7 @@ fn prepare_instruments_with_media(
     let definition = InstrumentDefinition {
         identity,
         second,
-        retained_receiver: None,
+        paired_move_timing: false,
         instrument_profile,
         epoch,
     };
@@ -1926,7 +1910,7 @@ fn confirmed_hosted_main_append_keeps_the_original_instrument_gate() {
     let synth = InstrumentDefinition {
         identity: instrument,
         second: None,
-        retained_receiver: None,
+        paired_move_timing: false,
         instrument_profile: true,
         epoch: 1,
     };
@@ -2141,7 +2125,7 @@ fn moving_a_wrapped_loop_keeps_foreign_gates_through_live_effect_edits() {
         let synth = InstrumentDefinition {
             identity: instrument,
             second: None,
-            retained_receiver: None,
+            paired_move_timing: false,
             instrument_profile: true,
             epoch: 1,
         };
@@ -2523,7 +2507,7 @@ fn timed_mixed_pages_and_foreign_instrument_keep_offsets_and_refusal() {
     let definition = InstrumentDefinition {
         identity,
         second: None,
-        retained_receiver: None,
+        paired_move_timing: false,
         instrument_profile: true,
         epoch: 1,
     };

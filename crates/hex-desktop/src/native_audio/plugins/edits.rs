@@ -4,23 +4,21 @@
 //! intent or shutdown cancels preparation without consuming another request.
 use super::*;
 use hex_audio::prepared::{AppliedAudioSource, PublicationControl};
-use hex_engine::playback::{HostedMoveRequest, HostedTrackEffectMove};
+use hex_engine::playback::{HostedInstrumentMove, HostedMoveRequest, HostedTrackEffectMove};
 use hex_session::service::RequestCancellation;
 mod authored;
 
 impl Plugins {
-    pub(super) fn retained_instrument_move(
+    pub(super) fn fresh_instrument_move(
         &self,
-        output: Option<&mut WorkerPreparedOutput>,
+        control: &PublicationControl,
         input: &ResidentEffectPreparation<'_>,
         desired: Option<&CanonicalAudioSourceSnapshot>,
+        bindings: &[Binding],
     ) -> Result<Option<hosted_move::MoveRoute>, String> {
         let Some(route) = input.hosted_instrument_move() else {
             return Ok(None);
         };
-        let control = output
-            .and_then(|output| output.publication.control())
-            .ok_or("native output closed")?;
         if !control
             .status
             .playing
@@ -31,6 +29,7 @@ impl Plugins {
         let predecessor = retained_move_predecessor(control, route.predecessor, input, desired)?;
         let device = route.device.value();
         let donor = ProcessorChainOwner::Track(route.donor.value());
+        let receiver = ProcessorChainOwner::Track(route.receiver.value());
         let mut sources = self.sources.iter().filter(|source| {
             source.owner == donor
                 && source.device == device
@@ -62,33 +61,32 @@ impl Plugins {
         {
             return Err("running vst3 move requires one settled instrument route".into());
         }
-        let physical_owner = if let Some(hosted_move::AdoptedRoute {
-            request: HostedMoveRequest::Instrument(installed),
-            ..
-        }) = self.adopted_move(input.context())
-        {
-            if installed.receiver != route.donor
-                || installed.physical_owner != route.receiver
-                || installed.device != route.device
-                || installed.binding != source.binding
-            {
-                return Err(
-                    "running vst3 move must return the original worker to its first track".into(),
-                );
-            }
-            installed.physical_owner
-        } else {
-            route.donor
-        };
+        let mut prepared = self.sources.iter().filter(|candidate| {
+            candidate.owner == receiver
+                && candidate.device == device
+                && candidate.project_generation == predecessor.context.project_generation
+                && !candidate.accepted
+                && !candidate.retiring
+                && candidate.operation.edit_context() == Some(input.context())
+                && candidate.binding.root == predecessor.output_identity
+                && candidate.binding != source.binding
+                && bindings.contains(&candidate.binding)
+        });
+        let fresh = prepared
+            .next()
+            .ok_or("fresh vst3 move worker is unavailable")?;
+        if prepared.next().is_some() {
+            return Err("fresh vst3 move worker is ambiguous".into());
+        }
         Ok(Some(hosted_move::MoveRoute::prepare(
             input.context(),
             route.predecessor,
-            HostedMoveRequest::Instrument(hex_engine::playback::HostedInstrumentMove {
+            HostedMoveRequest::Instrument(HostedInstrumentMove {
                 donor: route.donor,
                 receiver: route.receiver,
-                physical_owner,
                 device: route.device,
-                binding: source.binding,
+                donor_binding: source.binding,
+                receiver_binding: fresh.binding,
             }),
             predecessor,
         )))
