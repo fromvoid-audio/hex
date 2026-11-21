@@ -1,7 +1,7 @@
 //! Non-destructive intervals within an ordinary processing root or a frame-fixed
 //! container of independently retained complete roots.
 //! IDs are local to this sequence; callers scope references to clip/revision.
-use crate::{AudioClipEdit, AudioEventFade, Clip, ClipId, Invalid, Project};
+use crate::{AudioClipEdit, AudioEventFade, Clip, ClipId, Invalid, Project, WarpSettings};
 use std::sync::Arc;
 
 pub const MAX_AUDIO_EVENTS: usize = 1_024;
@@ -77,6 +77,12 @@ pub enum AudioEventEdit {
         sources: Vec<u64>,
         events: Vec<u64>,
         active: bool,
+    },
+    /// Edit markers in a grouped event's retained leaf without changing its
+    /// output clock or other events that read the same source.
+    SetRetainedWarp {
+        event: u64,
+        settings: WarpSettings,
     },
     SetFade {
         event: u64,
@@ -362,6 +368,69 @@ impl AudioEvents {
         }
         Ok(())
     }
+    fn set_retained_warp(&mut self, event: u64, settings: WarpSettings) -> Result<(), Invalid> {
+        let index = self
+            .events
+            .iter()
+            .position(|candidate| candidate.id == event && candidate.active)
+            .ok_or(Invalid("active audio event no longer exists"))?;
+        let source_id = self.events[index].source;
+        let source_index = self
+            .sources
+            .iter()
+            .position(|root| root.id == source_id)
+            .ok_or(Invalid("audio event has no retained warp source"))?;
+        let original = &self.sources[source_index];
+        let mut edit = original.clip.audio_event_root();
+        let current = edit
+            .domain
+            .warp
+            .as_ref()
+            .filter(|_| edit.domain.warp_enabled)
+            .ok_or(Invalid(
+                "enable warp on the retained source before editing markers",
+            ))?;
+        if original.clip.has_retained_audio_roots()
+            || current.mode != settings.mode
+            || current.markers.first() != settings.markers.first()
+            || current.markers.last() != settings.markers.last()
+        {
+            return Err(Invalid(
+                "grouped marker edits must keep the retained source bounds and mode",
+            ));
+        }
+        if current == &settings {
+            return Ok(());
+        }
+        Arc::make_mut(&mut edit.domain).warp = Some(settings);
+        let edit = Some(Arc::new(edit));
+        if self
+            .events
+            .iter()
+            .enumerate()
+            .any(|(other, event)| other != index && event.source == source_id)
+        {
+            if self.sources.len() >= MAX_AUDIO_EVENTS {
+                return Err(Invalid("grouped audio source limit reached"));
+            }
+            let mut fork = original.clone();
+            fork.id = self
+                .sources
+                .iter()
+                .map(|root| root.id)
+                .max()
+                .unwrap_or(0)
+                .checked_add(1)
+                .ok_or(Invalid("retained audio source identity exhausted"))?;
+            fork.clip.edit = edit;
+            self.events[index].source = fork.id;
+            self.sources.push(fork);
+        } else {
+            self.sources[source_index].clip.edit = edit;
+        }
+        Ok(())
+    }
+
     fn edited_inner(&self, operation: AudioEventEdit, length: u64) -> Result<Self, Invalid> {
         self.validate_geometry(length)?;
         let mut next = self.clone();
@@ -431,6 +500,9 @@ impl AudioEvents {
                     }
                 };
                 next.edit_retained(source, operation)?;
+            }
+            AudioEventEdit::SetRetainedWarp { event, settings } => {
+                next.set_retained_warp(event, settings)?;
             }
             AudioEventEdit::SetGain { event, gain } => {
                 next.events
@@ -792,14 +864,25 @@ pub(crate) fn apply(
         | AudioEventEdit::SetRetainedGain { sources, .. } => sources.first().copied(),
         _ => None,
     };
+    let warp_event = match &operation {
+        AudioEventEdit::SetRetainedWarp { event, .. } => Some(*event),
+        _ => None,
+    };
     let next = events.edited(operation, edit.domain.clock.length())?;
     if next == events {
         return Ok(());
     }
+    let changed_source = retained_source.or_else(|| {
+        warp_event.and_then(|id| {
+            next.events
+                .iter()
+                .find(|event| event.id == id)
+                .map(|event| event.source)
+        })
+    });
     // Validate retained roots against their original media and processing clock
     // before installing any changed source into the candidate clip.
-    if let Some(root) =
-        retained_source.and_then(|id| next.sources.iter().find(|root| root.id == id))
+    if let Some(root) = changed_source.and_then(|id| next.sources.iter().find(|root| root.id == id))
     {
         project.restore_retained_audio_root(
             root.id,
@@ -1098,6 +1181,131 @@ mod tests {
         expected.next_id = editor.project().snapshot().next_id;
         assert_eq!(editor.project().snapshot(), expected);
     }
+    #[test]
+    fn grouped_warp_forks_only_the_selected_retained_audio_source() {
+        use crate::{BeatTime, ClipFade, Command, Created, Editor};
+
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Imported { track, asset, clip } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "warp source".into(),
+                path: "warp.wav".into(),
+                sample_rate: 48_000,
+                frames: 96_000,
+            })
+            .unwrap()
+        else {
+            panic!("audio source");
+        };
+        let mut warp = editor
+            .project()
+            .audio_warp_settings_for_enable(clip)
+            .unwrap();
+        assert!(warp.insert_marker(24_000).unwrap());
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(warp.clone()),
+            })
+            .unwrap();
+        let Created::Clip(other) = editor
+            .execute(Command::PlaceClip {
+                track,
+                asset,
+                start: 97_000,
+                duration: 1_000,
+                source_offset: 0,
+                source_length: 1_000,
+                looping: false,
+            })
+            .unwrap()
+        else {
+            panic!("adjacent audio");
+        };
+        let Created::Clip(group) = editor
+            .execute(Command::GroupClips(vec![clip, other]))
+            .unwrap()
+        else {
+            panic!("group");
+        };
+        let command = |operation| Command::EditAudioEvents {
+            clip: group,
+            operation,
+        };
+        editor
+            .execute(command(AudioEventEdit::Split { at: 48_000 }))
+            .unwrap();
+        editor
+            .execute(command(AudioEventEdit::SetFade {
+                event: 1,
+                fade: Some(
+                    AudioEventFade::new(0, ClipFade::new(48_000, 0, 64, 32).unwrap()).unwrap(),
+                ),
+            }))
+            .unwrap();
+        let before = editor.project().clone();
+        let events = before.clip(group).unwrap().audio_events();
+        let [selected, sibling, _] = events.events.as_slice() else {
+            panic!("split retained events");
+        };
+        assert_eq!(selected.source, sibling.source);
+        assert_ne!(selected.source, 0);
+
+        let mut shifted = warp.clone();
+        let beat = shifted.markers[1].beat.raw();
+        assert!(
+            shifted
+                .move_marker(24_000, BeatTime::from_raw(beat + BeatTime::ONE.raw() / 8))
+                .unwrap()
+        );
+        editor
+            .execute(command(AudioEventEdit::SetRetainedWarp {
+                event: selected.id,
+                settings: shifted.clone(),
+            }))
+            .unwrap();
+        let after = editor.project().clone();
+        let changed = after.clip(group).unwrap().audio_events();
+        assert_eq!(changed.events[1..], events.events[1..]);
+        assert_eq!(changed.sources.len(), events.sources.len() + 1);
+        assert_eq!(changed.sources[..events.sources.len()], events.sources);
+        let edited = changed.events[0];
+        assert_ne!(edited.source, selected.source);
+        assert_eq!(
+            AudioEvent {
+                source: selected.source,
+                ..edited
+            },
+            *selected
+        );
+        let fork = changed
+            .sources
+            .iter()
+            .find(|root| root.id == edited.source)
+            .unwrap();
+        assert_eq!(
+            fork.clip.audio_edit().unwrap().domain.warp.as_ref(),
+            Some(&shifted)
+        );
+        assert_eq!(Project::from_snapshot(after.snapshot()).unwrap(), after);
+
+        let mut invalid = shifted.clone();
+        invalid.markers[1].beat = invalid.markers[0].beat;
+        assert!(
+            editor
+                .execute(command(AudioEventEdit::SetRetainedWarp {
+                    event: selected.id,
+                    settings: invalid,
+                }))
+                .is_err()
+        );
+        assert_eq!(editor.project(), &after);
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &before);
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &after);
+    }
+
     #[test]
     fn canonical_events_undo_and_outer_splits_keep_the_full_retained_sequence() {
         use crate::{Command, Created, Editor};
