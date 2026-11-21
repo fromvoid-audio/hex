@@ -49,7 +49,7 @@ impl SignalGraph {
             }
             _ => return None,
         };
-        let has_delay = |graph: &Self, output| {
+        let has_delay = |graph: &Self, output: usize| {
             let index = *graph.pre_main_edges.get(output)?;
             Some(graph.plan.edges().get(index)?.delay_frames != 0)
         };
