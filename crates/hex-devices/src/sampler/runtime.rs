@@ -64,6 +64,11 @@ pub struct PreparedSamplerRuntime {
 
 impl PartialEq for PreparedSamplerRuntime {
     fn eq(&self, other: &Self) -> bool {
+        if self.configuration == other.configuration
+            && self.gain_modulation == other.gain_modulation
+        {
+            return true;
+        }
         let Self {
             configuration: _,
             notes,
@@ -667,6 +672,9 @@ impl MutableInstrumentRuntime for SamplerRuntime {
         {
             return Err(Error::ResourceUnavailable);
         }
+        if events.is_empty() && self.is_quiescent() {
+            return Ok(());
+        }
         let mut active = self.active;
         let mut fading = self.fading;
         let mut cursor = 0;
@@ -840,6 +848,9 @@ impl SamplerRuntime {
                 base
             }
         };
+        if events.is_empty() && self.is_quiescent() {
+            return;
+        }
         let mut active = self.active;
         let mut fading = self.fading;
         let fade = self.prepared.steal_fade_frames() as f64;

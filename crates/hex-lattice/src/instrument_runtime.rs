@@ -62,6 +62,18 @@ pub trait NativeInstrumentClock {
     fn transport_is_running(&self) -> Option<bool> {
         None
     }
+    /// Optional block-level fast query: returns `Some((first_arrangement, first_performance))`
+    /// only when `transport_is_running() == Some(true)` and every offset
+    /// `first_offset + i` for `i in 0..len` has exact consecutive arrangement
+    /// and performance frames `(first_arrangement + i, first_performance + i)`.
+    fn contiguous_running_frames(&self, _first_offset: usize, _len: usize) -> Option<(u64, u64)> {
+        None
+    }
+    /// Optional block-level fast query: returns `Some(tempo)` only when every
+    /// offset `first_offset + i` for `i in 0..len` reports `Some(tempo)`.
+    fn constant_tempo_micro_bpm(&self, _first_offset: usize, _len: usize) -> Option<u32> {
+        None
+    }
 }
 
 /// A controller value on an instrument's logical MIDI channel. Notes retain

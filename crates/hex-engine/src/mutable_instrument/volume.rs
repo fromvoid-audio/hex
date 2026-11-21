@@ -82,7 +82,25 @@ impl GainBatch {
         &self.values[..self.len]
     }
 }
+pub(super) fn needs_gains(
+    frames: usize,
+    has_lookup: bool,
+    proofs: &[MutableOccurrence],
+    live: &[Option<super::live::LiveOccurrence>],
+) -> bool {
+    !(frames == 0
+        || (!has_lookup
+            && proofs
+                .iter()
+                .all(|p| p.gain_at_end_bits == 1.0_f64.to_bits() && p.contributor_fade.is_none())
+            && live
+                .iter()
+                .flatten()
+                .all(|voice| voice.contributor_fade.is_none())))
+}
+
 #[allow(clippy::too_many_arguments)] // Borrowed segment owners and distinct source/performance clocks.
+#[inline(never)]
 pub(super) fn gains_for_segment(
     pair: &NativeInstrumentRuntimePair,
     proofs: &mut [MutableOccurrence],
@@ -93,16 +111,7 @@ pub(super) fn gains_for_segment(
     frames: usize,
     mut lookup: Option<&mut VolumeLookup<'_>>,
 ) -> Result<Option<GainBatch>, MutableInstrumentRuntimeError> {
-    if frames == 0
-        || (lookup.is_none()
-            && proofs
-                .iter()
-                .all(|p| p.gain_at_end_bits == 1.0_f64.to_bits() && p.contributor_fade.is_none())
-            && live
-                .iter()
-                .flatten()
-                .all(|voice| voice.contributor_fade.is_none()))
-    {
+    if !needs_gains(frames, lookup.is_some(), proofs, live) {
         return Ok(None);
     }
     if proofs.len() > MAX_MUTABLE_OCCURRENCE_PROOFS || proofs.windows(2).any(|p| p[0].id >= p[1].id)

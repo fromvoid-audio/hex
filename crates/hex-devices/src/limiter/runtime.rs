@@ -142,6 +142,36 @@ impl Stage {
     fn quiet(&self) -> bool {
         self.scalar.nonzero == 0
     }
+    fn is_idle_unity(&self, config: &Config) -> bool {
+        let s = &self.scalar;
+        if s.nonzero != 0
+            || s.gain != [1.0; 2]
+            || s.program != [0.0; 2]
+            || s.attack_step != [0.0; 2]
+            || (s.len[0] > 0 && self.peaks[0][s.head[0]].value != 0.0)
+            || (s.len[1] > 0 && self.peaks[1][s.head[1]].value != 0.0)
+            || s.input.iter().any(|v| *v != [0.0; 2])
+        {
+            return false;
+        }
+        if config.true_peak {
+            let window = config.delay + 1;
+            if self.signal[..window]
+                .iter()
+                .any(|sample| sample.detector != [0.0; 2])
+            {
+                return false;
+            }
+        }
+        true
+    }
+    fn advance_silent(&mut self, count: usize, window: usize) {
+        let s = &mut self.scalar;
+        s.next = (s.next + count) % window;
+        s.input_next = (s.input_next + count) % TAPS;
+        s.stamp = s.stamp.wrapping_add(count as u64);
+        s.len = [0, 0];
+    }
     fn reset(&mut self) {
         self.signal.fill(Sample::default());
         self.scalar = Scalar::default();
@@ -249,19 +279,6 @@ impl Stage {
             } else if s.gain[lane] >= 0.999999 {
                 s.program[lane] = 0.0;
             }
-            let coefficient = if physical_guard {
-                config.guard_release_coefficient
-            } else if parameters.auto_release {
-                let seconds = 0.05 + 0.22 * s.program[lane];
-                1.0 - (-1.0 / (seconds * f64::from(config.rate))).exp()
-            } else {
-                parameters.release_coefficient
-            };
-            let coefficient = if config.true_peak {
-                coefficient.min(config.antimodulation_coefficient)
-            } else {
-                coefficient
-            };
             let mut gain = if target < s.gain[lane] && !config.soft_clip {
                 if config.true_peak {
                     s.attack_step[lane] = 0.0;
@@ -275,7 +292,24 @@ impl Stage {
                 }
             } else {
                 s.attack_step[lane] = 0.0;
-                target.min(s.gain[lane] + coefficient * (target - s.gain[lane]))
+                if target == s.gain[lane] {
+                    target
+                } else {
+                    let coefficient = if physical_guard {
+                        config.guard_release_coefficient
+                    } else if parameters.auto_release {
+                        let seconds = 0.05 + 0.22 * s.program[lane];
+                        1.0 - (-1.0 / (seconds * f64::from(config.rate))).exp()
+                    } else {
+                        parameters.release_coefficient
+                    };
+                    let coefficient = if config.true_peak {
+                        coefficient.min(config.antimodulation_coefficient)
+                    } else {
+                        coefficient
+                    };
+                    target.min(s.gain[lane] + coefficient * (target - s.gain[lane]))
+                }
             };
             let immediate_peak = immediate[lane] + link * (immediate_worst - immediate[lane]);
             if immediate_peak > parameters.ceiling {
@@ -670,6 +704,26 @@ impl Runtime {
         }
         if !self.releasing && !frames.is_empty() {
             self.restore_controls();
+        }
+        if !frames.is_empty()
+            && self.scratch.gain == self.scratch.parameters.gain
+            && self.scratch.output == self.scratch.parameters.output
+            && self.scratch.first.is_idle_unity(&self.config)
+            && self
+                .scratch
+                .final_stage
+                .as_ref()
+                .is_none_or(|stage| stage.is_idle_unity(&self.config))
+            && frames
+                .iter()
+                .all(|f| (f[0].to_bits() | f[1].to_bits()) == 0)
+        {
+            let window = self.config.delay + 1;
+            self.scratch.first.advance_silent(frames.len(), window);
+            if let Some(final_stage) = &mut self.scratch.final_stage {
+                final_stage.advance_silent(frames.len(), window);
+            }
+            return;
         }
         let mut stats = BlockStats::new();
         for frame in frames {

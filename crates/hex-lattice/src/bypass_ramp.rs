@@ -139,6 +139,33 @@ impl AlignedDry {
         let (frames, next) = self.parts_mut();
         advance(frames, next, input)
     }
+    /// Advance the ring with a whole block when the shifted-out dry samples are
+    /// unused. Exact same final ring contents and cursor as calling `advance`
+    /// for each frame in `input`.
+    pub(crate) fn advance_discard(&mut self, input: &[[f32; 2]]) {
+        if input.is_empty() {
+            return;
+        }
+        let (ring, next) = self.parts_mut();
+        let cap = ring.len();
+        if cap == 0 {
+            return;
+        }
+        if input.len() >= cap {
+            let tail = &input[input.len() - cap..];
+            let new_next = (*next + input.len()) % cap;
+            let first = cap - new_next;
+            ring[new_next..].copy_from_slice(&tail[..first]);
+            ring[..new_next].copy_from_slice(&tail[first..]);
+            *next = new_next;
+        } else {
+            let first = input.len().min(cap - *next);
+            ring[*next..*next + first].copy_from_slice(&input[..first]);
+            let second = input.len() - first;
+            ring[..second].copy_from_slice(&input[first..]);
+            *next = (*next + input.len()) % cap;
+        }
+    }
     pub(crate) fn main_pass_latency_frames(&self) -> Option<u32> {
         let len = self.parts().0.len();
         (1..=MAX_NATIVE_MAIN_PASS_DRY_FRAMES)
@@ -589,6 +616,40 @@ mod tests {
                 assert_eq!(actual[0], actual[1]);
             }
             current = next;
+        }
+    }
+
+    #[test]
+    fn aligned_dry_advance_discard_matches_frame_by_frame_advance() {
+        for cap in [1, 4, 11, 66] {
+            for len in [0, 1, 3, 4, 11, 17, 66, 256] {
+                let make = |cap: usize| {
+                    super::AlignedDry::new(Some(cap as u32))
+                        .unwrap_or_else(|| super::AlignedDry::reserved(cap as u32).unwrap())
+                };
+                let mut block = make(cap);
+                let mut scalar = make(cap);
+                // Prime to a non-zero cursor before testing the batch call.
+                for i in 0..(cap / 2 + 1) {
+                    let f = [i as f32 * 0.1, -(i as f32) * 0.2];
+                    assert_eq!(block.advance(f), scalar.advance(f));
+                }
+                let input: Vec<[f32; 2]> = (0..len)
+                    .map(|i| [(i as f32 + 1.0) * 0.01, -((i as f32 + 1.0) * 0.02)])
+                    .collect();
+                block.advance_discard(&input);
+                for &f in &input {
+                    scalar.advance(f);
+                }
+                for k in 0..cap {
+                    let sentinel = [-(k as f32) - 1.0, k as f32 + 1.0];
+                    assert_eq!(
+                        block.advance(sentinel),
+                        scalar.advance(sentinel),
+                        "cap={cap} len={len} drain={k}"
+                    );
+                }
+            }
         }
     }
 }

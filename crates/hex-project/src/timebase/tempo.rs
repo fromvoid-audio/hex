@@ -182,6 +182,77 @@ impl TempoMap {
         Ok(beat)
     }
 
+    /// Fill `out` with the exact `frame_to_beat(start_frame + i)` values when
+    /// the entire range `[start_frame, start_frame + out.len())` lies strictly
+    /// inside a single constant-tempo segment. Returns `Some(tempo)` on hit, or
+    /// `None` if a segment boundary or overflow requires per-frame conversion.
+    pub fn fill_constant_segment_beats(
+        &self,
+        start_frame: u64,
+        out: &mut [BeatTime],
+    ) -> Option<Tempo> {
+        if out.is_empty() {
+            return None;
+        }
+        let end_frame = start_frame.checked_add((out.len() - 1) as u64)?;
+        let factor = FRAME_FACTOR_NUMERATOR * u128::from(self.sample_rate);
+        let segment = {
+            let mut low = 0_usize;
+            let mut high = self.points.len();
+            while low < high {
+                let middle = low + (high - low) / 2;
+                if round_frame_q32(self.frame_prefix_q32[middle]) <= u128::from(start_frame) {
+                    low = middle + 1;
+                } else {
+                    high = middle;
+                }
+            }
+            low.saturating_sub(1)
+        };
+        if segment + 1 < self.points.len()
+            && round_frame_q32(self.frame_prefix_q32[segment + 1]) <= u128::from(end_frame)
+        {
+            return None;
+        }
+        let boundary_frame = round_frame_q32(self.frame_prefix_q32[segment]);
+        if boundary_frame >= u128::from(start_frame) {
+            return None;
+        }
+        // Validate both endpoints with the canonical inverse before stepping.
+        let first_expected = self.frame_to_beat(start_frame).ok()?;
+        let last_expected = self.frame_to_beat(end_frame).ok()?;
+        let tempo = self.points[segment].tempo;
+        let micro_bpm = u128::from(tempo.micro_bpm());
+        let base_raw = u128::from(self.points[segment].beat.raw());
+        let delta_frame_q32 = (u128::from(start_frame) << FRAME_FRACTION_BITS)
+            .checked_sub(self.frame_prefix_q32[segment])?;
+        let scaled = delta_frame_q32.checked_mul(micro_bpm)?;
+        let step_num = micro_bpm << FRAME_FRACTION_BITS;
+        let step_q = step_num / factor;
+        let step_r = step_num % factor;
+        let mut q = scaled / factor;
+        let mut r = scaled % factor;
+        let first_raw = base_raw.checked_add(q + u128::from(r >= factor - r))?;
+        if u64::try_from(first_raw).ok() != Some(first_expected.raw()) {
+            return None;
+        }
+        out[0] = first_expected;
+        for slot in &mut out[1..] {
+            q += step_q;
+            r += step_r;
+            if r >= factor {
+                r -= factor;
+                q += 1;
+            }
+            let raw = base_raw + q + u128::from(r >= factor - r);
+            *slot = BeatTime::from_raw(u64::try_from(raw).ok()?);
+        }
+        if out[out.len() - 1] != last_expected {
+            return None;
+        }
+        Some(tempo)
+    }
+
     /// Return the first raw Q32.32 beat whose forward rounded frame is at least
     /// `frame`. If no representable beat reaches that frame, return
     /// [`Self::BEAT_RANGE_SENTINEL`]. Frame zero starts at beat zero.
@@ -600,5 +671,41 @@ mod tests {
         assert_eq!(ceil_ratio(4, 2).unwrap(), 2);
         assert_eq!(ceil_ratio(5, 2).unwrap(), 3);
         assert!(ceil_ratio(1, 0).is_err());
+    }
+
+    #[test]
+    fn fill_constant_segment_beats_matches_frame_to_beat_and_falls_back_at_boundaries() {
+        for sample_rate in [44_100, 48_000, 96_000] {
+            let map = TempoMap::new(
+                sample_rate,
+                vec![
+                    TempoPoint::new(BeatTime::ZERO, tempo(138_000_000)),
+                    TempoPoint::new(BeatTime::from_raw(4 << 32), tempo(97_654_321)),
+                ],
+            )
+            .unwrap();
+            let boundary = map.beat_to_frame(BeatTime::from_raw(4 << 32)).unwrap();
+            let mut beats = [BeatTime::ZERO; 256];
+            // Strictly inside segment 0.
+            let t0 = map.fill_constant_segment_beats(1, &mut beats).unwrap();
+            assert_eq!(t0.micro_bpm(), 138_000_000);
+            for (i, &beat) in beats.iter().enumerate() {
+                assert_eq!(beat, map.frame_to_beat(1 + i as u64).unwrap());
+            }
+            // Crossing the tempo boundary must return None to force per-frame conversion.
+            assert!(
+                map.fill_constant_segment_beats(boundary - 10, &mut beats)
+                    .is_none()
+            );
+            assert!(map.fill_constant_segment_beats(0, &mut beats).is_none());
+            // Strictly inside segment 1.
+            let t1 = map
+                .fill_constant_segment_beats(boundary + 1, &mut beats)
+                .unwrap();
+            assert_eq!(t1.micro_bpm(), 97_654_321);
+            for (i, &beat) in beats.iter().enumerate() {
+                assert_eq!(beat, map.frame_to_beat(boundary + 1 + i as u64).unwrap());
+            }
+        }
     }
 }

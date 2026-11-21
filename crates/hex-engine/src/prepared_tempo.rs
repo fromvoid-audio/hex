@@ -184,6 +184,16 @@ impl PreparedTempoMap {
             .map_err(|error| PreparedTempoError::FrameToBeat(error.0))
     }
 
+    pub(crate) fn fill_constant_segment_beats(
+        &self,
+        start_frame: u64,
+        out: &mut [BeatTime],
+    ) -> Option<u32> {
+        self.canonical
+            .fill_constant_segment_beats(start_frame, out)
+            .map(|tempo| tempo.micro_bpm())
+    }
+
     /// Find the first raw Q32.32 beat whose canonical forward conversion is at
     /// least `frame`. Returns `u64::MAX + 1` when no representable beat reaches
     /// the requested frame. This is distinct from the latest-boundary inverse.
@@ -693,6 +703,71 @@ impl<'a> SessionTimingView<'a> {
         match base {
             SessionBaseTimingView::Canonical(map) => Self::Canonical(map),
             SessionBaseTimingView::Periodic(map) => Self::Periodic(map),
+        }
+    }
+
+    /// Fill `out` with exact `frame_to_beat(start_frame + i)` values and return
+    /// the constant local `micro_bpm` when the entire range stays inside one
+    /// tempo segment (and one periodic cycle, if looping). Returns `None` to
+    /// fall back to per-frame conversion on any boundary.
+    pub(crate) fn fill_constant_range_beats(
+        self,
+        start_frame: u64,
+        out: &mut [BeatTime],
+    ) -> Option<u32> {
+        if out.is_empty() {
+            return None;
+        }
+        match self {
+            Self::Canonical(map) => map.fill_constant_segment_beats(start_frame, out),
+            Self::Periodic(view) => {
+                if start_frame < view.cycle.start_frame {
+                    let end = start_frame.checked_add((out.len() - 1) as u64)?;
+                    if end >= view.cycle.start_frame {
+                        return None;
+                    }
+                    return view.canonical.fill_constant_segment_beats(start_frame, out);
+                }
+                let elapsed = start_frame - view.cycle.start_frame;
+                let cycles = elapsed / view.cycle.frame_period;
+                let local_offset = elapsed % view.cycle.frame_period;
+                if local_offset == 0
+                    || local_offset.checked_add(out.len() as u64)? > view.cycle.frame_period
+                {
+                    return None;
+                }
+                let local_start = view.cycle.start_frame.checked_add(local_offset)?;
+                let micro_bpm = view
+                    .canonical
+                    .fill_constant_segment_beats(local_start, out)?;
+                if out[0] < view.cycle.start_beat || out[out.len() - 1] >= view.cycle.end_beat {
+                    return None;
+                }
+                if cycles > 0 {
+                    let lift =
+                        u128::from(cycles).checked_mul(u128::from(view.cycle.beat_period))?;
+                    let max_raw = lift.checked_add(u128::from(out[out.len() - 1].raw()))?;
+                    u64::try_from(max_raw).ok()?;
+                    let lift = u64::try_from(lift).ok()?;
+                    for beat in out.iter_mut() {
+                        *beat = BeatTime::from_raw(beat.raw() + lift);
+                    }
+                }
+                Some(micro_bpm)
+            }
+            Self::Anchored(view) => {
+                let micro_bpm =
+                    Self::from_base(view.base).fill_constant_range_beats(start_frame, out)?;
+                let first = view.shift_raw(u128::from(out[0].raw())).ok()?;
+                let last = view.shift_raw(u128::from(out[out.len() - 1].raw())).ok()?;
+                u64::try_from(first).ok()?;
+                u64::try_from(last).ok()?;
+                for beat in out.iter_mut() {
+                    let shifted = view.shift_raw(u128::from(beat.raw())).ok()?;
+                    *beat = BeatTime::from_raw(u64::try_from(shifted).ok()?);
+                }
+                Some(micro_bpm)
+            }
         }
     }
 }

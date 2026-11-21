@@ -1412,94 +1412,113 @@ impl MutableInstrumentTrackRuntime {
             };
             (event.frame_offset(), rank, occurrence_id)
         });
-        let gains = volume::gains_for_segment(
-            &self.pair,
-            &mut self.scratch,
-            self.live
-                .as_mut()
-                .map(|live| &mut live.scratch[..])
-                .unwrap_or(&mut []),
-            events,
-            performance_start,
-            source_age,
-            frames.len(),
-            volume,
-        )?;
         let resources = self
             .resources
             .as_ref()
             .map_or(resources, |lease| lease.resources());
-        if let Some(modulation) = &mut self.modulation {
-            let mut processed = Ok(());
-            modulation
-                .render_instrument_chunk(frames.len(), automation, clock, events, |values| {
-                    let mut render = |frames: &mut [hex_lattice::StereoFrame]| {
-                        self.pair.process_block_with_clock_and_automation(
-                            events,
-                            frames,
-                            clock,
-                            gains.as_ref().map_or(&[], |gains| gains.as_slice()),
-                            values,
-                            resources,
-                        )
-                    };
-                    if let Some(trim) = &mut self.output_trim {
-                        use crate::device_modulation::INSTRUMENT_MODULATION_CHUNK_FRAMES;
-                        use hex_lattice_contract::{DeviceContractError, HostGain};
-                        let mut output_gains = [HostGain::ZERO; INSTRUMENT_MODULATION_CHUNK_FRAMES];
-                        let output_gains = output_gains
-                            .get_mut(..frames.len())
-                            .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
-                        for (offset, gain) in output_gains.iter_mut().enumerate() {
-                            *gain = values.instrument_output_gain_at(offset)?;
-                        }
-                        processed = output_trim::render_contribution(
-                            frames,
-                            |offset| output_gains[offset].linear(),
-                            NativeInstrumentRuntimeError::InvalidParameterAutomation,
-                            render,
-                        );
-                        if processed.is_ok()
-                            && let Some(&last) = output_gains.last()
-                        {
-                            trim.scratch = last;
-                        }
-                    } else {
-                        processed = render(frames);
-                    }
-                    Ok(())
-                })
-                .map_err(|_| {
-                    map_runtime_error(NativeInstrumentRuntimeError::InvalidParameterAutomation)
-                })?;
-            if processed.is_err() {
-                modulation.rollback();
-            }
-            processed
-        } else if let Some(values) = automation {
-            self.pair.process_block_with_clock_and_automation(
-                events,
-                frames,
-                clock,
-                gains.as_ref().map_or(&[], |gains| gains.as_slice()),
-                values,
-                resources,
-            )
+        let needs_gains = volume::needs_gains(
+            frames.len(),
+            volume.is_some(),
+            &self.scratch,
+            self.live
+                .as_ref()
+                .map_or(&[], |live| live.scratch.as_slice()),
+        );
+        if !needs_gains && self.modulation.is_none() && automation.is_none() {
+            self.pair
+                .process_block_with_clock(events, frames, clock, resources)
+                .map_err(map_runtime_error)?;
         } else {
-            match gains {
-                Some(gains) => self.pair.process_block_with_clock_and_occurrence_gains(
+            let gains = if needs_gains {
+                volume::gains_for_segment(
+                    &self.pair,
+                    &mut self.scratch,
+                    self.live
+                        .as_mut()
+                        .map(|live| &mut live.scratch[..])
+                        .unwrap_or(&mut []),
+                    events,
+                    performance_start,
+                    source_age,
+                    frames.len(),
+                    volume,
+                )?
+            } else {
+                None
+            };
+            if let Some(modulation) = &mut self.modulation {
+                let mut processed = Ok(());
+                modulation
+                    .render_instrument_chunk(frames.len(), automation, clock, events, |values| {
+                        let mut render = |frames: &mut [hex_lattice::StereoFrame]| {
+                            self.pair.process_block_with_clock_and_automation(
+                                events,
+                                frames,
+                                clock,
+                                gains.as_ref().map_or(&[], |gains| gains.as_slice()),
+                                values,
+                                resources,
+                            )
+                        };
+                        if let Some(trim) = &mut self.output_trim {
+                            use crate::device_modulation::INSTRUMENT_MODULATION_CHUNK_FRAMES;
+                            use hex_lattice_contract::{DeviceContractError, HostGain};
+                            let mut output_gains =
+                                [HostGain::ZERO; INSTRUMENT_MODULATION_CHUNK_FRAMES];
+                            let output_gains = output_gains
+                                .get_mut(..frames.len())
+                                .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+                            for (offset, gain) in output_gains.iter_mut().enumerate() {
+                                *gain = values.instrument_output_gain_at(offset)?;
+                            }
+                            processed = output_trim::render_contribution(
+                                frames,
+                                |offset| output_gains[offset].linear(),
+                                NativeInstrumentRuntimeError::InvalidParameterAutomation,
+                                render,
+                            );
+                            if processed.is_ok()
+                                && let Some(&last) = output_gains.last()
+                            {
+                                trim.scratch = last;
+                            }
+                        } else {
+                            processed = render(frames);
+                        }
+                        Ok(())
+                    })
+                    .map_err(|_| {
+                        map_runtime_error(NativeInstrumentRuntimeError::InvalidParameterAutomation)
+                    })?;
+                if processed.is_err() {
+                    modulation.rollback();
+                }
+                processed
+            } else if let Some(values) = automation {
+                self.pair.process_block_with_clock_and_automation(
                     events,
                     frames,
                     clock,
-                    gains.as_slice(),
+                    gains.as_ref().map_or(&[], |gains| gains.as_slice()),
+                    values,
                     resources,
-                ),
-                None => self
-                    .pair
-                    .process_block_with_clock(events, frames, clock, resources),
+                )
+            } else {
+                match gains {
+                    Some(gains) => self.pair.process_block_with_clock_and_occurrence_gains(
+                        events,
+                        frames,
+                        clock,
+                        gains.as_slice(),
+                        resources,
+                    ),
+                    None => self
+                        .pair
+                        .process_block_with_clock(events, frames, clock, resources),
+                }
             }
+            .map_err(map_runtime_error)?;
         }
-        .map_err(map_runtime_error)?;
         if let Some(live) = &mut self.live {
             live.scratch_age = live
                 .scratch_age

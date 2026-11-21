@@ -601,6 +601,17 @@ impl NativeProcessorRuntime for SaturatorRuntime {
         frames: &mut [StereoFrame],
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
+        if self.gain_ramp_remaining == [0; 2]
+            && self.channels[0].is_drained()
+            && self.channels[1].is_drained()
+            && frames
+                .iter()
+                .all(|f| (f[0].to_bits() | f[1].to_bits()) == 0)
+            && self.delay.iter().flatten().all(|&v| v == 0.0)
+        {
+            self.delay_index = (self.delay_index + frames.len()) % LATENCY_FRAMES;
+            return;
+        }
         for frame in frames {
             self.render_frame(frame, false);
         }

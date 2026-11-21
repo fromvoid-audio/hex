@@ -435,7 +435,7 @@ impl PreparedNativeProcessor for PreparedOverdrive {
             kernel: self.kernel,
             delay: [[0.0; 3]; LATENCY_FRAMES],
             delay_index: 0,
-            silent_frames: 0,
+            silent_frames: self.rate * 4,
         };
         runtime.check_inline_ownership();
         Box::new(runtime)
@@ -524,9 +524,13 @@ impl OverdriveRuntime {
             return;
         }
         if *frame == [0.0; 2] {
-            self.silent_frames = self.silent_frames.saturating_add(1).min(self.rate * 4);
+            let limit = self.rate * 4;
+            if self.silent_frames >= limit {
+                return;
+            }
+            self.silent_frames = self.silent_frames.saturating_add(1).min(limit);
             // Explicit finite-tail guarantee, including all envelope/interpolator history.
-            if self.silent_frames == self.rate * 4 {
+            if self.silent_frames == limit {
                 self.clear_history();
                 return;
             }
@@ -609,7 +613,7 @@ impl NativeProcessorRuntime for OverdriveRuntime {
         self.current = self.targets;
         self.step = [0.0; 6];
         self.remaining = 0;
-        self.silent_frames = 0;
+        self.silent_frames = self.rate * 4;
     }
     fn is_quiescent(&self) -> bool {
         self.channels.iter().all(|c| {

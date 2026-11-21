@@ -118,7 +118,10 @@ struct Scalar {
     ramp_left: u32,
     tempo: u32,
     filters: [BandPass; 2],
+    tuned_frequency: f64,
+    tuned_width: f64,
     filter_tick: u32,
+    stale_slots: bool,
     lfo: Lfo,
 }
 impl Scalar {
@@ -127,13 +130,11 @@ impl Scalar {
         let times = timing_times(timing, rate, 120_000_000);
         let mix = f64::from(s.value(DRY_WET));
         let (dry_gain, wet_gain) = mix_gains(mix, s.flag(EQUAL_LOUDNESS));
+        let frequency = f64::from(s.value(FREQUENCY));
+        let width = f64::from(s.value(WIDTH));
         let mut filters = [BandPass::default(); 2];
         for f in &mut filters {
-            f.tune(
-                f64::from(s.value(FREQUENCY)),
-                f64::from(s.value(WIDTH)),
-                rate,
-            );
+            f.tune(frequency, width, rate);
         }
         Self {
             controls: crate::parameter_binding::Controls::new(
@@ -152,12 +153,15 @@ impl Scalar {
             dry_gain,
             wet_gain,
             filter_mix: f64::from(s.flag(FILTER)),
-            frequency: f64::from(s.value(FREQUENCY)),
-            width: f64::from(s.value(WIDTH)),
+            frequency,
+            width,
             ramp_left: 0,
             tempo: 120_000_000,
             filters,
+            tuned_frequency: frequency,
+            tuned_width: width,
             filter_tick: 0,
+            stale_slots: false,
             lfo: Lfo::default(),
         }
     }
@@ -328,6 +332,75 @@ impl Runtime {
             self.restore_controls();
         }
         let block = self.block_settings();
+        if frames.is_empty() {
+            return;
+        }
+        let constant_tempo = if let Some(clock) = clock {
+            clock.constant_tempo_micro_bpm(0, frames.len())
+        } else {
+            Some(self.speculative.tempo)
+        };
+        if let Some(tempo) = constant_tempo {
+            if tempo > 0 {
+                self.speculative.tempo = tempo;
+            }
+            let rate = self.rate;
+            let targets = *self.speculative.controls.effective_ref();
+            let lfo_inc = lfo_increment(targets.lfo, rate, self.speculative.tempo);
+            let base_times = timing_times(self.speculative.timing, rate, self.speculative.tempo);
+            let min_time = f64::from(rate) / 1000.0;
+            let max_time = f64::from(rate) * MAX_SECONDS as f64;
+            let clamped_times = [
+                base_times[0].clamp(min_time, max_time),
+                base_times[1].clamp(min_time, max_time),
+            ];
+            let s = &mut self.speculative;
+            if !block.freeze
+                && s.nonzero == 0
+                && !s.stale_slots
+                && s.ramp_left == 0
+                && s.fade_left == 0
+                && s.filters[0].quiet()
+                && s.filters[1].quiet()
+                && targets.lfo.delay == 0.0
+                && targets.lfo.filter == 0.0
+                && (s.valid == 0 || s.times == clamped_times)
+                && frames
+                    .iter()
+                    .all(|f| (f[0].to_bits() | f[1].to_bits()) == 0)
+            {
+                if s.valid == 0 {
+                    s.times = clamped_times;
+                    s.old_times = clamped_times;
+                }
+                let frequency = s.frequency.clamp(20.0, 20000.0);
+                let hits_tick = s.filter_tick == 0 || (s.filter_tick as usize + frames.len()) > 16;
+                if hits_tick && (frequency != s.tuned_frequency || s.width != s.tuned_width) {
+                    for filter in &mut s.filters {
+                        filter.tune(frequency, s.width, rate);
+                    }
+                    s.tuned_frequency = frequency;
+                    s.tuned_width = s.width;
+                }
+                s.filter_tick = ((s.filter_tick as usize + frames.len()) % 16) as u32;
+                for _ in 0..frames.len() {
+                    s.lfo.advance_only(lfo_inc);
+                }
+                let ring_len = self.scratch.len();
+                s.valid = s.valid.saturating_add(frames.len()).min(ring_len);
+                s.next = (s.next + frames.len()) % ring_len;
+                if self.dirty_len == 0 {
+                    self.dirty_start = s.next;
+                } else {
+                    self.dirty_len = self.dirty_len.saturating_add(frames.len()).min(ring_len);
+                }
+                return;
+            }
+            for frame in frames.iter_mut() {
+                self.process_frame_cached(frame, bypassed, block, lfo_inc, base_times);
+            }
+            return;
+        }
         for (offset, frame) in frames.iter_mut().enumerate() {
             self.process_frame(
                 frame,
@@ -420,6 +493,25 @@ impl Runtime {
         bypassed: bool,
         block: BlockSettings,
     ) {
+        if let Some(tempo) = tempo.filter(|v| *v > 0) {
+            self.speculative.tempo = tempo;
+        }
+        let rate = self.rate;
+        let targets = self.speculative.controls.effective_ref();
+        let lfo_inc = lfo_increment(targets.lfo, rate, self.speculative.tempo);
+        let base_times = timing_times(self.speculative.timing, rate, self.speculative.tempo);
+        self.process_frame_cached(frame, bypassed, block, lfo_inc, base_times);
+    }
+
+    #[inline(always)]
+    fn process_frame_cached(
+        &mut self,
+        frame: &mut StereoFrame,
+        bypassed: bool,
+        block: BlockSettings,
+        lfo_inc: f64,
+        base_times: [f64; 2],
+    ) {
         let rate = self.rate;
         let BlockSettings {
             freeze,
@@ -435,21 +527,20 @@ impl Runtime {
         } = block;
         let s = &mut self.speculative;
         let targets = s.controls.effective_ref();
-        if let Some(tempo) = tempo.filter(|v| *v > 0) {
-            s.tempo = tempo;
-        }
-        let oscillator = s.lfo.process(
-            targets.lfo.wave,
-            f64::from(targets.lfo.morph),
-            lfo_increment(targets.lfo, rate, s.tempo),
-        );
-        let mut requested = timing_times(s.timing, rate, s.tempo);
-        for time in &mut requested {
-            *time = (*time * (1.0 + oscillator * f64::from(targets.lfo.delay))).clamp(
-                f64::from(rate) / 1000.0,
-                f64::from(rate) * MAX_SECONDS as f64,
-            );
-        }
+        let oscillator = if targets.lfo.delay == 0.0 && targets.lfo.filter == 0.0 {
+            s.lfo.advance_only(lfo_inc);
+            0.0
+        } else {
+            s.lfo
+                .process(targets.lfo.wave, f64::from(targets.lfo.morph), lfo_inc)
+        };
+        let min_time = f64::from(rate) / 1000.0;
+        let max_time = f64::from(rate) * MAX_SECONDS as f64;
+        let lfo_scale = 1.0 + oscillator * f64::from(targets.lfo.delay);
+        let requested = [
+            (base_times[0] * lfo_scale).clamp(min_time, max_time),
+            (base_times[1] * lfo_scale).clamp(min_time, max_time),
+        ];
         if s.valid == 0 {
             s.times = requested;
             s.old_times = requested;
@@ -513,27 +604,53 @@ impl Runtime {
             (s.dry_gain, s.wet_gain) = mix_gains(s.mix, targets.flags.equal_loudness);
         }
         let scalar = &*s;
-        let mut wet = std::array::from_fn::<_, 2, _>(|lane| {
-            tap(&self.scratch, scalar, s.times[lane], lane, hq, freeze)
-        });
+        let mut wet = if scalar.nonzero == 0 {
+            [0.0; 2]
+        } else {
+            [
+                tap(&self.scratch, scalar, s.times[0], 0, hq, freeze),
+                tap(&self.scratch, scalar, s.times[1], 1, hq, freeze),
+            ]
+        };
         if s.fade_left > 0 && !freeze {
-            let weight = 1.0 - f64::from(s.fade_left) / f64::from(fade_frames);
-            for (lane, value) in wet.iter_mut().enumerate() {
-                let old = tap(&self.scratch, scalar, s.old_times[lane], lane, hq, false);
-                *value = old * (1.0 - weight) + *value * weight;
+            if s.nonzero != 0 {
+                let weight = 1.0 - f64::from(s.fade_left) / f64::from(fade_frames);
+                let scalar = &*s;
+                for (lane, value) in wet.iter_mut().enumerate() {
+                    let old = tap(&self.scratch, scalar, s.old_times[lane], lane, hq, false);
+                    *value = old * (1.0 - weight) + *value * weight;
+                }
             }
             s.fade_left -= 1;
         }
         if s.filter_tick == 0 {
-            let frequency = (s.frequency
-                * 2.0_f64.powf(oscillator * f64::from(targets.lfo.filter) * 4.0))
-            .clamp(20.0, 20000.0);
-            for filter in &mut s.filters {
-                filter.tune(frequency, s.width, rate);
+            let frequency = if targets.lfo.filter == 0.0 {
+                s.frequency.clamp(20.0, 20000.0)
+            } else {
+                (s.frequency * 2.0_f64.powf(oscillator * f64::from(targets.lfo.filter) * 4.0))
+                    .clamp(20.0, 20000.0)
+            };
+            if frequency != s.tuned_frequency || s.width != s.tuned_width {
+                for filter in &mut s.filters {
+                    filter.tune(frequency, s.width, rate);
+                }
+                s.tuned_frequency = frequency;
+                s.tuned_width = s.width;
             }
         }
         s.filter_tick = (s.filter_tick + 1) % 16;
-        let dry = frame.map(|v| if v.is_finite() { f64::from(v) } else { 0.0 });
+        let dry = [
+            if frame[0].is_finite() {
+                f64::from(frame[0])
+            } else {
+                0.0
+            },
+            if frame[1].is_finite() {
+                f64::from(frame[1])
+            } else {
+                0.0
+            },
+        ];
         let mut write = [0.0; 2];
         for lane in 0..2 {
             let feedback = if targets.flags.ping_pong {
@@ -564,21 +681,36 @@ impl Runtime {
             write[lane] = if value.abs() < 1e-12 { 0.0 } else { value };
         }
         if !bypassed {
-            *frame =
-                std::array::from_fn(|lane| finite(dry[lane] * s.dry_gain + wet[lane] * s.wet_gain));
+            *frame = [
+                finite(dry[0] * s.dry_gain + wet[0] * s.wet_gain),
+                finite(dry[1] * s.dry_gain + wet[1] * s.wet_gain),
+            ];
         }
-        if s.valid == self.scratch.len() {
-            s.nonzero -= usize::from(self.scratch[s.next] != [0.0; 2]);
+        let ring_len = self.scratch.len();
+        if s.nonzero == 0 && !s.stale_slots && write == [0.0; 2] && self.dirty_len == 0 {
+            if s.valid < ring_len {
+                s.valid += 1;
+            }
+            s.next += 1;
+            if s.next == ring_len {
+                s.next = 0;
+            }
+            self.dirty_start = s.next;
         } else {
-            s.valid += 1;
+            if s.valid == ring_len {
+                s.nonzero -= usize::from(self.scratch[s.next] != [0.0; 2]);
+                s.stale_slots = false;
+            } else {
+                s.valid += 1;
+            }
+            s.nonzero += usize::from(write != [0.0; 2]);
+            self.scratch[s.next] = write;
+            s.next += 1;
+            if s.next == ring_len {
+                s.next = 0;
+            }
+            self.dirty_len = self.dirty_len.saturating_add(1).min(ring_len);
         }
-        s.nonzero += usize::from(write != [0.0; 2]);
-        self.scratch[s.next] = write;
-        s.next += 1;
-        if s.next == self.scratch.len() {
-            s.next = 0;
-        }
-        self.dirty_len = self.dirty_len.saturating_add(1).min(self.scratch.len());
     }
 }
 #[derive(Clone, Copy)]
@@ -694,7 +826,8 @@ impl OwnedProcessorRuntime for Runtime {
         self.pristine = false;
         self.releasing = false;
         let admitted = std::array::from_fn(|i| self.primary.controls.admitted(i));
-        let s = Scalar::new(self.settings, self.rate, admitted);
+        let mut s = Scalar::new(self.settings, self.rate, admitted);
+        s.stale_slots = true;
         self.primary = s;
         self.speculative = s;
         self.dirty_start = 0;
@@ -729,6 +862,8 @@ impl OwnedProcessorRuntime for Runtime {
             );
             Self::copy_interval(&old.committed, &mut self.scratch, start, old.primary.valid);
             self.inherit_scalars(old.primary, old.settings);
+            self.primary.stale_slots = true;
+            self.speculative.stale_slots = true;
         }
     }
     fn transfer_history_from(&mut self, old: &mut dyn OwnedProcessorRuntime) {

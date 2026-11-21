@@ -19,6 +19,19 @@ impl Default for Lfo {
     }
 }
 impl Lfo {
+    #[inline]
+    pub(super) fn advance_only(&mut self, increment: f64) {
+        self.phase += increment.clamp(0.0, 0.49);
+        if self.phase >= 1.0 {
+            self.phase -= 1.0;
+            self.previous = self.next;
+            self.random ^= self.random << 13;
+            self.random ^= self.random >> 7;
+            self.random ^= self.random << 17;
+            self.next = (self.random >> 11) as f64 / ((1_u64 << 53) - 1) as f64 * 2.0 - 1.0;
+        }
+    }
+
     pub(super) fn process(&mut self, wave: u32, morph: f64, increment: f64) -> f64 {
         let p = self.phase;
         let skew = 0.01 + 0.98 * morph;

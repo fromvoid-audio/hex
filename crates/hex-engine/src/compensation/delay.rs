@@ -164,6 +164,8 @@ pub struct DelayPair {
     ring: RingPair<Frame>,
     committed_nonzero: usize,
     scratch_nonzero: usize,
+    committed_any_bits: usize,
+    scratch_any_bits: usize,
     delay_frames: u32,
     storage_bytes: usize,
     transaction_active: bool,
@@ -178,6 +180,8 @@ impl DelayPair {
             ring,
             committed_nonzero: _,
             scratch_nonzero: _,
+            committed_any_bits: _,
+            scratch_any_bits: _,
             delay_frames: _,
             storage_bytes: _,
             transaction_active: _,
@@ -204,6 +208,8 @@ impl DelayPair {
             ring,
             committed_nonzero: 0,
             scratch_nonzero: 0,
+            committed_any_bits: 0,
+            scratch_any_bits: 0,
             delay_frames,
             storage_bytes,
             transaction_active: false,
@@ -250,9 +256,61 @@ impl DelayPair {
         if !self.transaction_active {
             return Err(CompensationError::TransactionInactive);
         }
-        for frame in frames {
-            *frame = self.process_frame(*frame);
+        let capacity = self.ring.scratch.len();
+        if capacity == 0 || frames.is_empty() {
+            return Ok(());
         }
+        if self.scratch_any_bits == 0
+            && frames
+                .iter()
+                .all(|f| (f[0].to_bits() | f[1].to_bits()) == 0)
+        {
+            let count = frames.len();
+            self.ring.scratch_cursor.next = (self.ring.scratch_cursor.next + count) % capacity;
+            self.ring.scratch_cursor.valid = self
+                .ring
+                .scratch_cursor
+                .valid
+                .saturating_add(count)
+                .min(capacity);
+            if self.ring.dirty_len == 0 {
+                self.ring.dirty_start = self.ring.scratch_cursor.next;
+            } else {
+                self.ring.dirty_len = self.ring.dirty_len.saturating_add(count).min(capacity);
+            }
+            return Ok(());
+        }
+        let mut next = self.ring.scratch_cursor.next;
+        let mut nonzero = self.scratch_nonzero;
+        let mut any_bits = self.scratch_any_bits;
+        let scratch = &mut self.ring.scratch;
+        for frame in frames.iter_mut() {
+            let input = *frame;
+            let previous = scratch[next];
+            scratch[next] = input;
+            *frame = previous;
+            next += 1;
+            if next == capacity {
+                next = 0;
+            }
+            nonzero = nonzero + usize::from(input != [0.0; 2]) - usize::from(previous != [0.0; 2]);
+            any_bits = any_bits + usize::from((input[0].to_bits() | input[1].to_bits()) != 0)
+                - usize::from((previous[0].to_bits() | previous[1].to_bits()) != 0);
+        }
+        self.ring.scratch_cursor.next = next;
+        self.ring.scratch_cursor.valid = self
+            .ring
+            .scratch_cursor
+            .valid
+            .saturating_add(frames.len())
+            .min(capacity);
+        self.ring.dirty_len = self
+            .ring
+            .dirty_len
+            .saturating_add(frames.len())
+            .min(capacity);
+        self.scratch_nonzero = nonzero;
+        self.scratch_any_bits = any_bits;
         Ok(())
     }
 
@@ -261,6 +319,9 @@ impl DelayPair {
         // For zero delay, previous equals input and the count stays zero.
         self.scratch_nonzero = self.scratch_nonzero + usize::from(input != [0.0; 2])
             - usize::from(previous != [0.0; 2]);
+        self.scratch_any_bits = self.scratch_any_bits
+            + usize::from((input[0].to_bits() | input[1].to_bits()) != 0)
+            - usize::from((previous[0].to_bits() | previous[1].to_bits()) != 0);
         previous
     }
 
@@ -270,6 +331,7 @@ impl DelayPair {
         }
         self.ring.commit();
         self.committed_nonzero = self.scratch_nonzero;
+        self.committed_any_bits = self.scratch_any_bits;
         self.transaction_active = false;
         Ok(())
     }
@@ -280,6 +342,7 @@ impl DelayPair {
         }
         self.ring.rollback();
         self.scratch_nonzero = self.committed_nonzero;
+        self.scratch_any_bits = self.committed_any_bits;
         self.transaction_active = false;
         Ok(())
     }
@@ -295,6 +358,8 @@ impl DelayPair {
         // The transfer preflight requires equal ring lengths.
         self.committed_nonzero = source.committed_nonzero;
         self.scratch_nonzero = self.committed_nonzero;
+        self.committed_any_bits = source.committed_any_bits;
+        self.scratch_any_bits = self.committed_any_bits;
     }
 
     pub(super) fn committed_main_pass_delay(&self) -> Option<hex_lattice::MainPassDelay> {
@@ -312,6 +377,8 @@ impl DelayPair {
         self.ring.reset();
         self.committed_nonzero = 0;
         self.scratch_nonzero = 0;
+        self.committed_any_bits = 0;
+        self.scratch_any_bits = 0;
         self.transaction_active = false;
     }
 }
