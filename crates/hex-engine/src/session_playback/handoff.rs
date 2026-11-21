@@ -2112,11 +2112,12 @@ impl SessionPlayback {
         } else {
             None
         };
-        let verified_last_child_exit = self
+        let verified_flat_group_faders = self
             .native_removal
-            .and_then(|pending| pending.verified_last_child_exit(previous));
+            .and_then(|pending| pending.verified_flat_group_faders(previous));
         let ends_verified_group_history = |index| {
-            verified_last_child_exit.is_some_and(|(leaf, group)| index == leaf || index == group)
+            verified_flat_group_faders
+                .is_some_and(|(outgoing, incoming)| index == outgoing || index == incoming)
         };
         let removed_send_clock = !force_restart
             && previous.playing
@@ -6832,16 +6833,21 @@ impl SessionPlayback {
                 .map(|_| index)
                 .or_else(|| previous.routes.iter().position(|old| old.id == route.id));
             if let Some(old_index) = old_index {
-                if verified_last_child_exit.is_some_and(|(leaf, _)| old_index == leaf) {
-                    // The old Group fader silenced the previous route. Start
-                    // the new, independently prepared direct route at zero.
+                if let Some((outgoing, incoming)) = verified_flat_group_faders
+                    && (old_index == outgoing || old_index == incoming)
+                {
                     let arrangement = self.revision.arrangement();
                     let fader = &mut self.track_faders[index];
-                    fader.follow([0.0; 2]);
-                    fader.retarget(
-                        arrangement.tracks()[index].mix().channel_gain(),
-                        arrangement.sample_rate(),
-                    );
+                    let gain = arrangement.tracks()[index].mix().channel_gain();
+                    if old_index == incoming {
+                        // Fade the new post-device output once. The leaf fader
+                        // is upstream of the Group's DSP on entry.
+                        fader.follow([0.0; 2]);
+                        fader.retarget(gain, arrangement.sample_rate());
+                    } else {
+                        // The old output is no longer the route's final fader.
+                        fader.follow(gain);
+                    }
                     continue;
                 }
                 self.track_faders[index] = previous.track_faders[old_index];

@@ -1,11 +1,12 @@
 //! One Arrangement leaf changes its route to Main or an existing Group.
 //! Classification borrows bounded prepared inventories only. Full handoff preview
-//! still fences runtime/tails before the child's existing post-device fader moves.
-//! Group and Main processors stay on their existing clocks. A supported
+//! still fences runtime and tails before the old route's post-device fade.
+//! Unchanged processors stay on their existing clocks. A supported
 //! compensated route waits for the departing output's aligned PCM to drain.
 //! Verified streaming admits fixed-row, zero-delay moves between Main and a
 //! Group that retains another child, or across the flat boundary when only
-//! one Group route changes. Both page windows must be ready first.
+//! one Group route changes. Both page windows must be ready first. The flat
+//! boundary cuts between the leaf and Group outputs with fresh DSP on both.
 use super::{RouteOwner, SessionPlayback};
 use crate::signal_graph::{SignalGraph, TrackOutput};
 
@@ -185,22 +186,32 @@ impl SessionPlayback {
         other_old_ids.eq(other_new_ids).then_some(from)
     }
 
-    /// After the fixed-row route proof, identify the old Group that loses its
-    /// only input. Its post-device fader can silence the entire old route.
-    pub(super) fn verified_last_child_exit_group(
+    /// After the fixed-row route proof, identify the predecessor and successor
+    /// output faders when the Group gains its first input or loses its last.
+    pub(super) fn verified_flat_group_faders(
         &self,
         previous: &Self,
         leaf: usize,
-    ) -> Option<usize> {
-        if !self.revision.contains_streamed_sources() || self.compensation.is_some() {
+    ) -> Option<(usize, usize)> {
+        if !self.revision.contains_streamed_sources() {
             return None;
         }
-        let TrackOutput::Group { target, .. } =
-            previous.group_cut_graph()?.tracks.get(leaf)?.output
-        else {
-            return None;
-        };
-        Some(target)
+        let old = previous.group_cut_graph()?.tracks.get(leaf)?.output;
+        let new = self.group_cut_graph()?.tracks.get(leaf)?.output;
+        match (
+            previous.compensation.is_some(),
+            self.compensation.is_some(),
+            old,
+            new,
+        ) {
+            (false, true, TrackOutput::Main { .. }, TrackOutput::Group { target, .. }) => {
+                Some((leaf, target))
+            }
+            (true, false, TrackOutput::Group { target, .. }, TrackOutput::Main { .. }) => {
+                Some((target, leaf))
+            }
+            _ => None,
+        }
     }
 
     fn group_cut_graph(&self) -> Option<&SignalGraph> {

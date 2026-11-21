@@ -211,8 +211,10 @@ fn verified_first_child_requires_exact_rows_and_source_across_the_flat_boundary(
     let grouped = SessionPlayback::new(streamed(editor.project(), &media, [19; 32])).unwrap();
     assert!(grouped.compensation.is_some());
     assert_eq!(grouped.group_reroute_from(&flat), Some(2));
+    assert_eq!(grouped.verified_flat_group_faders(&flat, 2), Some((2, 1)));
     assert_eq!(grouped.group_reroute_from(&shifted), None);
     assert_eq!(flat.group_reroute_from(&grouped), Some(2));
+    assert_eq!(flat.verified_flat_group_faders(&grouped, 2), Some((1, 2)));
     assert_eq!(shifted.group_reroute_from(&grouped), None);
     let different_source =
         SessionPlayback::new(streamed(editor.project(), &media, [31; 32])).unwrap();
