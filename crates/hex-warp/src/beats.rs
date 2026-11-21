@@ -17,6 +17,56 @@ const MAX_DETECTED_TRANSIENTS: usize = MAX_MAP_SEGMENTS;
 // on a long clip. Keep a separate ceiling for Beats analysis and synthesis.
 pub(super) const MAX_RENDER_WORK_UNITS: u64 = 4 * MAX_WORK_UNITS;
 
+/// Analyze finite stereo PCM on a control or background thread. Results are
+/// sorted source-frame offsets in the supplied slice. Region boundaries are
+/// not added as markers. The scan shares the Beats onset detector and its
+/// scratch, work and attack-count limits.
+pub fn detect_transients(
+    frames: &[Frame],
+    sample_rate: u32,
+    cancel: &mut dyn FnMut() -> bool,
+) -> Result<Vec<u64>, Error> {
+    if frames.len() > MAX_OUTPUT_FRAMES {
+        return Err(Error::Invalid("audio is too long for transient analysis"));
+    }
+    let input = Input {
+        frames,
+        sample_rate,
+        region_start: 0,
+        region_length: frames.len() as u64,
+        phase: 0,
+        looping: false,
+        envelope: &[],
+    };
+    input.validate()?;
+    let mut work = Work {
+        cancel,
+        used: 0,
+        limit: MAX_RENDER_WORK_UNITS,
+        scratch: 0,
+        base_scratch: 0,
+        resampler: Resampler::V1,
+    };
+    work.check(0)?;
+    for block in frames.chunks(4096) {
+        work.check(block.len() as u64)?;
+        if block.iter().flatten().any(|sample| !sample.is_finite()) {
+            return Err(Error::Invalid(
+                "transient analysis needs finite audio samples",
+            ));
+        }
+    }
+    work.scratch(
+        onsets::scratch(sample_rate) + MAX_DETECTED_TRANSIENTS * std::mem::size_of::<u64>(),
+    )?;
+    let mut starts = Vec::new();
+    starts
+        .try_reserve_exact(MAX_DETECTED_TRANSIENTS)
+        .map_err(|_| Error::Allocation)?;
+    onsets::detect(input, &mut starts, &mut work)?;
+    Ok(starts)
+}
+
 #[derive(Clone, Copy)]
 struct Anchor {
     source: f64,
