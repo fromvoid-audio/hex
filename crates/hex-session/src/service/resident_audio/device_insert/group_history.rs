@@ -1,32 +1,53 @@
-//! Identify a fixed-row Group edit and verify its complete normalized history target.
+//! Fixed-row Group shapes and their exact normalized history targets.
 use hex_project::{
     Command, Editor, Invalid, Project, StagedProjectHistory, TrackDestination, TrackId,
     TrackSelectionIds,
 };
+use std::ops::Range;
 
 /// The root audio leaf immediately follows an already populated root Group.
 /// Appending the leaf to that Group preserves every canonical row.
 pub(super) fn fixed_entry(project: &Project, leaf: TrackId, group: TrackId) -> bool {
-    let (Some(leaf), Some(group)) = (project.track(leaf), project.track(group)) else {
+    fixed_rows(project, leaf, group, None)
+        .is_some_and(|(leaf, group)| group.len() > 1 && group.end == leaf.start)
+}
+
+/// Moving the final direct leaf immediately outside its still-populated Group
+/// preserves its row only when the anchor is the following root, if present.
+pub(super) fn fixed_exit(project: &Project, leaf: TrackId, before: Option<TrackId>) -> bool {
+    let Some(group) = project
+        .track(leaf)
+        .and_then(hex_project::Track::parent_group)
+    else {
         return false;
     };
+    fixed_rows(project, leaf, group, Some(group)).is_some_and(|(leaf, group)| {
+        leaf.end == group.end
+            && group.len() > 2
+            && before == project.tracks().get(group.end).map(hex_project::Track::id)
+    })
+}
+
+fn fixed_rows(
+    project: &Project,
+    leaf: TrackId,
+    group: TrackId,
+    parent: Option<TrackId>,
+) -> Option<(Range<usize>, Range<usize>)> {
+    let (leaf, group) = (project.track(leaf)?, project.track(group)?);
     if leaf.is_group()
-        || leaf.parent_group().is_some()
+        || leaf.parent_group() != parent
         || leaf.clips().is_empty()
         || !group.is_group()
         || group.parent_group().is_some()
     {
-        return false;
+        return None;
     }
-    let Ok(hierarchy) = project.track_hierarchy() else {
-        return false;
-    };
-    let (Some(leaf_row), Some(group_row)) = (hierarchy.row(leaf.id()), hierarchy.row(group.id()))
-    else {
-        return false;
-    };
-    let subtree = group_row.subtree_range();
-    subtree.len() > 1 && subtree.end == leaf_row.subtree_range().start
+    let hierarchy = project.track_hierarchy().ok()?;
+    Some((
+        hierarchy.row(leaf.id())?.subtree_range(),
+        hierarchy.row(group.id())?.subtree_range(),
+    ))
 }
 
 pub(super) fn command(current: &Project, target: &Project) -> Option<Command> {
@@ -203,5 +224,38 @@ mod tests {
             })
             .unwrap();
         assert!(editor.inspect_history(false, command).flatten().is_none());
+    }
+
+    #[test]
+    fn explicit_exit_keeps_the_following_root_anchor_and_a_surviving_child() {
+        let (mut editor, leaf, group) = fixture();
+        editor.execute(entry(leaf, group)).unwrap();
+        let following = editor.project().tracks().last().unwrap().id();
+        assert!(fixed_exit(editor.project(), leaf, Some(following)));
+        assert!(!fixed_exit(editor.project(), leaf, Some(leaf)));
+        assert!(!fixed_exit(editor.project(), leaf, None));
+        editor
+            .execute(Command::MoveTracksBefore {
+                tracks: TrackSelectionIds::new(&[following]).unwrap(),
+                before: Some(group),
+            })
+            .unwrap();
+        assert!(fixed_exit(editor.project(), leaf, None));
+
+        let child = editor.project().tracks()[2].id();
+        assert_eq!(
+            editor.project().track(child).unwrap().parent_group(),
+            Some(group)
+        );
+        editor
+            .execute(Command::ReparentTracks {
+                tracks: TrackSelectionIds::new(&[child]).unwrap(),
+                destination: TrackDestination {
+                    parent_group: None,
+                    before: Some(group),
+                },
+            })
+            .unwrap();
+        assert!(!fixed_exit(editor.project(), leaf, None));
     }
 }
