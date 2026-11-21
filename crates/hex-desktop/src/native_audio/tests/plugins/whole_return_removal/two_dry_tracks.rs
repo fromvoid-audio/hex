@@ -37,9 +37,7 @@ fn assert_both_dry(h: &ResidentHarness, latency: usize) {
     }
 }
 
-fn worker_identity(
-    h: &ResidentHarness,
-) -> Option<(u64, hex_lattice_contract::ForeignProcessorBinding)> {
+fn worker_identity(h: &ResidentHarness) -> Option<(u64, hex_audio::plugin_effects::EffectBinding)> {
     h.plugin_progress.lock().unwrap().source_bindings[0]
         .map(|(device, binding, _completed)| (device, binding))
 }
