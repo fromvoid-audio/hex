@@ -79,25 +79,25 @@ impl EditorView {
         let remember_coordinates = self.audio_event_editor.revision != revision
             || self.audio_event_editor.frame_clip.is_none();
         if self.audio_event_editor.revision != revision
-            && let Some(current) = self
-                .state
-                .as_ref()
-                .and_then(|state| state.project.clip(clip_id))
+            && let Some(state) = self.state.as_ref()
+            && let Some(current) = state.project.clip(clip_id)
             && let Some(previous) = self.audio_event_editor.frame_clip.as_ref()
             && let Some(shift) = current.audio_event_coordinate_shift_from(previous)
             && shift != 0
         {
             let previous_root = previous.audio_event_root();
-            // The camera measures frames while musical selection coordinates
-            // measure beat ticks. A one-shot musical rebase carries its frame
-            // anchor by exactly the same amount as its content.
-            let frames = matches!(root.domain.clock, hex_project::AudioDomainClock::Frames(_));
-            let camera_delta = if frames {
-                i128::from(shift) + i128::from(editor_bounds(&previous_root).0)
-                    - i128::from(editor_bounds(&root).0)
-            } else {
-                0
+            // Keep the same frame of the scope at the same screen position.
+            // A placed musical clip's camera starts at root zero, while its
+            // scope moves within that root during a signed rebase.
+            let tempo = state.project.tempo_map();
+            let scope_offset = |edit: &AudioClipEdit| {
+                let scope = edit.root_frame_at(edit.view_start, tempo).ok()?;
+                let origin = edit.root_frame_at(editor_bounds(edit).0, tempo).ok()?;
+                Some(i128::from(scope) - i128::from(origin))
             };
+            let camera_delta = scope_offset(&root)
+                .zip(scope_offset(&previous_root))
+                .map_or(0, |(next, before)| next - before);
             let state = &mut self.audio_event_editor;
             let translate_camera = |view: &mut Viewport, negative: &mut u64| {
                 let start = i128::from(view.start) - i128::from(*negative) + camera_delta;
@@ -119,9 +119,12 @@ impl EditorView {
                 let (a, b) = (shifted(a), shifted(b));
                 (a < b).then_some((a, b))
             });
-            state.canonical_start = state
-                .canonical_start
-                .map(|(raw, frame)| (shifted(raw), if frames { shifted(frame) } else { frame }));
+            state.canonical_start = state.canonical_start.and_then(|(raw, _)| {
+                let raw = shifted(raw);
+                root.root_frame_at(raw, tempo)
+                    .ok()
+                    .map(|frame| (raw, frame))
+            });
             state.start_grip = state
                 .start_grip
                 .map(|(raw, offset, length)| (shifted(raw), offset, length));
