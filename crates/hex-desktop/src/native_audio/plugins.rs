@@ -19,6 +19,7 @@ mod degraded;
 mod editor;
 mod editor_close;
 pub(super) mod editor_recording;
+mod hosted_move;
 mod parameter_conversion;
 mod parameter_gesture;
 mod parameters;
@@ -246,6 +247,7 @@ pub(super) struct Plugins {
         hex_session::service::ResidentMainPowerOff,
         AudioSourceContext,
     )>,
+    hosted_move: Option<hosted_move::MoveRoute>,
     edit: Option<AudioSourceContext>,
     pub(super) catalog: Option<std::path::PathBuf>,
     degraded: degraded::DegradedReport<Binding>,
@@ -1378,6 +1380,11 @@ impl Plugins {
         let control = output
             .and_then(|output| output.publication.control())
             .ok_or("native output closed")?;
+        let adopted = if retained.is_none() {
+            self.adopted_hosted_route(context, &bindings, control.status.recording_source())?
+        } else {
+            None
+        };
         let mut canonical = Vec::new();
         canonical
             .try_reserve_exact(bindings.len())
@@ -1439,7 +1446,7 @@ impl Plugins {
                 &bindings,
                 &unavailable,
                 &canonical,
-                retained,
+                retained.or(adopted),
                 prepare,
             ) {
                 Err(error)
@@ -1454,7 +1461,17 @@ impl Plugins {
                     edits::check_cancel(cancellation)?;
                     edits::poll_control(control);
                 }
-                result => return result.map(Some),
+                Ok(prepared) => {
+                    if let Some((retained, route)) = retained.zip(input.hosted_instrument_move()) {
+                        self.hosted_move = Some(hosted_move::MoveRoute::prepare(
+                            context,
+                            *route,
+                            retained.binding(),
+                        ));
+                    }
+                    return Ok(Some(prepared));
+                }
+                Err(error) => return Err(error),
             }
         }
     }
