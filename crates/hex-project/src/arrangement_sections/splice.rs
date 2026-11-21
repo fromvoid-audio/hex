@@ -538,6 +538,21 @@ fn apply_transform(
         .ok_or(Invalid(
             "section interval must contain at least one audio frame",
         ))?;
+    let copy_length = match &purpose {
+        TransformPurpose::Duplicate(_, copy) => Some(
+            new_tempo
+                .beat_to_frame(copy.end)?
+                .checked_sub(end_frame)
+                .ok_or(Invalid("section copy frame span underflow"))?,
+        ),
+        _ => None,
+    };
+    let frames = FrameSplice {
+        start: start_frame,
+        end: end_frame,
+        length: frame_length,
+        copy_length,
+    };
     let new_meter = transformed_meter(&project.meter_map, transform)?;
     let loop_region = transformed_loop(project.loop_region, &old_tempo, &new_tempo)?;
     let mut clip_count = project
@@ -573,11 +588,7 @@ fn apply_transform(
             let fragments = transform_audio(
                 clip,
                 transform,
-                &FrameSplice {
-                    start: start_frame,
-                    end: end_frame,
-                    length: frame_length,
-                },
+                &frames,
                 &old_tempo,
                 &new_tempo,
                 &mut next_id,
@@ -806,6 +817,7 @@ struct FrameSplice {
     start: u64,
     end: u64,
     length: u64,
+    copy_length: Option<u64>,
 }
 fn transform_audio(
     original: &crate::Clip,
@@ -823,6 +835,11 @@ fn transform_audio(
     // sample beside it. Treat that edge as on the fence rather than cutting a
     // one-sample fragment whose beat and frame land on opposite sides.
     let fence = |frame: u64| {
+        // A duplicated section inserts between two audible ranges. Partition
+        // both at the common sample fence so residuals cannot cause overlap.
+        if frames.copy_length.is_some() {
+            return frame;
+        }
         let Some(edit) = original
             .audio_edit()
             .filter(|edit| edit.live_musical_start().is_some())
@@ -865,9 +882,9 @@ fn transform_audio(
     for pair in cuts.windows(2) {
         let source_start = pair[0];
         let source_end = pair[1];
-        let is_duplicate_source = matches!(transform, Transform::Duplicate { .. })
-            && start_frame <= source_start
-            && source_end <= end_frame;
+        let duplicate_length = frames
+            .copy_length
+            .filter(|_| start_frame <= source_start && source_end <= end_frame);
         let removed = matches!(transform, Transform::Delete { .. })
             && start_frame <= source_start
             && source_end <= end_frame;
@@ -881,11 +898,20 @@ fn transform_audio(
             original.id(),
             old,
         )?;
-        let destinations = if is_duplicate_source {
+        let destinations = if let Some(copy_length) = duplicate_length {
             let shifted = source_start
                 .checked_add(frame_length)
                 .ok_or(Invalid("section audio duplicate overflow"))?;
-            vec![Some(source_start), Some(shifted)]
+            let copy_source_end = frames
+                .start
+                .checked_add(copy_length)
+                .ok_or(Invalid("section audio copy end overflow"))?;
+            // Adjacent occurrences of the same beat interval can differ by
+            // one frame. Limit the new copy to its actual destination span.
+            vec![
+                (Some(source_start), source_end),
+                (Some(shifted), source_end.min(copy_source_end)),
+            ]
         } else {
             // A snapped edge moves with its authored fence and lands on the
             // mapped fence itself, as its beat does, dropping the residual.
@@ -896,21 +922,34 @@ fn transform_audio(
             } else {
                 source_start
             };
-            vec![transform.frame_map(authored, frames.start, frames.end)?]
+            let destination = match frames.copy_length {
+                Some(length) if authored >= frames.end => Some(
+                    authored
+                        .checked_add(length)
+                        .ok_or(Invalid("section audio shift overflow"))?,
+                ),
+                _ => transform.frame_map(authored, frames.start, frames.end)?,
+            };
+            vec![(destination, source_end)]
         };
-        for (destination_index, destination) in destinations.into_iter().enumerate() {
-            let Some(destination) = destination else {
+        for (destination_index, (destination, end)) in destinations.into_iter().enumerate() {
+            let Some(destination) = destination.filter(|_| source_start < end) else {
                 continue;
             };
-            let is_copy = is_duplicate_source && destination_index == 1;
+            let is_copy = duplicate_length.is_some() && destination_index == 1;
             let id = if !is_copy && !kept_original_id {
                 kept_original_id = true;
                 original.id()
             } else {
                 crate::ClipId(super::reorder::take_id(next_id)?)
             };
-            let mut fragment = retained.clone();
+            let mut fragment = if end == source_end {
+                retained.clone()
+            } else {
+                crate::edit::retained_audio_fragment(&root, source_start, end, id, old)?
+            };
             fragment.id = id;
+            let duration = end - source_start;
             let mut destination = destination;
             if let Some(edit) = fragment.audio_edit_mut()
                 && let Some(musical_start) = edit.live_musical_start()
@@ -934,18 +973,17 @@ fn transform_audio(
                             .checked_add(transform.length())
                             .ok_or(Invalid("section audio timing overflow"))?,
                     )
-                } else if is_duplicate_source {
+                } else if duplicate_length.is_some() {
                     source_beat
                 } else {
                     transform.map_position(source_beat)?
                 };
                 edit.timing = crate::AudioClipTiming::Musical(destination_beat);
-                destination =
-                    edit.retain_moved_frame_span(destination, source_end - source_start, new)?;
+                destination = edit.retain_moved_frame_span(destination, duration, new)?;
             }
             fragment.start = destination;
             crate::audio_edit::project_clip(&mut fragment, new)?;
-            if fragment.start() != destination || fragment.duration() != source_end - source_start {
+            if fragment.start() != destination || fragment.duration() != duration {
                 return Err(Invalid("section splice changed retained audio sample span"));
             }
             fragments.push(fragment);

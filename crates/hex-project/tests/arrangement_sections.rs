@@ -2126,6 +2126,110 @@ fn moving_and_duplicating_sections_preserve_a_single_global_tempo_clock() {
 }
 
 #[test]
+fn repeatedly_duplicating_beat_aligned_audio_never_overlaps_at_rounded_section_fences() {
+    let mut editor = Editor::new(Project::new(8_000).unwrap(), 16).unwrap();
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: b(0),
+            tempo: Tempo::new(143_000_000).unwrap(),
+        })
+        .unwrap();
+    let tempo = editor.project().tempo_map().clone();
+    let frame = |beat| tempo.beat_to_frame(b(beat)).unwrap();
+    assert_eq!((frame(1), frame(2), frame(3)), (3_357, 6_713, 10_070));
+    let Created::Imported { clip, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "audio".into(),
+            path: "aligned.wav".into(),
+            sample_rate: 8_000,
+            frames: frame(1),
+        })
+        .unwrap()
+    else {
+        panic!("audio import")
+    };
+    editor
+        .execute(Command::SetAudioClipMusical {
+            clip,
+            enabled: true,
+        })
+        .unwrap();
+    let source = section(&mut editor, "section", 0, 1);
+    let mut snapshot = editor.project().snapshot();
+    snapshot.tracks[0].audio_clips_mut().unwrap()[0]
+        .edit
+        .as_mut()
+        .unwrap()
+        .view_end = b(1).raw();
+    let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 16).unwrap();
+
+    let mut selected = source;
+    let mut first_copy = None;
+    for end in 2..=7 {
+        let before = editor.project().snapshot();
+        let Created::ArrangementSection(copy) = editor
+            .execute(Command::DuplicateArrangementSection(selected))
+            .unwrap_or_else(|error| panic!("duplicate ending at beat {end}: {error:?}"))
+        else {
+            panic!("section copy")
+        };
+        let copied = editor.project().arrangement_section(copy).unwrap();
+        assert_eq!((copied.start(), copied.end()), (b(end - 1), b(end)));
+        let clips = editor.project().tracks()[0].clips();
+        assert_eq!(clips.len(), end as usize);
+        assert_eq!(clips[0].id(), clip);
+        assert_eq!((clips[0].start(), clips[0].duration()), (0, frame(1)));
+        assert!(
+            clips
+                .windows(2)
+                .all(|pair| pair[0].start() + pair[0].duration() <= pair[1].start())
+        );
+        if end == 2 {
+            first_copy = Some((copy, editor.project().snapshot()));
+        }
+        if end == 3 {
+            let after = editor.project().snapshot();
+            assert_eq!(
+                Project::from_snapshot(after.clone()).unwrap().snapshot(),
+                after
+            );
+            assert!(editor.undo());
+            let mut expected = before;
+            expected.next_id = after.next_id;
+            assert_eq!(editor.project().snapshot(), expected);
+            assert!(editor.redo());
+            assert_eq!(editor.project().snapshot(), after);
+        }
+        selected = copy;
+    }
+
+    // Projects saved before the fix can already carry a first copy whose
+    // frozen processing spans one sample past its nominal section fence.
+    let (section, mut legacy) = first_copy.unwrap();
+    let clips = legacy.tracks[0].audio_clips_mut().unwrap();
+    let mut edit = clips[0].edit.clone().unwrap();
+    edit.timing = hex_project::AudioClipTiming::Musical(b(1));
+    edit.placement_end_offset = 1;
+    clips[1].edit = Some(edit);
+    clips[1].duration = frame(1);
+    clips[1].fade = clips[0].fade;
+    let mut legacy = Editor::new(Project::from_snapshot(legacy).unwrap(), 16).unwrap();
+    legacy
+        .execute(Command::DuplicateArrangementSection(section))
+        .unwrap();
+    let clips = legacy.project().tracks()[0].clips();
+    assert!(
+        clips
+            .windows(2)
+            .all(|pair| pair[0].start() + pair[0].duration() <= pair[1].start())
+    );
+    assert_eq!(
+        clips.iter().map(|clip| clip.duration()).sum::<u64>(),
+        frame(1) * 2 + frame(2) - frame(1)
+    );
+}
+
+#[test]
 fn repeated_duplicates_at_a_fractional_tempo_keep_musical_audio_editable() {
     // Reported on a saved 143 bpm project: after earlier section edits left a
     // musical clip one residual sample before a section's end fence,
