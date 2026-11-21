@@ -137,6 +137,7 @@ impl EditorView {
         self.sync_track_layout(state.project.tracks());
         let viewport = self.visible_viewport(state.timeline_frames);
         let clip_move_guide = self.displayed_clip_move_guide_frame(viewport);
+        let clip_editor_start = self.focused_clip_editor_play_start(window);
         let guide_line = clip_move_guide
             .and_then(|frame| viewport.fraction(frame))
             .map(|position| {
@@ -175,7 +176,7 @@ impl EditorView {
                 .flex()
                 .flex_col()
                 .bg(rgb(theme::color(theme::PaletteRole::Background)))
-                .child(self.ruler(&state, ruler_width, clip_move_guide, cx))
+                .child(self.ruler(&state, ruler_width, clip_move_guide, clip_editor_start, cx))
                 .children(self.locator_strip(&locator_state, empty_viewport, ruler_width, cx))
                 .child(super::loop_rail::view(
                     self,
@@ -228,7 +229,12 @@ impl EditorView {
                                 self.track_header_width(),
                                 "locator-line",
                             )])
-                            .children(self.edit_cursor_layer(empty_viewport, clip_move_guide, cx)),
+                            .children(self.edit_cursor_layer(
+                                empty_viewport,
+                                clip_move_guide,
+                                clip_editor_start,
+                                cx,
+                            )),
                     ),
                     cx,
                 )]);
@@ -327,14 +333,19 @@ impl EditorView {
             self.track_header_width(),
             "locator-line",
         )]);
-        content = content.children(self.edit_cursor_layer(viewport, clip_move_guide, cx));
+        content = content.children(self.edit_cursor_layer(
+            viewport,
+            clip_move_guide,
+            clip_editor_start,
+            cx,
+        ));
         content = content.children(self.track_reorder_line());
         let upper = div()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
-            .child(self.ruler(&state, ruler_width, clip_move_guide, cx))
+            .child(self.ruler(&state, ruler_width, clip_move_guide, clip_editor_start, cx))
             .children(self.locator_strip(&locator_state, viewport, ruler_width, cx))
             .child(super::loop_rail::view(self, &state, viewport, &grid, cx))
             .children([self.arrangement_body(content, cx)])
@@ -1245,6 +1256,7 @@ impl EditorView {
         state: &ViewState,
         ruler_width: f32,
         clip_move_guide: Option<u64>,
+        clip_editor_start: Option<u64>,
         cx: &mut Context<Self>,
     ) -> Div {
         let viewport = self.visible_viewport(state.timeline_frames);
@@ -1422,6 +1434,7 @@ impl EditorView {
                 viewport,
                 hex_widgets::TimeMarkerEdge::Top,
                 clip_move_guide,
+                clip_editor_start,
                 cx,
             ));
         super::timeline_strip::ruler_surface()
