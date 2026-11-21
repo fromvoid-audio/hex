@@ -234,9 +234,9 @@ impl EditorView {
                     .child(error.display_text()),
             );
         } else if plugin_status.is_none()
-            && let Some(indicator) = self.export_progress_indicator(cx)
+            && let Some(export_progress_indicator) = self.export_progress_indicator(cx)
         {
-            bar = bar.child(indicator);
+            bar = bar.child(export_progress_indicator);
             showing_export_progress = true;
         } else {
             let status = plugin_status.unwrap_or(&self.status);
