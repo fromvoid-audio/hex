@@ -767,9 +767,10 @@ impl EditorView {
         body = body.children(self.arrangement_device_drop_preview());
         if let Some(drag) = self.active_browser_audio_drag.as_ref()
             && self.browser_sampler_drop_ready(drag, cx).is_ok()
-            && let Some((x, y)) = drag.last_pointer.get()
-            && let Some((_, line_y)) = self.painted_sampler_track_gap(point(px(x), px(y)))
+            && let Some(line_y) = self.sampler_load.header_insertion_line_y
             && let Some(bounds) = self.arrangement_bounds
+            && line_y >= bounds.top
+            && line_y < bounds.top + bounds.height
         {
             body = body.child(
                 div()

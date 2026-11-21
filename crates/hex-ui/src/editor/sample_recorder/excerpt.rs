@@ -216,7 +216,7 @@ impl EditorView {
     }
 }
 
-fn move_payload(view: &EditorView, payload: &BrowserAudioDrag, x: f32, y: f32) {
+fn move_payload(view: &mut EditorView, payload: &BrowserAudioDrag, x: f32, y: f32) {
     payload.last_pointer.set(Some((x, y)));
     let (preview, hovered) = view.browser_audio_drop_position(payload, x, y);
     payload.preview.set(preview);

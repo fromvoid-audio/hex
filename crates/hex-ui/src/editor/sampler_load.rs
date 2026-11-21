@@ -26,6 +26,8 @@ struct Pending {
 pub(super) struct State {
     serial: u64,
     pending: Option<Pending>,
+    /// Measured during drag input, before render advances the layout epoch.
+    pub(super) header_insertion_line_y: Option<f32>,
 }
 impl EditorView {
     pub(super) fn first_sampler_current(&self) -> bool {

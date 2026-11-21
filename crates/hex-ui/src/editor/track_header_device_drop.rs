@@ -193,11 +193,11 @@ impl EditorView {
         let owner = cx.entity();
         let sample_owner = owner.clone();
         header
-            .drag_over::<BrowserAudioDrag>(move |style, drag, window, cx| {
+            .drag_over::<BrowserAudioDrag>(move |style, drag, _, cx| {
                 let view = sample_owner.read(cx);
-                if view
-                    .painted_sampler_track_gap(window.mouse_position())
-                    .is_none()
+                let is_gap = view.mode == super::EditorMode::Arrangement
+                    && view.sampler_load.header_insertion_line_y.is_some();
+                if !is_gap
                     && view
                         .browser_sampler_drop_track(drag, Some(track), cx)
                         .is_ok()

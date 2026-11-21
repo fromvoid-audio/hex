@@ -1262,6 +1262,7 @@ impl super::EditorView {
     pub(super) fn begin_browser_audio_drag(&mut self, drag: &BrowserAudioDrag) {
         self.retire_active_clip_drag();
         self.active_native_device_drag = None;
+        self.sampler_load.header_insertion_line_y = None;
         self.active_browser_audio_drag = Some(drag.clone());
     }
 
@@ -1568,11 +1569,17 @@ impl super::EditorView {
     }
 
     pub(super) fn browser_audio_drop_position(
-        &self,
+        &mut self,
         drag: &BrowserAudioDrag,
         pointer_x: f32,
         pointer_y: f32,
     ) -> (Option<DropPreview>, bool) {
+        self.sampler_load.header_insertion_line_y = if drag.project_asset.is_none() {
+            self.painted_sampler_track_gap(gpui::point(gpui::px(pointer_x), gpui::px(pointer_y)))
+                .map(|(_, line)| line)
+        } else {
+            None
+        };
         if !self.browser_audio_drag_is_current(drag) {
             drag.destination.set(None);
             drag.insertion_line_y.set(None);
@@ -1688,6 +1695,7 @@ impl super::EditorView {
             .is_some_and(|active| Rc::ptr_eq(&active.destination, &drag.destination))
         {
             self.active_browser_audio_drag = None;
+            self.sampler_load.header_insertion_line_y = None;
         }
         drag.preview.set(None);
         drag.destination.set(None);

@@ -200,6 +200,7 @@ impl EditorView {
                 self.apply_drag_scroll(&drag.scroll, next, horizon);
             }
             if vertical {
+                self.sampler_load.header_insertion_line_y = None;
                 drag.preview.set(None);
                 drag.destination.set(None);
                 drag.insertion_line_y.set(None);
@@ -212,8 +213,10 @@ impl EditorView {
             }
             if self.arrangement_bounds_epoch == self.drag_layout_generation {
                 let before = drag.destination.get();
+                let sampler_line = self.sampler_load.header_insertion_line_y;
                 self.refresh_browser_audio_drag(&drag);
-                return before != drag.destination.get();
+                return before != drag.destination.get()
+                    || sampler_line != self.sampler_load.header_insertion_line_y;
             }
             return false;
         }
