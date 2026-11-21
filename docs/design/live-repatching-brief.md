@@ -42,19 +42,13 @@ This policy needs no new long-term settings or configurable tail modes.
 4. **reorder within a track without restarting devices.** Keep running device
    state and switch routing. Moving distortion after a delay makes the delay's
    existing repeats pass through the distortion.
-5. **move the running device across tracks.** Smooth both paths with a short
-   fade. A VST3 audio effect move preserves the current preset and other
-   plug-in-authored state, including parameter values. A fresh instance
-   restored to that state can take over at the clean switch. The original
-   worker, live DSP state, tails and buffered audio need not carry over.
-   For other devices, transfer running state, including a delay's existing
-   repeats. Voices already sounding on the source track move with the
-   instrument and must receive their proper releases. For destination input,
-   wait for note-on events at or after the handoff; do not chase notes whose
-   destination onset preceded it. A four-bar destination chord already halfway
-   through stays silent on the moved instrument; the next real note-on plays
-   normally. This rule is specific to cross-track instrument moves and does
-   not change insertion, off/on or other note-chase behavior.
+5. **move the running device across tracks.** Preserve the current preset and
+   authored device settings, including parameter values. Smooth both paths with
+   a short fade and switch to the destination route at a clean boundary. A fresh
+   native or hosted instance restored to those settings can take over. Sounding
+   voices, tails and buffered audio can end at the cut. Release affected voices
+   and retire any outgoing instance safely. The destination uses its normal
+   playback and monitoring rules.
 6. **preserve sound through visual track reorder.** Routing edits, including
    moving into a group, retain running track and group processor states and
    switch to the new route with a short fade.
@@ -84,10 +78,10 @@ This policy needs no new long-term settings or configurable tail modes.
     placement and automation. Reintroduced devices are fresh DSP instances;
     do not resurrect audio buffers or voices. Release deleted plug-ins after
     safe retirement instead of retaining warm workers for history. Undo and
-    redo of a cross-track VST3 audio effect move follow rule 5. Restore the
-    applicable authored state, using a fresh instance if needed. For other
-    still-running devices, undoing a move transfers the current DSP state back.
-    Apply the same latency rules to undo/redo.
+    redo of a cross-track device move follow rule 5. Restore placement and
+    authored settings, using a fresh instance if needed. Undoing a move within
+    a track retains running state under rule 4. Apply the same latency rules to
+    undo/redo.
 12. **show a cancelable pending insertion.** A loading slot needs cancel, not
     movement or a pending-chain editor. Accepted independent edits, such as
     gain changes on a running EQ, survive insertion success, failure and cancel.
