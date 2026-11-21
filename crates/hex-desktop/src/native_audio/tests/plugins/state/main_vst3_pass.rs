@@ -454,7 +454,34 @@ fn verify_running_main_power_off(cancel_before_cut: bool) {
         assert_eq!(h.plugin_records.load(Acquire), 1);
         let processed = h.plugin_completed.load(Acquire);
         assert_wet_timing(&h);
-        assert!(h.plugin_completed.load(Acquire) > processed);
+        // Wet PCM waits for the actual endpoint. Its completion projection is
+        // published later by the independent canonical-worker poll.
+        let observed_by = Instant::now() + Duration::from_millis(250);
+        loop {
+            h.pump();
+            let progress = *h.plugin_progress.lock().unwrap();
+            if progress
+                .source_bindings
+                .iter()
+                .flatten()
+                .any(|(id, source, count)| {
+                    *id == device.value()
+                        && *source == binding
+                        && count.is_some_and(|count| count > processed)
+                })
+                && h.plugin_completed.load(Acquire) > processed
+            {
+                assert!(progress.accepted && !progress.retiring);
+                assert_eq!(progress.binding, Some(binding));
+                break;
+            }
+            assert!(
+                Instant::now() < observed_by,
+                "restored worker prefix not observed: before={processed} now={} binding={binding:?} progress={progress:?}",
+                h.plugin_completed.load(Acquire)
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
         Some(exact.audio_revision)
     } else {
         None
