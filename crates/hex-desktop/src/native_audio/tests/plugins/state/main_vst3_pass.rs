@@ -12,7 +12,9 @@ const SIGNAL: f32 = 0.25;
 const FADE: usize = 240;
 
 fn source_sample(frame: usize) -> f32 {
-    if frame % SPACING == IMPULSE {
+    if frame >= SOURCE_FRAMES as usize {
+        0.0
+    } else if frame % SPACING == IMPULSE {
         SIGNAL
     } else if frame >= 128 {
         0.03125
@@ -403,8 +405,14 @@ fn running_resident_main_power_off_retires_the_worker_but_keeps_pass_latency() {
     while h.plugin_records.load(Acquire) != 0 {
         assert_dry_timing(&h, BRIDGE);
         h.pump();
-        assert!(Instant::now() < deadline, "powered-Off worker stayed warm");
-        std::thread::yield_now();
+        assert!(
+            Instant::now() < deadline,
+            "powered-off worker stayed warm: frame={} records={} progress={:?}",
+            status(&h).position.load(Acquire),
+            h.plugin_records.load(Acquire),
+            h.plugin_progress.lock().unwrap(),
+        );
+        std::thread::sleep(Duration::from_millis(1));
     }
     assert!(h.plugin_progress.lock().unwrap().binding.is_none());
     let processed = h.plugin_completed.load(Acquire);
