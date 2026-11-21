@@ -705,6 +705,8 @@ fn write_wav(
     write_header_encoded(&mut writer, sample_rate, data_bytes, byte_rate, encoding)?;
     let mut clipped = 0_u64;
     let quantiser = dither::Pcm16Quantiser::main();
+    const FLOAT32_FRAME_BYTES: usize = ExportFormat::Float32.frame_bytes() as usize;
+    let mut encoded_floats = [0_u8; FRAMES_PER_BLOCK * FLOAT32_FRAME_BYTES];
     let mut sample_bytes = [0_u8; format::MAX_FRAME_BYTES / 2];
     let mut position = start;
 
@@ -713,15 +715,31 @@ fn write_wav(
     while remaining > 0 {
         let count = remaining.min(FRAMES_PER_BLOCK as u64) as usize;
         renderer.render_block(&mut block[..count])?;
-        for (frame, at) in block[..count].iter().zip(position..) {
-            for (channel, sample) in frame.iter().enumerate() {
-                if !sample.is_finite() {
+        if encoding == ExportFormat::Float32 {
+            // Encode one block into contiguous bytes, preserving the original
+            // IEEE bits and checking finiteness before staging it.
+            let bytes = &mut encoded_floats[..count * FLOAT32_FRAME_BYTES];
+            let (encoded, _) = bytes.as_chunks_mut::<FLOAT32_FRAME_BYTES>();
+            for (&[left, right], frame) in block[..count].iter().zip(encoded) {
+                if !left.is_finite() || !right.is_finite() {
                     return Err(ExportError::Invalid("render produced a non-finite sample"));
                 }
-                let bytes = &mut sample_bytes[..encoding.sample_bytes() as usize];
-                let over = format::encode_sample(encoding, quantiser, *sample, at, channel, bytes);
-                clipped += u64::from(over);
-                write_all(&mut writer, bytes, "write samples")?;
+                frame[..4].copy_from_slice(&left.to_le_bytes());
+                frame[4..].copy_from_slice(&right.to_le_bytes());
+            }
+            write_all(&mut writer, bytes, "write samples")?;
+        } else {
+            for (frame, at) in block[..count].iter().zip(position..) {
+                for (channel, sample) in frame.iter().enumerate() {
+                    if !sample.is_finite() {
+                        return Err(ExportError::Invalid("render produced a non-finite sample"));
+                    }
+                    let bytes = &mut sample_bytes[..encoding.sample_bytes() as usize];
+                    let over =
+                        format::encode_sample(encoding, quantiser, *sample, at, channel, bytes);
+                    clipped += u64::from(over);
+                    write_all(&mut writer, bytes, "write samples")?;
+                }
             }
         }
         remaining -= count as u64;
@@ -1051,22 +1069,24 @@ mod tests {
     fn float32_header_is_conformant_ieee_float_with_fact_and_keeps_overs() {
         let dir = TestDir::new();
         let path = dir.0.join("float.wav");
+        let frames = (2 * FRAMES_PER_BLOCK + 3) as u32;
+        let data_bytes = frames * 8;
         let report = publish_encoded(
             &path,
             44_100,
             0,
-            3,
+            u64::from(frames),
             &Publication::CreateNew,
             ExportFormat::Float32,
             || Ok(Constant([1.5, -0.25])),
         )
         .expect("float export");
-        assert_eq!(report.data_bytes, 24);
+        assert_eq!(report.data_bytes, data_bytes);
         assert_eq!(report.clipped_samples, 0, "float output does not clip");
         let bytes = fs::read(&path).expect("read float export");
         let mut expected = Vec::new();
         expected.extend_from_slice(b"RIFF");
-        expected.extend_from_slice(&(50_u32 + 24).to_le_bytes());
+        expected.extend_from_slice(&(50 + data_bytes).to_le_bytes());
         expected.extend_from_slice(b"WAVEfmt ");
         expected.extend_from_slice(&18_u32.to_le_bytes());
         expected.extend_from_slice(&3_u16.to_le_bytes()); // WAVE_FORMAT_IEEE_FLOAT
@@ -1078,11 +1098,11 @@ mod tests {
         expected.extend_from_slice(&0_u16.to_le_bytes()); // cbSize
         expected.extend_from_slice(b"fact");
         expected.extend_from_slice(&4_u32.to_le_bytes());
-        expected.extend_from_slice(&3_u32.to_le_bytes());
+        expected.extend_from_slice(&frames.to_le_bytes());
         expected.extend_from_slice(b"data");
-        expected.extend_from_slice(&24_u32.to_le_bytes());
+        expected.extend_from_slice(&data_bytes.to_le_bytes());
         assert_eq!(expected.len() as u64, FLOAT32_WAV_HEADER_BYTES);
-        for _ in 0..3 {
+        for _ in 0..frames {
             expected.extend_from_slice(&1.5_f32.to_le_bytes());
             expected.extend_from_slice(&(-0.25_f32).to_le_bytes());
         }
@@ -1264,6 +1284,35 @@ mod tests {
         ));
         assert!(!path.exists());
         assert_eq!(fs::read_dir(&dir.0).expect("list directory").count(), 1);
+    }
+
+    #[test]
+    fn float32_block_with_a_non_finite_sample_does_not_publish() {
+        let dir = TestDir::new();
+        let path = dir.0.join("overflow.wav");
+        let cancel = AtomicBool::new(false);
+        let error = write_float_wav_new(
+            &path,
+            48_000,
+            (FRAMES_PER_BLOCK + 3) as u64,
+            &cancel,
+            |output| {
+                output.fill([0.5, -0.5]);
+                if output.len() < FRAMES_PER_BLOCK {
+                    output[1][0] = f32::NAN;
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        let (stage, cause) = retained(error);
+        assert!(matches!(
+            cause,
+            ExportError::Invalid("render produced a non-finite sample")
+        ));
+        assert!(stage.exists());
+        assert!(!path.exists());
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
