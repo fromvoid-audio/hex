@@ -297,6 +297,8 @@ def validate_instance_input(path: Path, candidate: str, *, packaged=False, prove
     assert_plain_path(path.absolute())
     kwargs = {} if provenance is None else {"expected_source_digest": provenance[0], "expected_sdk_pins": provenance[1]}
     data = discovery_builder().verify(path, **kwargs)
+    if discovery_builder().is_observation_build(data):
+        raise DeliveryError("diagnostic slice clock helper cannot be deployed")
     if (data.get("scope") != "native-macos-instance"
             or data.get("source_commit") != candidate or data.get("source_dirty") is not False
             or data.get("package_layout") != ("hex-app-instance-v1" if packaged else None)):
