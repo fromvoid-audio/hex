@@ -18,10 +18,16 @@ fn verified_first_child_request_waits_for_the_exact_callback_receipt() {
     check_verified_group_entry(EntryScenario::FirstChild);
 }
 
+#[test]
+fn verified_first_child_undo_and_redo_wait_for_their_audio_receipts() {
+    check_verified_group_entry(EntryScenario::FirstChildHistory);
+}
+
 enum EntryScenario {
     Reorder,
     History,
     FirstChild,
+    FirstChildHistory,
 }
 
 fn check_verified_group_entry(scenario: EntryScenario) {
@@ -60,7 +66,10 @@ fn check_verified_group_entry(scenario: EntryScenario) {
     let Some(Created::Track(group)) = grouped.created else {
         panic!("group");
     };
-    let first_child = matches!(scenario, EntryScenario::FirstChild);
+    let first_child = matches!(
+        scenario,
+        EntryScenario::FirstChild | EntryScenario::FirstChildHistory
+    );
     let (original, expected_rows, child_parent) = if first_child {
         h.applied(h.context.unwrap());
         h.run(Request::Edit(Command::ReparentTracks {
@@ -176,9 +185,14 @@ fn check_verified_group_entry(scenario: EntryScenario) {
             );
             std::thread::yield_now();
         }
-        return;
+        if matches!(scenario, EntryScenario::FirstChild) {
+            return;
+        }
     }
-    if matches!(scenario, EntryScenario::History) {
+    if matches!(
+        scenario,
+        EntryScenario::History | EntryScenario::FirstChildHistory
+    ) {
         let before = Arc::clone(&original.state.project);
         let after = Arc::clone(&installed.state.project);
         let mut current = installed;
@@ -211,6 +225,17 @@ fn check_verified_group_entry(scenario: EntryScenario) {
             assert_eq!(source.audio_revision, receipt.submission.audio_revision);
             assert_eq!(source.output_identity, predecessor.output_identity);
             assert_eq!(source.output_identity, receipt.submission.output_identity);
+            if first_child {
+                let expected_gain = if label == "Undo" { 0.3125 } else { 0.1875 };
+                let deadline = Instant::now() + h.wait;
+                while h.render() != [[expected_gain; 2]; 64] {
+                    assert!(
+                        Instant::now() < deadline,
+                        "{label} did not reach the expected file-backed mix"
+                    );
+                    std::thread::yield_now();
+                }
+            }
             current = committed;
         }
         return;
