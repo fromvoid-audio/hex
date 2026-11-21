@@ -1799,14 +1799,17 @@ impl WorkerAudioSink for NativeAudioSink {
         {
             control.release_stopped_edit_fence(lease.fence);
         }
-        let off = self.applied_powered_off_main(context);
-        let applied = self
-            .output
-            .as_mut()
-            .and_then(|output| output.publication.control())
-            .and_then(|control| control.status.recording_source());
-        self.plugins
-            .finish_power_off(context, accepted, applied, off);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let off = self.applied_powered_off_main(context);
+            let applied = self
+                .output
+                .as_mut()
+                .and_then(|output| output.publication.control())
+                .and_then(|control| control.status.recording_source());
+            self.plugins
+                .finish_power_off(context, accepted, applied, off);
+        }
         self.plugins.finish_edit(context, accepted);
     }
     fn plugin_state_restore_pending(&self, context: AudioSourceContext) -> bool {
@@ -2266,6 +2269,7 @@ impl WorkerAudioSink for NativeAudioSink {
         crate::streamed_export::resident_seek_storage_bytes(prepared, sources)
     }
 
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn running_resident_main_power_off(
         &mut self,
         context: AudioSourceContext,
