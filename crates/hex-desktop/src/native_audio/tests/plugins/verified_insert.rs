@@ -9,21 +9,28 @@ use hex_session::device_gesture::{GestureKey, GestureRequest, ParameterValue};
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn verified_running_main_vst3_replacement_installs_at_its_exact_receipt() {
-    assert_verified_running_vst3_replacement(VerifiedReplacementBus::Main);
+    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::Main);
 }
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn verified_running_return_vst3_replacement_installs_at_its_exact_receipt() {
-    assert_verified_running_vst3_replacement(VerifiedReplacementBus::Return);
+    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::Return);
 }
 
-enum VerifiedReplacementBus {
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_running_track_vst3_replacement_installs_at_its_exact_receipt() {
+    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::Track);
+}
+
+enum VerifiedReplacementOwner {
     Main,
     Return,
+    Track,
 }
 
-fn assert_verified_running_vst3_replacement(bus: VerifiedReplacementBus) {
+fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
     use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
     use std::sync::atomic::AtomicUsize;
 
@@ -33,13 +40,14 @@ fn assert_verified_running_vst3_replacement(bus: VerifiedReplacementBus) {
     ) -> &[hex_project::Device] {
         match destination {
             PluginEffectDestination::Main => project.main_devices(),
+            PluginEffectDestination::Track(id) => project.track(id).unwrap().devices(),
             PluginEffectDestination::Return(id) => project
                 .return_tracks()
                 .iter()
                 .find(|track| track.id() == id)
                 .unwrap()
                 .devices(),
-            _ => panic!("effect bus fixture"),
+            _ => panic!("effect fixture destination"),
         }
     }
 
@@ -67,10 +75,11 @@ fn assert_verified_running_vst3_replacement(bus: VerifiedReplacementBus) {
     h.applied(h.context.unwrap());
     let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
     h.applied(h.context.unwrap());
-    let (state, destination) = match bus {
-        VerifiedReplacementBus::Main => (imported.state, PluginEffectDestination::Main),
-        VerifiedReplacementBus::Return => {
-            let track = imported.state.project.tracks()[0].id();
+    let track = imported.state.project.tracks()[0].id();
+    let (state, destination) = match owner {
+        VerifiedReplacementOwner::Main => (imported.state, PluginEffectDestination::Main),
+        VerifiedReplacementOwner::Track => (imported.state, PluginEffectDestination::Track(track)),
+        VerifiedReplacementOwner::Return => {
             let added = h.run(Request::Edit(Command::AddReturnTrack {
                 name: "replacement send".into(),
             }));
@@ -118,11 +127,11 @@ fn assert_verified_running_vst3_replacement(bus: VerifiedReplacementBus) {
     let status = h.audio.as_ref().unwrap().status().unwrap();
     let expected = |block| {
         let effect = 0.125 + block as f32 * 0.03125;
-        match bus {
-            VerifiedReplacementBus::Main => effect,
+        match owner {
+            VerifiedReplacementOwner::Main | VerifiedReplacementOwner::Track => effect,
             // The same authored 0.25 reaches the dry and wet routes. Return
             // receives half of it, so the measured ramp must be above dry.
-            VerifiedReplacementBus::Return => 0.25 + effect * 0.5,
+            VerifiedReplacementOwner::Return => 0.25 + effect * 0.5,
         }
     };
     for block in 0..4 {
@@ -145,13 +154,17 @@ fn assert_verified_running_vst3_replacement(bus: VerifiedReplacementBus) {
             PluginEffectDestination::Main => {
                 PluginEffectDestination::ReplaceMainEffect { replacing: old }
             }
+            PluginEffectDestination::Track(track) => PluginEffectDestination::ReplaceTrackEffect {
+                track,
+                replacing: old,
+            },
             PluginEffectDestination::Return(return_track) => {
                 PluginEffectDestination::ReplaceReturnEffect {
                     return_track,
                     replacing: old,
                 }
             }
-            _ => panic!("effect bus fixture"),
+            _ => panic!("effect fixture destination"),
         };
         request(&original.state, target)
     };
@@ -280,14 +293,22 @@ fn assert_verified_running_vst3_replacement(bus: VerifiedReplacementBus) {
     }
     assert_eq!(installed.state.revision, original.state.revision + 1);
     let [fresh] = effects(&installed.state.project, destination) else {
-        panic!("fresh effect in the original bus slot");
+        panic!("fresh effect in the original slot");
     };
     assert_eq!(fresh.id().value(), original.state.project.next_identity());
     assert!(installed.state.project.device(old).is_none());
-    assert_eq!(
-        installed.state.project.tracks(),
-        original.state.project.tracks()
-    );
+    if let PluginEffectDestination::Track(track) = destination {
+        let before = original.state.project.track(track).unwrap();
+        let after = installed.state.project.track(track).unwrap();
+        assert_eq!(after.clips(), before.clips());
+        assert_eq!(after.source_id(), before.source_id());
+        assert_eq!(after.instrument_position(), before.instrument_position());
+    } else {
+        assert_eq!(
+            installed.state.project.tracks(),
+            original.state.project.tracks()
+        );
+    }
     wait(|| {
         pump();
         records.load(Acquire) == 1

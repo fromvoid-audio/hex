@@ -583,6 +583,7 @@ impl Pending {
                         self.insertion.destination,
                         PluginEffectDestination::ReplaceMainEffect { .. }
                             | PluginEffectDestination::ReplaceReturnEffect { .. }
+                            | PluginEffectDestination::ReplaceTrackEffect { .. }
                     ))
                     && self
                         .insertion

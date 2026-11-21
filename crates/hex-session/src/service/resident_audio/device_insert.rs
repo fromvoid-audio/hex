@@ -838,7 +838,9 @@ impl Session {
         } else if proposal_control.is_some()
             && matches!(
                 &command,
-                Command::ReplaceMainDevice { .. } | Command::ReplaceReturnDevice { .. }
+                Command::ReplaceMainDevice { .. }
+                    | Command::ReplaceReturnDevice { .. }
+                    | Command::ReplaceTrackDevice { .. }
             )
         {
             Operation::Device(GraphEditOperation::ReplaceDevice)
