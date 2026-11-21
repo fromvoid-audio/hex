@@ -149,6 +149,26 @@ fn terminal_main_limiter_keeps_two_resident_tracks_aligned_until_stop() {
             assert_eq!(actual, sum(offset));
         }
     }
+
+    let [_, sibling] = editor.project().tracks() else {
+        panic!("two dry tracks");
+    };
+    editor
+        .execute(Command::Gain {
+            track: sibling.id(),
+            gain: 0.5,
+        })
+        .unwrap();
+    let (control, mut callback, predecessor, receipt) =
+        begin_insert_with_pending_track(before, prepare(editor.project()), None, CUT);
+    let mut old = [[0.0; 2]; 64];
+    render(&mut callback, &mut old);
+    assert_eq!(
+        receipt.state(),
+        PublicationReceiptState::Refused(PlaybackHandoffRejection::DeviceInsertNeedsConfirmation)
+    );
+    assert_eq!(control.status.recording_source(), Some(predecessor));
+    assert_eq!(old, std::array::from_fn(|offset| sum(CUT + offset - DELAY)));
 }
 
 #[test]

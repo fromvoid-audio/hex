@@ -53,12 +53,16 @@ fn render_playing(h: &ResidentHarness) -> (usize, [hex_engine::Frame; BLOCK]) {
     (start, pcm)
 }
 
-fn assert_dry_timing(h: &ResidentHarness, latency: usize) {
+fn assert_dry_timing(h: &ResidentHarness, latency: usize, mix_scale: f32) {
     let (start, pcm) = render_playing(h);
     for (offset, frame) in pcm.into_iter().enumerate() {
         let at = start + offset;
         let expected = at.checked_sub(latency).map_or(0.0, source_sample);
-        assert_eq!(frame, [expected; 2], "latency={latency} frame={at}");
+        assert_eq!(
+            frame,
+            [expected * mix_scale; 2],
+            "latency={latency} frame={at}"
+        );
     }
 }
 
@@ -122,26 +126,26 @@ fn signed_output(at: usize) -> (f32, f32) {
     })
 }
 
-fn assert_wet_timing(h: &ResidentHarness) {
+fn assert_wet_timing(h: &ResidentHarness, mix_scale: f32) {
     let (start, pcm) = render_playing(h);
     for (offset, frame) in pcm.into_iter().enumerate() {
         let (_, expected) = signed_output(start + offset);
         assert_eq!(
             frame,
-            [expected; 2],
+            [expected * mix_scale; 2],
             "signed bridge frame={}",
             start + offset
         );
     }
 }
 
-fn assert_aligned_fade(h: &ResidentHarness, toward_dry: bool) {
+fn assert_aligned_fade(h: &ResidentHarness, toward_dry: bool, mix_scale: f32) {
     let (start, pcm) = render_playing(h);
     for (offset, frame) in pcm.into_iter().enumerate() {
         let (dry, wet) = signed_output(start + offset);
         let progress = (offset + 1).min(FADE) as f32 / FADE as f32;
         let dry_gain = if toward_dry { progress } else { 1.0 - progress };
-        let expected = dry * dry_gain + wet * (1.0 - dry_gain);
+        let expected = (dry * dry_gain + wet * (1.0 - dry_gain)) * mix_scale;
         assert!(
             frame.into_iter().all(|lane| (lane - expected).abs() < 1e-6),
             "aligned fade at {}: {frame:?} vs {expected}",
@@ -153,7 +157,18 @@ fn assert_aligned_fade(h: &ResidentHarness, toward_dry: bool) {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn running_resident_main_vst3_removal_retires_a_worker_but_keeps_pass_latency() {
+    verify_running_main_removal(false);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn running_resident_main_vst3_removal_keeps_two_dry_tracks_aligned() {
+    verify_running_main_removal(true);
+}
+
+fn verify_running_main_removal(two_tracks: bool) {
     let _native = native_fixture();
+    let mix_scale = if two_tracks { 2.0 } else { 1.0 };
     let files = Files::new();
     let directory = files.0.canonicalize().unwrap();
     let selected = selection();
@@ -166,11 +181,23 @@ fn running_resident_main_vst3_removal_retires_a_worker_but_keeps_pass_latency() 
         }),
         48_000,
         directory.join("plugin-catalog.json"),
-        u64::from(SOURCE_FRAMES),
+        2 * u64::from(SOURCE_FRAMES),
     );
     assert!(h.next().error.is_none());
     let (empty, _) = h.applied(0);
-    let imported = h.run(Request::Import(impulse_wav(&files)));
+    let wave = impulse_wav(&files);
+    let (imported, dry) = if two_tracks {
+        h.run(Request::Import(wave.clone()));
+        let (first, _) = h.applied(empty);
+        let imported = h.run(Request::Import(wave));
+        let (dry, _) = h.applied(first);
+        assert_eq!(imported.state.project.tracks().len(), 2);
+        (imported, dry)
+    } else {
+        let imported = h.run(Request::Import(wave));
+        let (dry, _) = h.applied(empty);
+        (imported, dry)
+    };
     let source = imported.state.canonical_audio_source.as_ref().unwrap();
     assert!(source.required_sources().next().is_some());
     assert!(
@@ -178,7 +205,6 @@ fn running_resident_main_vst3_removal_retires_a_worker_but_keeps_pass_latency() 
             .required_sources()
             .all(|(_, source)| { matches!(source, hex_session::AudioSourceBinding::Resident(_)) })
     );
-    let (dry, _) = h.applied(empty);
     h.service
         .submit(Request::InsertPluginEffect(request(
             &imported.state,
@@ -225,7 +251,7 @@ fn running_resident_main_vst3_removal_retires_a_worker_but_keeps_pass_latency() 
         .command(PlaybackCommand::Play)
         .unwrap();
     for _ in 0..4 {
-        assert_wet_timing(&h);
+        assert_wet_timing(&h, mix_scale);
     }
     assert_eq!(status(&h).recording_source(), Some(predecessor));
 
@@ -243,7 +269,7 @@ fn running_resident_main_vst3_removal_retires_a_worker_but_keeps_pass_latency() 
         assert_eq!(pending.state.project, inserted.state.project);
         assert_eq!(exact.output_identity, predecessor.output_identity);
         assert_eq!(h.plugin_progress.lock().unwrap().binding, Some(binding));
-        assert_aligned_fade(&h, true);
+        assert_aligned_fade(&h, true, mix_scale);
         assert_eq!(status(&h).recording_source(), Some(predecessor));
         if !cancel {
             break;
@@ -263,7 +289,7 @@ fn running_resident_main_vst3_removal_retires_a_worker_but_keeps_pass_latency() 
                 }
             }
         });
-        assert_aligned_fade(&h, false);
+        assert_aligned_fade(&h, false, mix_scale);
         let cancelled = h.next();
         assert_eq!(
             cancelled.device_insert_complete.unwrap().outcome,
@@ -272,7 +298,7 @@ fn running_resident_main_vst3_removal_retires_a_worker_but_keeps_pass_latency() 
         assert_eq!(cancelled.state.project, inserted.state.project);
         assert_eq!(status(&h).recording_source(), Some(predecessor));
         assert_eq!(h.plugin_progress.lock().unwrap().binding, Some(binding));
-        assert_wet_timing(&h);
+        assert_wet_timing(&h, mix_scale);
     }
     let deadline = Instant::now() + Duration::from_secs(1);
     let removed = loop {
@@ -298,6 +324,10 @@ fn running_resident_main_vst3_removal_retires_a_worker_but_keeps_pass_latency() 
     assert_eq!(completion.outcome, DeviceInsertOutcome::Installed);
     assert!(removed.state.project.device(device).is_none());
     assert_eq!(removed.state.revision, inserted.state.revision + 1);
+    assert_eq!(
+        removed.state.project.tracks(),
+        inserted.state.project.tracks()
+    );
     let applied = status(&h).recording_source().unwrap();
     assert_ne!(applied, predecessor);
     assert_eq!(applied.output_identity, predecessor.output_identity);
@@ -305,7 +335,7 @@ fn running_resident_main_vst3_removal_retires_a_worker_but_keeps_pass_latency() 
     assert_eq!(applied.audio_revision, completion.submission.audio_revision);
     let deadline = Instant::now() + Duration::from_secs(1);
     while h.plugin_records.load(Acquire) != 0 {
-        assert_dry_timing(&h, BRIDGE);
+        assert_dry_timing(&h, BRIDGE, mix_scale);
         h.pump();
         assert!(
             Instant::now() < deadline,
@@ -315,9 +345,14 @@ fn running_resident_main_vst3_removal_retires_a_worker_but_keeps_pass_latency() 
     }
     assert!(h.plugin_progress.lock().unwrap().binding.is_none());
     for _ in 0..4 {
-        assert_dry_timing(&h, BRIDGE);
+        assert_dry_timing(&h, BRIDGE, mix_scale);
     }
 
+    for partition in [1, 257] {
+        assert_workerless_dry_partition(&h, partition, |frame| {
+            source_sample(frame - BRIDGE) * mix_scale
+        });
+    }
     h.audio.as_ref().unwrap().control.stop();
     h.render_plugin_block();
     assert!(!status(&h).playing.load(Acquire));
@@ -329,7 +364,7 @@ fn running_resident_main_vst3_removal_retires_a_worker_but_keeps_pass_latency() 
         .command(PlaybackCommand::Play)
         .unwrap();
     for _ in 0..4 {
-        assert_dry_timing(&h, 0);
+        assert_dry_timing(&h, 0, mix_scale);
     }
 }
 
@@ -417,7 +452,7 @@ fn verify_running_main_power_cycle(check: MainPowerCheck) {
         .command(PlaybackCommand::Play)
         .unwrap();
     for _ in 0..4 {
-        assert_wet_timing(&h);
+        assert_wet_timing(&h, 1.0);
     }
 
     // No callback runs while the first terminal/progress event is received.
@@ -440,7 +475,7 @@ fn verify_running_main_power_cycle(check: MainPowerCheck) {
         assert!(pending.error.is_none(), "{:?}", pending.error);
         assert!(!pending.request_complete);
         assert_eq!(pending.state.project, inserted.state.project);
-        assert_aligned_fade(&h, true);
+        assert_aligned_fade(&h, true, 1.0);
         assert_eq!(status(&h).recording_source(), Some(predecessor));
         wait(|| {
             match h
@@ -457,7 +492,7 @@ fn verify_running_main_power_cycle(check: MainPowerCheck) {
                 }
             }
         });
-        assert_aligned_fade(&h, false);
+        assert_aligned_fade(&h, false, 1.0);
         let cancelled = h.next();
         assert_eq!(
             cancelled.error.as_deref(),
@@ -479,7 +514,7 @@ fn verify_running_main_power_cycle(check: MainPowerCheck) {
         assert!(progress.accepted && !progress.retiring);
         assert_eq!(h.plugin_records.load(Acquire), 1);
         let processed = h.plugin_completed.load(Acquire);
-        assert_wet_timing(&h);
+        assert_wet_timing(&h, 1.0);
         // Wet PCM waits for the actual endpoint. Its completion projection is
         // published later by the independent canonical-worker poll.
         let observed_by = Instant::now() + Duration::from_millis(250);
@@ -529,7 +564,7 @@ fn verify_running_main_power_cycle(check: MainPowerCheck) {
     assert_eq!(status(&h).recording_source(), Some(predecessor));
     assert_eq!(h.plugin_progress.lock().unwrap().binding, Some(binding));
     assert_eq!(h.plugin_records.load(Acquire), 1);
-    assert_aligned_fade(&h, true);
+    assert_aligned_fade(&h, true, 1.0);
     assert_eq!(status(&h).recording_source(), Some(predecessor));
 
     let deadline = Instant::now() + Duration::from_secs(1);
@@ -573,7 +608,7 @@ fn verify_running_main_power_cycle(check: MainPowerCheck) {
 
     let deadline = Instant::now() + Duration::from_secs(1);
     while h.plugin_records.load(Acquire) != 0 {
-        assert_dry_timing(&h, BRIDGE);
+        assert_dry_timing(&h, BRIDGE, 1.0);
         h.pump();
         assert!(
             Instant::now() < deadline,
@@ -587,7 +622,7 @@ fn verify_running_main_power_cycle(check: MainPowerCheck) {
     assert!(h.plugin_progress.lock().unwrap().binding.is_none());
     let processed = h.plugin_completed.load(Acquire);
     for _ in 0..4 {
-        assert_dry_timing(&h, BRIDGE);
+        assert_dry_timing(&h, BRIDGE, 1.0);
     }
     for partition in [1, 257] {
         assert_workerless_dry_partition(&h, partition, |at| {
@@ -618,7 +653,7 @@ fn verify_running_main_power_cycle(check: MainPowerCheck) {
         .command(PlaybackCommand::Play)
         .unwrap();
     for _ in 0..4 {
-        assert_dry_timing(&h, 0);
+        assert_dry_timing(&h, 0, 1.0);
     }
 }
 
@@ -654,7 +689,7 @@ fn assert_running_main_power_on(
             assert_eq!(event.state.project, powered_off.state.project);
         }
         assert_eq!(status(h).recording_source(), Some(applied));
-        assert_dry_timing(h, BRIDGE);
+        assert_dry_timing(h, BRIDGE, 1.0);
         assert!(
             Instant::now() < preparation_deadline,
             "running On never reached native publication"
@@ -745,7 +780,7 @@ fn assert_running_main_power_on(
         assert!(status(h).native_effect_source().is_none());
         wait(|| {
             h.pump();
-            assert_dry_timing(h, BRIDGE);
+            assert_dry_timing(h, BRIDGE, 1.0);
             h.plugin_records.load(Acquire) == 0
         });
         return;
