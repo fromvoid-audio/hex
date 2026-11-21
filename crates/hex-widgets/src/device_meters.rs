@@ -3,7 +3,8 @@
 //! or keyboard behavior and never edits a value. Clicks fall through to the host.
 use crate::ControlStyle;
 use gpui::{
-    Context, Div, IntoElement, Render, SharedString, Window, div, prelude::*, px, relative, rgb,
+    App, Context, Div, Entity, IntoElement, Render, RenderOnce, SharedString, Window, div,
+    prelude::*, px, relative, rgb,
 };
 
 /// Input-level evidence drawn inside a meter fader's rail.
@@ -32,37 +33,69 @@ pub struct StereoPeakMeter {
 
 /// Two thin vertical bars, left then right, each with a held-peak line. The
 /// scale spans -60 to 0 dBFS; amplitudes above unity draw in the clipping color.
-/// Selectors: `{id}`, `{id}-left`/`{id}-right`, plus `-fill` and `-peak` suffixes.
+/// Tooltip text stays live across repaints while hovered without recreating the
+/// tooltip view.
+/// Selectors: `{id}`, `{id}-left`/`{id}-right`, `{id}-tooltip`, plus `-fill` and
+/// `-peak` suffixes.
 pub fn stereo_peak_meter(
     id: SharedString,
     meter: StereoPeakMeter,
     style: ControlStyle,
-) -> gpui::Stateful<Div> {
-    let selector = id.to_string();
-    let mut bars = div()
-        .debug_selector(move || selector)
-        .flex()
-        .gap(px(STEREO_PEAK_BAR_GAP))
-        .h_full();
-    for (side, (level, held)) in ["left", "right"]
-        .into_iter()
-        .zip(meter.levels.into_iter().zip(meter.held))
-    {
-        bars = bars.child(channel_bar(
-            format!("{id}-{side}").into(),
-            level,
-            held,
-            meter.colors,
-            style,
-        ));
+) -> impl IntoElement {
+    StereoPeakMeterElement { id, meter, style }
+}
+
+#[derive(IntoElement)]
+struct StereoPeakMeterElement {
+    id: SharedString,
+    meter: StereoPeakMeter,
+    style: ControlStyle,
+}
+
+impl RenderOnce for StereoPeakMeterElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let tooltip_state = window.use_keyed_state(
+            SharedString::from(format!("{}-tooltip-state", self.id)),
+            cx,
+            |_, _| MeterTooltipState {
+                text: self.meter.tooltip.clone(),
+                style: self.style,
+            },
+        );
+        tooltip_state.update(cx, |state, _| {
+            state.text = self.meter.tooltip.clone();
+            state.style = self.style;
+        });
+        let selector = self.id.to_string();
+        let tooltip_selector = format!("{}-tooltip", self.id);
+        let mut bars = div()
+            .debug_selector(move || selector)
+            .flex()
+            .gap(px(STEREO_PEAK_BAR_GAP))
+            .h_full();
+        for (side, (level, held)) in ["left", "right"]
+            .into_iter()
+            .zip(self.meter.levels.into_iter().zip(self.meter.held))
+        {
+            bars = bars.child(channel_bar(
+                format!("{}-{side}", self.id).into(),
+                level,
+                held,
+                self.meter.colors,
+                self.style,
+            ));
+        }
+        div()
+            .id(self.id)
+            .h_full()
+            .flex_shrink_0()
+            .child(bars)
+            .tooltip(move |_, cx| {
+                let state = tooltip_state.clone();
+                let selector = tooltip_selector.clone();
+                cx.new(|_| MeterTooltip { state, selector }).into()
+            })
     }
-    let tooltip = meter.tooltip;
-    div()
-        .id(id)
-        .h_full()
-        .flex_shrink_0()
-        .child(bars)
-        .tooltip(move |_, cx| cx.new(|_| MeterTooltip(tooltip.clone(), style)).into())
 }
 
 fn channel_bar(
@@ -105,15 +138,27 @@ fn channel_bar(
     })
 }
 
-struct MeterTooltip(SharedString, ControlStyle);
+struct MeterTooltipState {
+    text: SharedString,
+    style: ControlStyle,
+}
+
+struct MeterTooltip {
+    state: Entity<MeterTooltipState>,
+    selector: String,
+}
+
 impl Render for MeterTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let state = self.state.read(cx);
+        let selector = self.selector.clone();
         div()
+            .debug_selector(move || selector.clone())
             .px(px(6.0))
             .py(px(4.0))
-            .bg(rgb(self.1.raised))
-            .text_color(rgb(self.1.text))
+            .bg(rgb(state.style.raised))
+            .text_color(rgb(state.style.text))
             .text_size(px(10.0))
-            .child(self.0.clone())
+            .child(state.text.clone())
     }
 }

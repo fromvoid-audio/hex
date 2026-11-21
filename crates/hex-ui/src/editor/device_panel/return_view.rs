@@ -87,6 +87,13 @@ pub(super) fn render(
     view.device_panel
         .meter_states
         .retain(|id, _| alive.contains(id));
+    if view
+        .device_panel
+        .hovered_meter
+        .is_some_and(|id| !alive.contains(&id))
+    {
+        view.device_panel.hovered_meter = None;
+    }
     retire_transfer_previews(&mut view.device_panel, |id| {
         devices
             .iter()

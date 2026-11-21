@@ -69,6 +69,7 @@ pub(super) use source_picker::Choice as SourcePickerChoice;
 pub(super) use source_picker::bind_keys as bind_source_picker_keys;
 pub(super) use source_picker::focus_from_workspace as focus_source_picker_from_workspace;
 mod device_meter;
+pub(super) use device_meter::tick_hovered as tick_hovered_meter;
 mod fold;
 mod gate_panel;
 mod keyboard;
@@ -166,6 +167,7 @@ pub(super) struct DevicePanelState {
     controls: HashMap<ParameterKey, ParameterControl>,
     playback_values: automation_playback::Values,
     meter_states: HashMap<DeviceId, device_meter::MeterState>,
+    hovered_meter: Option<DeviceId>,
     send_controls: HashMap<SendControlKey, SendControl>,
     views: HashMap<
         DeviceId,
@@ -1247,6 +1249,13 @@ fn render_track(
     view.device_panel
         .meter_states
         .retain(|id, _| identities.contains_key(id));
+    if view
+        .device_panel
+        .hovered_meter
+        .is_some_and(|id| !identities.contains_key(&id))
+    {
+        view.device_panel.hovered_meter = None;
+    }
     let stale_keys: Vec<_> = view
         .device_panel
         .controls

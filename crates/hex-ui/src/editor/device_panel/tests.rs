@@ -6179,6 +6179,122 @@ fn clicking_a_device_meter_clears_its_held_overload_line(cx: &mut TestAppContext
     assert_eq!(visual.rendered_background(right_peak), clipping);
 }
 
+#[gpui::test]
+fn hovering_a_device_meter_updates_its_tooltip_live_and_ticks_while_decaying(
+    cx: &mut TestAppContext,
+) {
+    let _output_fixture_guard = eq_ui_tests::graph_layout_tests::status_fixture_guard();
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let prepared = Arc::new(
+        hex_engine::PreparedRevision::prepare(
+            &state.project,
+            &Default::default(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .expect("prepared revision"),
+    );
+    let meter = Arc::clone(
+        prepared
+            .arrangement()
+            .device_meter(device.value())
+            .expect("device meter"),
+    );
+    let deadline = crate::test_wait::hang_deadline();
+    let (mut output, _backend) = loop {
+        match hex_audio::worker_fixture::open(48_000) {
+            Ok(output) => break output,
+            Err(error)
+                if error == "audio output is open or still shutting down"
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::yield_now()
+            }
+            Err(error) => panic!("{error}"),
+        }
+    };
+    let client = output.take_client().expect("audio client");
+    let (handle, editor) = actor_editor_window(cx, service, Arc::clone(&state), track);
+    editor.update(cx, |view, cx| {
+        view.audio = Some(crate::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "meter tooltip fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.audible_playback = Some(super::super::PlaybackCandidate {
+            clip_preview_identity: None,
+            worker_requires_preroll: None,
+            observation: None,
+            audio_revision: 1,
+            project_generation: view.project_generation,
+            state: Arc::clone(&state),
+            prepared_revision: Some(Arc::clone(&prepared)),
+            seek_request_id: None,
+            device_preview_identity: None,
+            tuning_preview_identity: None,
+        });
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(880.0), px(540.0)));
+    visual.run_until_parked();
+
+    let meter_selector =
+        Box::leak(format!("device-{}-output-meter", device.value()).into_boxed_str());
+    let tooltip_selector = Box::leak(format!("{meter_selector}-tooltip").into_boxed_str());
+    let meter_bounds = visual.debug_bounds(meter_selector).expect("device meter");
+
+    // Hover the meter and wait for GPUI's tooltip show delay.
+    visual.simulate_mouse_move(meter_bounds.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    visual
+        .executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    visual.run_until_parked();
+
+    let quiet_bounds = visual
+        .debug_bounds(tooltip_selector)
+        .expect("hovered device meter tooltip");
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.device_panel.hovered_meter, Some(device));
+        assert!(
+            !super::tick_hovered_meter(view),
+            "silent meter needs no decay redraws"
+        );
+    });
+
+    // Feed live output peaks while the pointer stays stationary: the visible
+    // tooltip updates in place (wider than `−∞`) and requests decay ticks.
+    meter.observe_output(&[[0.125, 0.0625]]);
+    editor.update(&mut visual, |_, cx| cx.notify());
+    visual.run_until_parked();
+
+    let active_bounds = visual
+        .debug_bounds(tooltip_selector)
+        .expect("tooltip remains visible during live peak update");
+    assert!(
+        active_bounds.size.width > quiet_bounds.size.width,
+        "expected tooltip width to grow for live dBFS numbers: quiet={quiet_bounds:?}, active={active_bounds:?}"
+    );
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            super::tick_hovered_meter(view),
+            "hovered decaying meter keeps repainting until it settles"
+        );
+    });
+
+    // Moving the pointer off the meter stops decay ticks and hides the tooltip.
+    visual.simulate_mouse_move(point(px(4.0), px(4.0)), None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(tooltip_selector).is_none());
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.device_panel.hovered_meter, None);
+        assert!(!super::tick_hovered_meter(view));
+    });
+}
+
 /// Open the real optional oscillator controls for tests that edit those fields.
 fn open_operator_options(visual: &mut VisualTestContext, device: DeviceId) {
     let panel = Box::leak(format!("operator-options-panel-{}", device.value()).into_boxed_str());

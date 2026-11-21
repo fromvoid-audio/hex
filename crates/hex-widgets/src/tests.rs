@@ -2079,6 +2079,58 @@ fn stereo_peak_meter_draws_independent_channels_and_passes_clicks_to_its_host(
 }
 
 #[gpui::test]
+fn stereo_peak_meter_tooltip_updates_live_without_rehovering(cx: &mut TestAppContext) {
+    let colors = crate::MeterColors {
+        signal: 0x33bb77,
+        near_peak: 0xffcc33,
+        clipping: 0xee3344,
+    };
+    let handle = cx.add_window(|_, _| StereoMeterFixture {
+        meter: crate::StereoPeakMeter {
+            levels: [0.0; 2],
+            held: [0.0; 2],
+            tooltip: "l −∞".into(),
+            colors,
+        },
+        clicks: 0,
+    });
+    let view = handle.root(cx).unwrap();
+    let mut visual = VisualTestContext::from_window(*handle, cx);
+    visual.simulate_resize(size(px(320.0), px(160.0)));
+    visual.run_until_parked();
+
+    let center = visual.debug_bounds("meter").unwrap().center();
+    visual.simulate_mouse_move(center, None, Modifiers::default());
+    visual.run_until_parked();
+    visual
+        .executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    visual.run_until_parked();
+
+    let initial = visual
+        .debug_bounds("meter-tooltip")
+        .expect("hovered stereo meter shows tooltip");
+
+    // Updating the meter's tooltip while the pointer stays stationary must
+    // redraw the active tooltip view in place rather than keeping the initial snapshot.
+    view.update(&mut visual, |fixture, cx| {
+        fixture.meter.tooltip =
+            "output peak l -6.02 · r -12.04 dbfs\nheld peak l 0.00 · r -3.00 dbfs\nclick to clear peaks"
+                .into();
+        cx.notify();
+    });
+    visual.run_until_parked();
+
+    let updated = visual
+        .debug_bounds("meter-tooltip")
+        .expect("tooltip remains visible across live updates");
+    assert!(
+        updated.size.width > initial.size.width && updated.size.height > initial.size.height,
+        "expected live tooltip bounds to grow from {initial:?} to reflect updated multiline text, got {updated:?}"
+    );
+}
+
+#[gpui::test]
 fn accessibility_numeric_uses_real_domain_and_one_event_transaction(cx: &mut TestAppContext) {
     let (handle, control) = open_numeric_control(cx, NumericControlKind::HorizontalSlider);
     let phases = Rc::new(RefCell::new(Vec::new()));
