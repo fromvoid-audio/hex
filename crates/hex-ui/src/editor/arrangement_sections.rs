@@ -184,6 +184,9 @@ struct Pending {
     layout: Option<Arc<ViewState>>,
     // The created ID belongs to the exact committed copy observation.
     copied: Option<SectionId>,
+    // Cut commits its captured snapshot and cursor only when deletion succeeds.
+    cut_clipboard: Option<clipboard::Captured>,
+    cut_cursor: Option<BeatTime>,
     receipt: Receipt,
     selection_intent_epoch: Option<u64>,
 }
@@ -208,7 +211,7 @@ pub(super) struct Sections {
     // Shift ranges start here; ignored once it leaves the selection.
     anchor: Option<SectionId>,
     cursor: Option<SectionCursor>,
-    clipboard: Option<clipboard::Reference>,
+    clipboard: Option<clipboard::Captured>,
     gesture: Option<Gesture>,
     pending: Option<Pending>,
     // At most one keyboard duplicate may follow a committed pending copy.
@@ -247,7 +250,7 @@ impl Sections {
 pub(super) struct MenuAction {
     generation: u64,
     revision: u64,
-    section: SectionId,
+    section: Option<SectionId>,
     kind: MenuKind,
 }
 #[derive(Clone)]
@@ -257,6 +260,7 @@ enum MenuKind {
     Remove,
     Delete,
     Duplicate,
+    Cut,
     Copy,
     Paste,
     Merge,
@@ -571,8 +575,10 @@ impl EditorView {
             || observation.first_previous_revision != observation.previous_revision
             || observation.previous_revision != pending.revision
             || base.revision != pending.revision
-            || !(matches!(&pending.command, Command::DuplicateArrangementSection(_))
-                || copied_section_source(&pending.command).is_some())
+            || !(matches!(
+                &pending.command,
+                Command::DuplicateArrangementSection(_) | Command::PasteArrangementSection { .. }
+            ) || copied_section_source(&pending.command).is_some())
         {
             return false;
         }
@@ -743,6 +749,7 @@ impl EditorView {
                     | Command::AppendArrangementSectionCopy { .. }
                     | Command::MoveArrangementSectionBeyondEnd { .. }
                     | Command::ReplaceArrangementSection { .. }
+                    | Command::PasteArrangementSection { .. }
             )
         }) || self
             .audio
@@ -771,6 +778,26 @@ impl EditorView {
         self.time_selection_project_scope = false;
         self.cancel_time_selection_gesture();
     }
+    pub(super) fn place_section_cursor_at_main_point(&mut self, beat: BeatTime) {
+        let Some(revision) = self.state.as_ref().map(|state| state.revision) else {
+            return;
+        };
+        self.sections.cursor = Some(SectionCursor {
+            beat,
+            generation: self.project_generation,
+            revision,
+        });
+        self.selected_track = None;
+        self.arrangement_focus.observe_active_track(None);
+        self.selected_clip = None;
+        self.detail_context = None;
+        self.focused_return = None;
+        self.device_panel.main_selected = Some(self.project_generation);
+        self.selected_cell = None;
+        self.selected_scene = None;
+        self.track_selection = Default::default();
+    }
+
     pub(super) fn retire_section_pointer_context_for_range(&mut self) {
         self.sections.cursor = None;
         if !self.arrangement_focus.projection.enabled {
@@ -842,7 +869,7 @@ impl EditorView {
         let lane = self.main_track_lane_bounds?;
         Some([lane.left, lane.top, lane.width, lane.height])
     }
-    fn section_pointer(&self, x: f32, y: f32, free: bool) -> Option<BeatTime> {
+    pub(super) fn section_pointer(&self, x: f32, y: f32, free: bool) -> Option<BeatTime> {
         let [left, top, width, height] = self.section_layout()?;
         if x < left || x > left + width || y < top || y > top + height {
             return None;
@@ -1100,8 +1127,23 @@ impl EditorView {
             return true;
         }
         if time_range {
+            if let Some(revision) = self
+                .state
+                .as_ref()
+                .filter(|state| state.project.tracks().is_empty())
+                .map(|state| state.revision)
+            {
+                self.sections.cursor = Some(SectionCursor {
+                    beat: anchor,
+                    generation: self.project_generation,
+                    revision,
+                });
+                self.select_section_metadata(None);
+                return true;
+            }
             // Do not start a competing capture. Main's existing range receiver
-            // sees this same press next and keeps canonical all-track scope.
+            // sees this same press next: drags keep canonical all-track scope,
+            // while a stationary release places the section cursor.
             self.retire_section_pointer_context_for_range();
             return false;
         }
@@ -1546,6 +1588,8 @@ impl EditorView {
             display,
             layout,
             copied: None,
+            cut_clipboard: None,
+            cut_cursor: None,
             receipt: Receipt::new(generation),
             selection_intent_epoch: self.selection_intent_epoch,
         });
@@ -1653,17 +1697,41 @@ impl EditorView {
             }
             if event.error.is_none()
                 && !event.project_replaced
-                && let (Some(reference), Some(pending)) = (
-                    self.sections.clipboard.as_mut(),
-                    self.sections.pending.as_ref(),
-                )
+                && let Some(pending) = self.sections.pending.as_mut()
+                && let Some(captured) = pending.cut_clipboard.take()
             {
-                reference.acknowledge_copy(
-                    &pending.command,
-                    pending.generation,
-                    pending.revision,
-                    &event.state,
-                );
+                self.sections.clipboard = Some(captured);
+                if let Some(beat) = pending.cut_cursor.take() {
+                    self.sections.cursor = Some(SectionCursor {
+                        beat,
+                        generation: self.project_generation,
+                        revision: event.state.revision,
+                    });
+                }
+                self.status = "section cut".into();
+            }
+            let pasted_match = self.sections.pending.as_ref().is_some_and(|pending| {
+                matches!(pending.command, Command::PasteArrangementSection { .. })
+                    && pending
+                        .selection_intent_epoch
+                        .is_some_and(|epoch| Some(epoch) == self.selection_intent_epoch)
+            });
+            if event.error.is_none()
+                && !event.project_replaced
+                && pasted_match
+                && self.device_panel.main_selected == Some(self.project_generation)
+                && let Some(hex_project::Created::ArrangementSection(id)) = event.created.as_ref()
+            {
+                self.sections.selected = Some(*id);
+                self.sections.selection = vec![*id];
+                if let Some(pasted) = event.state.project.arrangement_section(*id) {
+                    self.sections.cursor = Some(SectionCursor {
+                        beat: pasted.end(),
+                        generation: self.project_generation,
+                        revision: event.state.revision,
+                    });
+                }
+                self.status = "section pasted".into();
             }
             let copy_source = self.sections.pending.as_ref().and_then(|pending| {
                 if pending
@@ -2162,6 +2230,7 @@ impl EditorView {
             | Command::AppendArrangementSectionCopy { .. }
             | Command::MoveArrangementSectionBeyondEnd { .. }
             | Command::ReplaceArrangementSection { .. }
+            | Command::PasteArrangementSection { .. }
             | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_) => {
                 match state.project.preview_arrangement_section_edit(&command) {
@@ -2233,6 +2302,8 @@ impl EditorView {
             display: primary.display.clone(),
             layout: None,
             copied: None,
+            cut_clipboard: None,
+            cut_cursor: None,
             receipt: Receipt::new(self.project_generation),
             selection_intent_epoch: primary.selection_intent_epoch,
         });
@@ -2279,7 +2350,7 @@ impl EditorView {
             super::context_menu::EditorContextAction::Section(MenuAction {
                 generation,
                 revision,
-                section: id,
+                section: Some(id),
                 kind,
             })
         };
@@ -2289,6 +2360,12 @@ impl EditorView {
                 swatch: None,
                 checked: false,
                 action: make(MenuKind::Duplicate),
+            },
+            MenuItem {
+                label: "cut section · cmd-x",
+                swatch: None,
+                checked: false,
+                action: make(MenuKind::Cut),
             },
             MenuItem {
                 label: "copy section · cmd-c",
@@ -2356,8 +2433,73 @@ impl EditorView {
         });
         cx.notify();
     }
+    pub(super) fn section_lane_menu(
+        &mut self,
+        x: f32,
+        y: f32,
+        position: gpui::Point<gpui::Pixels>,
+        modifiers: gpui::Modifiers,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.sections_available() {
+            if !self.sections_idle() {
+                self.error = Some(SECTION_BUSY.into());
+            }
+            return;
+        }
+        let free = section_input::EditModifiers::from(modifiers).invert_snap;
+        let Some(beat) = self.section_pointer(x, y, free) else {
+            return;
+        };
+        self.cancel_section_pointer();
+        self.select_section_metadata(None);
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let generation = self.project_generation;
+        let revision = state.revision;
+        self.sections.cursor = Some(SectionCursor {
+            beat,
+            generation,
+            revision,
+        });
+        let items = vec![MenuItem {
+            label: "paste section at cursor · cmd-v",
+            swatch: None,
+            checked: false,
+            action: super::context_menu::EditorContextAction::Section(MenuAction {
+                generation,
+                revision,
+                section: None,
+                kind: MenuKind::Paste,
+            }),
+        }];
+        let focus = cx.focus_handle();
+        let previous_focus = window.focused(cx);
+        focus.focus(window);
+        self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
+            icon_grid: None,
+            position,
+            selected: 0,
+            focus,
+            previous_focus,
+            items,
+        });
+        cx.notify();
+    }
     pub(super) fn section_menu_stale(&self, a: &MenuAction) -> bool {
-        !self.section_stamp_current(a.generation, a.revision, a.section)
+        match a.section {
+            Some(id) => !self.section_stamp_current(a.generation, a.revision, id),
+            None => {
+                a.generation != self.project_generation
+                    || self
+                        .state
+                        .as_ref()
+                        .is_none_or(|state| state.revision != a.revision)
+            }
+        }
     }
     pub(super) fn section_menu_action(
         &mut self,
@@ -2368,16 +2510,19 @@ impl EditorView {
         if self.section_menu_stale(&a) {
             return;
         }
-        self.sections.selected = Some(a.section);
+        if let Some(id) = a.section {
+            self.sections.selected = Some(id);
+        }
         match a.kind {
             MenuKind::Rename => {
                 self.focus.focus(window);
                 self.section_name_begin(window, cx);
             }
-            MenuKind::Color(color) => self.section_metadata(Command::SetArrangementSectionColor {
-                section: a.section,
-                color,
-            }),
+            MenuKind::Color(color) => {
+                if let Some(section) = a.section {
+                    self.section_metadata(Command::SetArrangementSectionColor { section, color });
+                }
+            }
             MenuKind::Remove => {
                 self.focus.focus(window);
                 self.delete_section_kind(true, window);
@@ -2389,6 +2534,10 @@ impl EditorView {
             MenuKind::Duplicate => {
                 self.focus.focus(window);
                 self.duplicate_section(window);
+            }
+            MenuKind::Cut => {
+                self.focus.focus(window);
+                self.cut_section(window);
             }
             MenuKind::Copy => {
                 self.focus.focus(window);
@@ -2517,10 +2666,14 @@ impl EditorView {
                         })
                         .map(|p| &p.command)
                 });
-            let copy_preview = copy_command.and_then(copied_section_source).is_some();
+            let copy_preview = copy_command.is_some_and(|command| {
+                copied_section_source(command).is_some()
+                    || matches!(command, Command::PasteArrangementSection { .. })
+            });
             let new_copy = m.id.is_none()
                 && copy_command.is_some_and(|command| match command {
                     Command::AppendArrangementSectionCopy { start, .. } => m.start == *start,
+                    Command::PasteArrangementSection { at, .. } => m.start == *at,
                     Command::DuplicateArrangementSectionAt { .. }
                     | Command::ReplaceArrangementSection { copy: true, .. } => true,
                     _ => false,
@@ -2561,7 +2714,7 @@ impl EditorView {
                 .w_full()
                 .tooltip(|_, cx| {
                     cx.new(|_| super::waveform::ClipTooltip { kind: crate::tooltips::Kind::Help,
-                        name: "header: select/reorder · body: time selection · inner edge: resize one · seam: resize both · option: copy · option-command: markers only · command: snap · shift-click: select range · cmd-shift-click: toggle · g: merge · cmd-d: duplicate · e: split"
+                        name: "header: select/reorder · click lane: place cursor · body drag: time selection · inner edge: resize one · seam: resize both · option: copy · option-command: markers only · command: snap · shift-click: select range · cmd-shift-click: toggle · g: merge · cmd-x/c/v: cut/copy/paste · cmd-d: duplicate · e: split"
                             .into(),
                     })
                     .into()
@@ -2798,6 +2951,20 @@ fn same_command(a: &Command, b: &Command) -> bool {
                 gap_color: bc,
             },
         ) => (a, at, an, ac) == (b, bt, bn, bc),
+        (
+            Command::PasteArrangementSection {
+                clipboard: a,
+                at: aa,
+                gap_name: an,
+                gap_color: ac,
+            },
+            Command::PasteArrangementSection {
+                clipboard: b,
+                at: ba,
+                gap_name: bn,
+                gap_color: bc,
+            },
+        ) => Arc::ptr_eq(a, b) && (aa, an, ac) == (ba, bn, bc),
         (
             Command::DuplicateArrangementSectionAt {
                 section: a,
@@ -5011,6 +5178,8 @@ pub(super) mod tests {
                 display: g.display,
                 layout: None,
                 copied: None,
+                cut_clipboard: None,
+                cut_cursor: None,
                 receipt,
             });
             v.worker_requests_pending = 2;
@@ -5408,7 +5577,7 @@ pub(super) mod tests {
             let action = MenuAction {
                 generation: v.project_generation,
                 revision: state.revision,
-                section: ids[1],
+                section: Some(ids[1]),
                 kind: MenuKind::Color(ElementColor::Green),
             };
             v.project_generation += 1;
@@ -6781,6 +6950,8 @@ pub(super) mod tests {
                 display: primary.display.clone(),
                 layout: None,
                 copied: None,
+                cut_clipboard: None,
+                cut_cursor: None,
                 receipt: Receipt::new(primary.generation),
                 selection_intent_epoch: primary.selection_intent_epoch,
             });

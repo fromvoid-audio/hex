@@ -12,7 +12,7 @@ use crate::{GainInterpolation, GainLane, GainPoint, MeterMap, TempoMap, TempoPoi
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy)]
-enum Transform {
+pub(super) enum Transform {
     Insert {
         at: BeatTime,
         end: BeatTime,
@@ -647,7 +647,7 @@ fn apply_transform(
 /// Fence the moved music's tempo. Authored points always stay; a seam that
 /// repeats the tempo already in effect there changes no clock, and inserting
 /// it anyway piles same-tempo points up with every structural section edit.
-fn seam(points: &mut BTreeMap<u64, crate::Tempo>, beat: u64, tempo: crate::Tempo) {
+pub(super) fn seam(points: &mut BTreeMap<u64, crate::Tempo>, beat: u64, tempo: crate::Tempo) {
     let prevailing = points.range(..=beat).next_back().map(|(_, tempo)| *tempo);
     if points.contains_key(&beat) || prevailing != Some(tempo) {
         points.insert(beat, tempo);
@@ -795,7 +795,7 @@ fn transformed_meter(old: &MeterMap, transform: Transform) -> Result<MeterMap, I
     result.finish(old.meter_at(BeatTime::ZERO))
 }
 
-fn transformed_loop(
+pub(super) fn transformed_loop(
     region: Option<crate::LoopRegion>,
     old: &TempoMap,
     new: &TempoMap,
@@ -813,13 +813,13 @@ fn transformed_loop(
 }
 
 /// Insert uses a synthetic blank end; only removal/copy ends are source fences.
-struct FrameSplice {
-    start: u64,
-    end: u64,
-    length: u64,
-    copy_length: Option<u64>,
+pub(super) struct FrameSplice {
+    pub(super) start: u64,
+    pub(super) end: u64,
+    pub(super) length: u64,
+    pub(super) copy_length: Option<u64>,
 }
-fn transform_audio(
+pub(super) fn transform_audio(
     original: &crate::Clip,
     transform: Transform,
     frames: &FrameSplice,
@@ -995,7 +995,7 @@ fn transform_audio(
     Ok(fragments)
 }
 
-fn transform_midi(
+pub(super) fn transform_midi(
     original: &crate::MidiClip,
     transform: Transform,
     next_id: &mut u64,
@@ -1100,20 +1100,23 @@ fn transform_midi(
     Ok(result)
 }
 
-fn assign_note_ids(clip: &mut crate::MidiClip, next_id: &mut u64) -> Result<(), Invalid> {
+pub(super) fn assign_note_ids(
+    clip: &mut crate::MidiClip,
+    next_id: &mut u64,
+) -> Result<(), Invalid> {
     for note in &mut std::sync::Arc::make_mut(&mut clip.source).notes {
         note.id = crate::NoteId(super::reorder::take_id(next_id)?);
     }
     Ok(())
 }
-fn add_notes(total: &mut usize, count: usize) -> Result<(), Invalid> {
+pub(super) fn add_notes(total: &mut usize, count: usize) -> Result<(), Invalid> {
     *total = total
         .checked_add(count)
         .filter(|n| *n <= crate::MAX_NOTES)
         .ok_or(Invalid("midi note limit reached"))?;
     Ok(())
 }
-fn transform_gain_lane(
+pub(super) fn transform_gain_lane(
     lane: &GainLane,
     fallback: f32,
     transform: Transform,

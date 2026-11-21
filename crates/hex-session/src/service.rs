@@ -3075,6 +3075,7 @@ fn is_section_copy(command: &Command) -> bool {
             | Command::DuplicateArrangementSectionAt { .. }
             | Command::AppendArrangementSectionCopy { .. }
             | Command::ReplaceArrangementSection { copy: true, .. }
+            | Command::PasteArrangementSection { .. }
     )
 }
 
