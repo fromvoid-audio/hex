@@ -268,7 +268,7 @@ fn signed_track_effect_cut_drains_old_dry_route_and_keeps_the_worker() {
     let mut f = fixture_with_quantum("processing", 0, QUANTUM as u16);
     let donor = f.editor.project().tracks()[0].id();
     let device = f.editor.project().tracks()[0].devices()[0].id();
-    let clip = f.editor.project().audio_clips().first().unwrap().id();
+    let clip = f.editor.project().tracks()[0].clips().first().unwrap().id();
     f.editor.execute(Command::RemoveClip(clip)).unwrap();
     let Created::Track(receiver) = f
         .editor
