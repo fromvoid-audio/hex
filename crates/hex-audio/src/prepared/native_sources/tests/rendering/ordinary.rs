@@ -12,6 +12,7 @@ mod manual_order;
 mod manual_origin;
 mod manual_pause;
 mod manual_preroll;
+mod marker_clock;
 mod parameter_extension;
 mod parameter_pressure;
 mod parameter_publication;

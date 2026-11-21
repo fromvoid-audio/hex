@@ -8,6 +8,7 @@ mod shared_sources;
 use shared_sources::SharedSourceHandoff;
 
 const GROUP_ROUTE_HISTORY_TRANSFER: u8 = 4;
+const HOSTED_MOVE_HISTORY_TRANSFER: u8 = 5;
 
 // This comparison does not authenticate publication or transfer custody.
 pub(super) fn configuration_matches_continuation(
@@ -1596,12 +1597,24 @@ impl SessionPlayback {
         } else {
             foreign_arrangement::held_removal::candidate(self, previous)
         };
+        let hosted_move = if self.hosted_instrument_move.is_some() {
+            let staged = self
+                .native_removal
+                .and_then(|pending| pending.hosted_track_move())
+                .ok_or(foreign_arrangement::INCOMPATIBLE_HANDOFF)?;
+            if !continuous_insert
+                || restart != Restart::None
+                || self.direct_hosted_track_cut_from(previous) != Some(staged)
+            {
+                return Err(foreign_arrangement::INCOMPATIBLE_HANDOFF);
+            }
+            Some(staged)
+        } else {
+            None
+        };
         let foreign_handoff = self.foreign_arrangement.plan_handoff(
             &previous.foreign_arrangement,
-            [
-                self.revision.arrangement().tracks(),
-                previous.revision.arrangement().tracks(),
-            ],
+            [&self.revision, &previous.revision],
             foreign_arrangement::FrameContext {
                 performance: previous.performance_frame,
                 arrangement: previous.arrangement_frame,
@@ -1614,6 +1627,7 @@ impl SessionPlayback {
             continuous_insert,
             hosted_cut,
             held_removal,
+            hosted_move,
             [old_loop_region, new_loop_region],
             tempo_cut,
             continuation,
@@ -2094,6 +2108,7 @@ impl SessionPlayback {
             });
         let planned_transfer = match (&self.compensation, &previous.compensation) {
             (None, Some(_)) if keeps_pass_clock => Some(0),
+            (Some(_), Some(_)) if hosted_move.is_some() => Some(HOSTED_MOVE_HISTORY_TRANSFER),
             (Some(_), Some(_)) if group_route_track.is_some() => Some(GROUP_ROUTE_HISTORY_TRANSFER),
             (Some(_), Some(_)) if removed_send_clock => Some(3_u8),
             (Some(candidate), Some(old))
@@ -2173,6 +2188,18 @@ impl SessionPlayback {
         let relocate = (planned_transfer.is_none() || force_restart)
             && !self.current_sampler_console
             && !self.revision.requires_control_sampler_sources();
+        if let Some(movement) = hosted_move
+            && demand.is_none()
+        {
+            let (next, old) = self
+                .compensation
+                .as_mut()
+                .zip(previous.compensation.as_ref())
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            // Prepare only the unpublished clock before changing the donor.
+            next.copy_hosted_move_from(old, movement.request.donor, movement.request.receiver)
+                .map_err(|_| SessionPlaybackError::LatencyLayoutChanged)?;
+        }
         if continuous_insert && relocate {
             return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
         }
@@ -6974,18 +7001,30 @@ impl SessionPlayback {
             true,
         );
         // A cancelled fade may still be ramping back up during an unrelated
-        // flat graph install. Carry it by stable bus ID rather than slot.
-        if self.compensation.is_none() && self.revision.arrangement().return_feed_plan.is_empty() {
+        // graph install. Match the stable bus ID and keep the same feed path.
+        if self.compensation.is_none() {
             self.return_fade = previous.return_fade.filter(|fade| {
-                self.revision
-                    .arrangement()
-                    .return_buses()
-                    .iter()
-                    .any(|bus| bus.id == fade.id)
+                let current = self.revision.arrangement();
+                let old = previous.revision.arrangement();
+                let same_feeds = if old.return_feed_plan.is_empty() {
+                    current.return_feed_plan.is_empty()
+                } else {
+                    current
+                        .return_buses()
+                        .iter()
+                        .map(|bus| bus.id)
+                        .eq(old.return_buses().iter().map(|bus| bus.id))
+                        && current
+                            .return_feed_plan
+                            .edges()
+                            .eq(old.return_feed_plan.edges())
+                };
+                same_feeds && current.return_buses().iter().any(|bus| bus.id == fade.id)
             });
         }
         self.main_pass_delay = main_pass_delay;
         self.native_removal = None;
+        self.hosted_instrument_move = None;
         Ok(report)
     }
 

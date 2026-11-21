@@ -191,6 +191,26 @@ impl Control {
         )
     }
 
+    /// Owning fixture access only: production bound capture remains timing-only.
+    #[cfg(all(
+        test,
+        feature = "allocation-probe",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ))]
+    pub(crate) fn start_bound_main_for_test(
+        &mut self,
+        source: crate::prepared::AppliedAudioSource,
+    ) -> Result<Reader, Invalid> {
+        self.start_inner(
+            source.context.project_generation,
+            &[],
+            true,
+            Some(source),
+            false,
+        )
+    }
+
     fn start_inner(
         &mut self,
         generation: u64,
