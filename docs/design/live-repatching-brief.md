@@ -9,10 +9,11 @@ dependencies and acceptance. Source doc comments own technical contracts.
 
 People composing and performing should be able to repatch a playing set quickly
 and predictably. Prepare edits away from the audio callback while the old graph
-plays. Apply the complete edit at a clean boundary with a short de-click
-transition. Keep unrelated tracks and transport going. After that transition,
-each running device has one active route. Brief fades and temporary retained
-compensation latency are acceptable costs of stability.
+plays. A signal routing change is a hard cut with a short fade to prevent
+clicks. Stop the old affected route and install one new route at the cut.
+The cut can clear live DSP history, including voices, tails and buffers. Keep
+unaffected routes and transport going. Preserve authored settings and apply
+the output timing rules below.
 
 Track/device creation, selection, power, placement, loading state, cancellation
 and failures belong on the working surface. Keep independent controls usable,
@@ -35,13 +36,11 @@ This policy needs no new long-term settings or configurable tail modes.
    removed device's own echoes, releases and held instrument notes end with
    the fade. Retire the instance safely after its callback references end.
    Do not run a separate outgoing DSP tail.
-3. **insert fresh DSP when ready.** Preserve still-present processors' history.
-   Inserting a delay after a sounding reverb feeds that reverb's continuing
-   decay through the new delay at the switch. There is no parallel old reverb
-   route beyond the transition.
-4. **reorder within a track without restarting devices.** Keep running device
-   state and switch routing. Moving distortion after a delay makes the delay's
-   existing repeats pass through the distortion.
+3. **insert fresh DSP when ready.** Prepare the device while the existing chain
+   plays. Apply the routing cut when ready so subsequent input runs through the
+   updated chain.
+4. **reorder devices within a track at a routing cut.** Keep the devices'
+   authored settings and apply the new order with a short de-click fade.
 5. **move the running device across tracks.** Prepare a fresh device for the
    destination with the current preset and authored settings, including
    parameter values, while the source keeps playing. At the routing cut, use a
@@ -50,9 +49,9 @@ This policy needs no new long-term settings or configurable tail modes.
    voices and retire the original safely. Failure or cancellation leaves the
    source in place. The destination uses its normal playback and monitoring
    rules.
-6. **preserve sound through visual track reorder.** Routing edits, including
-   moving into a group, retain running track and group processor states and
-   switch to the new route with a short fade.
+6. **preserve sound through visual track reorder.** Moving rows without changing
+   signal routing keeps playback continuous. Moving a track into, out of or
+   between groups changes its routing and follows the de-click cut policy.
 7. **make hex power genuine on/off.** Off smoothly removes the device's
    contribution, stops processing and clears runtime audio history. Retain
    authored settings and automation. On starts fresh, with only a tiny
@@ -63,10 +62,11 @@ This policy needs no new long-term settings or configurable tail modes.
    preparation leaves the old device. Duplicate/paste restores authored
    settings and copied automation into a fresh instance; the original keeps
    running.
-9. **keep surviving downstream history.** This includes shared returns.
-   Removing a vocal feed stops new vocal input after the fade, while vocal
-   and snare decay already inside a surviving return can finish. Deleting
-   the return itself follows the removal rule.
+9. **keep unaffected routes playing.** Apply the de-click cut on changed paths,
+   including input changes to a shared return. Removing a vocal feed stops its
+   input at the cut, while remaining feeds continue through the return. The cut
+   can clear decay buffered by the return. Deleting the return itself follows
+   the removal rule.
 10. **keep output timing stable through a playback pass where possible.**
     Apply live when routing fits existing timing and can switch cleanly. On
     latency reductions retain only compensation delay until stop and next
@@ -80,9 +80,8 @@ This policy needs no new long-term settings or configurable tail modes.
     do not resurrect audio buffers or voices. Release deleted plug-ins after
     safe retirement instead of retaining warm workers for history. Undo and
     redo of a cross-track device move follow rule 5. Restore placement and
-    authored settings in a fresh instance. Undoing a move within
-    a track retains running state under rule 4. Apply the same latency rules to
-    undo/redo.
+    authored settings in a fresh instance. When undo/redo changes signal
+    routing, use the same de-click cut and output timing rules.
 12. **show a cancelable pending insertion.** A loading slot needs cancel, not
     movement or a pending-chain editor. Accepted independent edits, such as
     gain changes on a running EQ, survive insertion success, failure and cancel.
@@ -108,6 +107,6 @@ documentation says device edits generally work without interruption and turning
 off devices retains latency. Deletion timing and a Live interruption dialog were
 not verified. No new reference runtime study is asserted here.
 
-Fade lengths, transfer mechanics and compensation capacity need bounded
+Fade lengths, cut mechanics and compensation capacity need bounded
 implementation decisions and evidence; this brief does not choose them or
 claim they are already qualified.
