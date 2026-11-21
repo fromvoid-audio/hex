@@ -212,10 +212,33 @@ fn verified_first_child_requires_exact_rows_and_source_across_the_flat_boundary(
     assert!(grouped.compensation.is_some());
     assert_eq!(grouped.group_reroute_from(&flat), Some(2));
     assert_eq!(grouped.group_reroute_from(&shifted), None);
-    assert_eq!(flat.group_reroute_from(&grouped), None);
+    assert_eq!(flat.group_reroute_from(&grouped), Some(2));
+    assert_eq!(shifted.group_reroute_from(&grouped), None);
     let different_source =
         SessionPlayback::new(streamed(editor.project(), &media, [31; 32])).unwrap();
     assert_eq!(different_source.group_reroute_from(&flat), None);
+    assert_eq!(flat.group_reroute_from(&different_source), None);
+
+    editor
+        .execute(Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&[sibling]).unwrap(),
+            name: "unrelated group".into(),
+        })
+        .unwrap();
+    let two_groups = SessionPlayback::new(streamed(editor.project(), &media, [19; 32])).unwrap();
+    editor
+        .execute(Command::ReparentTracks {
+            tracks: TrackSelectionIds::new(&[leaf]).unwrap(),
+            destination: TrackDestination {
+                parent_group: None,
+                before: None,
+            },
+        })
+        .unwrap();
+    let other_group = SessionPlayback::new(streamed(editor.project(), &media, [19; 32])).unwrap();
+    assert!(other_group.compensation.is_some());
+    assert_eq!(other_group.group_reroute_from(&two_groups), None);
+    assert_eq!(two_groups.group_reroute_from(&other_group), None);
 }
 
 #[test]
