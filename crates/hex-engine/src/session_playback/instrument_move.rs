@@ -6,7 +6,6 @@ use crate::Track;
 pub(super) struct InstrumentTrackMove {
     pub(super) source: usize,
     pub(super) destination: usize,
-    pub(super) source_id: hex_project::SourceId,
     pub(super) kind: InstrumentMoveKind,
 }
 
@@ -80,21 +79,13 @@ impl SessionPlayback {
         {
             return None;
         }
-        // An earlier cut may still own a held gate. Only transfer releases
-        // already carried by this exact generator on its current output.
+        // A release already on either current output needs a separate proof
+        // before this direct cut can retire it.
         if previous.releases.iter().any(|release| {
             let output = release.location.track_index();
             release.end_frame() > previous.performance_frame
                 && release.location.tail_group().is_none()
                 && [source, destination].contains(&output)
-                && !(kind == InstrumentMoveKind::AnalyticSine
-                    && output == source
-                    && release.source_origin.is_some_and(|origin| {
-                        origin.source == source_id
-                            && origin.receiver == donor_track
-                            && origin.moved_sine
-                            && origin.follows_current_configuration
-                    }))
         }) {
             return None;
         }
@@ -116,7 +107,6 @@ impl SessionPlayback {
         Some(InstrumentTrackMove {
             source,
             destination,
-            source_id,
             kind,
         })
     }
@@ -192,10 +182,6 @@ impl SessionPlayback {
 }
 
 impl Track {
-    pub(super) fn direct_native_sine(&self, index: usize) -> bool {
-        self.direct_instrument_move_kind(index) == Some(InstrumentMoveKind::AnalyticSine)
-    }
-
     fn direct_instrument_move_kind(&self, index: usize) -> Option<InstrumentMoveKind> {
         let direct = self.instrument_slot_enabled()
             && self.source_receiver_index == Some(index)
