@@ -1,4 +1,6 @@
 //! Signed Resident removal of the whole wet bus and its exact worker.
+mod two_dry_tracks;
+
 use super::*;
 use hex_audio::prepared::FreshRuntimeCancellationResult;
 use hex_session::service::DeviceInsertOutcome;
