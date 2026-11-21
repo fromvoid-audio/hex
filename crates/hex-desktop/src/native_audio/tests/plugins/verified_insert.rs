@@ -39,7 +39,17 @@ fn verified_running_main_vst3_replacement_redo_restores_a_fresh_worker() {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn verified_running_return_vst3_replacement_undo_restores_a_fresh_worker() {
-    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::ReturnHistory);
+    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::ReturnHistory {
+        redo: false,
+    });
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_running_return_vst3_replacement_redo_restores_a_fresh_worker() {
+    assert_verified_running_vst3_replacement(VerifiedReplacementOwner::ReturnHistory {
+        redo: true,
+    });
 }
 
 enum VerifiedReplacementOwner {
@@ -47,7 +57,7 @@ enum VerifiedReplacementOwner {
     Return,
     Track,
     MainHistory { redo: bool },
-    ReturnHistory,
+    ReturnHistory { redo: bool },
 }
 
 fn replacement_effects(
@@ -101,7 +111,7 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
             (imported.state, PluginEffectDestination::Main)
         }
         VerifiedReplacementOwner::Track => (imported.state, PluginEffectDestination::Track(track)),
-        VerifiedReplacementOwner::Return | VerifiedReplacementOwner::ReturnHistory => {
+        VerifiedReplacementOwner::Return | VerifiedReplacementOwner::ReturnHistory { .. } => {
             let added = h.run(Request::Edit(Command::AddReturnTrack {
                 name: "replacement send".into(),
             }));
@@ -155,7 +165,7 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
             | VerifiedReplacementOwner::Track => effect,
             // The same authored 0.25 reaches the dry and wet routes. Return
             // receives half of it, so the measured ramp must be above dry.
-            VerifiedReplacementOwner::Return | VerifiedReplacementOwner::ReturnHistory => {
+            VerifiedReplacementOwner::Return | VerifiedReplacementOwner::ReturnHistory { .. } => {
                 0.25 + effect * 0.5
             }
         }
@@ -343,8 +353,8 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
             })
     });
     let redo = match owner {
-        VerifiedReplacementOwner::MainHistory { redo } => Some(redo),
-        VerifiedReplacementOwner::ReturnHistory => Some(false),
+        VerifiedReplacementOwner::MainHistory { redo }
+        | VerifiedReplacementOwner::ReturnHistory { redo } => Some(redo),
         _ => None,
     };
     if let Some(redo) = redo {
