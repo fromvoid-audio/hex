@@ -185,6 +185,24 @@ impl SessionPlayback {
         other_old_ids.eq(other_new_ids).then_some(from)
     }
 
+    /// After the fixed-row route proof, identify the old Group that loses its
+    /// only input. Its post-device fader can silence the entire old route.
+    pub(super) fn verified_last_child_exit_group(
+        &self,
+        previous: &Self,
+        leaf: usize,
+    ) -> Option<usize> {
+        if !self.revision.contains_streamed_sources() || self.compensation.is_some() {
+            return None;
+        }
+        let TrackOutput::Group { target, .. } =
+            previous.group_cut_graph()?.tracks.get(leaf)?.output
+        else {
+            return None;
+        };
+        Some(target)
+    }
+
     fn group_cut_graph(&self) -> Option<&SignalGraph> {
         let arrangement = self.revision.arrangement();
         let graph = arrangement.signal_graph.as_deref()?;
