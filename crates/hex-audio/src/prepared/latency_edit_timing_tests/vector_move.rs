@@ -1,4 +1,4 @@
-//! A running filtered Vector has mutable phase and filter history to carry.
+//! A filtered Vector starts with fresh phase and filter history after a move.
 use super::*;
 use hex_devices::operator_state::OPERATOR_TYPE_ID;
 use hex_engine::NativeDeviceClass;
@@ -17,7 +17,9 @@ const FRAMES: usize = 32_768;
 struct VectorMoveScene {
     before: Project,
     after: Project,
-    reference: Project,
+    donor_reference: Project,
+    receiver_reference: Project,
+    returned_reference: Option<Project>,
     original: TrackId,
     receiver: TrackId,
     device: DeviceId,
@@ -90,23 +92,29 @@ fn scene(return_cut: Option<usize>) -> VectorMoveScene {
         }
     };
     let donor = note(editor.project(), donor_clip, 0, 1950, 57);
-    editor.execute(donor).unwrap();
+    let Created::Note(donor_note) = editor.execute(donor).unwrap() else {
+        panic!("donor note");
+    };
     if let Some(frame) = return_cut {
         let at_return = note(editor.project(), donor_clip, frame, 590, 76);
         editor.execute(at_return).unwrap();
     }
-    let mut reference = Editor::new(editor.project().clone(), 8).unwrap();
-
-    // One uninterrupted runtime gets precisely the wanted notes for the
-    // independent oracle. The graph being edited puts new notes on the receiver.
+    let donor_reference = editor.project().clone();
+    // The independent fresh receiver has only the authored onsets eligible
+    // while its instrument is installed. Predating notes remain in the edit.
     for (frame, length, pitch) in [(CUT, 864, 69), (2600, 700, 74)] {
-        if return_cut.is_none_or(|cut| frame < cut) {
-            let expected = note(reference.project(), donor_clip, frame, length, pitch);
-            reference.execute(expected).unwrap();
-        }
         let actual = note(editor.project(), receiver_clip, frame, length, pitch);
         editor.execute(actual).unwrap();
     }
+    let returned_reference = return_cut.map(|_| {
+        let mut reference = Editor::new(editor.project().clone(), 8).unwrap();
+        reference
+            .execute(Command::RemoveMidiNote(donor_note))
+            .unwrap();
+        reference.project().clone()
+    });
+    let mut receiver_reference = Editor::new(editor.project().clone(), 8).unwrap();
+    move_vector(&mut receiver_reference, device, source, destination);
     let predating = note(editor.project(), receiver_clip, 128, 5_800, 84);
     editor.execute(predating).unwrap();
     editor
@@ -120,7 +128,9 @@ fn scene(return_cut: Option<usize>) -> VectorMoveScene {
     VectorMoveScene {
         before,
         after: editor.project().clone(),
-        reference: reference.project().clone(),
+        donor_reference,
+        receiver_reference: receiver_reference.project().clone(),
+        returned_reference,
         original: source,
         receiver: destination,
         device,
@@ -181,38 +191,42 @@ fn render(callback: &mut Callback, block: &mut [Frame]) {
     );
 }
 
+fn render_reference(reference: &PreparedVector, chunks: &[(usize, usize)]) -> Vec<Frame> {
+    let mut oracle = playback(reference);
+    oracle.apply(PlaybackCommand::Play);
+    let mut expected = vec![[0.0; 2]; FRAMES];
+    let mut start = 0;
+    for &(end, partition) in chunks {
+        for block in expected[start..end].chunks_mut(partition) {
+            oracle.render(block).unwrap();
+        }
+        start = end;
+    }
+    expected
+}
+
 #[test]
-fn direct_vector_move_preserves_the_filtered_donor_and_new_note_boundary() {
+fn direct_vector_move_cuts_the_filtered_donor_and_plays_new_receiver_notes() {
     let scene = scene(None);
     let sine = Arc::new(hex_engine::SineTable::new());
     let before = prepare(&scene.before, &sine);
     let after = prepare(&scene.after, &sine);
-    let reference = prepare(&scene.reference, &sine);
+    let donor_reference = prepare(&scene.donor_reference, &sine);
+    let receiver_reference = prepare(&scene.receiver_reference, &sine);
     for partition in [1, BLOCK] {
-        let mut oracle = playback(&reference);
-        oracle.apply(PlaybackCommand::Play);
-        let mut expected = vec![[0.0; 2]; FRAMES];
-        let (prefix, remainder) = expected.split_at_mut(REQUEST);
-        let (boundary, release) = remainder.split_at_mut(BOUNDARY_END - REQUEST);
-        let (fade, successor) = boundary.split_at_mut(FADE);
-        oracle.render(prefix).unwrap();
-        for block in fade
-            .chunks_mut(partition)
-            .chain(successor.chunks_mut(partition))
-            .chain(release.chunks_mut(BLOCK))
-        {
-            oracle.render(block).unwrap();
-        }
-        for range in [REQUEST..CUT, CUT..CUT + FADE] {
-            assert!(
-                expected[range]
-                    .iter()
-                    .flatten()
-                    .any(|sample| sample.abs() > 1e-4)
-            );
+        let chunks = [
+            (REQUEST, REQUEST),
+            (CUT, partition),
+            (BOUNDARY_END, partition),
+            (FRAMES, BLOCK),
+        ];
+        let donor_pcm = render_reference(&donor_reference, &chunks);
+        let receiver_pcm = render_reference(&receiver_reference, &chunks);
+        for window in [&donor_pcm[REQUEST..CUT], &receiver_pcm[CUT..CUT + FADE]] {
+            assert!(window.iter().flatten().any(|sample| sample.abs() > 1e-4));
         }
         assert!(
-            expected[FRAMES - 64..]
+            receiver_pcm[FRAMES - 64..]
                 .iter()
                 .all(|frame| *frame == [0.0; 2])
         );
@@ -239,11 +253,18 @@ fn direct_vector_move_preserves_the_filtered_donor_and_new_note_boundary() {
         for block in release_pcm.chunks_mut(BLOCK) {
             render(&mut callback, block);
         }
-        for (offset, (actual, expected)) in pcm.iter().zip(&expected[REQUEST..]).enumerate() {
-            let gain = if offset < FADE {
-                0.25 * (1.0 - (offset + 1) as f32 / FADE as f32)
+        for (offset, actual) in pcm.iter().enumerate() {
+            let frame = REQUEST + offset;
+            let (expected, gain) = if offset < FADE {
+                (
+                    donor_pcm[frame],
+                    0.25 * (1.0 - (offset + 1) as f32 / FADE as f32),
+                )
             } else {
-                0.75 * (offset - FADE + 1).min(FADE) as f32 / FADE as f32
+                (
+                    receiver_pcm[frame],
+                    0.75 * (offset - FADE + 1).min(FADE) as f32 / FADE as f32,
+                )
             };
             for (actual, expected) in actual.iter().zip(expected) {
                 let expected = expected * gain;
@@ -263,7 +284,7 @@ fn direct_vector_move_preserves_the_filtered_donor_and_new_note_boundary() {
         );
     }
 
-    // A simultaneous donor clip removal cannot use the original gate proof.
+    // A simultaneous donor clip removal cannot use this exact move proof.
     let mut editor = Editor::new(scene.after, 8).unwrap();
     editor
         .execute(Command::RemoveMidiClip(scene.donor_clip))
@@ -285,7 +306,7 @@ fn direct_vector_move_preserves_the_filtered_donor_and_new_note_boundary() {
 }
 
 #[test]
-fn reversing_a_vector_move_carries_both_already_sounding_notes() {
+fn reversing_a_vector_move_ends_the_receiver_gate_and_starts_fresh() {
     const RETURN_REQUEST: usize = 1_200;
     const RETURN_CUT: usize = RETURN_REQUEST + FADE;
     let scene = scene(Some(RETURN_CUT));
@@ -295,7 +316,9 @@ fn reversing_a_vector_move_carries_both_already_sounding_notes() {
     let mut editor = Editor::new(scene.after, 8).unwrap();
     move_vector(&mut editor, scene.device, scene.receiver, scene.original);
     let returned = prepare(editor.project(), &sine);
-    let reference = prepare(&scene.reference, &sine);
+    let donor_reference = prepare(&scene.donor_reference, &sine);
+    let receiver_reference = prepare(&scene.receiver_reference, &sine);
+    let returned_reference = prepare(scene.returned_reference.as_ref().unwrap(), &sine);
     let (mut control, mut callback, _, forward) = begin_quantized_playback_insert(
         playback(&before),
         playback(&after),
@@ -342,53 +365,62 @@ fn reversing_a_vector_move_carries_both_already_sounding_notes() {
     }
     let restored = control.status.recording_source().unwrap();
 
-    let mut oracle = playback(&reference);
-    oracle.apply(PlaybackCommand::Play);
-    let mut expected = vec![[0.0; 2]; FRAMES];
-    let (prefix, moves) = expected.split_at_mut(REQUEST);
-    oracle.render(prefix).unwrap();
-    let (forward_pcm, reverse_pcm) = moves.split_at_mut(RETURN_REQUEST - REQUEST);
-    let (forward_fade, on_receiver) = forward_pcm.split_at_mut(FADE);
-    let (reverse_fade, on_original) = reverse_pcm.split_at_mut(FADE);
-    for block in [forward_fade, on_receiver, reverse_fade, on_original]
-        .into_iter()
-        .flat_map(|audio| audio.chunks_mut(BLOCK))
-    {
-        oracle.render(block).unwrap();
-    }
+    let chunks = [
+        (REQUEST, REQUEST),
+        (CUT, BLOCK),
+        (RETURN_REQUEST, BLOCK),
+        (RETURN_CUT, BLOCK),
+        (FRAMES, BLOCK),
+    ];
+    let donor_reference = render_reference(&donor_reference, &chunks);
+    let receiver_reference = render_reference(&receiver_reference, &chunks);
+    let returned_reference = render_reference(&returned_reference, &chunks);
     assert!(
-        expected[RETURN_REQUEST..RETURN_CUT]
+        receiver_reference[RETURN_REQUEST..RETURN_CUT]
             .iter()
             .flatten()
             .any(|s| s.abs() > 1e-4)
     );
     assert!(
-        expected[FRAMES - 64..]
+        returned_reference[FRAMES - 64..]
             .iter()
             .all(|frame| *frame == [0.0; 2])
     );
-    let first_mismatch = pcm.iter().zip(&expected[REQUEST..]).enumerate().find_map(
-        |(offset, (actual, expected))| {
-            let frame = REQUEST + offset;
-            let fade_in = |frames: usize| frames.min(FADE) as f32 / FADE as f32;
-            let gain = match frame {
-                ..CUT => 0.25 * (1.0 - fade_in(frame - REQUEST + 1)),
-                CUT..RETURN_REQUEST => 0.75 * fade_in(frame - CUT + 1),
-                RETURN_REQUEST..RETURN_CUT => 0.75 * (1.0 - fade_in(frame - RETURN_REQUEST + 1)),
-                _ => 0.25 * fade_in(frame - RETURN_CUT + 1),
-            };
-            (0..2).find_map(|lane| {
-                let wanted = expected[lane] * gain;
-                let difference = (actual[lane] - wanted).abs();
-                (!difference.is_finite() || difference >= 2e-6).then_some((
-                    frame,
-                    lane,
-                    actual[lane],
-                    wanted,
-                ))
-            })
-        },
+    assert!(
+        returned_reference[RETURN_CUT..RETURN_CUT + FADE]
+            .iter()
+            .flatten()
+            .any(|s| s.abs() > 1e-4)
     );
+    let first_mismatch = pcm.iter().enumerate().find_map(|(offset, actual)| {
+        let frame = REQUEST + offset;
+        let fade_in = |frames: usize| frames.min(FADE) as f32 / FADE as f32;
+        let (expected, gain) = match frame {
+            ..CUT => (
+                donor_reference[frame],
+                0.25 * (1.0 - fade_in(frame - REQUEST + 1)),
+            ),
+            CUT..RETURN_REQUEST => (receiver_reference[frame], 0.75 * fade_in(frame - CUT + 1)),
+            RETURN_REQUEST..RETURN_CUT => (
+                receiver_reference[frame],
+                0.75 * (1.0 - fade_in(frame - RETURN_REQUEST + 1)),
+            ),
+            _ => (
+                returned_reference[frame],
+                0.25 * fade_in(frame - RETURN_CUT + 1),
+            ),
+        };
+        (0..2).find_map(|lane| {
+            let wanted = expected[lane] * gain;
+            let difference = (actual[lane] - wanted).abs();
+            (!difference.is_finite() || difference >= 2e-6).then_some((
+                frame,
+                lane,
+                actual[lane],
+                wanted,
+            ))
+        })
+    });
     assert_eq!(
         (faded, after_cut, receipt.state(), first_mismatch),
         (
