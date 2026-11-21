@@ -1019,6 +1019,7 @@ pub(super) struct EditorView {
     automation_close_preflight: close::AutomationClosePreflight,
     export_pending: bool,
     bounce_control: Option<hex_session::service::ExportControl>,
+    bounce_fraction: f32,
     /// `b` is held during the active Arrangement clip drag; release bounces.
     drag_bounce_held: bool,
     pending_bounce_drop: Option<bounce::PendingBounceDrop>,
@@ -1840,6 +1841,7 @@ impl EditorView {
             automation_close_preflight: Default::default(),
             export_pending: false,
             bounce_control: None,
+            bounce_fraction: 0.0,
             drag_bounce_held: false,
             pending_bounce_drop: None,
             pending_plugin_effect: None,

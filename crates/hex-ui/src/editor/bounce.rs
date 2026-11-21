@@ -239,10 +239,22 @@ impl EditorView {
             adoption,
             control: control.clone(),
         }) {
+            self.bounce_fraction = 0.0;
             self.bounce_control = Some(control);
             self.status = "bouncing audio · escape cancels".into();
         }
     }
+
+    pub(super) fn poll_bounce_progress(&mut self) -> bool {
+        let fraction = self
+            .bounce_control
+            .as_ref()
+            .map_or(0.0, hex_session::service::ExportControl::bounce_fraction);
+        let changed = self.bounce_fraction != fraction;
+        self.bounce_fraction = fraction;
+        changed
+    }
+
     pub(super) fn cancel_bounce(&mut self) -> bool {
         if let Some(control) = &self.bounce_control
             && control.cancel()
@@ -270,6 +282,37 @@ impl EditorView {
 mod tests {
     use crate::editor::loop_selection_ui_test::{click, fixture_with_bounce_media, pump};
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
+
+    #[gpui::test]
+    fn bounce_status_bar_fills_from_the_active_job(cx: &mut TestAppContext) {
+        let (handle, editor, _, _, _files) = fixture_with_bounce_media(cx, false);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        let job = hex_session::service::ExportControl::default();
+        editor.update(cx, |view, cx| {
+            view.bounce_control = Some(job.clone());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let track = visual.debug_bounds("bounce-status-progress").unwrap();
+        assert!(visual.debug_bounds("bounce-progress-fill").is_none());
+
+        for (index, fraction) in [(0, 0.5), (1, 1.0)] {
+            job.for_bounce_item(index, 2).unwrap().finish_bounce_item();
+            editor.update(cx, |view, cx| {
+                assert!(view.poll_bounce_progress());
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let fill = visual.debug_bounds("bounce-progress-fill").unwrap();
+            assert_eq!(fill.left(), track.left());
+            assert!(
+                (f32::from(fill.size.width) - f32::from(track.size.width) * fraction).abs() < 1.0
+            );
+        }
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        assert!(job.is_cancelled());
+    }
 
     #[gpui::test]
     fn rendered_shift_b_bounces_a_multitrack_range_to_one_track(cx: &mut TestAppContext) {

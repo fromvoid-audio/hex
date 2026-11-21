@@ -436,6 +436,7 @@ fn multi_track_failure_and_cancellation_after_render_preserve_the_entire_transac
             },
             |path, revision, _, item, tails, control| {
                 if !rendered.is_empty() {
+                    assert_eq!(control.bounce_fraction(), 0.5);
                     return Err("second output failed".into());
                 }
                 let report = hex_export::render_arrangement_bounce_new(
@@ -458,6 +459,7 @@ fn multi_track_failure_and_cancellation_after_render_preserve_the_entire_transac
         );
         assert!(result.is_err());
         assert_eq!(rendered.len(), 1);
+        assert_eq!(control.bounce_fraction(), 0.5);
         assert!(!rendered[0].exists());
         assert_eq!(session.project(), &original);
         assert_eq!(session.resident_frames, resident);
