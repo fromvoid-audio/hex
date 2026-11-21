@@ -182,6 +182,11 @@ full disks with a useful error and a defined recovery path.
   in that graph when practical. Use a short fade where safe to soften an
   interruption. Never run the old chain alongside its replacement to preserve
   residual audio from the edit, or let tail preservation block the switch.
+  A VST3 audio effect moved across tracks, including through Undo/Redo, may
+  switch to a fresh instance restored to the applicable plug-in-authored state,
+  including its preset and parameter values. Use the same clean switch and
+  de-click policy. Worker identity and live audio history are optional for this
+  move.
   An admitted edit becomes active in the editor only after the audio owner
   confirms installation of its exact graph.
   The [live track and device editing brief](docs/design/live-repatching-brief.md)

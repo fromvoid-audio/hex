@@ -42,9 +42,13 @@ This policy needs no new long-term settings or configurable tail modes.
 4. **reorder within a track without restarting devices.** Keep running device
    state and switch routing. Moving distortion after a delay makes the delay's
    existing repeats pass through the distortion.
-5. **move the running device across tracks.** Transfer its state to the
-   destination, including a delay's existing repeats. Smooth both paths with a
-   short fade. Voices already sounding on the source track move with the
+5. **move the running device across tracks.** Smooth both paths with a short
+   fade. A VST3 audio effect move preserves the current preset and other
+   plug-in-authored state, including parameter values. A fresh instance
+   restored to that state can take over at the clean switch. The original
+   worker, live DSP state, tails and buffered audio need not carry over.
+   For other devices, transfer running state, including a delay's existing
+   repeats. Voices already sounding on the source track move with the
    instrument and must receive their proper releases. For destination input,
    wait for note-on events at or after the handoff; do not chase notes whose
    destination onset preceded it. A four-bar destination chord already halfway
@@ -79,9 +83,11 @@ This policy needs no new long-term settings or configurable tail modes.
 11. **restore authored state with undo/redo.** Restore project settings,
     placement and automation. Reintroduced devices are fresh DSP instances;
     do not resurrect audio buffers or voices. Release deleted plug-ins after
-    safe retirement instead of retaining warm workers for history. Undoing a
-    move of a still-running device moves its current DSP state back. Apply the
-    same latency rules to undo/redo.
+    safe retirement instead of retaining warm workers for history. Undo and
+    redo of a cross-track VST3 audio effect move follow rule 5. Restore the
+    applicable authored state, using a fresh instance if needed. For other
+    still-running devices, undoing a move transfers the current DSP state back.
+    Apply the same latency rules to undo/redo.
 12. **show a cancelable pending insertion.** A loading slot needs cancel, not
     movement or a pending-chain editor. Accepted independent edits, such as
     gain changes on a running EQ, survive insertion success, failure and cancel.
