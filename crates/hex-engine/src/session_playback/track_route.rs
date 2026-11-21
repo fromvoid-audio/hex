@@ -109,18 +109,18 @@ impl SessionPlayback {
         }
         let (from, to) = changed?;
         let upstream_delay = old_graph.main_input_arrival() != 0;
-        // The aligned entry from above retains the old fader and draining
-        // ring by TrackId even when the candidate row moves downward.
+        // The aligned entry from above and its upward inverse retain the
+        // exact old fader and surviving rings by TrackId across the row shift.
         if main_latency != 0 && from != to {
-            let enters_group_from_above = from < to
-                && matches!(
-                    (
-                        old_graph.tracks.get(from)?.output,
-                        new_graph.tracks.get(to)?.output
-                    ),
-                    (TrackOutput::Main { .. }, TrackOutput::Group { .. })
-                );
-            if !upstream_delay || !enters_group_from_above {
+            let follows_aligned_row_shift = match (
+                old_graph.tracks.get(from)?.output,
+                new_graph.tracks.get(to)?.output,
+            ) {
+                (TrackOutput::Main { .. }, TrackOutput::Group { .. }) => from < to,
+                (TrackOutput::Group { .. }, TrackOutput::Main { .. }) => from > to,
+                _ => false,
+            };
+            if !upstream_delay || !follows_aligned_row_shift {
                 return None;
             }
         }
