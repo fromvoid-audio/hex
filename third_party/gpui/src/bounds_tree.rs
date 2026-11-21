@@ -97,16 +97,17 @@ where
         for (raw, order) in bounds.iter().zip(orders) {
             let rect = TreeBounds::from_bounds(raw);
             let mut local_max = 0;
-            let mut identical_overlap = false;
+            let mut covered_by_prior_member = false;
             for (member, rank) in &self.group_members[start..] {
                 if *rank > local_max && rect.intersects(member) {
                     local_max = *rank;
-                    identical_overlap |= *member == rect;
+                    covered_by_prior_member = covered_by_prior_member || member.contains(&rect);
                 }
             }
-            // An overlapping identical member already follows every relevant
-            // leaf in the main tree. Rounded-flat bounds can fail self-overlap.
-            let before = if identical_overlap {
+            // The earlier containing member already follows every older leaf
+            // that can overlap this rectangle. Require intersection as well:
+            // rounded-flat bounds can contain each other without overlapping.
+            let before = if covered_by_prior_member {
                 local_max
             } else {
                 self.root
@@ -321,6 +322,12 @@ impl<U: Clone + Debug + Default + PartialEq + PartialOrd + Add<Output = U> + Sub
             && self.min.y < other.max.y
             && self.max.y > other.min.y
     }
+    fn contains(&self, other: &Self) -> bool {
+        self.min.x <= other.min.x
+            && self.min.y <= other.min.y
+            && self.max.x >= other.max.x
+            && self.max.y >= other.max.y
+    }
     fn half_perimeter(&self) -> U {
         (self.max.x.clone() - self.min.x.clone()) + (self.max.y.clone() - self.min.y.clone())
     }
@@ -526,6 +533,32 @@ mod ordering_verification {
                 .is_some()
                 && orders == [2, 2],
             "rounded-flat group member lost its earlier cover",
+        )?;
+
+        // An inset member may reuse its cover's ordering proof. A member
+        // crossing outside the cover still needs an older-tree query.
+        let mut contained_group = BoundsTree::default();
+        let blocker = rect(1.0, 0.0, 2.0, 4.0);
+        for order in 1..=3 {
+            require(
+                contained_group.insert(blocker) == order,
+                "older overlap rank",
+            )?;
+        }
+        let frame = rect(4.0, 0.0, 4.0, 4.0);
+        let inset = rect(5.0, 1.0, 2.0, 2.0);
+        let crossing = rect(2.0, 1.0, 4.0, 2.0);
+        let mut orders = [0; 3];
+        require(
+            contained_group
+                .insert_group(&[frame, inset, crossing], &mut orders)
+                .is_some()
+                && orders == [1, 2, 4],
+            "contained group member changed the ordinary order of its crossing neighbor",
+        )?;
+        require(
+            contained_group.insert(rect(5.5, 1.25, 1.0, 0.5)) == 5,
+            "later draw lost the crossing member's rank",
         )?;
 
         // A union represented as origin + size may round its far edge inward.
