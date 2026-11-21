@@ -537,7 +537,21 @@ impl Clip {
         crate::clip_fade_trim::preview(self, edge, frame, asset_playback_frames, tempo)
     }
 
+    /// Resize one Arrangement edge, carrying the instance fade with it.
     pub fn preview_edge_trim_with_tempo(
+        &self,
+        edge: TrimEdge,
+        frame: u64,
+        asset_playback_frames: u64,
+        tempo: &TempoMap,
+    ) -> Result<Self, Invalid> {
+        self.preview_edge_crop_with_tempo(edge, frame, asset_playback_frames, tempo)?
+            .with_resized_instance_fade(self, tempo)
+    }
+
+    /// Source geometry shared by interactive resize and the lower fade
+    /// handle, whose upper fade point stays fixed independently.
+    pub(crate) fn preview_edge_crop_with_tempo(
         &self,
         edge: TrimEdge,
         frame: u64,

@@ -1937,11 +1937,16 @@ pub fn preview_audio_view_resize(
                 == next.placement.cycle_phase
         };
     let preview = materialize_view_resize(clip, tempo, asset_playback_frames, next)?;
-    Ok(if unchanged_start {
-        clip.clone()
-    } else {
-        preview
-    })
+    if unchanged_start {
+        return Ok(clip.clone());
+    }
+    match operation {
+        AudioViewResizeOperation::OuterEnd { .. }
+        | AudioViewResizeOperation::RepeatOuterEnd { .. } => {
+            preview.with_resized_instance_fade(clip, tempo)
+        }
+        _ => Ok(preview),
+    }
 }
 
 fn materialize_view_resize(

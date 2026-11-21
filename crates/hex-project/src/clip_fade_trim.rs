@@ -55,7 +55,7 @@ pub(crate) fn preview(
     } else {
         frame
     };
-    let mut trimmed = clip.preview_edge_trim_with_tempo(edge, frame, asset_frames, tempo)?;
+    let mut trimmed = clip.preview_edge_crop_with_tempo(edge, frame, asset_frames, tempo)?;
     if trimmed.start == clip.start && trimmed.duration == clip.duration && endpoint_aligned {
         return Ok(clip.clone());
     }

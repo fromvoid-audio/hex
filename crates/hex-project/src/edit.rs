@@ -3370,11 +3370,12 @@ impl Project {
                     .asset(original.asset)
                     .ok_or(Invalid("media no longer exists"))?
                     .playback_frames;
-                let trimmed = if original.edit.is_some() {
-                    crate::audio_edit::trim_view(original, edge, frame, self.tempo_map())?
-                } else {
-                    preview_edge_trim(original, edge, frame, asset_frames)?
-                };
+                let trimmed = original.preview_edge_trim_with_tempo(
+                    edge,
+                    frame,
+                    asset_frames,
+                    self.tempo_map(),
+                )?;
                 crate::clip_group::replace_audio(self, trimmed)
             }
             Command::TrimClipFadeEdge { clip, edge, frame } => {

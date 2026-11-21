@@ -30,7 +30,7 @@ pub(super) fn loop_waveform_view(
         .original
         .audio_edit()
         .zip(request.preview.audio_edit())
-        .is_some_and(|(a, b)| Arc::ptr_eq(&a.domain, &b.domain));
+        .is_some_and(|(a, b)| super::waveform::shares_audio_preview_root(a, b));
     let captured_markers = request.original.audio_edit().is_none()
         && [
             hex_project::AudioViewProjection::new(request.preview, request.tempo)

@@ -157,18 +157,8 @@ fn crossfade(
             .map(|asset| asset.playback_frames())
             .ok_or(Invalid("crossfade source is missing"))
     };
-    let outgoing = left.preview_edge_trim_with_tempo(
-        TrimEdge::Right,
-        end,
-        frames(left)?,
-        project.tempo_map(),
-    )?;
-    let incoming = right.preview_edge_trim_with_tempo(
-        TrimEdge::Left,
-        start,
-        frames(right)?,
-        project.tempo_map(),
-    )?;
+    let outgoing = left.preview_edge_trim(TrimEdge::Right, end, frames(left)?)?;
+    let incoming = right.preview_edge_trim(TrimEdge::Left, start, frames(right)?)?;
     if clip_end(&outgoing)? != end
         || incoming.start() != start
         || clip_end(&incoming)? != clip_end(right)?
