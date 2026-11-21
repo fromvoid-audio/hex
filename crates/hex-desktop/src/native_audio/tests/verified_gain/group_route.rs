@@ -58,7 +58,14 @@ fn verified_group_entry_waits_for_the_exact_callback_receipt() {
         .control
         .command(PlaybackCommand::Play)
         .unwrap();
-    let status = h.audio.as_ref().unwrap().status().unwrap();
+    let applied_source = |h: &Harness| {
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_audio_source()
+    };
     let deadline = Instant::now() + h.wait;
     while h.render() != [[0.3125; 2]; 64] {
         assert!(
@@ -67,7 +74,7 @@ fn verified_group_entry_waits_for_the_exact_callback_receipt() {
         );
         std::thread::yield_now();
     }
-    assert_eq!(status.applied_audio_source(), Some(predecessor));
+    assert_eq!(applied_source(&h), Some(predecessor));
     let generation = predecessor.context.project_generation;
     let selection = TrackSelectionIds::new(&[leaf]).unwrap();
     let pending = h.run(Request::ReparentTracks {
@@ -89,15 +96,15 @@ fn verified_group_entry_waits_for_the_exact_callback_receipt() {
     );
     assert_eq!(pending.state.project, original.state.project);
     assert_eq!(pending.state.revision, original.state.revision);
-    assert_eq!(status.applied_audio_source(), Some(predecessor));
+    assert_eq!(applied_source(&h), Some(predecessor));
     h.render();
-    assert_eq!(status.applied_audio_source(), Some(predecessor));
+    assert_eq!(applied_source(&h), Some(predecessor));
     let installed = h.next_with_audio();
     assert!(installed.error.is_none(), "{:?}", installed.error);
     assert!(installed.request_complete);
     let receipt = installed.device_insert_complete.as_ref().unwrap();
     assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
-    let applied = status.applied_audio_source().unwrap();
+    let applied = applied_source(&h).unwrap();
     assert_eq!(applied.context, receipt.submission.context);
     assert_eq!(applied.audio_revision, receipt.submission.audio_revision);
     assert_eq!(applied.output_identity, receipt.submission.output_identity);
