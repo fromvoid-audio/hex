@@ -229,6 +229,73 @@ fn group_reroute_refuses_a_delayed_leaf_to_group_edge_in_either_direction() {
     assert_eq!(old.resident_group_reroute_from(&next), None);
 }
 
+#[test]
+fn aligned_nested_group_reroute_refuses_the_downward_cut() {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let (mut editor, media, leaf, inner) = fixture();
+    let Created::Track(enclosing) = editor
+        .execute(Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&[inner]).unwrap(),
+            name: "enclosing".into(),
+        })
+        .unwrap()
+    else {
+        panic!("enclosing group");
+    };
+    let Created::Track(unrelated) = editor
+        .execute(Command::AddTrack {
+            name: "unrelated".into(),
+        })
+        .unwrap()
+    else {
+        panic!("unrelated track");
+    };
+    editor
+        .execute(Command::InsertDevice {
+            track: unrelated,
+            before: None,
+            state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+        })
+        .unwrap();
+    let mut prepare_with_parent = |parent_group| {
+        editor
+            .execute(Command::ReparentTracks {
+                tracks: TrackSelectionIds::new(&[leaf]).unwrap(),
+                destination: TrackDestination {
+                    parent_group: Some(parent_group),
+                    before: None,
+                },
+            })
+            .unwrap();
+        Arc::new(
+            PreparedRevision::prepare(
+                editor.project(),
+                &media,
+                Arc::new(crate::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let inner_route = prepare_with_parent(inner);
+    let enclosing_route = prepare_with_parent(enclosing);
+    let latency = inner_route.arrangement().main_latency_frames();
+    assert!(latency > 0);
+    assert_eq!(enclosing_route.arrangement().main_latency_frames(), latency);
+    let inner_route = SessionPlayback::new(inner_route).unwrap();
+    let enclosing_route = SessionPlayback::new(enclosing_route).unwrap();
+    // The same fixed-row layouts admit only the cut to the enclosing Group.
+    assert!(
+        enclosing_route
+            .resident_group_reroute_from(&inner_route)
+            .is_some()
+    );
+    assert_eq!(
+        inner_route.resident_group_reroute_from(&enclosing_route),
+        None
+    );
+}
+
 fn hex_engine_delay() -> hex_lattice_contract::NativeDeviceState {
     use hex_lattice_contract::NativeDeviceMetadata;
     hex_devices::delay::DEFINITION.default_state().unwrap()
