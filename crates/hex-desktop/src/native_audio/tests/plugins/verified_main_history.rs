@@ -1,4 +1,4 @@
-//! Catalog Main history uses the existing exact Verified install receipts.
+//! Running catalog history uses the existing exact Verified install receipts.
 use super::verified_insert::{await_verified_retirement, render_hosted_quantum};
 use super::*;
 use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
@@ -10,6 +10,16 @@ fn status(h: &Harness) -> &hex_audio::prepared::Status {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn running_verified_main_history_restores_and_retires_the_exact_worker() {
+    assert_running_verified_history(false);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn running_verified_track_history_restores_and_retires_the_exact_worker() {
+    assert_running_verified_history(true);
+}
+
+fn assert_running_verified_history(track_effect: bool) {
     let _native = native_fixture();
     let files = Files::new();
     let directory = files.0.canonicalize().unwrap();
@@ -37,7 +47,12 @@ fn running_verified_main_history_restores_and_retires_the_exact_worker() {
     let imported = h.run(Request::Import(files.wav(48_000, 1_048_576)));
     h.applied(h.context.unwrap());
     let submit = |h: &Harness, request| h.service.as_ref().unwrap().submit(request).unwrap();
-    let mut insertion = request(&imported.state, PluginEffectDestination::Main);
+    let destination = if track_effect {
+        PluginEffectDestination::Track(imported.state.project.tracks()[0].id())
+    } else {
+        PluginEffectDestination::Main
+    };
+    let mut insertion = request(&imported.state, destination);
     insertion.selection = selection.clone();
     submit(&h, Request::InsertPluginEffect(insertion));
     let inserted = loop {
@@ -119,7 +134,7 @@ fn running_verified_main_history_restores_and_retires_the_exact_worker() {
         let event = next_event(h);
         assert!(
             event.error.is_none(),
-            "running Main history refused: {:?}",
+            "running {destination:?} history refused: {:?}",
             event.error
         );
         assert!(!event.request_complete);
@@ -180,7 +195,7 @@ fn running_verified_main_history_restores_and_retires_the_exact_worker() {
             .error
             .as_deref()
             .is_some_and(|message| message.contains("saved vst3 binary or class is unavailable")),
-        "wrong provider was accepted: {:?}",
+        "unexpected wrong-provider result: {:?}",
         unavailable.error
     );
     assert_eq!(unavailable.state.project, removed.state.project);
@@ -282,7 +297,7 @@ fn running_verified_main_history_restores_and_retires_the_exact_worker() {
             let event = next_event(&h);
             assert!(
                 event.error.is_none(),
-                "running Main removal history refused: {:?}",
+                "running {destination:?} removal history refused: {:?}",
                 event.error
             );
             assert!(!event.request_complete);
