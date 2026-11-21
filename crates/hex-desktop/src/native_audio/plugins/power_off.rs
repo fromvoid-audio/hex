@@ -20,7 +20,10 @@ impl Plugins {
                     && !source.editor_open
                     && !source.editor_transfer
                     && !source.edit_backlog
-                    && source.edit_recovery.is_none()
+                    // The existing retirement lease takes over an admitted
+                    // read after the exact cut, just as quiescent(true) does.
+                    && (source.edit_recovery.is_none()
+                        || source.editor_retirement.lease.is_some())
                     && source.open_editor_group.is_none()
                     && source.pending_touch.is_none()
             })

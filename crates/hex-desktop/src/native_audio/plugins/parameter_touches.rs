@@ -467,6 +467,37 @@ mod tests {
             attempts: 0,
         }
     }
+    #[test]
+    fn main_power_off_refuses_an_admitted_read_without_its_retirement_lease() {
+        let active = AppliedAudioSource {
+            context: AudioSourceContext {
+                project_generation: 1,
+                editor_revision: 2,
+            },
+            output_identity: 1,
+            audio_revision: 3,
+        };
+        let mut plugins = Plugins::default();
+        let mut original = source(7, active, 42);
+        original.pending_touch = None;
+        let binding = original.binding;
+        plugins.sources.push(original);
+        assert_eq!(
+            plugins.main_power_off_binding(active.context, 7),
+            Some(binding)
+        );
+        plugins.sources[0].edit_recovery = Some(PendingRead {
+            recovery: true,
+            source: active,
+        });
+        assert!(plugins.sources[0].editor_retirement.lease.is_none());
+        assert_eq!(plugins.main_power_off_binding(active.context, 7), None);
+        let retained = plugins.sources[0].edit_recovery.unwrap();
+        assert_eq!(retained.source, active);
+        assert!(retained.recovery);
+        assert!(plugins.sources[0].accepted && !plugins.sources[0].retiring);
+    }
+
     fn scheduling_sources() -> (AppliedAudioSource, Vec<Source>) {
         let active = AppliedAudioSource {
             context: AudioSourceContext {

@@ -338,6 +338,11 @@ fn running_resident_main_power_off_retires_the_worker_but_keeps_pass_latency() {
     // No callback runs while the first terminal/progress event is received.
     // Ordinary running bypass currently completes here and keeps its worker.
     // Genuine power Off must instead wait for one exact installed graph.
+    // Hold the actual ordinary receipt reader on this original worker. The
+    // same reserved retirement lease must claim it only after installation;
+    // clearing the read or requiring an accidentally idle polling turn fails.
+    h.plugin_progress.lock().unwrap().hold_pending_read = Some(binding);
+    wait(|| h.plugin_progress.lock().unwrap().held_pending_read == Some(binding));
     h.service
         .submit(Request::Edit(Command::SetDeviceBypass {
             device,
