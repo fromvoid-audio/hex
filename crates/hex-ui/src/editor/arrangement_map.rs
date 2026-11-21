@@ -207,7 +207,12 @@ fn layer(
                         let y = top + index as f32 * row_height;
                         let h = (row_height - pixel).max(pixel).min(height - y);
                         let edge = chamfer.map_or(width, |cut| {
-                            crate::section_surface::miniature_right(width, height, cut, y + h)
+                            crate::section_surface::geometry::miniature_right(
+                                width,
+                                height,
+                                cut,
+                                y + h,
+                            )
                         });
                         let spans = row[first..]
                             .iter()

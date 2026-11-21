@@ -2,7 +2,7 @@
 use crate::theme;
 use gpui::{
     Bounds, Div, PathBuilder, Pixels, Styled, Window, canvas, fill, point, prelude::*, px,
-    relative, rgb, rgba,
+    relative, rgb, rgba, size,
 };
 use hex_project::{BeatTime, ElementColor, SectionId};
 
@@ -46,7 +46,7 @@ pub(crate) fn surface(
         .child(
             canvas(
                 move |bounds, window, _| {
-                    let rects = geometry::fill_rects(bounds, chamfer)?;
+                    let rects = fill_rects(bounds, chamfer)?;
                     if let Some(coverage) = coverage {
                         coverage.record(rects, window);
                     }
@@ -137,11 +137,42 @@ pub(crate) fn header(color: ElementColor, selected: bool, hovered: bool, minimum
 }
 
 #[path = "section_surface/geometry.rs"]
-mod geometry;
-pub(crate) use geometry::{CHAMFER, cut, miniature_right};
+pub(crate) mod geometry;
+pub(crate) use geometry::{CHAMFER, cut};
 #[path = "section_surface/coverage.rs"]
 mod coverage;
 pub(crate) use coverage::SectionCoverage;
+
+#[derive(Clone, Copy)]
+struct SectionFillRects {
+    upper: Bounds<Pixels>,
+    lower_left: Option<Bounds<Pixels>>,
+    cut: f32,
+}
+
+fn fill_rects(bounds: Bounds<Pixels>, requested: f32) -> Option<SectionFillRects> {
+    let width = f32::from(bounds.size.width);
+    let height = f32::from(bounds.size.height);
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    let cut = cut(width, height, requested);
+    let upper = Bounds::new(bounds.origin, size(bounds.size.width, px(height - cut)));
+    let lower_left = (cut > 0.0).then(|| {
+        Bounds::new(
+            point(bounds.left(), bounds.top() + px(height - cut)),
+            size(
+                px(geometry::miniature_right(width, height, cut, height)),
+                px(cut),
+            ),
+        )
+    });
+    Some(SectionFillRects {
+        upper,
+        lower_left,
+        cut,
+    })
+}
 
 pub(crate) fn paint(
     bounds: Bounds<Pixels>,
@@ -150,7 +181,7 @@ pub(crate) fn paint(
     outline: Option<u32>,
     window: &mut Window,
 ) {
-    if let Some(rects) = geometry::fill_rects(bounds, requested) {
+    if let Some(rects) = fill_rects(bounds, requested) {
         paint_fills(bounds, requested, color, outline, rects, window);
     }
 }
@@ -160,7 +191,7 @@ fn paint_fills(
     requested: f32,
     color: u32,
     outline: Option<u32>,
-    rects: geometry::SectionFillRects,
+    rects: SectionFillRects,
     window: &mut Window,
 ) {
     let width = f32::from(bounds.size.width);

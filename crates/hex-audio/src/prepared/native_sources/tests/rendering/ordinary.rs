@@ -79,7 +79,27 @@ fn fixture_with_authored_mode_and_capacity(
     instrument: bool,
     source_capacity: usize,
 ) -> OrdinaryFixture {
-    let (mut control, mut callback) = channel(48_000).unwrap();
+    fixture_with_rate(
+        profile,
+        location,
+        quantum,
+        ids,
+        instrument,
+        source_capacity,
+        48_000,
+    )
+}
+
+fn fixture_with_rate(
+    profile: &str,
+    location: usize,
+    quantum: u16,
+    ids: &[u32],
+    instrument: bool,
+    source_capacity: usize,
+    rate: u32,
+) -> OrdinaryFixture {
+    let (mut control, mut callback) = channel(rate).unwrap();
     control
         .configure_plugin_callback_quantum(&mut callback, quantum)
         .unwrap();
@@ -103,7 +123,7 @@ fn fixture_with_authored_mode_and_capacity(
     control
         .configure_native_source_preparation(source_capacity, source_reservation())
         .unwrap();
-    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let mut editor = Editor::new(Project::new(rate).unwrap(), 8).unwrap();
     let Created::Track(track) = editor
         .execute(if instrument {
             Command::AddMidiTrack {
@@ -199,7 +219,7 @@ fn fixture_with_authored_mode_and_capacity(
             .unwrap();
     }
     let media = if instrument {
-        let duration = hex_project::BeatTime::from_ratio(44, 24_000).unwrap();
+        let duration = hex_project::BeatTime::from_ratio(88, u64::from(rate)).unwrap();
         let Created::Clip(clip) = editor
             .execute(Command::PlaceMidiClip {
                 track,
@@ -226,7 +246,7 @@ fn fixture_with_authored_mode_and_capacity(
         let Created::Asset(asset) = editor
             .execute(Command::AddAsset {
                 path: "ordinary-original.wav".into(),
-                sample_rate: 48_000,
+                sample_rate: rate,
                 frames,
             })
             .unwrap()
@@ -246,7 +266,7 @@ fn fixture_with_authored_mode_and_capacity(
             .unwrap();
         BTreeMap::from([(
             asset,
-            hex_engine::Audio::new(48_000, vec![[0.25, -0.5]; frames as usize]).unwrap(),
+            hex_engine::Audio::new(rate, vec![[0.25, -0.5]; frames as usize]).unwrap(),
         )])
     };
     let resources = PreparedDeviceResources::prepare_on_control(

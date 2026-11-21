@@ -1,6 +1,6 @@
 //! Same-frame paint coverage from the section's solid rectangular fills.
 
-use super::geometry::SectionFillRects;
+use super::SectionFillRects;
 use gpui::{Bounds, ScaledPixels, Window};
 use std::{cell::Ref, cell::RefCell, rc::Rc};
 
