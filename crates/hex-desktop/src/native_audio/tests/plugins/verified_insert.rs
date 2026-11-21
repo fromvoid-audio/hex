@@ -20,6 +20,22 @@ fn verified_running_return_vst3_replacement_installs_at_its_exact_receipt() {
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_running_replacement_waits_for_native_definition_work() {
+    assert_verified_running_vst3_replacement(
+        VerifiedReplacementOwner::ReturnProjectionContention { cancel: false },
+    );
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_running_replacement_cancels_during_native_definition_contention() {
+    assert_verified_running_vst3_replacement(
+        VerifiedReplacementOwner::ReturnProjectionContention { cancel: true },
+    );
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
 fn verified_running_track_vst3_replacement_installs_at_its_exact_receipt() {
     assert_verified_running_vst3_replacement(VerifiedReplacementOwner::Track);
 }
@@ -70,6 +86,7 @@ enum VerifiedReplacementOwner {
     Main,
     Return,
     Track,
+    ReturnProjectionContention { cancel: bool },
     MainHistory { redo: bool },
     ReturnHistory { redo: bool },
     TrackHistory { redo: bool },
@@ -104,11 +121,19 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
         crate::native_audio::plugins::PreparationObservation::default(),
     ));
     let records = Arc::new(AtomicUsize::new(0));
+    let (busy_observer, busy) = mpsc::sync_channel(1);
+    let hold_projection = matches!(
+        owner,
+        VerifiedReplacementOwner::ReturnProjectionContention { .. }
+    );
     let mut h = super::super::verified_gain::native_harness_with(|sink| {
         sink.plugins = crate::native_audio::plugins::Plugins::with_fixture(host(), None);
         sink.plugins.catalog = Some(directory.join("plugin-catalog.json"));
         sink.plugins.progress = Some(Arc::clone(&progress));
         sink.plugins.records = Some(Arc::clone(&records));
+        if hold_projection {
+            sink.native_graph_busy_observer = Some(busy_observer);
+        }
     });
     h.next();
     h.open();
@@ -128,7 +153,9 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
         VerifiedReplacementOwner::Track | VerifiedReplacementOwner::TrackHistory { .. } => {
             (imported.state, PluginEffectDestination::Track(track))
         }
-        VerifiedReplacementOwner::Return | VerifiedReplacementOwner::ReturnHistory { .. } => {
+        VerifiedReplacementOwner::Return
+        | VerifiedReplacementOwner::ReturnHistory { .. }
+        | VerifiedReplacementOwner::ReturnProjectionContention { .. } => {
             let added = h.run(Request::Edit(Command::AddReturnTrack {
                 name: "replacement send".into(),
             }));
@@ -183,9 +210,9 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
             | VerifiedReplacementOwner::TrackHistory { .. } => effect,
             // The same authored 0.25 reaches the dry and wet routes. Return
             // receives half of it, so the measured ramp must be above dry.
-            VerifiedReplacementOwner::Return | VerifiedReplacementOwner::ReturnHistory { .. } => {
-                0.25 + effect * 0.5
-            }
+            VerifiedReplacementOwner::Return
+            | VerifiedReplacementOwner::ReturnHistory { .. }
+            | VerifiedReplacementOwner::ReturnProjectionContention { .. } => 0.25 + effect * 0.5,
         }
     };
     for block in 0..4 {
@@ -304,7 +331,66 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
 
     let candidate = replacement();
     let operation = Arc::clone(&candidate.control);
-    submit(&h, candidate);
+    if let VerifiedReplacementOwner::ReturnProjectionContention { cancel } = owner {
+        let (entered, at_projection) = mpsc::sync_channel(1);
+        let (resume, resume_projection) = mpsc::sync_channel(1);
+        h.observation
+            .lock()
+            .unwrap()
+            .pause_verified_effect_projection = Some((entered, resume_projection));
+        submit(&h, candidate);
+        wait(|| {
+            if at_projection.try_recv().is_ok() {
+                return true;
+            }
+            pump();
+            false
+        });
+        while busy.try_recv().is_ok() {}
+        let (held, acquired) = mpsc::sync_channel(1);
+        let (release, released) = mpsc::sync_channel(1);
+        let backend = Arc::clone(&h.backend);
+        let holder = std::thread::spawn(move || {
+            let mut slot = backend.lock().unwrap();
+            slot.as_mut()
+                .unwrap()
+                .with_native_source_work_held_on_control(|| {
+                    held.send(()).unwrap();
+                    released.recv_timeout(Duration::from_secs(2))
+                })
+        });
+        acquired.recv_timeout(Duration::from_secs(2)).unwrap();
+        resume.send(()).unwrap();
+        let refused_borrow = busy.recv_timeout(Duration::from_secs(2));
+        let during_borrow = status.applied_audio_source();
+        let cancelled = cancel && operation.cancel();
+        release.send(()).unwrap();
+        assert_eq!(holder.join().unwrap(), Some(Ok(())));
+        refused_borrow
+            .expect("the exact native definition borrow must encounter Root Work contention");
+        assert_eq!(during_borrow, Some(predecessor));
+        if cancel {
+            assert!(cancelled);
+            loop {
+                let event = next();
+                assert_predecessor(&event);
+                assert!(event.device_insert_confirmation.is_none());
+                assert!(event.device_insert_complete.is_none());
+                if let Some(terminal) = event.plugin_effect_complete.first() {
+                    assert!(Arc::ptr_eq(&terminal.control, &operation));
+                    assert!(!terminal.accepted);
+                    break;
+                }
+            }
+            wait(|| {
+                pump();
+                records.load(Acquire) == 1
+            });
+            return;
+        }
+    } else {
+        submit(&h, candidate);
+    }
     let installed = loop {
         let event = next();
         if let Some(offer) = &event.device_insert_confirmation {

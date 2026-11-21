@@ -2061,7 +2061,7 @@ impl WorkerAudioSink for NativeAudioSink {
     fn prepare_verified_effects(
         &mut self,
         input: hex_session::service::ResidentEffectPreparation<'_>,
-        proposal: Option<&Arc<hex_session::service::PluginEffectControl>>,
+        attempt: Option<&hex_session::service::VerifiedGraphEditAttempt>,
         prepare: &mut dyn FnMut(
             &hex_engine::AudioCandidateEffects<'_, '_>,
         )
@@ -2091,34 +2091,60 @@ impl WorkerAudioSink for NativeAudioSink {
         } else {
             None
         };
+        let proposal_attempt = attempt.filter(|attempt| attempt.proposal_control().is_some());
+        let proposal = proposal_attempt.and_then(|attempt| attempt.proposal_control());
         let bindings = self.plugins.verified_effect_bindings(
             input,
             proposal,
             staged_cancellation.is_some(),
         )?;
+        let projection_cancellation = if let Some(attempt) = proposal_attempt {
+            Some(
+                self.request_cancellation
+                    .clone()
+                    .ok_or("verified vst3 preparation request is unavailable")?
+                    .with_preparation_deadline(attempt.preparation_deadline()),
+            )
+        } else {
+            staged_cancellation
+        };
         let control = self
             .output
             .as_mut()
             .and_then(|output| output.publication.control())
             .ok_or("verified audio output is unavailable")?;
         loop {
-            if let Some(cancellation) = &staged_cancellation {
+            if let Some(cancellation) = &projection_cancellation {
                 if cancellation.preparation_expired() {
                     return Err("verified vst3 preparation timed out".into());
                 }
-                if cancellation.is_cancelled() {
+                if cancellation.is_cancelled()
+                    || proposal.is_some_and(|control| control.is_cancelled())
+                {
                     return Err("verified vst3 preparation cancelled".into());
                 }
             }
-            match control.with_native_effect_definition(&bindings, |definition| {
+            let projected = control.with_native_effect_definition(&bindings, |definition| {
                 hex_engine::AudioCandidateEffects::with_host_definitions(
                     &[definition],
                     &mut *prepare,
                 )
                 .map_err(|error| error.to_string())
-            }) {
+            });
+            #[cfg(all(test, feature = "allocation-probe"))]
+            if let Some(observer) = &self.native_graph_busy_observer
+                && projected.as_ref().is_err_and(|error| {
+                    matches!(
+                        error.as_str(),
+                        "native effect preparation is busy" | "native effect selection is busy"
+                    )
+                })
+            {
+                let _ = observer.try_send(());
+            }
+            match projected {
                 Err(error)
-                    if staged_cancellation.is_some()
+                    if projection_cancellation.is_some()
                         && matches!(
                             error.as_str(),
                             "native effect preparation is busy" | "native effect selection is busy"

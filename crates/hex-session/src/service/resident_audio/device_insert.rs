@@ -1202,7 +1202,7 @@ impl Session {
             edit.project(),
             previous,
             attempt.source().context(),
-            attempt.proposal_control(),
+            Some(&attempt),
             sink,
         );
         let prepared = match prepared {
@@ -1243,7 +1243,7 @@ impl Session {
         project: &Project,
         previous: Option<&PreparedRevision>,
         context: hex_engine::AudioSourceContext,
-        proposal: Option<&Arc<PluginEffectControl>>,
+        attempt: Option<&VerifiedGraphEditAttempt>,
         sink: &mut dyn WorkerAudioSink,
     ) -> Result<PreparedRevision, SessionError> {
         let media = self.media_bank();
@@ -1258,7 +1258,7 @@ impl Session {
             hosted_instrument_move: None,
         };
         let prepared = if input.requires_plugin_profile() {
-            sink.prepare_verified_effects(input, proposal, &mut |effects| {
+            sink.prepare_verified_effects(input, attempt, &mut |effects| {
                 crate::prepare_with_waveforms_using(
                     project,
                     &media,
