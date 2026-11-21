@@ -1821,6 +1821,67 @@ fn last_touched_dotted_line_follows_gesture_preview_through_delayed_ack(cx: &mut
 }
 
 #[gpui::test]
+fn native_parameter_click_selects_lane_without_an_edit_or_mode_change(cx: &mut TestAppContext) {
+    use hex_lattice_contract::ParameterId;
+
+    let (mut visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);
+    let (revision, before) = editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert!(!view.automation_view.enabled);
+        (state.revision, state.project.clone())
+    });
+    let knob = |visual: &mut VisualTestContext, parameter| {
+        let selector = Box::leak(
+            format!("device-{}-parameter-{parameter}-knob", device.value()).into_boxed_str(),
+        );
+        visual.debug_bounds(selector).unwrap().center()
+    };
+    let gain = knob(&mut visual, 1);
+    visual.simulate_mouse_down(gain, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(gain, MouseButton::Left, Modifiers::default());
+    editor.update(&mut visual, |view, cx| {
+        assert!(
+            !view.automation_view.enabled,
+            "click must keep Automation view off"
+        );
+        assert!(view.toggle_automation_view(cx));
+    });
+    visual.run_until_parked();
+
+    let balance = knob(&mut visual, 2);
+    visual.simulate_mouse_down(balance, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            view.automation_view.devices.main.iter().any(|entry| {
+                entry.target.owner == owner
+                    && entry.target.device == device
+                    && entry.target.kind
+                        == DeviceAutomationTarget::Parameter(ParameterId::from_static(2))
+            }),
+            "a press without pointer movement selects the balance lane"
+        );
+        assert!(view.device_gesture.snapshot().is_none());
+    });
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("automation-plot-{}-2-true", device.value()).into_boxed_str()
+            ))
+            .is_some()
+    );
+    visual.simulate_mouse_up(balance, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.revision, revision);
+        assert_eq!(state.project, before);
+        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.pending_requests.is_empty());
+    });
+}
+
+#[gpui::test]
 fn touching_an_automated_parameter_shows_its_envelope_unmoved(cx: &mut TestAppContext) {
     let (mut visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);
     let kind = DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(1));

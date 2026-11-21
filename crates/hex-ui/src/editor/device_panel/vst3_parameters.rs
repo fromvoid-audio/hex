@@ -2951,6 +2951,11 @@ mod tests {
         use crate::editor::{clip_drag_ui_test, device_panel::DevicePanelOwner};
         use gpui::VisualTestContext;
         let (project, track, device) = parameter_project();
+        let automation_class = project
+            .device(device)
+            .unwrap()
+            .automation_target_class(hex_project::DeviceAutomationTarget::Vst3 { parameter: 7 })
+            .unwrap();
         let (handle, editor) = clip_drag_ui_test::editor_window(cx, project, Arc::default());
         // Exercise the parameter card itself without an audio publication. The
         // full editor intentionally hides this card until a native source exists.
@@ -3003,9 +3008,13 @@ mod tests {
             panel.cache_loading = false;
             panel.source = Some(binding);
             panel.result = Some(Arc::new(vec![
-                layout_row(0.2, true, 1),
+                PluginParameterRow {
+                    automation_class,
+                    ..layout_row(0.2, true, 1)
+                },
                 PluginParameterRow {
                     id: 8,
+                    automation_class,
                     ..layout_row(0.3, true, 1)
                 },
             ]));
@@ -3086,6 +3095,68 @@ mod tests {
             assert!(view.device_gesture.snapshot().is_none());
         });
         visual.simulate_mouse_up(down, gpui::MouseButton::Left, modifiers);
+        visual.run_until_parked();
+
+        let (revision, before) = editor.update(&mut visual, |view, cx| {
+            view.automation_view.enabled = true;
+            let state = view.state.as_ref().unwrap();
+            cx.notify();
+            (state.revision, state.project.clone())
+        });
+        visual.run_until_parked();
+        let click = |visual: &mut VisualTestContext, selector: String| {
+            let point = visual
+                .debug_bounds(Box::leak(selector.into_boxed_str()))
+                .unwrap()
+                .center();
+            visual.simulate_mouse_down(point, gpui::MouseButton::Left, modifiers);
+            visual.simulate_mouse_up(point, gpui::MouseButton::Left, modifiers);
+            visual.run_until_parked();
+        };
+        let owner = DevicePanelOwner::Track(track);
+        click(&mut visual, format!("vst3-knob-{}-8-knob", device.value()));
+        editor.update(&mut visual, |view, cx| {
+            assert!(
+                view.test_touched_vst3_lane(owner, device, 8),
+                "a hosted parameter click selects its lane without a value gesture"
+            );
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            assert!(
+                panel.last_touched.is_none(),
+                "lane selection keeps native touch status"
+            );
+            panel.last_touched = Some(7);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        click(
+            &mut visual,
+            format!("vst3-follow-knob-{}-7-knob", device.value()),
+        );
+        editor.update(&mut visual, |view, cx| {
+            assert!(view.test_touched_vst3_lane(owner, device, 7));
+            let state = view.state.as_ref().unwrap();
+            assert_eq!(state.revision, revision);
+            assert_eq!(state.project, before);
+            assert!(view.device_gesture.snapshot().is_none());
+            assert!(view.pending_requests.is_empty());
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            assert_eq!(panel.rows().unwrap()[0].normalized, 0.2);
+            assert_eq!(panel.rows().unwrap()[1].normalized, 0.3);
+            panel.last_touched = None;
+            view.automation_view.enabled = false;
+            cx.notify();
+        });
         visual.run_until_parked();
 
         editor.update(&mut visual, |view, _| {
