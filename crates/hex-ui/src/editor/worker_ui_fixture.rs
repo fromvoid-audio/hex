@@ -526,4 +526,388 @@ mod tests {
         });
         fixture.finish(cx);
     }
+
+    #[gpui::test]
+    fn session_runtime_refusal_republishes_on_pause_and_resumes_play(cx: &mut TestAppContext) {
+        use hex_project::{Command, LoopRegion};
+        use std::sync::atomic::Ordering::{Acquire, Release};
+
+        let mut fixture = open_with_section_support(
+            cx,
+            vec![
+                Command::AddTrack {
+                    name: "track".into(),
+                },
+                Command::SetLoopRegion {
+                    start: 0,
+                    end: 48_000,
+                    enabled: false,
+                },
+            ],
+            false,
+            true,
+        );
+        let editor = fixture.editor.clone();
+        let deadline = crate::test_wait::hang_deadline();
+
+        // Wait for playback settings load and start playing on the initial revision.
+        loop {
+            let ready = editor.update(cx, |view, cx| {
+                view.tick(cx);
+                !view.playback_settings.loading && view.applied_project_revision().is_some()
+            });
+            if ready {
+                break;
+            }
+            assert!(Instant::now() < deadline, "editor did not become ready");
+            cx.run_until_parked();
+            std::thread::yield_now();
+        }
+        let before_revision = editor.update(cx, |view, _| {
+            view.toggle_play();
+            view.state.as_ref().unwrap().revision
+        });
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let playing = editor.update(cx, |view, cx| {
+                view.tick(cx);
+                view.audio_status().unwrap().playing.load(Acquire)
+            });
+            if playing {
+                break;
+            }
+            assert!(Instant::now() < deadline, "playback did not start");
+        }
+
+        // Force the live ToggleLoopRegion publication to be rejected at the
+        // callback with SessionRuntime, leaving audio on `before_revision`.
+        fixture
+            .consume_next_inherited_candidate
+            .store(true, Release);
+        editor.update(cx, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::ToggleLoopRegion)));
+        });
+        let edited_revision = loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let settled = editor.update(cx, |view, cx| {
+                view.tick(cx);
+                let state = view.state.as_ref().unwrap();
+                if state.revision > before_revision
+                    && matches!(
+                        view.audio_admission.current().map(|c| c.state),
+                        Some(super::super::audio_admission::AdmissionState::Rejected(_))
+                    )
+                {
+                    Some(state.revision)
+                } else {
+                    None
+                }
+            });
+            if let Some(revision) = settled {
+                break revision;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "refused loop edit did not settle"
+            );
+            std::thread::yield_now();
+        };
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.applied_project_revision(), Some(before_revision));
+            assert_eq!(
+                view.state.as_ref().unwrap().project.loop_region(),
+                Some(LoopRegion::new(0, 48_000, true).unwrap())
+            );
+            assert!(
+                !view.status.contains("waiting for playback"),
+                "stale submitted status remained: {}",
+                view.status
+            );
+            assert!(view.paused_republish_waiting_for_current());
+        });
+
+        // Pause via Space (TogglePlay): once paused, the editor must republish
+        // the refused canonical revision automatically instead of stranding
+        // audio on `before_revision`.
+        editor.update(cx, |view, _| view.toggle_play());
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let republished = editor.update(cx, |view, cx| {
+                view.tick(cx);
+                let status = view.audio_status().unwrap();
+                !status.playing.load(Acquire)
+                    && view.applied_project_revision() == Some(edited_revision)
+                    && matches!(
+                        view.audio_admission.current().map(|c| c.state),
+                        Some(super::super::audio_admission::AdmissionState::Applied)
+                    )
+            });
+            if republished {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "paused republish did not apply: {:?}",
+                editor.read_with(cx, |view, _| (
+                    view.status.clone(),
+                    view.error.as_ref().map(|e| e.to_string()),
+                    view.applied_project_revision(),
+                    view.audio_admission.current()
+                ))
+            );
+            std::thread::yield_now();
+        }
+
+        // Pressing Space (TogglePlay) again must start playback cleanly rather
+        // than reporting "playback source is unavailable".
+        editor.update(cx, |view, _| view.toggle_play());
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let resumed = editor.update(cx, |view, cx| {
+                view.tick(cx);
+                view.audio_status().unwrap().playing.load(Acquire)
+            });
+            if resumed {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "playback did not resume after paused republish: {:?}",
+                editor.read_with(cx, |view, _| (
+                    view.status.clone(),
+                    view.error.as_ref().map(|e| e.to_string())
+                ))
+            );
+        }
+        editor.read_with(cx, |view, _| {
+            assert!(view.error.is_none(), "unexpected error: {:?}", view.error);
+            assert_eq!(view.applied_project_revision(), Some(edited_revision));
+        });
+        fixture.finish(cx);
+    }
+
+    #[gpui::test]
+    fn play_pressed_while_paused_republish_is_in_flight_starts_once_ready(cx: &mut TestAppContext) {
+        use hex_project::Command;
+        use std::sync::atomic::Ordering::{Acquire, Release};
+
+        let mut fixture = open_with_section_support(
+            cx,
+            vec![
+                Command::AddTrack {
+                    name: "track".into(),
+                },
+                Command::SetLoopRegion {
+                    start: 0,
+                    end: 48_000,
+                    enabled: false,
+                },
+            ],
+            false,
+            true,
+        );
+        let editor = fixture.editor.clone();
+        let deadline = crate::test_wait::hang_deadline();
+
+        loop {
+            let ready = editor.update(cx, |view, cx| {
+                view.tick(cx);
+                !view.playback_settings.loading && view.applied_project_revision().is_some()
+            });
+            if ready {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            cx.run_until_parked();
+            std::thread::yield_now();
+        }
+        let before_revision = editor.update(cx, |view, _| {
+            view.toggle_play();
+            view.state.as_ref().unwrap().revision
+        });
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if editor.update(cx, |view, cx| {
+                view.tick(cx);
+                view.audio_status().unwrap().playing.load(Acquire)
+            }) {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+        }
+
+        fixture
+            .consume_next_inherited_candidate
+            .store(true, Release);
+        editor.update(cx, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::ToggleLoopRegion)));
+        });
+        let edited_revision = loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let settled = editor.update(cx, |view, cx| {
+                view.tick(cx);
+                let state = view.state.as_ref().unwrap();
+                (state.revision > before_revision && view.paused_republish_waiting_for_current())
+                    .then_some(state.revision)
+            });
+            if let Some(revision) = settled {
+                break revision;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+
+        // Pause and wait until the callback reports !playing, then immediately
+        // press Play before the republished audio revision installs.
+        editor.update(cx, |view, _| view.toggle_play());
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if !editor.read_with(cx, |view, _| {
+                view.audio_status().unwrap().playing.load(Acquire)
+            }) {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+        }
+        editor.update(cx, |view, _| {
+            view.toggle_play();
+            assert!(
+                view.error.is_none(),
+                "must defer play instead of failing: {:?}",
+                view.error
+            );
+            assert!(view.deferred_play.is_some());
+        });
+
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            let playing = editor.update(cx, |view, cx| {
+                view.tick(cx);
+                view.audio_status().unwrap().playing.load(Acquire)
+                    && view.applied_project_revision() == Some(edited_revision)
+            });
+            if playing {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "deferred play did not start once republish installed: {:?}",
+                editor.read_with(cx, |view, _| (
+                    view.status.clone(),
+                    view.error.as_ref().map(|e| e.to_string()),
+                    view.applied_project_revision()
+                ))
+            );
+            std::thread::yield_now();
+        }
+        editor.read_with(cx, |view, _| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert!(view.deferred_play.is_none());
+        });
+        fixture.finish(cx);
+    }
+
+    #[gpui::test]
+    fn repeated_session_runtime_refusal_on_paused_republish_stops_retrying(
+        cx: &mut TestAppContext,
+    ) {
+        use hex_project::Command;
+        use std::sync::atomic::Ordering::{Acquire, Release};
+
+        let mut fixture = open_with_section_support(
+            cx,
+            vec![
+                Command::AddTrack {
+                    name: "track".into(),
+                },
+                Command::SetLoopRegion {
+                    start: 0,
+                    end: 48_000,
+                    enabled: false,
+                },
+            ],
+            false,
+            true,
+        );
+        let editor = fixture.editor.clone();
+        let deadline = crate::test_wait::hang_deadline();
+
+        loop {
+            let ready = editor.update(cx, |view, cx| {
+                view.tick(cx);
+                !view.playback_settings.loading && view.applied_project_revision().is_some()
+            });
+            if ready {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            cx.run_until_parked();
+            std::thread::yield_now();
+        }
+        let before_revision = editor.update(cx, |view, _| {
+            view.toggle_play();
+            view.state.as_ref().unwrap().revision
+        });
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if editor.update(cx, |view, cx| {
+                view.tick(cx);
+                view.audio_status().unwrap().playing.load(Acquire)
+            }) {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+        }
+
+        // Refuse the initial live edit.
+        fixture
+            .consume_next_inherited_candidate
+            .store(true, Release);
+        editor.update(cx, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::ToggleLoopRegion)));
+        });
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if editor.update(cx, |view, cx| {
+                view.tick(cx);
+                view.state.as_ref().unwrap().revision > before_revision
+                    && view.paused_republish_waiting_for_current()
+            }) {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+
+        // Refuse the automatic paused republish too.
+        fixture
+            .consume_next_inherited_candidate
+            .store(true, Release);
+        editor.update(cx, |view, _| view.toggle_play());
+        loop {
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            if editor.update(cx, |view, cx| {
+                view.tick(cx);
+                view.paused_republish_exhausted_for_current()
+            }) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "republish did not reach exhausted"
+            );
+            std::thread::yield_now();
+        }
+        editor.update(cx, |view, cx| {
+            // Subsequent ticks must not re-enqueue endlessly.
+            assert!(!view.tick_paused_republish());
+            view.toggle_play();
+            assert_eq!(
+                view.error.as_deref(),
+                Some("stop playback to apply edit before playing")
+            );
+            view.tick(cx);
+        });
+        fixture.finish(cx);
+    }
 }

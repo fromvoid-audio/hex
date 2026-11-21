@@ -235,6 +235,14 @@ impl EditorView {
             || self.edit_pending()
             || self.automation_close_preflight.waiting()
             || self.automation_take_recovery.polling()
+            || matches!(
+                self.paused_republish,
+                Some(
+                    super::audio_admission::PausedRepublish::Unresolved { .. }
+                        | super::audio_admission::PausedRepublish::WaitingForPause { .. }
+                        | super::audio_admission::PausedRepublish::Submitted { .. }
+                )
+            )
             || super::device_panel::vst3_parameters::query_pending(self)
             || self.transport_pending()
     }
