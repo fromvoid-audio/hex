@@ -1360,15 +1360,22 @@ impl Plugins {
             })
         });
         let mut output = output;
+        let mut reorder = None;
         if input.preparing_edit() {
-            self.prepare_edit_sources(
-                output.as_deref_mut(),
-                &input,
-                desired,
-                cancellation,
-                false,
-                powering_on,
-            )?;
+            if let Some(output) = output.as_deref_mut() {
+                reorder =
+                    self.prepare_hosted_effect_reorder(output, &input, desired, cancellation)?;
+            }
+            if reorder.is_none() {
+                self.prepare_edit_sources(
+                    output.as_deref_mut(),
+                    &input,
+                    desired,
+                    cancellation,
+                    false,
+                    powering_on,
+                )?;
+            }
         }
         let mut bindings = Vec::new();
         bindings
@@ -1378,6 +1385,15 @@ impl Plugins {
         let mut unavailable = Vec::new();
         input.visit_plugin_devices(|destination, device, state| {
             let owner = destination.owner();
+            if let Some((_, binding)) = reorder
+                && input.hosted_track_effect_reorder().is_some_and(|route| {
+                    destination == PluginEffectDestination::Track(route.track)
+                        && device == route.device.value()
+                })
+            {
+                bindings.push(binding);
+                return Ok(());
+            }
             let source = match output
                 .as_deref_mut()
                 .and_then(|output| output.publication.control())
@@ -1439,10 +1455,14 @@ impl Plugins {
         let control = output
             .and_then(|output| output.publication.control())
             .ok_or("native output closed")?;
-        let movement = match self.fresh_instrument_move(control, &input, desired, &bindings)? {
-            Some(route) => Some(route),
-            None => {
-                self.fresh_track_effect_move(control, &input, desired, &bindings, cancellation)?
+        let movement = if let Some((route, _)) = reorder {
+            Some(route)
+        } else {
+            match self.fresh_instrument_move(control, &input, desired, &bindings)? {
+                Some(route) => Some(route),
+                None => {
+                    self.fresh_track_effect_move(control, &input, desired, &bindings, cancellation)?
+                }
             }
         };
         let mut canonical = Vec::new();

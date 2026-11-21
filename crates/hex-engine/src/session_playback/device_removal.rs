@@ -472,6 +472,11 @@ impl SessionPlayback {
             Some(RemovalTransition::Move(StagedTrackMove::HostedEffect(
                 movement,
             )))
+        } else if matches!(self.hosted_move, Some(HostedMoveRequest::Reorder(_))) {
+            let (index, _) = self
+                .direct_hosted_effect_reorder_from(previous)
+                .ok_or(SessionPlaybackError::DeviceInsertNeedsConfirmation)?;
+            Some(RemovalTransition::Reorder(index))
         } else if same_latency {
             self.native_removal_transition_from(previous)
                 .map(RemovalTransition::Device)

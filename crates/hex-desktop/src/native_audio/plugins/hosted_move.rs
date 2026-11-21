@@ -57,6 +57,9 @@ impl Plugins {
             HostedMoveRequest::Effect(movement) => {
                 playback.require_hosted_track_effect_move(movement)
             }
+            HostedMoveRequest::Reorder(reorder) => {
+                playback.require_hosted_track_effect_reorder(reorder)
+            }
         }
         .map_err(|error| error.0.into())
     }

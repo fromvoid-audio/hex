@@ -14,6 +14,19 @@ struct InstrumentDefinition {
     epoch: u64,
 }
 
+pub(super) fn paired_effect(
+    identity: ProcessorInstanceIdentity,
+    epoch: u64,
+) -> impl NativeDeviceDefinition {
+    InstrumentDefinition {
+        identity,
+        second: None,
+        paired_move_timing: true,
+        instrument_profile: false,
+        epoch,
+    }
+}
+
 impl NativeDeviceMetadata for InstrumentDefinition {
     fn type_id(&self) -> DeviceTypeId {
         VST3

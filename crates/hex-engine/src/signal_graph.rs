@@ -56,6 +56,7 @@ pub(crate) enum FreshHistory {
     ChangedTrack {
         track: TrackId,
         device: u64,
+        second_device: Option<u64>,
         cut_predecessor_pcm: bool,
     },
     Return(ReturnId),
@@ -67,8 +68,15 @@ impl FreshHistory {
             Self::Track(id) | Self::ColdTrack(id) | Self::RemovedTrack { track: id, .. } => {
                 node.belongs_to_track(id)
             }
-            Self::ChangedTrack { track, device, .. } => {
-                node.belongs_to_track(track) || node == NodeId::Device(device)
+            Self::ChangedTrack {
+                track,
+                device,
+                second_device,
+                ..
+            } => {
+                node.belongs_to_track(track)
+                    || node == NodeId::Device(device)
+                    || second_device.is_some_and(|device| node == NodeId::Device(device))
             }
             Self::Return(id) => {
                 matches!(node, NodeId::ReturnInput(value) | NodeId::ReturnOutput(value) if value == id.value())

@@ -315,12 +315,22 @@ pub struct HostedTrackEffectMove {
     pub binding: hex_lattice_contract::ForeignProcessorBinding,
 }
 
-/// One of the two exact ordinary hosted Track cuts. The playback marker and
+/// A same-Track permutation with independently prepared incoming DSP.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostedTrackEffectReorder {
+    pub track: hex_project::TrackId,
+    pub device: hex_project::DeviceId,
+    pub previous_binding: hex_lattice_contract::ForeignProcessorBinding,
+    pub binding: hex_lattice_contract::ForeignProcessorBinding,
+}
+
+/// An exact ordinary hosted Track cut. The playback marker and
 /// Desktop receipt both keep the same request through admission or refusal.
 #[derive(Clone, Copy, Debug)]
 pub enum HostedMoveRequest {
     Instrument(HostedInstrumentMove),
     Effect(HostedTrackEffectMove),
+    Reorder(HostedTrackEffectReorder),
 }
 
 /// Compact truthful category for asynchronous callback handoff refusals.
@@ -2562,6 +2572,40 @@ impl Playback {
             .as_mut()
             .ok_or(Invalid("hosted effect move has no session runtime"))?;
         runtime.hosted_move = Some(HostedMoveRequest::Effect(movement));
+        Ok(())
+    }
+
+    /// Fence a same-Track reorder to the fresh endpoint in this prepared graph.
+    pub fn require_hosted_track_effect_reorder(
+        &mut self,
+        reorder: HostedTrackEffectReorder,
+    ) -> Result<(), Invalid> {
+        let owner = crate::ProcessorChainOwner::Track(reorder.track.value());
+        let device = reorder.device.value();
+        let matching = self.project.tracks.iter().any(|track| {
+            track.canonical_track_id() == Some(reorder.track)
+                && track.device_chain.iter().any(|node| {
+                    node.owner == owner
+                        && node.device_id == device
+                        && node.foreign_processor().is_some_and(|facts| {
+                            !facts.is_instrument_profile()
+                                && facts.binding() == Some(reorder.binding)
+                        })
+                })
+        });
+        if !matching
+            || reorder.binding == reorder.previous_binding
+            || reorder.binding.root != reorder.previous_binding.root
+            || reorder.binding.instance != device
+            || reorder.previous_binding.instance != device
+        {
+            return Err(Invalid("hosted reorder differs from its fresh worker"));
+        }
+        let runtime = self
+            .session_runtime
+            .as_mut()
+            .ok_or(Invalid("hosted reorder has no session runtime"))?;
+        runtime.hosted_move = Some(HostedMoveRequest::Reorder(reorder));
         Ok(())
     }
 
