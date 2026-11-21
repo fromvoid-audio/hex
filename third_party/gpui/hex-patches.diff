@@ -4287,7 +4287,7 @@ diff --git a/src/scene.rs b/src/scene.rs
 +    }
 +
 +    fn append_primitive(&mut self, mut primitive: Primitive, order: DrawOrder) {
-@@ -117,0 +181,117 @@
+@@ -117,0 +181,123 @@
 +        if self.try_bulk_replay(range.clone(), prev_scene) {
 +            return;
 +        }
@@ -4316,7 +4316,7 @@ diff --git a/src/scene.rs b/src/scene.rs
 +            return false;
 +        }
 +        let mut depth = 0_usize;
-+        let mut union = None::<Bounds<ScaledPixels>>;
++        let mut envelope = None::<(Point<ScaledPixels>, Point<ScaledPixels>)>;
 +        let mut min_order = u32::MAX;
 +        let mut max_order = 0_u32;
 +        let mut visible = false;
@@ -4359,18 +4359,24 @@ diff --git a/src/scene.rs b/src/scene.rs
 +            if !finite_scene_bounds(&bounds) {
 +                return false;
 +            }
-+            let combined = union.map_or(bounds, |union| union.union(&bounds));
-+            if !finite_scene_bounds(&combined) {
-+                return false;
-+            }
-+            union = Some(combined);
++            let bottom_right = bounds.bottom_right();
++            envelope = Some(match envelope {
++                Some((min, max)) => (min.min(&bounds.origin), max.max(&bottom_right)),
++                None => (bounds.origin, bottom_right),
++            });
 +        }
 +        if depth != 0 || !visible {
 +            return false;
 +        }
-+        let Some(bounds) = union else {
++        let Some((min, max)) = envelope else {
 +            return false;
 +        };
++        // Converting corners to an origin and size can round a far edge
++        // inward. Such an envelope could hide an overlap from a later draw.
++        let bounds = Bounds::from_corners(min, max);
++        if !finite_scene_bounds(&bounds) || bounds.right() < max.x || bounds.bottom() < max.y {
++            return false;
++        }
 +        let span = max_order - min_order;
 +        let Some(base) = self.primitive_bounds.reserve(bounds, span) else {
 +            return false;
@@ -4405,7 +4411,7 @@ diff --git a/src/scene.rs b/src/scene.rs
 +    }
 +
 +    fn replay_legacy(&mut self, range: Range<usize>, prev_scene: &Scene) {
-@@ -172,0 +353,14 @@
+@@ -172,0 +359,14 @@
 +fn finite_scene_bounds(bounds: &Bounds<ScaledPixels>) -> bool {
 +    let values = [
 +        bounds.origin.x.0,
@@ -4420,7 +4426,7 @@ diff --git a/src/scene.rs b/src/scene.rs
 +        && bounds.size.height.0 >= 0.0
 +}
 +
-@@ -209,0 +404,11 @@
+@@ -209,0 +410,11 @@
 +    fn order(&self) -> DrawOrder {
 +        match self {
 +            Primitive::Shadow(value) => value.order,
@@ -4432,7 +4438,7 @@ diff --git a/src/scene.rs b/src/scene.rs
 +            Primitive::Surface(value) => value.order,
 +        }
 +    }
-@@ -219,0 +425,7 @@
+@@ -219,0 +431,7 @@
 +    }
 +
 +    fn painted_bounds(&self) -> Bounds<ScaledPixels> {
@@ -4440,7 +4446,7 @@ diff --git a/src/scene.rs b/src/scene.rs
 +            return sprite.painted_bounds();
 +        }
 +        *self.bounds()
-@@ -630,0 +843,28 @@
+@@ -630,0 +849,28 @@
 +impl MonochromeSprite {
 +    pub(crate) fn painted_bounds(&self) -> Bounds<ScaledPixels> {
 +        if self.transformation == TransformationMatrix::unit() {
@@ -4469,7 +4475,7 @@ diff --git a/src/scene.rs b/src/scene.rs
 +    }
 +}
 +
-@@ -673,0 +914,30 @@
+@@ -673,0 +920,30 @@
 +/// Mutable construction keeps a directly owned Vec; only finished scaled meshes
 +/// pay for sharing. Metadata remains in Path, separate from immutable vertex bytes.
 +#[derive(Clone)]
@@ -4500,14 +4506,14 @@ diff --git a/src/scene.rs b/src/scene.rs
 +    }
 +}
 +
-@@ -681 +951,2 @@
+@@ -681 +957,2 @@
 -    pub(crate) vertices: Vec<PathVertex<P>>,
 +    // Scaled Scene clones share mesh bytes; mutable construction stays owned.
 +    pub(crate) vertices: PathVertices<P>,
-@@ -694 +965 @@
+@@ -694 +971 @@
 -            vertices: Vec::new(),
 +            vertices: PathVertices::Owned(Vec::new()),
-@@ -714,5 +985,2 @@
+@@ -714,5 +991,2 @@
 -            vertices: self
 -                .vertices
 -                .iter()
@@ -4515,17 +4521,17 @@ diff --git a/src/scene.rs b/src/scene.rs
 -                .collect(),
 +            vertices: PathVertices::Shared(Arc::new(self.vertices.iter()
 +                .map(|vertex| vertex.scale(factor)).collect())),
-@@ -783 +1051,2 @@
+@@ -783 +1057,2 @@
 -        self.vertices.push(PathVertex {
 +        let vertices = self.vertices.make_mut();
 +        vertices.push(PathVertex {
-@@ -788 +1057 @@
+@@ -788 +1063 @@
 -        self.vertices.push(PathVertex {
 +        vertices.push(PathVertex {
-@@ -793 +1062 @@
+@@ -793 +1068 @@
 -        self.vertices.push(PathVertex {
 +        vertices.push(PathVertex {
-@@ -833,0 +1103,853 @@
+@@ -833,0 +1109,853 @@
 +
 +#[cfg(any(test, feature = "test-support"))]
 +pub(crate) fn verify_bulk_replay() -> Result<(), String> {
