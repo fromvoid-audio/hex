@@ -1681,7 +1681,7 @@ impl EditorView {
                 cx,
             ));
         }
-        let header = self.build_track_header(state, track, track_index, cx);
+        let header = self.track_header_element(state, track, track_index, scale_factor, cx);
         let row = div()
             .w_full()
             .h(px(self.track_body_height(track_id)))

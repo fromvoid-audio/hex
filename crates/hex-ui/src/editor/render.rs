@@ -628,6 +628,7 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let frame_timing_start = super::frame_timing::enabled().then(std::time::Instant::now);
         self.wake_poll_if_busy();
         self.reconcile_update_ready(window, cx);
         #[cfg(all(test, feature = "ui-test-support"))]
@@ -679,6 +680,8 @@ impl Render for EditorView {
         }
         self.clip_content_cache
             .reconcile(self.project_generation, self.state.as_ref(), cx);
+        self.track_header_cache
+            .reconcile(self.project_generation, self.state.as_ref(), cx);
         self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
         let clip_view = self.clip_detail_view(window, cx);
         self.reconcile_device_action_menu(window, cx);
@@ -728,7 +731,7 @@ impl Render for EditorView {
         if self.has_arrangement_sections() {
             key_context.add("hex_arrangement_sections");
         }
-        div()
+        let root = div()
             // Pointer presses leave the idle poll cadence before any handler runs.
             .capture_any_mouse_down(cx.listener(|view, _, _, _| view.wake_poll()))
             .when(crate::diagnostics::actions_enabled(cx), |root| {
@@ -886,7 +889,6 @@ impl Render for EditorView {
                         cx,
                     );
                 });
-                window.refresh();
             })
             .on_mouse_up(
                 MouseButton::Left,
@@ -1925,7 +1927,8 @@ impl Render for EditorView {
                                 ),
                         ),
                 )
-            })
+            });
+        super::frame_timing::wrap(root, frame_timing_start)
     }
 }
 

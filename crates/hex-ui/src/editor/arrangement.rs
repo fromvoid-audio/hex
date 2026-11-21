@@ -406,7 +406,7 @@ impl EditorView {
                         view.track_reorder_painted();
                     });
                     let zoom_entity = measure_entity.clone();
-                    window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+                    window.on_mouse_event(move |event: &ScrollWheelEvent, phase, _window, cx| {
                         if !phase.capture() || !bounds.contains(&event.position) {
                             return;
                         }
@@ -428,26 +428,25 @@ impl EditorView {
                             return;
                         }
                         cx.stop_propagation();
-                        let did_zoom = zoom_entity.update(cx, |view, _| {
+                        zoom_entity.update(cx, |view, cx| {
                             if view.context_menu.is_some()
                                 || super::device_panel::picker_is_open(view)
                             {
-                                return false;
+                                return;
                             }
-                            view.zoom_timeline_wheel_at(
+                            if view.zoom_timeline_wheel_at(
                                 event.position.x,
                                 f32::from(bounds.origin.x),
                                 (f32::from(bounds.size.width) - header_width).max(0.0),
                                 delta_y,
-                            )
+                            ) {
+                                cx.notify();
+                            }
                         });
-                        if did_zoom {
-                            window.refresh();
-                        }
                     });
                     let start_entity = measure_entity.clone();
                     let pan_bounds = bounds;
-                    window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                    window.on_mouse_event(move |event: &MouseDownEvent, phase, _, cx| {
                         if !phase.capture()
                             || event.button != MouseButton::Middle
                             || !pan_bounds.contains(&event.position)
@@ -457,51 +456,61 @@ impl EditorView {
                         {
                             return;
                         }
-                        let started = start_entity.update(cx, |view, _| {
-                            view.begin_arrangement_pan(
+                        let started = start_entity.update(cx, |view, cx| {
+                            let started = view.begin_arrangement_pan(
                                 f32::from(event.position.x),
                                 f32::from(event.position.y),
-                            )
+                            );
+                            if started {
+                                cx.notify();
+                            }
+                            started
                         });
                         if started {
                             cx.stop_propagation();
-                            window.refresh();
                         }
                     });
                     let move_entity = measure_entity.clone();
-                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                         if !phase.capture() {
                             return;
                         }
                         if event.pressed_button != Some(MouseButton::Middle) {
-                            let canceled =
-                                move_entity.update(cx, |view, _| view.cancel_arrangement_pan());
-                            if canceled {
-                                window.refresh();
-                            }
+                            move_entity.update(cx, |view, cx| {
+                                if view.cancel_arrangement_pan() {
+                                    cx.notify();
+                                }
+                            });
                             return;
                         }
-                        let moved = move_entity.update(cx, |view, _| {
-                            view.update_arrangement_pan(
+                        let moved = move_entity.update(cx, |view, cx| {
+                            let moved = view.update_arrangement_pan(
                                 f32::from(event.position.x),
                                 f32::from(event.position.y),
-                            )
+                            );
+                            if moved {
+                                cx.notify();
+                            }
+                            moved
                         });
                         if moved {
                             cx.stop_propagation();
-                            window.refresh();
                         }
                     });
                     let up_entity = measure_entity.clone();
-                    window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                    window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
                         if !phase.capture() || event.button != MouseButton::Middle {
                             return;
                         }
-                        let canceled =
-                            up_entity.update(cx, |view, _| view.cancel_arrangement_pan());
+                        let canceled = up_entity.update(cx, |view, cx| {
+                            let canceled = view.cancel_arrangement_pan();
+                            if canceled {
+                                cx.notify();
+                            }
+                            canceled
+                        });
                         if canceled {
                             cx.stop_propagation();
-                            window.refresh();
                         }
                     });
                     let cursor_down_entity = measure_entity.clone();
@@ -511,13 +520,13 @@ impl EditorView {
                         }
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
-                        let (started, moving) = cursor_down_entity.update(cx, |view, cx| {
+                        let started = cursor_down_entity.update(cx, |view, cx| {
                             // Foreground controls own the press while open.
                             if view.context_menu.is_some()
                                 || view.theme_settings.open
                                 || super::device_panel::picker_is_open(view)
                             {
-                                return (false, false);
+                                return false;
                             }
                             // The body still handles a click. Only a drag takes
                             // over the selection, using the full painted tail.
@@ -536,10 +545,10 @@ impl EditorView {
                                 {
                                     view.focus.focus(window);
                                 }
-                                return (false, false);
+                                return false;
                             }
                             if view.pointer_hits_section_launch(x, y) {
-                                return (false, false);
+                                return false;
                             }
                             if view.time_selection_key_held {
                                 let started = view.begin_main_time_selection_gesture(
@@ -558,7 +567,7 @@ impl EditorView {
                                     view.focus_detail_context(window, cx);
                                     cx.notify();
                                 }
-                                return (started, false);
+                                return started;
                             }
                             if view.begin_section_pointer(
                                 x,
@@ -572,10 +581,10 @@ impl EditorView {
                                     view.cancel_section_pointer();
                                 }
                                 cx.notify();
-                                return (true, false);
+                                return true;
                             }
                             if view.pointer_hits_priority_clip_control(x, y, event.modifiers.alt) {
-                                return (false, false);
+                                return false;
                             }
                             if event.click_count == 2
                                 && let Some((track, _)) = view.visible_lane_at(x, y)
@@ -583,7 +592,7 @@ impl EditorView {
                             {
                                 view.select_clip_header(track, clip, event.modifiers, window, cx);
                                 view.focus.focus(window);
-                                return (true, false);
+                                return true;
                             }
                             if event.click_count == 2
                                 && !event.modifiers.shift
@@ -594,7 +603,7 @@ impl EditorView {
                                     view.cancel_clip_paint();
                                 }
                                 cx.notify();
-                                return (true, false);
+                                return true;
                             }
                             let move_started = !event.modifiers.shift
                                 && (view.begin_main_time_range_move_gesture(x, y)
@@ -619,27 +628,24 @@ impl EditorView {
                                 view.focus.focus(window);
                                 if !move_started {
                                     view.focus_detail_context(window, cx);
-                                    cx.notify();
                                 }
+                                cx.notify();
                             }
-                            (started, move_started)
+                            started
                         });
                         if started {
-                            // Selection updates invalidate the live owner/overlays only.
+                            // Selection and time-range move updates invalidate the live owner/overlays only.
                             cx.stop_propagation();
-                            if moving {
-                                window.refresh();
-                            }
                         }
                     });
                     let cursor_move_entity = measure_entity.clone();
-                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                         if !phase.capture() {
                             return;
                         }
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
-                        let (changed, moving) = cursor_move_entity.update(cx, |view, cx| {
+                        let changed = cursor_move_entity.update(cx, |view, cx| {
                             if view.sections.held() {
                                 let changed = if event.pressed_button == Some(MouseButton::Left) {
                                     view.update_section_pointer(x, y, event.modifiers)
@@ -649,7 +655,7 @@ impl EditorView {
                                 if changed {
                                     cx.notify();
                                 }
-                                return (changed, false);
+                                return changed;
                             }
                             if view.clip_paint_gesture.is_some() {
                                 let changed = if event.pressed_button == Some(MouseButton::Left) {
@@ -660,9 +666,8 @@ impl EditorView {
                                 if changed {
                                     cx.notify();
                                 }
-                                return (changed, false);
+                                return changed;
                             }
-                            let moving = view.time_range_move_gesture.is_some();
                             let changed =
                                 view.update_time_range_move_gesture(x, y, event.modifiers.platform)
                                     || view.update_time_selection_gesture(
@@ -670,36 +675,32 @@ impl EditorView {
                                         y,
                                         event.modifiers.platform,
                                     );
-                            if changed && !moving {
+                            if changed {
                                 cx.notify();
                             }
-                            (changed, moving)
+                            changed
                         });
                         if changed {
                             cx.stop_propagation();
-                            if moving {
-                                window.refresh();
-                            }
                         }
                     });
                     let cursor_up_entity = measure_entity.clone();
-                    window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                    window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
                         if !phase.capture() || event.button != MouseButton::Left {
                             return;
                         }
-                        let (finished, moving) = cursor_up_entity.update(cx, |view, cx| {
-                            let moving = view.time_range_move_gesture.is_some();
+                        cursor_up_entity.update(cx, |view, cx| {
                             let x = f32::from(event.position.x);
                             let y = f32::from(event.position.y);
                             if view.finish_section_pointer(x, y, event.modifiers) {
                                 cx.stop_propagation();
                                 cx.notify();
-                                return (true, false);
+                                return;
                             }
                             if view.finish_clip_paint(x, y, event.modifiers.platform) {
                                 cx.stop_propagation();
                                 cx.notify();
-                                return (true, false);
+                                return;
                             }
                             view.refresh_time_gesture_modifiers(
                                 event.modifiers.platform,
@@ -714,14 +715,10 @@ impl EditorView {
                                     );
                             let finished = view.finish_time_range_move_gesture()
                                 || view.finish_time_selection_gesture();
-                            if finished && !moving {
+                            if finished {
                                 cx.notify();
                             }
-                            (finished, moving)
                         });
-                        if finished && moving {
-                            window.refresh();
-                        }
                     });
                 },
             )
@@ -1350,10 +1347,11 @@ impl EditorView {
                         {
                             return;
                         }
-                        let started = mouse_entity.update(cx, |view, _| {
+                        let started = mouse_entity.update(cx, |view, cx| {
                             if view.begin_scrub(f32::from(event.position.x), seek_viewport, bounds)
                             {
                                 view.focus.focus(window);
+                                cx.notify();
                                 true
                             } else {
                                 false
@@ -1361,40 +1359,45 @@ impl EditorView {
                         });
                         if started {
                             cx.stop_propagation();
-                            window.refresh();
                         }
                     });
                     let move_entity = entity.clone();
-                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                         if !phase.capture() {
                             return;
                         }
-                        let changed = move_entity.update(cx, |view, _| {
-                            if event.pressed_button == Some(MouseButton::Left) {
+                        let changed = move_entity.update(cx, |view, cx| {
+                            let changed = if event.pressed_button == Some(MouseButton::Left) {
                                 view.update_scrub(f32::from(event.position.x), false)
                             } else {
                                 view.lose_scrub_pointer()
+                            };
+                            if changed {
+                                cx.notify();
                             }
+                            changed
                         });
                         if changed {
                             cx.stop_propagation();
-                            window.refresh();
                         }
                     });
                     let up_entity = entity.clone();
-                    window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                    window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
                         if !phase.capture() || event.button != MouseButton::Left {
                             return;
                         }
-                        if up_entity.update(cx, |view, _| {
-                            view.update_scrub(f32::from(event.position.x), true)
+                        if up_entity.update(cx, |view, cx| {
+                            let changed = view.update_scrub(f32::from(event.position.x), true);
+                            if changed {
+                                cx.notify();
+                            }
+                            changed
                         }) {
                             cx.stop_propagation();
-                            window.refresh();
                         }
                     });
                     let wheel_entity = entity.clone();
-                    window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+                    window.on_mouse_event(move |event: &ScrollWheelEvent, phase, _, cx| {
                         if !phase.capture() || !bounds.contains(&event.position) {
                             return;
                         }
@@ -1406,22 +1409,21 @@ impl EditorView {
                             return;
                         }
                         cx.stop_propagation();
-                        let did_zoom = wheel_entity.update(cx, |view, _| {
+                        wheel_entity.update(cx, |view, cx| {
                             if view.context_menu.is_some()
                                 || super::device_panel::picker_is_open(view)
                             {
-                                return false;
+                                return;
                             }
-                            view.zoom_timeline_wheel_at(
+                            if view.zoom_timeline_wheel_at(
                                 event.position.x,
                                 f32::from(bounds.origin.x),
                                 f32::from(bounds.size.width),
                                 delta_y,
-                            )
+                            ) {
+                                cx.notify();
+                            }
                         });
-                        if did_zoom {
-                            window.refresh();
-                        }
                     });
                 },
             )
@@ -1444,44 +1446,6 @@ impl EditorView {
             .child(cells)
             .children([self.time_controls(cx)])
     }
-}
-
-pub(super) fn timeline_grid_elements(
-    lines: &[super::musical_time::GridLine],
-    viewport: super::viewport::Viewport,
-    scale: f32,
-) -> Vec<Div> {
-    if viewport.length == 0 {
-        return Vec::new();
-    }
-    lines
-        .iter()
-        .filter_map(|line| {
-            let offset = line.frame.checked_sub(viewport.start)?;
-            if offset > viewport.length {
-                return None;
-            }
-            let position = (offset as f64 / viewport.length as f64) as f32;
-            let (color, opacity) = if line.meter_marker {
-                (theme::color(theme::PaletteRole::Primary), 0.48)
-            } else if line.bar_start {
-                (theme::color(theme::PaletteRole::Border), 1.0)
-            } else {
-                (theme::color(theme::PaletteRole::Border), 0.65)
-            };
-            Some(
-                div()
-                    .debug_selector(|| format!("arrangement-grid-line-{}", line.frame))
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left(relative(position.clamp(0.0, 1.0)))
-                    .w(px(1.0 / scale.max(1.0)))
-                    .bg(rgb(color))
-                    .opacity(opacity),
-            )
-        })
-        .collect()
 }
 
 fn vertical_timeline_guide(name: &'static str, position: f32, color: u32, width: f32) -> Div {
@@ -1528,6 +1492,108 @@ fn loop_guides(state: &ViewState, view: &EditorView, viewport: Viewport, header_
     layer
 }
 
+fn paint_timeline_grid_canvas(
+    bands: &[super::musical_time::GridBand],
+    lines: &[super::musical_time::GridLine],
+    viewport: super::viewport::Viewport,
+    scale: f32,
+) -> impl IntoElement + use<> {
+    let bands: std::rc::Rc<[super::musical_time::GridBand]> = std::rc::Rc::from(bands);
+    let lines: std::rc::Rc<[super::musical_time::GridLine]> = std::rc::Rc::from(lines);
+    let stroke = 1.0 / scale.max(1.0);
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let Some(viewport_end) = viewport.end() else {
+                return;
+            };
+            let width = f32::from(bounds.size.width);
+            if viewport.length == 0 || !width.is_finite() || width <= 0.0 {
+                return;
+            }
+            let paint = |window: &mut Window| {
+                let lane_left = f64::from(bounds.left());
+                let lane_w = f64::from(width);
+                let phys_scale = f64::from(scale.max(1.0));
+                let snap = |v: f64| ((v * phys_scale).round() / phys_scale) as f32;
+                for band in bands.iter() {
+                    let start = band.start_frame.max(viewport.start);
+                    let end = band.end_frame.min(viewport_end);
+                    if start >= end {
+                        continue;
+                    }
+                    let left_frac = (start - viewport.start) as f64 / viewport.length as f64;
+                    let right_frac = (end - viewport.start) as f64 / viewport.length as f64;
+                    let left_px = snap(lane_left + left_frac * lane_w);
+                    let right_px = snap(lane_left + right_frac * lane_w);
+                    let rect = gpui::Bounds::new(
+                        point(px(left_px), bounds.top()),
+                        gpui::size(px((right_px - left_px).max(0.0)), bounds.size.height),
+                    );
+                    if !rect.is_empty() {
+                        window.paint_quad(gpui::fill(
+                            rect,
+                            rgb(theme::time_grid_band_color(band.alternate)),
+                        ));
+                    }
+                    #[cfg(feature = "ui-test-support")]
+                    window.record_debug_bounds(
+                        format!("arrangement-grid-band-{}", band.start_frame),
+                        rect,
+                    );
+                }
+                let primary = gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Primary)));
+                let border = gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Border)));
+                for line in lines.iter() {
+                    let Some(offset) = line.frame.checked_sub(viewport.start) else {
+                        continue;
+                    };
+                    if offset > viewport.length {
+                        continue;
+                    }
+                    let position = (offset as f64 / viewport.length as f64).clamp(0.0, 1.0);
+                    let x = snap(lane_left + position * lane_w);
+                    let rect = gpui::Bounds::new(
+                        point(px(x), bounds.top()),
+                        gpui::size(px(stroke), bounds.size.height),
+                    );
+                    let color = if line.meter_marker {
+                        primary.opacity(0.48)
+                    } else if line.bar_start {
+                        border
+                    } else {
+                        border.opacity(0.65)
+                    };
+                    window.paint_quad(gpui::fill(rect, color));
+                    #[cfg(feature = "ui-test-support")]
+                    window
+                        .record_debug_bounds(format!("arrangement-grid-line-{}", line.frame), rect);
+                }
+            };
+            let mask = window.content_mask().bounds;
+            let clipped = bounds.intersect(&mask);
+            let reserved = clipped.scale(window.scale_factor());
+            if !clipped.is_empty()
+                && !reserved.is_empty()
+                && [
+                    reserved.left(),
+                    reserved.right(),
+                    reserved.top(),
+                    reserved.bottom(),
+                ]
+                .into_iter()
+                .all(|edge| f64::from(edge).is_finite())
+            {
+                window.paint_layer(bounds, paint);
+            } else {
+                paint(window);
+            }
+        },
+    )
+    .absolute()
+    .inset_0()
+}
+
 fn timeline_grid_layer(
     bands: &[super::musical_time::GridBand],
     lines: &[super::musical_time::GridLine],
@@ -1542,8 +1608,7 @@ fn timeline_grid_layer(
         .bottom_0()
         .left_0()
         .right(px(header_width))
-        .children(timeline_band_elements(bands, viewport))
-        .children(timeline_grid_elements(lines, viewport, scale))
+        .child(paint_timeline_grid_canvas(bands, lines, viewport, scale))
 }
 
 fn main_track_grid_layer(
@@ -1556,37 +1621,5 @@ fn main_track_grid_layer(
         .debug_selector(|| "main-track-grid".to_owned())
         .absolute()
         .inset_0()
-        .children(timeline_band_elements(bands, viewport))
-        .children(timeline_grid_elements(lines, viewport, scale))
-}
-
-fn timeline_band_elements(
-    bands: &[super::musical_time::GridBand],
-    viewport: super::viewport::Viewport,
-) -> Vec<Div> {
-    if viewport.length == 0 {
-        return Vec::new();
-    }
-    bands
-        .iter()
-        .filter_map(|band| {
-            let start = band.start_frame.max(viewport.start);
-            let end = band.end_frame.min(viewport.end()?);
-            if start >= end {
-                return None;
-            }
-            let left = (start - viewport.start) as f64 / viewport.length as f64;
-            let width = (end - start) as f64 / viewport.length as f64;
-            Some(
-                div()
-                    .debug_selector(|| format!("arrangement-grid-band-{}", band.start_frame))
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left(relative(left as f32))
-                    .w(relative(width as f32))
-                    .bg(rgb(theme::time_grid_band_color(band.alternate))),
-            )
-        })
-        .collect()
+        .child(paint_timeline_grid_canvas(bands, lines, viewport, scale))
 }

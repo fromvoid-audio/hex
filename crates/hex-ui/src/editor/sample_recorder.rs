@@ -58,6 +58,12 @@ pub(super) struct Recorder {
     error: Option<String>,
 }
 
+impl Recorder {
+    pub(super) fn is_armed(&self, generation: u64, arm: Arm) -> bool {
+        self.generation == Some(generation) && self.armed.contains(&arm)
+    }
+}
+
 struct Job {
     result: Receiver<Result<sample_recording::Takes, String>>,
     names: Vec<(Source, String)>,

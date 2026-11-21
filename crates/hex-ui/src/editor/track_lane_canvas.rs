@@ -93,9 +93,9 @@ struct WideClipPlan {
     id: ClipId,
     is_midi: bool,
     index: usize,
-    #[cfg(any(test, feature = "ui-test-support"))]
+    #[cfg(feature = "ui-test-support")]
     clip_start: u64,
-    #[cfg(any(test, feature = "ui-test-support"))]
+    #[cfg(feature = "ui-test-support")]
     clip_end: u64,
     visible_start: u64,
     visible_end: u64,
@@ -424,7 +424,7 @@ fn paint_alias_badge(
             Default::default(),
         ));
     }
-    #[cfg(any(test, feature = "ui-test-support"))]
+    #[cfg(feature = "ui-test-support")]
     window.record_debug_bounds(
         format!("clip-alias-{}", clip_id.value()),
         Bounds::new(point(badge_left, badge_top), size(px(10.0), px(9.0))),
@@ -491,17 +491,17 @@ impl TrackLaneCanvas {
             .hovered_arrangement_clip
             .filter(|h| h.generation == view.project_generation && h.track == self.track_id)
             .map(|h| h.clip);
-        #[cfg(any(test, feature = "ui-test-support"))]
+        #[cfg(feature = "ui-test-support")]
         let drag_available = view.drag_available();
-        #[cfg(any(test, feature = "ui-test-support"))]
+        #[cfg(feature = "ui-test-support")]
         let trim_admitted = trim::drag_admitted(view);
-        #[cfg(any(test, feature = "ui-test-support"))]
+        #[cfg(feature = "ui-test-support")]
         let header_hit_height = super::time_selection::header_hit_height(lane_height);
-        #[cfg(any(test, feature = "ui-test-support"))]
+        #[cfg(feature = "ui-test-support")]
         let edge_trim_h = trim::edge_trim_height(lane_height);
-        #[cfg(any(test, feature = "ui-test-support"))]
+        #[cfg(feature = "ui-test-support")]
         let fade_key_held = view.fade_key_held;
-        #[cfg(any(test, feature = "ui-test-support"))]
+        #[cfg(feature = "ui-test-support")]
         let time_selection_key_held = view.time_selection_key_held;
         let rem_size = f32::from(window.rem_size());
         let font_size = px(rem_size * 0.75);
@@ -646,7 +646,7 @@ impl TrackLaneCanvas {
                             narrow_fades.push((idx, clip_bounds, vis_start, vis_end, active));
                         }
                     }
-                    #[cfg(any(test, feature = "ui-test-support"))]
+                    #[cfg(feature = "ui-test-support")]
                     {
                         record_narrow_clip_debug_bounds(
                             window,
@@ -706,9 +706,9 @@ impl TrackLaneCanvas {
                     id: entry.id,
                     is_midi,
                     index: idx,
-                    #[cfg(any(test, feature = "ui-test-support"))]
+                    #[cfg(feature = "ui-test-support")]
                     clip_start: entry.start,
-                    #[cfg(any(test, feature = "ui-test-support"))]
+                    #[cfg(feature = "ui-test-support")]
                     clip_end: entry.end,
                     visible_start: vis_start,
                     visible_end: vis_end,
@@ -731,7 +731,7 @@ impl TrackLaneCanvas {
         }
 
         // Record narrow-clip-bars debug selector when narrow bars exist.
-        #[cfg(any(test, feature = "ui-test-support"))]
+        #[cfg(feature = "ui-test-support")]
         if !narrow_spans.is_empty() {
             window.record_debug_bounds(
                 format!("narrow-clip-bars-{}", self.track_id.value()),
@@ -884,13 +884,13 @@ impl TrackLaneCanvas {
                         if body_h > px(0.0) && span > 0 {
                             let first_line =
                                 self.grid.partition_point(|l| l.frame <= clip.visible_start);
-                            #[cfg(any(test, feature = "ui-test-support"))]
+                            #[cfg(feature = "ui-test-support")]
                             let mut any_line = false;
                             for line in &self.grid[first_line..] {
                                 if line.frame >= clip.visible_end {
                                     break;
                                 }
-                                #[cfg(any(test, feature = "ui-test-support"))]
+                                #[cfg(feature = "ui-test-support")]
                                 {
                                     any_line = true;
                                 }
@@ -917,13 +917,13 @@ impl TrackLaneCanvas {
                                     grid_color.opacity(alpha)
                                 };
                                 window.paint_quad(fill(rect, color));
-                                #[cfg(any(test, feature = "ui-test-support"))]
+                                #[cfg(feature = "ui-test-support")]
                                 window.record_debug_bounds(
                                     format!("clip-grid-line-{}", line.frame),
                                     rect,
                                 );
                             }
-                            #[cfg(any(test, feature = "ui-test-support"))]
+                            #[cfg(feature = "ui-test-support")]
                             if any_line {
                                 let grid_bounds = Bounds::new(
                                     point(clip.bounds.left(), body_top),
@@ -1018,7 +1018,7 @@ impl TrackLaneCanvas {
                         };
                         missing_labels.push((label, body_bounds));
                     }
-                    #[cfg(any(test, feature = "ui-test-support"))]
+                    #[cfg(feature = "ui-test-support")]
                     window.record_debug_bounds("clip-waveform-body", body_bounds);
                 }
                 // Non-raised fade overlay.
@@ -1048,7 +1048,7 @@ impl TrackLaneCanvas {
                     };
                     if samples.len() >= 2 {
                         paint_fade_overlay(clip.bounds, &samples, false, clip.active, window);
-                        #[cfg(any(test, feature = "ui-test-support"))]
+                        #[cfg(feature = "ui-test-support")]
                         {
                             let shade_bounds = Bounds::new(
                                 point(
@@ -1161,7 +1161,7 @@ impl TrackLaneCanvas {
                             },
                         );
                     }
-                    #[cfg(any(test, feature = "ui-test-support"))]
+                    #[cfg(feature = "ui-test-support")]
                     {
                         window.record_debug_bounds("clip-waveform-body", body_bounds);
                         if !visible_notes.intervals.is_empty() || visible_notes.tiles.is_some() {
@@ -1195,7 +1195,7 @@ impl TrackLaneCanvas {
             };
             if samples.len() >= 2 {
                 paint_fade_overlay(clip_bounds, &samples, false, active, window);
-                #[cfg(any(test, feature = "ui-test-support"))]
+                #[cfg(feature = "ui-test-support")]
                 {
                     let shade_bounds = Bounds::new(
                         point(
@@ -1216,7 +1216,7 @@ impl TrackLaneCanvas {
             }
         }
         // Record loop handle debug bounds for wide clips while `view` is still in scope.
-        #[cfg(any(test, feature = "ui-test-support"))]
+        #[cfg(feature = "ui-test-support")]
         if drag_available && trim_admitted {
             let lane_bounds = super::drag::LaneBounds {
                 left: f32::from(bounds.left()),
@@ -1357,7 +1357,7 @@ impl TrackLaneCanvas {
                             cx,
                         );
                     }
-                    #[cfg(any(test, feature = "ui-test-support"))]
+                    #[cfg(feature = "ui-test-support")]
                     window.record_debug_bounds(
                         format!("clip-name-label-{}", clip.id.value()),
                         text_bounds,
@@ -1386,7 +1386,7 @@ impl TrackLaneCanvas {
                             outline_color,
                             window,
                         );
-                        #[cfg(any(test, feature = "ui-test-support"))]
+                        #[cfg(feature = "ui-test-support")]
                         {
                             let edge = Bounds::new(
                                 point(clip.bounds.right(), clip.bounds.top()),
@@ -1411,7 +1411,7 @@ impl TrackLaneCanvas {
         }
 
         // Record test-support debug bounds for wide clips (compiled out in release!).
-        #[cfg(any(test, feature = "ui-test-support"))]
+        #[cfg(feature = "ui-test-support")]
         for clip in &wide_clips {
             let visual_sel = if clip.is_midi {
                 format!("midi-clip-visual-{}", clip.id.value())
@@ -1524,7 +1524,7 @@ impl TrackLaneCanvas {
     }
 }
 
-#[cfg(any(test, feature = "ui-test-support"))]
+#[cfg(feature = "ui-test-support")]
 fn record_narrow_clip_debug_bounds(
     window: &mut Window,
     clip_id: ClipId,

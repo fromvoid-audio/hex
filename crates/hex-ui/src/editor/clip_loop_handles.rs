@@ -440,7 +440,7 @@ fn paint_markers(
         let rect = gpui::Bounds::new(gpui::point(x, marker_top), gpui::size(width, marker_height));
         let alpha = (if primary { 0.85 } else { 0.3 }) * detail_opacity;
         window.paint_quad(gpui::fill(rect, base_color.opacity(alpha)));
-        #[cfg(any(test, feature = "ui-test-support"))]
+        #[cfg(feature = "ui-test-support")]
         window.record_debug_bounds(format!("clip-repeat-marker-{index}"), rect);
     }
 }
