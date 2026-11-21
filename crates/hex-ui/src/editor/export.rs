@@ -1,7 +1,13 @@
 //! Native export admission and completion display; never applies canonical state.
 use super::EditorView;
-use gpui::{AnyWindowHandle, AppContext, Context, PromptButton, PromptLevel, Window};
-use hex_session::service::{ExportControl, ExportFormat, ExportSignal, Request, Stem};
+use crate::theme::{self, PaletteRole};
+use gpui::{
+    AnyWindowHandle, AppContext, Context, Div, PromptButton, PromptLevel, Stateful, Window, div,
+    prelude::*, px, relative, rgb,
+};
+use hex_session::service::{
+    ExportControl, ExportFormat, ExportProgress, ExportSignal, Request, Stem,
+};
 use std::{path::PathBuf, sync::mpsc::TryRecvError};
 
 impl EditorView {
@@ -21,15 +27,7 @@ impl EditorView {
 
     pub(super) fn export_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.export_pending {
-            if let Some(control) = &self.export_control {
-                self.status = if control.cancel() {
-                    "cancelling export"
-                } else {
-                    "export publication already started"
-                }
-                .into();
-                cx.notify();
-            }
+            self.cancel_export(cx);
             return;
         }
         if !super::device_panel::finalize_controls(self, cx) {
@@ -246,6 +244,7 @@ impl EditorView {
                     }) {
                         view.export_pending = true;
                         view.export_control = Some(control);
+                        view.export_progress = None;
                         view.export_window = Some(handle);
                         view.status = "export requested".into();
                         view.error = None;
@@ -257,29 +256,100 @@ impl EditorView {
         .detach();
     }
 
-    pub(super) fn poll_export(&mut self, cx: &mut Context<Self>) -> bool {
-        let mut changed = false;
+    fn cancel_export(&mut self, cx: &mut Context<Self>) {
         if self.export_pending
             && let Some(control) = &self.export_control
         {
-            let progress = control.progress();
-            let status = format!(
-                "{} {} / {} frames · click export to cancel",
-                if control.is_cancelled() {
-                    "cancelling export"
-                } else {
-                    "export"
-                },
-                progress.processed_frames,
-                progress.total_frames
-            );
-            changed = self.status != status;
-            self.status = status;
+            self.status = if control.cancel() {
+                "cancelling export"
+            } else {
+                "export publication already started"
+            }
+            .into();
+            cx.notify();
         }
+    }
+
+    pub(super) fn export_progress_indicator(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<Stateful<Div>> {
+        let control = self
+            .export_control
+            .as_ref()
+            .filter(|_| self.export_pending)?;
+        let cancelled = control.is_cancelled();
+        let progress = self
+            .export_progress
+            .filter(|progress| progress.total_frames != 0);
+        let label = match (cancelled, progress) {
+            (true, _) => "cancelling export",
+            (false, None) => "preparing export",
+            (false, Some(progress)) if progress.processed_frames >= progress.total_frames => {
+                "finishing export"
+            }
+            (false, Some(_)) => "exporting",
+        };
+        let fraction = progress.map(|progress| {
+            (progress.processed_frames.min(progress.total_frames) as f64
+                / progress.total_frames as f64) as f32
+        });
+        Some(
+            div()
+                .id("export-status-progress")
+                .debug_selector(|| "export-status-progress".into())
+                .flex_1()
+                .min_w(px(88.0))
+                .flex()
+                .items_center()
+                .gap_2()
+                .text_color(rgb(theme::color(PaletteRole::Muted)))
+                .child(
+                    div()
+                        .debug_selector(|| "export-progress-track".into())
+                        .w(px(96.0))
+                        .min_w(px(24.0))
+                        .h(px(4.0))
+                        .overflow_hidden()
+                        .bg(rgb(theme::color(PaletteRole::Border)))
+                        .children(fraction.map(|fraction| {
+                            div()
+                                .debug_selector(|| "export-progress-fill".into())
+                                .w(relative(fraction))
+                                .h_full()
+                                .bg(rgb(theme::color(PaletteRole::Primary)))
+                        })),
+                )
+                .child(div().min_w(px(0.0)).truncate().child(theme::text(label)))
+                .when(!cancelled, |indicator| {
+                    indicator.child(
+                        div()
+                            .id("cancel-export")
+                            .debug_selector(|| "cancel-export".into())
+                            .flex_shrink_0()
+                            .px_1()
+                            .cursor_pointer()
+                            .text_color(rgb(theme::color(PaletteRole::Primary)))
+                            .child(theme::text("cancel"))
+                            .on_click(cx.listener(|view, _, _, cx| view.cancel_export(cx))),
+                    )
+                }),
+        )
+    }
+
+    pub(super) fn poll_export(&mut self, cx: &mut Context<Self>) -> bool {
+        let progress = self
+            .export_control
+            .as_ref()
+            .filter(|_| self.export_pending)
+            .map(ExportControl::progress);
+        let changed = self.export_progress != progress;
+        self.export_progress = progress;
         match self.service.try_export_event() {
             Ok(event) => {
                 self.export_pending = false;
                 self.export_control = None;
+                self.export_progress = None;
                 // Native message bodies preserve case-sensitive recovery paths;
                 // status chrome and the prompt normalize app text through theme::text.
                 let recovery_message = match &event.result {
@@ -326,6 +396,7 @@ impl EditorView {
             Err(TryRecvError::Disconnected) if self.export_pending => {
                 self.export_pending = false;
                 self.export_control = None;
+                self.export_progress = None;
                 self.export_window = None;
                 self.error = Some("export worker stopped".into());
                 true
@@ -409,7 +480,7 @@ mod status_tests {
 mod tests {
     use super::super::clip_drag_ui_test;
     use super::*;
-    use gpui::TestAppContext;
+    use gpui::{Modifiers, TestAppContext, VisualTestContext, size};
 
     #[gpui::test]
     fn export_dialog_cancel_reopen_starts_in_user_folder_and_native_save_needs_no_second_consent(
@@ -488,5 +559,60 @@ mod tests {
         assert!(control.is_cancelled());
         assert!(!cx.has_pending_prompt());
         assert!(!editor.read_with(cx, |view, _| view.export_dialog_open));
+    }
+
+    #[gpui::test]
+    fn export_status_bar_draws_progress_and_its_cancel_button_targets_the_active_job(
+        cx: &mut TestAppContext,
+    ) {
+        let (project, _, _, _) = clip_drag_ui_test::midi_project();
+        let (handle, editor) =
+            clip_drag_ui_test::editor_window(cx, project, std::sync::Arc::default());
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(960.0), px(600.0)));
+        let control = ExportControl::default();
+        editor.update(cx, |view, cx| {
+            view.export_pending = true;
+            view.export_control = Some(control.clone());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("export-progress-track").is_some());
+        assert!(visual.debug_bounds("export-progress-fill").is_none());
+
+        for (processed_frames, fraction) in [(25, 0.25), (75, 0.75), (125, 1.0)] {
+            editor.update(cx, |view, cx| {
+                view.export_progress = Some(ExportProgress {
+                    processed_frames,
+                    total_frames: 100,
+                });
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let track = visual.debug_bounds("export-progress-track").unwrap();
+            let fill = visual.debug_bounds("export-progress-fill").unwrap();
+            assert_eq!(fill.left(), track.left());
+            assert!(
+                (f32::from(fill.size.width) - f32::from(track.size.width) * fraction).abs() < 1.0
+            );
+        }
+        assert!(visual.debug_bounds("editor-status-message").is_none());
+        let cancel = visual.debug_bounds("cancel-export").unwrap();
+        let bar = visual.debug_bounds("editor-status-bar").unwrap();
+        assert!(cancel.right() <= bar.right());
+        visual.simulate_click(cancel.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(control.is_cancelled());
+        assert!(!cx.has_pending_prompt());
+        assert!(visual.debug_bounds("cancel-export").is_none());
+
+        editor.update(cx, |view, cx| {
+            view.export_pending = false;
+            assert!(view.poll_export(cx));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("export-status-progress").is_none());
+        assert!(visual.debug_bounds("editor-status-message").is_some());
     }
 }
