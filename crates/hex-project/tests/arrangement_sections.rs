@@ -2212,6 +2212,7 @@ fn repeatedly_duplicating_beat_aligned_audio_never_overlaps_at_rounded_section_f
     edit.placement_end_offset = 1;
     clips[1].edit = Some(edit);
     clips[1].duration = frame(1);
+    clips[1].fade = clips[0].fade;
     let mut legacy = Editor::new(Project::from_snapshot(legacy).unwrap(), 16).unwrap();
     legacy
         .execute(Command::DuplicateArrangementSection(section))
