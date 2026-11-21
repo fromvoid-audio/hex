@@ -1232,7 +1232,7 @@ pub(crate) type ScrollWheelListener =
 
 pub(crate) type ClickListener = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
-type DragListener = Box<
+pub(crate) type DragListener = Box<
     dyn FnOnce(
         &MouseDownEvent,
         Point<Pixels>,
@@ -1589,7 +1589,7 @@ pub struct Interactivity {
     pub(crate) drop_listeners: Vec<(TypeId, DropListener)>,
     pub(crate) can_drop_predicate: Option<CanDropPredicate>,
     pub(crate) click_listeners: Vec<ClickListener>,
-    drag_listener: Option<DragListener>,
+    pub(crate) drag_listener: Option<DragListener>,
     pub(crate) hover_listener: Option<Box<dyn Fn(&bool, &mut Window, &mut App)>>,
     pub(crate) tooltip_builder: Option<TooltipBuilder>,
     pub(crate) window_control: Option<WindowControlArea>,

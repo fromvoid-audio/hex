@@ -1258,7 +1258,7 @@ diff --git a/src/elements/div.rs b/src/elements/div.rs
 @@ -1197,2 +1235,8 @@
 -pub(crate) type DragListener =
 -    Box<dyn Fn(&dyn Any, Point<Pixels>, &mut Window, &mut App) -> AnyView + 'static>;
-+type DragListener = Box<
++pub(crate) type DragListener = Box<
 +    dyn FnOnce(
 +        &MouseDownEvent,
 +        Point<Pixels>,
@@ -1300,7 +1300,7 @@ diff --git a/src/elements/div.rs b/src/elements/div.rs
 +                }
 @@ -1520 +1592 @@
 -    pub(crate) drag_listener: Option<(Arc<dyn Any>, DragListener)>,
-+    drag_listener: Option<DragListener>,
++    pub(crate) drag_listener: Option<DragListener>,
 @@ -1789,0 +1862,20 @@
 +        if self.hover_style.is_some()
 +            || self.group_hover_style.is_some()
