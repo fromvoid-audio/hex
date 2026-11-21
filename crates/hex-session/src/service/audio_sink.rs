@@ -235,8 +235,8 @@ impl<'a> ResidentEffectPreparation<'a> {
         let device = self.sole_played_main().filter(|device| device.bypassed())?;
         Some((device.id().value(), device.state()))
     }
-    /// The sole retained authored Return Off. This declaration grants no
-    /// preparation or installation authority without the exact applied marker.
+    /// The sole hosted Return authored Off on a playback route. This
+    /// declaration grants no preparation or installation authority.
     pub fn powered_off_return(
         &self,
     ) -> Option<(hex_engine::ProcessorChainOwner, u64, &'a NativeDeviceState)> {
