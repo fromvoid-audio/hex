@@ -100,7 +100,7 @@ pub use audio_sink::{
     ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata, ResidentFilePitch,
     ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
     ResidentFreshRuntimeFence, ResidentGraphSubmission, ResidentHostedInstrumentMove,
-    ResidentMainPowerOn, ResidentMainPowerOnInterval, ResidentPublicationAcceptance,
+    ResidentPowerOn, ResidentPowerOnInterval, ResidentPublicationAcceptance,
     ResidentPublicationFailure, ResidentPublicationInputs, ResidentPublicationMetadata,
     ResidentPublicationPolicy, ResidentPublicationReadiness, ResidentPublicationRefusal,
     ResidentRunningPowerOff, ResidentRuntimeLoop, ResidentSourceOrigin, ResidentTempoEdit,
@@ -7738,7 +7738,7 @@ fn run_worker(
                                     sink,
                                 )
                                 .is_some()
-                                || resident_audio::device_insert::stopped_hosted_power_fence(
+                                || resident_audio::device_insert::stopped_hosted_power(
                                     session.project(),
                                     &command,
                                     hex_engine::AudioSourceContext {

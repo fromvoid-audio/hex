@@ -321,7 +321,7 @@ fn saved_off_resident_return_reopens_without_a_worker_and_preserves_authored_sta
 
 struct SavedOffHostedReturn {
     harness: ResidentHarness,
-    _files: Files,
+    files: Files,
     saved_off: Event,
     device: DeviceId,
     retired_binding: EffectBinding,
@@ -470,7 +470,7 @@ fn reopen_saved_off_return() -> SavedOffHostedReturn {
     assert_no_worker(&reopened);
     SavedOffHostedReturn {
         harness: reopened,
-        _files: files,
+        files,
         saved_off,
         device,
         retired_binding,
@@ -495,6 +495,44 @@ fn saved_off_resident_return_installs_a_fresh_worker_on_stopped_power_on() {
     };
     let mut expected = hex_project::Editor::new(current.project.as_ref().clone(), 8).unwrap();
     expected.execute(command.clone()).unwrap();
+
+    let catalog = off.files.0.join("plugin-catalog.json");
+    let parked = off.files.0.join("parked-catalog.json");
+    fs::rename(&catalog, &parked).unwrap();
+    h.service.submit(Request::Edit(command.clone())).unwrap();
+    let unavailable = state::edits::ordinary_terminal(h);
+    assert!(unavailable.error.is_some());
+    assert_original(&unavailable, current);
+    assert_eq!(status(h).recording_source(), Some(predecessor));
+    assert_eq!(h.plugin_records.load(Acquire), 0);
+    fs::rename(&parked, &catalog).unwrap();
+
+    h.service.submit(Request::Edit(command.clone())).unwrap();
+    let interrupted = queued_without_callback(h, current, predecessor);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let refused = terminal_at_cut(h, current, |h| assert_aligned_bypass(h, 0));
+    assert_original(&refused, current);
+    assert_eq!(
+        status(h).rejected_revision(),
+        Some((
+            interrupted.audio_revision,
+            hex_engine::playback::PlaybackHandoffRejection::RuntimeFenceChanged
+        ))
+    );
+    assert_eq!(status(h).recording_source(), Some(predecessor));
+    h.audio.as_ref().unwrap().control.stop();
+    render(h);
+    wait(|| {
+        h.pump();
+        render(h);
+        h.plugin_records.load(Acquire) == 0
+    });
+
     h.service.submit(Request::Edit(command)).unwrap();
     let submitted = queued_without_callback(h, current, predecessor);
     assert_eq!(status(h).recording_source(), Some(predecessor));
