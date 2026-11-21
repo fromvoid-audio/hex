@@ -1389,7 +1389,22 @@ impl Session {
         {
             Some((
                 edge,
-                sink.stopped_resident_return_history_fence(context, return_track, device.value()),
+                sink.stopped_resident_effect_history_fence(
+                    context,
+                    hex_engine::ProcessorChainOwner::Return(return_track.value()),
+                    device.value(),
+                ),
+            ))
+        } else if let Some((edge, track, device)) =
+            hosted_replacement_history::stage_enabled_track_replacement(&mut self.editor, redo)?
+        {
+            Some((
+                edge,
+                sink.stopped_resident_effect_history_fence(
+                    context,
+                    hex_engine::ProcessorChainOwner::Track(track.value()),
+                    device.value(),
+                ),
             ))
         } else {
             None

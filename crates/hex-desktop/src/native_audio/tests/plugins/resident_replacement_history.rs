@@ -1,4 +1,4 @@
-//! Signed Resident bus effect replacement history at the real paused callback.
+//! Signed Resident effect replacement history at the real paused callback.
 use super::*;
 use hex_audio::plugin_effects::EffectBinding;
 use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
@@ -6,27 +6,26 @@ use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn stopped_resident_main_vst3_replacement_undo_waits_for_its_exact_receipt() {
-    let _native = native_fixture();
-    let files = Files::new();
-    let (mut h, original, installed, original_binding, destination) =
-        installed_replacement(&files, HistoryEffectBus::Main);
-    assert_stopped_history(
-        &mut h,
-        &installed,
-        &original,
-        original_binding,
-        destination,
-        Request::Undo,
-    );
+    assert_stopped_undo(ReplacementOwner::Main);
 }
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn stopped_resident_return_vst3_replacement_undo_waits_for_its_exact_receipt() {
+    assert_stopped_undo(ReplacementOwner::Return);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn stopped_resident_track_vst3_replacement_undo_waits_for_its_exact_receipt() {
+    assert_stopped_undo(ReplacementOwner::Track);
+}
+
+fn assert_stopped_undo(owner: ReplacementOwner) {
     let _native = native_fixture();
     let files = Files::new();
     let (mut h, original, installed, original_binding, destination) =
-        installed_replacement(&files, HistoryEffectBus::Return);
+        installed_replacement(&files, owner);
     assert_stopped_history(
         &mut h,
         &installed,
@@ -40,16 +39,22 @@ fn stopped_resident_return_vst3_replacement_undo_waits_for_its_exact_receipt() {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn stopped_resident_main_vst3_replacement_redo_waits_for_its_exact_receipt() {
-    assert_stopped_redo(HistoryEffectBus::Main);
+    assert_stopped_redo(ReplacementOwner::Main);
 }
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn stopped_resident_return_vst3_replacement_redo_waits_for_its_exact_receipt() {
-    assert_stopped_redo(HistoryEffectBus::Return);
+    assert_stopped_redo(ReplacementOwner::Return);
 }
 
-fn assert_stopped_redo(bus: HistoryEffectBus) {
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn stopped_resident_track_vst3_replacement_redo_waits_for_its_exact_receipt() {
+    assert_stopped_redo(ReplacementOwner::Track);
+}
+
+fn assert_stopped_redo(bus: ReplacementOwner) {
     let _native = native_fixture();
     let files = Files::new();
     let (mut h, original, installed, original_binding, destination) =
@@ -76,16 +81,22 @@ fn assert_stopped_redo(bus: HistoryEffectBus) {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn rolling_resident_main_vst3_replacement_undo_preserves_the_predecessor() {
-    assert_rolling_refusal(HistoryEffectBus::Main);
+    assert_rolling_refusal(ReplacementOwner::Main);
 }
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn rolling_resident_return_vst3_replacement_undo_preserves_the_predecessor() {
-    assert_rolling_refusal(HistoryEffectBus::Return);
+    assert_rolling_refusal(ReplacementOwner::Return);
 }
 
-fn assert_rolling_refusal(bus: HistoryEffectBus) {
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn rolling_resident_track_vst3_replacement_undo_preserves_the_predecessor() {
+    assert_rolling_refusal(ReplacementOwner::Track);
+}
+
+fn assert_rolling_refusal(bus: ReplacementOwner) {
     let _native = native_fixture();
     let files = Files::new();
     let (mut h, _, installed, _, destination) = installed_replacement(&files, bus);
@@ -132,9 +143,15 @@ fn assert_rolling_refusal(bus: HistoryEffectBus) {
     }
 }
 
+enum ReplacementOwner {
+    Main,
+    Return,
+    Track,
+}
+
 fn installed_replacement(
     files: &Files,
-    bus: HistoryEffectBus,
+    bus: ReplacementOwner,
 ) -> (
     ResidentHarness,
     Event,
@@ -157,8 +174,16 @@ fn installed_replacement(
     let imported = h.run(Request::Import(files.wav(48_000, 8192)));
     let (mut applied, _) = h.applied(applied);
     let (document, destination) = match bus {
-        HistoryEffectBus::Main => (imported.state, PluginEffectDestination::Main),
-        HistoryEffectBus::Return => {
+        ReplacementOwner::Main => (imported.state, PluginEffectDestination::Main),
+        ReplacementOwner::Track => {
+            let [track] = imported.state.project.tracks() else {
+                panic!("direct audio track");
+            };
+            assert!(!track.is_group() && track.parent_group().is_none());
+            let destination = PluginEffectDestination::Track(track.id());
+            (imported.state, destination)
+        }
+        ReplacementOwner::Return => {
             let track = imported.state.project.tracks()[0].id();
             let added = h.run(Request::Edit(Command::AddReturnTrack {
                 name: "replacement return".into(),
@@ -203,7 +228,11 @@ fn installed_replacement(
                 replacing: old.id(),
             }
         }
-        _ => panic!("resident bus effect"),
+        PluginEffectDestination::Track(track) => PluginEffectDestination::ReplaceTrackEffect {
+            track,
+            replacing: old.id(),
+        },
+        _ => panic!("resident effect"),
     };
     let old_binding = binding(&h).unwrap().1;
 
@@ -386,7 +415,8 @@ fn occupied_effect(event: &Event, destination: PluginEffectDestination) -> &hex_
             .find(|bus| bus.id() == return_track)
             .unwrap()
             .devices(),
-        _ => panic!("resident bus effect"),
+        PluginEffectDestination::Track(track) => project.track(track).unwrap().devices(),
+        _ => panic!("resident effect"),
     };
     let [effect] = effects else {
         panic!("exact occupied slot");
