@@ -2,21 +2,12 @@
 use super::*;
 use hex_engine::NativeDeviceClass;
 use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
-use hex_lattice_contract::ParameterId;
+use hex_lattice_contract::{NativeDeviceState, ParameterId};
 use hex_project::{BeatTime, TrackDeviceSlot};
 use std::sync::atomic::AtomicBool;
 
 #[test]
 fn removing_a_held_vector_fades_its_original_pcm_and_keeps_the_bed() {
-    const REQUEST: usize = 512;
-    const FADE: usize = 240;
-    const BED: Frame = [0.125, -0.0625];
-    let (mut editor, _, _) = resident_input(vec![BED; 2048]);
-    let asset = editor.project().assets().next().unwrap().id();
-    let media = BTreeMap::from([(
-        asset,
-        hex_engine::Audio::new(RATE, vec![BED; 2048]).unwrap(),
-    )]);
     let class = NativeDeviceClass::Instrument;
     let state = hex_engine::default_native_device_state_for_class(
         class,
@@ -30,9 +21,32 @@ fn removing_a_held_vector_fades_its_original_pcm_and_keeps_the_bed() {
         ParameterValue::Bool(true),
     )
     .unwrap();
+    assert_held_instrument_removal(state);
+}
+
+#[test]
+fn removing_a_held_fm4_fades_its_original_pcm_and_keeps_the_bed() {
+    let state = hex_engine::default_native_device_state_for_class(
+        NativeDeviceClass::Instrument,
+        hex_devices::fm4::device::FM4_TYPE_ID,
+    )
+    .unwrap();
+    assert_held_instrument_removal(state);
+}
+
+fn assert_held_instrument_removal(state: NativeDeviceState) {
+    const REQUEST: usize = 512;
+    const FADE: usize = 240;
+    const BED: Frame = [0.125, -0.0625];
+    let (mut editor, _, _) = resident_input(vec![BED; 2048]);
+    let asset = editor.project().assets().next().unwrap().id();
+    let media = BTreeMap::from([(
+        asset,
+        hex_engine::Audio::new(RATE, vec![BED; 2048]).unwrap(),
+    )]);
     let Created::Track(track) = editor
         .execute(Command::InsertTrackWithDevice {
-            name: "vector".into(),
+            name: "held instrument".into(),
             before_track: None,
             slot: TrackDeviceSlot::Instrument,
             state,
