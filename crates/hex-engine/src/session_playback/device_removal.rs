@@ -142,7 +142,10 @@ enum RemovalTransition {
     Route(usize),
     Instrument(usize),
     Move(StagedTrackMove),
-    Return(ReturnId),
+    Return {
+        id: ReturnId,
+        pass_latency: Option<u32>,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -192,7 +195,7 @@ impl PendingNativeRemoval {
             | RemovalTransition::Route(_)
             | RemovalTransition::Instrument(_)
             | RemovalTransition::Move(_)
-            | RemovalTransition::Return(_) => None,
+            | RemovalTransition::Return { .. } => None,
         }
     }
 
@@ -217,7 +220,14 @@ impl PendingNativeRemoval {
 
     pub(super) fn faded_return(self) -> Option<ReturnId> {
         match self.transition {
-            RemovalTransition::Return(id) => Some(id),
+            RemovalTransition::Return { id, .. } => Some(id),
+            _ => None,
+        }
+    }
+
+    pub(super) fn return_pass_latency(self) -> Option<u32> {
+        match self.transition {
+            RemovalTransition::Return { pass_latency, .. } => pass_latency,
             _ => None,
         }
     }
@@ -286,7 +296,7 @@ impl PendingNativeRemoval {
             | RemovalTransition::Route(_)
             | RemovalTransition::Instrument(_)
             | RemovalTransition::Move(_)
-            | RemovalTransition::Return(_) => None,
+            | RemovalTransition::Return { .. } => None,
         }
     }
 
@@ -301,7 +311,7 @@ impl PendingNativeRemoval {
             RemovalTransition::Device(transition) | RemovalTransition::MainPass(transition) => {
                 previous.native_removal_ready(transition)
             }
-            RemovalTransition::Return(id) => previous
+            RemovalTransition::Return { id, .. } => previous
                 .return_fade
                 .is_some_and(|fade| fade.id == id && fade.fader.removal_ready()),
             RemovalTransition::Track(index)
@@ -413,11 +423,21 @@ impl SessionPlayback {
                 })
                 .or_else(|| {
                     self.flat_return_removal_from(previous)
-                        .map(RemovalTransition::Return)
+                        .map(|id| RemovalTransition::Return {
+                            id,
+                            pass_latency: None,
+                        })
                 })
         } else {
             self.short_main_pass_removal_from(previous)
                 .map(RemovalTransition::MainPass)
+                .or_else(|| {
+                    self.short_hosted_return_pass_from(previous)
+                        .map(|(id, latency)| RemovalTransition::Return {
+                            id,
+                            pass_latency: Some(latency),
+                        })
+                })
         };
         let Some(transition) = transition else {
             return Ok(false);
@@ -463,7 +483,7 @@ impl SessionPlayback {
                         .native_removal_chain_mut(transition.identity().owner())
                         .is_some_and(|chain| chain.begin_native_removal(transition))
                 }
-                RemovalTransition::Return(id) => {
+                RemovalTransition::Return { id, .. } => {
                     let rate = previous.revision.arrangement().sample_rate();
                     let fade = previous.return_fade.get_or_insert_with(|| ReturnFade {
                         id,
@@ -561,7 +581,7 @@ impl SessionPlayback {
                         chain.cancel_native_removal(transition);
                     }
                 }
-                RemovalTransition::Return(id) => {
+                RemovalTransition::Return { id, .. } => {
                     if let Some(fade) = previous.return_fade.as_mut().filter(|fade| fade.id == id) {
                         fade.fader.cancel_removal(
                             [1.0; 2],

@@ -2058,6 +2058,24 @@ impl SignalRuntime {
             && self.delay_graph.history_compatible(&self.graph)
             && other.delay_graph.history_compatible(&other.graph)
     }
+
+    /// Snapshot only the committed Fader→Main PCM of an unshifted direct
+    /// track. The caller still proves which routings survive the graph cut.
+    pub(crate) fn committed_resident_main_alignment(
+        &self,
+        track: usize,
+        latency: u32,
+    ) -> Option<hex_lattice::MainPassDelay> {
+        if !Arc::ptr_eq(&self.graph, &self.delay_graph) {
+            return None;
+        }
+        let (edge, 0) = self.graph.resident_main_alignment(track)? else {
+            return None;
+        };
+        self.delays
+            .committed_main_pass_edge(*self.delay_graph.pre_main_edges.get(edge)?, latency)
+    }
+
     pub(crate) fn horizon(&self) -> u32 {
         self.delays.history_horizon()
     }
