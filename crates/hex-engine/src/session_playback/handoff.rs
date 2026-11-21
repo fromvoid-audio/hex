@@ -1522,7 +1522,7 @@ impl SessionPlayback {
             if !continuous_insert
                 || restart != Restart::None
                 || groups.is_some()
-                || demand.is_some()
+                || demand.as_ref().is_some_and(|demand| !demand.ordinary)
                 || self.native_removal.is_some()
             {
                 return Err(SessionPlaybackError::InvalidCommand);
