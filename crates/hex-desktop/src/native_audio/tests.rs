@@ -107,6 +107,7 @@ pub(super) struct Observation {
     pause_poll: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
     pause_keyboard_activation: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
     pause_resident_publication: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
+    pause_verified_effect_projection: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
     blocked: Option<AudioSourceContext>,
     fresh_before_input: Option<(EditorAudio, Arc<Mutex<Option<HeadlessBackend>>>)>,
     fresh_before_input_checked: bool,
@@ -311,6 +312,17 @@ impl WorkerAudioSink for ObservedSink {
         )
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<hex_engine::PreparedRevision, String> {
+        let pause = proposal.and_then(|_| {
+            self.observation
+                .lock()
+                .unwrap()
+                .pause_verified_effect_projection
+                .take()
+        });
+        if let Some((entered, release)) = pause {
+            entered.send(()).unwrap();
+            release.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
         self.inner
             .prepare_verified_effects(input, proposal, prepare)
     }

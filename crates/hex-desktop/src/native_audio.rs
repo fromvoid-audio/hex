@@ -2110,13 +2110,25 @@ impl WorkerAudioSink for NativeAudioSink {
                     return Err("verified vst3 preparation cancelled".into());
                 }
             }
-            match control.with_native_effect_definition(&bindings, |definition| {
+            let projected = control.with_native_effect_definition(&bindings, |definition| {
                 hex_engine::AudioCandidateEffects::with_host_definitions(
                     &[definition],
                     &mut *prepare,
                 )
                 .map_err(|error| error.to_string())
-            }) {
+            });
+            #[cfg(all(test, feature = "allocation-probe"))]
+            if let Some(observer) = &self.native_graph_busy_observer
+                && projected.as_ref().is_err_and(|error| {
+                    matches!(
+                        error.as_str(),
+                        "native effect preparation is busy" | "native effect selection is busy"
+                    )
+                })
+            {
+                let _ = observer.try_send(());
+            }
+            match projected {
                 Err(error)
                     if staged_cancellation.is_some()
                         && matches!(
