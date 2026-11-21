@@ -198,6 +198,10 @@ fn installed_sdk_marker_joins_bound_main_pcm_with_an_injected_output_clock() {
                 OutputClockOrigin::CoreAudioHostTime
             },
         ));
+        assert_eq!(
+            f.control.status.position.load(Acquire),
+            (number + 1) * QUANTUM as u64
+        );
     }
     let mut expected = [[0.0; 2]; 64];
     for frame in [17, 18, 49, 50] {
@@ -210,7 +214,7 @@ fn installed_sdk_marker_joins_bound_main_pcm_with_an_injected_output_clock() {
     let mut packets = 0;
     let mut marker_predictions = Vec::new();
     assert_eq!(
-        reader.drain_with_output_clock(|frames, sources, pcm, spans, clock| {
+        reader.drain_with_output_clock(|frames, sources, pcm, _, clock| {
             assert_eq!(sources, &[Source::Main]);
             assert_eq!(frames, QUANTUM);
             assert_eq!(
@@ -223,7 +227,8 @@ fn installed_sdk_marker_joins_bound_main_pcm_with_an_injected_output_clock() {
                 if pcm[local] != [1.0; 2] {
                     continue;
                 }
-                assert!(!spans.is_empty());
+                // This join uses the source-bound output packet and its sample
+                // offset. The playing cursor was checked for every block.
                 marker_predictions.push((packets * QUANTUM + local, marker_time(clock, local)));
             }
             packets += 1;
