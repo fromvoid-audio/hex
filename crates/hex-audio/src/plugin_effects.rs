@@ -29,7 +29,8 @@ mod definition;
 mod tail;
 mod transport;
 pub use definition::{
-    NativeEffectDefinition, PoweredOffEffect, RetainedInstrumentSource, UnavailableEffect,
+    NativeEffectDefinition, PoweredOffEffect, RetainedHostedSource, RetainedInstrumentSource,
+    RetainedTrackEffectSource, UnavailableEffect,
 };
 use transport::EffectTransport;
 mod hosting;

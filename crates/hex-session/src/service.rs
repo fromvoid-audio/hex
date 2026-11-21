@@ -100,11 +100,11 @@ pub use audio_sink::{
     ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata, ResidentFilePitch,
     ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
     ResidentFreshRuntimeFence, ResidentGraphSubmission, ResidentHostedInstrumentMove,
-    ResidentPowerOn, ResidentPowerOnInterval, ResidentPublicationAcceptance,
-    ResidentPublicationFailure, ResidentPublicationInputs, ResidentPublicationMetadata,
-    ResidentPublicationPolicy, ResidentPublicationReadiness, ResidentPublicationRefusal,
-    ResidentRunningPowerOff, ResidentRuntimeLoop, ResidentSourceOrigin, ResidentTempoEdit,
-    ResidentTempoEditOutcome, WorkerAudioSink,
+    ResidentHostedTrackEffectMove, ResidentPowerOn, ResidentPowerOnInterval,
+    ResidentPublicationAcceptance, ResidentPublicationFailure, ResidentPublicationInputs,
+    ResidentPublicationMetadata, ResidentPublicationPolicy, ResidentPublicationReadiness,
+    ResidentPublicationRefusal, ResidentRunningPowerOff, ResidentRuntimeLoop, ResidentSourceOrigin,
+    ResidentTempoEdit, ResidentTempoEditOutcome, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;

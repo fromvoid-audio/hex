@@ -1572,10 +1572,7 @@ fn compile_effect_devices(
             && (identity.device_id() != authored.device_id()
                 || !matches!(owner, hex_lattice::ProcessorChainOwner::Track(_))
                 || !matches!(identity.owner(), hex_lattice::ProcessorChainOwner::Track(_))
-                || device.parent().is_some()
-                || bypassed
-                || !device.automation().is_empty()
-                || !device.modulation().is_empty())
+                || device.parent().is_some())
         {
             return Err(Invalid(
                 "foreign effect route differs from its prepared source",
@@ -1648,9 +1645,7 @@ fn compile_effect_devices(
         // An explicitly admitted unavailable effect has no factory. Keep its
         // canonical lanes through document staging; the restored foreign
         // worker must still prove its exact metadata before any playback.
-        if let Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) =
-            processor.as_ref().filter(|_| !retained)
-        {
+        if let Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) = processor.as_ref() {
             if let Some(program) = crate::foreign_automation::candidate::prepare_device(
                 device,
                 identity,

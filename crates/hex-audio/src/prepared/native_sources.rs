@@ -1709,7 +1709,7 @@ impl PublicationControl {
         self.with_native_effect_definition(&[binding], |definition| {
             check_predecessor()?;
             let retained = definition
-                .including_retained_track_effect(receiver, original)
+                .including_retained_track_effect(predecessor, receiver, original)
                 .map_err(|error| error.to_string())?;
             let compiled = prepare(&retained)?;
             check_predecessor()?;

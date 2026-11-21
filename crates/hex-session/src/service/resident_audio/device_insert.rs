@@ -1260,7 +1260,7 @@ impl Session {
             preparing_edit: true,
             power_on: None,
             running_power_off: None,
-            hosted_instrument_move: None,
+            hosted_move: None,
         };
         let prepared = if input.requires_plugin_profile() {
             sink.prepare_verified_effects(input, attempt, &mut |effects| {
@@ -1613,8 +1613,21 @@ impl Session {
                 preparing_edit: plugin.is_none(),
                 power_on,
                 running_power_off,
-                hosted_instrument_move: hosted_instrument_move.and_then(|intent| {
-                    intent.preparation(self.project(), edit.project(), installed)
+                hosted_move: hosted_instrument_move.and_then(|intent| {
+                    use audio_sink::ResidentHostedMove;
+                    intent
+                        .preparation(self.project(), edit.project(), installed)
+                        .map(ResidentHostedMove::Instrument)
+                        .or_else(|| {
+                            if !matches!(&edit, StagedChange::Command(_))
+                                || !sink.resident_playing()
+                            {
+                                return None;
+                            }
+                            intent
+                                .track_effect_preparation(self.project(), edit.project(), installed)
+                                .map(ResidentHostedMove::TrackEffect)
+                        })
                 }),
                 device_insert_control: proposal_control,
                 ..self.resident_seek_inputs(admission, current, None)?
