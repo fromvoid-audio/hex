@@ -585,6 +585,8 @@ pub(super) struct ClipViewTimeline<'a> {
     pub(super) viewport: Viewport,
     pub(super) grid: &'a [super::musical_time::GridLine],
     pub(super) scale_factor: f32,
+    // Present only when the content owner has the lane resolved in this prepaint.
+    pub(super) caption_rem_size: Option<f32>,
 }
 
 impl EditorView {
@@ -608,6 +610,7 @@ impl EditorView {
             viewport,
             grid,
             scale_factor,
+            caption_rem_size,
         } = timeline;
         let track_id = track.id();
         let selected = self.selected_track() == Some(track_id);
@@ -687,6 +690,7 @@ impl EditorView {
                 viewport,
                 grid,
                 scale_factor,
+                caption_rem_size,
             },
             cx,
         );
@@ -2043,6 +2047,7 @@ impl EditorView {
             viewport,
             grid,
             scale_factor,
+            caption_rem_size,
         } = timeline;
         let Some(viewport_end) = viewport.end() else {
             return div().size_full();
@@ -2143,6 +2148,7 @@ impl EditorView {
                     viewport,
                     grid,
                     scale_factor,
+                    caption_rem_size,
                 },
                 &mut bars,
                 cx,
@@ -2412,6 +2418,9 @@ impl EditorView {
                     clip.name(),
                     header_fill,
                     notch.enabled(),
+                    caption_rem_size.is_some_and(|rem| {
+                        super::clip_name::notched_label_is_clipped(pixel_width, rem, scale_factor)
+                    }),
                     cx,
                 )
                 .into_any_element()
@@ -2850,6 +2859,7 @@ impl EditorView {
             viewport,
             grid,
             scale_factor,
+            caption_rem_size,
         } = timeline;
         let clip = self.fade_trim_preview(clip.id()).unwrap_or(clip);
         let clip_id = clip.id();
@@ -3066,6 +3076,9 @@ impl EditorView {
                 clip.name(),
                 header_fill,
                 notch.enabled(),
+                caption_rem_size.is_some_and(|rem| {
+                    super::clip_name::notched_label_is_clipped(clip_pixel_width, rem, scale_factor)
+                }),
                 cx,
             )
             .into_any_element()

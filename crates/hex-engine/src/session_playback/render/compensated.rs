@@ -1561,6 +1561,15 @@ impl SessionPlayback {
                     if let Some(matrix) = bus.matrix {
                         frame = matrix.apply(frame);
                     }
+                    if let Some(fade) = self
+                        .return_fade_scratch
+                        .as_mut()
+                        .filter(|fade| fade.id == bus.id)
+                    {
+                        let gain = fade.fader.next();
+                        frame[0] *= gain[0];
+                        frame[1] *= gain[1];
+                    }
                     frame = if bus.muted {
                         [0.0; 2]
                     } else {

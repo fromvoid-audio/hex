@@ -1514,6 +1514,10 @@ impl SessionPlayback {
         let main_pass_cut = self
             .native_removal
             .and_then(|pending| pending.main_pass_transition());
+        let return_pass_latency = self
+            .native_removal
+            .and_then(|pending| pending.return_pass_latency());
+        let keeps_pass_clock = main_pass_cut.is_some() || return_pass_latency.is_some();
         let tail_policy = if let Some(removal) = self.native_removal {
             if !continuous_insert || !removal.matches(previous) {
                 return Err(SessionPlaybackError::InvalidCommand);
@@ -1743,13 +1747,23 @@ impl SessionPlayback {
         if continuous_insert
             && (force_restart
                 || !mapped_main_clock
-                || (main_pass_cut.is_none()
+                || (!keeps_pass_clock
                     && self.revision.arrangement().main_latency_frames()
                         != previous.revision.arrangement().main_latency_frames()))
         {
             return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
         }
-        let main_pass_delay = if let Some(transition) = main_pass_cut {
+        let main_pass_delay = if let Some(latency) = return_pass_latency {
+            if demand.is_none() {
+                Some(
+                    previous
+                        .committed_return_main_pass(latency)
+                        .ok_or(SessionPlaybackError::DeviceRuntime)?,
+                )
+            } else {
+                None
+            }
+        } else if let Some(transition) = main_pass_cut {
             if demand.is_none() {
                 let settled = if let Some((_, frames)) = transition.foreign_main_pass() {
                     self.main_pass_delay
@@ -2079,7 +2093,7 @@ impl SessionPlayback {
                     })
             });
         let planned_transfer = match (&self.compensation, &previous.compensation) {
-            (None, Some(_)) if main_pass_cut.is_some() => Some(0),
+            (None, Some(_)) if keeps_pass_clock => Some(0),
             (Some(_), Some(_)) if group_route_track.is_some() => Some(GROUP_ROUTE_HISTORY_TRANSFER),
             (Some(_), Some(_)) if removed_send_clock => Some(3_u8),
             (Some(candidate), Some(old))
