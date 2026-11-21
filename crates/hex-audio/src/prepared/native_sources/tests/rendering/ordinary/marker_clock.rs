@@ -223,13 +223,12 @@ fn installed_sdk_marker_joins_bound_main_pcm_with_an_injected_output_clock() {
             );
             let clock = clock.unwrap();
             assert_eq!(clock.graph_latency_frames, Some(16));
-            for local in 0..frames {
-                if pcm[local] != [1.0; 2] {
-                    continue;
+            // This join uses the source-bound output packet and its sample
+            // offset. The playing cursor was checked for every block.
+            for (local, frame) in pcm[..frames].iter().enumerate() {
+                if *frame == [1.0; 2] {
+                    marker_predictions.push((packets * QUANTUM + local, marker_time(clock, local)));
                 }
-                // This join uses the source-bound output packet and its sample
-                // offset. The playing cursor was checked for every block.
-                marker_predictions.push((packets * QUANTUM + local, marker_time(clock, local)));
             }
             packets += 1;
         }),
