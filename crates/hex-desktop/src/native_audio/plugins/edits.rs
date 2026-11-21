@@ -56,6 +56,24 @@ impl Plugins {
         if sources.next().is_some() {
             return Err("original vst3 move worker is ambiguous".into());
         }
+        // The read mode also covers ordinary Resident polling. A read at
+        // the exact predecessor stays with the same physical worker. An
+        // observed latency restart or a recovery read from another source
+        // still needs to settle before the move.
+        if self.has_adopted_hosted_route(input.context())
+            || source.editor_open
+            || source.open_editor_group.is_some()
+            || source.edit_backlog
+            || source
+                .edit_recovery
+                .is_some_and(|read| read.recovery && read.source != predecessor)
+            || self
+                .latency_notice
+                .is_some_and(|(source, _)| source == predecessor)
+            || source.pending_touch.is_some()
+        {
+            return Err("running vst3 move requires one settled instrument route".into());
+        }
         RetainedInstrumentSource::for_track_move(
             predecessor,
             route.donor.value(),

@@ -2,12 +2,14 @@
 use super::*;
 use crate::Invalid;
 use hex_project::{BeatTime, Editor, Project};
+mod held_move_clock;
 
 const VST3: DeviceTypeId = DeviceTypeId::from_static("hex.vst3");
 
 struct InstrumentDefinition {
     identity: ProcessorInstanceIdentity,
     second: Option<ProcessorInstanceIdentity>,
+    retained_receiver: Option<ProcessorInstanceIdentity>,
     instrument_profile: bool,
     epoch: u64,
 }
@@ -58,6 +60,22 @@ impl NativeDeviceMetadata for InstrumentDefinition {
 }
 
 impl NativeDeviceDefinition for InstrumentDefinition {
+    fn retained_foreign_instrument_identity(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &DevicePreparationContext<'_>,
+    ) -> Result<ProcessorInstanceIdentity, DeviceContractError> {
+        if self.retained_receiver != Some(identity) {
+            return Ok(identity);
+        }
+        self.migrate_state(state)?;
+        if context.sample_rate != 48_000 {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
+        Ok(self.identity)
+    }
+
     fn prepare_matrix(
         &self,
         state: &NativeDeviceState,
@@ -78,7 +96,12 @@ impl NativeDeviceDefinition for InstrumentDefinition {
         {
             return Err(DeviceContractError::InvalidId);
         }
-        let facts = PreparedForeignProcessor::new(8, 3, 16)?.with_binding(
+        let (quantum, latency, bridge) = if self.retained_receiver.is_some() {
+            (256, 0, 512)
+        } else {
+            (8, 3, 16)
+        };
+        let facts = PreparedForeignProcessor::new(quantum, latency, bridge)?.with_binding(
             hex_lattice_contract::ForeignProcessorBinding {
                 root: 1,
                 instance: identity.device_id(),
@@ -187,6 +210,7 @@ fn prepare_instruments_with_media(
     let definition = InstrumentDefinition {
         identity,
         second,
+        retained_receiver: None,
         instrument_profile,
         epoch,
     };
@@ -315,10 +339,7 @@ fn staged_native_to_hosted_replacement_refuses_a_shared_predecessor() {
     assert!(matches!(
         candidate.foreign_arrangement.plan_handoff(
             &before.foreign_arrangement,
-            [
-                candidate.revision.arrangement().tracks(),
-                before.revision.arrangement().tracks(),
-            ],
+            [&candidate.revision, &before.revision],
             FrameContext {
                 performance: 64,
                 arrangement: 64,
@@ -330,6 +351,7 @@ fn staged_native_to_hosted_replacement_refuses_a_shared_predecessor() {
             None,
             true,
             crate::session_playback::foreign_arrangement::HeldInstrumentCut::Unsupported,
+            None,
             None,
             [None, None],
             None,
@@ -1904,6 +1926,7 @@ fn confirmed_hosted_main_append_keeps_the_original_instrument_gate() {
     let synth = InstrumentDefinition {
         identity: instrument,
         second: None,
+        retained_receiver: None,
         instrument_profile: true,
         epoch: 1,
     };
@@ -2118,6 +2141,7 @@ fn moving_a_wrapped_loop_keeps_foreign_gates_through_live_effect_edits() {
         let synth = InstrumentDefinition {
             identity: instrument,
             second: None,
+            retained_receiver: None,
             instrument_profile: true,
             epoch: 1,
         };
@@ -2499,6 +2523,7 @@ fn timed_mixed_pages_and_foreign_instrument_keep_offsets_and_refusal() {
     let definition = InstrumentDefinition {
         identity,
         second: None,
+        retained_receiver: None,
         instrument_profile: true,
         epoch: 1,
     };

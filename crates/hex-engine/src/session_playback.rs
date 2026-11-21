@@ -30,6 +30,7 @@ mod candidate_storage;
 mod device_move;
 mod device_reorder;
 mod foreign_arrangement;
+mod hosted_instrument_move;
 mod instrument_move;
 mod instrument_removal;
 mod main_pass_delay;
@@ -670,6 +671,7 @@ pub struct SessionPlayback {
     route_state_generation: u64,
     candidate_admission_open: bool,
     pub(crate) require_continuous_insert: bool,
+    pub(crate) hosted_instrument_move: Option<crate::playback::HostedInstrumentMove>,
     pub(crate) foreign_continuation: Option<Box<crate::playback::StoredForeignContinuation>>,
     // Control-side request that the live handoff restart at the cursor rather
     // than carry voices or detached tails the candidate already represents.
@@ -1104,6 +1106,7 @@ impl SessionPlayback {
             route_state_generation: _,
             candidate_admission_open: _,
             require_continuous_insert: _,
+            hosted_instrument_move: _,
             foreign_continuation,
             live_restart: _,
             native_removal: _,
@@ -2407,6 +2410,7 @@ impl SessionPlayback {
             route_state_generation: 0,
             candidate_admission_open: true,
             require_continuous_insert: false,
+            hosted_instrument_move: None,
             foreign_continuation: None,
             live_restart: false,
             native_removal: None,

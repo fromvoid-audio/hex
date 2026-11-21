@@ -3,7 +3,7 @@
 //! the outer source fence and restores the donor when it returns a candidate.
 use super::{
     RouteOwner, SessionPlayback, SessionPlaybackError, device_move::NativeTrackMove,
-    instrument_move::InstrumentTrackMove,
+    hosted_instrument_move::HostedTrackCut, instrument_move::InstrumentTrackMove,
 };
 use crate::signal_graph::FreshHistory;
 use hex_lattice::{NativeRemovalTransition, NativeRuntimeChain, ProcessorChainOwner};
@@ -152,6 +152,7 @@ enum RemovalTransition {
 enum StagedTrackMove {
     Effect(NativeTrackMove),
     Instrument(InstrumentTrackMove),
+    Hosted(HostedTrackCut),
 }
 
 impl StagedTrackMove {
@@ -163,6 +164,11 @@ impl StagedTrackMove {
                 ..
             })
             | Self::Instrument(InstrumentTrackMove {
+                source,
+                destination,
+                ..
+            })
+            | Self::Hosted(HostedTrackCut {
                 source,
                 destination,
                 ..
@@ -242,6 +248,13 @@ impl PendingNativeRemoval {
     pub(super) fn instrument_track_move(self) -> Option<InstrumentTrackMove> {
         match self.transition {
             RemovalTransition::Move(StagedTrackMove::Instrument(movement)) => Some(movement),
+            _ => None,
+        }
+    }
+
+    pub(super) fn hosted_track_move(self) -> Option<HostedTrackCut> {
+        match self.transition {
+            RemovalTransition::Move(StagedTrackMove::Hosted(movement)) => Some(movement),
             _ => None,
         }
     }
@@ -393,7 +406,12 @@ impl SessionPlayback {
         }
         let same_latency = self.revision.arrangement().main_latency_frames()
             == previous.revision.arrangement().main_latency_frames();
-        let transition = if same_latency {
+        let transition = if self.hosted_instrument_move.is_some() {
+            let movement = self
+                .direct_hosted_track_cut_from(previous)
+                .ok_or(super::foreign_arrangement::INCOMPATIBLE_HANDOFF)?;
+            Some(RemovalTransition::Move(StagedTrackMove::Hosted(movement)))
+        } else if same_latency {
             self.native_removal_transition_from(previous)
                 .map(RemovalTransition::Device)
                 .or_else(|| {
@@ -750,9 +768,7 @@ impl SessionPlayback {
         }
         let old = previous.revision.arrangement();
         let new = self.revision.arrangement();
-        if !old.return_feed_plan.is_empty()
-            || !new.return_feed_plan.is_empty()
-            || old.return_buses().len().checked_sub(1) != Some(new.return_buses().len())
+        if old.return_buses().len().checked_sub(1) != Some(new.return_buses().len())
             || !old
                 .tracks()
                 .iter()
@@ -762,16 +778,20 @@ impl SessionPlayback {
             return None;
         }
         let mut remaining = new.return_buses().iter().map(|bus| bus.id);
-        let removed = old
+        let (removed_index, removed) = old
             .return_buses()
             .iter()
-            .find(|bus| remaining.next() != Some(bus.id))?;
+            .enumerate()
+            .find(|(_, bus)| remaining.next() != Some(bus.id))?;
         if !old
             .return_buses()
             .iter()
             .filter(|bus| bus.id != removed.id)
             .map(|bus| bus.id)
             .eq(new.return_buses().iter().map(|bus| bus.id))
+            || !new
+                .return_feed_plan
+                .keeps_feeds_after_removal(&old.return_feed_plan, removed_index)
             || previous
                 .return_fade
                 .is_some_and(|fade| fade.id != removed.id)
