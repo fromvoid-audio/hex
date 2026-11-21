@@ -3081,6 +3081,8 @@ impl EditorView {
             self.edit_cursor = None;
             self.clip_drop_cursor_epoch = None;
             self.locked_play_start = None;
+            self.locked_play_start_drag = None;
+            self.bottom_play_start_marker_bounds.set(None);
             self.play_start_at_beginning = false;
             self.escape_stop_armed = false;
             self.loop_start_over_clip = None;

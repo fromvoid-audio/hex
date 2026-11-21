@@ -20,6 +20,7 @@ impl EditorView {
             || self.active_browser_audio_drag.is_some()
             || self.active_native_device_drag.is_some()
             || self.loop_rail_gesture.is_some()
+            || self.locked_play_start_drag_active()
             || self.track_resize_active()
             || self.arrangement_bounds.is_none()
             || !x.is_finite()
@@ -525,6 +526,10 @@ impl EditorView {
                             if view.context_menu.is_some()
                                 || view.theme_settings.open
                                 || super::device_panel::picker_is_open(view)
+                                || view.pointer_hits_bottom_play_start_marker(
+                                    event.position,
+                                    event.modifiers,
+                                )
                             {
                                 return false;
                             }
@@ -1381,6 +1386,20 @@ impl EditorView {
                             return;
                         }
                         let changed = move_entity.update(cx, |view, cx| {
+                            if view.locked_play_start_drag_active() {
+                                let changed = if event.pressed_button == Some(MouseButton::Left) {
+                                    view.update_locked_play_start_drag(
+                                        event.position,
+                                        event.modifiers.platform,
+                                    )
+                                } else {
+                                    view.cancel_locked_play_start_drag()
+                                };
+                                if changed {
+                                    cx.notify();
+                                }
+                                return true;
+                            }
                             let changed = if event.pressed_button == Some(MouseButton::Left) {
                                 view.update_scrub(f32::from(event.position.x), false)
                             } else {
@@ -1401,6 +1420,14 @@ impl EditorView {
                             return;
                         }
                         if up_entity.update(cx, |view, cx| {
+                            if view.locked_play_start_drag_active() {
+                                if view
+                                    .finish_locked_play_start_drag(event.position, event.modifiers)
+                                {
+                                    cx.notify();
+                                }
+                                return true;
+                            }
                             let changed = view.update_scrub(f32::from(event.position.x), true);
                             if changed {
                                 cx.notify();

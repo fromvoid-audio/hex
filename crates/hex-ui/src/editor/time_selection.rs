@@ -233,6 +233,7 @@ impl EditorView {
             || self.time_range_move_gesture.is_some()
             || self.sections.held()
             || self.loop_rail_gesture.is_some()
+            || self.locked_play_start_drag_active()
             || self.arrangement_pan.is_some()
         {
             return false;
@@ -363,6 +364,7 @@ impl EditorView {
             || self.time_range_move_gesture.is_some()
             || self.sections.held()
             || self.loop_rail_gesture.is_some()
+            || self.locked_play_start_drag_active()
             || self.arrangement_pan.is_some()
             || self.scrub_active()
             || self.track_resize_active()
@@ -458,6 +460,7 @@ impl EditorView {
             || self.active_trim_drag.is_some()
             || self.active_fade_drag.is_some()
             || self.active_midi_trim_drag.is_some()
+            || self.locked_play_start_drag_active()
         {
             return false;
         }
@@ -506,6 +509,7 @@ impl EditorView {
             || self.active_trim_drag.is_some()
             || self.active_fade_drag.is_some()
             || self.active_midi_trim_drag.is_some()
+            || self.locked_play_start_drag_active()
         {
             return false;
         }
@@ -598,6 +602,7 @@ impl EditorView {
             || self.active_trim_drag.is_some()
             || self.active_fade_drag.is_some()
             || self.active_midi_trim_drag.is_some()
+            || self.locked_play_start_drag_active()
         {
             return false;
         }

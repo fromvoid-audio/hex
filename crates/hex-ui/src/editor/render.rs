@@ -861,6 +861,9 @@ impl Render for EditorView {
                     if view.refresh_loop_rail_modifiers(event.modifiers, window) {
                         cx.notify();
                     }
+                    if view.refresh_locked_play_start_drag_modifiers(event.modifiers) {
+                        cx.notify();
+                    }
                     view.refresh_drag_modifiers(
                         event.modifiers.platform,
                         event.modifiers.alt,
@@ -1215,6 +1218,7 @@ impl Render for EditorView {
                 if super::device_panel::cancel_sampler_boundary(view)
                     | view.cancel_audio_loop_gesture()
                     | view.cancel_loop_rail_gesture()
+                    | view.cancel_locked_play_start_drag()
                     | view.locators.cancel_drag()
                     | view.project_spectrum_splitter_event(
                         hex_widgets::SplitterEvent::Cancel(hex_widgets::SplitterCancel::Escape),

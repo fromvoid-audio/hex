@@ -170,6 +170,7 @@ impl EditorView {
             || self.active_fade_drag.is_some()
             || self.track_resize_active()
             || self.loop_rail_gesture.is_some()
+            || self.locked_play_start_drag_active()
             || self.sections.held()
             || self.section_install_pending()
             || self.midi_note_gesture.is_some()

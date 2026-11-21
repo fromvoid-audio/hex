@@ -44,6 +44,10 @@ impl EditorView {
         self.scrub.gesture.is_some()
     }
 
+    pub(super) fn timeline_ruler_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.scrub.bounds
+    }
+
     pub(super) fn update_scrub_geometry(&mut self, bounds: Bounds<Pixels>) {
         if self
             .scrub
@@ -52,6 +56,7 @@ impl EditorView {
         {
             self.cancel_scrub();
         }
+        self.cancel_locked_play_start_drag_on_ruler_change(bounds);
         self.scrub.bounds = Some(bounds);
     }
 
@@ -83,6 +88,7 @@ impl EditorView {
             && self.active_midi_trim_drag.is_none()
             && self.arrangement_pan.is_none()
             && self.loop_rail_gesture.is_none()
+            && !self.locked_play_start_drag_active()
             && self.time_selection_gesture.is_none()
             && self.time_range_move_gesture.is_none()
             && self.visible_viewport(state.timeline_frames) == viewport

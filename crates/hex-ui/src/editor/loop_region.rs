@@ -66,7 +66,7 @@ impl EditorView {
     }
 
     /// The names are diagnostics only; the same snapshot determines admission.
-    fn loop_edit_gates(&self) -> [(&'static str, bool); 28] {
+    fn loop_edit_gates(&self) -> [(&'static str, bool); 29] {
         [
             ("edit_pending", self.edit_pending()),
             ("gain_recording", self.gain_recorder.blocks_edits()),
@@ -109,6 +109,10 @@ impl EditorView {
             ("fade_drag", self.active_fade_drag.is_some()),
             ("track_resize", self.track_resize_active()),
             ("loop_rail_gesture", self.loop_rail_gesture.is_some()),
+            (
+                "locked_play_start_drag",
+                self.locked_play_start_drag_active(),
+            ),
             ("section_held", self.sections.held()),
             ("section_install_pending", self.section_install_pending()),
         ]
