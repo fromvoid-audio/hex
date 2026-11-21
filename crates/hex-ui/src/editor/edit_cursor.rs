@@ -104,16 +104,6 @@ impl EditorView {
             .filter(|cursor| cursor.track.is_none() && self.cursor_is_current(*cursor))
     }
 
-    pub(super) fn update_locked_play_start_from_point(&mut self) {
-        if let Some(locked) = self.locked_play_start {
-            self.locked_play_start = self.edit_cursor.map(|point| EditCursor {
-                pulse_color: locked.pulse_color,
-                pulse_started: locked.pulse_started,
-                ..point
-            });
-        }
-    }
-
     fn toggle_play_start_lock(&mut self, clip_editor_start: Option<u64>, cx: &mut Context<Self>) {
         if self.mode != EditorMode::Arrangement
             || self.context_menu.is_some()
@@ -253,7 +243,6 @@ impl EditorView {
     fn set_point_cursor(&mut self, track: Option<TrackId>, frame: u64) {
         self.advance_selection_intent();
         self.edit_cursor = Some(EditCursor::new(track, frame, self.project_generation));
-        self.update_locked_play_start_from_point();
         self.loop_start_over_clip = None;
     }
 
@@ -632,8 +621,8 @@ impl EditorView {
                     .into_any_element(),
             );
         }
-        // A clip drop can place an edit cursor independently of an explicit
-        // locked play start. Only the lock's own marker can toggle that lock.
+        // Point edits can leave a cursor at a different frame from the lock.
+        // Only the locked marker toggles that lock.
         if !reset
             && guide.is_none()
             && start == end

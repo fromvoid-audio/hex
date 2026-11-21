@@ -1,4 +1,4 @@
-//! Move a playing Sampler without restarting its original sample read cursor.
+//! The receiver uses the original sample with a fresh Sampler playback cursor.
 use super::*;
 use hex_devices::sampler::{Envelope, state::SamplerState};
 use hex_engine::{
@@ -12,7 +12,7 @@ use hex_project::{BeatTime, DeviceSelectionIds, TrackId};
 use std::sync::atomic::AtomicBool;
 
 #[test]
-fn direct_sampler_move_carries_the_original_sample_and_held_gate() {
+fn direct_sampler_move_keeps_the_sample_and_ends_the_original_gate() {
     const REQUEST: usize = 512;
     const FADE: usize = 240;
     const CUT: usize = REQUEST + FADE;
@@ -96,11 +96,21 @@ fn direct_sampler_move_carries_the_original_sample_and_held_gate() {
         editor.execute(command).unwrap();
     };
     add_note(&mut editor, donor_clip, 0, 1950, 60);
-    let mut reference = Editor::new(editor.project().clone(), 8).unwrap();
+    let donor_reference = editor.project().clone();
     for (frame, duration, pitch) in [(CUT as u64, 660, 69), (2600, 700, 74)] {
         add_note(&mut editor, receiver_clip, frame, duration, pitch);
-        add_note(&mut reference, donor_clip, frame, duration, pitch);
     }
+    let move_sampler = |editor: &mut Editor| {
+        editor
+            .execute(Command::MoveTrackDevices {
+                source: donor,
+                destination: receiver,
+                selected: DeviceSelectionIds::new(&[device]).unwrap(),
+            })
+            .unwrap();
+    };
+    let mut receiver_reference = Editor::new(editor.project().clone(), 8).unwrap();
+    move_sampler(&mut receiver_reference);
     add_note(&mut editor, receiver_clip, 128, 5600, 84);
     editor
         .execute(Command::SetTrackGains {
@@ -162,31 +172,35 @@ fn direct_sampler_move_carries_the_original_sample_and_held_gate() {
         Playback::try_from_prepared_with_device_resources(Arc::clone(revision), resources).unwrap()
     };
     let before = prepare(editor.project(), &assets);
-    editor
-        .execute(Command::MoveTrackDevices {
-            source: donor,
-            destination: receiver,
-            selected: DeviceSelectionIds::new(&[device]).unwrap(),
-        })
-        .unwrap();
+    move_sampler(&mut editor);
     let after = prepare(editor.project(), &assets);
-    let mut dry = playback(&prepare(reference.project(), &assets));
-    dry.apply(PlaybackCommand::Play);
-
-    let mut expected = vec![[0.0; 2]; FRAMES];
-    dry.render(&mut expected[..REQUEST]).unwrap();
-    dry.render(&mut expected[REQUEST..CUT]).unwrap();
-    for block in expected[CUT..].chunks_mut(BLOCK) {
-        dry.render(block).unwrap();
-    }
+    let render_reference = |project: &Project| {
+        let mut oracle = playback(&prepare(project, &assets));
+        oracle.apply(PlaybackCommand::Play);
+        let mut expected = vec![[0.0; 2]; FRAMES];
+        oracle.render(&mut expected[..REQUEST]).unwrap();
+        oracle.render(&mut expected[REQUEST..CUT]).unwrap();
+        for block in expected[CUT..].chunks_mut(BLOCK) {
+            oracle.render(block).unwrap();
+        }
+        expected
+    };
+    let donor_pcm = render_reference(&donor_reference);
+    let receiver_pcm = render_reference(receiver_reference.project());
     assert!(
-        expected[REQUEST..CUT]
+        donor_pcm[REQUEST..CUT]
             .iter()
             .flatten()
             .any(|sample| sample.abs() > 1e-4)
     );
     assert!(
-        expected[FRAMES - 64..]
+        receiver_pcm[CUT..CUT + BLOCK]
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 1e-4)
+    );
+    assert!(
+        receiver_pcm[FRAMES - 64..]
             .iter()
             .all(|frame| *frame == [0.0; 2])
     );
@@ -209,30 +223,33 @@ fn direct_sampler_move_carries_the_original_sample_and_held_gate() {
         render_without_allocation(&mut callback, block);
     }
 
-    let expected = &expected[REQUEST..];
     let mismatch = |faded: bool| {
-        pcm.iter()
-            .zip(expected)
-            .enumerate()
-            .find_map(|(offset, (actual, want))| {
-                let gain = if !faded {
-                    0.75
-                } else if offset < FADE {
-                    0.25 * (1.0 - (offset + 1) as f32 / FADE as f32)
-                } else {
-                    0.75 * (offset - FADE + 1).min(FADE) as f32 / FADE as f32
-                };
-                (0..2).find_map(|lane| {
-                    let expected = want[lane] * gain;
-                    let error = (actual[lane] - expected).abs();
-                    (!error.is_finite() || error >= 2e-6).then_some((
-                        REQUEST + offset,
-                        lane,
-                        actual[lane],
-                        expected,
-                    ))
-                })
+        pcm.iter().enumerate().find_map(|(offset, actual)| {
+            let frame = REQUEST + offset;
+            let (want, gain) = if !faded {
+                (receiver_pcm[frame], 0.75)
+            } else if offset < FADE {
+                (
+                    donor_pcm[frame],
+                    0.25 * (1.0 - (offset + 1) as f32 / FADE as f32),
+                )
+            } else {
+                (
+                    receiver_pcm[frame],
+                    0.75 * (offset - FADE + 1).min(FADE) as f32 / FADE as f32,
+                )
+            };
+            (0..2).find_map(|lane| {
+                let expected = want[lane] * gain;
+                let error = (actual[lane] - expected).abs();
+                (!error.is_finite() || error >= 2e-6).then_some((
+                    frame,
+                    lane,
+                    actual[lane],
+                    expected,
+                ))
             })
+        })
     };
 
     assert_eq!(
@@ -250,8 +267,7 @@ fn direct_sampler_move_carries_the_original_sample_and_held_gate() {
         receipt.revision()
     );
 
-    // Identical contents and asset ID in a separate retained owner cannot
-    // authenticate the running sampler's resource lease.
+    // A separate store cannot establish custody of the original asset lease.
     let unrelated_assets = store();
     let unrelated = prepare(editor.project(), &unrelated_assets);
     let (control, mut callback, predecessor, receipt) = begin_quantized_playback_insert(
@@ -268,7 +284,7 @@ fn direct_sampler_move_carries_the_original_sample_and_held_gate() {
         PublicationReceiptState::Refused(PlaybackHandoffRejection::SessionRuntime)
     );
     assert_eq!(control.status.recording_source(), Some(predecessor));
-    for (actual, dry) in output.into_iter().zip(expected) {
+    for (actual, dry) in output.into_iter().zip(&donor_pcm[REQUEST..]) {
         for (actual, dry) in actual.into_iter().zip(dry) {
             assert!((actual - dry * 0.25).abs() < 2e-6);
         }
