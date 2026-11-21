@@ -103,6 +103,98 @@ fn close(a: &[hex_engine::Frame], b: &[hex_engine::Frame]) {
 }
 
 #[test]
+fn consolidating_a_slipped_audio_clip_preserves_pcm_and_reopens_at_zero() {
+    let (folder, mut session, _, source, neighbor, paths) = audio_fixture(48_000);
+    let original_files = paths
+        .iter()
+        .map(|path| fs::read(path).unwrap())
+        .collect::<Vec<_>>();
+    session
+        .command(Command::ResizeAudioClipView {
+            clip: source,
+            operation: AudioViewResizeOperation::PlayStart { position: 17 },
+        })
+        .unwrap();
+    let before = session.project().clone();
+    let original = before.clip(source).unwrap();
+    let cursor = |project: &hex_project::Project, id| {
+        hex_project::AudioViewProjection::new(project.clip(id).unwrap(), project.tempo_map())
+            .unwrap()
+            .play_start_position()
+            .unwrap()
+    };
+    assert_eq!(cursor(&before, source), Some(17));
+    let previous = session.compile_prepared_revision(None).unwrap();
+    let samples = pcm(previous.clone(), 440);
+    assert!(
+        samples[..original.duration() as usize]
+            .iter()
+            .any(|frame| *frame != [0.0; 2])
+    );
+
+    let (Created::Clip(result), prepared) = session
+        .command_prepared_revision(Command::GroupClips(vec![source]), Some(&previous))
+        .unwrap()
+    else {
+        panic!("consolidated audio clip");
+    };
+    let after = session.project().clone();
+    let clip = after.clip(result).unwrap();
+    assert_eq!(
+        (clip.start(), clip.duration()),
+        (original.start(), original.duration())
+    );
+    assert_eq!(cursor(&after, result), Some(0));
+    assert!(!clip.looping());
+    assert!(after.clip(source).is_none());
+    assert_eq!(after.clip(neighbor), before.clip(neighbor));
+    assert_eq!(
+        after.assets().collect::<Vec<_>>(),
+        before.assets().collect::<Vec<_>>()
+    );
+    assert_eq!(clip.audio_events().sources[0].clip, *original);
+    close(&pcm(prepared.clone(), 440), &samples);
+
+    let undone = session
+        .undo_prepared_revision(Some(&prepared))
+        .unwrap()
+        .unwrap();
+    let mut restored = session.project().snapshot();
+    restored.next_id = before.snapshot().next_id;
+    assert_eq!(restored, before.snapshot());
+    let redone = session
+        .redo_prepared_revision(Some(&undone))
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.project(), &after);
+    close(&pcm(redone, 440), &samples);
+
+    let path = folder.0.join("consolidated.hex");
+    hex_storage::save_new(&path, session.project()).unwrap();
+    let loaded = hex_storage::load(&path).unwrap();
+    let audio = loaded
+        .assets()
+        .map(|asset| {
+            let decoded = hex_media::decode_wav_file(
+                asset.path(),
+                hex_media::Limits::new(1024 * 1024, 100_000),
+            )
+            .unwrap();
+            (asset.id(), decoded)
+        })
+        .collect();
+    let reopened = Session::from_loaded(loaded, 32, 100_000, audio).unwrap();
+    assert_eq!(cursor(reopened.project(), result), Some(0));
+    close(
+        &pcm(reopened.compile_prepared_revision(None).unwrap(), 440),
+        &samples,
+    );
+    for (path, bytes) in paths.iter().zip(original_files) {
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+}
+
+#[test]
 fn nested_group_reopens_with_the_same_sound_and_reactivates_its_source() {
     let (folder, mut session, _, group, extra, _) = audio_fixture(48_000);
     let inner_event = session.project().clip(group).unwrap().audio_events().events[1].id;

@@ -175,25 +175,24 @@ work at a zoom level where the intended edge
 and grid position are clear. use **command+z** to undo and
 **command+shift+z** to redo admitted edits.
 
-with the computer midi keyboard off, select two or more clips on one arrange
-track and press **g** to group them. select only audio clips or only midi clips.
-hex keeps gaps and refuses a group that would cover unselected material. midi
-clips become one finite midi clip with their played notes and volume curves.
-audio clips become events inside one clip; original files and source processing
-remain retained. when an existing group has repeats or outer processing, hex
-renders its audible span to one ordinary audio clip. this includes partial repeats
-and gaps, keeps original media, and leaves track effects and routing live.
-rendered grouping supports one track at a time; press escape to cancel preparation.
-grouped audio keeps its source timing at the grouping tempo.
+with the computer midi keyboard off, select one or more clips on one arrange
+track and press **g**. for a single clip, this consolidates its audible span
+from clip-local zero. a slipped play start becomes the new zero point while
+the audio stays at the same place in the arrangement. select only audio clips
+or only midi clips. hex keeps gaps and refuses a group that would cover
+unselected material. midi clips become one finite midi clip with their played
+notes and volume curves. audio clips become events inside one clip. original
+files and source processing remain retained, including repeats and outer
+processing inside existing groups. grouping leaves track effects and routing
+live. grouped audio keeps its source timing at the grouping tempo.
 use undo to restore the original clips in one step. grouping requires resident
 audio; unsupported streamed sources refuse before the edit is committed.
 
 with a positive arrange time selection, **g** instead groups only the included
 pieces, splitting clips at both selection edges and preserving outside material.
 each populated track gets its own clip, preserving track routing; empty tracks
-are skipped. each track must contain one media kind. ordinary audio groups preserve
+are skipped. each track must contain one media kind. audio grouping preserves
 inactive events, and midi grouping preserves inactive notes, inside an active clip.
-rendered groups with outer processing still require matching clip activation.
 the final track's result becomes the selected clip. one undo restores all tracks.
 
 the lower clip editor shows the accepted arrange playback position inside the

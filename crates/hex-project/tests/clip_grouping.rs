@@ -315,15 +315,60 @@ fn midi_group_materializes_loops_and_gaps_with_one_history_edge_and_fresh_ids() 
     assert_eq!(e.project().snapshot(), after);
 }
 #[test]
+fn consolidating_one_midi_clip_rebases_its_play_start() {
+    let mut e = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let owner = track(&mut e);
+    let source = midi(&mut e, owner, 4);
+    e.execute(Command::AddMidiNote {
+        clip: source,
+        start: b(1),
+        duration: BeatTime::from_ratio(1, 2).unwrap(),
+        pitch: 67,
+        channel: 2,
+        velocity: 93,
+    })
+    .unwrap();
+    e.execute(Command::ResizeMidiClipView {
+        clip: source,
+        operation: hex_project::MidiViewResizeOperation::PlayStart { source_start: b(1) },
+    })
+    .unwrap();
+    let before = e.project().snapshot();
+    let original = e.project().midi_clip(source).unwrap().clone();
+    assert_eq!(original.source_start(), b(1));
+
+    let Created::Clip(result) = e.execute(Command::GroupClips(vec![source])).unwrap() else {
+        panic!("consolidated midi clip");
+    };
+    let clip = e.project().midi_clip(result).unwrap();
+    assert_eq!(
+        (clip.start(), clip.length()),
+        (original.start(), original.length())
+    );
+    assert_eq!(clip.source_start(), BeatTime::ZERO);
+    assert_eq!(clip.source_length(), clip.length());
+    let [note] = clip.notes() else {
+        panic!("only the played note survives");
+    };
+    assert_eq!(note.start(), BeatTime::ZERO);
+    assert_eq!(note.duration(), BeatTime::from_ratio(1, 2).unwrap());
+    assert_eq!(note.pitch(), 67);
+    assert_eq!(note.channel(), 2);
+    assert!(e.project().midi_clip(source).is_none());
+    let after = e.project().snapshot();
+    assert!(e.undo());
+    let mut restored = e.project().snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+    assert!(e.redo());
+    assert_eq!(e.project().snapshot(), after);
+}
+
+#[test]
 fn grouping_refusals_preserve_ids_history_and_nonselected_material() {
     let (mut e, t, clips) = audio_fixture();
     let before = e.project().snapshot();
-    for ids in [
-        vec![],
-        vec![clips[0]],
-        vec![clips[0], clips[0]],
-        vec![clips[0], clips[2]],
-    ] {
+    for ids in [vec![], vec![clips[0], clips[0]], vec![clips[0], clips[2]]] {
         assert!(e.execute(Command::GroupClips(ids)).is_err());
         assert_eq!(e.project().snapshot(), before);
         assert!(!e.can_undo());

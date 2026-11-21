@@ -7964,7 +7964,7 @@ pub(super) mod tests {
             assert!(
                 v.error
                     .as_ref()
-                    .is_some_and(|e| e.contains("select two or more clips, sections")),
+                    .is_some_and(|e| e.contains("select a clip, a time range or two sections")),
                 "{:?}",
                 v.error
             );

@@ -26,9 +26,8 @@ fn group(
     ids: Vec<ClipId>,
     range: Option<&crate::TimeRange>,
 ) -> Result<Created, Invalid> {
-    let minimum = if range.is_some() { 1 } else { 2 };
-    if !(minimum..=MAX_CLIPS).contains(&ids.len()) {
-        return Err(Invalid("select at least two clips to group"));
+    if ids.is_empty() || ids.len() > MAX_CLIPS {
+        return Err(Invalid("invalid clip grouping selection count"));
     }
     let selected: BTreeSet<_> = ids.iter().copied().collect();
     if selected.len() != ids.len() {
