@@ -157,17 +157,19 @@ fn verify_typed_off(on_return: bool) {
             None,
         )
         .unwrap();
-    let owner = candidate.owner_on_control().unwrap();
-    let sealed = owner.seal_constructor_on_control(reservation()).unwrap();
+    let candidate_owner = candidate.owner_on_control().unwrap();
+    let sealed = candidate_owner
+        .seal_constructor_on_control(reservation())
+        .unwrap();
     assert_eq!(sealed.data.unknown_storage, 0);
     assert!(sealed.data.data_allocations <= quote.data_rows);
     let mut cap = reservation();
     cap.data_rows = sealed.data.data_allocations - 1;
     assert_eq!(
-        owner.seal_constructor_on_control(cap),
+        candidate_owner.seal_constructor_on_control(cap),
         Err(AudioStorageError::Capacity)
     );
-    let playback = &owner.inner.runtime.as_ref().unwrap().playback;
+    let playback = &candidate_owner.inner.runtime.as_ref().unwrap().playback;
     assert_eq!(playback.main_output_latency_frames(), 0);
     let revision = playback.prepared_revision().unwrap();
     assert_eq!(
