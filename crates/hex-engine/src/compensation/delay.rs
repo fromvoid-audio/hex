@@ -296,28 +296,19 @@ impl DelayPair {
         self.committed_nonzero = source.committed_nonzero;
         self.scratch_nonzero = self.committed_nonzero;
     }
+
+    pub(super) fn committed_main_pass_delay(&self) -> Option<hex_lattice::MainPassDelay> {
+        let ring = &self.ring;
+        if self.transaction_active || ring.committed_cursor.valid != ring.committed.len() {
+            return None;
+        }
+        hex_lattice::MainPassDelay::copy_committed_ring(&ring.committed, ring.committed_cursor.next)
+    }
+
     pub fn reset_epoch(&mut self) {
         self.ring.reset();
         self.committed_nonzero = 0;
         self.scratch_nonzero = 0;
         self.transaction_active = false;
-    }
-}
-
-#[cfg(test)]
-impl CompensationRuntime {
-    pub(crate) fn test_committed_dry_pass(
-        &self,
-        edge: usize,
-    ) -> Option<hex_lattice::MainPassDelay> {
-        let pair = self.edges.get(edge)?;
-        let ring = &pair.ring;
-        if !self.is_closed()
-            || pair.transaction_active
-            || ring.committed_cursor.valid != ring.committed.len()
-        {
-            return None;
-        }
-        hex_lattice::MainPassDelay::copy_committed_ring(&ring.committed, ring.committed_cursor.next)
     }
 }

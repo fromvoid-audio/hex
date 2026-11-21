@@ -63,21 +63,45 @@ fn sole_routed_return_alignment_supplies_bounded_committed_dry_pcm() {
     let mut prefix = std::array::from_fn::<_, { DELAY - 1 }, _>(signal);
     provider.edge_block(dry, &mut prefix).unwrap();
     provider.delays.commit_transaction().unwrap();
-    assert!(provider.delays.test_committed_dry_pass(planned).is_none());
+    assert!(
+        provider
+            .committed_resident_main_alignment(0, DELAY as u32)
+            .is_none()
+    );
 
     provider.delays.begin_transaction().unwrap();
     let mut wrap = std::array::from_fn::<_, 263, _>(|offset| signal(DELAY - 1 + offset));
     provider.edge_block(dry, &mut wrap).unwrap();
-    assert!(provider.delays.test_committed_dry_pass(planned).is_none());
+    assert!(
+        provider
+            .committed_resident_main_alignment(0, DELAY as u32)
+            .is_none()
+    );
     provider.delays.commit_transaction().unwrap();
 
-    let mut pass = provider.delays.test_committed_dry_pass(planned).unwrap();
+    let mut pass = provider
+        .committed_resident_main_alignment(0, DELAY as u32)
+        .unwrap();
     assert_eq!(pass.latency_frames(), DELAY as u32);
+    assert!(
+        provider
+            .committed_resident_main_alignment(1, DELAY as u32)
+            .is_none()
+    );
+    assert!(
+        provider
+            .committed_resident_main_alignment(0, DELAY as u32 - 1)
+            .is_none()
+    );
     // Reject a speculative write without publishing it into the value snapshot.
     provider.delays.begin_transaction().unwrap();
     let mut poison = [[-1.0, 1.0]; 17];
     provider.edge_block(dry, &mut poison).unwrap();
-    assert!(provider.delays.test_committed_dry_pass(planned).is_none());
+    assert!(
+        provider
+            .committed_resident_main_alignment(0, DELAY as u32)
+            .is_none()
+    );
     provider.delays.rollback_transaction().unwrap();
 
     let cut = DELAY - 1 + 263;
