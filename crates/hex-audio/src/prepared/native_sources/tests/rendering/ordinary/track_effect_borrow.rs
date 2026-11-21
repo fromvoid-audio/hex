@@ -259,6 +259,16 @@ fn private_compiler_borrows_original_root_binding_for_the_exact_receiver_chain()
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn signed_track_effect_cut_drains_old_dry_route_and_keeps_the_worker() {
+    verify_track_effect_cut(false);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn cancelling_a_signed_track_effect_cut_restores_the_old_route_and_worker() {
+    verify_track_effect_cut(true);
+}
+
+fn verify_track_effect_cut(cancel_after_fade: bool) {
     use hex_engine::playback::HostedTrackEffectMove;
     const QUANTUM: usize = 256;
     const FRAMES: u64 = 8192;
@@ -385,7 +395,31 @@ fn signed_track_effect_cut_drains_old_dry_route_and_keeps_the_worker() {
         context,
     );
     let receipt = f.control.fresh_runtime_receipt(revision).unwrap();
-    for _ in 0..3 {
+    let (_, faded) = render(&mut f);
+    assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+    assert_eq!(f.control.status.recording_source(), Some(predecessor));
+    assert!(faded[0][0] > RECEIVER[0]);
+    assert_eq!(faded[QUANTUM - 1], RECEIVER);
+    if cancel_after_fade {
+        assert_eq!(receipt.cancel(), FreshRuntimeCancellationResult::Cancelled);
+        for _ in 0..4 {
+            render(&mut f);
+        }
+        assert_eq!(receipt.state(), PublicationReceiptState::Cancelled);
+        assert_eq!(f.control.status.recording_source(), Some(predecessor));
+        let (block, restored) = render(&mut f);
+        let wet_gain = 0.5 + (block - 3) as f32 * 0.125;
+        assert_eq!(
+            restored[QUANTUM - 1],
+            [
+                RECEIVER[0] + DONOR[0] * wet_gain,
+                RECEIVER[1] + DONOR[1] * wet_gain,
+            ]
+        );
+        dispose(f);
+        return;
+    }
+    for _ in 0..2 {
         render(&mut f);
         assert_eq!(receipt.state(), PublicationReceiptState::Pending);
         assert_eq!(f.control.status.recording_source(), Some(predecessor));
