@@ -454,6 +454,18 @@ fn enqueue_legacy(
     Ok(())
 }
 
+fn native_epoch_accepts_successor(
+    returned: Option<hex_engine::AudioSourceContext>,
+    successor: Option<hex_engine::AudioSourceContext>,
+) -> bool {
+    returned
+        .zip(successor)
+        .is_some_and(|(returned, successor)| {
+            returned.project_generation == successor.project_generation
+                && successor.editor_revision >= returned.editor_revision
+        })
+}
+
 /// Controls whether a newly compiled runtime inherits transport and Session
 /// route state from the currently active project revision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -484,9 +496,11 @@ pub enum PublicationPolicy {
     /// Authored structural edit: the shared stopped gate remains held until exact
     /// installation. Stop keeps priority; Play cannot run on the old graph.
     InstallUnderStoppedArrangement(StoppedEditFence),
-    /// Same-source native renewal after actual stopped graph/endpoint return.
-    /// Only its ready native gate admits this ordinary successor; it does not
-    /// inherit an old revoked runtime or authorize a different source context.
+    /// Same-generation native renewal after actual stopped graph/endpoint return.
+    /// Only its ready native gate admits this ordinary successor; it restores the
+    /// returned revision or a newer canonical revision of the same project
+    /// generation whose live handoff was refused, never an older revision or
+    /// different project generation.
     InstallUnderNativeEpoch(StoppedEditFence),
     /// Inherit the exact still-active ordinary native graph while its stopped
     /// fence remains held. This does not renew or return its original sources.
@@ -2372,12 +2386,10 @@ impl PublicationControl {
             Some("native inheritance requires its exact stopped active source")
         } else if native_inheritance.is_none()
             && native_epoch.is_some_and(|token| {
-                self.status
-                    .sampler_edit
-                    .native_epoch_context(token)
-                    .is_none()
-                    || self.status.sampler_edit.native_epoch_context(token) != source_context
-                    || self.status.native_effect_source().is_some()
+                !native_epoch_accepts_successor(
+                    self.status.sampler_edit.native_epoch_context(token),
+                    source_context,
+                ) || self.status.native_effect_source().is_some()
             })
         {
             Some("native successor requires its matching stopped returned source")
@@ -4064,14 +4076,10 @@ impl Callback {
                         .runtime_transports_are_live(&next.playback);
                     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
                     let live = false;
-                    (self
-                        .status
-                        .sampler_edit
-                        .native_epoch_context(token)
-                        .is_none()
-                        || self.status.sampler_edit.native_epoch_context(token)
-                            != next.source_context
-                        || self.active.is_some()
+                    (!native_epoch_accepts_successor(
+                        self.status.sampler_edit.native_epoch_context(token),
+                        next.source_context,
+                    ) || self.active.is_some()
                         || !live)
                         .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
                 }
@@ -14761,5 +14769,21 @@ mod tests {
             callback.begin_block();
             control.reclaim();
         }
+    }
+
+    #[test]
+    fn native_epoch_successor_accepts_same_or_newer_revision_in_same_generation() {
+        let ctx = |project_generation, editor_revision| {
+            Some(hex_engine::AudioSourceContext {
+                project_generation,
+                editor_revision,
+            })
+        };
+        assert!(native_epoch_accepts_successor(ctx(1, 15), ctx(1, 15)));
+        assert!(native_epoch_accepts_successor(ctx(1, 15), ctx(1, 16)));
+        assert!(!native_epoch_accepts_successor(ctx(1, 15), ctx(1, 14)));
+        assert!(!native_epoch_accepts_successor(ctx(1, 15), ctx(2, 16)));
+        assert!(!native_epoch_accepts_successor(None, ctx(1, 15)));
+        assert!(!native_epoch_accepts_successor(ctx(1, 15), None));
     }
 }

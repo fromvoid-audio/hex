@@ -461,6 +461,7 @@ impl EditorView {
         self.audible_playback = None;
         self.applied_project_revision = None;
         self.observed_rejected_revision = 0;
+        self.paused_republish = None;
         self.audio_admission.reset_audio();
         // A new output prepares fresh endpoints; it reports its own set.
         self.degraded_plugins = Default::default();
@@ -1703,6 +1704,20 @@ impl EditorView {
                         output,
                         runtime_audio: None,
                     });
+                } else if reason == hex_engine::PlaybackHandoffRejection::SessionRuntime {
+                    visible_change |= record_paused_republish_rejection(
+                        &mut self.paused_republish,
+                        &mut self.deferred_play,
+                        &mut self.status,
+                        &mut self.error,
+                        self.project_generation,
+                        self.state.as_deref(),
+                        &self.audio_admission,
+                        project,
+                        audio.control.output_identity(),
+                        audio_revision,
+                        reason,
+                    );
                 }
             } else if rejected_preview_candidate(
                 &self.playback_candidates,
@@ -1726,6 +1741,28 @@ impl EditorView {
                     &mut self.error,
                     &format!("preview rejected: {}", reason.message()),
                 );
+            } else if reason == hex_engine::PlaybackHandoffRejection::SessionRuntime
+                && let Some(output) = audio.control.output_identity()
+                && !matches!(
+                    self.paused_republish,
+                    Some(
+                        super::audio_admission::PausedRepublish::Submitted {
+                            project,
+                            output: submitted_output,
+                            ..
+                        } | super::audio_admission::PausedRepublish::Exhausted {
+                            project,
+                            output: submitted_output,
+                        }
+                    ) if project.generation == self.project_generation
+                        && submitted_output == output
+                )
+            {
+                self.paused_republish = Some(super::audio_admission::PausedRepublish::Unresolved {
+                    generation: self.project_generation,
+                    output,
+                    audio_revision,
+                });
             }
         }
         let applied = audio
@@ -2329,6 +2366,7 @@ impl EditorView {
         visible_change |= self.tick_track_meters(Instant::now());
         visible_change |= self.tick_track_performance(Instant::now());
         visible_change |= self.tick_latency_rebuild();
+        visible_change |= self.tick_paused_republish();
         visible_change |= self.tick_sampler_edit_resume();
         visible_change |= self.tick_deferred_play();
         self.observe_audio_frame(frame, visible_change, Instant::now())
@@ -4990,6 +5028,7 @@ impl EditorView {
             || self.recovery.generation().is_some()
             || self.pending_loop_region().is_some()
             || self.stopped_plugin_parameter_terminal_pending()
+            || self.paused_republish_blocks_play()
         {
             return false;
         }
@@ -5000,6 +5039,239 @@ impl EditorView {
             self.queue_playback_action(action, revision);
         }
         true
+    }
+
+    pub(super) fn paused_republish_waiting_for_current(&self) -> bool {
+        matches!(
+            self.paused_republish,
+            Some(super::audio_admission::PausedRepublish::WaitingForPause { project, output, .. })
+                if project.generation == self.project_generation
+                    && self
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.revision == project.revision)
+                    && self
+                        .audio
+                        .as_ref()
+                        .and_then(|audio| audio.control.output_identity())
+                        == Some(output)
+        )
+    }
+
+    pub(super) fn paused_republish_blocks_play(&self) -> bool {
+        let current = |project: super::audio_admission::ProjectRevision, output: u64| {
+            project.generation == self.project_generation
+                && self
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == project.revision)
+                && self
+                    .audio
+                    .as_ref()
+                    .and_then(|audio| audio.control.output_identity())
+                    == Some(output)
+        };
+        match self.paused_republish {
+            Some(super::audio_admission::PausedRepublish::Submitted {
+                project, output, ..
+            }) => current(project, output),
+            Some(super::audio_admission::PausedRepublish::WaitingForPause {
+                project,
+                output,
+                ..
+            }) => {
+                let actual_playing = self
+                    .audio_status()
+                    .is_some_and(|status| status.playing.load(Acquire));
+                current(project, output) && !self.play_intent.desired_playing(actual_playing)
+            }
+            _ => false,
+        }
+    }
+
+    pub(super) fn paused_republish_exhausted_for_current(&self) -> bool {
+        matches!(
+            self.paused_republish,
+            Some(super::audio_admission::PausedRepublish::Exhausted { project, output })
+                if project.generation == self.project_generation
+                    && self
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.revision == project.revision)
+                    && self
+                        .audio
+                        .as_ref()
+                        .and_then(|audio| audio.control.output_identity())
+                        == Some(output)
+        )
+    }
+
+    pub(super) fn tick_paused_republish(&mut self) -> bool {
+        use super::audio_admission::{AdmissionState, PausedRepublish};
+        let Some(republish) = self.paused_republish else {
+            return false;
+        };
+        if let PausedRepublish::Unresolved {
+            generation,
+            output,
+            audio_revision,
+        } = republish
+        {
+            if generation != self.project_generation
+                || self
+                    .audio
+                    .as_ref()
+                    .and_then(|audio| audio.control.output_identity())
+                    != Some(output)
+            {
+                self.paused_republish = None;
+                return false;
+            }
+            let Some(candidate) = self
+                .playback_candidates
+                .iter()
+                .find(|candidate| candidate.audio_revision == audio_revision)
+            else {
+                return false;
+            };
+            if candidate.project_generation != generation
+                || candidate.seek_request_id.is_some()
+                || candidate.device_preview_identity.is_some()
+                || candidate.tuning_preview_identity.is_some()
+                || candidate.clip_preview_identity.is_some()
+                || self
+                    .state
+                    .as_ref()
+                    .is_none_or(|state| state.revision != candidate.state.revision)
+            {
+                self.paused_republish = None;
+                return false;
+            }
+            let project = super::audio_admission::ProjectRevision {
+                generation,
+                revision: candidate.state.revision,
+            };
+            self.audio_admission.rejected(
+                project,
+                audio_revision,
+                hex_engine::PlaybackHandoffRejection::SessionRuntime.message(),
+            );
+            return record_paused_republish_rejection(
+                &mut self.paused_republish,
+                &mut self.deferred_play,
+                &mut self.status,
+                &mut self.error,
+                self.project_generation,
+                self.state.as_deref(),
+                &self.audio_admission,
+                project,
+                Some(output),
+                audio_revision,
+                hex_engine::PlaybackHandoffRejection::SessionRuntime,
+            );
+        }
+        let (project, output) = match republish {
+            PausedRepublish::WaitingForPause {
+                project, output, ..
+            }
+            | PausedRepublish::Submitted {
+                project, output, ..
+            }
+            | PausedRepublish::Exhausted { project, output } => (project, output),
+            PausedRepublish::Unresolved { .. } => return false,
+        };
+        if self.project_generation != project.generation
+            || self
+                .state
+                .as_ref()
+                .is_none_or(|state| state.revision != project.revision)
+            || self
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.control.output_identity())
+                != Some(output)
+        {
+            if matches!(republish, PausedRepublish::Submitted { .. }) {
+                self.deferred_play = None;
+            }
+            self.paused_republish = None;
+            return false;
+        }
+        if self.applied_project_revision == Some(project.revision) {
+            self.paused_republish = None;
+            return true;
+        }
+        match republish {
+            PausedRepublish::Unresolved { .. } | PausedRepublish::Exhausted { .. } => false,
+            PausedRepublish::WaitingForPause { audio_revision, .. } => {
+                if self.edit_pending()
+                    || self.opening_project
+                    || self.close_prompt_open
+                    || self.save_dialog_open
+                    || self.device_gesture.snapshot().is_some()
+                    || self.tuning.client.snapshot().is_some()
+                    || self.midi_recorder.blocks_edits()
+                    || self.gain_recorder.blocks_edits()
+                    || self.computer_keyboard.input.is_some()
+                    || !self.pending_audio_commands.is_empty()
+                    || self.pending_session_ticket.is_some()
+                    || self.pending_seek_ticket.is_some()
+                    || self.recovery.generation().is_some()
+                    || self.stopped_playback_restore.is_some()
+                    || self.section_launch_waiting()
+                    || self.prepared_seek.is_some()
+                    || self.latency_rebuild.is_some()
+                {
+                    return false;
+                }
+                let Some(playing) = self
+                    .audio
+                    .as_ref()
+                    .and_then(|audio| audio.control.status())
+                    .map(|status| status.playing.load(Acquire))
+                else {
+                    return false;
+                };
+                if playing {
+                    return false;
+                }
+                if self.enqueue(Request::RepublishPausedPlayback) {
+                    self.paused_republish = Some(PausedRepublish::Submitted {
+                        project,
+                        output,
+                        rejected_audio_revision: audio_revision,
+                    });
+                    self.status = "applying audio update at the paused cursor".into();
+                    return true;
+                }
+                false
+            }
+            PausedRepublish::Submitted {
+                rejected_audio_revision,
+                ..
+            } => {
+                if self.edit_pending()
+                    || !self.playback_candidates.is_empty()
+                    || self
+                        .audio
+                        .as_ref()
+                        .and_then(|audio| audio.control.status())
+                        .is_some_and(|status| status.publication_in_flight())
+                {
+                    return false;
+                }
+                if self.audio_admission.current().is_some_and(|current| {
+                    current.project == project
+                        && current.audio_revision == Some(rejected_audio_revision)
+                        && matches!(current.state, AdmissionState::Rejected(_))
+                }) {
+                    self.paused_republish = Some(PausedRepublish::Exhausted { project, output });
+                    self.deferred_play = None;
+                    return replace_status(&mut self.status, "stop playback to apply edit");
+                }
+                false
+            }
+        }
     }
 
     pub(super) fn tick_latency_rebuild(&mut self) -> bool {
@@ -5404,6 +5676,7 @@ impl EditorView {
 
     fn stop_transport(&mut self, stop_output: bool) {
         self.playback_settings.pending = None;
+        self.paused_republish = None;
         self.cancel_native_automation_touch();
         use super::audio_admission::LatencyRebuild;
         let native_restore = matches!(
@@ -5534,6 +5807,67 @@ impl EditorView {
 }
 
 // Called only after exact current context/output identity has been reconciled.
+#[allow(clippy::too_many_arguments)] // Disjoint EditorView fields borrowed alongside active audio control.
+fn record_paused_republish_rejection(
+    paused_republish: &mut Option<super::audio_admission::PausedRepublish>,
+    deferred_play: &mut Option<(PlaybackAction, Option<u64>, u64)>,
+    status: &mut String,
+    error: &mut Option<super::display_error::DisplayError>,
+    project_generation: u64,
+    state: Option<&ViewState>,
+    audio_admission: &super::audio_admission::AudioAdmissionStatus,
+    project: super::audio_admission::ProjectRevision,
+    output: Option<u64>,
+    audio_revision: u64,
+    reason: hex_engine::PlaybackHandoffRejection,
+) -> bool {
+    use super::audio_admission::{AdmissionState, PausedRepublish};
+    let Some(output) = output else {
+        return false;
+    };
+    if project.generation != project_generation
+        || state.is_none_or(|state| state.revision != project.revision)
+        || !audio_admission.current().is_some_and(|current| {
+            current.project == project
+                && current.audio_revision == Some(audio_revision)
+                && matches!(current.state, AdmissionState::Rejected(_))
+        })
+    {
+        return false;
+    }
+    let mut changed = false;
+    if matches!(
+        *paused_republish,
+        Some(
+            PausedRepublish::Submitted {
+                project: previous,
+                output: previous_output,
+                ..
+            } | PausedRepublish::Exhausted {
+                project: previous,
+                output: previous_output,
+            }
+        ) if previous == project && previous_output == output
+    ) {
+        *paused_republish = Some(PausedRepublish::Exhausted { project, output });
+        *deferred_play = None;
+        changed |= replace_status(status, "stop playback to apply edit");
+        changed |= replace_error(error, reason.message());
+        return changed;
+    }
+    *paused_republish = Some(PausedRepublish::WaitingForPause {
+        project,
+        output,
+        audio_revision,
+    });
+    let submitted_status =
+        format!("audio revision {audio_revision} submitted · waiting for playback");
+    if *status == submitted_status {
+        changed |= replace_status(status, "audio update waiting for pause or stop");
+    }
+    changed
+}
+
 fn restore_verified_recovery_from_applied(
     recovery: &mut super::recovery_state::RecoveryState,
     pending: Option<u64>,

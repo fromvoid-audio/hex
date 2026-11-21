@@ -49,6 +49,32 @@ pub(super) enum LatencyRebuild {
     },
 }
 
+/// A live canonical edit refused by the callback (`SessionRuntime`) cannot
+/// install while playback continues. Track the exact refused revision so
+/// pausing republishes it once instead of stranding playback on an older graph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PausedRepublish {
+    Unresolved {
+        generation: u64,
+        output: u64,
+        audio_revision: u64,
+    },
+    WaitingForPause {
+        project: ProjectRevision,
+        output: u64,
+        audio_revision: u64,
+    },
+    Submitted {
+        project: ProjectRevision,
+        output: u64,
+        rejected_audio_revision: u64,
+    },
+    Exhausted {
+        project: ProjectRevision,
+        output: u64,
+    },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AdmissionState {
     Pending,

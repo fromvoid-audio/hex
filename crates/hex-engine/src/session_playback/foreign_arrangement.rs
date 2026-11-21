@@ -528,30 +528,47 @@ impl ForeignArrangement {
             let ledger = &donor.committed;
             if ledger.loop_pass.is_some() && (cut.playing || ledger.has_any_held_notes()) {
                 plan.requires_clock_continuity = true;
-                // An Arrangement gate keeps its performance-frame deadline at
-                // the same cursor. A future wrap releases it through the normal
-                // renderer. Without an authored program, a changed loop does
-                // not affect the worker's parameter-origin budget.
-                plan.keeps_unautomated_loop_clock &= ledger.route == Some(RouteOwner::Arrangement)
-                    && !candidate.has_authored_automation
-                    && !donor.has_authored_automation;
-                // These held gates are timed against the canonical first
-                // pass. Keep their IDs and deadlines on the original worker.
-                plan.keeps_first_pass_loop_clock &= cut.loop_pass == 0
-                    && cut.performance == cut.arrangement
-                    && ledger.route == Some(RouteOwner::Arrangement)
-                    && !ledger.live.held()
-                    && !ledger.hardware.held()
-                    && loops
-                        .into_iter()
-                        .flatten()
-                        .all(|region| !region.enabled() || cut.arrangement < region.end())
+                let arrangement_or_silent = matches!(
+                    ledger.route,
+                    Some(RouteOwner::Arrangement | RouteOwner::Silence)
+                );
+                let unautomated =
+                    !candidate.has_authored_automation && !donor.has_authored_automation;
+                // An Arrangement (or silent) gate keeps its performance-frame
+                // deadline at the same cursor. A future wrap releases it
+                // through the normal renderer. Without an authored program, a
+                // changed loop does not affect the worker's parameter-origin
+                // budget.
+                plan.keeps_unautomated_loop_clock &= arrangement_or_silent && unautomated;
+                // These held gates are timed against the canonical first pass.
+                // Keep their IDs and deadlines on the original worker. An
+                // unautomated generator does not restrict automated generators
+                // in the same project, and enabled loops already behind the
+                // linear first-pass cursor cannot wrap before or after the cut.
+                let inactive_linear_loop = loops
+                    .into_iter()
+                    .flatten()
+                    .all(|region| !region.enabled() || cut.arrangement >= region.end());
+                let active_first_pass_loop = loops
+                    .into_iter()
+                    .flatten()
+                    .all(|region| !region.enabled() || cut.arrangement < region.end())
                     && crate::foreign_automation::QuantumProfile::keeps_instrument_epoch(
                         candidate.processor.quantum_frames(),
                         loops[0],
                         loops[1],
-                    )
-                    && candidate.has_authored_automation;
+                    );
+                plan.keeps_first_pass_loop_clock &= if unautomated {
+                    arrangement_or_silent
+                } else {
+                    cut.loop_pass == 0
+                        && cut.performance == cut.arrangement
+                        && arrangement_or_silent
+                        && !ledger.live.held()
+                        && !ledger.hardware.held()
+                        && candidate.has_authored_automation
+                        && (inactive_linear_loop || active_first_pass_loop)
+                };
             }
             if !ledger.cut
                 && matches!(ledger.route, Some(RouteOwner::Session { .. }))

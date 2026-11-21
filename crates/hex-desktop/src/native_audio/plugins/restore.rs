@@ -78,7 +78,14 @@ impl Plugins {
             .status
             .recording_source()
             .ok_or("ordinary vst3 restore source unavailable")?;
-        if self.pending.is_some() || source.context != context {
+        // A live edit can commit on the session worker while its callback
+        // handoff is refused (leaving the applied graph on an earlier revision
+        // of the same project generation). Stop must still restore the current
+        // canonical revision once no publication is in flight.
+        let recoverable_revision = source.context.project_generation == context.project_generation
+            && source.context.editor_revision <= context.editor_revision
+            && !control.status.publication_in_flight();
+        if self.pending.is_some() || !recoverable_revision {
             return Err("stopped vst3 source is not current".into());
         }
         let fence = control
