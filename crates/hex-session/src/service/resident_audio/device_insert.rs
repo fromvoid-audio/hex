@@ -866,7 +866,8 @@ impl Session {
         let project = self.project();
         let fixed_row = match destination.parent_group {
             Some(group) => {
-                destination.before.is_none() && group_history::fixed_entry(project, *leaf, group)
+                destination.before.is_none()
+                    && group_history::fixed_entry(project, *leaf, group).is_some()
             }
             None => group_history::fixed_exit(project, *leaf, destination.before),
         };
