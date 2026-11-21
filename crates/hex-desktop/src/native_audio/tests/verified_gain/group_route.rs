@@ -5,20 +5,26 @@ use hex_session::service::DeviceInsertOutcome;
 
 #[test]
 fn verified_group_entry_waits_for_the_exact_callback_receipt() {
-    check_verified_group_entry(FollowUp::Reorder);
+    check_verified_group_entry(EntryScenario::Reorder);
 }
 
 #[test]
 fn verified_group_route_history_waits_for_each_exact_callback_receipt() {
-    check_verified_group_entry(FollowUp::History);
+    check_verified_group_entry(EntryScenario::History);
 }
 
-enum FollowUp {
+#[test]
+fn verified_first_child_request_waits_for_the_exact_callback_receipt() {
+    check_verified_group_entry(EntryScenario::FirstChild);
+}
+
+enum EntryScenario {
     Reorder,
     History,
+    FirstChild,
 }
 
-fn check_verified_group_entry(follow_up: FollowUp) {
+fn check_verified_group_entry(scenario: EntryScenario) {
     let _native = native_fixture();
     let files = Files::new();
     let mut h = actual_native_harness();
@@ -47,12 +53,32 @@ fn check_verified_group_entry(follow_up: FollowUp) {
     )));
     h.applied(h.context.unwrap());
     let leaf = imported.state.project.tracks()[1].id();
-    let original = h.run(Request::Edit(Command::GroupTracks {
+    let grouped = h.run(Request::Edit(Command::GroupTracks {
         tracks: TrackSelectionIds::new(&[child]).unwrap(),
         name: "group".into(),
     }));
-    let Some(Created::Track(group)) = original.created else {
+    let Some(Created::Track(group)) = grouped.created else {
         panic!("group");
+    };
+    let first_child = matches!(scenario, EntryScenario::FirstChild);
+    let (original, expected_rows, child_parent) = if first_child {
+        h.applied(h.context.unwrap());
+        h.run(Request::Edit(Command::ReparentTracks {
+            tracks: TrackSelectionIds::new(&[child]).unwrap(),
+            destination: TrackDestination {
+                parent_group: None,
+                before: Some(group),
+            },
+        }));
+        h.applied(h.context.unwrap());
+        // The empty Group's gain makes the successor distinguishable in PCM.
+        let original = h.run(Request::Edit(Command::Gain {
+            track: group,
+            gain: 0.5,
+        }));
+        (original, [child, group, leaf], None)
+    } else {
+        (grouped, [group, child, leaf], Some(group))
     };
     let predecessor = h.applied(h.context.unwrap());
     assert_eq!(predecessor.context.editor_revision, original.state.revision);
@@ -65,7 +91,15 @@ fn check_verified_group_entry(follow_up: FollowUp) {
             .map(|track| track.id())
             .collect::<Vec<_>>()
     };
-    assert_eq!(rows(&original), [group, child, leaf]);
+    assert_eq!(rows(&original), expected_rows);
+    assert_eq!(
+        original.state.project.track(child).unwrap().parent_group(),
+        child_parent
+    );
+    assert_eq!(
+        original.state.project.track(leaf).unwrap().parent_group(),
+        None
+    );
     h.audio
         .as_mut()
         .unwrap()
@@ -128,8 +162,23 @@ fn check_verified_group_entry(follow_up: FollowUp) {
         installed.state.project.track(leaf).unwrap().parent_group(),
         Some(group)
     );
-    assert_eq!(rows(&installed), [group, child, leaf]);
-    if matches!(follow_up, FollowUp::History) {
+    assert_eq!(rows(&installed), expected_rows);
+    assert_eq!(
+        installed.state.project.track(child).unwrap().parent_group(),
+        child_parent
+    );
+    if first_child {
+        let deadline = Instant::now() + h.wait;
+        while h.render() != [[0.1875; 2]; 64] {
+            assert!(
+                Instant::now() < deadline,
+                "first-child route did not reach the expected mix"
+            );
+            std::thread::yield_now();
+        }
+        return;
+    }
+    if matches!(scenario, EntryScenario::History) {
         let before = Arc::clone(&original.state.project);
         let after = Arc::clone(&installed.state.project);
         let mut current = installed;
