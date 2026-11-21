@@ -5,6 +5,70 @@ use hex_project::{BeatTime, Command};
 use hex_session::service::Request;
 
 #[gpui::test]
+fn g_consolidates_one_slipped_audio_clip_and_follows_undo_and_redo(cx: &mut TestAppContext) {
+    let (_files, handle, editor, clips) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let source = clips[1];
+    let cursor = |project: &hex_project::Project, id| {
+        hex_project::AudioViewProjection::new(project.clip(id).unwrap(), project.tempo_map())
+            .unwrap()
+            .play_start_position()
+            .unwrap()
+    };
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::ResizeAudioClipView {
+            clip: source,
+            operation: hex_project::AudioViewResizeOperation::PlayStart { position: 2_400 },
+        })));
+    });
+    pump(&editor, &mut visual);
+    click(&mut visual, source, false);
+    let original = editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(view.selected_clip_ids(), [source]);
+        assert_eq!(cursor(project, source), Some(2_400));
+        project.clip(source).unwrap().clone()
+    });
+    visual.update(|window, cx| editor.read_with(cx, |view, _| view.focus.focus(window)));
+    visual.simulate_keystrokes("g");
+    pump(&editor, &mut visual);
+    let consolidated = editor.read_with(&visual, |view, _| {
+        assert!(
+            view.error.is_none(),
+            "single-clip g refused: {:?}",
+            view.error
+        );
+        let result = view.selected_clip.unwrap();
+        assert_ne!(result, source);
+        assert_eq!(view.selected_clip_ids(), [result]);
+        let project = &view.state.as_ref().unwrap().project;
+        let clip = project.clip(result).unwrap();
+        assert_eq!(
+            (clip.start(), clip.duration()),
+            (original.start(), original.duration())
+        );
+        assert_eq!(cursor(project, result), Some(0));
+        assert_eq!(clip.audio_events().sources[0].clip, original);
+        assert!(project.clip(source).is_none());
+        result
+    });
+
+    for (request, selected, removed) in [
+        (Request::Undo, source, consolidated),
+        (Request::Redo, consolidated, source),
+    ] {
+        editor.update(&mut visual, |view, _| assert!(view.enqueue(request)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.selected_clip_ids(), [selected]);
+            let project = &view.state.as_ref().unwrap().project;
+            assert!(project.clip(selected).is_some());
+            assert!(project.clip(removed).is_none());
+        });
+    }
+}
+
+#[gpui::test]
 fn g_groups_selected_midi_clips_and_selects_one_created_clip(cx: &mut TestAppContext) {
     let (_files, handle, editor, _) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -88,6 +152,16 @@ fn g_groups_selected_midi_clips_and_selects_one_created_clip(cx: &mut TestAppCon
         assert_eq!(grouped.notes()[1].start(), BeatTime::from_raw(3 << 32));
         (selected, project.snapshot())
     });
+    for (request, expected) in [
+        (Request::Undo, clips[..2].to_vec()),
+        (Request::Redo, vec![grouped_id]),
+    ] {
+        editor.update(&mut visual, |view, _| assert!(view.enqueue(request)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.selected_clip_ids(), expected)
+        });
+    }
     let remaining = editor.read_with(&visual, |view, _| {
         view.state
             .as_ref()

@@ -905,7 +905,8 @@ pub enum Command {
     DuplicateClip(ClipId),
     /// Copy a frozen whole-clip selection after its complete extent, atomically.
     DuplicateClips(Vec<ClipId>),
-    /// Wrap one same-track, same-kind selection atomically; never replace nonselected material.
+    /// Consolidate one or more same-track, same-kind clips into one local
+    /// timeline from zero. Preserve original audio sources and other placements.
     GroupClips(Vec<ClipId>),
     /// Split selection edges and group included material independently per track,
     /// retaining the full selected extent including empty margins and internal gaps.

@@ -47,12 +47,11 @@ impl EditorView {
             return;
         }
         let clips = self.selected_clip_ids();
-        if clips.len() < 2 {
+        if clips.is_empty() {
             // A section span is the only grouping selection: merge it rather
             // than dropping `g` when the stricter section-focus test fails.
             if !self.merge_section_span_selection() {
-                self.error =
-                    Some("select two or more clips, sections or a time range to group".into());
+                self.error = Some("select a clip, a time range or two sections to group".into());
             }
             return;
         }
@@ -184,17 +183,17 @@ impl EditorView {
                 .iter()
                 .rev()
                 .find_map(|(result, before)| {
-                    let has_clip = |project: &hex_project::Project| {
-                        project.clip(*result).is_some() || project.midi_clip(*result).is_some()
+                    let has_clip = |project: &hex_project::Project, id| {
+                        project.clip(id).is_some() || project.midi_clip(id).is_some()
                     };
-                    let was_present = has_clip(&old.project);
-                    let present = has_clip(project);
+                    let was_present = has_clip(&old.project, *result);
+                    let present = has_clip(project, *result);
                     if was_present
                         && !present
                         && self.selected_clip == Some(*result)
                         && self.selected_clip_ids() == [*result]
                         && self.time_selection == before.time
-                        && before.ids.iter().all(|id| project.clip(*id).is_some())
+                        && before.ids.iter().all(|id| has_clip(project, *id))
                     {
                         Some(before.clone())
                     } else if !was_present && present && before.matches(self) {

@@ -5346,8 +5346,8 @@ fn run_worker(
             } => Some(
                 if *captured_generation != project_generation || *captured_revision != revision {
                     Err("clip grouping canceled · project changed".into())
-                } else if clips.len() < 2 || clips.len() > hex_project::MAX_CLIPS {
-                    Err("select at least two clips to group".into())
+                } else if clips.is_empty() || clips.len() > hex_project::MAX_CLIPS {
+                    Err("invalid clip grouping selection count".into())
                 } else if pending_sampler_parameter.is_some()
                     || device_gesture.snapshot().is_some()
                     || tuning_gesture.snapshot().is_some()
