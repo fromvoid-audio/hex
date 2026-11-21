@@ -327,6 +327,45 @@ struct SavedOffHostedReturn {
     retired_binding: EffectBinding,
 }
 
+fn queue_stopped_return_on(
+    h: &mut ResidentHarness,
+    current: &ViewState,
+    predecessor: AppliedAudioSource,
+    command: Command,
+) -> ResidentGraphSubmission {
+    let (prepared, enqueue, _) = h.probe_next_native_publication();
+    let (submitted, resume) = h.probe_next_submitted_device_insert();
+    h.service.submit(Request::Edit(command)).unwrap();
+    let deadline = Instant::now() + Duration::from_millis(800);
+    while prepared.try_recv().is_err() {
+        h.pump();
+        while let Ok(event) = h.service.try_event() {
+            assert!(
+                !event.request_complete && event.error.is_none(),
+                "stopped Return On ended before native submission: {:?} {:?}",
+                event.status,
+                event.error
+            );
+            assert_original(&event, current);
+        }
+        // Preparation may need old-graph callback progress for file custody.
+        // The native publication gate prevents the new runtime from queuing.
+        assert_eq!(render(h), [[0.0; 2]; BLOCK]);
+        assert_eq!(status(h).recording_source(), Some(predecessor));
+        assert!(
+            Instant::now() < deadline,
+            "private stopped Return preparation"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(h.plugin_completed.load(Acquire), 0);
+    enqueue.send(()).unwrap();
+    let queued = submitted.recv_timeout(Duration::from_millis(800)).unwrap();
+    resume.send(()).unwrap();
+    assert_eq!(queued_without_callback(h, current, predecessor), queued);
+    queued
+}
+
 fn reopen_saved_off_return() -> SavedOffHostedReturn {
     let files = Files::new();
     let RollingHostedReturn {
@@ -509,6 +548,11 @@ fn saved_off_resident_return_installs_a_fresh_worker_on_stopped_power_on() {
     let h = &mut off.harness;
     let current = &off.saved_off.state;
     let device = off.device;
+    let captured =
+        hex_plugin_state::decode(current.project.device(device).unwrap().state()).unwrap();
+    let component = captured.component.unwrap();
+    assert_eq!(&component[..4], b"HXPS");
+    assert_eq!(u32::from_le_bytes(component[4..8].try_into().unwrap()), 0);
     h.enable_confirmed_device_inserts();
     assert!(!status(h).playing.load(Acquire));
     let predecessor = status(h).recording_source().unwrap();
@@ -531,8 +575,7 @@ fn saved_off_resident_return_installs_a_fresh_worker_on_stopped_power_on() {
     assert_eq!(h.plugin_records.load(Acquire), 0);
     fs::rename(&parked, &catalog).unwrap();
 
-    h.service.submit(Request::Edit(command.clone())).unwrap();
-    let interrupted = queued_without_callback(h, current, predecessor);
+    let interrupted = queue_stopped_return_on(h, current, predecessor, command.clone());
     h.audio
         .as_mut()
         .unwrap()
@@ -557,8 +600,7 @@ fn saved_off_resident_return_installs_a_fresh_worker_on_stopped_power_on() {
         h.plugin_records.load(Acquire) == 0
     });
 
-    h.service.submit(Request::Edit(command)).unwrap();
-    let submitted = queued_without_callback(h, current, predecessor);
+    let submitted = queue_stopped_return_on(h, current, predecessor, command);
     assert_eq!(status(h).recording_source(), Some(predecessor));
     assert!(status(h).native_effect_source().is_none());
     assert_eq!(h.plugin_completed.load(Acquire), 0);
