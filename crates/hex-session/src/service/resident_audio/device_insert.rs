@@ -1,6 +1,7 @@
 //! Keep a validated graph edit private until the callback installs its exact graph.
 use super::*;
 mod detached_history;
+mod group_history;
 mod hosted_effect_history;
 mod hosted_instrument_move;
 mod hosted_replacement_history;
@@ -94,6 +95,7 @@ pub(in crate::service) enum Operation {
     Device(GraphEditOperation),
     HostedHistory(GraphEditOperation),
     ResidentMoveHistory,
+    VerifiedGroupHistory,
     HostedClipboard,
     Tempo,
 }
@@ -110,7 +112,9 @@ impl Operation {
             Self::Device(GraphEditOperation::MoveTrack) => "track moved",
             Self::Device(GraphEditOperation::PowerDevice) => "device power changed",
             Self::Device(GraphEditOperation::RemoveTrack) => "track removed",
-            Self::HostedHistory(_) | Self::ResidentMoveHistory => "history committed",
+            Self::HostedHistory(_) | Self::ResidentMoveHistory | Self::VerifiedGroupHistory => {
+                "history committed"
+            }
             Self::Tempo => "tempo applied",
         }
     }
@@ -119,6 +123,7 @@ impl Operation {
         match self {
             Self::Device(operation) | Self::HostedHistory(operation) => Some(operation),
             Self::ResidentMoveHistory => Some(GraphEditOperation::MoveDevice),
+            Self::VerifiedGroupHistory => Some(GraphEditOperation::MoveTrack),
             Self::HostedClipboard => Some(GraphEditOperation::InsertDevice),
             Self::Tempo => None,
         }
@@ -780,22 +785,27 @@ impl Session {
         command: &Command,
         previous: Option<&PreparedRevision>,
     ) -> bool {
-        let (
-            Command::ReparentTracks {
-                tracks,
-                destination,
-            },
-            Some(previous),
-        ) = (command, previous)
+        let Command::ReparentTracks {
+            tracks,
+            destination,
+        } = command
         else {
             return false;
         };
         let ([leaf], Some(group)) = (tracks.ids(), destination.parent_group) else {
             return false;
         };
+        destination.before.is_none()
+            && group_history::fixed_entry(self.project(), *leaf, group)
+            && self.verified_group_route_inputs(previous)
+    }
+
+    fn verified_group_route_inputs(&self, previous: Option<&PreparedRevision>) -> bool {
+        let Some(previous) = previous else {
+            return false;
+        };
         let project = self.project();
-        if destination.before.is_some()
-            || previous.arrangement().main_latency_frames() != 0
+        if previous.arrangement().main_latency_frames() != 0
             || !previous.contains_streamed_sources()
             || previous.native_parameter_input_target().is_some()
             || previous.gain_recording_track().is_some()
@@ -807,30 +817,6 @@ impl Session {
             || !project.midi_routes().is_empty()
             || !project.sidechains().is_empty()
         {
-            return false;
-        }
-        let (Some(leaf), Some(group)) = (project.track(*leaf), project.track(group)) else {
-            return false;
-        };
-        if leaf.is_group()
-            || leaf.parent_group().is_some()
-            || leaf.clips().is_empty()
-            || !group.is_group()
-            || group.parent_group().is_some()
-        {
-            return false;
-        }
-        let Ok(hierarchy) = project.track_hierarchy() else {
-            return false;
-        };
-        let (Some(leaf_row), Some(group_row)) =
-            (hierarchy.row(leaf.id()), hierarchy.row(group.id()))
-        else {
-            return false;
-        };
-        let subtree = group_row.subtree_range();
-        // Appending the next root row leaves every track at its current index.
-        if subtree.len() <= 1 || subtree.end != leaf_row.subtree_range().start {
             return false;
         }
         let vst3 = hex_lattice_contract::DeviceTypeId::from_static("hex.vst3");
@@ -883,6 +869,42 @@ impl Session {
             .inspect_history(redo, hosted_membership_operation)
             .flatten()
             .is_some()
+    }
+
+    pub(in crate::service) fn stage_verified_group_history(
+        &mut self,
+        redo: bool,
+        state: &ViewState,
+        previous: Option<&PreparedRevision>,
+        sink: &mut dyn WorkerAudioSink,
+        document_intent: u64,
+    ) -> Result<Option<Pending>, SessionError> {
+        let Some(command) = self
+            .editor
+            .inspect_history(redo, group_history::command)
+            .flatten()
+        else {
+            return Ok(None);
+        };
+        if !self.verified_group_route_inputs(previous) {
+            return Ok(None);
+        }
+        let Some(edge) = group_history::stage(&mut self.editor, redo, command)? else {
+            return Ok(None);
+        };
+        let predecessor = self.verified_graph_predecessor(state)?;
+        self.start_verified_graph_edit(
+            StagedChange::History(edge),
+            Operation::VerifiedGroupHistory,
+            predecessor,
+            state.revision,
+            previous,
+            sink,
+            document_intent,
+            None,
+            None,
+        )
+        .map(Some)
     }
 
     pub(in crate::service) fn stage_verified_hosted_history(
@@ -1096,7 +1118,10 @@ impl Session {
             document_intent,
             plugin: None,
             proposal_control: None,
-            publish_created: !matches!(operation, Operation::HostedHistory(_)),
+            publish_created: !matches!(
+                operation,
+                Operation::HostedHistory(_) | Operation::VerifiedGroupHistory
+            ),
         })
     }
 
