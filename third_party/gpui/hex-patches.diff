@@ -4525,7 +4525,7 @@ diff --git a/src/scene.rs b/src/scene.rs
 @@ -793 +1062 @@
 -        self.vertices.push(PathVertex {
 +        vertices.push(PathVertex {
-@@ -833,0 +1103,833 @@
+@@ -833,0 +1103,853 @@
 +
 +#[cfg(any(test, feature = "test-support"))]
 +pub(crate) fn verify_bulk_replay() -> Result<(), String> {
@@ -5081,9 +5081,29 @@ diff --git a/src/scene.rs b/src/scene.rs
 +        Ok(())
 +    }
 +
++    fn verify_rounded_replay_envelope() -> Result<(), String> {
++        let near_path = bounds(0.1, 0.0, 0.18, 1.0, 1.0);
++        let far_quad = bounds(-1_000_000.0, 0.0, 1.0, 1.0, 1.0);
++        let cover = bounds(0.26, 0.0, 0.005, 1.0, 1.0);
++        let mut previous = Scene::default();
++        previous.insert_primitive(primitive(2, 20, near_path, near_path));
++        previous.insert_primitive(primitive(1, 21, far_quad, far_quad));
++
++        let mut fast = Scene::default();
++        let mut legacy = Scene::default();
++        refused(&mut fast, 0..previous.len(), &previous)?;
++        fast.replay(0..previous.len(), &previous);
++        legacy.replay_legacy(0..previous.len(), &previous);
++        let cover = primitive(1, 22, cover, cover);
++        fast.insert_primitive(cover.clone());
++        legacy.insert_primitive(cover);
++        equivalent(&mut fast, &mut legacy)
++    }
++
 +    pub(super) fn verify() -> Result<(), String> {
 +        verify_path_clone_value_semantics()?;
 +        verify_disjoint_path_pair()?;
++        verify_rounded_replay_envelope()?;
 +        for scale in [1.0, 2.0] {
 +            for seed in 1..=12 {
 +                let (previous, range) = source(scale, seed);
