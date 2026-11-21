@@ -1413,7 +1413,7 @@ impl EditorView {
         visible_change |= self.tick_track_reorder(now);
         visible_change |= self.tick_edit_cursor(now);
         let project_edit_pending = self.edit_pending();
-        visible_change |= self.tick_project_spectrum();
+        visible_change |= self.tick_project_spectrum(cx);
         visible_change |= self.tick_sample_recorder();
         visible_change |= self.retire_stale_spectrum_target();
         visible_change |= self.retire_stale_processor_audition_target();
