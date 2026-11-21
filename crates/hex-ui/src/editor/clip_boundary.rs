@@ -375,7 +375,9 @@ pub(super) fn backdrop_shell(
                 move |bounds, _, window, _| {
                     if visible {
                         let color = window.text_style().color;
-                        paint_backdrop(bounds, &paint_style, color, window);
+                        window.paint_ordered_group(|window| {
+                            paint_backdrop(bounds, &paint_style, color, window);
+                        });
                         paint_resolved_trailing(bounds, &paint_style, color, window);
                     }
                 },

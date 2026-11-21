@@ -12,6 +12,7 @@ where
     root: Option<usize>,
     nodes: Vec<Node<U>>,
     stack: Vec<usize>,
+    group_members: Vec<(TreeBounds<U>, u32)>,
 }
 
 impl<U> BoundsTree<U>
@@ -29,6 +30,7 @@ where
         self.root = None;
         self.nodes.clear();
         self.stack.clear();
+        self.group_members.clear();
     }
 
     pub fn insert(&mut self, new_bounds: Bounds<U>) -> u32 {
@@ -48,19 +50,12 @@ where
 
     fn insert_with_order(&mut self, raw_bounds: Bounds<U>, reserved: Option<u32>) -> u32 {
         let bounds = TreeBounds::from_bounds(&raw_bounds);
-        let Some(mut index) = self.root else {
+        let Some(index) = self.placement_leaf(&bounds) else {
             let order = reserved.unwrap_or(1);
             let leaf = self.push_leaf(bounds, order);
             self.root = Some(leaf);
             return order;
         };
-
-        while let Node::Internal { left, right, .. } = self.nodes[index] {
-            self.stack.push(index);
-            let left_cost = bounds.union(self.nodes[left].bounds()).half_perimeter();
-            let right_cost = bounds.union(self.nodes[right].bounds()).half_perimeter();
-            index = if left_cost < right_cost { left } else { right };
-        }
 
         let mut order = 0;
         if reserved.is_none() {
@@ -84,24 +79,98 @@ where
             *stored = (*stored).max(order);
         } else {
             let leaf = self.push_leaf(bounds, order);
-            let parent = self.push_internal(index, leaf);
-            if let Some(&ancestor) = self.stack.last() {
-                let Node::Internal { left, right, .. } = &mut self.nodes[ancestor] else {
-                    unreachable!()
-                };
-                if *left == index {
-                    *left = parent;
-                } else {
-                    *right = parent;
-                }
-            } else {
-                self.root = Some(parent);
-            }
+            self.attach(leaf, index);
         }
+        self.rebalance_placement();
+        order
+    }
+
+    /// Insert consecutive clipped members with their ordinary painter orders.
+    /// Only the balanced traversal entry is shared across the members.
+    pub fn insert_group(&mut self, bounds: &[Bounds<U>], orders: &mut [u32]) -> Option<()> {
+        if bounds.is_empty() || bounds.len() != orders.len() {
+            return None;
+        }
+        let start = self.group_members.len();
+        let mut envelope = TreeBounds::from_bounds(&bounds[0]);
+        let mut max_order = 0;
+        for (raw, order) in bounds.iter().zip(orders) {
+            let rect = TreeBounds::from_bounds(raw);
+            let mut local_max = 0;
+            let mut repeat = false;
+            for (member, rank) in &self.group_members[start..] {
+                if *rank > local_max && rect.intersects(member) {
+                    local_max = *rank;
+                }
+                repeat |= *member == rect;
+            }
+            // The earlier identical primitive ordered itself after every
+            // overlapping member already in the main tree.
+            let before = if repeat {
+                local_max
+            } else {
+                self.root
+                    .map_or(local_max, |root| self.find_order(root, &rect, local_max))
+            };
+            let Some(ranked) = before.checked_add(1) else {
+                self.group_members.truncate(start);
+                return None;
+            };
+            *order = ranked;
+            max_order = max_order.max(ranked);
+            envelope = envelope.union(&rect);
+            self.group_members.push((rect, ranked));
+        }
+        self.group_members[start..].sort_unstable_by_key(|(_, order)| std::cmp::Reverse(*order));
+        let end = self.group_members.len();
+        let path = self.placement_leaf(&envelope);
+        let leaf = self.nodes.len();
+        self.nodes.push(Node::Group {
+            bounds: envelope,
+            start,
+            end,
+            max_order,
+        });
+        if let Some(index) = path {
+            self.attach(leaf, index);
+        } else {
+            self.root = Some(leaf);
+        }
+        self.rebalance_placement();
+        Some(())
+    }
+
+    fn placement_leaf(&mut self, bounds: &TreeBounds<U>) -> Option<usize> {
+        let mut index = self.root?;
+        while let Node::Internal { left, right, .. } = self.nodes[index] {
+            self.stack.push(index);
+            let left_cost = bounds.union(self.nodes[left].bounds()).half_perimeter();
+            let right_cost = bounds.union(self.nodes[right].bounds()).half_perimeter();
+            index = if left_cost < right_cost { left } else { right };
+        }
+        Some(index)
+    }
+
+    fn attach(&mut self, leaf: usize, index: usize) {
+        let parent = self.push_internal(index, leaf);
+        if let Some(&ancestor) = self.stack.last() {
+            let Node::Internal { left, right, .. } = &mut self.nodes[ancestor] else {
+                unreachable!()
+            };
+            if *left == index {
+                *left = parent;
+            } else {
+                *right = parent;
+            }
+        } else {
+            self.root = Some(parent);
+        }
+    }
+
+    fn rebalance_placement(&mut self) {
         while let Some(parent) = self.stack.pop() {
             self.rebalance(parent);
         }
-        order
     }
 
     fn find_order(&self, index: usize, bounds: &TreeBounds<U>, mut order: u32) -> u32 {
@@ -111,6 +180,17 @@ where
         }
         match node {
             Node::Leaf { order, .. } => *order,
+            Node::Group { start, end, .. } => {
+                for (member, member_order) in &self.group_members[*start..*end] {
+                    if *member_order <= order {
+                        break;
+                    }
+                    if bounds.intersects(member) {
+                        return *member_order;
+                    }
+                }
+                order
+            }
             Node::Internal { left, right, .. } => {
                 let left = *left;
                 let right = *right;
@@ -208,6 +288,7 @@ where
             root: None,
             nodes: Vec::new(),
             stack: Vec::new(),
+            group_members: Vec::new(),
         }
     }
 }
@@ -254,6 +335,12 @@ where
         bounds: TreeBounds<U>,
         order: u32,
     },
+    Group {
+        bounds: TreeBounds<U>,
+        start: usize,
+        end: usize,
+        max_order: u32,
+    },
     Internal {
         left: usize,
         right: usize,
@@ -270,13 +357,13 @@ where
     fn bounds(&self) -> &TreeBounds<U> {
         match self {
             Node::Leaf { bounds, .. } => bounds,
-            Node::Internal { bounds, .. } => bounds,
+            Node::Group { bounds, .. } | Node::Internal { bounds, .. } => bounds,
         }
     }
 
     fn height(&self) -> usize {
         match self {
-            Self::Leaf { .. } => 0,
+            Self::Leaf { .. } | Self::Group { .. } => 0,
             Self::Internal { height, .. } => *height,
         }
     }
@@ -286,10 +373,7 @@ where
             Node::Leaf {
                 order: ordering, ..
             } => *ordering,
-            Node::Internal {
-                max_order: max_ordering,
-                ..
-            } => *max_ordering,
+            Node::Internal { max_order, .. } | Node::Group { max_order, .. } => *max_order,
         }
     }
 }

@@ -631,7 +631,11 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +use crate::{Bounds, Half, Point};
 @@ -3 +2,0 @@
 -    cmp,
-@@ -36,11 +35,111 @@
+@@ -15,0 +15 @@
++    group_members: Vec<(TreeBounds<U>, u32)>,
+@@ -32,0 +33 @@
++        self.group_members.clear();
+@@ -36,11 +37,189 @@
 -        // If the tree is empty, make the root the new leaf.
 -        if self.root.is_none() {
 -            let new_node = self.push_leaf(new_bounds, 1);
@@ -659,19 +663,12 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +
 +    fn insert_with_order(&mut self, raw_bounds: Bounds<U>, reserved: Option<u32>) -> u32 {
 +        let bounds = TreeBounds::from_bounds(&raw_bounds);
-+        let Some(mut index) = self.root else {
++        let Some(index) = self.placement_leaf(&bounds) else {
 +            let order = reserved.unwrap_or(1);
 +            let leaf = self.push_leaf(bounds, order);
 +            self.root = Some(leaf);
 +            return order;
 +        };
-+
-+        while let Node::Internal { left, right, .. } = self.nodes[index] {
-+            self.stack.push(index);
-+            let left_cost = bounds.union(self.nodes[left].bounds()).half_perimeter();
-+            let right_cost = bounds.union(self.nodes[right].bounds()).half_perimeter();
-+            index = if left_cost < right_cost { left } else { right };
-+        }
 +
 +        let mut order = 0;
 +        if reserved.is_none() {
@@ -695,24 +692,98 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +            *stored = (*stored).max(order);
 +        } else {
 +            let leaf = self.push_leaf(bounds, order);
-+            let parent = self.push_internal(index, leaf);
-+            if let Some(&ancestor) = self.stack.last() {
-+                let Node::Internal { left, right, .. } = &mut self.nodes[ancestor] else {
-+                    unreachable!()
-+                };
-+                if *left == index {
-+                    *left = parent;
-+                } else {
-+                    *right = parent;
-+                }
-+            } else {
-+                self.root = Some(parent);
-+            }
++            self.attach(leaf, index);
 +        }
++        self.rebalance_placement();
++        order
++    }
++
++    /// Insert consecutive clipped members with their ordinary painter orders.
++    /// Only the balanced traversal entry is shared across the members.
++    pub fn insert_group(&mut self, bounds: &[Bounds<U>], orders: &mut [u32]) -> Option<()> {
++        if bounds.is_empty() || bounds.len() != orders.len() {
++            return None;
++        }
++        let start = self.group_members.len();
++        let mut envelope = TreeBounds::from_bounds(&bounds[0]);
++        let mut max_order = 0;
++        for (raw, order) in bounds.iter().zip(orders) {
++            let rect = TreeBounds::from_bounds(raw);
++            let mut local_max = 0;
++            let mut repeat = false;
++            for (member, rank) in &self.group_members[start..] {
++                if *rank > local_max && rect.intersects(member) {
++                    local_max = *rank;
++                }
++                repeat |= *member == rect;
++            }
++            // The earlier identical primitive ordered itself after every
++            // overlapping member already in the main tree.
++            let before = if repeat {
++                local_max
++            } else {
++                self.root
++                    .map_or(local_max, |root| self.find_order(root, &rect, local_max))
++            };
++            let Some(ranked) = before.checked_add(1) else {
++                self.group_members.truncate(start);
++                return None;
++            };
++            *order = ranked;
++            max_order = max_order.max(ranked);
++            envelope = envelope.union(&rect);
++            self.group_members.push((rect, ranked));
++        }
++        self.group_members[start..].sort_unstable_by_key(|(_, order)| std::cmp::Reverse(*order));
++        let end = self.group_members.len();
++        let path = self.placement_leaf(&envelope);
++        let leaf = self.nodes.len();
++        self.nodes.push(Node::Group {
++            bounds: envelope,
++            start,
++            end,
++            max_order,
++        });
++        if let Some(index) = path {
++            self.attach(leaf, index);
++        } else {
++            self.root = Some(leaf);
++        }
++        self.rebalance_placement();
++        Some(())
++    }
++
++    fn placement_leaf(&mut self, bounds: &TreeBounds<U>) -> Option<usize> {
++        let mut index = self.root?;
++        while let Node::Internal { left, right, .. } = self.nodes[index] {
++            self.stack.push(index);
++            let left_cost = bounds.union(self.nodes[left].bounds()).half_perimeter();
++            let right_cost = bounds.union(self.nodes[right].bounds()).half_perimeter();
++            index = if left_cost < right_cost { left } else { right };
++        }
++        Some(index)
++    }
++
++    fn attach(&mut self, leaf: usize, index: usize) {
++        let parent = self.push_internal(index, leaf);
++        if let Some(&ancestor) = self.stack.last() {
++            let Node::Internal { left, right, .. } = &mut self.nodes[ancestor] else {
++                unreachable!()
++            };
++            if *left == index {
++                *left = parent;
++            } else {
++                *right = parent;
++            }
++        } else {
++            self.root = Some(parent);
++        }
++    }
++
++    fn rebalance_placement(&mut self) {
 +        while let Some(parent) = self.stack.pop() {
 +            self.rebalance(parent);
 +        }
-+        order
 +    }
 +
 +    fn find_order(&self, index: usize, bounds: &TreeBounds<U>, mut order: u32) -> u32 {
@@ -722,6 +793,17 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +        }
 +        match node {
 +            Node::Leaf { order, .. } => *order,
++            Node::Group { start, end, .. } => {
++                for (member, member_order) in &self.group_members[*start..*end] {
++                    if *member_order <= order {
++                        break;
++                    }
++                    if bounds.intersects(member) {
++                        return *member_order;
++                    }
++                }
++                order
++            }
 +            Node::Internal { left, right, .. } => {
 +                let left = *left;
 +                let right = *right;
@@ -754,7 +836,7 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +        let a = &self.nodes[left];
 +        let b = &self.nodes[right];
 +        Node::Internal {
-@@ -49,60 +148,48 @@
+@@ -49,60 +228,48 @@
 -            bounds: node_bounds,
 -            ..
 -        } = &mut self.nodes[index]
@@ -863,7 +945,7 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +                self.rotate_left(left);
 +            }
 +            self.rotate_right(index);
-@@ -110,72 +197,2 @@
+@@ -110,72 +277,2 @@
 -            // If the old parent was the root, the new parent is the new root.
 -            self.root = Some(new_parent);
 -        }
@@ -938,7 +1020,13 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 -        self.nodes.len() - 1
 +            self.set_internal(index, left, right);
 +        }
-@@ -197,0 +215,33 @@
+@@ -194 +291,35 @@
+-        }
++            group_members: Vec::new(),
++        }
++    }
++}
++
 +// Stored corners keep child coverage exact across rotations.
 +#[derive(Debug, Clone, PartialEq)]
 +struct TreeBounds<U: Clone + Debug + Default + PartialEq> {
@@ -969,29 +1057,42 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +    }
 +    fn half_perimeter(&self) -> U {
 +        (self.max.x.clone() - self.min.x.clone()) + (self.max.y.clone() - self.min.y.clone())
-+    }
-+}
-+
-@@ -204 +254 @@
+@@ -204 +335 @@
 -        bounds: Bounds<U>,
 +        bounds: TreeBounds<U>,
-@@ -210 +260 @@
+@@ -205,0 +337,6 @@
++    },
++    Group {
++        bounds: TreeBounds<U>,
++        start: usize,
++        end: usize,
++        max_order: u32,
+@@ -210 +347 @@
 -        bounds: Bounds<U>,
 +        bounds: TreeBounds<U>,
-@@ -211,0 +262 @@
+@@ -211,0 +349 @@
 +        height: usize,
-@@ -219 +270 @@
+@@ -219 +357 @@
 -    fn bounds(&self) -> &Bounds<U> {
 +    fn bounds(&self) -> &TreeBounds<U> {
-@@ -222,0 +274,7 @@
+@@ -222 +360,8 @@
+-            Node::Internal { bounds, .. } => bounds,
++            Node::Group { bounds, .. } | Node::Internal { bounds, .. } => bounds,
 +        }
 +    }
 +
 +    fn height(&self) -> usize {
 +        match self {
-+            Self::Leaf { .. } => 0,
++            Self::Leaf { .. } | Self::Group { .. } => 0,
 +            Self::Internal { height, .. } => *height,
-@@ -235,0 +294,201 @@
+@@ -231,5 +376,203 @@
+-            Node::Internal {
+-                max_order: max_ordering,
+-                ..
+-            } => *max_ordering,
+-        }
++            Node::Internal { max_order, .. } | Node::Group { max_order, .. } => *max_order,
++        }
 +    }
 +}
 +
@@ -4197,27 +4298,44 @@ diff --git a/src/platform/windows/util.rs b/src/platform/windows/util.rs
 diff --git a/src/scene.rs b/src/scene.rs
 --- a/src/scene.rs
 +++ b/src/scene.rs
-@@ -14 +14 @@
+@@ -10,0 +11 @@
++use smallvec::SmallVec;
+@@ -14 +15 @@
 -    ops::{Add, Range, Sub},
 +    ops::{Add, Deref, Range, Sub},
-@@ -15,0 +16 @@
+@@ -15,0 +17 @@
 +    sync::Arc,
-@@ -25 +26,4 @@
+@@ -22,0 +25,2 @@
++const MAX_ORDERED_GROUP_PRIMITIVES: usize = 16;
++
+@@ -25 +29,4 @@
 -    pub(crate) paint_operations: Vec<PaintOperation>,
 +    paint_operations: Vec<PaintOperation>,
 +    // Sorted paint indices immediately after an outermost start or end.
 +    outer_layer_boundaries: Vec<usize>,
 +    unmatched_layer_end: Option<usize>,
-@@ -39,0 +44,2 @@
+@@ -27,0 +35,2 @@
++    collecting_group: bool,
++    group_primitives: Vec<(Primitive, Bounds<ScaledPixels>)>,
+@@ -39,0 +49,2 @@
 +        self.outer_layer_boundaries.clear();
 +        self.unmatched_layer_end = None;
-@@ -56,0 +63 @@
+@@ -41,0 +53,2 @@
++        self.collecting_group = false;
++        self.group_primitives.clear();
+@@ -52 +65 @@
+-        self.paint_operations.len()
++        self.paint_operations.len() + self.group_primitives.len()
+@@ -55,0 +69 @@
++        self.end_ordered_primitive_group();
+@@ -56,0 +71 @@
 +        let outermost = self.layer_stack.is_empty();
-@@ -57,0 +65,12 @@
+@@ -57,0 +73,13 @@
 +        self.record_layer_start(bounds, outermost);
 +    }
 +
 +    pub fn pop_layer(&mut self) {
++        self.end_ordered_primitive_group();
 +        let matched = self.layer_stack.pop().is_some();
 +        self.record_layer_end(matched && self.layer_stack.is_empty());
 +        if !matched && self.unmatched_layer_end.is_none() {
@@ -4226,7 +4344,7 @@ diff --git a/src/scene.rs b/src/scene.rs
 +    }
 +
 +    fn record_layer_start(&mut self, bounds: Bounds<ScaledPixels>, outermost: bool) {
-@@ -60,4 +79,6 @@
+@@ -60,4 +88,6 @@
 -    }
 -
 -    pub fn pop_layer(&mut self) {
@@ -4237,21 +4355,74 @@ diff --git a/src/scene.rs b/src/scene.rs
 +    }
 +
 +    fn record_layer_end(&mut self, outermost: bool) {
-@@ -64,0 +86,3 @@
+@@ -64,0 +95,3 @@
 +        if outermost {
 +            self.outer_layer_boundaries.push(self.len());
 +        }
-@@ -68 +92 @@
+@@ -68 +101 @@
 -        let mut primitive = primitive.into();
 +        let primitive = primitive.into();
-@@ -70 +94 @@
+@@ -70 +103 @@
 -            .bounds()
 +            .painted_bounds()
-@@ -81,0 +106,39 @@
+@@ -76,0 +110,51 @@
++        if self.collecting_group {
++            if self.group_primitives.len() < MAX_ORDERED_GROUP_PRIMITIVES
++                && finite_scene_bounds(&clipped_bounds)
++            {
++                self.group_primitives.push((primitive, clipped_bounds));
++                return;
++            }
++            self.end_ordered_primitive_group();
++        }
++        self.append_clipped_primitive(primitive, clipped_bounds);
++    }
++
++    pub(crate) fn start_ordered_primitive_group(&mut self) -> bool {
++        if self.collecting_group || !self.layer_stack.is_empty() {
++            return false;
++        }
++        self.collecting_group = true;
++        true
++    }
++
++    pub(crate) fn end_ordered_primitive_group(&mut self) {
++        if !self.collecting_group {
++            return;
++        }
++        self.collecting_group = false;
++        let mut primitives = std::mem::take(&mut self.group_primitives);
++        if primitives.len() > 1 {
++            let bounds: SmallVec<[Bounds<ScaledPixels>; MAX_ORDERED_GROUP_PRIMITIVES]> =
++                primitives.iter().map(|(_, bounds)| *bounds).collect();
++            let mut orders = [0; MAX_ORDERED_GROUP_PRIMITIVES];
++            if self
++                .primitive_bounds
++                .insert_group(&bounds, &mut orders[..bounds.len()])
++                .is_some()
++            {
++                for ((primitive, _), order) in primitives.drain(..).zip(orders) {
++                    self.append_primitive(primitive, order);
++                }
++            }
++        }
++        for (primitive, clipped_bounds) in primitives.drain(..) {
++            self.append_clipped_primitive(primitive, clipped_bounds);
++        }
++        self.group_primitives = primitives;
++    }
++
++    fn append_clipped_primitive(
++        &mut self,
++        primitive: Primitive,
++        clipped_bounds: Bounds<ScaledPixels>,
++    ) {
+@@ -81,0 +166,40 @@
 +        self.append_primitive(primitive, order);
 +    }
 +
 +    pub(crate) fn insert_disjoint_path_pair(&mut self, paths: [Path<ScaledPixels>; 2]) {
++        self.end_ordered_primitive_group();
 +        let [first, second] = paths.each_ref().map(Path::clipped_bounds);
 +        let gap = ScaledPixels::from(1.0);
 +        let separated = first.bottom() + gap <= second.top() || second.bottom() + gap <= first.top();
@@ -4287,7 +4458,8 @@ diff --git a/src/scene.rs b/src/scene.rs
 +    }
 +
 +    fn append_primitive(&mut self, mut primitive: Primitive, order: DrawOrder) {
-@@ -117,0 +181,123 @@
+@@ -117,0 +242,124 @@
++        self.end_ordered_primitive_group();
 +        if self.try_bulk_replay(range.clone(), prev_scene) {
 +            return;
 +        }
@@ -4411,7 +4583,9 @@ diff --git a/src/scene.rs b/src/scene.rs
 +    }
 +
 +    fn replay_legacy(&mut self, range: Range<usize>, prev_scene: &Scene) {
-@@ -172,0 +359,14 @@
+@@ -127,0 +376 @@
++        self.end_ordered_primitive_group();
+@@ -172,0 +422,14 @@
 +fn finite_scene_bounds(bounds: &Bounds<ScaledPixels>) -> bool {
 +    let values = [
 +        bounds.origin.x.0,
@@ -4426,7 +4600,7 @@ diff --git a/src/scene.rs b/src/scene.rs
 +        && bounds.size.height.0 >= 0.0
 +}
 +
-@@ -209,0 +410,11 @@
+@@ -209,0 +473,11 @@
 +    fn order(&self) -> DrawOrder {
 +        match self {
 +            Primitive::Shadow(value) => value.order,
@@ -4438,7 +4612,7 @@ diff --git a/src/scene.rs b/src/scene.rs
 +            Primitive::Surface(value) => value.order,
 +        }
 +    }
-@@ -219,0 +431,7 @@
+@@ -219,0 +494,7 @@
 +    }
 +
 +    fn painted_bounds(&self) -> Bounds<ScaledPixels> {
@@ -4446,7 +4620,7 @@ diff --git a/src/scene.rs b/src/scene.rs
 +            return sprite.painted_bounds();
 +        }
 +        *self.bounds()
-@@ -630,0 +849,28 @@
+@@ -630,0 +912,28 @@
 +impl MonochromeSprite {
 +    pub(crate) fn painted_bounds(&self) -> Bounds<ScaledPixels> {
 +        if self.transformation == TransformationMatrix::unit() {
@@ -4475,7 +4649,7 @@ diff --git a/src/scene.rs b/src/scene.rs
 +    }
 +}
 +
-@@ -673,0 +920,30 @@
+@@ -673,0 +983,30 @@
 +/// Mutable construction keeps a directly owned Vec; only finished scaled meshes
 +/// pay for sharing. Metadata remains in Path, separate from immutable vertex bytes.
 +#[derive(Clone)]
@@ -4506,14 +4680,14 @@ diff --git a/src/scene.rs b/src/scene.rs
 +    }
 +}
 +
-@@ -681 +957,2 @@
+@@ -681 +1020,2 @@
 -    pub(crate) vertices: Vec<PathVertex<P>>,
 +    // Scaled Scene clones share mesh bytes; mutable construction stays owned.
 +    pub(crate) vertices: PathVertices<P>,
-@@ -694 +971 @@
+@@ -694 +1034 @@
 -            vertices: Vec::new(),
 +            vertices: PathVertices::Owned(Vec::new()),
-@@ -714,5 +991,2 @@
+@@ -714,5 +1054,2 @@
 -            vertices: self
 -                .vertices
 -                .iter()
@@ -4521,17 +4695,17 @@ diff --git a/src/scene.rs b/src/scene.rs
 -                .collect(),
 +            vertices: PathVertices::Shared(Arc::new(self.vertices.iter()
 +                .map(|vertex| vertex.scale(factor)).collect())),
-@@ -783 +1057,2 @@
+@@ -783 +1120,2 @@
 -        self.vertices.push(PathVertex {
 +        let vertices = self.vertices.make_mut();
 +        vertices.push(PathVertex {
-@@ -788 +1063 @@
+@@ -788 +1126 @@
 -        self.vertices.push(PathVertex {
 +        vertices.push(PathVertex {
-@@ -793 +1068 @@
+@@ -793 +1131 @@
 -        self.vertices.push(PathVertex {
 +        vertices.push(PathVertex {
-@@ -833,0 +1109,853 @@
+@@ -833,0 +1172,925 @@
 +
 +#[cfg(any(test, feature = "test-support"))]
 +pub(crate) fn verify_bulk_replay() -> Result<(), String> {
@@ -5106,7 +5280,79 @@ diff --git a/src/scene.rs b/src/scene.rs
 +        equivalent(&mut fast, &mut legacy)
 +    }
 +
++    fn verify_fresh_ordered_group() -> Result<(), String> {
++        let mask = bounds(1.0, 0.0, 24.0, 22.0, 2.0);
++        let background = primitive(1, 46, mask, mask);
++        let mut ordinary = Scene::default();
++        ordinary.insert_primitive(background.clone());
++        let mut grouped = Scene::default();
++        grouped.insert_primitive(background);
++
++        let range = |left| {
++            [
++                (1, bounds(left, 1.0, 5.5, 18.0, 2.0)),
++                (2, bounds(left + 1.5, 0.0, 4.0, 4.5, 2.0)),
++                (1, bounds(left + 5.5, 3.0, 0.5, 15.0, 2.0)),
++            ]
++        };
++        for x in [-2.25, 2.25, 7.75, 13.25, 18.75] {
++            require(
++                grouped.start_ordered_primitive_group(),
++                "clip group refused",
++            )?;
++            require(
++                !grouped.start_ordered_primitive_group(),
++                "nested collector replaced the active group",
++            )?;
++            for (kind, bounds) in range(x) {
++                let value = primitive(kind, 47 + kind as u32, bounds, mask);
++                ordinary.insert_primitive(value.clone());
++                grouped.insert_primitive(value);
++            }
++            grouped.end_ordered_primitive_group();
++        }
++        require(
++            grouped.start_ordered_primitive_group(),
++            "overflow fixture refused",
++        )?;
++        for i in 0..=MAX_ORDERED_GROUP_PRIMITIVES {
++            let value = primitive(i % 2 + 1, 51 + i as u32, mask, mask);
++            ordinary.insert_primitive(value.clone());
++            grouped.insert_primitive(value);
++        }
++        grouped.end_ordered_primitive_group();
++
++        require(
++            grouped.start_ordered_primitive_group(),
++            "layer fixture refused",
++        )?;
++        let overlay = primitive(1, 72, mask, mask);
++        grouped.insert_primitive(overlay.clone());
++        ordinary.insert_primitive(overlay.clone());
++        grouped.push_layer(mask);
++        ordinary.push_layer(mask);
++        grouped.insert_primitive(overlay.clone());
++        ordinary.insert_primitive(overlay);
++        grouped.pop_layer();
++        ordinary.pop_layer();
++        grouped.end_ordered_primitive_group();
++        require(
++            operations(&ordinary, false) == operations(&grouped, false),
++            "group changed exact primitive order, paint payload or path ID",
++        )?;
++        equivalent(&mut grouped, &mut ordinary)?;
++        let mut retained = Scene::default();
++        let mut reference = Scene::default();
++        retained.replay(0..grouped.len(), &grouped);
++        reference.replay_legacy(0..ordinary.len(), &ordinary);
++        let cover = primitive(2, 73, mask, mask);
++        retained.insert_primitive(cover.clone());
++        reference.insert_primitive(cover);
++        equivalent(&mut retained, &mut reference)
++    }
++
 +    pub(super) fn verify() -> Result<(), String> {
++        verify_fresh_ordered_group()?;
 +        verify_path_clone_value_semantics()?;
 +        verify_disjoint_path_pair()?;
 +        verify_rounded_replay_envelope()?;
@@ -5422,23 +5668,13 @@ diff --git a/src/view.rs b/src/view.rs
 @@ -325,0 +341 @@
 +            cache_epoch: 0,
 diff --git a/src/window.rs b/src/window.rs
-index 6d74a0e11..6d968eae1 100644
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -53,6 +53,9 @@ use util::post_inc;
- use util::{ResultExt, measure};
- use uuid::Uuid;
- 
+@@ -55,0 +56,3 @@
 +/// Shared threshold for pointer hover suppression and typed drag initiation.
 +pub(crate) const POINTER_DRAG_THRESHOLD: f64 = 2.;
 +
- mod prompts;
- 
- use crate::util::atomic_incr_if_not_zero;
-@@ -462,6 +465,28 @@ type FrameCallback = Box<dyn FnOnce(&mut Window, &mut App)>;
- pub(crate) type AnyMouseListener =
-     Box<dyn FnMut(&dyn Any, DispatchPhase, &mut Window, &mut App) + 'static>;
- 
+@@ -464,0 +468,22 @@
 +type CapturedMouseListener = Box<dyn FnMut(&dyn Any, &mut Window, &mut App)>;
 +
 +// One control-side lease. The owner must witness its live held gesture in paint;
@@ -5461,42 +5697,18 @@ index 6d74a0e11..6d968eae1 100644
 +    painted_hover: bool,
 +}
 +
- #[derive(Clone)]
- pub(crate) struct CursorStyleRequest {
-     pub(crate) hitbox_id: Option<HitboxId>,
-@@ -656,7 +681,7 @@ pub(crate) struct DeferredDraw {
-     current_view: EntityId,
-     priority: usize,
-     parent_node: DispatchNodeId,
+@@ -659 +684 @@
 -    element_id_stack: SmallVec<[ElementId; 32]>,
 +    element_id_stack: SmallVec<[ElementId; 8]>,
-     text_style_stack: Vec<TextStyleRefinement>,
-     element: Option<AnyElement>,
-     absolute_offset: Point<Pixels>,
-@@ -665,6 +690,7 @@ pub(crate) struct DeferredDraw {
- }
- 
- pub(crate) struct Frame {
+@@ -667,0 +693 @@
 +    pub(crate) accessibility: crate::accessibility::AccessibilityFrame,
-     pub(crate) focus: Option<FocusId>,
-     pub(crate) window_active: bool,
-     pub(crate) element_states: FxHashMap<(GlobalElementId, TypeId), ElementStateBox>,
-@@ -678,8 +704,10 @@ pub(crate) struct Frame {
-     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
-     pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
-     pub(crate) cursor_styles: Vec<CursorStyleRequest>,
+@@ -680,0 +707,2 @@
 +    pointer_hover_observers: Vec<PointerHoverObserver>,
 +    pointer_capture_owners: Vec<EntityId>,
-     #[cfg(any(test, feature = "test-support"))]
+@@ -682 +710 @@
 -    pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
 +    pub(crate) debug_bounds: DebugBounds,
-     #[cfg(any(feature = "inspector", debug_assertions))]
-     pub(crate) next_inspector_instance_ids: FxHashMap<Rc<crate::InspectorElementPath>, usize>,
-     #[cfg(any(feature = "inspector", debug_assertions))]
-@@ -687,8 +715,42 @@ pub(crate) struct Frame {
-     pub(crate) tab_stops: TabStopMap,
- }
- 
+@@ -689,0 +718,33 @@
 +// Test selectors follow paint ordering, including cached and nested view replay.
 +// Retaining only the final map loses each cached view's insertion range and can
 +// incorrectly restore another view's later overwrite of the same selector.
@@ -5530,85 +5742,36 @@ index 6d74a0e11..6d968eae1 100644
 +    }
 +}
 +
- #[derive(Clone, Default)]
- pub(crate) struct PrepaintStateIndex {
+@@ -691,0 +753 @@
 +    accessibility_index: usize,
-     hitboxes_index: usize,
-     tooltips_index: usize,
-     deferred_draws_index: usize,
-@@ -703,14 +765,19 @@ pub(crate) struct PaintIndex {
-     mouse_listeners_index: usize,
-     input_handlers_index: usize,
-     cursor_styles_index: usize,
+@@ -705,0 +768,2 @@
 +    pointer_hover_observers_index: usize,
 +    pointer_capture_owners_index: usize,
-     accessed_element_states_index: usize,
-     tab_handle_index: usize,
-     line_layout_index: LineLayoutIndex,
+@@ -708,0 +773,2 @@
 +    #[cfg(any(test, feature = "test-support"))]
 +    debug_bounds_index: usize,
- }
- 
- impl Frame {
-     pub(crate) fn new(dispatch_tree: DispatchTree) -> Self {
-         Frame {
+@@ -713,0 +780 @@
 +            accessibility: Default::default(),
-             focus: None,
-             window_active: false,
-             element_states: FxHashMap::default(),
-@@ -724,9 +791,11 @@ impl Frame {
-             input_handlers: Vec::new(),
-             tooltip_requests: Vec::new(),
-             cursor_styles: Vec::new(),
+@@ -726,0 +794,2 @@
 +            pointer_hover_observers: Vec::new(),
 +            pointer_capture_owners: Vec::new(),
- 
-             #[cfg(any(test, feature = "test-support"))]
+@@ -729 +798 @@
 -            debug_bounds: FxHashMap::default(),
 +            debug_bounds: DebugBounds::default(),
- 
-             #[cfg(any(feature = "inspector", debug_assertions))]
-             next_inspector_instance_ids: FxHashMap::default(),
-@@ -738,6 +807,7 @@ impl Frame {
-     }
- 
-     pub(crate) fn clear(&mut self) {
+@@ -740,0 +810 @@
 +        self.accessibility = Default::default();
-         self.element_states.clear();
-         self.accessed_element_states.clear();
-         self.mouse_listeners.clear();
-@@ -746,12 +816,17 @@ impl Frame {
-         self.input_handlers.clear();
-         self.tooltip_requests.clear();
-         self.cursor_styles.clear();
+@@ -748,0 +819,2 @@
 +        self.pointer_hover_observers.clear();
 +        self.pointer_capture_owners.clear();
-         self.hitboxes.clear();
-         self.window_control_hitboxes.clear();
-         self.deferred_draws.clear();
-         self.tab_stops.clear();
-         self.focus = None;
- 
+@@ -754,0 +827,3 @@
 +        #[cfg(any(test, feature = "test-support"))]
 +        self.debug_bounds.clear();
 +
-         #[cfg(any(feature = "inspector", debug_assertions))]
-         {
-             self.next_inspector_instance_ids.clear();
-@@ -760,6 +835,9 @@ impl Frame {
-     }
- 
-     pub(crate) fn cursor_style(&self, window: &Window) -> Option<CursorStyle> {
+@@ -762,0 +838,3 @@
 +        if let Some(capture) = &window.pointer_capture {
 +            return Some(capture.cursor);
 +        }
-         self.cursor_styles
-             .iter()
-             .rev()
-@@ -815,11 +893,21 @@ impl Frame {
-     }
- }
- 
+@@ -817,0 +896,9 @@
 +// A frame-owned cursor override must restore even when its window is destroyed.
 +struct HiddenCursorRestore(Rc<dyn crate::Platform>);
 +
@@ -5618,39 +5781,17 @@ index 6d74a0e11..6d968eae1 100644
 +    }
 +}
 +
- /// Holds the state for a specific window.
- pub struct Window {
-     pub(crate) handle: AnyWindowHandle,
-     pub(crate) invalidator: WindowInvalidator,
-     pub(crate) removed: bool,
+@@ -822,0 +910 @@
 +    hidden_cursor_restore: Option<HiddenCursorRestore>,
-     pub(crate) platform_window: Box<dyn PlatformWindow>,
-     display_id: Option<DisplayId>,
-     sprite_atlas: Arc<dyn PlatformAtlas>,
-@@ -833,7 +921,7 @@ pub struct Window {
-     pub(crate) viewport_size: Size<Pixels>,
-     layout_engine: Option<TaffyLayoutEngine>,
-     pub(crate) root: Option<AnyView>,
+@@ -836 +924 @@
 -    pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
 +    pub(crate) element_id_stack: SmallVec<[ElementId; 8]>,
-     pub(crate) text_style_stack: Vec<TextStyleRefinement>,
-     pub(crate) rendered_entity_stack: Vec<EntityId>,
-     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
-@@ -853,6 +941,10 @@ pub struct Window {
-     default_prevented: bool,
-     mouse_position: Point<Pixels>,
-     mouse_hit_test: HitTest,
+@@ -855,0 +944,4 @@
 +    pointer_press: Option<(MouseButton, Point<Pixels>)>,
 +    pointer_dragging: bool,
 +    pointer_capture: Option<PointerCapture>,
 +    suppressed_pointer_ups: SmallVec<[MouseButton; 5]>,
-     modifiers: Modifiers,
-     capslock: Capslock,
-     scale_factor: f32,
-@@ -1034,12 +1126,11 @@ impl Window {
-                         .log_err();
-                 }
-
+@@ -1037,6 +1129,5 @@
 -                // Keep presenting the current scene for 1 extra second since the
 -                // last input to prevent the display from underclocking the refresh rate.
 -                let needs_present = request_frame_options.require_presentation
@@ -5662,42 +5803,24 @@ index 6d74a0e11..6d968eae1 100644
 +                // Keep the display warm for one second after ordinary input.
 +                let keepalive = active.get()
 +                    && last_input_timestamp.get().elapsed() < Duration::from_secs(1);
-
-                 if invalidator.is_dirty() || request_frame_options.force_render {
-                     measure("frame duration", || {
-@@ -1052,9 +1143,13 @@ impl Window {
-                             })
-                             .log_err();
-                     })
+@@ -1055 +1146 @@
 -                } else if needs_present {
 +                } else if presentation_required || keepalive {
-                     handle
+@@ -1057 +1148,5 @@
 -                        .update(&mut cx, |_, window, _| window.present())
 +                        .update(&mut cx, |_, window, _| {
 +                            if window.should_present_drawn_scene(presentation_required, keepalive) {
 +                                window.present();
 +                            }
 +                        })
-                         .log_err();
-                 }
-
-@@ -1095,6 +1190,12 @@ impl Window {
-                 handle
-                     .update(&mut cx, |_, window, cx| {
-                         window.active.set(active);
+@@ -1097,0 +1193,6 @@
 +                        if !active {
 +                            window.cancel_pointer_capture(cx);
 +                            window.hidden_cursor_restore.take();
 +                            window.pointer_press = None;
 +                            window.pointer_dragging = false;
 +                        }
-                         window.modifiers = window.platform_window.modifiers();
-                         window.capslock = window.platform_window.capslock();
-                         window
-@@ -1121,6 +1222,16 @@ impl Window {
-                     .log_err();
-             }
-         }));
+@@ -1123,0 +1225,10 @@
 +        platform_window.on_accessibility_action({
 +            let mut cx = cx.to_async();
 +            Box::new(move |request: crate::AccessibilityRequest| {
@@ -5708,32 +5831,14 @@ index 6d74a0e11..6d968eae1 100644
 +                    .unwrap_or(false)
 +            })
 +        });
-         platform_window.on_input({
-             let mut cx = cx.to_async();
-             Box::new(move |event| {
-@@ -1208,6 +1319,7 @@ impl Window {
-             handle,
-             invalidator,
-             removed: false,
+@@ -1210,0 +1322 @@
 +            hidden_cursor_restore: None,
-             platform_window,
-             display_id,
-             sprite_atlas,
-@@ -1236,6 +1348,10 @@ impl Window {
-             default_prevented: true,
-             mouse_position,
-             mouse_hit_test: HitTest::default(),
+@@ -1238,0 +1351,4 @@
 +            pointer_press: None,
 +            pointer_dragging: false,
 +            pointer_capture: None,
 +            suppressed_pointer_ups: SmallVec::new(),
-             modifiers,
-             capslock,
-             scale_factor,
-@@ -1371,8 +1487,17 @@ impl Window {
-         }
-     }
- 
+@@ -1373,0 +1490,7 @@
 +    /// Whether this window currently owns an invisible cursor override.
 +    /// Test support only: this does not establish physical cursor appearance.
 +    #[cfg(any(test, feature = "test-support"))]
@@ -5741,17 +5846,10 @@ index 6d74a0e11..6d968eae1 100644
 +        self.hidden_cursor_restore.is_some()
 +    }
 +
-     /// Close this window.
-     pub fn remove_window(&mut self) {
+@@ -1375,0 +1499,2 @@
 +        self.platform_window.revoke_accessibility();
 +        self.hidden_cursor_restore.take();
-         self.removed = true;
-     }
- 
-@@ -1908,6 +2033,61 @@ impl Window {
-         self.platform_window.completed_frame();
-     }
- 
+@@ -1910,0 +2036,55 @@
 +    /// Current bounded, actually mounted semantic nodes in rendered order.
 +    pub fn accessibility_nodes(&self) -> impl Iterator<Item = &crate::AccessibilityNode> {
 +        self.rendered_frame
@@ -5807,24 +5905,12 @@ index 6d74a0e11..6d968eae1 100644
 +        })
 +    }
 +
-     /// Produces a new frame and assigns it to `rendered_frame`. To actually show
-     /// the contents of the new [`Scene`], use [`Self::present`].
-     #[profiling::function]
-@@ -1941,6 +2121,10 @@ impl Window {
-         let previous_window_active = self.rendered_frame.window_active;
-         mem::swap(&mut self.rendered_frame, &mut self.next_frame);
-         self.next_frame.clear();
+@@ -1943,0 +2124,4 @@
 +        self.platform_window.publish_accessibility(
 +            self.accessibility_nodes().cloned().collect(),
 +            self.rendered_frame.accessibility.invalid,
 +        );
-         let current_focus_path = self.rendered_frame.focus_path();
-         let current_window_active = self.rendered_frame.window_active;
- 
-@@ -1975,6 +2159,17 @@ impl Window {
-         self.reset_cursor_style(cx);
-         self.refreshing = false;
-         self.invalidator.set_phase(DrawPhase::None);
+@@ -1977,0 +2162,11 @@
 +        if self.pointer_capture.as_ref().is_some_and(|capture| {
 +            !self
 +                .rendered_frame
@@ -5836,48 +5922,24 @@ index 6d74a0e11..6d968eae1 100644
 +            self.cancel_pointer_capture(cx);
 +            self.reset_cursor_style(cx);
 +        }
-         self.needs_present.set(true);
- 
-         ArenaClearNeeded
-@@ -2003,6 +2198,14 @@ impl Window {
-         self.invalidator.replace_views(views);
-     }
-
+@@ -2003,0 +2199,8 @@
++    }
++
 +    pub(crate) fn should_present_drawn_scene(&self, required: bool, keepalive: bool) -> bool {
 +        // Snapping and held previews can leave a scene unchanged across many
 +        // display requests. On macOS, skip optional drawable acquisition while
 +        // the gesture is held. A new paint or required presentation still runs.
 +        required
 +            || (keepalive && (!cfg!(target_os = "macos") || !self.is_pointer_dragging()))
-+    }
-+
-     #[profiling::function]
-     fn present(&self) {
-         self.platform_window.draw(&self.rendered_frame.scene);
-@@ -2086,6 +2289,11 @@ impl Window {
-     }
- 
-     fn prepaint_tooltip(&mut self, cx: &mut App) -> Option<AnyElement> {
+@@ -2088,0 +2292,5 @@
 +        // Hoverable tooltips may otherwise retain themselves or wait through a
 +        // hide delay even after their source stops being eligible.
 +        if self.is_pointer_dragging() {
 +            return None;
 +        }
-         // Use indexing instead of iteration to avoid borrowing self for the duration of the loop.
-         for tooltip_request_index in (0..self.next_frame.tooltip_requests.len()).rev() {
-             let Some(Some(tooltip_request)) = self
-@@ -2220,6 +2428,7 @@ impl Window {
- 
-     pub(crate) fn prepaint_index(&self) -> PrepaintStateIndex {
-         PrepaintStateIndex {
+@@ -2222,0 +2431 @@
 +            accessibility_index: self.next_frame.accessibility.nodes.len(),
-             hitboxes_index: self.next_frame.hitboxes.len(),
-             tooltips_index: self.next_frame.tooltip_requests.len(),
-             deferred_draws_index: self.next_frame.deferred_draws.len(),
-@@ -2230,6 +2439,14 @@ impl Window {
-     }
- 
-     pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
+@@ -2232,0 +2442,8 @@
 +        for (node, callback) in &self.rendered_frame.accessibility.nodes
 +            [range.start.accessibility_index..range.end.accessibility_index]
 +        {
@@ -5886,24 +5948,13 @@ index 6d74a0e11..6d968eae1 100644
 +                .insert(node.clone(), callback.clone());
 +        }
 +        self.next_frame.accessibility.invalid |= self.rendered_frame.accessibility.invalid;
-         self.next_frame.hitboxes.extend(
-             self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
-                 .iter()
-@@ -2284,13 +2501,38 @@ impl Window {
-             mouse_listeners_index: self.next_frame.mouse_listeners.len(),
-             input_handlers_index: self.next_frame.input_handlers.len(),
-             cursor_styles_index: self.next_frame.cursor_styles.len(),
+@@ -2286,0 +2504,2 @@
 +            pointer_hover_observers_index: self.next_frame.pointer_hover_observers.len(),
 +            pointer_capture_owners_index: self.next_frame.pointer_capture_owners.len(),
-             accessed_element_states_index: self.next_frame.accessed_element_states.len(),
-             tab_handle_index: self.next_frame.tab_stops.paint_index(),
-             line_layout_index: self.text_system.layout_index(),
+@@ -2289,0 +2509,2 @@
 +            #[cfg(any(test, feature = "test-support"))]
 +            debug_bounds_index: self.next_frame.debug_bounds.insertion_history.len(),
-         }
-     }
- 
-     pub(crate) fn reuse_paint(&mut self, range: Range<PaintIndex>) {
+@@ -2293,0 +2515,21 @@
 +        #[cfg(any(test, feature = "test-support"))]
 +        self.next_frame.debug_bounds.replay(
 +            &self.rendered_frame.debug_bounds.insertion_history
@@ -5925,13 +5976,21 @@ index 6d74a0e11..6d968eae1 100644
 +                    painted_hover: observer.painted_hover,
 +                }),
 +        );
-         self.next_frame.cursor_styles.extend(
-             self.rendered_frame.cursor_styles
-                 [range.start.cursor_styles_index..range.end.cursor_styles_index]
-@@ -2952,6 +3194,31 @@ impl Window {
-         glyph_id: GlyphId,
-         font_size: Pixels,
-         color: Hsla,
+@@ -2802,0 +3045,13 @@
++    /// Submit consecutive primitives while sharing one draw-order traversal
++    /// entry. Each primitive keeps its ordinary overlap order. Layers, scene
++    /// replay and groups exceeding the internal bound use ordinary insertion.
++    pub fn paint_ordered_group<R>(&mut self, paint: impl FnOnce(&mut Self) -> R) -> R {
++        self.invalidator.debug_assert_paint();
++        let collect = self.next_frame.scene.start_ordered_primitive_group();
++        let result = paint(self);
++        if collect {
++            self.next_frame.scene.end_ordered_primitive_group();
++        }
++        result
++    }
++
+@@ -2954,0 +3210,25 @@
 +    ) -> Result<()> {
 +        self.paint_oriented_glyph(origin, font_id, glyph_id, font_size, color, false)
 +    }
@@ -5957,13 +6016,7 @@ index 6d74a0e11..6d968eae1 100644
 +        font_size: Pixels,
 +        color: Hsla,
 +        vertical: bool,
-     ) -> Result<()> {
-         self.invalidator.debug_assert_paint();
-
-@@ -2986,6 +3253,15 @@ impl Window {
-                 size: tile.bounds.size.map(Into::into),
-             };
-             let content_mask = self.content_mask().scale(scale_factor);
+@@ -2988,0 +3269,9 @@
 +            let transformation = if vertical {
 +                let Point { x, y } = glyph_origin;
 +                TransformationMatrix {
@@ -5973,22 +6026,10 @@ index 6d74a0e11..6d968eae1 100644
 +            } else {
 +                TransformationMatrix::unit()
 +            };
-             self.next_frame.scene.insert_primitive(MonochromeSprite {
-                 order: 0,
-                 pad: 0,
-@@ -2993,7 +3269,7 @@ impl Window {
-                 content_mask,
-                 color: color.opacity(element_opacity),
-                 tile,
+@@ -2996 +3285 @@
 -                transformation: TransformationMatrix::unit(),
 +                transformation,
-             });
-         }
-         Ok(())
-@@ -3524,14 +3800,28 @@ impl Window {
-         subscription
-     }
- 
+@@ -3527,7 +3816,11 @@
 -    fn reset_cursor_style(&self, cx: &mut App) {
 -        // Set the cursor only if we're the active window.
 -        if self.is_window_hovered() {
@@ -6007,7 +6048,7 @@ index 6d74a0e11..6d968eae1 100644
 +            if self.hidden_cursor_restore.is_none() {
 +                self.hidden_cursor_restore = Some(HiddenCursorRestore(cx.platform.clone()));
 +            }
-             cx.platform.set_cursor_style(style);
+@@ -3534,0 +3828,10 @@
 +        } else {
 +            self.hidden_cursor_restore.take();
 +            if self.is_window_hovered() {
@@ -6018,13 +6059,7 @@ index 6d74a0e11..6d968eae1 100644
 +                        style
 +                    });
 +            }
-         }
-     }
- 
-@@ -3576,6 +3866,188 @@ impl Window {
-             .unwrap_or_else(|| action.name().to_string())
-     }
- 
+@@ -3578,0 +3882,182 @@
 +    /// Record a paint dependency on pressed-pointer hover state. Entries retain
 +    /// their insertion ranges through cached/deferred paint replay.
 +    pub(crate) fn observe_pointer_hover(
@@ -6207,13 +6242,7 @@ index 6d74a0e11..6d968eae1 100644
 +        self.dispatch_event(event, cx);
 +    }
 +
-     /// Dispatch a mouse or keyboard event on the window.
-     #[profiling::function]
-     pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
-@@ -3585,6 +4057,63 @@ impl Window {
-         // Handlers may set this to true by calling `prevent_default`.
-         self.default_prevented = false;
- 
+@@ -3587,0 +4073,57 @@
 +        let was_dragging = self.is_pointer_dragging();
 +        // Retain isolation for the entire terminal event, even if cancellation
 +        // or the owner clears its lease while handling it.
@@ -6271,13 +6300,7 @@ index 6d74a0e11..6d968eae1 100644
 +            }
 +            _ => {}
 +        }
-         let event = match event {
-             // Track the mouse position with our own state, since accessing the platform
-             // API for the mouse position can only occur on the main thread.
-@@ -3662,25 +4191,87 @@ impl Window {
-             PlatformInput::KeyDown(_) | PlatformInput::KeyUp(_) => event,
-         };
- 
+@@ -3664,0 +4207,7 @@
 +        let pointer_hover_transition = was_dragging != self.is_pointer_dragging();
 +        let keyboard_hover_transition =
 +            event.keyboard_event().is_some() && pointer_hover_transition;
@@ -6285,7 +6308,7 @@ index 6d74a0e11..6d968eae1 100644
 +            self.invalidate_pointer_hover();
 +            self.dispatch_pointer_hover(cx);
 +        }
-         if let Some(any_mouse_event) = event.mouse_event() {
+@@ -3666 +4215,6 @@
 -            self.dispatch_mouse_event(any_mouse_event, cx);
 +            self.dispatch_mouse_event(
 +                any_mouse_event,
@@ -6293,10 +6316,9 @@ index 6d74a0e11..6d968eae1 100644
 +                isolated_mouse_event,
 +                cx,
 +            );
-         } else if let Some(any_key_event) = event.keyboard_event() {
-             self.dispatch_key_event(any_key_event, cx);
-         }
-
+@@ -3668,0 +4223,38 @@
++        }
++
 +        if keyboard_hover_transition {
 +            self.dispatch_pointer_hover(cx);
 +            self.invalidate_pointer_hover();
@@ -6333,14 +6355,7 @@ index 6d74a0e11..6d968eae1 100644
 +        }
 +        if isolated_mouse_event != self.pointer_capture.is_some() {
 +            self.reset_cursor_style(cx);
-+        }
-+
-         DispatchEventResult {
-             propagate: cx.propagate_event,
-             default_prevented: self.default_prevented,
-         }
-     }
- 
+@@ -3677 +4269,7 @@
 -    fn dispatch_mouse_event(&mut self, event: &dyn Any, cx: &mut App) {
 +    fn dispatch_mouse_event(
 +        &mut self,
@@ -6349,25 +6364,17 @@ index 6d74a0e11..6d968eae1 100644
 +        isolated: bool,
 +        cx: &mut App,
 +    ) {
-         let hit_test = self.rendered_frame.hit_test(self.mouse_position());
-         if hit_test != self.mouse_hit_test {
-             self.mouse_hit_test = hit_test;
-             self.reset_cursor_style(cx);
-         }
- 
+@@ -3683,0 +4282,6 @@
 +        if hover_transition {
 +            // Use the updated hit test: both painted hover and newly eligible
 +            // hover must retire/restore even if capture consumes this event.
 +            self.invalidate_pointer_hover();
 +        }
 +
-         #[cfg(any(feature = "inspector", debug_assertions))]
-         if self.is_inspector_picking(cx) {
-             self.handle_inspector_mouse_event(event, cx);
-@@ -3688,6 +4279,27 @@ impl Window {
-             return;
-         }
-
+@@ -3687,0 +4292,21 @@
++            return;
++        }
++
 +        if event.is::<MouseMoveEvent>() {
 +            self.dispatch_pointer_hover(cx);
 +        }
@@ -6386,16 +6393,7 @@ index 6d74a0e11..6d968eae1 100644
 +            // No underlying action, wheel, raw listener or trailing click can
 +            // receive this input, even if the owner ignored this event type.
 +            cx.stop_propagation();
-+            return;
-+        }
-+
-         let mut mouse_listeners = mem::take(&mut self.rendered_frame.mouse_listeners);
- 
-         // Capture phase, events bubble from back to front. Handlers for this phase are used for
-@@ -5101,3 +5713,45 @@ pub fn outline(
-         border_style,
-     }
- }
+@@ -5103,0 +5729,42 @@
 +
 +impl Window {
 +    /// Paint two retained paths at a logical-pixel offset. Visible paths at least

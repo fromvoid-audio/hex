@@ -130,6 +130,15 @@ ancestor is refreshed from its children after insertion. The ordering
 verifier covers 4,096 consecutive non-overlapping clip positions and
 their repeated draws, with logarithmic tree depth.
 
+The Arrangement clip backdrop can submit a bounded group of fresh primitives
+through `Window::paint_ordered_group`. The Scene keeps the effective clipped
+bounds and exact ordinary draw order for each member but places one grouped
+leaf in the balanced tree. Subsequent queries refine this leaf against its
+actual members. The group ends before layer or replay operations and at its
+size limit. If group order assignment fails, queued primitives use ordinary
+insertion. The Scene oracle compares exact order, operation payloads, cache
+replay and later mixed-kind overlaps.
+
 Mac display requests still service dirty frames and explicit presentation.
 The optional recent-input replay of an unchanged scene skips drawable
 acquisition during a GPUI pointer drag. Release or cancellation restores the
