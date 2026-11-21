@@ -3491,7 +3491,6 @@ impl EditorView {
         let drag_entity = cx.entity();
         let mouse_down_entity = drag_entity.clone();
         let mouse_up_entity = drag_entity.clone();
-        let move_entity = drag_entity.clone();
         let source_track = source.track;
         let source_generation = source.project_generation;
         let mouse_down_source = source.clone();
@@ -3629,33 +3628,6 @@ impl EditorView {
                     cx.notify();
                 });
                 Some((payload, cx.new(|_| ClipDragGhost)))
-            })
-            .on_drag_move::<ClipDrag>(move |event, window, cx| {
-                let Some(payload) = event.dragged_item().downcast_ref::<ClipDrag>() else {
-                    return;
-                };
-                #[cfg(test)]
-                move_entity.update(cx, |view, _| {
-                    view.drag_move_event_count = view.drag_move_event_count.saturating_add(1);
-                });
-                let pointer = event.event.position;
-                let pointer = (f32::from(pointer.x), f32::from(pointer.y));
-                payload.last_pointer.set(Some(pointer));
-                payload.snap_modifier.set(event.event.modifiers.platform);
-                payload.copy_modifier.set(event.event.modifiers.alt);
-                cx.set_active_drag_cursor_style(
-                    drag::copy_cursor(payload.copy_modifier.get()),
-                    window,
-                );
-                let (preview, lane_hovered) = move_entity.update(cx, |view, _| {
-                    view.clip_drag_drop_position(payload, pointer.0, pointer.1)
-                });
-                payload.preview.set(preview);
-                payload.lane_hovered.set(lane_hovered);
-                move_entity.update(cx, |view, cx| {
-                    view.sync_held_clip_move_audition();
-                    cx.notify();
-                });
             })
     }
 }
