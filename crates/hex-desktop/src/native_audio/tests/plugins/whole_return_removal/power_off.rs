@@ -735,11 +735,17 @@ fn running_saved_off_return_power_on_waits_for_consent_and_the_exact_receipt() {
             assert_eq!(receipt.outcome, DeviceInsertOutcome::Cancelled);
             assert_original(&cancelled, current);
             assert_eq!(status(h).recording_source(), Some(predecessor));
-            wait(|| {
+            let retire_deadline = Instant::now() + Duration::from_millis(800);
+            while h.plugin_records.load(Acquire) != 0 {
                 h.pump();
                 assert_aligned_bypass(h, 0);
-                h.plugin_records.load(Acquire) == 0
-            });
+                assert!(
+                    Instant::now() < retire_deadline,
+                    "cancelled Return On worker did not retire"
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            assert!(status(h).position.load(Acquire) < u64::from(FRAMES));
             continue;
         }
 
@@ -754,7 +760,13 @@ fn running_saved_off_return_power_on_waits_for_consent_and_the_exact_receipt() {
 
         let frame_at_consent = status(h).position.load(Acquire);
         let on = terminal_at_cut(h, current, |h| {
-            let _ = render_rolling(h);
+            let before = status(h).position.load(Acquire);
+            let _ = render(h);
+            let after = status(h).position.load(Acquire);
+            assert!(
+                (before..=before + BLOCK as u64).contains(&after),
+                "running Return On changed musical position from {before} to {after}"
+            );
         });
         assert!(on.error.is_none(), "{:?}", on.error);
         let receipt = on.device_insert_complete.unwrap();
@@ -767,6 +779,7 @@ fn running_saved_off_return_power_on_waits_for_consent_and_the_exact_receipt() {
         assert_eq!(applied.context, exact.context);
         assert_eq!(applied.audio_revision, exact.audio_revision);
         assert_eq!(status(h).native_effect_source(), Some(applied));
+        assert!(status(h).playing.load(Acquire));
         assert!(status(h).position.load(Acquire) > frame_at_consent);
         for _ in 0..4 {
             h.pump();

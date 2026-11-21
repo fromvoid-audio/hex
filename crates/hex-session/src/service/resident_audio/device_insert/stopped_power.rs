@@ -34,6 +34,35 @@ pub(super) fn return_power_on_target<'a>(
     (device.id() == target && device.bypassed()).then_some((owner, device))
 }
 
+pub(super) fn running_return_power_on_target<'a>(
+    project: &'a Project,
+    command: &Command,
+) -> Option<(hex_engine::ProcessorChainOwner, &'a Device)> {
+    let (owner, device) = return_power_on_target(project, command)?;
+    let hex_engine::ProcessorChainOwner::Return(bus) = owner else {
+        return None;
+    };
+    let [track] = project.tracks() else {
+        return None;
+    };
+    if track.is_group()
+        || track.parent_group().is_some()
+        || track.clips().len() != 1
+        || !track.midi_clips().is_empty()
+        || !track.devices().is_empty()
+        || track.instrument().is_some()
+        || !project.main_devices().is_empty()
+        || project.has_gain_automation()
+        || !track
+            .sends()
+            .iter()
+            .any(|send| send.return_track().value() == bus && send.gain() > 0.0)
+    {
+        return None;
+    }
+    Some((owner, device))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +167,69 @@ mod tests {
             })
             .unwrap();
         assert!(return_power_on_target(editor.project(), &on).is_none());
+    }
+
+    #[test]
+    fn running_return_on_requires_one_direct_audio_track_sending_to_the_sole_off_return() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { track, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "dry".into(),
+                path: "memory/dry.wav".into(),
+                sample_rate: 48_000,
+                frames: 4096,
+            })
+            .unwrap()
+        else {
+            panic!("direct audio track");
+        };
+        let Created::ReturnTrack(bus) = editor
+            .execute(Command::AddReturnTrack { name: "fx".into() })
+            .unwrap()
+        else {
+            panic!("return fixture");
+        };
+        let Created::Device(device) = editor
+            .execute(Command::InsertReturnDevice {
+                return_track: bus,
+                before: None,
+                state: hex_lattice_contract::NativeDeviceState::new(
+                    hex_lattice_contract::VST3_DEVICE_TYPE_ID,
+                    1,
+                    vec![1],
+                )
+                .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("hosted return fixture");
+        };
+        editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            })
+            .unwrap();
+        let on = Command::SetDeviceBypass {
+            device,
+            bypassed: false,
+        };
+        assert!(running_return_power_on_target(editor.project(), &on).is_none());
+        editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 0.5,
+            })
+            .unwrap();
+        let (owner, target) = running_return_power_on_target(editor.project(), &on).unwrap();
+        assert_eq!(owner, hex_engine::ProcessorChainOwner::Return(bus.value()));
+        assert_eq!(target.id(), device);
+        editor
+            .execute(Command::AddTrack {
+                name: "extra".into(),
+            })
+            .unwrap();
+        assert!(running_return_power_on_target(editor.project(), &on).is_none());
     }
 }
