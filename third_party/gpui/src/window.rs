@@ -3049,6 +3049,13 @@ impl Window {
         result
     }
 
+    /// Record a test-support debug selector rectangle for a custom-painted
+    /// surface that does not instantiate a separate `Div` per logical region.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn record_debug_bounds(&mut self, selector: impl Into<String>, bounds: Bounds<Pixels>) {
+        self.next_frame.debug_bounds.insert(selector.into(), bounds);
+    }
+
     /// Submit consecutive primitives while sharing one draw-order traversal
     /// entry. Each primitive keeps its ordinary overlap order. Layers, scene
     /// replay and groups exceeding the internal bound use ordinary insertion.

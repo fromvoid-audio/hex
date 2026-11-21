@@ -5783,11 +5783,11 @@ diff --git a/src/view.rs b/src/view.rs
 diff --git a/src/window.rs b/src/window.rs
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -55,0 +56,3 @@ use uuid::Uuid;
+@@ -55,0 +56,3 @@
 +/// Shared threshold for pointer hover suppression and typed drag initiation.
 +pub(crate) const POINTER_DRAG_THRESHOLD: f64 = 2.;
 +
-@@ -464,0 +468,22 @@ pub(crate) type AnyMouseListener =
+@@ -464,0 +468,22 @@
 +type CapturedMouseListener = Box<dyn FnMut(&dyn Any, &mut Window, &mut App)>;
 +
 +// One control-side lease. The owner must witness its live held gesture in paint;
@@ -5810,18 +5810,18 @@ diff --git a/src/window.rs b/src/window.rs
 +    painted_hover: bool,
 +}
 +
-@@ -659 +684 @@ pub(crate) struct DeferredDraw {
+@@ -659 +684 @@
 -    element_id_stack: SmallVec<[ElementId; 32]>,
 +    element_id_stack: SmallVec<[ElementId; 8]>,
-@@ -667,0 +693 @@ pub(crate) struct Frame {
+@@ -667,0 +693 @@
 +    pub(crate) accessibility: crate::accessibility::AccessibilityFrame,
-@@ -680,0 +707,2 @@ pub(crate) struct Frame {
+@@ -680,0 +707,2 @@
 +    pointer_hover_observers: Vec<PointerHoverObserver>,
 +    pointer_capture_owners: Vec<EntityId>,
-@@ -682 +710 @@ pub(crate) struct Frame {
+@@ -682 +710 @@
 -    pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
 +    pub(crate) debug_bounds: DebugBounds,
-@@ -689,0 +718,33 @@ pub(crate) struct Frame {
+@@ -689,0 +718,33 @@
 +// Test selectors follow paint ordering, including cached and nested view replay.
 +// Retaining only the final map loses each cached view's insertion range and can
 +// incorrectly restore another view's later overwrite of the same selector.
@@ -5855,36 +5855,36 @@ diff --git a/src/window.rs b/src/window.rs
 +    }
 +}
 +
-@@ -691,0 +753 @@ pub(crate) struct PrepaintStateIndex {
+@@ -691,0 +753 @@
 +    accessibility_index: usize,
-@@ -705,0 +768,2 @@ pub(crate) struct PaintIndex {
+@@ -705,0 +768,2 @@
 +    pointer_hover_observers_index: usize,
 +    pointer_capture_owners_index: usize,
-@@ -708,0 +773,2 @@ pub(crate) struct PaintIndex {
+@@ -708,0 +773,2 @@
 +    #[cfg(any(test, feature = "test-support"))]
 +    debug_bounds_index: usize,
-@@ -713,0 +780 @@ impl Frame {
+@@ -713,0 +780 @@
 +            accessibility: Default::default(),
-@@ -726,0 +794,2 @@ impl Frame {
+@@ -726,0 +794,2 @@
 +            pointer_hover_observers: Vec::new(),
 +            pointer_capture_owners: Vec::new(),
-@@ -729 +798 @@ impl Frame {
+@@ -729 +798 @@
 -            debug_bounds: FxHashMap::default(),
 +            debug_bounds: DebugBounds::default(),
-@@ -740,0 +810 @@ impl Frame {
+@@ -740,0 +810 @@
 +        self.accessibility = Default::default();
-@@ -748,0 +819,2 @@ impl Frame {
+@@ -748,0 +819,2 @@
 +        self.pointer_hover_observers.clear();
 +        self.pointer_capture_owners.clear();
-@@ -754,0 +827,3 @@ impl Frame {
+@@ -754,0 +827,3 @@
 +        #[cfg(any(test, feature = "test-support"))]
 +        self.debug_bounds.clear();
 +
-@@ -762,0 +838,3 @@ impl Frame {
+@@ -762,0 +838,3 @@
 +        if let Some(capture) = &window.pointer_capture {
 +            return Some(capture.cursor);
 +        }
-@@ -817,0 +896,9 @@ impl Frame {
+@@ -817,0 +896,9 @@
 +// A frame-owned cursor override must restore even when its window is destroyed.
 +struct HiddenCursorRestore(Rc<dyn crate::Platform>);
 +
@@ -5894,17 +5894,17 @@ diff --git a/src/window.rs b/src/window.rs
 +    }
 +}
 +
-@@ -822,0 +910 @@ pub struct Window {
+@@ -822,0 +910 @@
 +    hidden_cursor_restore: Option<HiddenCursorRestore>,
-@@ -836 +924 @@ pub struct Window {
+@@ -836 +924 @@
 -    pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
 +    pub(crate) element_id_stack: SmallVec<[ElementId; 8]>,
-@@ -855,0 +944,4 @@ pub struct Window {
+@@ -855,0 +944,4 @@
 +    pointer_press: Option<(MouseButton, Point<Pixels>)>,
 +    pointer_dragging: bool,
 +    pointer_capture: Option<PointerCapture>,
 +    suppressed_pointer_ups: SmallVec<[MouseButton; 5]>,
-@@ -1037,6 +1129,5 @@ impl Window {
+@@ -1037,6 +1129,5 @@
 -                // Keep presenting the current scene for 1 extra second since the
 -                // last input to prevent the display from underclocking the refresh rate.
 -                let needs_present = request_frame_options.require_presentation
@@ -5916,24 +5916,24 @@ diff --git a/src/window.rs b/src/window.rs
 +                // Keep the display warm for one second after ordinary input.
 +                let keepalive = active.get()
 +                    && last_input_timestamp.get().elapsed() < Duration::from_secs(1);
-@@ -1055 +1146 @@ impl Window {
+@@ -1055 +1146 @@
 -                } else if needs_present {
 +                } else if presentation_required || keepalive {
-@@ -1057 +1148,5 @@ impl Window {
+@@ -1057 +1148,5 @@
 -                        .update(&mut cx, |_, window, _| window.present())
 +                        .update(&mut cx, |_, window, _| {
 +                            if window.should_present_drawn_scene(presentation_required, keepalive) {
 +                                window.present();
 +                            }
 +                        })
-@@ -1097,0 +1193,6 @@ impl Window {
+@@ -1097,0 +1193,6 @@
 +                        if !active {
 +                            window.cancel_pointer_capture(cx);
 +                            window.hidden_cursor_restore.take();
 +                            window.pointer_press = None;
 +                            window.pointer_dragging = false;
 +                        }
-@@ -1123,0 +1225,10 @@ impl Window {
+@@ -1123,0 +1225,10 @@
 +        platform_window.on_accessibility_action({
 +            let mut cx = cx.to_async();
 +            Box::new(move |request: crate::AccessibilityRequest| {
@@ -5944,14 +5944,14 @@ diff --git a/src/window.rs b/src/window.rs
 +                    .unwrap_or(false)
 +            })
 +        });
-@@ -1210,0 +1322 @@ impl Window {
+@@ -1210,0 +1322 @@
 +            hidden_cursor_restore: None,
-@@ -1238,0 +1351,4 @@ impl Window {
+@@ -1238,0 +1351,4 @@
 +            pointer_press: None,
 +            pointer_dragging: false,
 +            pointer_capture: None,
 +            suppressed_pointer_ups: SmallVec::new(),
-@@ -1373,0 +1490,7 @@ impl Window {
+@@ -1373,0 +1490,7 @@
 +    /// Whether this window currently owns an invisible cursor override.
 +    /// Test support only: this does not establish physical cursor appearance.
 +    #[cfg(any(test, feature = "test-support"))]
@@ -5959,10 +5959,10 @@ diff --git a/src/window.rs b/src/window.rs
 +        self.hidden_cursor_restore.is_some()
 +    }
 +
-@@ -1375,0 +1499,2 @@ impl Window {
+@@ -1375,0 +1499,2 @@
 +        self.platform_window.revoke_accessibility();
 +        self.hidden_cursor_restore.take();
-@@ -1910,0 +2036,55 @@ impl Window {
+@@ -1910,0 +2036,55 @@
 +    /// Current bounded, actually mounted semantic nodes in rendered order.
 +    pub fn accessibility_nodes(&self) -> impl Iterator<Item = &crate::AccessibilityNode> {
 +        self.rendered_frame
@@ -6018,12 +6018,12 @@ diff --git a/src/window.rs b/src/window.rs
 +        })
 +    }
 +
-@@ -1943,0 +2124,4 @@ impl Window {
+@@ -1943,0 +2124,4 @@
 +        self.platform_window.publish_accessibility(
 +            self.accessibility_nodes().cloned().collect(),
 +            self.rendered_frame.accessibility.invalid,
 +        );
-@@ -1977,0 +2162,11 @@ impl Window {
+@@ -1977,0 +2162,11 @@
 +        if self.pointer_capture.as_ref().is_some_and(|capture| {
 +            !self
 +                .rendered_frame
@@ -6035,24 +6035,24 @@ diff --git a/src/window.rs b/src/window.rs
 +            self.cancel_pointer_capture(cx);
 +            self.reset_cursor_style(cx);
 +        }
-@@ -2005,0 +2201,8 @@ impl Window {
+@@ -2003,0 +2199,8 @@
++    }
++
 +    pub(crate) fn should_present_drawn_scene(&self, required: bool, keepalive: bool) -> bool {
 +        // Snapping and held previews can leave a scene unchanged across many
 +        // display requests. On macOS, skip optional drawable acquisition while
 +        // the gesture is held. A new paint or required presentation still runs.
 +        required
 +            || (keepalive && (!cfg!(target_os = "macos") || !self.is_pointer_dragging()))
-+    }
-+
-@@ -2088,0 +2292,5 @@ impl Window {
+@@ -2088,0 +2292,5 @@
 +        // Hoverable tooltips may otherwise retain themselves or wait through a
 +        // hide delay even after their source stops being eligible.
 +        if self.is_pointer_dragging() {
 +            return None;
 +        }
-@@ -2222,0 +2431 @@ impl Window {
+@@ -2222,0 +2431 @@
 +            accessibility_index: self.next_frame.accessibility.nodes.len(),
-@@ -2232,0 +2442,8 @@ impl Window {
+@@ -2232,0 +2442,8 @@
 +        for (node, callback) in &self.rendered_frame.accessibility.nodes
 +            [range.start.accessibility_index..range.end.accessibility_index]
 +        {
@@ -6061,13 +6061,13 @@ diff --git a/src/window.rs b/src/window.rs
 +                .insert(node.clone(), callback.clone());
 +        }
 +        self.next_frame.accessibility.invalid |= self.rendered_frame.accessibility.invalid;
-@@ -2286,0 +2504,2 @@ impl Window {
+@@ -2286,0 +2504,2 @@
 +            pointer_hover_observers_index: self.next_frame.pointer_hover_observers.len(),
 +            pointer_capture_owners_index: self.next_frame.pointer_capture_owners.len(),
-@@ -2289,0 +2509,2 @@ impl Window {
+@@ -2289,0 +2509,2 @@
 +            #[cfg(any(test, feature = "test-support"))]
 +            debug_bounds_index: self.next_frame.debug_bounds.insertion_history.len(),
-@@ -2293,0 +2515,21 @@ impl Window {
+@@ -2293,0 +2515,21 @@
 +        #[cfg(any(test, feature = "test-support"))]
 +        self.next_frame.debug_bounds.replay(
 +            &self.rendered_frame.debug_bounds.insertion_history
@@ -6089,7 +6089,7 @@ diff --git a/src/window.rs b/src/window.rs
 +                    painted_hover: observer.painted_hover,
 +                }),
 +        );
-@@ -2549,0 +2792,7 @@ impl Window {
+@@ -2549,0 +2792,7 @@
 +    /// Whether the active element and its ancestors apply no opacity attenuation.
 +    /// Call during paint. Individual fills can still have their own transparency.
 +    pub fn is_paint_fully_opaque(&self) -> bool {
@@ -6097,7 +6097,14 @@ diff --git a/src/window.rs b/src/window.rs
 +        self.element_opacity() == 1.0
 +    }
 +
-@@ -2802,0 +3052,13 @@ impl Window {
+@@ -2802,0 +3052,20 @@
++    /// Record a test-support debug selector rectangle for a custom-painted
++    /// surface that does not instantiate a separate `Div` per logical region.
++    #[cfg(any(test, feature = "test-support"))]
++    pub fn record_debug_bounds(&mut self, selector: impl Into<String>, bounds: Bounds<Pixels>) {
++        self.next_frame.debug_bounds.insert(selector.into(), bounds);
++    }
++
 +    /// Submit consecutive primitives while sharing one draw-order traversal
 +    /// entry. Each primitive keeps its ordinary overlap order. Layers, scene
 +    /// replay and groups exceeding the internal bound use ordinary insertion.
@@ -6111,7 +6118,7 @@ diff --git a/src/window.rs b/src/window.rs
 +        result
 +    }
 +
-@@ -2954,0 +3217,25 @@ impl Window {
+@@ -2954,0 +3224,25 @@
 +    ) -> Result<()> {
 +        self.paint_oriented_glyph(origin, font_id, glyph_id, font_size, color, false)
 +    }
@@ -6137,7 +6144,7 @@ diff --git a/src/window.rs b/src/window.rs
 +        font_size: Pixels,
 +        color: Hsla,
 +        vertical: bool,
-@@ -2988,0 +3276,9 @@ impl Window {
+@@ -2988,0 +3283,9 @@
 +            let transformation = if vertical {
 +                let Point { x, y } = glyph_origin;
 +                TransformationMatrix {
@@ -6147,10 +6154,10 @@ diff --git a/src/window.rs b/src/window.rs
 +            } else {
 +                TransformationMatrix::unit()
 +            };
-@@ -2996 +3292 @@ impl Window {
+@@ -2996 +3299 @@
 -                transformation: TransformationMatrix::unit(),
 +                transformation,
-@@ -3527,7 +3823,11 @@ impl Window {
+@@ -3527,7 +3830,11 @@
 -    fn reset_cursor_style(&self, cx: &mut App) {
 -        // Set the cursor only if we're the active window.
 -        if self.is_window_hovered() {
@@ -6169,7 +6176,7 @@ diff --git a/src/window.rs b/src/window.rs
 +            if self.hidden_cursor_restore.is_none() {
 +                self.hidden_cursor_restore = Some(HiddenCursorRestore(cx.platform.clone()));
 +            }
-@@ -3534,0 +3835,10 @@ impl Window {
+@@ -3534,0 +3842,10 @@
 +        } else {
 +            self.hidden_cursor_restore.take();
 +            if self.is_window_hovered() {
@@ -6180,7 +6187,7 @@ diff --git a/src/window.rs b/src/window.rs
 +                        style
 +                    });
 +            }
-@@ -3578,0 +3889,182 @@ impl Window {
+@@ -3578,0 +3896,182 @@
 +    /// Record a paint dependency on pressed-pointer hover state. Entries retain
 +    /// their insertion ranges through cached/deferred paint replay.
 +    pub(crate) fn observe_pointer_hover(
@@ -6363,7 +6370,7 @@ diff --git a/src/window.rs b/src/window.rs
 +        self.dispatch_event(event, cx);
 +    }
 +
-@@ -3587,0 +4080,57 @@ impl Window {
+@@ -3587,0 +4087,57 @@
 +        let was_dragging = self.is_pointer_dragging();
 +        // Retain isolation for the entire terminal event, even if cancellation
 +        // or the owner clears its lease while handling it.
@@ -6421,7 +6428,7 @@ diff --git a/src/window.rs b/src/window.rs
 +            }
 +            _ => {}
 +        }
-@@ -3664,0 +4214,7 @@ impl Window {
+@@ -3664,0 +4221,7 @@
 +        let pointer_hover_transition = was_dragging != self.is_pointer_dragging();
 +        let keyboard_hover_transition =
 +            event.keyboard_event().is_some() && pointer_hover_transition;
@@ -6429,7 +6436,7 @@ diff --git a/src/window.rs b/src/window.rs
 +            self.invalidate_pointer_hover();
 +            self.dispatch_pointer_hover(cx);
 +        }
-@@ -3666 +4222,6 @@ impl Window {
+@@ -3666 +4229,6 @@
 -            self.dispatch_mouse_event(any_mouse_event, cx);
 +            self.dispatch_mouse_event(
 +                any_mouse_event,
@@ -6437,7 +6444,9 @@ diff --git a/src/window.rs b/src/window.rs
 +                isolated_mouse_event,
 +                cx,
 +            );
-@@ -3670,0 +4232,38 @@ impl Window {
+@@ -3668,0 +4237,38 @@
++        }
++
 +        if keyboard_hover_transition {
 +            self.dispatch_pointer_hover(cx);
 +            self.invalidate_pointer_hover();
@@ -6474,9 +6483,7 @@ diff --git a/src/window.rs b/src/window.rs
 +        }
 +        if isolated_mouse_event != self.pointer_capture.is_some() {
 +            self.reset_cursor_style(cx);
-+        }
-+
-@@ -3677 +4276,7 @@ impl Window {
+@@ -3677 +4283,7 @@
 -    fn dispatch_mouse_event(&mut self, event: &dyn Any, cx: &mut App) {
 +    fn dispatch_mouse_event(
 +        &mut self,
@@ -6485,14 +6492,17 @@ diff --git a/src/window.rs b/src/window.rs
 +        isolated: bool,
 +        cx: &mut App,
 +    ) {
-@@ -3683,0 +4289,6 @@ impl Window {
+@@ -3683,0 +4296,6 @@
 +        if hover_transition {
 +            // Use the updated hit test: both painted hover and newly eligible
 +            // hover must retire/restore even if capture consumes this event.
 +            self.invalidate_pointer_hover();
 +        }
 +
-@@ -3690,0 +4302,21 @@ impl Window {
+@@ -3687,0 +4306,21 @@
++            return;
++        }
++
 +        if event.is::<MouseMoveEvent>() {
 +            self.dispatch_pointer_hover(cx);
 +        }
@@ -6511,10 +6521,7 @@ diff --git a/src/window.rs b/src/window.rs
 +            // No underlying action, wheel, raw listener or trailing click can
 +            // receive this input, even if the owner ignored this event type.
 +            cx.stop_propagation();
-+            return;
-+        }
-+
-@@ -5103,0 +5736,42 @@ pub fn outline(
+@@ -5103,0 +5743,42 @@
 +
 +impl Window {
 +    /// Paint two retained paths at a logical-pixel offset. Visible paths at least
@@ -6557,7 +6564,6 @@ diff --git a/src/window.rs b/src/window.rs
 +        self.next_frame.scene.insert_primitive(scene_path);
 +    }
 +}
-
 diff --git a/src/element.rs b/src/element.rs
 --- a/src/element.rs
 +++ b/src/element.rs
