@@ -178,7 +178,7 @@
       "original": "e64c7f14f833251c8a884f5d379b03395723833f4ebc0a57999590dd2c456043"
     },
     "src/host/coreaudio/macos/device.rs": {
-      "current": "28fd0e948dd4474f5dac6c930b8a5ab60781241cfca12a6196620559eb2070fe",
+      "current": "f1bfa6f9574ecad261154deca2a0298024dfd2bbd5c7bc558cd5c04f748cc58b",
       "original": "d5ccdc81b1c2fabb138d60362b3175bbd134b96897856db37231118dcf9ab70b"
     },
     "src/host/coreaudio/macos/enumerate.rs": {
@@ -267,7 +267,7 @@
     }
   },
   "package": "cpal",
-  "patch_sha256": "cbfeef4200780e564ea041ff2a241eaba14752a6e502251e4607d1e7d99a0f3f",
+  "patch_sha256": "5da92d615970764a4ca258dd3434f21f430a37fc1fbc3568a9fc8ea261e61534",
   "upstream_vcs": "fd3b945bffcaa493fa7cb5ceddf9db1f9330fd30",
   "version": "0.17.3"
 }
