@@ -1,6 +1,7 @@
 //! Signed direct Resident track-effect move with the original SDK worker.
 use super::*;
 use hex_audio::plugin_effects::EffectBinding;
+use hex_audio::prepared::FreshRuntimeCancellationResult;
 use hex_project::DeviceSelectionIds;
 use hex_session::service::{
     DeviceInsertConfirmation, DeviceInsertOutcome, GraphEditOperation, ViewState,
@@ -54,16 +55,30 @@ fn assert_track_pcm_at_gain(h: &ResidentHarness, moved: bool, receiver_gain: f32
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn running_resident_track_vst3_effect_move_keeps_the_original_worker() {
-    run_track_effect_move(false);
+    run_track_effect_move(MoveCase::Retained);
 }
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn confirmed_resident_track_vst3_effect_move_installs_the_prepared_worker() {
-    run_track_effect_move(true);
+    run_track_effect_move(MoveCase::Confirmed);
 }
 
-fn run_track_effect_move(approve_interruption: bool) {
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn cancelling_a_running_track_effect_move_restores_the_original_wet_route() {
+    run_track_effect_move(MoveCase::Cancelled);
+}
+
+#[derive(PartialEq, Eq)]
+enum MoveCase {
+    Retained,
+    Confirmed,
+    Cancelled,
+}
+
+fn run_track_effect_move(case: MoveCase) {
+    let approve_interruption = case == MoveCase::Confirmed;
     let _native = native_fixture();
     let files = Files::new();
     let directory = files.0.canonicalize().unwrap();
@@ -234,7 +249,29 @@ fn run_track_effect_move(approve_interruption: bool) {
     );
     assert_project_retained(&pending, before);
 
-    if !approve_interruption {
+    if case == MoveCase::Cancelled {
+        assert_eq!(candidate, Some((owner, original)));
+        let fading = instruments::render_replay_block(&h);
+        let dry = f32::from(RECEIVER_INPUT) / 32768.0 * RECEIVER_GAIN;
+        assert!(fading[0][0] > dry);
+        assert_eq!(fading[BLOCK as usize - 1], [dry; 2]);
+        assert_eq!(status(&h).recording_source(), Some(predecessor));
+        wait(|| {
+            match h
+                .audio
+                .as_ref()
+                .unwrap()
+                .control
+                .cancel_fresh_runtime_publication(exact.audio_revision)
+            {
+                FreshRuntimeCancellationResult::Busy => false,
+                outcome => {
+                    assert_eq!(outcome, FreshRuntimeCancellationResult::Cancelled);
+                    true
+                }
+            }
+        });
+    } else if case == MoveCase::Retained {
         for _ in 0..3 {
             instruments::render_replay_block(&h);
             assert_eq!(status(&h).recording_source(), Some(predecessor));
@@ -251,6 +288,10 @@ fn run_track_effect_move(approve_interruption: bool) {
             }
             assert_project_retained(&event, before);
             if let Some(offer) = event.device_insert_confirmation {
+                assert!(
+                    case != MoveCase::Cancelled,
+                    "pending retained move offered a restart"
+                );
                 assert_eq!(offer.operation(), GraphEditOperation::MoveDevice);
                 assert_eq!(offer.submission(), exact);
                 if approve_interruption {
@@ -281,6 +322,17 @@ fn run_track_effect_move(approve_interruption: bool) {
         .device_insert_complete
         .expect("exact move completion");
     assert_eq!(completion.submission, exact);
+    if case == MoveCase::Cancelled {
+        assert_eq!(completion.outcome, DeviceInsertOutcome::Cancelled);
+        assert_project_retained(&terminal, before);
+        assert_eq!(status(&h).recording_source(), Some(predecessor));
+        for _ in 0..4 {
+            instruments::render_replay_block(&h);
+        }
+        assert_eq!(live_worker(&h), original);
+        assert_track_pcm(&h, false);
+        return;
+    }
     let installed = completion.outcome == DeviceInsertOutcome::Installed;
     if !installed {
         assert_project_retained(&terminal, before);
