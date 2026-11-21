@@ -230,7 +230,7 @@ fn group_reroute_refuses_a_delayed_leaf_to_group_edge_in_either_direction() {
 }
 
 #[test]
-fn aligned_group_entry_can_shift_only_the_leaf_row_downward() {
+fn aligned_group_entry_and_exit_require_reciprocal_row_shifts() {
     use hex_lattice_contract::NativeDeviceMetadata;
     let (mut editor, media, leaf, group) = fixture();
     let Created::Track(unrelated) = editor
@@ -282,7 +282,21 @@ fn aligned_group_entry_can_shift_only_the_leaf_row_downward() {
     let old = SessionPlayback::new(before).unwrap();
     let next = SessionPlayback::new(after).unwrap();
     assert_eq!(next.resident_group_reroute_from(&old), Some(0));
-    assert_eq!(old.resident_group_reroute_from(&next), None);
+    assert_eq!(old.resident_group_reroute_from(&next), Some(2));
+
+    let mut below = Editor::new(editor.project().clone(), 4).unwrap();
+    below
+        .execute(Command::ReparentTracks {
+            tracks: TrackSelectionIds::new(&[leaf]).unwrap(),
+            destination: TrackDestination {
+                parent_group: None,
+                before: None,
+            },
+        })
+        .unwrap();
+    let below = SessionPlayback::new(prepare(&below)).unwrap();
+    assert_eq!(below.resident_group_reroute_from(&next), None);
+    assert_eq!(next.resident_group_reroute_from(&below), None);
 
     editor
         .execute(Command::MoveTracksBefore {
