@@ -154,6 +154,10 @@ enum RemovalTransition {
         id: ReturnId,
         pass_latency: Option<u32>,
     },
+    ReturnPowerOn {
+        id: ReturnId,
+        device: u64,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -229,7 +233,8 @@ impl PendingNativeRemoval {
             | RemovalTransition::Route { .. }
             | RemovalTransition::Instrument(_)
             | RemovalTransition::Move(_)
-            | RemovalTransition::Return { .. } => None,
+            | RemovalTransition::Return { .. }
+            | RemovalTransition::ReturnPowerOn { .. } => None,
         }
     }
 
@@ -256,7 +261,16 @@ impl PendingNativeRemoval {
 
     pub(super) fn faded_return(self) -> Option<ReturnId> {
         match self.transition {
-            RemovalTransition::Return { id, .. } => Some(id),
+            RemovalTransition::Return { id, .. } | RemovalTransition::ReturnPowerOn { id, .. } => {
+                Some(id)
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn return_power_on(self) -> Option<(ReturnId, u64)> {
+        match self.transition {
+            RemovalTransition::ReturnPowerOn { id, device } => Some((id, device)),
             _ => None,
         }
     }
@@ -354,7 +368,8 @@ impl PendingNativeRemoval {
             | RemovalTransition::Route { .. }
             | RemovalTransition::Instrument(_)
             | RemovalTransition::Move(_)
-            | RemovalTransition::Return { .. } => None,
+            | RemovalTransition::Return { .. }
+            | RemovalTransition::ReturnPowerOn { .. } => None,
         }
     }
 
@@ -379,6 +394,18 @@ impl PendingNativeRemoval {
             RemovalTransition::Return { id, .. } => previous
                 .return_fade
                 .is_some_and(|fade| fade.id == id && fade.fader.removal_ready()),
+            RemovalTransition::ReturnPowerOn { id, device } => {
+                previous
+                    .return_fade
+                    .is_some_and(|fade| fade.id == id && fade.fader.removal_ready())
+                    && previous.compensation.as_ref().is_some_and(|compensation| {
+                        compensation.owner_history_is_silent(FreshHistory::ChangedReturn {
+                            bus: id,
+                            device,
+                            cut_predecessor_pcm: false,
+                        })
+                    })
+            }
             RemovalTransition::Track(index)
             | RemovalTransition::Reorder(index)
             | RemovalTransition::Route {
@@ -522,6 +549,10 @@ impl SessionPlayback {
                             pass_latency: None,
                         })
                 })
+                .or_else(|| {
+                    self.same_pass_hosted_return_power_on_from(previous, true)
+                        .map(|(id, device)| RemovalTransition::ReturnPowerOn { id, device })
+                })
         } else {
             self.short_main_pass_removal_from(previous)
                 .or_else(|| self.short_hosted_return_off_from(previous))
@@ -581,7 +612,8 @@ impl SessionPlayback {
                         .native_removal_chain_mut(transition.identity().owner())
                         .is_some_and(|chain| chain.begin_native_removal(transition))
                 }
-                RemovalTransition::Return { id, .. } => {
+                RemovalTransition::Return { id, .. }
+                | RemovalTransition::ReturnPowerOn { id, .. } => {
                     let rate = previous.revision.arrangement().sample_rate();
                     let fade = previous.return_fade.get_or_insert_with(|| ReturnFade {
                         id,
@@ -727,7 +759,8 @@ impl SessionPlayback {
                         chain.cancel_native_removal(transition);
                     }
                 }
-                RemovalTransition::Return { id, .. } => {
+                RemovalTransition::Return { id, .. }
+                | RemovalTransition::ReturnPowerOn { id, .. } => {
                     if let Some(fade) = previous.return_fade.as_mut().filter(|fade| fade.id == id) {
                         fade.fader.cancel_removal(
                             [1.0; 2],
@@ -946,6 +979,150 @@ impl SessionPlayback {
                     && device.algorithmic_latency_frames() == Some(0)
             })
             .then_some(removed.id)
+    }
+
+    /// Fade one workerless Off hosted Return and drain its alignment ring when
+    /// the running Main pass already covers the enabled hosted Return's latency.
+    pub(super) fn same_pass_hosted_return_power_on_from(
+        &self,
+        previous: &Self,
+        cut_predecessor_pcm: bool,
+    ) -> Option<(ReturnId, u64)> {
+        let (next, old) = self
+            .compensation
+            .as_ref()
+            .zip(previous.compensation.as_ref())?;
+        let before = previous.revision.arrangement();
+        let after = self.revision.arrangement();
+        let ([old_bus], [new_bus]) = (before.return_buses(), after.return_buses()) else {
+            return None;
+        };
+        let ([old_dev], [new_dev]) = (old_bus.device_chain.as_ref(), new_bus.device_chain.as_ref())
+        else {
+            return None;
+        };
+        let main_latency = before.main_latency_frames();
+        if !previous.playing
+            || main_latency == 0
+            || main_latency != after.main_latency_frames()
+            || self.revision.contains_streamed_sources()
+            || previous.revision.contains_streamed_sources()
+            || !before.main_device_chain.is_empty()
+            || !after.main_device_chain.is_empty()
+            || before.master_mix() != after.master_mix()
+            || !before.return_feed_plan.is_empty()
+            || !after.return_feed_plan.is_empty()
+            || previous.main_pass_delay.is_some()
+            || self.main_pass_delay.is_some()
+            || previous.stopped_input.is_some()
+            || self.stopped_input.is_some()
+            || previous.live_gain.audible().is_some()
+            || previous
+                .return_fade
+                .is_some_and(|fade| fade.id != old_bus.id)
+            || previous.track_faders[..previous.routes.len()]
+                .iter()
+                .any(|fader| fader.active())
+            || previous
+                .return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .any(|tail| tail.output_active)
+            || previous.tail_output_active.iter().any(|active| *active)
+            || !previous.releases.is_empty()
+            || previous.foreign_runtime_bindings().next().is_some()
+            || old_bus.id != new_bus.id
+            || old_bus.muted
+            || new_bus.muted
+            || old_bus.gain <= 0.0
+            || old_bus.gain != new_bus.gain
+            || old_bus.matrix != new_bus.matrix
+            || old_dev.device_id != new_dev.device_id
+            || old_dev.device_type != hex_lattice_contract::VST3_DEVICE_TYPE_ID
+            || new_dev.device_type != hex_lattice_contract::VST3_DEVICE_TYPE_ID
+            || !old_dev.bypassed
+            || old_dev.foreign_processor().is_some()
+            || old_dev.algorithmic_latency_frames() != Some(0)
+            || new_dev.bypassed
+            || new_dev.foreign_processor().is_none()
+            || !new_dev
+                .algorithmic_latency_frames()
+                .is_some_and(|frames| frames > 0 && frames <= main_latency)
+            || before.tracks().len() != after.tracks().len()
+            || !(1..=2).contains(&before.tracks().len())
+            || previous.routes.len() != before.tracks().len()
+            || self.routes.len() != after.tracks().len()
+            || previous.revision.gain_recording_track().is_some()
+            || self.revision.gain_recording_track().is_some()
+        {
+            return None;
+        }
+        let mut fed_return = false;
+        for (index, (left, right)) in before.tracks().iter().zip(after.tracks()).enumerate() {
+            let direct_arrangement = |playback: &SessionPlayback, track: &crate::Track| {
+                playback.routes.get(index).is_some_and(|route| {
+                    matches!(route.owner, RouteOwner::Arrangement)
+                        && route.pending.is_none()
+                        && route.audio_release.is_none()
+                }) && !playback.source_effects.has_chain(index)
+                    && track.clips.len() == 1
+                    && track.instrument_id.is_none()
+                    && track.source_id.is_none()
+                    && track.midi_source_index.is_none()
+                    && !track.has_gain_automation()
+            };
+            let same_sends = left.sends().len() == right.sends().len()
+                && left.sends().iter().zip(right.sends()).all(|(a, b)| {
+                    a.return_index == b.return_index && a.gain.to_bits() == b.gain.to_bits()
+                });
+            let same_chain = left.device_chain.len() == right.device_chain.len()
+                && left.device_chain.iter().all(|dev| {
+                    dev.foreign_processor().is_none()
+                        && dev.device_type != hex_lattice_contract::VST3_DEVICE_TYPE_ID
+                })
+                && self
+                    .device_chains
+                    .get(index)
+                    .zip(previous.device_chains.get(index))
+                    .is_some_and(|(next_chain, old_chain)| {
+                        next_chain.len() == old_chain.len()
+                            && next_chain.configuration_matches_range(old_chain, 0..old_chain.len())
+                    });
+            if left.canonical_track_id().is_none()
+                || left.canonical_track_id() != right.canonical_track_id()
+                || left.mix != right.mix
+                || !direct_arrangement(previous, left)
+                || !direct_arrangement(self, right)
+                || !super::device_move::same_clip(&left.clips[0], &right.clips[0])
+                || !same_sends
+                || !same_chain
+            {
+                return None;
+            }
+            if let [send] = left.sends() {
+                if send.return_index != 0
+                    || send.gain <= 0.0
+                    || !left.device_chain.is_empty()
+                    || fed_return
+                {
+                    return None;
+                }
+                fed_return = true;
+            } else if !left.sends().is_empty() {
+                return None;
+            }
+        }
+        if !fed_return {
+            return None;
+        }
+        let history = FreshHistory::ChangedReturn {
+            bus: old_bus.id,
+            device: old_dev.device_id,
+            cut_predecessor_pcm,
+        };
+        next.can_copy_from(old, Some(history))
+            .then_some((old_bus.id, old_dev.device_id))
     }
 
     fn native_removal_transition_from(&self, previous: &Self) -> Option<NativeRemovalTransition> {

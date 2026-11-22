@@ -2037,6 +2037,24 @@ impl SessionPlayback {
             if let Some((_, history)) = hosted_reorder {
                 return Some(history);
             }
+            if let Some((bus, device)) = self
+                .native_removal
+                .and_then(|pending| pending.return_power_on())
+                .filter(|&(bus, device)| {
+                    continuous_insert
+                        && restart == Restart::None
+                        && groups.is_none()
+                        && demand.as_ref().is_none_or(|demand| demand.ordinary)
+                        && self.same_pass_hosted_return_power_on_from(previous, demand.is_some())
+                            == Some((bus, device))
+                })
+            {
+                return Some(FreshHistory::ChangedReturn {
+                    bus,
+                    device,
+                    cut_predecessor_pcm: demand.is_some(),
+                });
+            }
             let staged_track = self
                 .native_removal
                 .and_then(|removal| removal.staged_track_id(previous));

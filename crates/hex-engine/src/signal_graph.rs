@@ -60,6 +60,14 @@ pub(crate) enum FreshHistory {
         cut_predecessor_pcm: bool,
     },
     Return(ReturnId),
+    /// An existing Return whose sole stage switches between workerless Off and
+    /// enabled within the running Main pass latency. Only its local send and
+    /// Return output delay edges are excluded; unaffected routes keep 1:1 PCM.
+    ChangedReturn {
+        bus: ReturnId,
+        device: u64,
+        cut_predecessor_pcm: bool,
+    },
 }
 
 impl FreshHistory {
@@ -80,6 +88,10 @@ impl FreshHistory {
             }
             Self::Return(id) => {
                 matches!(node, NodeId::ReturnInput(value) | NodeId::ReturnOutput(value) if value == id.value())
+            }
+            Self::ChangedReturn { bus, device, .. } => {
+                matches!(node, NodeId::ReturnInput(value) | NodeId::ReturnOutput(value) if value == bus.value())
+                    || node == NodeId::Device(device)
             }
         }
     }
@@ -1497,6 +1509,31 @@ impl SignalGraph {
             }
         })
     }
+    /// Boundary edges belong to direct Track sends into this Return and the
+    /// Return's own output to Main. No Return-to-Return feeds or sidechains
+    /// may leave or enter the changed Return.
+    fn changed_return_owns_local_history(&self, id: ReturnId, owner: FreshHistory) -> bool {
+        let Some(bus) = self.returns.iter().find(|bus| bus.id == id) else {
+            return false;
+        };
+        if !bus.feeds.is_empty() || !bus.audio_feeds.is_empty() {
+            return false;
+        }
+        self.pre_main_edges.iter().enumerate().all(|(index, _)| {
+            let Some((from, to)) = self.pre_main_endpoints(index) else {
+                return false;
+            };
+            match (owner.contains(from), owner.contains(to)) {
+                (true, true) => true,
+                (true, false) => from == NodeId::ReturnOutput(id.value()) && to == NodeId::Main,
+                (false, true) => {
+                    matches!(from, NodeId::Fader(_)) && to == NodeId::ReturnInput(id.value())
+                }
+                (false, false) => true,
+            }
+        })
+    }
+
     /// One new empty Return may begin with silent history only when retained
     /// Returns keep their order and no edge feeds it or routes it beyond Main.
     pub(crate) fn added_isolated_return_from(&self, other: &Self) -> Option<ReturnId> {
@@ -1574,7 +1611,9 @@ impl SignalGraph {
                         | FreshHistory::ColdTrack(id)
                         | FreshHistory::RemovedTrack { track: id, .. }
                         | FreshHistory::ChangedTrack { track: id, .. } => (false, id.value()),
-                        FreshHistory::Return(id) => (true, id.value()),
+                        FreshHistory::Return(id) | FreshHistory::ChangedReturn { bus: id, .. } => {
+                            (true, id.value())
+                        }
                     })
                 })
                 .then_some(key)
@@ -1591,7 +1630,8 @@ impl SignalGraph {
                     FreshHistory::Track(_)
                     | FreshHistory::ColdTrack(_)
                     | FreshHistory::RemovedTrack { .. }
-                    | FreshHistory::ChangedTrack { .. },
+                    | FreshHistory::ChangedTrack { .. }
+                    | FreshHistory::ChangedReturn { .. },
                 )
                 | None => self.returns.len() != other.returns.len(),
                 Some(FreshHistory::Return(id)) => {
@@ -1627,6 +1667,11 @@ impl SignalGraph {
                                 || !other.changed_track_owns_local_history(track, owner)
                         }
                         FreshHistory::Return(_) => self.tracks.len() != other.tracks.len(),
+                        FreshHistory::ChangedReturn { bus, .. } => {
+                            self.tracks.len() != other.tracks.len()
+                                || !self.changed_return_owns_local_history(bus, owner)
+                                || !other.changed_return_owns_local_history(bus, owner)
+                        }
                     }
                     || !self
                         .owner_order
@@ -1679,8 +1724,13 @@ impl SignalGraph {
         // The existing edited track keeps its typed output and sends even though
         // its local history is excluded.
         let retained = |track: &&TrackPlan| !matches!(fresh, Some(FreshHistory::Track(id) | FreshHistory::ColdTrack(id) | FreshHistory::RemovedTrack { track: id, .. }) if track.id == Some(id));
-        let retained_return =
-            |bus: &&ReturnPlan| !matches!(fresh, Some(FreshHistory::Return(id)) if bus.id == id);
+        let retained_return = |bus: &&ReturnPlan| {
+            !matches!(
+                fresh,
+                Some(FreshHistory::Return(id) | FreshHistory::ChangedReturn { bus: id, .. })
+                if bus.id == id
+            )
+        };
         if !self
             .tracks
             .iter()
@@ -2165,6 +2215,10 @@ impl SignalRuntime {
                     owner,
                     FreshHistory::RemovedTrack { .. }
                         | FreshHistory::ChangedTrack {
+                            cut_predecessor_pcm: true,
+                            ..
+                        }
+                        | FreshHistory::ChangedReturn {
                             cut_predecessor_pcm: true,
                             ..
                         }

@@ -42,25 +42,42 @@ pub(super) fn running_return_power_on_target<'a>(
     let hex_engine::ProcessorChainOwner::Return(bus) = owner else {
         return None;
     };
-    let [track] = project.tracks() else {
-        return None;
-    };
-    if track.is_group()
-        || track.parent_group().is_some()
-        || track.clips().len() != 1
-        || !track.midi_clips().is_empty()
-        || !track.devices().is_empty()
-        || track.instrument().is_some()
-        || !project.main_devices().is_empty()
+    if !project.main_devices().is_empty()
         || project.has_gain_automation()
-        || !track
-            .sends()
-            .iter()
-            .any(|send| send.return_track().value() == bus && send.gain() > 0.0)
+        || !(1..=2).contains(&project.tracks().len())
     {
         return None;
     }
-    Some((owner, device))
+    let mut fed_return = false;
+    for track in project.tracks() {
+        if track.is_group()
+            || track.parent_group().is_some()
+            || track.clips().len() != 1
+            || !track.midi_clips().is_empty()
+            || track.instrument().is_some()
+        {
+            return None;
+        }
+        if let [send] = track.sends() {
+            if send.return_track().value() != bus
+                || send.gain() <= 0.0
+                || !track.devices().is_empty()
+                || fed_return
+            {
+                return None;
+            }
+            fed_return = true;
+        } else if !track.sends().is_empty()
+            || track.devices().iter().any(|dev| {
+                !dev.automation().is_empty()
+                    || !dev.modulation().sources().is_empty()
+                    || !dev.modulation().routes().is_empty()
+            })
+        {
+            return None;
+        }
+    }
+    fed_return.then_some((owner, device))
 }
 
 #[cfg(test)]
@@ -220,6 +237,30 @@ mod tests {
                 track,
                 return_track: bus,
                 gain: 0.5,
+            })
+            .unwrap();
+        let (owner, target) = running_return_power_on_target(editor.project(), &on).unwrap();
+        assert_eq!(owner, hex_engine::ProcessorChainOwner::Return(bus.value()));
+        assert_eq!(target.id(), device);
+        let Created::Imported { track: bed, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "bed".into(),
+                path: "memory/bed.wav".into(),
+                sample_rate: 48_000,
+                frames: 4096,
+            })
+            .unwrap()
+        else {
+            panic!("bed track");
+        };
+        editor
+            .execute(Command::InsertDevice {
+                track: bed,
+                before: None,
+                state: hex_engine::default_native_device_state(
+                    hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+                )
+                .unwrap(),
             })
             .unwrap();
         let (owner, target) = running_return_power_on_target(editor.project(), &on).unwrap();
