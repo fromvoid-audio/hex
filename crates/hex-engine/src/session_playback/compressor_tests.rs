@@ -149,6 +149,40 @@ fn compressor_renders_on_track_and_return_in_send_order_and_bypass_is_transparen
 }
 
 #[test]
+fn compressor_publishes_activity_for_track_and_return_only_while_active() {
+    for bypassed in [false, true] {
+        let project = project_with_compressors(-60.0, -60.0, bypassed, bypassed);
+        let prepared = revision(&project, Arc::new(hex_devices::SineTable::new()));
+        let observation =
+            crate::PreparedPlaybackObservation::prepare_on_control(&prepared).unwrap();
+        let mut playback = SessionPlayback::new(prepared).unwrap();
+        playback.set_device_metering(true);
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut frames = [[0.0; 2]; 512];
+        for _ in 0..8 {
+            playback.render(&mut frames).unwrap();
+        }
+        for device in [
+            &project.tracks()[0].devices()[0],
+            &project.return_tracks()[0].devices()[0],
+        ] {
+            let meter = observation
+                .meter(device.id().value(), device.state().type_id())
+                .unwrap();
+            let peaks = meter.take_peaks();
+            assert!(peaks.input > 0.0 && peaks.output[0] > 0.0);
+            let dynamics = meter.take_dynamics();
+            if bypassed {
+                assert_eq!(dynamics, Default::default());
+            } else {
+                assert!(dynamics.post_input_peak > 0.0 && dynamics.reduction_db[0] > 0.0);
+                assert_eq!(dynamics.reduction_db[0], dynamics.reduction_db[1]);
+            }
+        }
+    }
+}
+
+#[test]
 fn compressor_parameter_revisions_keep_detector_and_gain_history_live() {
     let original = project_with_compressors(-18.0, -18.0, false, false);
     let table = Arc::new(hex_devices::SineTable::new());
