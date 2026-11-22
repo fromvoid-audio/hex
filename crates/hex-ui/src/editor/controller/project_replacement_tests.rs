@@ -2,7 +2,7 @@
 use super::*;
 use crate::editor::viewport::Viewport;
 use gpui::TestAppContext;
-use hex_engine::{PreparedRevision, SineTable};
+use hex_engine::{PreparedRevision, SineTable, playback::Playback};
 use hex_project::{Command, Editor, Project};
 use hex_session::service::{Request, Service, ViewState};
 use std::collections::BTreeMap;

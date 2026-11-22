@@ -6,8 +6,10 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
+# Headless worker/input fixture for downstream UI/Desktop tests; no allocation counting.
+worker-test-support = []
 # Instrumented headless tests only; never referenced by production code.
-allocation-probe = ["hex-plugin-host/allocation-probe"]
+allocation-probe = ["worker-test-support", "hex-plugin-host/allocation-probe"]
 stream-test-support = ["hex-stream/test-support"]
 # Opt-in native macOS arm64 VST3 SDK integration suite; absent from normal builds.
 vst3-sdk-tests = ["allocation-probe", "stream-test-support", "hex-plugin-host/test-support"]

@@ -40,6 +40,7 @@ gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "
 nix = { version = "=0.31.3", features = ["signal", "process"] }
 
 [dev-dependencies]
+hex-engine = { path = "../hex-engine", features = ["instrument-test-support"] }
 hex-audio = { path = "../hex-audio", features = ["stream-test-support"] }
 hex-session = { path = "../hex-session", features = ["recovery-checkpoint-test-support"] }
 hex-plugin-state = { path = "../hex-plugin-state" }

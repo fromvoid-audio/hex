@@ -14,5 +14,14 @@ mod signed_frame_viewport;
 #[path = "../../src/editor/viewport.rs"]
 mod viewport;
 
+#[path = "drag_autoscroll.rs"]
+mod drag_autoscroll;
+
+#[path = "drag.rs"]
+mod drag;
+
+#[path = "loop_rail.rs"]
+mod loop_rail;
+
 #[path = "midi_cue.rs"]
 mod midi_cue;

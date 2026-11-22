@@ -126,6 +126,7 @@ impl AudioAdmissionStatus {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)] // Used by ui-unit-tier and ui-test-support tests.
     pub(super) fn last_audible(&self) -> Option<AudibleRevision> {
         self.last_audible
     }

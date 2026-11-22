@@ -4,7 +4,7 @@ use super::*;
 use gpui::{TestAppContext, VisualTestContext};
 use hex_session::{
     DocumentAudioMode,
-    device_gesture::{GestureRequest, GestureTarget, ParameterValue},
+    device_gesture::{GestureKey, GestureRequest, GestureTarget, ParameterValue},
     service::{Event, Service},
 };
 use std::time::Duration;

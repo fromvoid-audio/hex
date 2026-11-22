@@ -320,7 +320,7 @@ use gpui::{
     actions, px, size,
 };
 use hex_audio::prepared::Status;
-use hex_engine::playback::{Playback, PlaybackAction, PlaybackCommand};
+use hex_engine::playback::{PlaybackAction, PlaybackCommand};
 use hex_project::{ClipId, Command, SceneId, TrackId};
 use hex_session::service::{Request, Service, ViewState};
 use recent_projects::RecentProjectsState;
@@ -335,19 +335,6 @@ const PLAYBACK_CANDIDATE_CAPACITY: usize = 32;
 
 pub(super) use mode::EditorMode;
 pub(super) use session_grid::PendingPlaybackAction;
-
-struct PendingPlayback {
-    project_revision: u64,
-    project_generation: u64,
-    state: Arc<ViewState>,
-    playback: Playback,
-    install_fresh_runtime: bool,
-    fresh_runtime_fence: Option<hex_audio::prepared::FreshRuntimeFence>,
-    prepared_revision: Option<Arc<hex_engine::PreparedRevision>>,
-    seek_request_id: Option<u64>,
-    device_preview_identity: Option<hex_session::service::DevicePreviewIdentity>,
-    tuning_preview_identity: Option<hex_session::service::TuningPreviewIdentity>,
-}
 
 struct PendingResidentPublication {
     token: hex_audio::prepared::ResidentPublicationToken,
@@ -407,19 +394,8 @@ struct PendingEditorPublicationObservation {
     state: crate::EditorPublicationState,
 }
 
-#[derive(Clone)]
-struct PlaybackCandidate {
-    clip_preview_identity: Option<hex_session::service::ClipMovePreviewIdentity>,
-    worker_requires_preroll: Option<bool>,
-    observation: Option<Arc<hex_engine::PreparedPlaybackObservation>>,
-    audio_revision: u64,
-    project_generation: u64,
-    state: Arc<ViewState>,
-    prepared_revision: Option<Arc<hex_engine::PreparedRevision>>,
-    seek_request_id: Option<u64>,
-    device_preview_identity: Option<hex_session::service::DevicePreviewIdentity>,
-    tuning_preview_identity: Option<hex_session::service::TuningPreviewIdentity>,
-}
+mod playback_candidate;
+use playback_candidate::{PendingPlayback, PlaybackCandidate};
 
 #[derive(Clone, Copy)]
 pub(super) struct PendingSceneDuplicate {

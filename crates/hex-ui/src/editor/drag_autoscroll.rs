@@ -1,16 +1,10 @@
 //! Bounded edge scrolling for captured clip, import and trim gestures.
 use super::{EditorMode, EditorView, drag::LaneBounds, viewport::Viewport};
 use gpui::{Context, point, px};
-use std::{cell::Cell, rc::Rc, time::Instant};
+use std::time::Instant;
 
-pub(super) type DragScroll = Rc<Cell<ScrollState>>;
-
-#[derive(Clone, Copy, Debug, Default)]
-pub(super) struct ScrollState {
-    pub(super) viewport: Option<Viewport>,
-    last_tick: Option<Instant>,
-    last_track_tick: Option<Instant>,
-}
+pub(super) mod scroll_state;
+pub(super) use scroll_state::DragScroll;
 
 /// Only the in-lane 24px edge bands scroll. A delayed tick advances at most
 /// 50ms, and scrolling never starts while the pointer is outside the lane.

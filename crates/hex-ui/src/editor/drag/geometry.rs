@@ -1,19 +1,5 @@
 //! Pointer and lane geometry shared by clip dragging and its consumers.
-
-/// Clip edge selected once from the original horizontal press.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::editor) enum ClipSnapEdge {
-    Leading,
-    Trailing,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(in crate::editor) struct LaneBounds {
-    pub(in crate::editor) left: f32,
-    pub(in crate::editor) width: f32,
-    pub(in crate::editor) top: f32,
-    pub(in crate::editor) height: f32,
-}
+pub(in crate::editor) use super::lane_bounds::{ClipSnapEdge, LaneBounds};
 
 pub(super) fn lane_contains_pointer(pointer_x: f32, pointer_y: f32, lane: LaneBounds) -> bool {
     let bottom = lane.top + lane.height;

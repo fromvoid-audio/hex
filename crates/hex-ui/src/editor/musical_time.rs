@@ -1080,6 +1080,7 @@ pub(super) enum SnapGrid {
     OffDensity(AdaptiveGridDensity),
     // Fixed resolutions are retained only as musical-time regression fixtures.
     #[cfg(test)]
+    #[allow(dead_code)] // Used by feature-gated window and timeline fixtures.
     Quarter,
     #[cfg(test)]
     #[allow(dead_code)] // Used by feature-gated window and timeline fixtures.

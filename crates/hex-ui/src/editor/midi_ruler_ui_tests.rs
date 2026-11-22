@@ -2,6 +2,7 @@
 use super::*;
 use crate::editor::{
     midi_canvas::creation_tests::{fixture, pump},
+    midi_drag::MidiGrid,
     test_environment::Environment,
 };
 use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};

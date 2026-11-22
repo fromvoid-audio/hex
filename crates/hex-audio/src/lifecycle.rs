@@ -166,9 +166,9 @@ impl CompletedStreamHandle {
 }
 struct Retirement {
     stream: Option<cpal::Stream>,
-    #[cfg(feature = "allocation-probe")]
+    #[cfg(feature = "worker-test-support")]
     headless_backend: Option<()>,
-    #[cfg(feature = "allocation-probe")]
+    #[cfg(feature = "worker-test-support")]
     headless: bool,
     spectrum_reaper: Option<SpectrumReaper>,
     _lease: Lease,
@@ -194,9 +194,9 @@ impl StreamOwner {
         Self {
             retirement: Some(Retirement {
                 stream: Some(stream),
-                #[cfg(feature = "allocation-probe")]
+                #[cfg(feature = "worker-test-support")]
                 headless_backend: None,
-                #[cfg(feature = "allocation-probe")]
+                #[cfg(feature = "worker-test-support")]
                 headless: false,
                 spectrum_reaper,
                 _lease: lease,
@@ -229,9 +229,9 @@ impl StreamOwner {
         Self {
             retirement: Some(Retirement {
                 stream: None,
-                #[cfg(feature = "allocation-probe")]
+                #[cfg(feature = "worker-test-support")]
                 headless_backend: None,
-                #[cfg(feature = "allocation-probe")]
+                #[cfg(feature = "worker-test-support")]
                 headless: false,
                 spectrum_reaper,
                 _lease: lease,
@@ -242,7 +242,7 @@ impl StreamOwner {
             }),
         }
     }
-    #[cfg(feature = "allocation-probe")]
+    #[cfg(feature = "worker-test-support")]
     pub(crate) fn expose_headless_backend(&mut self) {
         if let Some(retirement) = self.retirement.as_mut() {
             retirement.headless = true;
@@ -857,22 +857,20 @@ fn retire_prepared_output(mut retirement: Retirement) {
         {
             native.fail_retained_receipts();
         }
-        // Headless allocation-probe fixtures still use the real custody and
+        // Headless worker-test-support fixtures still use the real custody and
         // quiescence protocol, but need not inherit the native backend's
         // coarse retirement retry interval. Failed custody stays quarantined.
-        #[cfg(feature = "allocation-probe")]
-        let delay = if retirement.headless && !progress.failed {
-            Duration::from_millis(5)
-        } else {
-            Duration::from_millis(250)
-        };
-        #[cfg(not(feature = "allocation-probe"))]
-        let delay = Duration::from_millis(250);
+        #[allow(unused_mut)]
+        let mut delay = Duration::from_millis(250);
+        #[cfg(feature = "worker-test-support")]
+        if retirement.headless && !progress.failed {
+            delay = Duration::from_millis(5);
+        }
         thread::sleep(delay);
     }
 }
 fn retirement_tick(retirement: &mut Retirement) -> Result<bool, ()> {
-    #[cfg(feature = "allocation-probe")]
+    #[cfg(feature = "worker-test-support")]
     if retirement.headless {
         return dispose_stream_and_native_on_control(
             &mut retirement.headless_backend,

@@ -33,3 +33,6 @@ mod midi_wheel_mapping;
 
 #[path = "midi_canvas.rs"]
 mod midi_canvas;
+
+#[path = "midi_ruler.rs"]
+mod midi_ruler;

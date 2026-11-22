@@ -781,14 +781,14 @@ where
         })
 }
 
-#[cfg(feature = "allocation-probe")]
+#[cfg(feature = "worker-test-support")]
 pub(crate) fn headless_worker_output(
     rate: u32,
 ) -> Result<(WorkerPreparedOutput, crate::worker_fixture::HeadlessBackend), String> {
     headless_worker_output_with_outcomes(rate, false)
 }
 
-#[cfg(feature = "allocation-probe")]
+#[cfg(feature = "worker-test-support")]
 pub(crate) fn headless_worker_output_with_outcomes(
     rate: u32,
     reliable: bool,

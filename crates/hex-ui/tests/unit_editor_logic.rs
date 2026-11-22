@@ -10,5 +10,9 @@ mod editor;
 #[path = "../src/theme.rs"]
 mod theme;
 
+#[allow(dead_code)]
+#[path = "../src/test_wait.rs"]
+mod test_wait;
+
 #[path = "editor_logic_unit/log_viewer.rs"]
 mod log_viewer;
