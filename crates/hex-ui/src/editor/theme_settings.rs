@@ -197,7 +197,7 @@ struct ColorControl {
 pub(super) struct ThemeSettingsState {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     vst3_editor: vst3_editor::State,
-    path: PathBuf,
+    path: Option<PathBuf>,
     window: AnyWindowHandle,
     loading: bool,
     writable: bool,
@@ -222,13 +222,19 @@ pub(super) struct ThemeSettingsState {
 impl ThemeSettingsState {
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn test_path(&self) -> &std::path::Path {
-        &self.path
+        self.path.as_deref().unwrap_or(std::path::Path::new(""))
     }
-    pub(super) fn new(path: PathBuf, window: &Window, cx: &mut Context<EditorView>) -> Self {
+    pub(super) fn new(
+        path: Option<PathBuf>,
+        window: &Window,
+        cx: &mut Context<EditorView>,
+    ) -> Self {
         let colors = theme::preferences();
         Self {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            vst3_editor: vst3_editor::State::new(path.with_file_name("vst3-editor.json")),
+            vst3_editor: vst3_editor::State::new(
+                path.as_ref().map(|p| p.with_file_name("vst3-editor.json")),
+            ),
             path,
             window: window.window_handle(),
             loading: true,
@@ -263,17 +269,26 @@ impl ThemeSettingsState {
     }
 }
 
+pub(super) fn preferences_path_for_home(home: Option<&std::path::Path>) -> Option<PathBuf> {
+    home.filter(|path| !path.as_os_str().is_empty())
+        .map(hex_preferences::theme_preferences_path)
+}
+
 #[cfg(not(test))]
-pub(super) fn default_preferences_path() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/"));
-    hex_preferences::theme_preferences_path(&home)
+pub(super) fn default_preferences_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    preferences_path_for_home(home.as_deref())
 }
 
 impl EditorView {
     pub(super) fn start_theme_preferences_load(&mut self, cx: &mut Context<Self>) {
-        let path = self.theme_settings.path.clone();
+        let Some(path) = self.theme_settings.path.clone() else {
+            self.theme_settings.loading = false;
+            self.theme_settings.writable = false;
+            self.theme_settings.error =
+                Some("theme settings unavailable · home directory is unset".into());
+            return;
+        };
         let generation = self.theme_settings.load_generation;
         #[cfg(test)]
         let test_environment = std::sync::Arc::clone(&self.test_environment);
@@ -744,10 +759,15 @@ impl EditorView {
         let Some((generation, colors)) = self.theme_settings.pending_save.take() else {
             return;
         };
+        let Some(path) = self.theme_settings.path.clone() else {
+            self.theme_settings.writable = false;
+            self.theme_settings.error =
+                Some("theme settings unavailable · home directory is unset".into());
+            return;
+        };
         self.theme_settings.saving = true;
         self.theme_settings.saving_colors = Some((generation, colors));
         self.theme_settings.error = Some("saving theme settings…".into());
-        let path = self.theme_settings.path.clone();
         let window_handle = self.theme_settings.window;
         let editor_focus = self.focus.clone();
         #[cfg(test)]
@@ -1672,7 +1692,7 @@ mod tests {
         editor.update(cx, |view, cx| {
             // Loading used the valid missing-file path; point the save at a directory so the
             // asynchronous atomic publisher deterministically reports a recoverable I/O error.
-            view.theme_settings.path = directory.0.clone();
+            view.theme_settings.path = Some(directory.0.clone());
             view.update_theme_channel(ThemeChannel::PrimaryRed, 220.0, cx)
         });
         click_bounds(&mut visual, "save theme settings");
@@ -1869,5 +1889,20 @@ mod tests {
             });
         })
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::preferences_path_for_home;
+    use std::path::Path;
+
+    #[test]
+    fn unset_or_empty_home_returns_none_instead_of_system_library() {
+        assert_eq!(preferences_path_for_home(None), None);
+        assert_eq!(preferences_path_for_home(Some(Path::new(""))), None);
+        let resolved = preferences_path_for_home(Some(Path::new("/Users/tester"))).unwrap();
+        assert!(resolved.starts_with("/Users/tester"));
+        assert!(!resolved.starts_with("/Library/"));
     }
 }

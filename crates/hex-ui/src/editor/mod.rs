@@ -1256,14 +1256,19 @@ impl EditorView {
     ) -> Self {
         #[cfg(not(test))]
         {
-            Self::new_with_browser_preferences_path(
+            Self::new_with_optional_browser_paths(
                 window,
                 cx,
                 service,
                 output,
-                browser::default_preferences_path(),
-                recent_projects::default_preferences_path(),
-                theme_settings::default_preferences_path(),
+                (
+                    browser::default_preferences_path(),
+                    recent_projects::default_preferences_path(),
+                    theme_settings::default_preferences_path(),
+                    project_directory::default_preferences_path(),
+                ),
+                #[cfg(feature = "ui-test-support")]
+                None,
             )
         }
         #[cfg(test)]
@@ -1430,31 +1435,51 @@ impl EditorView {
         recent_projects_path: std::path::PathBuf,
         theme_preferences_path: std::path::PathBuf,
     ) -> Self {
-        Self::new_with_browser_paths(
-            window,
-            cx,
-            service,
-            output,
-            (
-                preferences_path,
-                recent_projects_path,
-                theme_preferences_path,
-                project_directory::default_preferences_path(),
-            ),
-            #[cfg(feature = "ui-test-support")]
-            None,
-            #[cfg(test)]
-            test_environment::Inputs {
-                defaults: [false, false, false, true],
-                ..Default::default()
-            },
-        )
+        #[cfg(test)]
+        {
+            Self::new_with_browser_paths(
+                window,
+                cx,
+                service,
+                output,
+                (
+                    preferences_path,
+                    recent_projects_path,
+                    theme_preferences_path,
+                    std::path::PathBuf::new(),
+                ),
+                #[cfg(feature = "ui-test-support")]
+                None,
+                test_environment::Inputs {
+                    defaults: [false, false, false, true],
+                    ..Default::default()
+                },
+            )
+        }
+        #[cfg(not(test))]
+        {
+            Self::new_with_optional_browser_paths(
+                window,
+                cx,
+                service,
+                output,
+                (
+                    Some(preferences_path),
+                    Some(recent_projects_path),
+                    Some(theme_preferences_path),
+                    project_directory::default_preferences_path(),
+                ),
+                #[cfg(feature = "ui-test-support")]
+                None,
+            )
+        }
     }
 
+    #[cfg(any(test, feature = "ui-test-support"))]
     fn new_with_browser_paths(
         window: &mut Window,
         cx: &mut Context<Self>,
-        mut service: Service,
+        service: Service,
         output: Result<crate::EditorAudio, String>,
         paths: (
             std::path::PathBuf,
@@ -1465,9 +1490,6 @@ impl EditorView {
         #[cfg(feature = "ui-test-support")] fixture_paths: Option<sampler_load::FixturePaths>,
         #[cfg(test)] test_paths: test_environment::Inputs,
     ) -> Self {
-        #[cfg(all(test, feature = "ui-test-support"))]
-        cx.use_test_assets(crate::assets::HexAssets);
-        crate::diagnostics::attach_service(cx, &service);
         #[cfg(test)]
         let test_environment = test_paths.existing_environment.unwrap_or_else(|| {
             test_environment::Environment::new()
@@ -1475,6 +1497,43 @@ impl EditorView {
         });
         #[cfg(test)]
         let paths = test_environment.resolve_paths(paths, test_paths.defaults);
+        Self::new_with_optional_browser_paths(
+            window,
+            cx,
+            service,
+            output,
+            (Some(paths.0), Some(paths.1), Some(paths.2), Some(paths.3)),
+            #[cfg(feature = "ui-test-support")]
+            fixture_paths,
+            #[cfg(test)]
+            test_environment,
+            #[cfg(test)]
+            test_paths.home,
+            #[cfg(test)]
+            test_paths.directory,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_optional_browser_paths(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        mut service: Service,
+        output: Result<crate::EditorAudio, String>,
+        paths: (
+            Option<std::path::PathBuf>,
+            Option<std::path::PathBuf>,
+            Option<std::path::PathBuf>,
+            Option<std::path::PathBuf>,
+        ),
+        #[cfg(feature = "ui-test-support")] fixture_paths: Option<sampler_load::FixturePaths>,
+        #[cfg(test)] test_environment: std::sync::Arc<test_environment::Environment>,
+        #[cfg(test)] test_home: Option<std::path::PathBuf>,
+        #[cfg(test)] test_directory: Option<std::path::PathBuf>,
+    ) -> Self {
+        #[cfg(all(test, feature = "ui-test-support"))]
+        cx.use_test_assets(crate::assets::HexAssets);
+        crate::diagnostics::attach_service(cx, &service);
 
         let (
             preferences_path,
@@ -1483,7 +1542,8 @@ impl EditorView {
             project_directory_path,
         ) = paths;
         let device_defaults_error = preferences_path
-            .parent()
+            .as_deref()
+            .and_then(|path| path.parent())
             .filter(|path| !path.as_os_str().is_empty())
             .ok_or_else(|| "device default data folder is unavailable".to_owned())
             .and_then(|root| service.set_device_defaults_directory(root.to_path_buf()))
@@ -1675,24 +1735,29 @@ impl EditorView {
             cx,
             preferences_path,
             #[cfg(test)]
-            Some(
-                test_paths
-                    .home
-                    .unwrap_or_else(|| test_environment.home.clone()),
-            ),
+            Some(test_home.unwrap_or_else(|| test_environment.home.clone())),
         );
         let recent_projects = RecentProjectsState::new(recent_projects_path);
         let project_directory = project_directory::State::new(project_directory_path);
-        let playback_settings =
-            playback_settings::State::new(theme_preferences_path.with_file_name("playback.json"));
+        let playback_settings = playback_settings::State::new(
+            theme_preferences_path
+                .as_ref()
+                .map(|path| path.with_file_name("playback.json")),
+        );
         let audio_import_settings = audio_import_settings::State::new(
-            theme_preferences_path.with_file_name("audio-import.json"),
+            theme_preferences_path
+                .as_ref()
+                .map(|path| path.with_file_name("audio-import.json")),
         );
         let track_defaults = track_defaults::State::new(
-            theme_preferences_path.with_file_name("track-defaults.json"),
+            theme_preferences_path
+                .as_ref()
+                .map(|path| path.with_file_name("track-defaults.json")),
         );
         let controller_input = controller_input::ControllerInput::new(
-            theme_preferences_path.with_file_name("midi-input.json"),
+            theme_preferences_path
+                .as_ref()
+                .map(|path| path.with_file_name("midi-input.json")),
         );
         let theme_settings =
             theme_settings::ThemeSettingsState::new(theme_preferences_path, window, cx);
@@ -2030,7 +2095,7 @@ impl EditorView {
             suppress_cursor_click: false,
         };
         #[cfg(test)]
-        if let Some(directory) = test_paths.directory {
+        if let Some(directory) = test_directory {
             view.browser.directory = directory.clone();
             view.browser.places = vec![directory];
         }

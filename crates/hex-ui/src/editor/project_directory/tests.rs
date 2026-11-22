@@ -731,13 +731,15 @@ fn project_directory_ordinary_constructor_resolves_fourth_path_before_any_job(
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.project_directory.path,
-            view.test_environment
-                .root()
-                .join("config/project-directory.json")
+            Some(
+                view.test_environment
+                    .root()
+                    .join("config/project-directory.json"),
+            )
         );
         assert!(view.project_directory.directory.is_none());
         assert!(
-            !view.project_directory.path.exists(),
+            !view.project_directory.path.as_ref().unwrap().exists(),
             "merely opening a picker/starting up must not create preference data"
         );
     });

@@ -72,7 +72,7 @@ fn fixture(
         assert!(Arc::ptr_eq(&environment, &view.test_environment));
         assert_eq!(
             view.browser.preferences_path,
-            environment.root().join("config/browser.json")
+            Some(environment.root().join("config/browser.json"))
         );
         assert_eq!(view.browser.directory, samples);
     });
@@ -466,6 +466,8 @@ fn bookmark_fixture_catalog_worker_retains_same_root_after_view_drop(cx: &mut Te
         assert_eq!(
             view.browser
                 .preferences_path
+                .as_ref()
+                .unwrap()
                 .with_extension("samples-v1.db"),
             root.join("config/browser.samples-v1.db")
         );

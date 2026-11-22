@@ -470,7 +470,7 @@ fn browser_vst3_reload_marks_missing_source_without_rewriting_last_good_or_scann
     let mut visual = VisualTestContext::from_window(handle, cx);
     wait_for_plugin_scan(&mut visual, &editor);
     editor.update(&mut visual, |view, cx| {
-        view.browser.preferences_path = physical.join("browser.json");
+        view.browser.preferences_path = Some(physical.join("browser.json"));
         view.select_browser_source(BrowserSection::Plugins, cx);
         view.start_plugin_catalog(cx);
     });
@@ -666,7 +666,7 @@ fn browser_vst3_restores_searchable_typed_rows_and_enter_refuses_unavailable_inv
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     editor.update(&mut visual, |view, cx| {
-        view.browser.preferences_path = physical.join("browser.json");
+        view.browser.preferences_path = Some(physical.join("browser.json"));
         view.select_browser_source(BrowserSection::Plugins, cx);
         view.start_plugin_catalog(cx);
     });

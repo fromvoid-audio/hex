@@ -27,6 +27,7 @@ const MAGIC_V2: [u8; 8] = *b"hexsmp2\0";
 const NO_RECORD: u8 = 0;
 const RECORD_UNREADABLE: u8 = 1;
 const RECORD_FINGERPRINTED: u8 = 2;
+const TEMPORARY_ATTEMPTS: usize = 32;
 
 fn magic(base: [u8; 8]) -> [u8; 8] {
     let mut magic = base;
@@ -137,21 +138,10 @@ impl SampleCatalog {
         if holds_exactly(path, &bytes) {
             return Ok(false);
         }
-        let parent = path.parent().ok_or_else(invalid)?;
-        fs::create_dir_all(parent)?;
         let name = path.file_name().ok_or_else(invalid)?;
-        let mut pending = OsString::from(".");
-        pending.push(name);
-        pending.push(format!(
-            ".{}-{}.pending",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let temporary = parent.join(pending);
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
+        let parent = normalized_parent(path);
+        fs::create_dir_all(parent)?;
+        let (temporary, mut file) = create_temporary(parent, name, &NEXT)?;
         let result = (|| {
             file.write_all(&bytes)?;
             file.sync_all()?;
@@ -166,6 +156,42 @@ impl SampleCatalog {
         }
         result.map(|()| true)
     }
+}
+
+fn normalized_parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+fn create_temporary(
+    parent: &Path,
+    name: &std::ffi::OsStr,
+    counter: &AtomicU64,
+) -> io::Result<(std::path::PathBuf, File)> {
+    for _ in 0..TEMPORARY_ATTEMPTS {
+        let mut pending = OsString::from(".");
+        pending.push(name);
+        pending.push(format!(
+            ".{}-{}.pending",
+            std::process::id(),
+            counter.fetch_add(1, Ordering::Relaxed)
+        ));
+        let temporary = parent.join(pending);
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => return Ok((temporary, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate temporary sample database file",
+    ))
 }
 
 /// Whether `path` is a regular file whose contents equal `bytes`. Reads at most
@@ -297,5 +323,95 @@ fn decode_path(bytes: &[u8]) -> io::Result<std::path::PathBuf> {
     #[cfg(not(any(unix, windows)))]
     {
         Ok(std::str::from_utf8(bytes).map_err(|_| invalid())?.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    struct TempDir(PathBuf);
+    impl TempDir {
+        fn new(label: &str) -> Self {
+            static ID: AtomicU64 = AtomicU64::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "hex-library-db-{label}-{}-{}",
+                std::process::id(),
+                ID.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    struct CwdGuard(PathBuf);
+    impl CwdGuard {
+        fn enter(dir: &Path) -> Self {
+            let previous = std::env::current_dir().unwrap();
+            std::env::set_current_dir(dir).unwrap();
+            Self(previous)
+        }
+    }
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.0);
+        }
+    }
+
+    #[test]
+    fn save_normalizes_bare_relative_filename_parent() {
+        assert_eq!(normalized_parent(Path::new("samples.db")), Path::new("."));
+        assert_eq!(
+            normalized_parent(Path::new("/tmp/hex/samples.db")),
+            Path::new("/tmp/hex")
+        );
+        let dir = TempDir::new("bare-relative");
+        let _cwd = CwdGuard::enter(&dir.0);
+        let catalog = SampleCatalog::default();
+        assert!(catalog.save(Path::new("samples.db")).unwrap());
+        let loaded = SampleCatalog::load(Path::new("samples.db")).unwrap();
+        assert_eq!(loaded.entries.len(), 0);
+    }
+
+    #[test]
+    fn save_retries_past_preexisting_pending_file_collision() {
+        let dir = TempDir::new("pending-collision");
+        let db = dir.0.join("samples.db");
+        let name = db.file_name().unwrap();
+        let counter = AtomicU64::new(0);
+        let colliding = dir
+            .0
+            .join(format!(".samples.db.{}-0.pending", std::process::id()));
+        fs::write(&colliding, b"stale").unwrap();
+        let (allocated, file) = create_temporary(&dir.0, name, &counter).unwrap();
+        drop(file);
+        assert_ne!(allocated, colliding);
+        assert_eq!(fs::read(&colliding).unwrap(), b"stale");
+        let _ = fs::remove_file(allocated);
+
+        // Also exercise SampleCatalog::save directly when the next sequence slots collide.
+        let base = NEXT.load(Ordering::Relaxed);
+        let mut stale_files = Vec::new();
+        for offset in 0..4 {
+            let path = dir.0.join(format!(
+                ".samples.db.{}-{}.pending",
+                std::process::id(),
+                base + offset
+            ));
+            fs::write(&path, b"preexisting").unwrap();
+            stale_files.push(path);
+        }
+        let catalog = SampleCatalog::default();
+        assert!(catalog.save(&db).unwrap());
+        assert_eq!(SampleCatalog::load(&db).unwrap().entries.len(), 0);
+        for path in &stale_files {
+            assert_eq!(fs::read(path).unwrap(), b"preexisting");
+        }
     }
 }

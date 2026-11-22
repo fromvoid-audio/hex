@@ -45,7 +45,7 @@ pub(super) struct PendingStart {
 }
 
 pub(super) struct State {
-    pub path: PathBuf,
+    pub path: Option<PathBuf>,
     pub preferences: PlaybackPreferences,
     pub loading: bool,
     pub saving: bool,
@@ -55,7 +55,7 @@ pub(super) struct State {
 }
 
 impl State {
-    pub fn new(path: PathBuf) -> Self {
+    pub fn new(path: Option<PathBuf>) -> Self {
         Self {
             path,
             preferences: PlaybackPreferences::default(),
@@ -326,7 +326,16 @@ impl EditorView {
     }
 
     pub(super) fn start_playback_preferences_load(&mut self, cx: &mut Context<Self>) {
-        let path = self.playback_settings.path.clone();
+        let Some(path) = self.playback_settings.path.clone() else {
+            self.playback_settings.loading = false;
+            self.playback_settings.writable = false;
+            self.playback_settings.error =
+                Some("playback settings unavailable · home directory is unset".into());
+            if let Some(pending) = self.playback_settings.pending.take() {
+                self.dispatch_normal_start(pending);
+            }
+            return;
+        };
         #[cfg(test)]
         let environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
@@ -376,9 +385,13 @@ impl EditorView {
         let preferences = PlaybackPreferences {
             note_chase: enabled,
         };
+        let Some(path) = state.path.clone() else {
+            state.writable = false;
+            state.error = Some("playback settings unavailable · home directory is unset".into());
+            return;
+        };
         state.saving = true;
         state.error = None;
-        let path = state.path.clone();
         #[cfg(test)]
         let environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();

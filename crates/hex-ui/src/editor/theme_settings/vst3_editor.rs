@@ -8,7 +8,7 @@ use hex_widgets::{Toggle, ToggleChanged, ToggleConfig};
 use std::path::PathBuf;
 
 pub(super) struct State {
-    path: PathBuf,
+    path: Option<PathBuf>,
     load_started: bool,
     preferences: Option<Vst3EditorPreferences>,
     pub(super) saving: bool,
@@ -17,7 +17,7 @@ pub(super) struct State {
 }
 
 impl State {
-    pub(super) fn new(path: PathBuf) -> Self {
+    pub(super) fn new(path: Option<PathBuf>) -> Self {
         Self {
             path,
             load_started: false,
@@ -43,7 +43,10 @@ impl EditorView {
             return;
         }
         state.load_started = true;
-        let path = state.path.clone();
+        let Some(path) = state.path.clone() else {
+            state.error = Some("vst3 editor settings unavailable · home directory is unset".into());
+            return;
+        };
         #[cfg(test)]
         let test_environment = std::sync::Arc::clone(&self.test_environment);
         let load = cx.background_executor().spawn(async move {
@@ -73,9 +76,12 @@ impl EditorView {
         if state.saving || state.preferences.is_none() || state.preferences == Some(preferences) {
             return;
         }
+        let Some(path) = state.path.clone() else {
+            state.error = Some("vst3 editor settings unavailable · home directory is unset".into());
+            return;
+        };
         state.saving = true;
         state.error = None;
-        let path = state.path.clone();
         #[cfg(test)]
         let test_environment = std::sync::Arc::clone(&self.test_environment);
         let save = cx.background_executor().spawn(async move {

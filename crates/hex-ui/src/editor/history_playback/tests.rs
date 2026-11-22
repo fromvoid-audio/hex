@@ -376,9 +376,11 @@ fn playback_menu_order_session_availability_and_keyboard_save_keep_history_indep
     editor.update(&mut visual, |view, cx| {
         assert!(!view.playback_settings.preferences.note_chase);
         assert!(
-            !hex_preferences::load_playback_preferences(&view.playback_settings.path)
-                .unwrap()
-                .note_chase
+            !hex_preferences::load_playback_preferences(
+                view.playback_settings.path.as_ref().unwrap()
+            )
+            .unwrap()
+            .note_chase
         );
         assert!(view.prepared_seek.is_none());
         assert!(view.latched_seek_intent.is_none());
@@ -395,7 +397,11 @@ fn playback_menu_order_session_availability_and_keyboard_save_keep_history_indep
     // Activation uses the same real atomic save owner; failed writes retain
     // both the active checkmark and the user's existing malformed bytes.
     editor.update(&mut visual, |view, _| {
-        std::fs::write(&view.playback_settings.path, b"original malformed settings").unwrap();
+        std::fs::write(
+            view.playback_settings.path.as_ref().unwrap(),
+            b"original malformed settings",
+        )
+        .unwrap();
     });
     visual.simulate_keystrokes("enter");
     wait_for_save(&editor, &mut visual);
@@ -403,7 +409,7 @@ fn playback_menu_order_session_availability_and_keyboard_save_keep_history_indep
         assert!(!view.playback_settings.preferences.note_chase);
         assert!(view.error.as_ref().unwrap().contains("could not save"));
         assert_eq!(
-            std::fs::read(&view.playback_settings.path).unwrap(),
+            std::fs::read(view.playback_settings.path.as_ref().unwrap()).unwrap(),
             b"original malformed settings"
         );
     });
@@ -522,8 +528,10 @@ fn saved_play_menu_toggle_controls_held_midi_on_the_next_arrangement_start(
         visual.simulate_keystrokes("down enter");
         wait_for_save(&editor, &mut visual);
         editor.read_with(&visual, |view, _| {
-            let saved =
-                hex_preferences::load_playback_preferences(&view.playback_settings.path).unwrap();
+            let saved = hex_preferences::load_playback_preferences(
+                view.playback_settings.path.as_ref().unwrap(),
+            )
+            .unwrap();
             assert_eq!(saved.note_chase, enabled);
             assert_eq!(view.playback_settings.preferences.note_chase, enabled);
             assert!(!view.audio_status().unwrap().playing.load(Acquire));

@@ -89,7 +89,7 @@ fn browser_arrows_fixture_catalog_job_owns_root_after_caller_and_view_drop(
         assert!(Arc::ptr_eq(&owner, &view.test_environment));
         assert_eq!(view.test_environment.root(), root);
         [
-            view.browser.preferences_path.clone(),
+            view.browser.test_preferences_path().to_owned(),
             view.recent_projects.test_path().to_owned(),
             view.theme_settings.test_path().to_owned(),
             view.project_directory.test_path().to_owned(),

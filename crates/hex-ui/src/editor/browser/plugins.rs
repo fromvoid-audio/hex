@@ -211,10 +211,11 @@ impl EditorView {
         }
     }
 
-    fn plugin_catalog_path(&self) -> PathBuf {
+    fn plugin_catalog_path(&self) -> Option<PathBuf> {
         self.browser
             .preferences_path
-            .with_file_name("plugin-catalog.json")
+            .as_ref()
+            .map(|path| path.with_file_name("plugin-catalog.json"))
     }
     pub(super) fn apply_plugin_catalog(&mut self, catalog: Catalog, cx: &App) {
         let selected = if matches!(
@@ -234,12 +235,17 @@ impl EditorView {
         if self.browser.plugins.loading || self.browser.plugins.busy {
             return;
         }
+        let Some(path) = self.plugin_catalog_path() else {
+            self.browser.plugins.writable = false;
+            self.browser.plugins.status =
+                "plugin catalog unavailable · home directory is unset".into();
+            return;
+        };
         self.browser.plugins.loading = true;
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             self.browser.plugins.diagnostics = None;
         }
-        let path = self.plugin_catalog_path();
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let (loaded, app) = cx
@@ -291,7 +297,7 @@ impl EditorView {
         target_arch = "aarch64"
     ))]
     pub(super) fn set_plugin_test_app(&mut self, app: PathBuf, preferences: PathBuf) {
-        self.browser.preferences_path = preferences;
+        self.browser.preferences_path = Some(preferences);
         self.browser.plugins.app = Some(app);
         self.browser.plugins.writable = true;
     }
@@ -595,6 +601,12 @@ impl EditorView {
             let Some(app) = self.browser.plugins.app.clone() else {
                 return;
             };
+            let Some(catalog) = self.plugin_catalog_path() else {
+                self.browser.plugins.writable = false;
+                self.browser.plugins.status =
+                    "plugin catalog unavailable · home directory is unset".into();
+                return;
+            };
             let cancellation = Cancellation::default();
             let token = cancellation.token();
             self.browser.plugins.cancellation = Some(cancellation);
@@ -625,7 +637,6 @@ impl EditorView {
             self.browser.plugins.busy = true;
             self.browser.plugins.diagnostics = None;
             self.browser.plugins.status = "scanning vst3…".into();
-            let catalog = self.plugin_catalog_path();
             let this = cx.entity().downgrade();
             cx.spawn(async move |_, cx| {
                 let result = cx

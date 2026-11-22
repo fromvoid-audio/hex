@@ -7,7 +7,7 @@ use hex_session::{
 use std::path::PathBuf;
 
 pub(in crate::editor) struct State {
-    pub(super) path: PathBuf,
+    pub(super) path: Option<PathBuf>,
     pub(super) preferences: AudioImportPreferences,
     pub(super) loading: bool,
     pub(super) saving: bool,
@@ -20,7 +20,7 @@ impl State {
         self.loading
     }
 
-    pub(in crate::editor) fn new(path: PathBuf) -> Self {
+    pub(in crate::editor) fn new(path: Option<PathBuf>) -> Self {
         Self {
             path,
             preferences: Default::default(),

@@ -75,7 +75,13 @@ impl EditorView {
     }
 
     pub(super) fn start_audio_import_preferences_load(&mut self, cx: &mut Context<Self>) {
-        let path = self.audio_import_settings.path.clone();
+        let Some(path) = self.audio_import_settings.path.clone() else {
+            self.audio_import_settings.loading = false;
+            self.audio_import_settings.writable = false;
+            self.audio_import_settings.error =
+                Some("audio import settings unavailable · home directory is unset".into());
+            return;
+        };
         #[cfg(test)]
         let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
@@ -117,9 +123,14 @@ impl EditorView {
         let preferences = AudioImportPreferences {
             auto_warp_beats: !state.preferences.auto_warp_beats,
         };
+        let Some(path) = state.path.clone() else {
+            state.writable = false;
+            state.error =
+                Some("audio import settings unavailable · home directory is unset".into());
+            return;
+        };
         state.saving = true;
         state.error = None;
-        let path = state.path.clone();
         #[cfg(test)]
         let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();

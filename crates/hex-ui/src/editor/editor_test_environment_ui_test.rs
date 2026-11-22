@@ -41,7 +41,13 @@ fn browser_test_environment_ordinary_constructor_has_private_roots_before_startu
                 .all(|path| path.starts_with(&view.browser.home))
         );
         let owner = view.browser.home.parent().unwrap();
-        assert!(view.browser.preferences_path.starts_with(owner));
+        assert!(
+            view.browser
+                .preferences_path
+                .as_ref()
+                .unwrap()
+                .starts_with(owner)
+        );
         assert!(view.recent_projects.test_path().starts_with(owner));
         assert!(view.theme_settings.test_path().starts_with(owner));
     });
@@ -87,7 +93,13 @@ fn browser_test_environment_unique_editors_complete_real_directory_and_catalog_s
                     .iter()
                     .all(|path| path.starts_with(&root))
             );
-            assert!(view.browser.preferences_path.starts_with(&root));
+            assert!(
+                view.browser
+                    .preferences_path
+                    .as_ref()
+                    .unwrap()
+                    .starts_with(&root)
+            );
             assert!(view.recent_projects.test_path().starts_with(&root));
             assert!(view.theme_settings.test_path().starts_with(&root));
             (
@@ -95,6 +107,8 @@ fn browser_test_environment_unique_editors_complete_real_directory_and_catalog_s
                 view.browser.home.clone(),
                 view.browser
                     .preferences_path
+                    .as_ref()
+                    .unwrap()
                     .with_extension("samples-v1.db"),
             )
         });
@@ -190,7 +204,10 @@ fn browser_test_environment_explicit_missing_corrupt_and_populated_preferences_k
             })
             .unwrap();
         editor.read_with(cx, |view, _| {
-            assert_eq!(view.browser.preferences_path, prefs);
+            assert_eq!(
+                view.browser.preferences_path.as_deref(),
+                Some(prefs.as_path())
+            );
             assert_eq!(view.recent_projects.test_path(), recent);
             assert!(
                 view.theme_settings
