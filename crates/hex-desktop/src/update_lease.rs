@@ -27,11 +27,10 @@ impl Drop for UpdateLease {
 pub(super) fn acquire_for_current_executable() -> Result<Option<UpdateLease>, String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("could not identify executable for update custody: {error}"))?;
-    acquire_for_reported_executable(&executable, hex_ui::diagnostic_build_identity()).map_err(
-        |error| {
+    acquire_for_reported_executable(&executable, crate::desktop_diagnostic_build_identity())
+        .map_err(|error| {
             format!("could not acquire update custody; retry after the update finishes: {error}")
-        },
-    )
+        })
 }
 
 fn acquire_for_reported_executable(

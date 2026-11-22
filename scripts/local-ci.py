@@ -1499,6 +1499,7 @@ class LocalCiRunner:
                 self.env["HEX_GUARDED_BUILD_SOURCE"] = (
                     snapshot["commit"] + ":" + snapshot["content_sha256"] + ":"
                     + ("dirty" if snapshot["dirty"] else "clean"))
+            self.env["HEX_GUARDED_UI_ASSETS_SHA256"] = self._ui_assets_digest()
             root_path = Path(top_level.stdout.strip()).resolve()
             common_path = Path(common_dir.stdout.strip())
             if not common_path.is_absolute():
@@ -1523,6 +1524,38 @@ class LocalCiRunner:
                 ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
             ]
         return True
+
+    def _ui_assets_digest(self) -> str:
+        """Content digest of `hex-ui`'s repo-root embedded assets (changelog + fonts).
+
+        Scoped strictly to `hex-ui`'s actual non-crate inputs so unrelated commits
+        or edits in other crates never trigger a rebuild of `hex-ui`.
+        """
+        digest = hashlib.sha256()
+        digest.update(b"hex-ui-assets-v1\0")
+        release_notes = self.env.get("HEX_RELEASE_CHANGELOG")
+        changelog = Path(release_notes) if release_notes else self.root / "changelog/generated.json"
+        if not changelog.is_absolute():
+            changelog = self.root / changelog
+        try:
+            data = changelog.read_bytes()
+        except OSError:
+            digest.update(b"changelog:missing\0")
+        else:
+            digest.update(b"changelog:file\0")
+            digest.update(len(data).to_bytes(8, "big"))
+            digest.update(data)
+        fonts_dir = self.root / "assets/fonts"
+        if fonts_dir.is_dir():
+            for path in sorted(p for p in fonts_dir.rglob("*") if p.is_file()):
+                rel = path.relative_to(self.root).as_posix().encode()
+                data = path.read_bytes()
+                digest.update(b"font\0")
+                digest.update(len(rel).to_bytes(8, "big"))
+                digest.update(rel)
+                digest.update(len(data).to_bytes(8, "big"))
+                digest.update(data)
+        return digest.hexdigest()
 
     def _resolve_cargo_identity(self, reservation: FreshTargetReservation | None = None) -> bool:
         """Resolve Cargo identity, optionally validating a pre-metadata reservation.

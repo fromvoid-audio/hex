@@ -30,8 +30,20 @@ mod time_selection_profile;
 mod update_lease;
 mod update_supervisor;
 
+const DESKTOP_BUILD_IDENTITY: hex_ui::BuildIdentity = hex_ui::BuildIdentity::new(
+    env!("HEX_DISPLAY_VERSION"),
+    env!("HEX_BUILD_IDENTITY"),
+    env!("HEX_DIAGNOSTIC_SOURCE"),
+);
+
+pub(crate) fn desktop_diagnostic_build_identity() -> &'static str {
+    hex_ui::install_build_identity(DESKTOP_BUILD_IDENTITY);
+    hex_ui::diagnostic_build_identity()
+}
+
 /// Exits 1 after any fatal startup failure, once its alert is dismissed.
 fn main() -> ExitCode {
+    hex_ui::install_build_identity(DESKTOP_BUILD_IDENTITY);
     // Keep shared publication custody until every desktop worker has shut
     // down. Do not pass this file descriptor to any update helper.
     let update_lease = update_lease::acquire_for_current_executable()
@@ -142,7 +154,7 @@ fn record_startup_identity(handle: &hex_diagnostics::DiagnosticsHandle) {
         hex_diagnostics::Category::Startup,
         &format!(
             "hex version={}; executable={:?}",
-            option_env!("HEX_RELEASE_LABEL").unwrap_or(env!("CARGO_PKG_VERSION")),
+            env!("HEX_DISPLAY_VERSION"),
             std::env::current_exe()
         ),
     );
@@ -211,7 +223,7 @@ fn start_session_log(context: &str) -> Result<hex_diagnostics::SessionLog, Strin
             directory,
             &format!(
                 "build={} platform={}-{} {context}",
-                hex_ui::diagnostic_build_identity(),
+                desktop_diagnostic_build_identity(),
                 std::env::consts::OS,
                 std::env::consts::ARCH
             ),

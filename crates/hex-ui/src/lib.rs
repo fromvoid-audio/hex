@@ -22,6 +22,7 @@ mod mts;
 pub use mts::install_mts_publisher;
 mod app;
 mod build_info;
+pub use build_info::{BuildIdentity, diagnostic_build_identity, install_build_identity};
 mod context_menu;
 mod controller_input;
 mod device_composition;
@@ -225,13 +226,4 @@ pub fn sampler_midi_test_ready(
     cx: &gpui::App,
 ) -> Result<bool, String> {
     editor::sampler_midi_fixture_ready(window, cx)
-}
-
-/// Compile-time source provenance; guarded builds include the frozen tree digest.
-pub fn diagnostic_build_identity() -> &'static str {
-    concat!(
-        env!("HEX_DISPLAY_VERSION"),
-        " source=",
-        env!("HEX_DIAGNOSTIC_SOURCE")
-    )
 }

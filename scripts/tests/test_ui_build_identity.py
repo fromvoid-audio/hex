@@ -34,32 +34,45 @@ class UiBuildIdentityTests(unittest.TestCase):
         root = self.root = Path(temporary.name).resolve()
         install_delivery_source_fixture(root)
         package = root / "crates/ui"
+        desktop = root / "crates/desktop"
         (package / "src").mkdir(parents=True)
+        (desktop / "src").mkdir(parents=True)
         (root / "changelog").mkdir()
         (root / "assets/fonts").mkdir(parents=True)
         font = self.font = root / "assets/fonts/fixture-font.data"
         font.write_text("old-font")
         (root / "Cargo.toml").write_text(
-            '[workspace]\nmembers=["crates/ui"]\nresolver="2"\n'
+            '[workspace]\nmembers=["crates/ui", "crates/desktop"]\nresolver="2"\n'
             '[profile.dev]\ndebug=0\n')
         (root / ".gitignore").write_text('/target/\n/release-target/\n/artifacts/\n')
-        (package / "Cargo.toml").write_text('[package]\nname="identity-fixture"\nversion="0.1.0"\nedition="2024"\n')
-        script = (ROOT / "crates/hex-ui/build.rs").read_text()
-        (package / "build.rs").write_text(script)
-        (package / "src/main.rs").write_text(
+        (package / "Cargo.toml").write_text('[package]\nname="ui-fixture"\nversion="0.1.0"\nedition="2024"\n')
+        (package / "build.rs").write_text((ROOT / "crates/hex-ui/build.rs").read_text())
+        (package / "src/lib.rs").write_text(
+            'pub fn display_version() -> &\'static str { env!("HEX_DISPLAY_VERSION") }\n'
+            'pub fn font() -> &\'static [u8] { include_bytes!("../../../assets/fonts/fixture-font.data") }\n'
+            'pub fn notes() -> &\'static [u8] { include_bytes!(concat!(env!("OUT_DIR"), "/changelog.json")) }\n')
+        (desktop / "Cargo.toml").write_text(
+            '[package]\nname="identity-fixture"\nversion="0.1.0"\nedition="2024"\n'
+            '[dependencies]\nui-fixture = { path = "../ui" }\n')
+        (desktop / "build.rs").write_text((ROOT / "crates/hex-desktop/build.rs").read_text())
+        (desktop / "src/main.rs").write_text(
             'fn main() {\n'
-            '    let font = include_bytes!("../../../assets/fonts/fixture-font.data");\n'
-            '    let notes = include_bytes!(concat!(env!("OUT_DIR"), "/changelog.json"));\n'
+            '    assert_eq!(env!("HEX_DISPLAY_VERSION"), ui_fixture::display_version());\n'
             '    println!("{}", env!("HEX_DISPLAY_VERSION"));\n'
-            '    println!("{}", String::from_utf8_lossy(font));\n'
-            '    println!("{}|{}", env!("HEX_BUILD_IDENTITY"), String::from_utf8_lossy(notes));\n'
+            '    println!("{}", String::from_utf8_lossy(ui_fixture::font()));\n'
+            '    println!("{}|{}", env!("HEX_BUILD_IDENTITY"), String::from_utf8_lossy(ui_fixture::notes()));\n'
             '}\n')
 
         self.command("git", "init", "-q")
         self.command("git", "config", "user.name", "identity fixture")
         self.command("git", "config", "user.email", "fixture@invalid")
         self.env = {**os.environ, "CARGO_TARGET_DIR": str(root / "target")}
-        for key in ("HEX_GUARDED_BUILD_SOURCE", "HEX_RELEASE_CHANGELOG", "HEX_RELEASE_LABEL"):
+        for key in (
+            "HEX_GUARDED_BUILD_SOURCE",
+            "HEX_GUARDED_UI_ASSETS_SHA256",
+            "HEX_RELEASE_CHANGELOG",
+            "HEX_RELEASE_LABEL",
+        ):
             self.env.pop(key, None)
         subprocess.run(["cargo", "generate-lockfile", "--offline"], cwd=root, env=self.env,
                        check=True, capture_output=True)
@@ -76,7 +89,13 @@ class UiBuildIdentityTests(unittest.TestCase):
         self.command("git", "commit", "-qm", message)
 
     def inspect_artifact(self, text):
-        events = (json.loads(line) for line in text.splitlines() if line.startswith("{"))
+        events = [json.loads(line) for line in text.splitlines() if line.startswith("{")]
+        ui_lib = next(
+            (e for e in events if e.get("reason") == "compiler-artifact"
+             and e.get("target", {}).get("name") == "ui_fixture"),
+            None,
+        )
+        self.ui_fresh = None if ui_lib is None else ui_lib["fresh"]
         artifact = next(e for e in events if e.get("reason") == "compiler-artifact" and e.get("executable"))
         self.display_version, embedded_font, identity = self.command(artifact["executable"]).split("\n", 2)
         self.assertEqual(embedded_font, self.font.read_text())
@@ -137,6 +156,7 @@ class UiBuildIdentityTests(unittest.TestCase):
         (self.root / "untracked-input").write_text("new input")
         fresh, output = self.build()
         self.assertFalse(fresh)
+        self.assertTrue(self.ui_fresh, "unrelated untracked file must not recompile ui crate")
         self.assertIn(" dirty|", output)
         self.assertTrue(self.build()[0])
         dirty_head = self.command("git", "rev-parse", "HEAD")
@@ -145,28 +165,43 @@ class UiBuildIdentityTests(unittest.TestCase):
         # and the Rust asset embedding.
         self.rewrite_with_old_mtime(self.font, "new-font")
         self.assertFalse(self.build()[0])
+        self.assertFalse(self.ui_fresh)
         self.assertEqual(self.cleanup, "not_needed")
         self.assertEqual(self.command("git", "rev-parse", "HEAD"), dirty_head)
         self.notes.write_text('{"batches":[]}')
         fresh, output = self.build()
         self.assertFalse(fresh)
+        self.assertFalse(self.ui_fresh)
         self.assertTrue(output.endswith('|{"batches":[]}'))
         self.commit("new HEAD and notes")
         fresh, output = self.build()
         self.assertFalse(fresh)
+        self.assertTrue(self.ui_fresh, "committing unchanged UI inputs must not recompile ui crate")
         self.assertEqual(output, self.command("git", "rev-parse", "--short=8", "HEAD") + '|{"batches":[]}')
         self.assertTrue(self.build()[0])
         self.rewrite_with_old_mtime(self.notes, '{"batches": []}')
         self.assertTrue(self.build()[1].endswith('|{"batches": []}'))
+        self.assertFalse(self.ui_fresh)
         self.assertEqual(self.cleanup, "not_needed")
         self.commit("notes changed with retained mtime")
 
         (self.root / "another-input").write_text("dirty")
         self.assertIn(" dirty|", self.build(raw=True)[1])
-        embedded = list((self.root / "target/debug/build").glob("identity-fixture-*/out/changelog.json"))
+        embedded = list((self.root / "target/debug/build").glob("ui-fixture-*/out/changelog.json"))
+        self.assertTrue(embedded)
         before = {str(p): p.stat().st_mtime_ns for p in embedded}
         raw_fresh, _ = self.build(raw=True)
+        self.assertTrue(self.ui_fresh, "repeat raw build must not recompile ui crate")
         self.assertEqual(before, {str(p): p.stat().st_mtime_ns for p in embedded})
+        (self.root / "unrelated-raw-file").write_text("unrelated")
+        self.commit("unrelated commit under raw cargo")
+        raw_commit_fresh, raw_commit_output = self.build(raw=True)
+        self.assertFalse(raw_commit_fresh, "desktop refreshes build identity on new commit")
+        self.assertTrue(self.ui_fresh, "unrelated commit under raw cargo must not recompile ui crate")
+        self.assertEqual(
+            raw_commit_output,
+            self.command("git", "rev-parse", "--short=8", "HEAD") + '|{"batches": []}',
+        )
         print("ACTUAL_UI_BUILD raw_repeat_fresh=", raw_fresh)
         # Missing notes are unavailable and malformed bytes retain their
         # embed behavior. The changelog guard separately validates the bytes.
