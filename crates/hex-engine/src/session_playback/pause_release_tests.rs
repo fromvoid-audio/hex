@@ -110,73 +110,80 @@ fn voices_idle(playback: &SessionPlayback) -> bool {
             .all(|runtime| runtime.committed_is_quiescent())
 }
 
-#[test]
-fn pause_releases_held_notes_and_resume_plays_only_new_note_ons() {
-    for owner in [Owner::Arrangement, Owner::Session] {
-        for instrument in [Instrument::Analytic, Instrument::Mutable] {
-            for looped in [false, true] {
-                for block in [1, 64, 512] {
-                    let case = format!("{owner:?} {instrument:?}, looped={looped}, block={block}");
-                    let project = held_note_project(looped, instrument);
-                    let revision = prepared(&project, instrument);
-                    let session_clip = revision.session().midi_clips()[0].id;
-                    let mut playback = SessionPlayback::new(revision).unwrap();
-                    // Pause cuts gates on source-owner runtimes; every
-                    // instrument track binds a native source, so that is all.
-                    assert!(
-                        playback
-                            .mutable_instruments
-                            .iter()
-                            .flatten()
-                            .all(|runtime| runtime.is_source_owner()),
-                        "{case}: instrument runtimes are source owners"
-                    );
-                    if matches!(owner, Owner::Session) {
-                        playback
-                            .apply(SessionPlaybackCommand::LaunchClip {
-                                clip: session_clip,
-                                quantization: LaunchQuantization::Immediate,
-                            })
-                            .unwrap();
-                    }
-                    playback.apply(SessionPlaybackCommand::Play).unwrap();
-                    let held = render_frames(&mut playback, PAUSE_AT, block);
-                    assert!(
-                        held[PAUSE_AT - 64..].iter().any(|frame| *frame != [0.0; 2]),
-                        "{case}: the note sounds before the pause"
-                    );
-                    playback.apply(SessionPlaybackCommand::Pause).unwrap();
-                    // The held voice releases while paused, then goes idle.
-                    let paused = render_frames(&mut playback, BEAT_FRAMES, block);
-                    assert!(
-                        paused[..64].iter().any(|frame| *frame != [0.0; 2]),
-                        "{case}: the release plays out after the pause"
-                    );
-                    assert!(
-                        paused[BEAT_FRAMES - 512..]
-                            .iter()
-                            .all(|frame| *frame == [0.0; 2]),
-                        "{case}: the release ends while paused"
-                    );
-                    assert!(voices_idle(&playback), "{case}: every voice is idle");
-                    assert_eq!(playback.performance_frame(), PAUSE_AT as u64);
-                    // Resume: the note held at the pause is not re-sounded.
-                    playback.apply(SessionPlaybackCommand::Play).unwrap();
-                    let resumed = render_frames(&mut playback, BEAT_FRAMES - PAUSE_AT, block);
-                    assert!(
-                        resumed.iter().all(|frame| *frame == [0.0; 2]),
-                        "{case}: no voice for a note held across the pause"
-                    );
-                    // A new note-on after the pause plays normally.
-                    let next = render_frames(&mut playback, BEAT_FRAMES / 8, block);
-                    assert!(
-                        next.iter().any(|frame| *frame != [0.0; 2]),
-                        "{case}: the next note-on sounds"
-                    );
+fn assert_pause_releases_held_notes(owner: Owner) {
+    for instrument in [Instrument::Analytic, Instrument::Mutable] {
+        for looped in [false, true] {
+            for block in [1, 64, 512] {
+                let case = format!("{owner:?} {instrument:?}, looped={looped}, block={block}");
+                let project = held_note_project(looped, instrument);
+                let revision = prepared(&project, instrument);
+                let session_clip = revision.session().midi_clips()[0].id;
+                let mut playback = SessionPlayback::new(revision).unwrap();
+                // Pause cuts gates on source-owner runtimes; every
+                // instrument track binds a native source, so that is all.
+                assert!(
+                    playback
+                        .mutable_instruments
+                        .iter()
+                        .flatten()
+                        .all(|runtime| runtime.is_source_owner()),
+                    "{case}: instrument runtimes are source owners"
+                );
+                if matches!(owner, Owner::Session) {
+                    playback
+                        .apply(SessionPlaybackCommand::LaunchClip {
+                            clip: session_clip,
+                            quantization: LaunchQuantization::Immediate,
+                        })
+                        .unwrap();
                 }
+                playback.apply(SessionPlaybackCommand::Play).unwrap();
+                let held = render_frames(&mut playback, PAUSE_AT, block);
+                assert!(
+                    held[PAUSE_AT - 64..].iter().any(|frame| *frame != [0.0; 2]),
+                    "{case}: the note sounds before the pause"
+                );
+                playback.apply(SessionPlaybackCommand::Pause).unwrap();
+                // The held voice releases while paused, then goes idle.
+                let paused = render_frames(&mut playback, BEAT_FRAMES, block);
+                assert!(
+                    paused[..64].iter().any(|frame| *frame != [0.0; 2]),
+                    "{case}: the release plays out after the pause"
+                );
+                assert!(
+                    paused[BEAT_FRAMES - 512..]
+                        .iter()
+                        .all(|frame| *frame == [0.0; 2]),
+                    "{case}: the release ends while paused"
+                );
+                assert!(voices_idle(&playback), "{case}: every voice is idle");
+                assert_eq!(playback.performance_frame(), PAUSE_AT as u64);
+                // Resume: the note held at the pause is not re-sounded.
+                playback.apply(SessionPlaybackCommand::Play).unwrap();
+                let resumed = render_frames(&mut playback, BEAT_FRAMES - PAUSE_AT, block);
+                assert!(
+                    resumed.iter().all(|frame| *frame == [0.0; 2]),
+                    "{case}: no voice for a note held across the pause"
+                );
+                // A new note-on after the pause plays normally.
+                let next = render_frames(&mut playback, BEAT_FRAMES / 8, block);
+                assert!(
+                    next.iter().any(|frame| *frame != [0.0; 2]),
+                    "{case}: the next note-on sounds"
+                );
             }
         }
     }
+}
+
+#[test]
+fn pause_releases_held_notes_and_resume_plays_only_new_note_ons_arrangement() {
+    assert_pause_releases_held_notes(Owner::Arrangement);
+}
+
+#[test]
+fn pause_releases_held_notes_and_resume_plays_only_new_note_ons_session() {
+    assert_pause_releases_held_notes(Owner::Session);
 }
 
 fn operator_project(

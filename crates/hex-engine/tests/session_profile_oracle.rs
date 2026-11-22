@@ -21,8 +21,12 @@ fn assert_pcm_matches(actual: &[[f32; 2]], expected: &[[f32; 2]], label: &str) {
     );
 }
 
-fn check_fixture(loop_tempo: bool) {
-    let project = fixture::project(loop_tempo).unwrap();
+// 18 tracks cover both parity classes (Arrangement/Session), all 7 gain steps,
+// and all 9 balance steps while staying under the per-test budget.
+const UNIT_ORACLE_TRACKS: usize = 18;
+
+fn check_fixture(tracks: usize, loop_tempo: bool) {
+    let project = fixture::project_with_tracks(tracks, loop_tempo).unwrap();
     let finite = fixture::finite_oracle(&project, loop_tempo).unwrap();
     let revision = Arc::new(
         PreparedRevision::prepare(&project, &BTreeMap::new(), Arc::new(SineTable::new()), None)
@@ -68,10 +72,22 @@ fn check_fixture(loop_tempo: bool) {
 
 #[test]
 fn mixed_profile_oracle_matches_canonical_hybrid_tracks_across_transport_wraps() {
-    check_fixture(false);
+    check_fixture(UNIT_ORACLE_TRACKS, false);
 }
 
 #[test]
 fn mixed_profile_oracle_matches_repeating_tempo_map_across_transport_wraps() {
-    check_fixture(true);
+    check_fixture(UNIT_ORACLE_TRACKS, true);
+}
+
+#[test]
+#[ignore = "100-track profile soak; run explicitly with --ignored"]
+fn mixed_profile_oracle_100_track_soak_hybrid_tracks() {
+    check_fixture(100, false);
+}
+
+#[test]
+#[ignore = "100-track profile soak; run explicitly with --ignored"]
+fn mixed_profile_oracle_100_track_soak_repeating_tempo_map() {
+    check_fixture(100, true);
 }
