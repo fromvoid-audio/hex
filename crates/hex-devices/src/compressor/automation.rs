@@ -106,6 +106,8 @@ impl CompressorRuntime {
             detector_remaining,
             envelope,
             gain_db,
+            reduction_db,
+            meter,
             mix,
             mix_remaining,
         } = self;
@@ -114,7 +116,8 @@ impl CompressorRuntime {
         settings.check_inline();
         let _: &[f64; 2] = energy;
         let _: [&u32; 3] = [sample_rate, detector_remaining, mix_remaining];
-        let _: [&f64; 8] = [
+        let _: &hex_lattice::DynamicsMeter = meter;
+        let _: [&f64; 9] = [
             attack_alpha,
             release_alpha,
             gain_alpha,
@@ -122,6 +125,7 @@ impl CompressorRuntime {
             detector_mix,
             envelope,
             gain_db,
+            reduction_db,
             mix,
         ];
     }

@@ -70,6 +70,319 @@ fn verified_arrangement_gain_auditions_cancels_commits_and_undoes() {
 }
 
 #[test]
+fn verified_arrangement_play_start_auditions_cancels_commits_and_undoes() {
+    use hex_project::Command;
+    use hex_session::service::{ArrangementPlayStartAudition, PlayStartEdit};
+    use std::io::{Seek, SeekFrom, Write};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = open_verified();
+    let segment = 96_000_u32;
+    let path = files.constant_wav("verified-play-start.wav", 48_000, segment * 3, &[8192]);
+    {
+        let mut wav = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        let seg_bytes = i64::from(segment) * size_of::<i16>() as i64;
+        wav.seek(SeekFrom::End(-seg_bytes * 2)).unwrap();
+        wav.write_all(&4096_i16.to_le_bytes().repeat(segment as usize))
+            .unwrap();
+        wav.write_all(&2048_i16.to_le_bytes().repeat(segment as usize))
+            .unwrap();
+    }
+    let original = fs::read(&path).unwrap();
+
+    let imported = h.run(Request::Import(path.clone()));
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    assert!(matches!(
+        imported
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .required_sources()
+            .next()
+            .unwrap()
+            .1,
+        AudioSourceBinding::VerifiedFile(_)
+    ));
+    h.run(Request::Edit(Command::SetClipFades {
+        clip,
+        fade_in: 0,
+        fade_out: 0,
+    }));
+    let base = h.run(Request::Edit(Command::TrimClip {
+        clip,
+        start: 0,
+        duration: u64::from(segment),
+        source_offset: 0,
+        source_length: u64::from(segment * 3),
+    }));
+    let context = h.context.unwrap();
+    h.applied(context);
+    let domain = h.domain(context).0;
+    start_playing(&mut h);
+    expect_pcm_level(&h, 0.25);
+
+    // 1. Plain streamed TrimClip (AudioTrimStart): coalesce rapid slips without decoding behind catalog.
+    for offset in [segment / 2, segment, segment * 2] {
+        h.service
+            .as_ref()
+            .unwrap()
+            .audition_arrangement_play_start(Some(ArrangementPlayStartAudition {
+                context,
+                edit: PlayStartEdit::AudioTrimStart {
+                    clip,
+                    start: 0,
+                    duration: u64::from(segment),
+                    source_offset: u64::from(offset),
+                    source_length: u64::from(segment * 3 - offset),
+                },
+            }));
+    }
+    expect_pcm_level(&h, 0.0625);
+    assert_eq!(h.domain(context).0, domain);
+    assert!(h.service.as_ref().unwrap().try_event().is_err());
+
+    // Cancel restores 0.25.
+    h.service
+        .as_ref()
+        .unwrap()
+        .audition_arrangement_play_start(None);
+    expect_pcm_level(&h, 0.25);
+    assert_eq!(h.domain(context).0, domain);
+
+    // Release + commit + undo.
+    h.service
+        .as_ref()
+        .unwrap()
+        .audition_arrangement_play_start(Some(ArrangementPlayStartAudition {
+            context,
+            edit: PlayStartEdit::AudioTrimStart {
+                clip,
+                start: 0,
+                duration: u64::from(segment),
+                source_offset: u64::from(segment * 2),
+                source_length: u64::from(segment),
+            },
+        }));
+    expect_pcm_level(&h, 0.0625);
+    h.service
+        .as_ref()
+        .unwrap()
+        .finish_arrangement_play_start_audition();
+    let release_wait = Instant::now() + Duration::from_millis(45);
+    while Instant::now() < release_wait {
+        assert!(
+            h.render()[63]
+                .into_iter()
+                .all(|s| (s - 0.0625).abs() < 1e-6)
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let committed = h.run(Request::Edit(Command::TrimClip {
+        clip,
+        start: 0,
+        duration: u64::from(segment),
+        source_offset: u64::from(segment * 2),
+        source_length: u64::from(segment),
+    }));
+    assert_eq!(
+        committed.state.project.clip(clip).unwrap().source_offset(),
+        u64::from(segment * 2)
+    );
+    h.service
+        .as_ref()
+        .unwrap()
+        .retire_arrangement_play_start_audition();
+    h.applied(h.context.unwrap());
+    expect_pcm_level(&h, 0.0625);
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project, base.state.project);
+    h.applied(h.context.unwrap());
+    expect_pcm_level(&h, 0.25);
+
+    // 2. Looped SetClipSourcePhase (AudioSourcePhase) in VerifiedStreaming.
+    let looped = h.run(Request::Edit(Command::SetClipLooping {
+        clip,
+        looping: true,
+    }));
+    let looped_context = h.context.unwrap();
+    h.applied(looped_context);
+    let looped_domain = h.domain(looped_context).0;
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Seek(0))
+        .unwrap();
+    expect_pcm_level(&h, 0.25);
+
+    h.service
+        .as_ref()
+        .unwrap()
+        .audition_arrangement_play_start(Some(ArrangementPlayStartAudition {
+            context: looped_context,
+            edit: PlayStartEdit::AudioSourcePhase {
+                clip,
+                phase: u64::from(segment),
+            },
+        }));
+    expect_pcm_level(&h, 0.125);
+    assert_eq!(h.domain(looped_context).0, looped_domain);
+
+    h.service
+        .as_ref()
+        .unwrap()
+        .audition_arrangement_play_start(None);
+    expect_pcm_level(&h, 0.25);
+
+    h.service
+        .as_ref()
+        .unwrap()
+        .audition_arrangement_play_start(Some(ArrangementPlayStartAudition {
+            context: looped_context,
+            edit: PlayStartEdit::AudioSourcePhase {
+                clip,
+                phase: u64::from(segment * 2),
+            },
+        }));
+    expect_pcm_level(&h, 0.0625);
+    h.service
+        .as_ref()
+        .unwrap()
+        .finish_arrangement_play_start_audition();
+    let phase_committed = h.run(Request::Edit(Command::SetClipSourcePhase {
+        clip,
+        phase: u64::from(segment * 2),
+    }));
+    assert_eq!(
+        phase_committed
+            .state
+            .project
+            .clip(clip)
+            .unwrap()
+            .source_phase(),
+        u64::from(segment * 2)
+    );
+    h.service
+        .as_ref()
+        .unwrap()
+        .retire_arrangement_play_start_audition();
+    h.applied(h.context.unwrap());
+    expect_pcm_level(&h, 0.0625);
+    let phase_undone = h.run(Request::Undo);
+    assert_eq!(phase_undone.state.project, looped.state.project);
+    h.applied(h.context.unwrap());
+    expect_pcm_level(&h, 0.25);
+    assert_eq!(fs::read(&path).unwrap(), original);
+}
+
+#[test]
+fn verified_arrangement_play_start_refuses_transformed_streamed_clips_without_interrupting_playback()
+ {
+    use hex_project::{BeatTime, Command, WarpMarker, WarpMode, WarpSettings};
+    use hex_session::service::{ArrangementPlayStartAudition, PlayStartEdit};
+    use std::sync::atomic::Ordering::Acquire;
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = open_verified();
+    let segment = 96_000_u32;
+    let path = files.wav(48_000, segment * 2);
+    let imported = h.run(Request::Import(path));
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    h.run(Request::Edit(Command::SetClipFades {
+        clip,
+        fade_in: 0,
+        fade_out: 0,
+    }));
+    let context = h.context.unwrap();
+    let canonical = h.applied(context);
+    let domain = h.domain(context).0;
+    start_playing(&mut h);
+    expect_pcm_level(&h, 0.25);
+
+    // Case 1: Placed audio_edit on a plain VerifiedFile clip is refused cleanly.
+    h.service
+        .as_ref()
+        .unwrap()
+        .audition_arrangement_play_start(Some(ArrangementPlayStartAudition {
+            context,
+            edit: PlayStartEdit::Audio {
+                clip,
+                position: u64::from(segment),
+            },
+        }));
+    let wait_until = Instant::now() + Duration::from_millis(60);
+    while Instant::now() < wait_until {
+        let pcm = h.render();
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.playing.load(Acquire));
+        assert!(!status.render_fault.load(Acquire));
+        assert_eq!(status.applied_audio_source(), Some(canonical));
+        assert!(pcm.into_iter().flatten().all(|s| (s - 0.25).abs() < 1e-6));
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(h.domain(context).0, domain);
+    assert!(h.service.as_ref().unwrap().try_event().is_err());
+    h.service
+        .as_ref()
+        .unwrap()
+        .audition_arrangement_play_start(None);
+
+    // Case 2: Warped VerifiedFile clip refuses AudioTrimStart without interrupting playback.
+    let warped = h.run(Request::Edit(Command::SetAudioClipWarp {
+        clip,
+        settings: Some(WarpSettings {
+            mode: WarpMode::RePitch,
+            markers: vec![
+                WarpMarker {
+                    source_frame: 0,
+                    beat: BeatTime::ZERO,
+                },
+                WarpMarker {
+                    source_frame: u64::from(segment * 2),
+                    beat: BeatTime::from_quarters(8).unwrap(),
+                },
+            ],
+        }),
+    }));
+    let warped_context = h.context.unwrap();
+    let warped_canonical = h.applied(warped_context);
+    let warped_domain = h.domain(warped_context).0;
+    h.service
+        .as_ref()
+        .unwrap()
+        .audition_arrangement_play_start(Some(ArrangementPlayStartAudition {
+            context: warped_context,
+            edit: PlayStartEdit::AudioTrimStart {
+                clip,
+                start: 0,
+                duration: u64::from(segment * 2),
+                source_offset: u64::from(segment),
+                source_length: u64::from(segment),
+            },
+        }));
+    let wait_until = Instant::now() + Duration::from_millis(60);
+    while Instant::now() < wait_until {
+        let pcm = h.render();
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.playing.load(Acquire));
+        assert!(!status.render_fault.load(Acquire));
+        assert_eq!(status.applied_audio_source(), Some(warped_canonical));
+        assert!(pcm.into_iter().flatten().all(|s| (s - 0.25).abs() < 1e-6));
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(h.domain(warped_context).0, warped_domain);
+    assert!(h.service.as_ref().unwrap().try_event().is_err());
+    assert_eq!(warped.state.project.clip(clip).unwrap().source_offset(), 0);
+    h.service
+        .as_ref()
+        .unwrap()
+        .audition_arrangement_play_start(None);
+}
+
+#[test]
 fn verified_graph_edit_refuses_the_retired_gain_preview_until_canonical_audio_installs() {
     let _native = native_fixture();
     let files = Files::new();
@@ -246,6 +559,38 @@ fn matches_gain(frame: hex_engine::Frame, gain: ClipGain) -> bool {
     frame
         .into_iter()
         .all(|sample| (sample - 0.25 * gain.linear()).abs() < 1e-6)
+}
+
+fn expect_pcm_level(h: &Harness, level: f32) {
+    let until = Instant::now() + h.wait;
+    loop {
+        for event in h.events.try_iter() {
+            match event {
+                EditorAudioEvent::Publication {
+                    state:
+                        EditorPublicationState::Refused(error)
+                        | EditorPublicationState::VerifiedArrangementGainRefused(error)
+                        | EditorPublicationState::VerifiedArrangementPlayStartRefused(error),
+                    ..
+                } => panic!("{error}"),
+                EditorAudioEvent::Unavailable { error, .. } => panic!("{error}"),
+                _ => {}
+            }
+        }
+        let pcm = h.render();
+        if pcm
+            .into_iter()
+            .all(|frame| frame.into_iter().all(|s| (s - level).abs() < 1e-6))
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < until,
+            "expected {level}, heard {:?}",
+            pcm[63]
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 fn expect_gain(h: &Harness, gain: ClipGain) {

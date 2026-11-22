@@ -73,7 +73,10 @@ fn retiring_unsealed_source_keeps_built_verified_candidate_for_retry() {
         let control = output.publication.control().unwrap();
         policy.configure(control).unwrap();
         control
-            .configure_native_source_preparation(policy.plugins.capacity, policy.plugins.source)
+            .configure_native_source_preparation(
+                policy.plugins.pool_capacity,
+                policy.plugins.source,
+            )
             .unwrap();
         let binding = host
             .begin_on_control(

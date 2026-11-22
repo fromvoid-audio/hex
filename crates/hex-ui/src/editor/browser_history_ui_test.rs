@@ -125,9 +125,9 @@ fn browser_history_typing_coalesces_until_navigation_and_branch_clears_forward(
     assert_eq!(query(&editor, visual), "");
     // Command-F commits a distinct location, keeps its accepted selection behavior.
     visual.simulate_keystrokes("cmd-f");
-    visual.simulate_input("utility");
+    visual.simulate_input("mix");
     visual.run_until_parked();
-    assert_eq!(query(&editor, visual), "utility");
+    assert_eq!(query(&editor, visual), "mix");
     editor.read_with(visual, |view, _| {
         assert_eq!(view.browser.section, BrowserSection::All)
     });

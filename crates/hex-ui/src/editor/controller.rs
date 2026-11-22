@@ -252,6 +252,7 @@ impl EditorView {
             &mut self.clip_loop,
             &mut self.pending_plugin_effect,
             &mut self.failed_plugin_proposal,
+            &mut self.device_panel,
         );
         self.pending_playback = None;
         self.pending_resident_publication = None;
@@ -520,6 +521,12 @@ impl EditorView {
             }
             crate::EditorPublicationState::VerifiedArrangementGainRefused(reason) => {
                 self.status = format!("gain preview unavailable · {}", reason.to_lowercase());
+            }
+            crate::EditorPublicationState::VerifiedArrangementPlayStartSubmitted { .. } => {
+                self.status = "publishing play start preview".into();
+            }
+            crate::EditorPublicationState::VerifiedArrangementPlayStartRefused(reason) => {
+                self.status = format!("play start preview unavailable · {}", reason.to_lowercase());
             }
             crate::EditorPublicationState::Preparing => self.status = "preparing audio".into(),
             crate::EditorPublicationState::Busy => {
@@ -2050,6 +2057,7 @@ impl EditorView {
                 &mut self.clip_loop,
                 &mut self.pending_plugin_effect,
                 &mut self.failed_plugin_proposal,
+                &mut self.device_panel,
             );
             self.pending_recovery_generation = None;
             visible_change |= replace_error(
@@ -2577,6 +2585,7 @@ impl EditorView {
         let sampler_load_complete = event.sampler_load_complete;
         let sampler_load_succeeded = event.error.is_none();
         let gain_control_preview = self.audio_clip_controls.has_gain_preview();
+        let play_start_control_preview = self.audio_clip_controls.has_play_start_preview();
         if self
             .audio_clip_controls
             .observe(self.project_generation, &event)
@@ -2584,6 +2593,10 @@ impl EditorView {
             if gain_control_preview {
                 self.set_held_gain_audition(None);
                 self.service.retire_arrangement_gain_audition();
+            }
+            if play_start_control_preview {
+                self.sync_held_play_start_audition();
+                self.service.retire_arrangement_play_start_audition();
             }
             self.retire_sample_bpm_control();
         }
@@ -2664,6 +2677,7 @@ impl EditorView {
                 &mut self.clip_loop,
                 &mut self.pending_plugin_effect,
                 &mut self.failed_plugin_proposal,
+                &mut self.device_panel,
             );
             self.pending_playback = None;
             self.pending_resident_publication = None;
@@ -3132,6 +3146,8 @@ impl EditorView {
             self.session_copy_source = None;
             self.session_track_start = 0;
             self.midi_selection.clear();
+            self.arrangement_focus.reset();
+            self.reconcile_arrangement_focus();
         } else if let Some(state) = self.state.clone() {
             let previous_clip = self.detail_clip_id();
             if self.session_copy_source.is_some_and(|clip| {

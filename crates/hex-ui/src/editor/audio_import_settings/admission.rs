@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn loading_never_captures_placeholder_policy_for_arrangement_imports() {
-        let mut settings = State::new(PathBuf::new());
+        let mut settings = State::new(None);
         let make_import = || Request::Import(PathBuf::from("/early.wav"));
         assert!(
             settings
@@ -303,12 +303,12 @@ mod tests {
                 assert_eq!(start, expected_start);
             }
         }
-        assert_eq!(State::new(PathBuf::new()).policy(), AudioImportWarp::Off);
+        assert_eq!(State::new(None).policy(), AudioImportWarp::Off);
     }
 
     #[test]
     fn queued_legacy_off_import_is_not_reinterpreted_when_preference_changes() {
-        let mut settings = State::new(PathBuf::new());
+        let mut settings = State::new(None);
         let request = capture(
             Request::ImportToTrackWithOverwrite {
                 path: PathBuf::from("/queued.wav"),

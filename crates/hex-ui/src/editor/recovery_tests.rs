@@ -2638,3 +2638,349 @@ fn play_during_stopped_restore_starts_once_the_restore_settles(cx: &mut gpui::Te
     drop(output);
     editor.update(cx, |view, _| view.audio = None);
 }
+
+struct FixtureOutputGuard {
+    backend: Option<hex_audio::worker_fixture::HeadlessBackend>,
+    output: Option<hex_audio::WorkerPreparedOutput>,
+}
+
+impl FixtureOutputGuard {
+    fn open() -> (Self, EditorAudio) {
+        let (mut output, mut backend) =
+            hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+        let playback = Playback::new(hex_engine::Project::new(48_000, Vec::new()).unwrap());
+        output
+            .publication
+            .control()
+            .unwrap()
+            .publish(playback)
+            .unwrap();
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        let audio = EditorAudio {
+            control: output.take_client().unwrap(),
+            sample_rate: 48_000,
+            label: "degraded recovery fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        };
+        (
+            Self {
+                backend: Some(backend),
+                output: Some(output),
+            },
+            audio,
+        )
+    }
+
+    fn render_block(&mut self) {
+        self.backend
+            .as_mut()
+            .unwrap()
+            .render(&mut [[0.0; 2]; 64])
+            .unwrap();
+    }
+}
+
+impl Drop for FixtureOutputGuard {
+    fn drop(&mut self) {
+        if let Some(mut backend) = self.backend.take() {
+            backend.close();
+        }
+        if let Some(mut output) = self.output.take() {
+            output.publication.close();
+        }
+    }
+}
+
+fn next_service_event(service: &Service) -> hex_session::service::Event {
+    let deadline = Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match service.try_event() {
+            Ok(event) => {
+                assert!(event.error.is_none(), "{:?}", event.error);
+                break event;
+            }
+            Err(TryRecvError::Empty) => {
+                assert!(Instant::now() < deadline, "session event");
+                std::thread::yield_now();
+            }
+            Err(error) => panic!("{error}"),
+        }
+    }
+}
+
+fn setup_degraded_device_recovery(
+    cx: &mut gpui::TestAppContext,
+) -> (
+    gpui::Entity<EditorView>,
+    hex_project::TrackId,
+    hex_project::DeviceId,
+    FixtureOutputGuard,
+    std::sync::mpsc::Receiver<(u64, u64)>,
+) {
+    struct RestartObserver(SyncSender<(u64, u64)>);
+    impl WorkerAudioSink for RestartObserver {
+        fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
+            Ok(48_000)
+        }
+        fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
+        fn poll(&mut self) {}
+        fn close(&mut self) {}
+        fn restart_audio(&mut self, generation: u64, request: u64) -> Result<(), String> {
+            self.0
+                .try_send((generation, request))
+                .map_err(|e| e.to_string())
+        }
+    }
+
+    let (restarts, restarted) = sync_channel(1);
+    let service =
+        Service::with_audio_sink(16, 8_000_000, None, Box::new(RestartObserver(restarts))).unwrap();
+    next_service_event(&service);
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "vst-track".into(),
+        }))
+        .unwrap();
+    let track = next_service_event(&service).state.project.tracks()[0].id();
+    service
+        .submit(Request::AddNativeDevice {
+            track,
+            class: hex_engine::NativeDeviceClass::Effect,
+            type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.eq")),
+            before: None,
+        })
+        .unwrap();
+    let ready = next_service_event(&service).state;
+    let device = ready.project.track(track).unwrap().devices()[0].id();
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        ready.project.as_ref().clone(),
+        Arc::clone(&ready.midi_preview),
+    );
+    let (old_guard, old_audio) = FixtureOutputGuard::open();
+    editor.update(cx, |v, _| {
+        v.service = service;
+        v.state = Some(ready);
+        v.project_generation = 0;
+        v.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        v.audio = Some(old_audio);
+        v.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![device.value()]);
+    });
+    (editor, track, device, old_guard, restarted)
+}
+
+fn finish_fresh_recovery_output(
+    cx: &mut gpui::TestAppContext,
+    editor: &gpui::Entity<EditorView>,
+    restarted: &std::sync::mpsc::Receiver<(u64, u64)>,
+    old_guard: FixtureOutputGuard,
+) -> FixtureOutputGuard {
+    let (_generation, _req) = restarted
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("restart_audio signal");
+    drop(old_guard);
+    let recovery = editor.update(cx, |v, _| {
+        let restart = next_service_event(&v.service);
+        v.receive(restart);
+        v.recovery.generation().expect("recovery active")
+    });
+    let (mut fresh_guard, fresh_audio) = FixtureOutputGuard::open();
+    editor.update(cx, |v, _| {
+        v.audio = Some(fresh_audio);
+        v.degraded_plugins = Default::default();
+        v.applied_project_revision = v.state.as_ref().map(|s| s.revision);
+        assert!(v.recovery.opened(recovery));
+        assert!(v.recovery.restored(recovery));
+        let _ = v.finish_audio_recovery_tick();
+    });
+    fresh_guard.render_block();
+    editor.update(cx, |v, _| {
+        assert!(v.finish_audio_recovery_tick());
+    });
+    fresh_guard
+}
+
+#[gpui::test]
+fn degraded_remove_device_recovers_audio_and_applies_or_cancels(cx: &mut gpui::TestAppContext) {
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    // Ready path: RemoveDevice defers behind recovery, then removes the device.
+    {
+        let mut app = cx.new_app();
+        let (editor, track, device, old_guard, restarted) =
+            setup_degraded_device_recovery(&mut app);
+        editor.update(&mut app, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::RemoveDevice(device))));
+            assert!(v.recovery.generation().is_some());
+            assert!(v.recovery.deferred_edit.is_some());
+            assert_eq!(
+                v.status.as_str(),
+                "restarting audio · device will be removed when ready"
+            );
+            assert!(v.state.as_ref().unwrap().project.device(device).is_some());
+        });
+        let fresh_guard = finish_fresh_recovery_output(&mut app, &editor, &restarted, old_guard);
+        editor.update(&mut app, |v, _| {
+            let removed = next_service_event(&v.service);
+            v.receive(removed);
+            assert!(v.state.as_ref().unwrap().project.device(device).is_none());
+            assert!(
+                v.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .devices()
+                    .is_empty()
+            );
+            assert!(v.error.is_none(), "{:?}", v.error);
+            v.audio = None;
+        });
+        drop(fresh_guard);
+    }
+    // Failed recovery path: clears deferred RemoveDevice cleanly.
+    {
+        let (editor, _track, device, old_guard, _restarted) = setup_degraded_device_recovery(cx);
+        editor.update(cx, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::RemoveDevice(device))));
+            assert!(v.recovery.deferred_edit.is_some());
+            v.fail_audio_recovery("fixture recovery failure");
+            assert!(v.recovery.deferred_edit.is_none());
+            assert!(v.recovery.generation().is_none());
+            assert!(v.state.as_ref().unwrap().project.device(device).is_some());
+            v.audio = None;
+        });
+        drop(old_guard);
+    }
+}
+
+#[gpui::test]
+fn degraded_toggle_device_bypass_preserves_receipt_through_recovery_and_retires_on_failure(
+    cx: &mut gpui::TestAppContext,
+) {
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    // Ready path: queued receipt survives retire_abandoned_bypass, then applies.
+    {
+        let mut app = cx.new_app();
+        let (editor, _track, device, old_guard, restarted) =
+            setup_degraded_device_recovery(&mut app);
+        editor.update(&mut app, |v, _| {
+            assert!(
+                !v.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .device(device)
+                    .unwrap()
+                    .bypassed()
+            );
+            v.toggle_device_bypass(device);
+            assert!(v.recovery.generation().is_some());
+            assert!(v.recovery.deferred_edit.is_some());
+            assert_eq!(
+                v.status.as_str(),
+                "restarting audio · device bypass will update when ready"
+            );
+            assert!(
+                !v.retire_abandoned_bypass(),
+                "deferred ToggleDeviceBypass receipt must survive recovery"
+            );
+            assert!(v.device_panel.displayed_bypass(device, false));
+        });
+        let fresh_guard = finish_fresh_recovery_output(&mut app, &editor, &restarted, old_guard);
+        editor.update(&mut app, |v, _| {
+            let toggled = next_service_event(&v.service);
+            v.receive(toggled);
+            assert!(
+                v.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .device(device)
+                    .unwrap()
+                    .bypassed()
+            );
+            assert!(v.device_panel.displayed_bypass(device, true));
+            assert!(v.error.is_none(), "{:?}", v.error);
+            v.audio = None;
+        });
+        drop(fresh_guard);
+    }
+    // Failed recovery path: clear_recovery retires the queued bypass receipt.
+    {
+        let (editor, _track, device, old_guard, _restarted) = setup_degraded_device_recovery(cx);
+        editor.update(cx, |v, _| {
+            v.toggle_device_bypass(device);
+            assert!(v.device_panel.displayed_bypass(device, false));
+            v.fail_audio_recovery("fixture recovery failure");
+            assert!(v.recovery.deferred_edit.is_none());
+            assert!(
+                !v.device_panel.displayed_bypass(device, false),
+                "failed recovery must retire the queued bypass receipt"
+            );
+            v.audio = None;
+        });
+        drop(old_guard);
+    }
+}
+
+#[gpui::test]
+fn degraded_insert_plugin_effect_recovers_audio_and_settles_proposal_on_failure(
+    cx: &mut gpui::TestAppContext,
+) {
+    use hex_plugin_catalog::{PluginRole, PluginSelection};
+    use hex_session::service::PluginEffectDestination;
+
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let selection = PluginSelection {
+        role: PluginRole::Effect,
+        module: std::path::PathBuf::from("fixture.vst3"),
+        cid: [1u8; 16],
+        class_name: "fixture".into(),
+        executable_relative_path: "Contents/MacOS/fixture".into(),
+        executable_sha256: "0".repeat(64),
+        info_sha256: "1".repeat(64),
+    };
+
+    // Ready path: insert_plugin_effect waits for recovery and submits once audio is ready.
+    {
+        let mut app = cx.new_app();
+        let (editor, track, _device, old_guard, restarted) =
+            setup_degraded_device_recovery(&mut app);
+        editor.update(&mut app, |v, cx| {
+            v.insert_plugin_effect(&selection, PluginEffectDestination::Track(track), None, cx);
+            assert!(v.recovery.generation().is_some());
+            assert!(v.recovery.deferred_edit.is_some());
+            assert!(v.pending_plugin_effect.is_some());
+        });
+        let fresh_guard = finish_fresh_recovery_output(&mut app, &editor, &restarted, old_guard);
+        editor.update(&mut app, |v, _| {
+            assert!(v.recovery.deferred_edit.is_none());
+            assert_eq!(v.status.as_str(), "adding plug-in");
+            assert!(v.pending_plugin_effect.is_some());
+            v.audio = None;
+        });
+        drop(fresh_guard);
+    }
+    // Failed recovery path: clear_recovery settles pending_plugin_effect cleanly.
+    {
+        let (editor, track, _device, old_guard, _restarted) = setup_degraded_device_recovery(cx);
+        editor.update(cx, |v, cx| {
+            v.insert_plugin_effect(&selection, PluginEffectDestination::Track(track), None, cx);
+            assert!(v.pending_plugin_effect.is_some());
+            v.fail_audio_recovery("fixture recovery failure");
+            assert!(v.recovery.deferred_edit.is_none());
+            assert!(
+                v.pending_plugin_effect.is_none(),
+                "failed recovery must settle pending_plugin_effect"
+            );
+            assert!(
+                v.failed_plugin_proposal.is_some(),
+                "failed recovery must record failed_plugin_proposal"
+            );
+            v.audio = None;
+        });
+        drop(old_guard);
+    }
+}

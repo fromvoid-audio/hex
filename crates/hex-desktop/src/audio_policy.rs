@@ -42,17 +42,35 @@ impl GranularPolicy {
     }
 }
 /// Finite native source/history custody, independent of PCM/ordinary graph caps.
-/// Actual Root construction validates this reserved pool before client exposure.
+/// Active/retiring `Plugins.sources` occupancy is capped at `active_capacity`,
+/// while Root reserves `pool_capacity = active_capacity + scratch_capacity` so
+/// transient control-side captures (project save canonical bases, parameter
+/// gesture scratch, retiring replay) retain dedicated headroom even at full
+/// active VST3 occupancy. Actual Root construction validates this reserved pool
+/// before client exposure.
 #[derive(Clone, Copy)]
 pub(super) struct PluginPolicy {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub capacity: usize,
+    pub active_capacity: usize,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub scratch_capacity: usize,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub pool_capacity: usize,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub source: hex_audio::NativeSourceDataReservation,
+    pub shared_handles: usize,
     pub retained: usize,
     pub peak: usize,
 }
-const PLUGIN_CONTROL_METADATA_BYTES: usize = 128 * 1024;
+const PLUGIN_CONTROL_METADATA_BYTES: usize = 512 * 1024;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) const PLUGIN_ACTIVE_CAPACITY: usize = 64;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) const PLUGIN_SCRATCH_CAPACITY: usize = 4;
+// Conservative per-cell shared-handle allowance covering hex-audio's
+// constructor-derived PoolResources bound (42 handles per cell).
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const PLUGIN_SHARED_HANDLES_PER_CELL: usize = 64;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(super) const PLUGIN_CONTROL_DATA_BYTES: usize =
     PLUGIN_CONTROL_METADATA_BYTES + hex_audio::plugin_effects::Hosting::CAPTURE_RESPONSE_DATA_BYTES;
@@ -61,14 +79,24 @@ pub(super) const PLUGIN_CONTROL_DATA_BYTES: usize = PLUGIN_CONTROL_METADATA_BYTE
 impl PluginPolicy {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn new() -> Result<Self, String> {
-        let capacity = 16;
+        let active_capacity = PLUGIN_ACTIVE_CAPACITY;
+        let scratch_capacity = PLUGIN_SCRATCH_CAPACITY;
+        let pool_capacity = active_capacity
+            .checked_add(scratch_capacity)
+            .ok_or("native pool capacity overflow")?;
+        let shared_handles = pool_capacity
+            .checked_mul(PLUGIN_SHARED_HANDLES_PER_CELL)
+            .ok_or("native pool handle quote overflow")?;
         let source = hex_audio::plugin_effects::Hosting::source_data_reservation()?;
         let (retained, peak) = source
-            .pool_data_bytes(capacity)
+            .pool_data_bytes(pool_capacity)
             .ok_or("native pool quote overflow")?;
         Ok(Self {
-            capacity,
+            active_capacity,
+            scratch_capacity,
+            pool_capacity,
             source,
+            shared_handles,
             retained,
             peak,
         })
@@ -78,6 +106,7 @@ impl PluginPolicy {
         // No native source bank exists on this target. Ordinary graph/source
         // reservations retain their existing owners and limits.
         Ok(Self {
+            shared_handles: 0,
             retained: 0,
             peak: 0,
         })
@@ -196,11 +225,13 @@ impl AudioPolicy {
             .max_prepared_data_bytes
             .checked_mul(RUNTIME_CELLS)
             .and_then(|n| n.checked_add(domain_data.checked_mul(2)?))
+            .and_then(|n| n.checked_add(plugins.retained))
             .ok_or("audio reservation overflow")?;
         let peak = graph
             .max_construction_data_bytes
             .checked_mul(RUNTIME_CELLS)
             .and_then(|n| n.checked_add(domain_peak.checked_mul(2)?))
+            .and_then(|n| n.checked_add(plugins.peak))
             .ok_or("audio reservation overflow")?;
         let handles = quote
             .handle_rows
@@ -227,6 +258,7 @@ impl AudioPolicy {
             .ok_or("audio handle reservation overflow")?;
         let handles = handles
             .checked_add((8 + 2 * stream.max_sources) * 2)
+            .and_then(|n| n.checked_add(plugins.shared_handles))
             .ok_or("granular handle reservation overflow")?;
         let publication = AudioCandidatePublicationReservation {
             runtime_slots: RUNTIME_CELLS,
@@ -441,5 +473,93 @@ mod tests {
         assert!(policy.ordinary_graph_metadata_bytes >= programs.max_retained_bytes);
         // Closed constructors keep their own source-only reservation.
         assert_eq!(policy.resident_publication.data_rows, native.data_rows);
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn plugin_policy_separates_active_and_scratch_capacities() {
+        let policy = AudioPolicy::new().unwrap();
+        assert!(policy.plugins.active_capacity > 16);
+        assert!(policy.plugins.scratch_capacity >= 2);
+        assert_eq!(
+            policy.plugins.pool_capacity,
+            policy.plugins.active_capacity + policy.plugins.scratch_capacity
+        );
+        assert!(
+            policy
+                .plugins
+                .source
+                .pool_data_bytes(policy.plugins.pool_capacity)
+                .is_some()
+        );
+    }
+
+    #[cfg(all(
+        target_os = "macos",
+        target_arch = "aarch64",
+        feature = "allocation-probe"
+    ))]
+    #[test]
+    fn plugin_policy_reserves_scratch_headroom_and_configures_both_audio_modes() {
+        let policy = AudioPolicy::new().unwrap();
+        let _serial = hex_audio::worker_fixture::serial_output();
+        // VerifiedStreaming mode: publication data + handle rows must admit the full pool.
+        {
+            let (mut output, backend) =
+                hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+            let control = output.publication.control().unwrap();
+            policy.configure(control).unwrap();
+            control
+                .configure_native_source_preparation(
+                    policy.plugins.pool_capacity,
+                    policy.plugins.source,
+                )
+                .unwrap();
+            assert!(
+                control.has_vacant_native_source_slots_on_control(policy.plugins.pool_capacity),
+                "verified streaming pool must expose active + scratch slots"
+            );
+            assert!(
+                !control
+                    .has_vacant_native_source_slots_on_control(policy.plugins.pool_capacity + 1),
+                "pool must not exceed policy.pool_capacity"
+            );
+            drop(backend);
+            output.publication.close();
+        }
+        // Resident mode: resident_native + ordinary_domains must admit the full pool.
+        {
+            let (mut output, backend) =
+                hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+            let control = output.publication.control().unwrap();
+            control
+                .configure_device_resource_publication_on_control(policy.resident_native.storage)
+                .unwrap();
+            let domains = policy.plugins.domains(policy.ordinary_domains).unwrap();
+            control
+                .configure_ordinary_streaming_on_control(
+                    domains,
+                    policy.readiness.extents_per_role,
+                    policy.ordinary_stream_metadata_bytes,
+                )
+                .unwrap();
+            control
+                .configure_native_source_preparation(
+                    policy.plugins.pool_capacity,
+                    policy.plugins.source,
+                )
+                .unwrap();
+            assert!(
+                control.has_vacant_native_source_slots_on_control(policy.plugins.pool_capacity),
+                "resident pool must expose active + scratch slots"
+            );
+            assert!(
+                !control
+                    .has_vacant_native_source_slots_on_control(policy.plugins.pool_capacity + 1),
+                "resident pool must not exceed policy.pool_capacity"
+            );
+            drop(backend);
+            output.publication.close();
+        }
     }
 }

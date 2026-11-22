@@ -98,6 +98,13 @@ impl EditorView {
         if let Some(position) = self.held_audio_play_start_position() {
             return position;
         }
+        if let Some(preview) = self
+            .audio_clip_controls
+            .play_start_preview_clip(self, clip.id())
+        {
+            let preview_root = preview.audio_event_root();
+            return event_grid_origin(preview, &preview_root, tempo);
+        }
         if let Some(pending) = self.pending_clip_loop_audio(clip.id()) {
             let pending_root = pending.audio_event_root();
             return event_grid_origin(pending, &pending_root, tempo);

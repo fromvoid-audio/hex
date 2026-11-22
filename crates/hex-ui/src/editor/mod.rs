@@ -1635,7 +1635,7 @@ impl EditorView {
             view.blur_computer_keyboard(window);
             view.midi_step.cancel_pending();
             view.invalidate_hardware_step();
-            if view.cancel_loop_rail_gesture() {
+            if view.cancel_loop_rail_gesture() | view.cancel_locked_play_start_drag() {
                 cx.defer_in(window, |_, _, cx| cx.notify());
             }
             if view.cancel_scrub() | view.cancel_clip_paint() | view.cancel_section_pointer() {

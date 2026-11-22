@@ -334,6 +334,9 @@ impl EditorView {
         if kinds.clip_loop {
             visible |= self.retire_pending_clip_loop();
         }
+        if kinds.clip_detail {
+            visible |= self.retire_clip_detail();
+        }
         if kinds.bypass.is_some() {
             visible |= self.retire_unsubmitted_bypass(request);
         }

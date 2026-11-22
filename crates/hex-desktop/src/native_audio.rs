@@ -325,7 +325,7 @@ impl NativeAudioSink {
     fn relinquish_output(&mut self) {
         if matches!(
             self.verified_preview,
-            Some(VerifiedSource::ArrangementGain(_))
+            Some(VerifiedSource::ArrangementGain(_) | VerifiedSource::ArrangementPlayStart(_))
         ) {
             self.verified_preview = None;
         }
@@ -633,6 +633,7 @@ impl NativeAudioSink {
             EditorPublicationState::Submitted { audio_revision }
             | EditorPublicationState::VerifiedPreviewSubmitted { audio_revision, .. }
             | EditorPublicationState::VerifiedArrangementGainSubmitted { audio_revision }
+            | EditorPublicationState::VerifiedArrangementPlayStartSubmitted { audio_revision }
             | EditorPublicationState::ResidentSubmitted { audio_revision, .. } => {
                 Some(*audio_revision)
             }
@@ -1317,6 +1318,11 @@ impl NativeAudioSink {
                             audio_revision: revision,
                         }
                     }
+                    VerifiedSource::ArrangementPlayStart(_) => {
+                        EditorPublicationState::VerifiedArrangementPlayStartSubmitted {
+                            audio_revision: revision,
+                        }
+                    }
                     snapshot => match snapshot.preview_identity() {
                         Some(identity) => EditorPublicationState::VerifiedPreviewSubmitted {
                             audio_revision: revision,
@@ -1406,12 +1412,19 @@ impl NativeAudioSink {
         let context = source.context();
         self.plugins.finish_reopen(context, false);
         self.verified_blocked = Some(source.key());
-        let state = if matches!(source, VerifiedSource::ArrangementGain(_)) {
-            self.verified_preview = None;
-            EditorPublicationState::VerifiedArrangementGainRefused(error)
-        } else {
-            self.blocked = Some(context);
-            EditorPublicationState::Refused(error)
+        let state = match source {
+            VerifiedSource::ArrangementGain(_) => {
+                self.verified_preview = None;
+                EditorPublicationState::VerifiedArrangementGainRefused(error)
+            }
+            VerifiedSource::ArrangementPlayStart(_) => {
+                self.verified_preview = None;
+                EditorPublicationState::VerifiedArrangementPlayStartRefused(error)
+            }
+            _ => {
+                self.blocked = Some(context);
+                EditorPublicationState::Refused(error)
+            }
         };
         self.observe(context, "refused", state);
     }
@@ -2306,7 +2319,7 @@ impl WorkerAudioSink for NativeAudioSink {
         let capacity = self
             .policy
             .as_ref()
-            .map_or(0, |policy| policy.plugins.capacity);
+            .map_or(0, |policy| policy.plugins.active_capacity);
         self.plugins
             .prepare_offline_bounce(input, control, capacity)
     }
@@ -2700,6 +2713,12 @@ impl WorkerAudioSink for NativeAudioSink {
         update: hex_session::service::VerifiedArrangementGainUpdate,
     ) -> bool {
         self.receive_verified_arrangement_gain(update)
+    }
+    fn verified_arrangement_play_start_update(
+        &mut self,
+        update: hex_session::service::VerifiedArrangementPlayStartUpdate,
+    ) -> bool {
+        self.receive_verified_arrangement_play_start(update)
     }
     fn resident_publication_enabled(&self) -> bool {
         self.worker_owned_resident_graphs

@@ -23,6 +23,33 @@ impl State {
     pub(in crate::editor) fn displayed(&self, device: DeviceId, canonical: bool) -> bool {
         canonical ^ (self.pending.iter().filter(|p| p.device == device).count() % 2 == 1)
     }
+
+    pub(in crate::editor) fn retire_unsubmitted(&mut self, request: &Request) -> bool {
+        let Request::Edit(Command::ToggleDeviceBypass { device }) = request else {
+            return false;
+        };
+        if let Some(index) = self
+            .pending
+            .iter()
+            .position(|p| p.device == *device && p.receipt.is_queued())
+        {
+            self.pending.remove(index);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl super::DevicePanelState {
+    pub(in crate::editor) fn retire_unsubmitted_bypass(&mut self, request: &Request) -> bool {
+        self.bypass.retire_unsubmitted(request)
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(in crate::editor) fn displayed_bypass(&self, device: DeviceId, canonical: bool) -> bool {
+        self.bypass.displayed(device, canonical)
+    }
 }
 
 impl EditorView {
@@ -50,6 +77,12 @@ impl EditorView {
             .pending_requests
             .iter()
             .chain(self.device_gesture_barriers.iter())
+            .chain(
+                self.recovery
+                    .deferred_edit
+                    .as_ref()
+                    .map(|edit| edit.request.as_ref()),
+            )
             .filter_map(|r| match r {
                 Request::Edit(Command::ToggleDeviceBypass { device }) => Some(*device),
                 _ => None,
@@ -116,21 +149,7 @@ impl EditorView {
     }
 
     pub(in crate::editor) fn retire_unsubmitted_bypass(&mut self, request: &Request) -> bool {
-        let Request::Edit(Command::ToggleDeviceBypass { device }) = request else {
-            return false;
-        };
-        if let Some(index) = self
-            .device_panel
-            .bypass
-            .pending
-            .iter()
-            .position(|p| p.device == *device && p.receipt.is_queued())
-        {
-            self.device_panel.bypass.pending.remove(index);
-            true
-        } else {
-            false
-        }
+        self.device_panel.bypass.retire_unsubmitted(request)
     }
 
     pub(in crate::editor) fn clear_pending_bypass(&mut self) -> bool {

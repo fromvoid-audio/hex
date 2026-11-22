@@ -1985,12 +1985,16 @@ impl EditorView {
 
     pub(super) fn set_mode(&mut self, mode: EditorMode) {
         if self.mode != mode {
+            if self.mode == EditorMode::Arrangement {
+                self.cancel_pending_loop_focus();
+            }
             self.section_loop_key = Default::default();
             self.cancel_arrangement_pan();
             self.cancel_active_browser_audio_drag();
             if self.time_selection_gesture.is_some() || self.time_range_move_gesture.is_some() {
                 self.cancel_time_selection_gesture();
             }
+            self.cancel_locked_play_start_drag();
             self.cancel_scene_duplicate_selection();
         }
         if mode == EditorMode::Session

@@ -168,6 +168,12 @@ pub enum EditorPublicationState {
     },
     /// The running canonical source remains usable after a preview refusal.
     VerifiedArrangementGainRefused(String),
+    /// A temporary play-start audition with unchanged Arrangement gate.
+    VerifiedArrangementPlayStartSubmitted {
+        audio_revision: u64,
+    },
+    /// The running canonical source remains usable after a play-start preview refusal.
+    VerifiedArrangementPlayStartRefused(String),
     /// Exact submission correlation and bounded resource-free observation endpoints. Application
     /// still needs the output/revision callback ACK; no graph or native resource owner crosses.
     ResidentSubmitted {

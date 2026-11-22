@@ -24,13 +24,18 @@ pub(super) struct State {
     toggle: Option<Entity<Toggle>>,
     toggle_subscription: Option<Subscription>,
 }
-mod hidden_tracks;
+pub(super) mod hidden_tracks;
 mod interval;
 #[path = "arrangement_focus/visibility.rs"]
 mod visibility;
 pub(super) use interval::track_intersects_sections;
 
 impl State {
+    pub(super) fn reset(&mut self) {
+        self.projection = visibility::Projection::default();
+        self.restore_scroll = None;
+        self.pending_restore = None;
+    }
     pub(super) fn observe_active_track(&mut self, active: Option<TrackId>) {
         self.projection.observe_active_track(active);
     }
@@ -71,10 +76,22 @@ impl EditorView {
         scale: f32,
         row: Div,
     ) -> Div {
-        hidden_tracks::row(&self.arrangement_focus.projection, index, track, scale, row)
+        hidden_tracks::row(
+            &self.arrangement_focus.projection,
+            index,
+            track,
+            scale,
+            self.track_header_width(),
+            row,
+        )
     }
     pub(super) fn decorate_focused_empty_tracks(&self, scale: f32, content: Div) -> Div {
-        hidden_tracks::empty(&self.arrangement_focus.projection, scale, content)
+        hidden_tracks::empty(
+            &self.arrangement_focus.projection,
+            scale,
+            self.track_header_width(),
+            content,
+        )
     }
 
     pub(super) fn arrangement_focus_ranges(&self) -> Rc<[(u64, u64)]> {
@@ -146,10 +163,13 @@ impl EditorView {
                 self.invalidate_arrangement_track_layout();
             }
         } else {
-            self.arrangement_focus = State::default();
+            self.arrangement_focus.reset();
         }
     }
     pub(super) fn toggle_arrangement_focus(&mut self) {
+        if self.state.is_none() {
+            return;
+        }
         // An explicit Q/toolbar choice supersedes a delayed automatic focus.
         self.cancel_pending_loop_focus();
         self.reconcile_arrangement_focus();

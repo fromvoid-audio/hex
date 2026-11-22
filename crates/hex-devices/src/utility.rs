@@ -52,7 +52,7 @@ impl std::error::Error for UtilityError {}
 
 impl From<InvalidMatrix> for UtilityError {
     fn from(_: InvalidMatrix) -> Self {
-        Self("utility coefficient preparation overflowed")
+        Self("mix coefficient preparation overflowed")
     }
 }
 
@@ -89,24 +89,22 @@ impl UtilitySettings {
     ) -> Result<Self, UtilityError> {
         if !gain.is_finite() || !(0.0..=MAX_UTILITY_GAIN).contains(&gain) {
             return Err(UtilityError(
-                "utility gain must be finite and between 0 and +35 dB",
+                "mix gain must be finite and between 0 and +35 dB",
             ));
         }
         if !balance.is_finite() || !(-1.0..=1.0).contains(&balance) {
             return Err(UtilityError(
-                "utility balance must be finite and between -1 and 1",
+                "mix balance must be finite and between -1 and 1",
             ));
         }
         if !width.is_finite() || !(0.0..=4.0).contains(&width) {
-            return Err(UtilityError(
-                "utility width must be finite and between 0 and 4",
-            ));
+            return Err(UtilityError("mix width must be finite and between 0 and 4"));
         }
         if mid_side_balance
             .is_some_and(|value| !value.is_finite() || !(-1.0..=1.0).contains(&value))
         {
             return Err(UtilityError(
-                "utility mid-side balance must be finite and between -1 and 1",
+                "mix mid-side balance must be finite and between -1 and 1",
             ));
         }
         Ok(Self {
@@ -584,7 +582,7 @@ fn encode_state_fields(
 
 impl NativeDeviceMetadata for UtilityDefinition {
     fn display_name(&self) -> Option<&'static str> {
-        Some("utility")
+        Some("mix")
     }
     fn type_id(&self) -> DeviceTypeId {
         UTILITY_TYPE_ID
@@ -1275,7 +1273,7 @@ fn matrix_from_f64(values: [[f64; 2]; 2]) -> Result<StereoMatrix, UtilityError> 
         for column in 0..2 {
             let value = values[row][column];
             if !value.is_finite() || value.abs() > f64::from(f32::MAX) {
-                return Err(UtilityError("utility coefficient is not representable"));
+                return Err(UtilityError("mix coefficient is not representable"));
             }
             coefficients[row][column] = value as f32;
         }

@@ -54,7 +54,7 @@ impl PreparedUtilityFilters {
     ) -> Result<Self, UtilityError> {
         if !(8_000..=192_000).contains(&sample_rate) {
             return Err(UtilityError(
-                "utility filter rate must be between 8000 and 192000 hz",
+                "mix filter rate must be between 8000 and 192000 hz",
             ));
         }
         if !cutoff_hz.is_finite() || !(50.0..=500.0).contains(&cutoff_hz) {

@@ -36,7 +36,7 @@ fn stateful_project() -> Project {
         .expect("effect catalog");
     let utility = catalog
         .iter()
-        .find(|entry| entry.name == "utility")
+        .find(|entry| entry.name == "mix")
         .expect("utility device");
     let state = hex_engine::default_native_device_state(utility.type_id).expect("utility default");
     let dc_remove = utility

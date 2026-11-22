@@ -241,6 +241,10 @@ impl EditorView {
             })
             || (self.detail_clip_id() == Some(clip)
                 && self.held_audio_play_start_position().is_some())
+            || self
+                .audio_clip_controls
+                .play_start_preview_clip(self, clip)
+                .is_some()
     }
     /// Arrangement geometry and peaks share the detail editor's held and
     /// released scope/start edit through its ordinary receipt.
@@ -279,6 +283,12 @@ impl EditorView {
             )
         {
             return std::borrow::Cow::Owned(preview);
+        }
+        if let Some(preview) = self
+            .audio_clip_controls
+            .play_start_preview_clip(self, clip.id())
+        {
+            return std::borrow::Cow::Borrowed(preview);
         }
         std::borrow::Cow::Borrowed(self.pending_clip_loop_audio(clip.id()).unwrap_or(clip))
     }
