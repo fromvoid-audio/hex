@@ -310,7 +310,8 @@ impl EditorView {
             .minimum_gate()
             .max(creation.minimum_gate)
             .min(remaining);
-        let end = midi_drag::snap_raw(raw, end_grid).clamp(start.saturating_add(minimum), length);
+        let end = midi_drag::snap_raw_aligned(raw, end_grid, current.grid_origin)
+            .clamp(start.saturating_add(minimum), length);
         let duration = BeatTime::from_raw(end - start);
         let changed = creation.preview.duration != duration;
         creation.preview.duration = duration;

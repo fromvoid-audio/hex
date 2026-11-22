@@ -794,7 +794,9 @@ fn warped_drag_through_ack(cx: &mut TestAppContext, scoped: bool) {
             let tempo = state.project.tempo_map();
             let clip = state.project.clip(clip).unwrap();
             let root = clip.audio_event_root();
-            let anchor = root.root_frame_at(event_grid_origin(&root), tempo).unwrap();
+            let anchor = root
+                .root_frame_at(event_grid_origin(clip, &root, tempo), tempo)
+                .unwrap();
             let frame = i128::from(clip.start())
                 + root
                     .signed_root_frame_at(i128::from(*start), tempo)

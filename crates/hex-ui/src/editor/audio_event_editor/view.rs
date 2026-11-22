@@ -94,7 +94,7 @@ pub(in crate::editor) fn view(
     let root_window = view
         .event_root_window(&canonical_root)?
         .shifted(placement.map_or(0, |p| p.frame_shift()))?;
-    let project_window = view.event_project_window(&canonical_root)?;
+    let project_window = view.display_event_project_window(&canonical_root)?;
     let viewport = project_window
         .visible_unsigned()
         .unwrap_or(Viewport::fit(0));

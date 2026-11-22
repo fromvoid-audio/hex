@@ -69,11 +69,13 @@ fn beat_at(context: Context, x: f32, invert: bool) -> Option<u64> {
         context.span,
     )?;
     let grid = midi_drag::effective_grid(context.grid, invert);
+    let origin = context.values.source_start;
     Some(clamp_loop_grid(
-        midi_drag::snap_raw(raw, grid),
+        midi_drag::snap_signed_aligned(i128::from(raw), grid, origin),
         0,
         super::super::midi_scene::zoom_limit(context.values.source_length),
         grid,
+        origin,
     ))
 }
 impl Capture {

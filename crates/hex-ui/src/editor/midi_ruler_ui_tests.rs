@@ -622,3 +622,195 @@ fn held_two_at_saved_start_selects_time_without_moving_midi_start(cx: &mut TestA
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
 }
+
+#[gpui::test]
+fn midi_play_start_realigns_roll_grid_and_snapping_through_delayed_ack_and_history(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, _environment, clip) = fixture(cx);
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::SetMidiClipSource {
+            clip,
+            source_length: beat(4),
+            source_start: beat(0),
+            loop_start: beat(0),
+            loop_end: beat(4),
+            looping: true,
+            length: beat(4),
+        })));
+    });
+    pump(&editor, &mut visual);
+
+    let roll_grid = |visual: &mut VisualTestContext| -> Vec<(f32, bool)> {
+        let roll = visual.debug_bounds("midi-note-roll").unwrap();
+        let scale = gpui::ScaledPixels::from(visual.update(|window, _| window.scale_factor()));
+        let grid_color: gpui::Background = rgb(theme::color(theme::PaletteRole::Grid)).into();
+        let accent_color: gpui::Background = rgb(theme::color(theme::PaletteRole::Border)).into();
+        let mut lines: Vec<(f32, bool)> = visual
+            .rendered_filled_quads("midi-note-roll")
+            .into_iter()
+            .filter(|(b, c)| {
+                (*c == grid_color || *c == accent_color)
+                    && (b.size.width / scale - 1.0).abs() < 0.01
+                    && (b.size.height / scale - (f32::from(roll.size.height) - 2.0)).abs() < 0.01
+            })
+            .map(|(b, c)| {
+                (
+                    b.origin.x / scale - (f32::from(roll.origin.x) + 1.0),
+                    c == accent_color,
+                )
+            })
+            .collect();
+        lines.sort_by(|a, b| a.0.total_cmp(&b.0));
+        lines
+    };
+
+    let roll_width = f32::from(visual.debug_bounds("midi-note-roll").unwrap().size.width) - 2.0;
+    let initial_lines = roll_grid(&mut visual);
+    let initial_accents: Vec<f32> = initial_lines
+        .iter()
+        .filter(|(_, accent)| *accent)
+        .map(|(x, _)| *x)
+        .collect();
+    assert!(
+        initial_accents.iter().any(|x| x.abs() < 1.0),
+        "initial bar accent sits at beat 0: {initial_accents:?}",
+    );
+
+    // Drag play start off-grid (0.15 of the 4-beat clip = 0.60b, off 1/16 grid).
+    let free = Modifiers {
+        platform: true,
+        ..Default::default()
+    };
+    let down = marker_at(&mut visual, 0.0);
+    let up = marker_at(&mut visual, 0.15);
+    visual.simulate_mouse_down(down, MouseButton::Left, free);
+    visual.simulate_mouse_move(up, Some(MouseButton::Left), free);
+    visual.run_until_parked();
+
+    let held_lines = roll_grid(&mut visual);
+    let expected_accent = roll_width * 0.15;
+    let held_accents: Vec<f32> = held_lines
+        .iter()
+        .filter(|(_, accent)| *accent)
+        .map(|(x, _)| *x)
+        .collect();
+    assert_eq!(
+        held_accents.len(),
+        1,
+        "one 4-beat accent visible in 4-beat span"
+    );
+    assert!(
+        (held_accents[0] - expected_accent).abs() < 1.5,
+        "held play-start drag shifts bar accent to the marker: got {}, expected {expected_accent}",
+        held_accents[0],
+    );
+
+    // Release mouse and verify delayed-ACK repaints keep the realigned grid with zero flicker.
+    visual.simulate_mouse_up(up, MouseButton::Left, free);
+    let event = editor.read_with(&visual, |v, _| next(&v.service));
+    for _ in 0..2 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        let pending_lines = roll_grid(&mut visual);
+        assert_eq!(pending_lines.len(), held_lines.len());
+        for ((px, pa), (hx, ha)) in pending_lines.iter().zip(&held_lines) {
+            assert_eq!(pa, ha);
+            assert!(
+                (px - hx).abs() < 0.5,
+                "pending play-start receipt must not flicker grid lines: {px} vs {hx}",
+            );
+        }
+    }
+
+    // Deliver worker ACK and verify grid + snapping both use the realigned origin.
+    editor.update(&mut visual, |v, cx| {
+        v.receive(event);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let acked_lines = roll_grid(&mut visual);
+    assert_eq!(acked_lines.len(), held_lines.len());
+    for ((ax, aa), (hx, ha)) in acked_lines.iter().zip(&held_lines) {
+        assert_eq!(aa, ha);
+        assert!((ax - hx).abs() < 0.5);
+    }
+
+    let source_start = editor.read_with(&visual, |v, _| {
+        v.state
+            .as_ref()
+            .unwrap()
+            .project
+            .midi_source(clip)
+            .unwrap()
+            .source_start()
+            .raw()
+    });
+    let step = MidiGrid::Sixteenth.step_raw().unwrap();
+    assert_ne!(
+        source_start % step,
+        0,
+        "play start must be strictly off the original 1/16 grid",
+    );
+
+    // Double-clicking inside the piano roll snaps note creation to the realigned grid.
+    let roll = visual.debug_bounds("midi-note-roll").unwrap();
+    let click = point(roll.left() + roll.size.width * 0.5, roll.center().y);
+    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_event(gpui::MouseDownEvent {
+        position: click,
+        button: MouseButton::Left,
+        click_count: 2,
+        modifiers: Modifiers::default(),
+        first_mouse: false,
+    });
+    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        let notes = v
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .midi_source(clip)
+            .unwrap()
+            .notes();
+        assert_eq!(notes.len(), 1);
+        let note_start = notes[0].start().raw();
+        assert_eq!(
+            (i128::from(note_start) - i128::from(source_start)).rem_euclid(i128::from(step)),
+            0,
+            "created note start {note_start} must snap to the realigned grid anchored at {source_start}",
+        );
+        assert_ne!(
+            note_start % step,
+            0,
+            "created note must not snap to the old 0-anchored grid",
+        );
+    });
+
+    // Undo note creation, then undo play-start edit and verify grid reverts and redoes.
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    let undone_accents: Vec<f32> = roll_grid(&mut visual)
+        .into_iter()
+        .filter(|(_, accent)| *accent)
+        .map(|(x, _)| x)
+        .collect();
+    assert!(
+        undone_accents.iter().any(|x| x.abs() < 1.0),
+        "undo restores the original 0-anchored bar accent: {undone_accents:?}",
+    );
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump(&editor, &mut visual);
+    let redone_accents: Vec<f32> = roll_grid(&mut visual)
+        .into_iter()
+        .filter(|(_, accent)| *accent)
+        .map(|(x, _)| x)
+        .collect();
+    assert_eq!(redone_accents.len(), 1);
+    assert!((redone_accents[0] - expected_accent).abs() < 1.5);
+}

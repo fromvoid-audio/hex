@@ -9,6 +9,7 @@ pub(super) fn beat_at_x(
     beat_span: BeatTime,
     clip_length: BeatTime,
     grid: midi_drag::MidiGrid,
+    grid_origin: u64,
 ) -> Option<BeatTime> {
     if !x.is_finite()
         || !width.is_finite()
@@ -25,8 +26,13 @@ pub(super) fn beat_at_x(
         return None;
     }
     let start = if let Some(step) = grid.step_raw() {
-        let last_grid = clip_length.raw().saturating_sub(1) / step * step;
-        midi_drag::creation_start(raw, grid).min(last_grid)
+        let last_grid = midi_drag::last_grid_at_or_before(
+            clip_length.raw().saturating_sub(1),
+            step,
+            grid_origin,
+        )
+        .unwrap_or(0);
+        midi_drag::creation_start_aligned(raw, grid, grid_origin).min(last_grid)
     } else {
         raw.min(clip_length.raw().saturating_sub(1))
     };
@@ -73,6 +79,7 @@ mod tests {
                 BeatTime::from_quarters(4).unwrap(),
                 clip,
                 midi_drag::MidiGrid::Sixteenth,
+                0,
             )
             .unwrap(),
             BeatTime::ONE
@@ -85,6 +92,7 @@ mod tests {
                 BeatTime::from_quarters(4).unwrap(),
                 clip,
                 midi_drag::MidiGrid::Sixteenth,
+                0,
             ),
             None
         );
@@ -96,6 +104,7 @@ mod tests {
                 BeatTime::from_quarters(4).unwrap(),
                 clip,
                 midi_drag::MidiGrid::Sixteenth,
+                0,
             ),
             None
         );
@@ -126,7 +135,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                beat_at_x(x, 100.0, 0, span, clip, grid).unwrap().raw(),
+                beat_at_x(x, 100.0, 0, span, clip, grid, 0).unwrap().raw(),
                 expected
             );
         }
@@ -136,12 +145,12 @@ mod tests {
         let snapped_from_free = midi_drag::effective_grid(midi_drag::MidiGrid::Off, true);
         assert_eq!(free, midi_drag::MidiGrid::Off);
         assert_eq!(snapped_from_free, midi_drag::MidiGrid::Sixteenth);
-        let free_start = beat_at_x(x, 100.0, 0, span, clip, free).unwrap().raw();
+        let free_start = beat_at_x(x, 100.0, 0, span, clip, free, 0).unwrap().raw();
         assert!(free_start > BeatTime::ONE.raw() + BeatTime::ONE.raw() * 239 / 1000);
         assert!(free_start < BeatTime::ONE.raw() + BeatTime::ONE.raw() * 241 / 1000);
         assert_ne!(free_start, BeatTime::ONE.raw() + BeatTime::ONE.raw() / 4);
         assert_eq!(
-            beat_at_x(x, 100.0, 0, span, clip, snapped_from_free)
+            beat_at_x(x, 100.0, 0, span, clip, snapped_from_free, 0)
                 .unwrap()
                 .raw(),
             BeatTime::ONE.raw()

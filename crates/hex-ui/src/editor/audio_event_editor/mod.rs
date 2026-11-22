@@ -59,8 +59,29 @@ pub(in crate::editor) fn editor_bounds(root: &AudioClipEdit) -> (u64, u64) {
         (root.view_start, root.view_end)
     }
 }
-/// The event grid anchors direct reads to the scope start in project time.
-pub(in crate::editor) fn event_grid_origin(root: &AudioClipEdit) -> u64 {
+/// The event grid anchors project time to the clip's saved play start whenever
+/// that view exposes a forward or editable start cursor, so `clip.start()`
+/// aligns with where playback begins.
+pub(in crate::editor) fn event_grid_origin(
+    clip: &hex_project::Clip,
+    root: &AudioClipEdit,
+    tempo: &hex_project::TempoMap,
+) -> u64 {
+    if let Some(position) = hex_project::AudioViewProjection::new(clip, tempo)
+        .ok()
+        .and_then(|projection| projection.play_start_position().ok().flatten())
+        .filter(|&position| {
+            root.content_view.is_none()
+                || hex_project::preview_view_resize(
+                    clip,
+                    tempo,
+                    hex_project::AudioViewResizeOperation::PlayStart { position },
+                )
+                .is_ok()
+        })
+    {
+        return position;
+    }
     if root.content_view.is_none() || matches!(root.timing, hex_project::AudioClipTiming::Frames) {
         root.view_start
     } else {
@@ -1003,7 +1024,7 @@ impl EditorView {
         };
         let position = if trim { event.end } else { event.start };
         let tempo = state.project.tempo_map();
-        let Ok(origin) = root.root_frame_at(event_grid_origin(&root), tempo) else {
+        let Ok(origin) = root.root_frame_at(event_grid_origin(clip, &root, tempo), tempo) else {
             return;
         };
         let Ok(frame) = root.root_frame_at(position, tempo) else {
