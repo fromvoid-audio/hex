@@ -70,6 +70,22 @@ impl Pending {
         }
     }
 }
+struct SignalGuard(signal_hook::SigId);
+impl Drop for SignalGuard {
+    fn drop(&mut self) {
+        signal_hook::low_level::unregister(self.0);
+    }
+}
+
+const DRAIN_CHUNK_BYTES: usize = 4 * 4096;
+
+fn final_drain_passes(frame_limit: usize) -> usize {
+    frame_limit
+        .max(64 * 1024)
+        .div_ceil(DRAIN_CHUNK_BYTES)
+        .saturating_add(2)
+}
+
 fn drain(reader: &mut impl Read, bytes: &mut Vec<u8>, limit: usize) -> Result<(), String> {
     let mut buffer = [0_u8; 4096];
     for _ in 0..4 {
@@ -124,8 +140,10 @@ pub fn run(
     // SA_NOCLDWAIT. Audited safe flag registration installs a SIGCHLD handler
     // without NOCLDWAIT; no workspace unsafe or signal callback allocation.
     let child_notice = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let _sigchld = signal_hook::flag::register(signal_hook::consts::SIGCHLD, child_notice)
-        .map_err(|_| "waitable child disposition unavailable")?;
+    let _sigchld = SignalGuard(
+        signal_hook::flag::register(signal_hook::consts::SIGCHLD, child_notice)
+            .map_err(|_| "waitable child disposition unavailable")?,
+    );
     let (mut protocol, writer) = UnixStream::pair().map_err(|_| "protocol pair failed")?;
     let (mut stdout, out_writer) = UnixStream::pair().map_err(|_| "stdout pair failed")?;
     let (mut stderr, err_writer) = UnixStream::pair().map_err(|_| "stderr pair failed")?;
@@ -292,15 +310,20 @@ pub fn run(
         std::thread::sleep(Duration::from_millis(2));
     }
     // Actual direct wait precedes final drain. This profile never creates descendants.
-    for _ in 0..70 {
+    let frame_limit = hex_clap_scan::MAX_PACKET + 12;
+    for _ in 0..final_drain_passes(frame_limit) {
+        let before = (packet.len(), out.len(), err.len());
         for result in [
-            drain(&mut protocol, &mut packet, hex_clap_scan::MAX_PACKET + 12),
+            drain(&mut protocol, &mut packet, frame_limit),
             drain(&mut stdout, &mut out, 64 * 1024),
             drain(&mut stderr, &mut err, 64 * 1024),
         ] {
             if let Err(error) = result {
                 cause = Some(error);
             }
+        }
+        if (packet.len(), out.len(), err.len()) == before {
+            break;
         }
     }
     let mut cleanup = pending.cleanup();
@@ -316,4 +339,24 @@ pub fn run(
         cleanup,
     };
     Ok((output, (!complete).then_some(pending)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signal_guard_unregisters_sigchld_on_drop() {
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let id = signal_hook::flag::register(signal_hook::consts::SIGCHLD, flag).unwrap();
+        let guard = SignalGuard(id);
+        drop(guard);
+        assert!(!signal_hook::low_level::unregister(id));
+    }
+
+    #[test]
+    fn final_drain_passes_scales_with_frame_limit() {
+        let large_limit = 4 * 1024 * 1024 + 12;
+        assert!(final_drain_passes(large_limit) * DRAIN_CHUNK_BYTES >= large_limit);
+    }
 }
