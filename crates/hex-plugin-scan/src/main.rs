@@ -97,6 +97,7 @@ fn main() {
                 hex_plugin_scan::MAX_PACKET,
             )?;
             if let Some(lease) = pending.as_mut() {
+                output.packet.clear();
                 report.output = Some(output);
                 report.catalog.record(Err(
                     "cleanup incomplete: supervisor retains owned lease".into()

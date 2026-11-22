@@ -28,16 +28,33 @@ pub struct Output {
 }
 pub struct Pending {
     child: Child,
-    pid: Pid,
+    pid: Option<Pid>,
     direct_reaped: bool,
+    group_scoped: bool,
     descendants: usize,
     descendant_pids: Vec<i32>,
 }
 impl Pending {
     pub fn poll(&mut self) -> Result<bool, String> {
+        let Some(pid) = self.pid else {
+            if self.direct_reaped {
+                return Ok(true);
+            }
+            // An unsupported PID never authorizes a group signal or result.
+            if self
+                .child
+                .try_wait()
+                .map_err(|_| "unidentified child wait failed")?
+                .is_none()
+            {
+                return Ok(false);
+            }
+            self.direct_reaped = true;
+            return Ok(true);
+        };
         if !self.direct_reaped {
             let state = process::waitid(
-                WaitId::Pid(self.pid),
+                WaitId::Pid(pid),
                 WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
             )
             .map_err(|_| "child observation failed")?;
@@ -48,7 +65,7 @@ impl Pending {
             self.direct_reaped = true;
         }
         loop {
-            match process::waitpgid(self.pid, WaitOptions::NOHANG) {
+            match process::waitpgid(pid, WaitOptions::NOHANG) {
                 Ok(Some((pid, _))) => {
                     self.descendants += 1;
                     self.descendant_pids.push(pid.as_raw_nonzero().get());
@@ -64,13 +81,27 @@ impl Pending {
             direct_reaped: self.direct_reaped,
             descendants_reaped: self.descendants,
             descendant_pids: self.descendant_pids.clone(),
-            group_signals_scoped: true,
+            group_signals_scoped: self.group_scoped,
             pending: !self.direct_reaped,
         }
     }
 }
+struct SignalGuard(signal_hook::SigId);
+impl Drop for SignalGuard {
+    fn drop(&mut self) {
+        signal_hook::low_level::unregister(self.0);
+    }
+}
 /// Magic plus little-endian length preceding every scanner protocol payload.
 const FRAME_HEADER: usize = 12;
+const DRAIN_CHUNK_BYTES: usize = 4 * 4096;
+
+fn final_drain_passes(frame_limit: usize) -> usize {
+    frame_limit
+        .max(64 * 1024)
+        .div_ceil(DRAIN_CHUNK_BYTES)
+        .saturating_add(2)
+}
 fn drain(reader: &mut impl Read, bytes: &mut Vec<u8>, limit: usize) -> Result<(), String> {
     let mut buffer = [0_u8; 4096];
     for _ in 0..4 {
@@ -132,8 +163,10 @@ pub fn run(
     // SA_NOCLDWAIT. Audited safe flag registration installs a SIGCHLD handler
     // without NOCLDWAIT; no workspace unsafe or signal callback allocation.
     let child_notice = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let _sigchld = signal_hook::flag::register(signal_hook::consts::SIGCHLD, child_notice)
-        .map_err(|_| "waitable child disposition unavailable")?;
+    let _sigchld = SignalGuard(
+        signal_hook::flag::register(signal_hook::consts::SIGCHLD, child_notice)
+            .map_err(|_| "waitable child disposition unavailable")?,
+    );
     // This function exists only in this single-request dedicated executable.
     process::set_child_subreaper(Some(Pid::INIT)).map_err(|_| "subreaper unavailable")?;
     if process::child_subreaper().map_err(|_| "subreaper query failed")? != Some(Pid::INIT) {
@@ -159,14 +192,33 @@ pub fn run(
         .stderr(Stdio::from(OwnedFd::from(err_writer)))
         .spawn()
         .map_err(|_| "helper spawn failed")?;
-    // Linux Child::id is a positive pid_t. Successful std spawn also confirms
-    // process_group(0)'s child-side setpgid; a setup failure is a spawn error.
-    let pid = Pid::from_raw(i32::try_from(child.id()).expect("Linux pid_t range"))
-        .expect("positive child PID");
-    assert!(
-        pid.as_raw_nonzero().get() > 1,
-        "spawn never returns init PID"
-    );
+    let pid = i32::try_from(child.id())
+        .ok()
+        .filter(|p| *p > 1)
+        .and_then(Pid::from_raw);
+    let Some(pid) = pid else {
+        let output = Output {
+            packet: Vec::new(),
+            stdout: String::new(),
+            stderr: String::new(),
+            cause: Some("unsupported child PID; owned lease retained".into()),
+            cleanup: Cleanup {
+                pending: true,
+                ..Cleanup::default()
+            },
+        };
+        return Ok((
+            output,
+            Some(Pending {
+                child,
+                pid: None,
+                direct_reaped: false,
+                group_scoped: false,
+                descendants: 0,
+                descendant_pids: Vec::new(),
+            }),
+        ));
+    };
     eprintln!("scanner: controlled helper started");
     let mut sent = 0;
     let mut write_closed = input.is_empty();
@@ -246,8 +298,9 @@ pub fn run(
     }
     let mut pending = Pending {
         child,
-        pid,
+        pid: Some(pid),
         direct_reaped: false,
+        group_scoped: true,
         descendants: 0,
         descendant_pids: Vec::new(),
     };
@@ -268,7 +321,8 @@ pub fn run(
         std::thread::sleep(Duration::from_millis(2));
     }
     // Group termination/reaping precedes final drain, including inherited pipes.
-    for _ in 0..70 {
+    for _ in 0..final_drain_passes(frame_limit) {
+        let before = (packet.len(), out.len(), err.len());
         for result in [
             drain(&mut protocol, &mut packet, frame_limit),
             drain(&mut stdout, &mut out, 64 * 1024),
@@ -277,6 +331,9 @@ pub fn run(
             if let Err(error) = result {
                 cause = Some(error);
             }
+        }
+        if (packet.len(), out.len(), err.len()) == before {
+            break;
         }
     }
     let mut cleanup = pending.cleanup();
@@ -292,4 +349,24 @@ pub fn run(
         cleanup,
     };
     Ok((output, (!complete).then_some(pending)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signal_guard_unregisters_sigchld_on_drop() {
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let id = signal_hook::flag::register(signal_hook::consts::SIGCHLD, flag).unwrap();
+        let guard = SignalGuard(id);
+        drop(guard);
+        assert!(!signal_hook::low_level::unregister(id));
+    }
+
+    #[test]
+    fn final_drain_passes_covers_arbitrary_frame_limit() {
+        let large_limit = 4 * 1024 * 1024 + FRAME_HEADER;
+        assert!(final_drain_passes(large_limit) * DRAIN_CHUNK_BYTES >= large_limit);
+    }
 }
