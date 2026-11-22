@@ -7,9 +7,16 @@ publish.workspace = true
 
 [features]
 # Constructor/adapter integration only; no physical device is opened by fixtures.
-allocation-probe = ["hex-audio/allocation-probe", "hex-ui/ui-test-support"]
+allocation-probe = ["hex-audio/allocation-probe"]
+# Rendered GPUI desktop window tests (sampler/resident-preview UI and opt-in VST3 tests).
+ui-test-support = ["allocation-probe", "hex-ui/ui-test-support"]
 # Explicit signed recording-failure fixtures only.
 recording-fault-test-support = ["hex-session/recording-fault-test-support"]
+
+[[test]]
+name = "native_vst3_plugins"
+path = "src/native_vst3_plugins_test.rs"
+required-features = ["ui-test-support"]
 
 [dependencies]
 fs2 = "=0.4.3"

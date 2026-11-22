@@ -45,6 +45,7 @@ fn assert_loop_pcm(h: &ResidentHarness, level: f32) -> [hex_engine::Frame; 64] {
 // Native fixture parameters are uninhabited on targets without the host; the
 // portable harness can still use its ordinary constructor with None.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[allow(dead_code)]
 enum PluginFixture {
     Signed(
         Box<hex_audio::plugin_effects::Hosting>,
@@ -1756,18 +1757,19 @@ fn track_gain_gesture_reaches_callback_without_a_pcm_step() {
     }
 }
 
-pub(super) static CONFIRMED_TEST_INTERRUPTS: AtomicU64 = AtomicU64::new(0);
-pub(super) static CONFIRMED_TEST_POINTS: AtomicU64 = AtomicU64::new(0);
-pub(super) static CONFIRMED_TEST_READY: AtomicU64 = AtomicU64::new(0);
-pub(super) static CONFIRMED_TEST_ENDS: AtomicU64 = AtomicU64::new(0);
-pub(super) static CONFIRMED_TEST_NOOPS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static CONFIRMED_TEST_INTERRUPTS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static CONFIRMED_TEST_POINTS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static CONFIRMED_TEST_READY: AtomicU64 = AtomicU64::new(0);
+pub(crate) static CONFIRMED_TEST_ENDS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static CONFIRMED_TEST_NOOPS: AtomicU64 = AtomicU64::new(0);
 /// Copied original SDK receipts for the independent recorded-versus-authored
 /// replay oracle. This is test/control-side custody, never callback work.
-pub(super) static SESSION_RECORDING_OBSERVATIONS: Mutex<
+pub(crate) static SESSION_RECORDING_OBSERVATIONS: Mutex<
     Vec<hex_session::service::PluginParameterObservation>,
 > = Mutex::new(Vec::new());
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub(super) enum EditorRecordingProbe {
+#[allow(dead_code)]
+pub(crate) enum EditorRecordingProbe {
     Prepare(
         hex_session::service::PluginEditorRecordingInput,
         SyncSender<Result<hex_session::service::PluginParameterObservation, String>>,
@@ -1806,7 +1808,7 @@ struct ResidentSink {
     device_insert_probe: Arc<DeviceInsertProbe>,
 }
 #[derive(Default)]
-pub(super) struct DeviceInsertProbe {
+pub(crate) struct DeviceInsertProbe {
     // Keep older fixtures on their submission-only contract. The insertion
     // fixture opts into and retains the exact production callback receipt.
     enabled: AtomicBool,
@@ -1815,8 +1817,9 @@ pub(super) struct DeviceInsertProbe {
     foreign_binding: Mutex<Option<ForeignDeviceInsertProbe>>,
 }
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[allow(dead_code)]
 impl DeviceInsertProbe {
-    pub(super) fn next_submitted(
+    pub(crate) fn next_submitted(
         &self,
     ) -> (
         mpsc::Receiver<hex_session::service::ResidentGraphSubmission>,
@@ -1834,7 +1837,7 @@ impl DeviceInsertProbe {
         (submitted, resume)
     }
 
-    pub(super) fn observe_next_foreign_binding(
+    pub(crate) fn observe_next_foreign_binding(
         &self,
         track: hex_project::TrackId,
         device: hex_project::DeviceId,
@@ -1842,7 +1845,7 @@ impl DeviceInsertProbe {
         self.observe_foreign_binding(Some(track), device)
     }
 
-    pub(super) fn observe_next_foreign_effect_binding(
+    pub(crate) fn observe_next_foreign_effect_binding(
         &self,
         device: hex_project::DeviceId,
     ) -> mpsc::Receiver<Option<PreparedForeignSource>> {
@@ -1900,7 +1903,7 @@ struct PublicationProbe {
     busy: SyncSender<()>,
 }
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub(super) fn emit_replay_fixture_edit(trace: &std::path::Path) {
+pub(crate) fn emit_replay_fixture_edit(trace: &std::path::Path) {
     let release =
         std::path::PathBuf::from(std::env::var_os("HEX_ORIGINAL_EDITOR_RELEASE_DIR").unwrap());
     std::fs::write(release.join(trace.file_stem().unwrap()), b"edit").unwrap();
@@ -2880,67 +2883,69 @@ impl WorkerAudioSink for ResidentSink {
     }
 }
 
-pub(super) struct ResidentHarness {
-    pub(super) service: Service,
+#[allow(dead_code)]
+pub(crate) struct ResidentHarness {
+    pub(crate) service: Service,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) control_polls: Arc<AtomicU64>,
+    pub(crate) control_polls: Arc<AtomicU64>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) editor_recording_probe: Arc<Mutex<Option<EditorRecordingProbe>>>,
+    pub(crate) editor_recording_probe: Arc<Mutex<Option<EditorRecordingProbe>>>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     event_sender: mpsc::SyncSender<EditorAudioEvent>,
     events: mpsc::Receiver<EditorAudioEvent>,
-    pub(super) callback: Arc<Mutex<Option<HeadlessBackend>>>,
-    pub(super) audio: Option<EditorAudio>,
-    pub(super) submitted: Option<(u64, ResidentPublicationMetadata)>,
+    pub(crate) callback: Arc<Mutex<Option<HeadlessBackend>>>,
+    pub(crate) audio: Option<EditorAudio>,
+    pub(crate) submitted: Option<(u64, ResidentPublicationMetadata)>,
     submitted_observation: Option<Arc<PreparedPlaybackObservation>>,
-    pub(super) refuse: Arc<AtomicBool>,
-    pub(super) budget_refuse: Arc<AtomicBool>,
-    pub(super) loop_witness_fault: Arc<AtomicU8>,
-    pub(super) pending_present: Arc<AtomicBool>,
+    pub(crate) refuse: Arc<AtomicBool>,
+    pub(crate) budget_refuse: Arc<AtomicBool>,
+    pub(crate) loop_witness_fault: Arc<AtomicU8>,
+    pub(crate) pending_present: Arc<AtomicBool>,
     file_publication_waiting: Arc<AtomicBool>,
-    pub(super) pending_observation_generation: Arc<AtomicU64>,
+    pub(crate) pending_observation_generation: Arc<AtomicU64>,
     publication_probe: Arc<Mutex<Option<PublicationProbe>>>,
     confirmation_probe: Arc<Mutex<Option<ConfirmationProbe>>>,
     device_insert_probe: Arc<DeviceInsertProbe>,
-    pub(super) allow_unavailable: bool,
-    pub(super) unavailable: Vec<String>,
-    pub(super) publication_refusals: Vec<String>,
+    pub(crate) allow_unavailable: bool,
+    pub(crate) unavailable: Vec<String>,
+    pub(crate) publication_refusals: Vec<String>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) retirement_issues: Vec<(u64, hex_ui::PluginEditorRetirementIssue)>,
+    pub(crate) retirement_issues: Vec<(u64, hex_ui::PluginEditorRetirementIssue)>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) degraded_devices: Vec<u64>,
+    pub(crate) degraded_devices: Vec<u64>,
     constructor_submitted: Option<(u64, AudioSourceContext)>,
     /// `OutputReleased` events in delivery order: (generation, old output).
-    pub(super) released: Vec<(u64, u64)>,
-    pub(super) rebound: Option<(u64, u64)>,
+    pub(crate) released: Vec<(u64, u64)>,
+    pub(crate) rebound: Option<(u64, u64)>,
     native_plugins: bool,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) plugin_completed: Arc<AtomicU64>,
+    pub(crate) plugin_completed: Arc<AtomicU64>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) latency_restart: Option<hex_audio::prepared::AppliedAudioSource>,
+    pub(crate) latency_restart: Option<hex_audio::prepared::AppliedAudioSource>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) plugin_queued: Arc<AtomicBool>,
+    pub(crate) plugin_queued: Arc<AtomicBool>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) plugin_records: Arc<std::sync::atomic::AtomicUsize>,
+    pub(crate) plugin_records: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) plugin_progress: Arc<Mutex<crate::native_audio::plugins::PreparationObservation>>,
+    pub(crate) plugin_progress: Arc<Mutex<crate::native_audio::plugins::PreparationObservation>>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) plugin_failure: Arc<Mutex<Option<String>>>,
+    pub(crate) plugin_failure: Arc<Mutex<Option<String>>>,
 }
+#[allow(dead_code)]
 impl ResidentHarness {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with_frame_limit(8192)
     }
-    pub(super) fn with_frame_limit(frame_limit: u64) -> Self {
+    pub(crate) fn with_frame_limit(frame_limit: u64) -> Self {
         Self::with_open_gate(frame_limit, Arc::new(AtomicBool::new(true)))
     }
-    pub(super) fn with_frame_limit_at_rate(frame_limit: u64, rate: u32) -> Self {
+    pub(crate) fn with_frame_limit_at_rate(frame_limit: u64, rate: u32) -> Self {
         Self::with_event_capacity_at_rate(frame_limit, Arc::new(AtomicBool::new(true)), 4, rate)
     }
-    pub(super) fn with_open_gate(frame_limit: u64, gate: Arc<AtomicBool>) -> Self {
+    pub(crate) fn with_open_gate(frame_limit: u64, gate: Arc<AtomicBool>) -> Self {
         Self::with_event_capacity(frame_limit, gate, 4)
     }
-    pub(super) fn with_event_capacity(
+    pub(crate) fn with_event_capacity(
         frame_limit: u64,
         gate: Arc<AtomicBool>,
         capacity: usize,
@@ -2955,10 +2960,10 @@ impl ResidentHarness {
     ) -> Self {
         Self::with_plugin_fixture(frame_limit, gate, capacity, rate, None, None, None, None)
     }
-    pub(super) fn with_recovery(frame_limit: u64, recovery: PathBuf) -> Self {
+    pub(crate) fn with_recovery(frame_limit: u64, recovery: PathBuf) -> Self {
         Self::with_recovery_at_rate(frame_limit, recovery, 48_000)
     }
-    pub(super) fn with_recovery_at_rate(frame_limit: u64, recovery: PathBuf, rate: u32) -> Self {
+    pub(crate) fn with_recovery_at_rate(frame_limit: u64, recovery: PathBuf, rate: u32) -> Self {
         Self::with_plugin_fixture(
             frame_limit,
             Arc::new(AtomicBool::new(true)),
@@ -2971,7 +2976,7 @@ impl ResidentHarness {
         )
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) fn without_plugin_catalog_configuration() -> Self {
+    pub(crate) fn without_plugin_catalog_configuration() -> Self {
         Self::with_plugin_fixture(
             8192,
             Arc::new(AtomicBool::new(true)),
@@ -2984,14 +2989,14 @@ impl ResidentHarness {
         )
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) fn with_plugins(
+    pub(crate) fn with_plugins(
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
     ) -> Self {
         Self::with_plugins_at_rate(host, presentation, 48_000)
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) fn with_plugins_at_rate(
+    pub(crate) fn with_plugins_at_rate(
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
         rate: u32,
@@ -2999,7 +3004,7 @@ impl ResidentHarness {
         Self::with_plugins_at_rate_and_diagnostics(host, presentation, rate, None)
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) fn with_plugins_at_rate_and_diagnostics(
+    pub(crate) fn with_plugins_at_rate_and_diagnostics(
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
         rate: u32,
@@ -3021,7 +3026,7 @@ impl ResidentHarness {
         )
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) fn with_plugins_paused_at_facts(
+    pub(crate) fn with_plugins_paused_at_facts(
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
         facts: crate::native_audio::plugins::FactsGate,
@@ -3039,7 +3044,7 @@ impl ResidentHarness {
         )
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) fn with_plugins_and_catalog(
+    pub(crate) fn with_plugins_and_catalog(
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
         catalog: PathBuf,
@@ -3047,7 +3052,7 @@ impl ResidentHarness {
         Self::with_plugins_at_rate_and_catalog(host, presentation, 48_000, catalog, 8192)
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) fn with_plugins_at_rate_catalog_and_diagnostics(
+    pub(crate) fn with_plugins_at_rate_catalog_and_diagnostics(
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
         rate: u32,
@@ -3070,7 +3075,7 @@ impl ResidentHarness {
         )
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) fn with_plugins_at_rate_and_catalog(
+    pub(crate) fn with_plugins_at_rate_and_catalog(
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
         rate: u32,
@@ -3089,7 +3094,7 @@ impl ResidentHarness {
         )
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) fn with_plugins_at_rate_and_catalog_recovery(
+    pub(crate) fn with_plugins_at_rate_and_catalog_recovery(
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
         rate: u32,
@@ -3277,7 +3282,7 @@ impl ResidentHarness {
     /// to a rendered view. These are original events, never manufactured ACKs;
     /// the simulated callback and publication owner stay in their usual custody.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) fn into_plugin_ui_backend(mut self) -> EditorBackend {
+    pub(crate) fn into_plugin_ui_backend(mut self) -> EditorBackend {
         let audio = self.audio.take().expect("actual opened output");
         let output_identity = audio.control.output_identity().unwrap();
         let (audio_revision, metadata) = self.submitted.unwrap();
@@ -3311,10 +3316,10 @@ impl ResidentHarness {
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) fn submitted_observation(&self) -> Option<&PreparedPlaybackObservation> {
+    pub(crate) fn submitted_observation(&self) -> Option<&PreparedPlaybackObservation> {
         self.submitted_observation.as_deref()
     }
-    pub(super) fn pump(&mut self) {
+    pub(crate) fn pump(&mut self) {
         while let Ok(event) = self.events.try_recv() {
             match event {
                 EditorAudioEvent::Opened { audio, .. } => self.audio = Some(audio),
@@ -3378,7 +3383,7 @@ impl ResidentHarness {
         }
     }
     #[track_caller]
-    pub(super) fn next(&mut self) -> Event {
+    pub(crate) fn next(&mut self) -> Event {
         let end = Instant::now() + Duration::from_secs(10);
         loop {
             self.pump();
@@ -3392,7 +3397,7 @@ impl ResidentHarness {
             std::thread::yield_now();
         }
     }
-    pub(super) fn run(&mut self, request: Request) -> Event {
+    pub(crate) fn run(&mut self, request: Request) -> Event {
         self.service.submit(request).unwrap();
         let event = self.next();
         assert!(event.error.is_none(), "{:?}", event.error);
@@ -3403,7 +3408,7 @@ impl ResidentHarness {
         event
     }
     #[track_caller]
-    pub(super) fn wait_constructor_applied(&mut self, context: AudioSourceContext) {
+    pub(crate) fn wait_constructor_applied(&mut self, context: AudioSourceContext) {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             self.pump();
@@ -3429,7 +3434,7 @@ impl ResidentHarness {
             std::thread::yield_now();
         }
     }
-    pub(super) fn release_relinquished_output(&mut self) {
+    pub(crate) fn release_relinquished_output(&mut self) {
         let mut slot = self.callback.lock().unwrap();
         assert!(slot.as_ref().unwrap().shutdown_requested());
         slot.take().unwrap().close();
@@ -3437,7 +3442,7 @@ impl ResidentHarness {
         self.submitted = None;
         self.constructor_submitted = None;
     }
-    pub(super) fn wait_fresh_output(&mut self, old_output: u64) {
+    pub(crate) fn wait_fresh_output(&mut self, old_output: u64) {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             self.pump();
@@ -3456,7 +3461,7 @@ impl ResidentHarness {
             std::thread::yield_now();
         }
     }
-    pub(super) fn render(&self) -> [hex_engine::Frame; 64] {
+    pub(crate) fn render(&self) -> [hex_engine::Frame; 64] {
         let mut pcm = [[0.0; 2]; 64];
         let mut slot = self.callback.lock().unwrap();
         let callback = slot.as_mut().unwrap();
@@ -3480,7 +3485,7 @@ impl ResidentHarness {
         pcm
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) fn render_plugin_block(&self) -> [hex_engine::Frame; 256] {
+    pub(crate) fn render_plugin_block(&self) -> [hex_engine::Frame; 256] {
         let mut pcm = [[0.0; 2]; 256];
         let mut host = [0.0; 512];
         let mut slot = self.callback.lock().unwrap();
@@ -3520,7 +3525,7 @@ impl ResidentHarness {
     /// Advance the simulated callback, then observe each exact original
     /// endpoint's committed requests on control. The Session worker may be
     /// waiting for page/callback progress and is not the DSP completion clock.
-    pub(super) fn render_worker_step(&self) {
+    pub(crate) fn render_worker_step(&self) {
         self.render();
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if self.native_plugins
@@ -3553,7 +3558,7 @@ impl ResidentHarness {
         }
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) fn hold_native_work_on_control(
+    pub(crate) fn hold_native_work_on_control(
         &self,
         held: SyncSender<()>,
         release: mpsc::Receiver<()>,
@@ -3578,19 +3583,19 @@ impl ResidentHarness {
             assert_eq!(result, Some(Ok(())));
         })
     }
-    pub(super) fn enable_confirmed_device_inserts(&self) {
+    pub(crate) fn enable_confirmed_device_inserts(&self) {
         self.device_insert_probe
             .enabled
             .store(true, std::sync::atomic::Ordering::Release);
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) fn device_insert_probe(&self) -> Arc<DeviceInsertProbe> {
+    pub(crate) fn device_insert_probe(&self) -> Arc<DeviceInsertProbe> {
         Arc::clone(&self.device_insert_probe)
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) fn probe_next_submitted_device_insert(
+    pub(crate) fn probe_next_submitted_device_insert(
         &self,
     ) -> (
         mpsc::Receiver<hex_session::service::ResidentGraphSubmission>,
@@ -3599,15 +3604,15 @@ impl ResidentHarness {
         self.device_insert_probe.next_submitted()
     }
 
-    pub(super) fn probe_next_parameter_confirmation(&self) -> (mpsc::Receiver<()>, SyncSender<()>) {
+    pub(crate) fn probe_next_parameter_confirmation(&self) -> (mpsc::Receiver<()>, SyncSender<()>) {
         self.probe_next_parameter_stage(ProbeStage::ParameterConfirmation)
     }
 
-    pub(super) fn probe_next_replay_capture(&self) -> (mpsc::Receiver<()>, SyncSender<()>) {
+    pub(crate) fn probe_next_replay_capture(&self) -> (mpsc::Receiver<()>, SyncSender<()>) {
         self.probe_next_parameter_stage(ProbeStage::ReplayCapture)
     }
 
-    pub(super) fn probe_next_save_capture(&self) -> (mpsc::Receiver<()>, SyncSender<()>) {
+    pub(crate) fn probe_next_save_capture(&self) -> (mpsc::Receiver<()>, SyncSender<()>) {
         self.probe_next_parameter_stage(ProbeStage::SaveCapture)
     }
 
@@ -3630,7 +3635,7 @@ impl ResidentHarness {
         );
         (entered, resume)
     }
-    pub(super) fn probe_next_native_publication(
+    pub(crate) fn probe_next_native_publication(
         &self,
     ) -> (mpsc::Receiver<()>, SyncSender<()>, mpsc::Receiver<()>) {
         let (ready, entered) = mpsc::sync_channel(1);
@@ -3648,7 +3653,7 @@ impl ResidentHarness {
         assert!(old.is_none(), "one exact publication probe");
         (entered, resume, observed_busy)
     }
-    pub(super) fn applied(&mut self, after: u64) -> (u64, ResidentPublicationMetadata) {
+    pub(crate) fn applied(&mut self, after: u64) -> (u64, ResidentPublicationMetadata) {
         let end = Instant::now() + Duration::from_secs(10);
         loop {
             self.pump();
@@ -4156,7 +4161,7 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
 }
 
 impl ResidentHarness {
-    pub(super) fn seek_intent(
+    pub(crate) fn seek_intent(
         &self,
         request_id: u64,
         revision: u64,
@@ -4188,7 +4193,7 @@ impl ResidentHarness {
             cancelled: Arc::new(AtomicBool::new(false)),
         }
     }
-    pub(super) fn seek_result(&mut self) -> hex_session::service::ResidentArrangementSeekResult {
+    pub(crate) fn seek_result(&mut self) -> hex_session::service::ResidentArrangementSeekResult {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             self.pump();
@@ -6336,7 +6341,11 @@ fn confirmed_limiter_keeps_the_same_output(frame_limit: u64, streamed: bool, edi
     }
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(all(
+    feature = "ui-test-support",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
 #[gpui::test]
 fn browser_limiter_insertion_waits_for_consent_and_installs_on_the_same_output(
     cx: &mut gpui::TestAppContext,
@@ -6350,7 +6359,11 @@ fn browser_limiter_insertion_waits_for_consent_and_installs_on_the_same_output(
     }
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(all(
+    feature = "ui-test-support",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
 fn browser_limiter_insertion(cx: &mut gpui::TestAppContext, frame_limit: u64, main: bool) {
     use gpui::{Modifiers, MouseButton, point, px};
     use hex_session::service::PluginEffectDestination;

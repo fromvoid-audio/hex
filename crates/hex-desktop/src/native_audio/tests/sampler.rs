@@ -1,15 +1,23 @@
 mod composition;
+#[cfg(feature = "ui-test-support")]
 mod composition_ui;
+#[cfg(feature = "ui-test-support")]
 mod console;
+#[cfg(feature = "ui-test-support")]
 mod controls;
+#[cfg(feature = "ui-test-support")]
 mod envelope;
 mod gain;
 mod history;
+#[cfg(feature = "ui-test-support")]
 mod history_ui;
+#[cfg(feature = "ui-test-support")]
 mod overview;
 mod replacement;
+#[cfg(feature = "ui-test-support")]
 mod replacement_ui;
 use super::*;
+#[cfg(feature = "ui-test-support")]
 mod keyboard;
 mod live_release;
 use hex_project::{BeatTime, Command, Created};
@@ -34,6 +42,7 @@ impl Harness {
     fn resident_sampler(frame_limit: u64) -> Self {
         Self::sampler_fixture(frame_limit, false)
     }
+    #[cfg(feature = "ui-test-support")]
     fn rendered_resident_sampler(frame_limit: u64) -> Self {
         Self::sampler_fixture(frame_limit, true)
     }
@@ -698,46 +707,54 @@ fn actual_old_resident_current_pcm_remains_charged_across_new_and_sampler_prefli
     }
 }
 
+#[cfg(feature = "ui-test-support")]
 #[gpui::test]
 fn rendered_browser_first_load_reaches_real_service_and_native_current_without_retargeting(
     cx: &mut gpui::TestAppContext,
 ) {
     rendered_sampler_save_open(cx, true, false, false, None);
 }
+#[cfg(feature = "ui-test-support")]
 #[gpui::test]
 fn rendered_browser_mono_sampler_save_open_preserves_absolute_tuning(
     cx: &mut gpui::TestAppContext,
 ) {
     rendered_sampler_save_open(cx, false, false, false, None);
 }
+#[cfg(feature = "ui-test-support")]
 #[gpui::test]
 fn rendered_empty_midi_track_load_and_reopen_is_playable_from_computer_keyboard(
     cx: &mut gpui::TestAppContext,
 ) {
     rendered_sampler_save_open(cx, true, true, false, None);
 }
+#[cfg(feature = "ui-test-support")]
 #[gpui::test]
 fn rendered_sampler_key_release_and_focus_cancel_do_not_wait_for_blocked_service(
     cx: &mut gpui::TestAppContext,
 ) {
     rendered_sampler_save_open(cx, true, false, true, None);
 }
+#[cfg(feature = "ui-test-support")]
 #[gpui::test]
 fn rendered_mono_a880_sampler_keyboard_playing_and_blocked_release_are_literal(
     cx: &mut gpui::TestAppContext,
 ) {
     rendered_sampler_save_open(cx, false, false, true, None);
 }
+#[cfg(feature = "ui-test-support")]
 #[gpui::test]
 fn rendered_sampler_stopped_controls_rebuild_current_and_persist(cx: &mut gpui::TestAppContext) {
     rendered_sampler_save_open(cx, true, false, false, Some(ControlsFixture::Scalar));
 }
+#[cfg(feature = "ui-test-support")]
 #[gpui::test]
 fn rendered_sampler_envelope_controls_shape_current_keyboard_arrangement_and_persist(
     cx: &mut gpui::TestAppContext,
 ) {
     rendered_sampler_save_open(cx, true, false, false, Some(ControlsFixture::Envelope));
 }
+#[cfg(feature = "ui-test-support")]
 #[gpui::test]
 fn rendered_sampler_trigger_release_is_visible_but_inactive_without_mode_conversion(
     cx: &mut gpui::TestAppContext,
@@ -749,34 +766,40 @@ fn rendered_sampler_trigger_release_is_visible_but_inactive_without_mode_convers
         rendered_sampler_save_open(cx, true, false, false, Some(fixture));
     }
 }
+#[cfg(feature = "ui-test-support")]
 #[gpui::test]
 fn rendered_sampler_fresh_source_overview_and_controls_work_before_save_and_reconstruct_on_open(
     cx: &mut gpui::TestAppContext,
 ) {
     rendered_sampler_save_open(cx, true, false, false, Some(ControlsFixture::Overview));
 }
+#[cfg(feature = "ui-test-support")]
 #[gpui::test]
 fn rendered_sampler_history_uses_global_order_cancels_drafts_and_persists(
     cx: &mut gpui::TestAppContext,
 ) {
     rendered_sampler_save_open(cx, true, false, false, Some(ControlsFixture::History));
 }
+#[cfg(feature = "ui-test-support")]
 #[gpui::test]
 fn rendered_sampler_replacement_preserves_captured_target_cancel_sound_and_saved_sources(
     cx: &mut gpui::TestAppContext,
 ) {
     rendered_sampler_save_open(cx, true, false, false, Some(ControlsFixture::Replacement));
 }
+#[cfg(feature = "ui-test-support")]
 #[gpui::test]
 fn rendered_sampler_console_cell_scene_and_stop_use_actual_current(cx: &mut gpui::TestAppContext) {
     rendered_sampler_save_open(cx, true, false, false, Some(ControlsFixture::Console));
 }
+#[cfg(feature = "ui-test-support")]
 #[gpui::test]
 fn rendered_loaded_sampler_creates_arrange_midi_clip_through_fresh_current(
     cx: &mut gpui::TestAppContext,
 ) {
     rendered_sampler_save_open(cx, true, true, false, Some(ControlsFixture::Composition));
 }
+#[cfg(feature = "ui-test-support")]
 #[derive(Clone, Copy)]
 enum ControlsFixture {
     Scalar,
@@ -789,6 +812,7 @@ enum ControlsFixture {
     Console,
     Composition,
 }
+#[cfg(feature = "ui-test-support")]
 fn rendered_sampler_save_open(
     cx: &mut gpui::TestAppContext,
     stereo: bool,

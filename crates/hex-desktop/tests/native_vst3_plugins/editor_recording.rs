@@ -345,7 +345,7 @@ fn active_editor_take_refuses_project_replacement_then_allows_retry() {
     let result = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "native_audio::tests::plugins::editor_recording::original_instrument_editor_joins_actual_main_take_and_late_restoration",
+            "plugins::editor_recording::original_instrument_editor_joins_actual_main_take_and_late_restoration",
             "--ignored",
             "--test-threads=1",
         ])

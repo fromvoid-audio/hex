@@ -321,7 +321,7 @@ ADDITIVE_TEST_FEATURES: dict[str, tuple[str, ...]] = {
 # reviewed additive features from folding default+feature into a single run.
 SINGLE_RUN_COMPANION_FEATURES: dict[str, frozenset[str]] = {
     "hex-ui": frozenset({"ui-unit-tier"}),
-    "hex-desktop": frozenset({"allocation-probe"}),
+    "hex-desktop": frozenset({"allocation-probe", "ui-test-support"}),
     "hex-audio": frozenset({"allocation-probe"}),
     "hex-stream": frozenset({"allocation-probe"}),
     "hex-plugin-host": frozenset({"allocation-probe"}),
@@ -439,7 +439,7 @@ REVIEWED_EQUIVALENT_FEATURE_CFGS: dict[tuple[str, str], str] = {
     ("hex-ui", "src/editor/clip_boundary.rs"): '#[cfg(not(any(test, feature = "ui-test-support")))]',
     ("hex-ui", "src/editor/trim/geometry.rs"): '#[cfg(all(test, any(feature = "ui-unit-tier", not(feature = "ui-test-support"))))]',
     ("hex-session", "src/service/resident_audio/tests/native_automation_recording.rs"): '#[cfg(not(feature = "recording-fault-test-support"))]',
-    ("hex-desktop", "src/native_audio/tests/plugins/instruments.rs"): '#[cfg(not(feature = "recording-fault-test-support"))]',
+    ("hex-desktop", "tests/native_vst3_plugins/instruments.rs"): '#[cfg(not(feature = "recording-fault-test-support"))]',
     ("hex-stream", "tests/reference_channel.rs"): '#[cfg(not(feature = "test-support"))]',
     ("hex-audio", "src/candidate_custody.rs"): '#[cfg(not(feature = "stream-test-support"))]',
     ("hex-audio", "src/candidate_custody/eligible/preparation.rs"): '#[cfg(not(feature = "stream-test-support"))]',

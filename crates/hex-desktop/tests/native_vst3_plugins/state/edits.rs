@@ -29,7 +29,7 @@ fn with_gain_and_axis(
     })
     .unwrap()
 }
-pub(in crate::native_audio::tests::plugins) fn ordinary_terminal(h: &mut ResidentHarness) -> Event {
+pub(in crate::plugins) fn ordinary_terminal(h: &mut ResidentHarness) -> Event {
     let end = Instant::now() + Duration::from_secs(10);
     loop {
         h.pump();
@@ -47,7 +47,7 @@ pub(in crate::native_audio::tests::plugins) fn ordinary_terminal(h: &mut Residen
         std::thread::yield_now();
     }
 }
-pub(in crate::native_audio::tests::plugins) fn workers_idle(h: &ResidentHarness) {
+pub(in crate::plugins) fn workers_idle(h: &ResidentHarness) {
     wait(|| {
         h.callback
             .lock()

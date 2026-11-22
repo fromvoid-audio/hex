@@ -1,6 +1,6 @@
 //! Output completion alone is substituted. Session, verified readers, source
 //! domains, graph preparation, publication and callback are production paths.
-use super::*;
+pub(crate) use super::*;
 mod bypass_latency;
 mod delay_bypass;
 mod discrete_automation;
@@ -9,8 +9,6 @@ mod granular_source_projection;
 mod limiter;
 mod limiter_bypass;
 mod manual_host_gain;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-mod plugins;
 mod recovery;
 mod release_custody;
 mod resident_authoring;
@@ -21,11 +19,11 @@ mod resident_file_metadata;
 mod resident_granular;
 mod resident_grouping;
 mod resident_history_seek;
-mod resident_lifecycle;
-mod resident_preview;
+pub(crate) mod resident_lifecycle;
+pub(crate) mod resident_preview;
 mod resident_reverb;
 mod resident_routes;
-mod resident_sections;
+pub(crate) mod resident_sections;
 mod resident_streamed_bounce;
 mod reverb_bypass;
 mod sampler;
@@ -42,12 +40,12 @@ mod unavailable_plugins;
 mod utility_width;
 mod verified_clip_move;
 mod verified_device_preview;
-pub(super) mod verified_gain;
+pub(crate) mod verified_gain;
 mod worker_idle;
-use hex_audio::worker_fixture::HeadlessBackend;
-use hex_engine::PlaybackCommand;
-use hex_session::service::{Event, Request};
-use std::{
+pub(crate) use hex_audio::worker_fixture::HeadlessBackend;
+pub(crate) use hex_engine::PlaybackCommand;
+pub(crate) use hex_session::service::{Event, Request};
+pub(crate) use std::{
     fs,
     path::PathBuf,
     sync::{Mutex, Weak, atomic::AtomicU64},
@@ -57,13 +55,13 @@ use std::{
 /// 64-frame blocks covering the queued Pause/Stop declick fade at rates up
 /// to 96 kHz (256 frames; Pulse #4151), so oracles assert the settled
 /// transport after it rather than in the first block.
-const FADE_BLOCKS: usize = 256_usize.div_ceil(64);
+pub(crate) const FADE_BLOCKS: usize = 256_usize.div_ceil(64);
 static NEXT: AtomicU64 = AtomicU64::new(0);
 // The actual native constructor retains the process-wide output lease.
 static NATIVE_FIXTURE: Mutex<()> = Mutex::new(());
 /// Serialize native-lease fixtures. A failed test only poisons the unit guard;
 /// recovering it keeps one failure from cascading into unrelated tests.
-pub(super) fn native_fixture() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn native_fixture() -> std::sync::MutexGuard<'static, ()> {
     NATIVE_FIXTURE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -84,7 +82,7 @@ impl RenderedCurrentStatus for hex_audio::prepared::Status {
     }
 }
 #[derive(Default)]
-pub(super) struct Observation {
+pub(crate) struct Observation {
     resident_submitted: Vec<RenderedCurrent>,
     resident_endpoints: Vec<(u64, Weak<hex_audio::prepared::Status>)>,
     resident_observation_pending: bool,
@@ -95,7 +93,8 @@ pub(super) struct Observation {
         hex_engine::AudioCandidateIdentity,
         hex_engine::AudioCandidateIdentity,
     )>,
-    received_verified_device: Option<Arc<hex_session::service::VerifiedDeviceParameterSource>>,
+    pub(crate) received_verified_device:
+        Option<Arc<hex_session::service::VerifiedDeviceParameterSource>>,
     verified_clip_updates: Vec<(hex_session::service::ClipMovePreviewIdentity, &'static str)>,
     replay_verified_device: Option<Arc<hex_session::service::VerifiedDeviceParameterSource>>,
     pub(super) received_verified_gain: Option<Arc<hex_session::service::VerifiedTrackGainSource>>,
@@ -107,7 +106,7 @@ pub(super) struct Observation {
     pause_poll: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
     pause_keyboard_activation: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
     pause_resident_publication: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
-    pause_verified_effect_projection: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
+    pub(crate) pause_verified_effect_projection: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
     blocked: Option<AudioSourceContext>,
     fresh_before_input: Option<(EditorAudio, Arc<Mutex<Option<HeadlessBackend>>>)>,
     fresh_before_input_checked: bool,
@@ -739,9 +738,9 @@ impl WorkerAudioSink for ObservedSink {
         self.inner.close();
     }
 }
-pub(super) struct Files(pub(super) PathBuf);
+pub(crate) struct Files(pub(crate) PathBuf);
 impl Files {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
             "hex-desktop-worker-{}-{}",
             std::process::id(),
@@ -750,10 +749,16 @@ impl Files {
         fs::create_dir(&path).unwrap();
         Self(path)
     }
-    pub(super) fn wav(&self, rate: u32, frames: u32) -> PathBuf {
+    pub(crate) fn wav(&self, rate: u32, frames: u32) -> PathBuf {
         self.constant_wav("mixed-rate.wav", rate, frames, &[8192])
     }
-    fn constant_wav(&self, name: &str, rate: u32, frames: u32, samples: &[i16]) -> PathBuf {
+    pub(crate) fn constant_wav(
+        &self,
+        name: &str,
+        rate: u32,
+        frames: u32,
+        samples: &[i16],
+    ) -> PathBuf {
         assert!((1..=2).contains(&samples.len()));
         let channels = u16::try_from(samples.len()).unwrap();
         let frame_bytes = u32::from(channels) * 2;
@@ -788,29 +793,30 @@ impl Drop for Files {
 
 /// Pre-window consumer with one actual endpoint and one latest read-only observation.
 /// Superseded projection destruction is control-only; neither row owns a native resource set.
+#[allow(dead_code)]
 struct RenderedSetup {
     sender: SyncSender<EditorAudioEvent>,
     opened: Option<EditorAudioEvent>,
     observation: Option<EditorAudioEvent>,
 }
-pub(super) struct Harness {
+pub(crate) struct Harness {
     rendered_setup: Option<RenderedSetup>,
-    pub(super) service: Option<Service>,
-    pub(super) events: mpsc::Receiver<EditorAudioEvent>,
-    pub(super) backend: Arc<Mutex<Option<HeadlessBackend>>>,
-    pub(super) audio: Option<EditorAudio>,
-    pub(super) context: Option<AudioSourceContext>,
-    pub(super) observation: Arc<Mutex<Observation>>,
+    pub(crate) service: Option<Service>,
+    pub(crate) events: mpsc::Receiver<EditorAudioEvent>,
+    pub(crate) backend: Arc<Mutex<Option<HeadlessBackend>>>,
+    pub(crate) audio: Option<EditorAudio>,
+    pub(crate) context: Option<AudioSourceContext>,
+    pub(crate) observation: Arc<Mutex<Observation>>,
     wait: Duration,
 }
 impl Harness {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with_rate(48000)
     }
-    fn with_rate(default_rate: u32) -> Self {
+    pub(crate) fn with_rate(default_rate: u32) -> Self {
         Self::with_settings(default_rate, Duration::from_secs(10))
     }
-    fn with_wait(wait: Duration) -> Self {
+    pub(crate) fn with_wait(wait: Duration) -> Self {
         Self::with_settings(48000, wait)
     }
     fn with_settings(default_rate: u32, wait: Duration) -> Self {
@@ -850,11 +856,11 @@ impl Harness {
             wait,
         }
     }
-    pub(super) fn next(&mut self) -> Event {
+    pub(crate) fn next(&mut self) -> Event {
         self.next_event(false)
     }
 
-    pub(super) fn next_with_audio(&mut self) -> Event {
+    pub(crate) fn next_with_audio(&mut self) -> Event {
         self.next_event(true)
     }
 
@@ -938,7 +944,10 @@ impl Harness {
             std::thread::sleep(Duration::from_millis(1));
         }
     }
-    fn attach_rendered_setup(&mut self) -> (SyncSender<EditorAudioEvent>, [EditorAudioEvent; 2]) {
+    #[allow(dead_code)]
+    pub(crate) fn attach_rendered_setup(
+        &mut self,
+    ) -> (SyncSender<EditorAudioEvent>, [EditorAudioEvent; 2]) {
         let setup = self.rendered_setup.take().unwrap();
         // The worker can fill the original capacity-one channel after settle's final drain.
         // Transfer both actual events to the fixture's bounded handoff; replay only after the
@@ -948,13 +957,13 @@ impl Harness {
             [setup.opened.unwrap(), setup.observation.unwrap()],
         )
     }
-    pub(super) fn run(&mut self, request: Request) -> Event {
+    pub(crate) fn run(&mut self, request: Request) -> Event {
         self.service.as_ref().unwrap().submit(request).unwrap();
         let event = self.next();
         assert!(event.error.is_none(), "{:?}", event.error);
         event
     }
-    pub(super) fn run_verified_device_insert(&mut self, command: hex_project::Command) -> Event {
+    pub(crate) fn run_verified_device_insert(&mut self, command: hex_project::Command) -> Event {
         let staged = self.run(Request::Edit(command));
         assert!(!staged.request_complete);
         let mut applied = self.next_with_audio();
@@ -971,7 +980,7 @@ impl Harness {
         );
         applied
     }
-    pub(super) fn open(&mut self) {
+    pub(crate) fn open(&mut self) {
         let deadline = Instant::now() + self.wait;
         loop {
             match self.events.try_recv() {
@@ -994,7 +1003,7 @@ impl Harness {
             std::thread::sleep(Duration::from_millis(1));
         }
     }
-    pub(super) fn render(&self) -> [hex_engine::Frame; 64] {
+    pub(crate) fn render(&self) -> [hex_engine::Frame; 64] {
         let mut output = [[0.0; 2]; 64];
         let mut slot = self.backend.lock().unwrap();
         let backend = slot.as_mut().unwrap();
@@ -1012,7 +1021,7 @@ impl Harness {
         );
         output
     }
-    pub(super) fn applied(
+    pub(crate) fn applied(
         &self,
         context: AudioSourceContext,
     ) -> hex_audio::prepared::AppliedAudioSource {

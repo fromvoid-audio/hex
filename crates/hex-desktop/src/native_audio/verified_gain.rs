@@ -11,7 +11,7 @@ use hex_session::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct VerifiedKey {
+pub(crate) struct VerifiedKey {
     context: AudioSourceContext,
     preview: Option<VerifiedPreviewKey>,
 }
@@ -30,7 +30,7 @@ impl VerifiedKey {
     }
 }
 #[derive(Clone)]
-pub(super) enum VerifiedSource {
+pub(crate) enum VerifiedSource {
     Canonical(Arc<CanonicalAudioSourceSnapshot>),
     Gain(Arc<VerifiedTrackGainSource>),
     Device(Arc<VerifiedDeviceParameterSource>),
@@ -41,7 +41,7 @@ impl VerifiedSource {
     pub(super) fn canonical(&self) -> &CanonicalAudioSourceSnapshot {
         self.canonical_arc().as_ref()
     }
-    pub(super) fn canonical_arc(&self) -> &Arc<CanonicalAudioSourceSnapshot> {
+    pub(crate) fn canonical_arc(&self) -> &Arc<CanonicalAudioSourceSnapshot> {
         match self {
             Self::Canonical(source) => source,
             Self::Gain(source) => source.canonical(),
@@ -74,7 +74,7 @@ impl VerifiedSource {
             Self::Device(source) => source.terminal_sequence(),
         }
     }
-    pub(super) fn key(&self) -> VerifiedKey {
+    pub(crate) fn key(&self) -> VerifiedKey {
         VerifiedKey {
             context: self.context(),
             preview: match self {

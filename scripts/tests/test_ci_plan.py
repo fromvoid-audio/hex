@@ -1963,6 +1963,37 @@ class SingleRunFeatureTests(unittest.TestCase):
         self.assertEqual(scan_steps["module-tests-hex-plugin-scan"].argv,
                          ("cargo", "test", "-p", "hex-plugin-scan", "--locked", "--lib", "--bins", "--", "owner::"))
 
+    def test_hex_desktop_allocation_probe_decoupled_from_ui_test_support(self):
+        root, inventory = self.live()
+        desktop = next(p for p in inventory if p["name"] == "hex-desktop")
+        self.assertNotIn("hex-ui/ui-test-support", desktop["features"]["allocation-probe"])
+        self.assertIn("hex-ui/ui-test-support", desktop["features"]["ui-test-support"])
+        self.assertIn("allocation-probe", desktop["features"]["ui-test-support"])
+        # Non-UI hex-desktop module omits desktop-ui-tests while retaining lint coverage.
+        non_ui = "crates/hex-desktop/src/audio_policy.rs"
+        _, affected, _ = plan.classify([non_ui], inventory)
+        boundary = plan.boundary_selection(root, [non_ui], inventory, affected)
+        steps = {s.step_id: s for s in ci.planned_steps({
+            "scope": "rust", "affected_packages": affected, "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [non_ui]})}
+        self.assertIn("desktop-allocation-probe", steps)
+        self.assertNotIn("desktop-ui-tests", steps)
+        clippy_argv = steps["affected-feature-clippy"].argv
+        feature_arg = clippy_argv[clippy_argv.index("--features") + 1]
+        self.assertIn("hex-desktop/ui-test-support", feature_arg.split(","))
+        # Sampler UI module retains desktop-ui-tests scoped to sampler:: (not --all-targets).
+        ui_mod = "crates/hex-desktop/src/native_audio/tests/sampler.rs"
+        _, ui_affected, _ = plan.classify([ui_mod], inventory)
+        ui_boundary = plan.boundary_selection(root, [ui_mod], inventory, ui_affected)
+        ui_steps = {s.step_id: s for s in ci.planned_steps({
+            "scope": "rust", "affected_packages": ui_affected, "boundary": ui_boundary,
+            "cargo_inventory": inventory, "paths": [ui_mod]})}
+        self.assertEqual(
+            ui_steps["desktop-ui-tests"].argv,
+            ("cargo", "test", "-p", "hex-desktop", "--bins", "--features", "ui-test-support",
+             "--locked", "--", "native_audio::tests::sampler::"),
+        )
+
     def test_viewport_edit_stays_bounded_without_browser_or_sampler_explosion(self):
         root, inventory = self.live()
         path = "crates/hex-ui/src/editor/viewport.rs"
