@@ -72,6 +72,9 @@ impl PreparedNativeProcessor for PreparedFilter {
     fn supports_power_off(&self) -> bool {
         true
     }
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
     fn output_tail(&self) -> OutputTail {
         OutputTail::Unbounded
     }
