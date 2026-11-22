@@ -210,10 +210,10 @@ impl EditorView {
             Request::SaveNew(path) => Request::SaveNew(path.clone()),
             Request::SaveProjectAs {
                 path,
-                replace_existing,
+                extension_added,
             } => Request::SaveProjectAs {
                 path: path.clone(),
-                replace_existing: *replace_existing,
+                extension_added: *extension_added,
             },
             Request::SaveCurrentWithFormatUpgrade {
                 project_generation,

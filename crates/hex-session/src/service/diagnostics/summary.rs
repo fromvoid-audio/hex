@@ -2030,9 +2030,9 @@ pub(super) fn request(value: &Request) -> Description {
         }
         Request::SaveProjectAs {
             path,
-            replace_existing,
+            extension_added,
         } => {
-            describe!("save_project_as"; ["path_redacted_bytes" => path.as_os_str().len(), "replace_existing" => replace_existing]; omitted="")
+            describe!("save_project_as"; ["path_redacted_bytes" => path.as_os_str().len(), "extension_added" => extension_added]; omitted="")
         }
         Request::SaveCurrent => describe!("save_current"; []; omitted=""),
         Request::SaveCurrentWithFormatUpgrade {

@@ -39,7 +39,7 @@ fn stopped_save_capture_overflow_preserves_existing_file_and_retries_original() 
     h.service
         .submit(Request::SaveProjectAs {
             path: destination.clone(),
-            replace_existing: true,
+            extension_added: false,
         })
         .unwrap();
     let refused = h.next();
