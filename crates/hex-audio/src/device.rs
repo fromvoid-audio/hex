@@ -507,20 +507,14 @@ where
             }
             status.peak_left.store(peaks[0].to_bits(), Relaxed);
             status.peak_right.store(peaks[1].to_bits(), Relaxed);
+            let frames = data.len() / channels;
             let elapsed = start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
-            status
-                .cpu_meter
-                .record(elapsed, data.len() / channels, rate);
-            status.callback_max_ns.fetch_max(elapsed, Relaxed);
-            let deadline = (data.len() / channels) as u64 * 1_000_000_000 / u64::from(rate);
-            if elapsed > deadline {
-                status.deadline_misses.fetch_add(1, Relaxed);
-            }
+            let deadline = record_callback_timing(status, elapsed, frames, rate);
             if timing {
                 callback.trace_callback_timing(
                     elapsed,
-                    deadline,
-                    data.len() / channels,
+                    deadline.unwrap_or(0),
+                    frames,
                     start_interval_ns,
                 );
             }
@@ -839,6 +833,23 @@ pub(crate) fn headless_worker_output_with_outcomes(
         },
         crate::worker_fixture::HeadlessBackend::new(data, errors),
     ))
+}
+
+fn record_callback_timing(
+    status: &prepared::Status,
+    elapsed: u64,
+    frames: usize,
+    rate: u32,
+) -> Option<u64> {
+    status.cpu_meter.record(elapsed, frames, rate);
+    status.callback_max_ns.fetch_max(elapsed, Relaxed);
+    let deadline = crate::cpu_meter::callback_deadline_ns(frames, rate);
+    if let Some(deadline) = deadline
+        && elapsed > deadline
+    {
+        status.deadline_misses.fetch_add(1, Relaxed);
+    }
+    deadline
 }
 
 #[cfg(test)]
@@ -1447,6 +1458,35 @@ mod tests {
                 assert_eq!(output[..count], prefix);
             }
         }
+    }
+
+    #[test]
+    fn zero_frame_zero_rate_and_overflow_callbacks_do_not_record_spurious_deadline_misses() {
+        use std::sync::atomic::Ordering::Relaxed;
+
+        let (control, _callback) = prepared::channel(48_000).unwrap();
+        let status = &control.status;
+
+        assert_eq!(
+            super::record_callback_timing(status, 50_000, 0, 48_000),
+            None
+        );
+        assert_eq!(super::record_callback_timing(status, 50_000, 256, 0), None);
+        assert_eq!(
+            super::record_callback_timing(status, 50_000, usize::MAX, 48_000),
+            None
+        );
+        assert_eq!(status.deadline_misses.load(Relaxed), 0);
+
+        // Normal callback under deadline does not miss; over deadline increments once.
+        let deadline = super::record_callback_timing(status, 1_000_000, 480, 48_000);
+        assert_eq!(deadline, Some(10_000_000));
+        assert_eq!(status.deadline_misses.load(Relaxed), 0);
+        assert_eq!(
+            super::record_callback_timing(status, 10_000_001, 480, 48_000),
+            Some(10_000_000)
+        );
+        assert_eq!(status.deadline_misses.load(Relaxed), 1);
     }
 
     #[test]
