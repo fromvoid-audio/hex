@@ -78,3 +78,9 @@ opt-level = 1
 # Debug assertions and overflow checks remain enabled (Pulse #4636).
 [profile.dev.package.hex-warp]
 opt-level = 1
+
+# Keep CPU-bound DSP/rendering tests in hex-engine within the < 1s unit-test
+# budget without weakening fixtures. Debug assertions and overflow checks remain
+# enabled; release builds are unchanged (Pulse #8996).
+[profile.dev.package.hex-engine]
+opt-level = 1

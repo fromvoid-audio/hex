@@ -29,11 +29,20 @@ fn notes(next: &mut u64, track: usize, transposition: u8) -> Vec<MidiNoteSnapsho
         .collect()
 }
 
+#[allow(dead_code)]
 pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
+    project_with_tracks(TRACKS, loop_tempo)
+}
+
+#[allow(dead_code)]
+pub fn project_with_tracks(
+    track_count: usize,
+    loop_tempo: bool,
+) -> Result<Project, Box<dyn Error>> {
     let mut next = 2;
-    let mut tracks = Vec::with_capacity(TRACKS);
-    let mut cells = Vec::with_capacity(TRACKS / 2);
-    for index in 0..TRACKS {
+    let mut tracks = Vec::with_capacity(track_count);
+    let mut cells = Vec::with_capacity(track_count.div_ceil(2));
+    for index in 0..track_count {
         let track = next;
         let clip = next + 1;
         let instrument = next + 2;
