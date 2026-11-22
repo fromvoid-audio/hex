@@ -4043,6 +4043,7 @@ fn ruler_option_lock_edge_cases_focus_blur_deactivation_zoom_and_modals(cx: &mut
         )
     });
     let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+    visual.update(|window, _| window.activate_window());
     visual.run_until_parked();
 
     let render = |fixture: &mut WorkerUiFixture, visual: &mut VisualTestContext| {
@@ -4369,9 +4370,13 @@ fn ruler_option_lock_edge_cases_focus_blur_deactivation_zoom_and_modals(cx: &mut
     editor.read_with(&visual, |view, _| {
         assert!(!view.locked_play_start_drag_active());
         assert!(view.play_start_at_beginning);
-        assert!(view.valid_locked_play_start().is_none());
+        assert_eq!(
+            view.valid_locked_play_start().unwrap().frame,
+            committed_after_opt_release
+        );
     });
     assert!(visual.debug_bounds("transport-start-top").is_some());
+    assert!(visual.debug_bounds("locked-play-start-top").is_none());
     visual.simulate_mouse_up(ruler_at(0.45), MouseButton::Left, opt);
     visual.run_until_parked();
 
@@ -4381,6 +4386,9 @@ fn ruler_option_lock_edge_cases_focus_blur_deactivation_zoom_and_modals(cx: &mut
         point(px(lane.left + lane.width * 0.15), px(lane.top + 20.0)),
         Modifiers::default(),
     );
+    visual.run_until_parked();
+    let locked_top = visual.debug_bounds("locked-play-start-top").unwrap();
+    visual.simulate_click(locked_top.center(), Modifiers::default());
     visual.run_until_parked();
     let unlocked_frame = editor.read_with(&visual, |view, _| {
         assert!(view.valid_locked_play_start().is_none());
@@ -4447,24 +4455,37 @@ fn ruler_option_lock_edge_cases_focus_blur_deactivation_zoom_and_modals(cx: &mut
         });
     }
 
-    // context_menu guard
+    // context_menu guard (open menu off the ruler so clicking the ruler doesn't hit an item)
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
-            view.open_track_context_menu(ruler_at(0.2), Some(track), window, cx);
+            view.open_track_context_menu(
+                point(px(lane.left + 20.0), px(lane.top + 40.0)),
+                Some(track),
+                window,
+                cx,
+            );
+            let viewport = view.visible_viewport(view.state.as_ref().unwrap().timeline_frames);
+            assert!(!view.begin_ruler_locked_play_start_drag(
+                ruler_at(0.22),
+                opt,
+                viewport,
+                ruler,
+                cx,
+            ));
         });
     });
     visual.run_until_parked();
     visual.simulate_click(ruler_at(0.22), opt);
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
+        assert!(view.context_menu.is_none());
+        assert!(!view.edit_pending());
         assert_eq!(
             view.valid_locked_play_start().unwrap().frame,
             before_invalid
         );
         assert!(!view.scrub_active());
     });
-    visual.simulate_keystrokes("escape");
-    visual.run_until_parked();
 
     // locators.naming() guard
     let locator_selector: &'static str =
@@ -4475,6 +4496,12 @@ fn ruler_option_lock_edge_cases_focus_blur_deactivation_zoom_and_modals(cx: &mut
     visual.simulate_keystrokes("cmd-r");
     visual.run_until_parked();
     assert!(editor.read_with(&visual, |view, _| view.locators.naming()));
+    editor.update(&mut visual, |view, cx| {
+        let viewport = view.visible_viewport(view.state.as_ref().unwrap().timeline_frames);
+        assert!(
+            !view.begin_ruler_locked_play_start_drag(ruler_at(0.22), opt, viewport, ruler, cx,)
+        );
+    });
     visual.simulate_click(ruler_at(0.22), opt);
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
@@ -4487,6 +4514,12 @@ fn ruler_option_lock_edge_cases_focus_blur_deactivation_zoom_and_modals(cx: &mut
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| assert!(!view.locators.naming()));
+    let rename_deadline = Instant::now() + Duration::from_secs(2);
+    while editor.read_with(&visual, |view, _| view.edit_pending()) {
+        assert!(Instant::now() < rename_deadline, "locator rename timed out");
+        render(&mut fixture, &mut visual);
+        std::thread::sleep(Duration::from_millis(5));
+    }
 
     // Plain ruler press activates scrub without unlocking/replacing locked_play_start.
     visual.simulate_mouse_down(ruler_at(0.35), MouseButton::Left, Modifiers::default());
