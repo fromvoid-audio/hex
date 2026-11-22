@@ -120,7 +120,7 @@ pub(super) fn mode_buttons(
         let click_focus = focus.clone();
         row = row.child(
             hex_widgets::device_segment(theme::text(target.label()), style)
-                .id(selector.clone())
+                .id(gpui::ElementId::Name(selector.clone().into()))
                 .debug_selector(move || selector.clone())
                 .w_auto()
                 .h_full()
@@ -135,6 +135,10 @@ pub(super) fn mode_buttons(
                     cx.notify();
                 }))
                 .on_key_down(cx.listener(move |view, event: &KeyDownEvent, window, cx| {
+                    let modifiers = event.keystroke.modifiers;
+                    if modifiers.control || modifiers.alt || modifiers.platform || modifiers.shift {
+                        return;
+                    }
                     let next = match event.keystroke.key.as_str() {
                         "left" => (index + Mode::ALL.len() - 1) % Mode::ALL.len(),
                         "right" => (index + 1) % Mode::ALL.len(),
