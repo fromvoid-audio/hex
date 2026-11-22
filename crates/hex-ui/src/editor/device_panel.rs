@@ -676,6 +676,65 @@ pub(super) fn enqueue_return_edit(
     finalize_controls(view, cx) && view.enqueue_device_barrier(Request::Edit(command))
 }
 
+fn clear_owner_state(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    full_reset: bool,
+    next_owner: Option<DevicePanelOwner>,
+) {
+    if full_reset {
+        cancel_all_controls(view, cx);
+        cancel_send_controls(view, cx);
+        operator_panel::preview::cancel_all(view, cx);
+        view.device_panel.operator_preview_inventory = None;
+    } else {
+        operator_panel::preview::cancel_interactions(view, cx);
+        operator_panel::envelope::cancel_all(view, cx);
+        operator_panel::harmonics::retire(view, cx, |_| false);
+        retire_removed_eq8_graphs(view, cx, &HashSet::new());
+    }
+    let delay_panels: Vec<_> = view.device_panel.delay_panels.drain().collect();
+    for (_, panel) in delay_panels {
+        panel.cancel(cx);
+    }
+    view.device_panel.controls.clear();
+    view.device_panel.views.clear();
+    view.device_panel.pending_values.clear();
+    view.device_panel.operator_pages.clear();
+    view.device_panel.operator_navigation_focus.clear();
+    view.device_panel.operator_section_focus.clear();
+    view.device_panel.eq8_panels.clear();
+    view.device_panel.eq_panels.clear();
+    view.device_panel.eq8_audition_toggles.clear();
+    view.device_panel.eq8_graphs.clear();
+    view.device_panel.eq8_responses.clear();
+    view.device_panel.saturator_previews.clear();
+    view.device_panel.compressor_previews.clear();
+    view.device_panel.auto_pan_previews.clear();
+    view.device_panel.reverb_previews.clear();
+    view.device_panel.overdrive_previews.clear();
+    view.device_panel.rattle_previews.clear();
+    view.device_panel.meter_states.clear();
+    view.device_panel.hovered_meter = None;
+    view.device_panel.eq8_graph_gestures.clear();
+    view.device_panel.spectrum_results.clear();
+    view.device_panel.chain_window = Default::default();
+    view.device_panel.parameter_rows.clear();
+    view.device_panel.owner = next_owner;
+    view.device_panel.drag_selection = None;
+    view.device_panel.select_only(None);
+    if full_reset {
+        if let Some(audio) = view.audio.as_mut() {
+            let _ = audio.control.spectrum_clear();
+            let _ = audio.control.audition_cancel();
+        }
+        view.device_panel.collapsed.clear();
+        view.device_panel.generation = view.project_generation;
+    } else {
+        view.device_panel.message = None;
+    }
+}
+
 pub(super) fn view(
     view: &mut EditorView,
     window: Option<&Window>,
@@ -685,42 +744,7 @@ pub(super) fn view(
     if view.device_panel.generation != view.project_generation {
         // Project replacement retires the worker gesture. Drop old subscriptions
         // before stale controls can send events into the replacement project.
-        cancel_all_controls(view, cx);
-        cancel_send_controls(view, cx);
-        view.device_panel.controls.clear();
-        view.device_panel.views.clear();
-        view.device_panel.pending_values.clear();
-        view.device_panel.operator_pages.clear();
-        view.device_panel.operator_navigation_focus.clear();
-        view.device_panel.operator_section_focus.clear();
-        operator_panel::preview::cancel_all(view, cx);
-        view.device_panel.operator_preview_inventory = None;
-        operator_panel::envelope::cancel_all(view, cx);
-        operator_panel::harmonics::retire(view, cx, |_| false);
-        view.device_panel.eq8_panels.clear();
-        view.device_panel.eq_panels.clear();
-        view.device_panel.delay_panels.clear();
-        view.device_panel.eq8_audition_toggles.clear();
-        view.device_panel.eq8_graphs.clear();
-        view.device_panel.eq8_responses.clear();
-        view.device_panel.saturator_previews.clear();
-        view.device_panel.compressor_previews.clear();
-        view.device_panel.auto_pan_previews.clear();
-        view.device_panel.reverb_previews.clear();
-        view.device_panel.overdrive_previews.clear();
-        view.device_panel.eq8_graph_gestures.clear();
-        view.device_panel.spectrum_results.clear();
-        if let Some(audio) = view.audio.as_mut() {
-            let _ = audio.control.spectrum_clear();
-            let _ = audio.control.audition_cancel();
-        }
-        view.device_panel.chain_window = Default::default();
-        view.device_panel.collapsed.clear();
-        view.device_panel.parameter_rows.clear();
-        view.device_panel.owner = None;
-        view.device_panel.drag_selection = None;
-        view.device_panel.select_only(None);
-        view.device_panel.generation = view.project_generation;
+        clear_owner_state(view, cx, true, None);
     }
     reconcile_eq_spectrum(view);
     sampler_overview::reconcile_cursor(view);
@@ -818,34 +842,7 @@ pub(super) fn view(
         if let Some(audio) = view.audio.as_mut() {
             let _ = audio.control.spectrum_clear();
         }
-        view.device_panel.controls.clear();
-        view.device_panel.views.clear();
-        view.device_panel.pending_values.clear();
-        view.device_panel.operator_pages.clear();
-        view.device_panel.operator_navigation_focus.clear();
-        view.device_panel.operator_section_focus.clear();
-        operator_panel::preview::cancel_interactions(view, cx);
-        operator_panel::envelope::cancel_all(view, cx);
-        operator_panel::harmonics::retire(view, cx, |_| false);
-        view.device_panel.eq8_panels.clear();
-        view.device_panel.eq_panels.clear();
-        view.device_panel.delay_panels.clear();
-        view.device_panel.eq8_audition_toggles.clear();
-        view.device_panel.eq8_graphs.clear();
-        view.device_panel.eq8_responses.clear();
-        view.device_panel.saturator_previews.clear();
-        view.device_panel.compressor_previews.clear();
-        view.device_panel.auto_pan_previews.clear();
-        view.device_panel.reverb_previews.clear();
-        view.device_panel.overdrive_previews.clear();
-        view.device_panel.eq8_graph_gestures.clear();
-        view.device_panel.spectrum_results.clear();
-        view.device_panel.chain_window = Default::default();
-        view.device_panel.parameter_rows.clear();
-        view.device_panel.owner = desired_owner;
-        view.device_panel.drag_selection = None;
-        view.device_panel.select_only(None);
-        view.device_panel.message = None;
+        clear_owner_state(view, cx, false, desired_owner);
     }
     match view.device_panel.owner {
         Some(owner) => render_owner(view, window, cx, &state, owner),
@@ -1126,9 +1123,18 @@ pub(super) fn retire_removed_eq8_graphs(
     cx: &mut Context<EditorView>,
     alive: &HashSet<DeviceId>,
 ) {
-    view.device_panel
+    let stale_eq: Vec<_> = view
+        .device_panel
         .eq_panels
-        .retain(|device, _| alive.contains(device));
+        .keys()
+        .filter(|device| !alive.contains(device))
+        .copied()
+        .collect();
+    for device in stale_eq {
+        if let Some(panel) = view.device_panel.eq_panels.remove(&device) {
+            panel.cancel(cx);
+        }
+    }
     let stale: Vec<_> = view
         .device_panel
         .eq8_graphs
@@ -4419,3 +4425,207 @@ mod header_style_unit_tests {
 
 #[cfg(all(test, feature = "ui-test-support"))]
 pub(in crate::editor) mod tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod owner_reset_tests {
+    use super::*;
+    use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px, size};
+    use hex_engine::{NativeDeviceClass, default_native_device_state_for_class};
+    use hex_lattice_contract::DeviceTypeId;
+    use hex_project::{Command, Editor, Project};
+
+    fn effect_state(type_id: &str) -> NativeDeviceState {
+        default_native_device_state_for_class(
+            NativeDeviceClass::Effect,
+            DeviceTypeId::new(type_id).unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn setup_window(
+        cx: &mut TestAppContext,
+    ) -> (
+        gpui::AnyWindowHandle,
+        gpui::Entity<EditorView>,
+        [hex_project::TrackId; 2],
+        DeviceId,
+        DeviceId,
+        DeviceId,
+    ) {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        editor
+            .execute(Command::AddTrack { name: "a".into() })
+            .unwrap();
+        editor
+            .execute(Command::AddTrack { name: "b".into() })
+            .unwrap();
+        let tracks = [
+            editor.project().tracks()[0].id(),
+            editor.project().tracks()[1].id(),
+        ];
+        for id in ["hex.rattle", "hex.eq", "hex.eq8"] {
+            editor
+                .execute(Command::InsertDevice {
+                    track: tracks[0],
+                    before: None,
+                    state: effect_state(id),
+                })
+                .unwrap();
+        }
+        let devices = editor.project().track(tracks[0]).unwrap().devices();
+        let (rattle, eq, eq8) = (devices[0].id(), devices[1].id(), devices[2].id());
+        // Add one node to EQ so we have a draggable node on the EQ response graph.
+        let mut eq_state = hex_devices::eq::EqState::decode(devices[1].state()).unwrap();
+        let node_id = hex_devices::eq::NodeId::new(1).unwrap();
+        eq_state
+            .add(hex_devices::eq::Node::new(node_id, 1_000.0, 0.0, 0).unwrap())
+            .unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device: eq,
+                state: eq_state.encode().unwrap(),
+            })
+            .unwrap();
+        let project = editor.project().clone();
+        let (handle, view) = crate::editor::rendered_test_fixture::editor_window(
+            cx,
+            project,
+            std::sync::Arc::default(),
+        );
+        (handle, view, tracks, rattle, eq, eq8)
+    }
+
+    fn start_graph_drag(
+        visual: &mut VisualTestContext,
+        graph: &gpui::Entity<hex_widgets::ResponseGraph>,
+        node_id: u32,
+    ) {
+        let (bounds, position) = graph.read_with(visual, |g, _| {
+            (
+                g.plot_bounds().expect("painted plot bounds"),
+                g.node_position(node_id).expect("draggable node position"),
+            )
+        });
+        let target = point(
+            bounds.origin.x + bounds.size.width * position[0],
+            bounds.origin.y + bounds.size.height * (1.0 - position[1]),
+        );
+        visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(target.x + px(8.0), target.y),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        assert!(
+            graph.read_with(visual, |g, _| g.is_dragging()),
+            "expected graph node {node_id} drag to begin"
+        );
+    }
+
+    #[gpui::test]
+    fn owner_switch_and_project_replacement_clear_rattle_meter_hover_and_cancel_graph_captures(
+        cx: &mut TestAppContext,
+    ) {
+        let (handle, editor, tracks, rattle, eq, eq8) = setup_window(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(1800.0), px(900.0)));
+        editor.update(&mut visual, |view, cx| {
+            view.selected_track = Some(tracks[0]);
+            view.device_panel_active = true;
+            view.clip_view_open = true;
+            view.mode = crate::editor::EditorMode::Arrangement;
+            cx.notify();
+        });
+        visual.run_until_parked();
+
+        // Populate meter/hover state and verify rattle preview + EQ/EQ8 graphs exist.
+        let (eq_graph, eq8_graph) = editor.update(&mut visual, |view, _| {
+            view.device_panel
+                .meter_states
+                .insert(rattle, device_meter::MeterState::default());
+            view.device_panel.hovered_meter = Some(rattle);
+            assert!(view.device_panel.rattle_previews.contains_key(&rattle));
+            assert!(view.device_panel.eq_panels.contains_key(&eq));
+            assert!(view.device_panel.eq8_graphs.contains_key(&eq8));
+            (
+                eq_panel::graph_for_test(view, eq),
+                view.device_panel.eq8_graphs[&eq8].entity.clone(),
+            )
+        });
+
+        // Start an active drag on the EQ graph, cancel the device gesture so owner switch is
+        // allowed to proceed, and verify owner switch clears caches and cancels the graph capture.
+        start_graph_drag(&mut visual, &eq_graph, 1);
+        editor.update(&mut visual, |view, cx| {
+            view.device_gesture.reset();
+            view.selected_track = Some(tracks[1]);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(view.device_panel.rattle_previews.is_empty());
+            assert!(view.device_panel.meter_states.is_empty());
+            assert!(view.device_panel.hovered_meter.is_none());
+            assert!(view.device_panel.eq_panels.is_empty());
+            assert!(view.device_panel.eq8_graphs.is_empty());
+        });
+        assert!(!eq_graph.read_with(&visual, |g, _| g.is_dragging()));
+
+        // Switch back to Track 0, start a drag on EQ8 graph, and test project generation change.
+        editor.update(&mut visual, |view, cx| {
+            view.selected_track = Some(tracks[0]);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let (eq_graph_2, eq8_graph_2) = editor.update(&mut visual, |view, _| {
+            view.device_panel
+                .meter_states
+                .insert(rattle, device_meter::MeterState::default());
+            view.device_panel.hovered_meter = Some(rattle);
+            assert!(view.device_panel.rattle_previews.contains_key(&rattle));
+            (
+                eq_panel::graph_for_test(view, eq),
+                view.device_panel.eq8_graphs[&eq8].entity.clone(),
+            )
+        });
+        let eq8_node = (0..8u32)
+            .find(|id| eq8_graph_2.read_with(&visual, |g, _| g.node_position(*id).is_some()))
+            .expect("enabled eq8 band");
+        start_graph_drag(&mut visual, &eq8_graph_2, eq8_node);
+        editor.update(&mut visual, |view, cx| {
+            view.project_generation += 1;
+            view.selected_track = None;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(view.device_panel.rattle_previews.is_empty());
+            assert!(view.device_panel.meter_states.is_empty());
+            assert!(view.device_panel.hovered_meter.is_none());
+        });
+        assert!(!eq8_graph_2.read_with(&visual, |g, _| g.is_dragging()));
+        let _ = (eq8_graph, eq_graph_2);
+    }
+
+    #[gpui::test]
+    fn retire_removed_eq8_graphs_cancels_removed_eq_panel_capture(cx: &mut TestAppContext) {
+        let (handle, editor, tracks, _rattle, eq, _eq8) = setup_window(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(1800.0), px(900.0)));
+        editor.update(&mut visual, |view, cx| {
+            view.selected_track = Some(tracks[0]);
+            view.device_panel_active = true;
+            view.clip_view_open = true;
+            view.mode = crate::editor::EditorMode::Arrangement;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let eq_graph = editor.read_with(&visual, |view, _| eq_panel::graph_for_test(view, eq));
+        start_graph_drag(&mut visual, &eq_graph, 1);
+        editor.update(&mut visual, |view, cx| {
+            retire_removed_eq8_graphs(view, cx, &HashSet::new());
+            assert!(view.device_panel.eq_panels.is_empty());
+        });
+        assert!(!eq_graph.read_with(&visual, |g, _| g.is_dragging()));
+    }
+}

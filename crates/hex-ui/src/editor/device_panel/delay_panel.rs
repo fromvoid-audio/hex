@@ -16,6 +16,12 @@ pub(super) struct Panel {
     gesture: Option<GestureKey>,
     preview: Option<(NativeDeviceState, u32, Option<u32>)>,
 }
+
+impl Panel {
+    pub(super) fn cancel(&self, cx: &mut Context<EditorView>) {
+        self.graph.update(cx, |graph, cx| graph.cancel(cx));
+    }
+}
 fn row() -> Div {
     div()
         .flex()
