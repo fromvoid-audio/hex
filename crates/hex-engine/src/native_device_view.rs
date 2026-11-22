@@ -494,17 +494,14 @@ mod tests {
     fn catalog_and_batched_values_use_registered_metadata_and_current_state() {
         let catalog = native_device_catalog().unwrap();
         assert_eq!(catalog.len(), 12);
-        let utility = catalog
-            .iter()
-            .find(|entry| entry.name == "utility")
-            .unwrap();
+        let utility = catalog.iter().find(|entry| entry.name == "mix").unwrap();
         let original = crate::default_native_device_state(utility.type_id).unwrap();
         let first = utility.parameters[0];
         let changed =
             crate::patch_native_device_parameter(&original, first.id, ParameterValue::Float(0.25))
                 .unwrap();
         let view = native_device_view(&changed).unwrap();
-        assert_eq!(view.name, "utility");
+        assert_eq!(view.name, "mix");
         assert_eq!(view.parameters.len(), utility.parameters.len());
         assert_eq!(view.parameters[0].value, ParameterValue::Float(0.25));
         assert_eq!(
@@ -546,11 +543,11 @@ mod tests {
         assert_eq!(view.parameters.len(), 6);
         let auto_pan = catalog
             .iter()
-            .find(|entry| entry.name == "auto pan")
+            .find(|entry| entry.name == "pan")
             .expect("registered Auto Pan appears in the generic effect catalog");
         let state = crate::default_native_device_state(auto_pan.type_id).unwrap();
         let view = native_device_view(&state).unwrap();
-        assert_eq!(view.name, "auto pan");
+        assert_eq!(view.name, "pan");
         assert_eq!(view.parameters.len(), 4);
         assert_eq!(
             view.parameters[3].descriptor.id,
@@ -671,12 +668,12 @@ mod tests {
             )
         );
         assert!(effects.iter().any(|entry| entry.name == "rattle"));
-        assert!(effects.iter().any(|entry| entry.name == "utility"));
+        assert!(effects.iter().any(|entry| entry.name == "mix"));
         assert!(effects.iter().any(|entry| entry.name == "eq"));
         assert!(effects.iter().any(|entry| entry.name == "saturator"));
         assert!(effects.iter().any(|entry| entry.name == "compressor"));
         assert!(effects.iter().any(|entry| entry.name == "gate"));
-        assert!(effects.iter().any(|entry| entry.name == "auto pan"));
+        assert!(effects.iter().any(|entry| entry.name == "pan"));
         assert!(effects.iter().any(|entry| entry.name == "reverb"));
         assert!(effects.iter().any(|entry| entry.name == "overdrive"));
         assert!(effects.iter().any(|entry| entry.name == "delay"));
@@ -855,7 +852,7 @@ mod tests {
             native_device_view_for_class(NativeDeviceClass::Effect, &effect_state)
                 .unwrap()
                 .name,
-            "utility"
+            "mix"
         );
     }
 

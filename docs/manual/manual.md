@@ -561,8 +561,8 @@ and are retained when saving, reopening and rendering the project. clicking a
 control without editing it leaves automation running. the red indicator stays
 visible until the lane is cleared.
 
-supported device controls are utility's parameters, saturator's four parameters,
-auto pan's amount, rate, phase and waveform, and rattle's drive. native effects on tracks, main
+supported device controls are mix's parameters, saturator's four parameters,
+pan's amount, rate, phase and waveform, and rattle's drive. native effects on tracks, main
 and returns also offer host **input gain** and **output gain** lanes. instrument
 and source-owned effect lanes, other device controls and vst lanes are not yet
 available. recording device movements and shared modulator assignments are not

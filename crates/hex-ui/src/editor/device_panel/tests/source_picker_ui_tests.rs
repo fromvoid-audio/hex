@@ -2350,7 +2350,7 @@ fn source_picker_adds_first_utility(cx: &mut TestAppContext, from_contributor: b
             .iter()
             .position(|item| {
                 theme::text(crate::editor::context_menu::context_item_label(item))
-                    .contains("add utility to source")
+                    .contains("add mix to source")
             })
             .expect("source add action");
         let EditorContextAction::SourcePicker(choice) = &menu.items[index].action else {
@@ -2540,7 +2540,7 @@ fn source_picker_removes_sole_utility(cx: &mut TestAppContext, from_contributor:
             .iter()
             .position(|item| {
                 theme::text(crate::editor::context_menu::context_item_label(item))
-                    .contains("remove utility from source")
+                    .contains("remove mix from source")
             })
             .expect("source remove action");
         let EditorContextAction::SourcePicker(choice) = &menu.items[index].action else {
@@ -2779,7 +2779,7 @@ fn source_picker_appends_utility(cx: &mut TestAppContext, from_contributor: bool
             .iter()
             .position(|item| {
                 theme::text(crate::editor::context_menu::context_item_label(item))
-                    .contains("add utility to source")
+                    .contains("add mix to source")
             })
             .expect("append action");
         let EditorContextAction::SourcePicker(choice) = &menu.items[index].action else {
@@ -2932,7 +2932,7 @@ fn source_picker_hides_utility_append_for_other_effect_types(cx: &mut TestAppCon
         let menu = view.context_menu.as_ref().unwrap();
         assert!(menu.items.iter().all(|item| {
             !theme::text(crate::editor::context_menu::context_item_label(item))
-                .contains("add utility to source")
+                .contains("add mix to source")
         }));
     });
 }
@@ -3027,7 +3027,7 @@ fn source_picker_removes_shared_utility(
     let picker = visual.debug_bounds("device-source-picker").unwrap();
     visual.simulate_click(picker.center(), Modifiers::default());
     visual.run_until_parked();
-    let label = format!("remove utility {} from source", target_index + 1);
+    let label = format!("remove mix {} from source", target_index + 1);
     let index = editor.read_with(&visual, |view, _| {
         view.context_menu
             .as_ref()
@@ -3147,10 +3147,10 @@ fn source_picker_does_not_offer_subtree_removal(cx: &mut TestAppContext) {
                 theme::text(crate::editor::context_menu::context_item_label(item)).contains(text)
             })
         };
-        assert!(!contains("remove utility 1 from source"));
-        assert!(contains("remove utility 2 from source"));
-        assert!(!contains("move utility 1 later"));
-        assert!(!contains("move utility 2 earlier"));
+        assert!(!contains("remove mix 1 from source"));
+        assert!(contains("remove mix 2 from source"));
+        assert!(!contains("move mix 1 later"));
+        assert!(!contains("move mix 2 earlier"));
     });
 }
 
@@ -3232,9 +3232,9 @@ fn source_picker_moves_shared_utility(cx: &mut TestAppContext, earlier: bool) {
     visual.simulate_click(picker.center(), Modifiers::default());
     visual.run_until_parked();
     let label = if earlier {
-        "move utility 2 earlier"
+        "move mix 2 earlier"
     } else {
-        "move utility 1 later"
+        "move mix 1 later"
     };
     let (choice, index) = editor.read_with(&visual, |view, _| {
         let menu = view.context_menu.as_ref().unwrap();
