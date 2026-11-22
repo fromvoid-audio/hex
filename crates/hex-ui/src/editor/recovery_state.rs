@@ -12,6 +12,7 @@ pub(super) enum DeferredEditKind {
     TimeDuplicate,
     LoopRegion,
     ClipPlayStart,
+    MixerControl,
 }
 
 pub(super) struct DeferredGraphEdit {
@@ -36,6 +37,7 @@ struct Attempt {
     prepared_seek: Option<u64>,
     prepared_revision: Option<u64>,
     clip_play_start: Option<(AudioSourceContext, hex_project::ClipId)>,
+    mixer_edit: Option<AudioSourceContext>,
 }
 
 impl RecoveryState {
@@ -43,6 +45,12 @@ impl RecoveryState {
         self.deferred_edit
             .as_ref()
             .is_some_and(|edit| edit.kind == DeferredEditKind::ClipPlayStart)
+    }
+
+    pub(super) fn holds_mixer_edit(&self) -> bool {
+        self.deferred_edit
+            .as_ref()
+            .is_some_and(|edit| edit.kind == DeferredEditKind::MixerControl)
     }
 
     pub(super) fn bind_clip_play_start(
@@ -63,6 +71,18 @@ impl RecoveryState {
         self.active
             .as_ref()
             .is_some_and(|attempt| attempt.clip_play_start == Some((context, clip)))
+    }
+
+    pub(super) fn bind_mixer_edit(&mut self, context: AudioSourceContext) {
+        if let Some(attempt) = self.active.as_mut() {
+            attempt.mixer_edit = Some(context);
+        }
+    }
+
+    pub(super) fn admits_mixer_edit(&self, context: AudioSourceContext) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|attempt| attempt.mixer_edit == Some(context))
     }
 
     pub(super) fn holds_loop_region(&self) -> bool {
@@ -91,6 +111,7 @@ impl RecoveryState {
             prepared_seek: None,
             prepared_revision: None,
             clip_play_start: None,
+            mixer_edit: None,
         });
         Ok(generation)
     }

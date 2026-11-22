@@ -1,15 +1,22 @@
 //! Track-header bindings for the shared numeric widget; canonical gain stays on the actor.
-use super::{EditorView, device_panel};
+use super::{
+    EditorView, device_panel,
+    pending_edit::{Disposition, Receipt},
+};
 use crate::theme;
 use gpui::{Context, Div, Entity, Subscription, div, prelude::*, px};
+use hex_engine::AudioSourceContext;
 use hex_lattice_contract::ParameterValue;
-use hex_project::{ReturnId, ReturnTrack, Track, TrackId};
-use hex_session::device_gesture::GestureTarget;
+use hex_project::{Command, RelativeTrackGains, ReturnId, ReturnTrack, Track, TrackId};
+use hex_session::{
+    device_gesture::GestureTarget,
+    service::{Event, Request},
+};
 use hex_widgets::{
     NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
     NumericControlPresentation, NumericEventPhase, NumericScale, NumericSpec,
 };
-use std::{cell::Cell, collections::BTreeMap, rc::Rc};
+use std::{cell::Cell, collections::BTreeMap, rc::Rc, sync::atomic::Ordering::Acquire};
 
 #[cfg(all(test, feature = "ui-test-support"))]
 pub(super) mod tests;
@@ -20,9 +27,160 @@ pub(super) struct Controls {
     revision: Option<u64>,
     bindings: BTreeMap<TrackId, Binding>,
     mixer: BTreeMap<MixerKey, Binding>,
+    pending_recovery: Option<PendingRecovery>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ControlAnchor {
+    TrackVolume(TrackId),
+    Mixer(MixerKey),
+}
+
+#[derive(Clone, PartialEq)]
+enum RecoveryTarget {
+    TrackGain(TrackId),
+    TrackGains(Box<RelativeTrackGains>),
+    MainGain,
+    ReturnGain(ReturnId),
+    TrackBalance(TrackId),
+}
+
+impl RecoveryTarget {
+    fn anchor(&self) -> ControlAnchor {
+        match self {
+            Self::TrackGain(track) => ControlAnchor::TrackVolume(*track),
+            Self::TrackGains(group) => ControlAnchor::TrackVolume(group.anchor()),
+            Self::MainGain => ControlAnchor::Mixer(MixerKey::MainGain),
+            Self::ReturnGain(id) => ControlAnchor::Mixer(MixerKey::ReturnGain(*id)),
+            Self::TrackBalance(track) => ControlAnchor::Mixer(MixerKey::Balance(*track)),
+        }
+    }
+
+    fn is_pan(&self) -> bool {
+        matches!(self, Self::TrackBalance(_))
+    }
+
+    fn references_track(&self, track: TrackId) -> bool {
+        match self {
+            Self::TrackGain(id) | Self::TrackBalance(id) => *id == track,
+            Self::TrackGains(group) => group.starting_gain(track).is_some(),
+            Self::MainGain | Self::ReturnGain(_) => false,
+        }
+    }
+
+    fn displayed_track_gain(&self, track: TrackId, value: f32) -> Option<f32> {
+        match self {
+            Self::TrackGain(id) if *id == track => Some(value),
+            Self::TrackGains(group) => group.gain_for(track, value).ok().flatten(),
+            _ => None,
+        }
+    }
+
+    fn displayed_mixer_value(&self, key: MixerKey, value: f32) -> Option<f32> {
+        match (self, key) {
+            (Self::MainGain, MixerKey::MainGain) => Some(value),
+            (Self::ReturnGain(id), MixerKey::ReturnGain(other)) if *id == other => Some(value),
+            (Self::TrackBalance(id), MixerKey::Balance(other)) if *id == other => Some(value),
+            _ => None,
+        }
+    }
+
+    fn command(&self, project: &hex_project::Project, value: f32) -> Result<Command, &'static str> {
+        match self {
+            Self::TrackGain(track) => {
+                if project.track(*track).is_none_or(automated) {
+                    return Err("automation owns gain · edit or clear the gain lane");
+                }
+                Ok(Command::Gain {
+                    track: *track,
+                    gain: value,
+                })
+            }
+            Self::TrackGains(group) => group.command(project, value).map_err(|error| error.0),
+            Self::MainGain => Ok(Command::MasterGain { gain: value }),
+            Self::ReturnGain(return_track) => {
+                if !project
+                    .return_tracks()
+                    .iter()
+                    .any(|track| track.id() == *return_track)
+                {
+                    return Err("return track no longer exists");
+                }
+                Ok(Command::ReturnGain {
+                    return_track: *return_track,
+                    gain: value,
+                })
+            }
+            Self::TrackBalance(track) => {
+                if project.track(*track).is_none() {
+                    return Err("track no longer exists");
+                }
+                Ok(Command::Balance {
+                    track: *track,
+                    balance: value,
+                })
+            }
+        }
+    }
+
+    fn matches_request(&self, request: &Request) -> bool {
+        match (self, request) {
+            (Self::TrackGain(id), Request::Edit(Command::Gain { track, .. })) => id == track,
+            (Self::TrackGains(_), Request::Edit(Command::SetTrackGains { .. })) => true,
+            (Self::MainGain, Request::Edit(Command::MasterGain { .. })) => true,
+            (Self::ReturnGain(id), Request::Edit(Command::ReturnGain { return_track, .. })) => {
+                id == return_track
+            }
+            (Self::TrackBalance(id), Request::Edit(Command::Balance { track, .. })) => id == track,
+            _ => false,
+        }
+    }
+}
+
+struct PendingRecovery {
+    receipt: Option<Receipt>,
+    context: AudioSourceContext,
+    target: RecoveryTarget,
+    value: f32,
 }
 
 impl Controls {
+    pub(super) fn displayed_track_gain(&self, generation: u64, track: TrackId) -> Option<f32> {
+        let pending = self.pending_recovery.as_ref()?;
+        if pending.context.project_generation != generation {
+            return None;
+        }
+        pending.target.displayed_track_gain(track, pending.value)
+    }
+
+    fn displayed_mixer_value(&self, generation: u64, key: MixerKey) -> Option<f32> {
+        let pending = self.pending_recovery.as_ref()?;
+        if pending.context.project_generation != generation {
+            return None;
+        }
+        pending.target.displayed_mixer_value(key, pending.value)
+    }
+
+    pub(super) fn has_queued_recovery(&self) -> bool {
+        self.pending_recovery
+            .as_ref()
+            .is_some_and(|pending| pending.receipt.as_ref().is_some_and(Receipt::is_queued))
+    }
+
+    pub(super) fn has_committed_recovery(&self) -> bool {
+        self.pending_recovery
+            .as_ref()
+            .is_some_and(|pending| pending.receipt.is_some())
+    }
+
+    pub(super) fn retire_deferred_recovery(&mut self) -> bool {
+        if self.has_queued_recovery() {
+            self.pending_recovery = None;
+            true
+        } else {
+            false
+        }
+    }
     /// Keep an unfinished numeric draft attached to its original track when
     /// the Console selection changes before the draft can be completed.
     pub(super) fn pending_track_gain(&self, generation: u64, cx: &gpui::App) -> Option<TrackId> {
@@ -138,6 +296,15 @@ pub(super) fn retire_stale(view: &mut EditorView, cx: &mut Context<EditorView>) 
     {
         return;
     }
+    if view.track_gain_controls.generation != view.project_generation
+        && view
+            .track_gain_controls
+            .pending_recovery
+            .as_ref()
+            .is_some_and(|pending| pending.context.project_generation != view.project_generation)
+    {
+        view.track_gain_controls.pending_recovery = None;
+    }
     let stale = view
         .track_gain_controls
         .bindings
@@ -149,6 +316,16 @@ pub(super) fn retire_stale(view: &mut EditorView, cx: &mut Context<EditorView>) 
         })
         .collect::<Vec<_>>();
     for track in stale {
+        if view
+            .track_gain_controls
+            .pending_recovery
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.receipt.is_none() && pending.target.references_track(track)
+            })
+        {
+            view.track_gain_controls.pending_recovery = None;
+        }
         if let Some(binding) = view.track_gain_controls.bindings.remove(&track) {
             if device_panel::owns_numeric_gesture(
                 view,
@@ -171,6 +348,16 @@ pub(super) fn retire_stale(view: &mut EditorView, cx: &mut Context<EditorView>) 
         })
         .collect::<Vec<_>>();
     for key in stale {
+        if view
+            .track_gain_controls
+            .pending_recovery
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.receipt.is_none() && pending.target.anchor() == ControlAnchor::Mixer(key)
+            })
+        {
+            view.track_gain_controls.pending_recovery = None;
+        }
         if let Some(binding) = view.track_gain_controls.mixer.remove(&key) {
             if device_panel::owns_numeric_gesture(view, key.target(), &binding.lease) {
                 let _ = view.cancel_device_gesture();
@@ -256,9 +443,6 @@ fn dispatch_track_gain(
 }
 
 fn gain_recovery_blocker(view: &mut EditorView) -> Option<&'static str> {
-    if view.has_degraded_vst3_output() {
-        return Some("a plug-in failed · restart audio before changing volume");
-    }
     if view.device_gesture.is_recovery_pending()
         && view
             .device_gesture
@@ -271,7 +455,186 @@ fn gain_recovery_blocker(view: &mut EditorView) -> Option<&'static str> {
         }
         return Some("previous volume edit is canceling · drag again when it finishes");
     }
+    if view.recovery.generation().is_some() {
+        return Some("audio recovery pending · wait before editing");
+    }
     None
+}
+
+fn begin_degraded_recovery(
+    view: &mut EditorView,
+    target: RecoveryTarget,
+    value: f32,
+) -> Result<(), &'static str> {
+    let Some(state) = view.state.as_ref() else {
+        return Err("project is still loading");
+    };
+    let context = AudioSourceContext {
+        project_generation: view.project_generation,
+        editor_revision: state.revision,
+    };
+    let playing = view
+        .audio_status()
+        .is_some_and(|status| status.playing.load(Acquire));
+    view.recover_audio();
+    if view.recovery.generation().is_none() {
+        return Err("audio recovery could not start");
+    }
+    if playing {
+        view.defer_play_until_audio_recovers();
+    }
+    view.recovery.bind_mixer_edit(context);
+    let is_pan = target.is_pan();
+    view.track_gain_controls.pending_recovery = Some(PendingRecovery {
+        receipt: None,
+        context,
+        target,
+        value,
+    });
+    view.status = if is_pan {
+        "restarting audio · pan will update when ready"
+    } else {
+        "restarting audio · volume will update when ready"
+    }
+    .into();
+    view.error = None;
+    Ok(())
+}
+
+fn dispatch_degraded_recovery(
+    view: &mut EditorView,
+    anchor: ControlAnchor,
+    phase: NumericEventPhase,
+    value: f32,
+) -> Option<Result<(), &'static str>> {
+    let owns = view
+        .track_gain_controls
+        .pending_recovery
+        .as_ref()
+        .is_some_and(|pending| {
+            pending.receipt.is_none()
+                && pending.context.project_generation == view.project_generation
+                && pending.target.anchor() == anchor
+        });
+    if !owns {
+        return None;
+    }
+    match phase {
+        NumericEventPhase::Begin => Some(Ok(())),
+        NumericEventPhase::Change => {
+            if let Some(pending) = view.track_gain_controls.pending_recovery.as_mut() {
+                pending.value = value;
+            }
+            Some(Ok(()))
+        }
+        NumericEventPhase::Cancel => {
+            view.track_gain_controls.pending_recovery = None;
+            Some(Ok(()))
+        }
+        NumericEventPhase::Commit => {
+            let Some(pending) = view.track_gain_controls.pending_recovery.as_mut() else {
+                return Some(Ok(()));
+            };
+            pending.value = value;
+            let context = pending.context;
+            let Some(state) = view.state.as_ref() else {
+                view.track_gain_controls.pending_recovery = None;
+                return Some(Err("project is still loading"));
+            };
+            if state.revision != context.editor_revision {
+                view.track_gain_controls.pending_recovery = None;
+                return Some(Err("edit canceled · project changed"));
+            }
+            let command = match pending.target.command(&state.project, value) {
+                Ok(command) => command,
+                Err(reason) => {
+                    view.track_gain_controls.pending_recovery = None;
+                    return Some(Err(reason));
+                }
+            };
+            pending.receipt = Some(Receipt::new(view.project_generation));
+            if !view.enqueue_request(Request::Edit(command), false) {
+                view.track_gain_controls.retire_deferred_recovery();
+            }
+            Some(Ok(()))
+        }
+    }
+}
+
+impl EditorView {
+    pub(super) fn pending_mixer_edit_matches(&self, request: &Request) -> bool {
+        self.track_gain_controls
+            .pending_recovery
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.context.project_generation == self.project_generation
+                    && pending.receipt.as_ref().is_some_and(Receipt::is_queued)
+                    && pending.target.matches_request(request)
+            })
+    }
+
+    pub(super) fn mixer_edit_submitted(&mut self) {
+        if let Some(pending) = self.track_gain_controls.pending_recovery.as_mut()
+            && let Some(receipt) = pending.receipt.as_mut()
+            && receipt.is_queued()
+        {
+            receipt.submitted(self.worker_requests_pending);
+        }
+    }
+
+    pub(super) fn mixer_edit_request_complete(&mut self, event: &Event) {
+        let retire = self
+            .track_gain_controls
+            .pending_recovery
+            .as_mut()
+            .and_then(|pending| pending.receipt.as_mut())
+            .is_some_and(|receipt| {
+                receipt.observe(
+                    self.project_generation,
+                    event.project_replaced,
+                    event.request_complete,
+                ) != Disposition::Waiting
+            });
+        if retire {
+            self.track_gain_controls.pending_recovery = None;
+        }
+    }
+
+    pub(super) fn retire_pending_mixer_edit(&mut self) -> bool {
+        self.track_gain_controls.pending_recovery.take().is_some()
+    }
+
+    pub(super) fn retire_deferred_mixer_edit(&mut self) -> bool {
+        self.track_gain_controls.retire_deferred_recovery()
+    }
+
+    pub(super) fn retire_abandoned_mixer_edit(&mut self) -> bool {
+        let Some(target) = self
+            .track_gain_controls
+            .pending_recovery
+            .as_ref()
+            .filter(|pending| pending.receipt.as_ref().is_some_and(Receipt::is_queued))
+            .map(|pending| &pending.target)
+        else {
+            return false;
+        };
+        let still_queued = self
+            .pending_requests
+            .iter()
+            .chain(self.device_gesture_barriers.iter())
+            .chain(
+                self.recovery
+                    .deferred_edit
+                    .as_ref()
+                    .map(|edit| edit.request.as_ref()),
+            )
+            .any(|request| target.matches_request(request));
+        if still_queued {
+            return false;
+        }
+        self.track_gain_controls.pending_recovery = None;
+        true
+    }
 }
 
 impl EditorView {
@@ -327,6 +690,21 @@ impl EditorView {
                     if generation != view.project_generation {
                         return;
                     }
+                    if event.phase != NumericEventPhase::Begin
+                        && let Some(result) = dispatch_degraded_recovery(
+                            view,
+                            ControlAnchor::TrackVolume(id),
+                            event.phase,
+                            event.value as f32,
+                        )
+                    {
+                        if let Err(reason) = result {
+                            view.error = Some(reason.into());
+                            control.update(cx, |control, cx| control.cancel(cx));
+                        }
+                        cx.notify();
+                        return;
+                    }
                     if event.phase == NumericEventPhase::Begin {
                         // Gesture pumping bypasses ordinary edit admission while recording.
                         let reason = if view.gain_recorder.blocks_edits()
@@ -342,7 +720,10 @@ impl EditorView {
                             Some("automation owns gain · edit or clear the gain lane")
                         } else if let Some(reason) = gain_recovery_blocker(view) {
                             Some(reason)
-                        } else if view.edit_pending() {
+                        } else if view.edit_pending()
+                            || view.pending_restart_request.is_some()
+                            || view.track_gain_controls.pending_recovery.is_some()
+                        {
                             Some("wait for the current project edit before changing volume")
                         } else {
                             None
@@ -350,6 +731,51 @@ impl EditorView {
                         if let Some(reason) = reason {
                             view.error = Some(reason.into());
                             control.update(cx, |control, cx| control.cancel(cx));
+                            cx.notify();
+                            return;
+                        }
+                        if view.has_degraded_vst3_output() {
+                            let target = match view.state.as_ref() {
+                                Some(state)
+                                    if view.track_selection.contains(id)
+                                        && state
+                                            .project
+                                            .track(id)
+                                            .is_some_and(|track| track.gain() > 0.0) =>
+                                {
+                                    let selected = view.track_selection.ordered(&state.project);
+                                    if selected.len() > 1 {
+                                        match RelativeTrackGains::capture(
+                                            &state.project,
+                                            id,
+                                            &selected,
+                                        ) {
+                                            Ok(group) if group.len() > 1 => {
+                                                RecoveryTarget::TrackGains(Box::new(group))
+                                            }
+                                            Ok(_) => RecoveryTarget::TrackGain(id),
+                                            Err(error) => {
+                                                view.error = Some(error.0.into());
+                                                control
+                                                    .update(cx, |control, cx| control.cancel(cx));
+                                                cx.notify();
+                                                return;
+                                            }
+                                        }
+                                    } else {
+                                        RecoveryTarget::TrackGain(id)
+                                    }
+                                }
+                                _ => RecoveryTarget::TrackGain(id),
+                            };
+                            if let Err(reason) =
+                                begin_degraded_recovery(view, target, event.value as f32)
+                            {
+                                if view.error.is_none() {
+                                    view.error = Some(reason.into());
+                                }
+                                control.update(cx, |control, cx| control.cancel(cx));
+                            }
                             cx.notify();
                             return;
                         }
@@ -376,8 +802,12 @@ impl EditorView {
             });
         }
         let active = self
-            .device_gesture
-            .preview_track_gain(self.project_generation, id);
+            .track_gain_controls
+            .displayed_track_gain(self.project_generation, id)
+            .or_else(|| {
+                self.device_gesture
+                    .preview_track_gain(self.project_generation, id)
+            });
         let enabled = !automated(track)
             && !self.gain_recorder.blocks_edits()
             && !self.midi_recorder.blocks_edits()
@@ -497,12 +927,26 @@ impl EditorView {
                     if generation != view.project_generation || !key.current(view) {
                         return;
                     }
+                    if event.phase != NumericEventPhase::Begin
+                        && let Some(result) = dispatch_degraded_recovery(
+                            view,
+                            ControlAnchor::Mixer(key),
+                            event.phase,
+                            event.value as f32,
+                        )
+                    {
+                        if let Err(reason) = result {
+                            view.error = Some(reason.into());
+                            control.update(cx, |control, cx| control.cancel(cx));
+                        }
+                        cx.notify();
+                        return;
+                    }
                     if event.phase == NumericEventPhase::Begin {
                         atomic_admitted.set(false);
                     }
                     let explicit_gain = key.supports_atomic_gain() && event.gesture.is_none();
                     if event.phase == NumericEventPhase::Begin
-                        && key.supports_atomic_gain()
                         && view.document_audio_mode == hex_session::DocumentAudioMode::Resident
                         && !view.gain_recorder.blocks_edits()
                         && !view.midi_recorder.blocks_edits()
@@ -518,7 +962,9 @@ impl EditorView {
                             && !explicit_gain)
                             || view.gain_recorder.blocks_edits()
                             || view.midi_recorder.blocks_edits()
-                            || view.edit_pending())
+                            || view.edit_pending()
+                            || view.pending_restart_request.is_some()
+                            || view.track_gain_controls.pending_recovery.is_some())
                     {
                         view.error = Some(if explicit_gain {
                             "finish the current edit before changing output volume"
@@ -535,6 +981,26 @@ impl EditorView {
                                 let _ = control.set_external_value(f64::from(gain), cx);
                             }
                         });
+                        cx.notify();
+                        return;
+                    }
+                    if event.phase == NumericEventPhase::Begin
+                        && view.document_audio_mode == hex_session::DocumentAudioMode::Resident
+                        && view.has_degraded_vst3_output()
+                    {
+                        let recovery_target = match key {
+                            MixerKey::MainGain => RecoveryTarget::MainGain,
+                            MixerKey::ReturnGain(id) => RecoveryTarget::ReturnGain(id),
+                            MixerKey::Balance(track) => RecoveryTarget::TrackBalance(track),
+                        };
+                        if let Err(reason) =
+                            begin_degraded_recovery(view, recovery_target, event.value as f32)
+                        {
+                            if view.error.is_none() {
+                                view.error = Some(reason.into());
+                            }
+                            control.update(cx, |control, cx| control.cancel(cx));
+                        }
                         cx.notify();
                         return;
                     }
@@ -597,12 +1063,16 @@ impl EditorView {
             });
         }
         let active = self
-            .device_gesture
-            .snapshot()
-            .filter(|active| active.target == target)
-            .and_then(|active| match active.value {
-                ParameterValue::Float(value) => Some(value),
-                _ => None,
+            .track_gain_controls
+            .displayed_mixer_value(self.project_generation, key)
+            .or_else(|| {
+                self.device_gesture
+                    .snapshot()
+                    .filter(|active| active.target == target)
+                    .and_then(|active| match active.value {
+                        ParameterValue::Float(value) => Some(value),
+                        _ => None,
+                    })
             });
         let enabled = (self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             || key.supports_atomic_gain())

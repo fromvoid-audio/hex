@@ -251,6 +251,7 @@ impl EditorView {
             &mut self.pending_plugin_effect,
             &mut self.failed_plugin_proposal,
             &mut self.device_panel,
+            &mut self.track_gain_controls,
         );
         self.pending_playback = None;
         self.pending_resident_publication = None;
@@ -1401,6 +1402,7 @@ impl EditorView {
         visible_change |= self.pump_device_gesture();
         visible_change |= self.tick_stopped_vst3_restore();
         visible_change |= self.retire_abandoned_bypass();
+        visible_change |= self.retire_abandoned_mixer_edit();
         visible_change |= self.retire_abandoned_modulation_depth();
         visible_change |= self.retire_abandoned_duplicate();
         visible_change |= self.retire_abandoned_track_clipboard();
@@ -2056,6 +2058,7 @@ impl EditorView {
                 &mut self.pending_plugin_effect,
                 &mut self.failed_plugin_proposal,
                 &mut self.device_panel,
+                &mut self.track_gain_controls,
             );
             self.pending_recovery_generation = None;
             visible_change |= replace_error(
@@ -2601,6 +2604,7 @@ impl EditorView {
         let audio_placement_selection = self.audio_events_request_complete(&event);
         self.clip_loop_request_complete(&event);
         self.bypass_request_complete(&event);
+        self.mixer_edit_request_complete(&event);
         self.modulation_depth_complete(&event);
         let clip_drop = self.clip_move_request_complete(&event);
         self.clip_paint_request_complete(&event);
@@ -2676,6 +2680,7 @@ impl EditorView {
                 &mut self.pending_plugin_effect,
                 &mut self.failed_plugin_proposal,
                 &mut self.device_panel,
+                &mut self.track_gain_controls,
             );
             self.pending_playback = None;
             self.pending_resident_publication = None;
@@ -4143,6 +4148,12 @@ impl EditorView {
                 request,
             );
         }
+        if self.recovering_mixer_edit_request(&request) {
+            return self.recover_before_graph_edit(
+                super::recovery_state::DeferredEditKind::MixerControl,
+                request,
+            );
+        }
         if matches!(
             &request,
             Request::DeviceGesture(_)
@@ -5048,6 +5059,7 @@ impl EditorView {
         if self.stopped_playback_restore.is_some()
             || self.recovery.generation().is_some()
             || self.pending_loop_region().is_some()
+            || self.track_gain_controls.has_committed_recovery()
             || self.stopped_plugin_parameter_terminal_pending()
             || self.paused_republish_blocks_play()
         {

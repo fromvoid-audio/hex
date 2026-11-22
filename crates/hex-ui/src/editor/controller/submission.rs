@@ -31,6 +31,7 @@ pub(super) struct PendingKinds {
     audio_events: bool,
     clip_loop: bool,
     bypass: Option<hex_project::DeviceId>,
+    mixer_edit: bool,
     modulation_depth: bool,
     clip_move: bool,
     clip_paint: bool,
@@ -104,6 +105,7 @@ impl EditorView {
                     }
                     _ => None,
                 },
+                mixer_edit: self.pending_mixer_edit_matches(request),
                 modulation_depth: self.pending_modulation_depth_matches(request),
                 clip_move: self.pending_clip_move_matches(request),
                 clip_paint: self.pending_clip_paint_matches(request),
@@ -199,6 +201,9 @@ impl EditorView {
             self.bypass_submitted(&Request::Edit(hex_project::Command::ToggleDeviceBypass {
                 device,
             }));
+        }
+        if kinds.mixer_edit {
+            self.mixer_edit_submitted();
         }
         if kinds.modulation_depth {
             self.modulation_depth_submitted();
@@ -339,6 +344,9 @@ impl EditorView {
         }
         if kinds.bypass.is_some() {
             visible |= self.retire_unsubmitted_bypass(request);
+        }
+        if kinds.mixer_edit {
+            visible |= self.retire_pending_mixer_edit();
         }
         if kinds.modulation_depth {
             visible |= self.retire_pending_modulation_depth();

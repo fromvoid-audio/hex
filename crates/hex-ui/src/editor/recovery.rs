@@ -35,6 +35,7 @@ pub(super) fn clear_recovery(
     pending_device: &mut Option<super::plugin_effect::PendingPluginEffect>,
     failed_device: &mut Option<super::plugin_effect::FailedPluginProposal>,
     device_panel: &mut super::device_panel::DevicePanelState,
+    track_gain_controls: &mut super::track_gain::Controls,
 ) {
     if recovery
         .deferred_edit
@@ -55,6 +56,9 @@ pub(super) fn clear_recovery(
     }
     if recovery.holds_clip_play_start() {
         clip_loop.retire_deferred_play_start();
+    }
+    if recovery.holds_mixer_edit() {
+        track_gain_controls.retire_deferred_recovery();
     }
     if let Some(edit) = recovery.deferred_edit.as_ref()
         && edit.kind == DeferredEditKind::ToggleDeviceBypass
@@ -85,6 +89,19 @@ fn clip_play_start(request: &Request) -> Option<ClipId> {
         }) => Some(*clip),
         _ => None,
     }
+}
+
+fn is_mixer_control_edit(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::Edit(
+            Command::Gain { .. }
+                | Command::SetTrackGains { .. }
+                | Command::MasterGain { .. }
+                | Command::ReturnGain { .. }
+                | Command::Balance { .. }
+        )
+    )
 }
 
 impl EditorView {
@@ -146,6 +163,9 @@ impl EditorView {
         if matches!(request, Request::Edit(Command::ToggleDeviceBypass { .. })) {
             return Some(DeferredEditKind::ToggleDeviceBypass);
         }
+        if is_mixer_control_edit(request) {
+            return Some(DeferredEditKind::MixerControl);
+        }
         if matches!(request, Request::InsertPluginEffect(_)) {
             return Some(DeferredEditKind::PluginEffect);
         }
@@ -188,6 +208,17 @@ impl EditorView {
             && self.pending_clip_loop_matches(request)
     }
 
+    pub(super) fn recovering_mixer_edit_request(&self, request: &Request) -> bool {
+        is_mixer_control_edit(request)
+            && self.pending_mixer_edit_matches(request)
+            && self.state.as_ref().is_some_and(|state| {
+                self.recovery.admits_mixer_edit(AudioSourceContext {
+                    project_generation: self.project_generation,
+                    editor_revision: state.revision,
+                })
+            })
+    }
+
     /// Hold one admitted edit through the fresh graph and cursor. The sample
     /// request already carries the policy captured at its original drop.
     pub(super) fn recover_before_graph_edit(
@@ -196,6 +227,9 @@ impl EditorView {
         request: Request,
     ) -> bool {
         let retire_refused = |view: &mut Self, request: &Request| {
+            if kind == DeferredEditKind::MixerControl {
+                view.retire_deferred_mixer_edit();
+            }
             if let Some(control) = deferred_device_insert_control(request).cloned() {
                 let error = view.error.as_ref().map(ToString::to_string);
                 view.retire_plugin_effect(&control, false, error.as_deref());
@@ -203,15 +237,17 @@ impl EditorView {
         };
         let continuing_play_start = kind == DeferredEditKind::ClipPlayStart
             && clip_play_start(&request).is_some_and(|clip| self.recovering_clip_play_start(clip));
+        let continuing_mixer_edit =
+            kind == DeferredEditKind::MixerControl && self.recovering_mixer_edit_request(&request);
+        let continuing = continuing_play_start || continuing_mixer_edit;
         if self.recovery.generation().is_some()
-            && (!continuing_play_start || self.recovery.deferred_edit.is_some())
+            && (!continuing || self.recovery.deferred_edit.is_some())
         {
             self.error = Some("audio recovery pending · wait before editing".into());
             retire_refused(self, &request);
             return false;
         }
-        if !continuing_play_start && (self.edit_pending() || self.pending_restart_request.is_some())
-        {
+        if !continuing && (self.edit_pending() || self.pending_restart_request.is_some()) {
             self.error = Some("finish the current edit before restarting audio".into());
             retire_refused(self, &request);
             return false;
@@ -249,6 +285,21 @@ impl EditorView {
             | Request::Edit(Command::ToggleDeviceBypass { device }) => {
                 state.project.device(*device).is_some()
             }
+            Request::Edit(Command::Gain { track, .. } | Command::Balance { track, .. }) => {
+                state.project.track(*track).is_some()
+            }
+            Request::Edit(Command::SetTrackGains { gains }) => {
+                !gains.is_empty()
+                    && gains
+                        .iter()
+                        .all(|(track, _)| state.project.track(*track).is_some())
+            }
+            Request::Edit(Command::MasterGain { .. }) => true,
+            Request::Edit(Command::ReturnGain { return_track, .. }) => state
+                .project
+                .return_tracks()
+                .iter()
+                .any(|track| track.id() == *return_track),
             _ => match kind {
                 DeferredEditKind::SampleDrop => self.pending_sample_drop_matches(&request),
                 DeferredEditKind::TimeDuplicate => self.pending_time_duplicate_matches(&request),
@@ -257,7 +308,8 @@ impl EditorView {
                 DeferredEditKind::NativeEffect
                 | DeferredEditKind::PluginEffect
                 | DeferredEditKind::RemoveDevice
-                | DeferredEditKind::ToggleDeviceBypass => false,
+                | DeferredEditKind::ToggleDeviceBypass
+                | DeferredEditKind::MixerControl => false,
             },
         };
         if !current {
@@ -266,7 +318,7 @@ impl EditorView {
             return false;
         }
 
-        if !continuing_play_start {
+        if !continuing {
             let playing = self
                 .audio_status()
                 .is_some_and(|status| status.playing.load(Acquire));
@@ -282,6 +334,7 @@ impl EditorView {
                 self.defer_play_until_audio_recovers();
             }
         }
+        let is_pan = matches!(request, Request::Edit(Command::Balance { .. }));
         self.recovery.deferred_edit = Some(DeferredGraphEdit {
             kind,
             context,
@@ -304,6 +357,13 @@ impl EditorView {
             DeferredEditKind::ClipPlayStart => {
                 "restarting audio · play start will change when ready"
             }
+            DeferredEditKind::MixerControl => {
+                if is_pan {
+                    "restarting audio · pan will update when ready"
+                } else {
+                    "restarting audio · volume will update when ready"
+                }
+            }
         }
         .into();
         true
@@ -320,6 +380,11 @@ impl EditorView {
         let remove_device = pending.kind == DeferredEditKind::RemoveDevice;
         let toggle_bypass = pending.kind == DeferredEditKind::ToggleDeviceBypass;
         let plugin_effect = pending.kind == DeferredEditKind::PluginEffect;
+        let mixer_control = pending.kind == DeferredEditKind::MixerControl;
+        let is_pan = matches!(
+            pending.request.as_ref(),
+            Request::Edit(Command::Balance { .. })
+        );
         let control = deferred_device_insert_control(&pending.request).cloned();
         let bypass_device = match pending.request.as_ref() {
             Request::Edit(Command::ToggleDeviceBypass { device }) => Some(*device),
@@ -329,6 +394,9 @@ impl EditorView {
             || (time_duplicate && !self.pending_time_duplicate_matches(&pending.request))
             || (loop_region && !self.pending_loop_matches(&pending.request))
             || (clip_play_start && !self.pending_clip_loop_matches(&pending.request))
+            || (mixer_control
+                && self.track_gain_controls.has_queued_recovery()
+                && !self.pending_mixer_edit_matches(&pending.request))
         {
             return;
         }
@@ -349,7 +417,8 @@ impl EditorView {
             || loop_region
             || clip_play_start
             || remove_device
-            || toggle_bypass)
+            || toggle_bypass
+            || mixer_control)
             && self.edit_pending()
         {
             // A worker edit without an installed reply can already have
@@ -375,6 +444,12 @@ impl EditorView {
                 "removing device".into()
             } else if toggle_bypass {
                 "updating device bypass".into()
+            } else if mixer_control {
+                if is_pan {
+                    "updating pan".into()
+                } else {
+                    "updating volume".into()
+                }
             } else if plugin_effect {
                 "adding plug-in".into()
             } else {
@@ -388,6 +463,8 @@ impl EditorView {
             self.loop_state_installed(false);
         } else if clip_play_start {
             self.retire_pending_clip_loop();
+        } else if mixer_control {
+            self.retire_deferred_mixer_edit();
         } else if toggle_bypass {
             if let Some(device) = bypass_device {
                 self.retire_unsubmitted_bypass(&Request::Edit(Command::ToggleDeviceBypass {
@@ -476,6 +553,7 @@ impl EditorView {
                 &mut self.pending_plugin_effect,
                 &mut self.failed_plugin_proposal,
                 &mut self.device_panel,
+                &mut self.track_gain_controls,
             );
             return;
         }
@@ -665,6 +743,7 @@ impl EditorView {
             &mut self.pending_plugin_effect,
             &mut self.failed_plugin_proposal,
             &mut self.device_panel,
+            &mut self.track_gain_controls,
         );
         self.retire_audio_preserving_gain_take();
         self.pending_recovery_generation = None;

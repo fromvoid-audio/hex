@@ -178,81 +178,493 @@ pub(in crate::editor) fn pump(
 }
 
 #[gpui::test]
-fn degraded_plugin_explains_audio_restart_and_does_not_capture_the_fader(cx: &mut TestAppContext) {
+fn degraded_plugin_group_volume_drag_recovers_held_or_released_fader(cx: &mut TestAppContext) {
+    for (released, failed) in [(true, false), (false, false), (true, true)] {
+        degraded_group_volume_recovery(&mut cx.new_app(), released, failed);
+    }
+}
+
+fn degraded_group_volume_recovery(cx: &mut TestAppContext, released: bool, failed: bool) {
+    use super::super::device_panel::tests::eq_ui_tests::graph_layout_tests::{
+        headless_status_output, status_fixture_guard,
+    };
+    use hex_engine::playback::Playback;
+    use hex_project::Created;
+    use hex_session::service::{
+        CanonicalAudioSourceSnapshot, Event, Request, Service, WorkerAudioSink,
+    };
+    use std::sync::atomic::{AtomicBool, Ordering::Release};
+
+    struct RestartSink;
+    impl WorkerAudioSink for RestartSink {
+        fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
+            Ok(48_000)
+        }
+        fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
+        fn poll(&mut self) {}
+        fn close(&mut self) {}
+        fn restart_audio(&mut self, _: u64, _: u64) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn next_event(service: &Service) -> Event {
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            if let Ok(event) = service.try_event() {
+                return event;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "actor response missing"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    let _serial = status_fixture_guard();
     cx.update(bind_editor_keys);
-    let mut fixture = super::super::worker_ui_fixture::open(
-        cx,
-        vec![Command::AddTrack {
-            name: "volume".into(),
-        }],
-    );
-    let mut visual = VisualTestContext::from_window(fixture.handle, cx);
-    let (track, initial_gain) = fixture.editor.update(&mut visual, |view, cx| {
-        view.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![119]);
-        cx.notify();
-        let track = &view.state.as_ref().unwrap().project.tracks()[0];
-        (track.id(), track.gain())
-    });
+    let service = Service::with_audio_sink(32, 8_000_000, None, Box::new(RestartSink)).unwrap();
+    next_event(&service);
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "member".into(),
+        }))
+        .unwrap();
+    let Created::Track(member) = next_event(&service).created.unwrap() else {
+        panic!("member track")
+    };
+    service
+        .submit(Request::Edit(Command::GroupTracks {
+            tracks: hex_project::TrackSelectionIds::new(&[member]).unwrap(),
+            name: "group".into(),
+        }))
+        .unwrap();
+    let grouped = next_event(&service);
+    let Created::Track(group) = grouped.created.unwrap() else {
+        panic!("group track")
+    };
+    let state = grouped.state;
+    let initial_gain = state.project.track(group).unwrap().gain();
+    let revision = state.revision;
+    let generation = state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context()
+        .project_generation;
+
+    let browser = BrowserDirectory::new();
+    let handle = *cx.add_window(|_, _| gpui::Empty);
+    let (mut old, old_backend) = headless_status_output();
+    let old_control = old.take_client().unwrap();
+    old_control.status().unwrap().playing.store(true, Release);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            let editor = window.replace_root(cx, |window, cx| {
+                EditorView::new_for_test_with_environment(
+                    window,
+                    cx,
+                    service,
+                    Arc::clone(&browser.1),
+                )
+            });
+            editor.update(cx, |view, cx| {
+                view.project_generation = generation;
+                view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+                view.state = Some(state);
+                view.selected_track = Some(group);
+                view.audio = Some(crate::EditorAudio {
+                    control: old_control,
+                    sample_rate: 48_000,
+                    label: "degraded fixture".into(),
+                    spectrum_error: None,
+                    mode: hex_session::DocumentAudioMode::Resident,
+                });
+                view.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![119]);
+                cx.notify();
+            });
+            editor
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1280.0), px(800.0)));
     visual.run_until_parked();
-    let selector = Box::leak(format!("track-volume-{}-slider", track.value()).into_boxed_str());
+
+    let selector = Box::leak(format!("track-volume-{}-slider", group.value()).into_boxed_str());
     let rail = visual.debug_bounds(selector).unwrap();
     let from = point(rail.left() + px(10.0), rail.center().y);
-    let to = point(from.x, from.y - px(24.0));
-    let drag = |visual: &mut VisualTestContext| {
-        visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
-        visual.run_until_parked();
-    };
-    drag(&mut visual);
-    fixture.editor.read_with(&visual, |view, _| {
-        assert_eq!(
-            view.error.as_deref(),
-            Some("a plug-in failed · restart audio before changing volume")
-        );
+    let mid = point(from.x, from.y - px(12.0));
+    let to = point(from.x, from.y - px(28.0));
+
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(mid, MouseButton::Left, Modifiers::default());
+    let (recovery, earlier) = editor.read_with(&visual, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
         assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.deferred_play.is_some());
+        assert_eq!(
+            view.worker_requests_pending, 1,
+            "only the audio restart was submitted"
+        );
+        (
+            view.recovery.generation().unwrap(),
+            view.track_gain_controls
+                .displayed_track_gain(generation, group)
+                .unwrap(),
+        )
+    });
+
+    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    let target_gain = editor.read_with(&visual, |view, _| {
+        view.track_gain_controls
+            .displayed_track_gain(generation, group)
+            .unwrap()
+    });
+    assert!(
+        target_gain > earlier,
+        "fader drag stays live while audio restarts"
+    );
+
+    if released {
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    }
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(view.recovery.holds_mixer_edit(), released);
+        assert_eq!(
+            view.worker_requests_pending, 1,
+            "release must not submit against the degraded output"
+        );
+        assert_eq!(view.state.as_ref().unwrap().revision, revision);
+        // Frozen preview must remain visible across completed repaints.
+        let shown = view.track_gain_controls.bindings[&group]
+            .entity
+            .read(cx)
+            .value() as f32;
+        assert!(
+            (shown - target_gain).abs() < 1e-4,
+            "expected frozen preview {target_gain}, got {shown}"
+        );
+    });
+
+    drop(old_backend);
+    old.publication.close();
+    drop(old);
+    let restart = editor.read_with(&visual, |view, _| next_event(&view.service));
+    assert!(restart.error.is_none(), "{:?}", restart.error);
+    editor.update(&mut visual, |view, cx| {
+        view.receive(restart);
+        if failed {
+            view.fail_audio_recovery("fixture output refused");
+        }
+        cx.notify();
+    });
+    if failed {
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            assert!(
+                view.track_gain_controls
+                    .displayed_track_gain(generation, group)
+                    .is_none()
+            );
+            assert_eq!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(group)
+                    .unwrap()
+                    .gain(),
+                initial_gain
+            );
+            let shown = view.track_gain_controls.bindings[&group]
+                .entity
+                .read(cx)
+                .value() as f32;
+            assert!((shown - initial_gain).abs() < 1e-4);
+        });
+        return;
+    }
+
+    let (mut fresh, mut callback) = headless_status_output();
+    fresh
+        .publication
+        .control()
+        .unwrap()
+        .publish(Playback::new(
+            hex_engine::Project::new(48_000, Vec::new()).unwrap(),
+        ))
+        .unwrap();
+    callback.render(&mut [[0.0; 2]; 64]).unwrap();
+    let fresh_control = fresh.take_client().unwrap();
+    editor.update(&mut visual, |view, _| {
+        view.audio = Some(crate::EditorAudio {
+            control: fresh_control,
+            sample_rate: 48_000,
+            label: "fresh fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.degraded_plugins = Default::default();
+        view.applied_project_revision = Some(revision);
+        assert!(view.recovery.opened(recovery));
+        assert!(view.recovery.restored(recovery));
+        assert!(!view.finish_audio_recovery_tick());
+    });
+    callback.render(&mut [[0.0; 2]; 64]).unwrap();
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.finish_audio_recovery_tick());
+        assert!(!view.finish_audio_recovery_tick());
+        assert_eq!(view.worker_requests_pending, usize::from(released));
+        cx.notify();
+    });
+
+    if !released {
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    }
+    // Delayed-ACK check: complete repaints before receiving the worker reply
+    // must keep showing the frozen target gain without reverting to old state.
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(view.worker_requests_pending, 1);
         assert_eq!(
             view.state
                 .as_ref()
                 .unwrap()
                 .project
-                .track(track)
+                .track(group)
                 .unwrap()
                 .gain(),
             initial_gain
         );
-    });
-    // The output owner clears this flag when the replacement output is ready.
-    fixture.editor.update(&mut visual, |view, _| {
-        view.degraded_plugins = Default::default();
-    });
-    drag(&mut visual);
-    let deadline = crate::test_wait::hang_deadline();
-    loop {
-        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        let committed = fixture.editor.update(&mut visual, |view, cx| {
-            view.tick(cx);
-            !view.edit_pending()
-                && view
-                    .state
-                    .as_ref()
-                    .unwrap()
-                    .project
-                    .track(track)
-                    .unwrap()
-                    .gain()
-                    > initial_gain
-        });
-        if committed {
-            break;
-        }
+        let shown = view.track_gain_controls.bindings[&group]
+            .entity
+            .read(cx)
+            .value() as f32;
         assert!(
-            std::time::Instant::now() < deadline,
-            "the next fader drag did not commit"
+            (shown - target_gain).abs() < 1e-4,
+            "delayed ACK flashed old gain: shown={shown}, expected={target_gain}"
         );
-        std::thread::yield_now();
+    });
+
+    let committed = editor.read_with(&visual, |view, _| next_event(&view.service));
+    assert!(committed.error.is_none(), "{:?}", committed.error);
+    editor.update(&mut visual, |view, cx| {
+        view.receive(committed);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, cx| {
+        assert!(
+            view.track_gain_controls
+                .displayed_track_gain(generation, group)
+                .is_none(),
+            "frozen preview retires with canonical install"
+        );
+        let canonical = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(group)
+            .unwrap()
+            .gain();
+        assert!(
+            (canonical - target_gain).abs() < 1e-4,
+            "canonical={canonical}, expected={target_gain}"
+        );
+        let shown = view.track_gain_controls.bindings[&group]
+            .entity
+            .read(cx)
+            .value() as f32;
+        assert!((shown - canonical).abs() < 1e-4);
+        assert!(view.error.is_none(), "{:?}", view.error);
+    });
+    editor.update(&mut visual, |view, _| {
+        view.audio.take().unwrap().control.close();
+    });
+    drop(callback);
+    fresh.publication.close();
+    drop(fresh);
+}
+
+#[gpui::test]
+fn degraded_plugin_track_pan_and_main_volume_recover_automatically(cx: &mut TestAppContext) {
+    use super::super::device_panel::tests::eq_ui_tests::graph_layout_tests::{
+        headless_status_output, status_fixture_guard,
+    };
+    use hex_engine::playback::Playback;
+    use hex_project::Created;
+    use hex_session::service::{
+        CanonicalAudioSourceSnapshot, Event, Request, Service, WorkerAudioSink,
+    };
+
+    struct RestartSink;
+    impl WorkerAudioSink for RestartSink {
+        fn initialize(&mut self, _: &std::sync::atomic::AtomicBool) -> Result<u32, String> {
+            Ok(48_000)
+        }
+        fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
+        fn poll(&mut self) {}
+        fn close(&mut self) {}
+        fn restart_audio(&mut self, _: u64, _: u64) -> Result<(), String> {
+            Ok(())
+        }
     }
-    fixture.finish(cx);
+
+    fn next_event(service: &Service) -> Event {
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            if let Ok(event) = service.try_event() {
+                return event;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "actor response missing"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    let _serial = status_fixture_guard();
+    cx.update(bind_editor_keys);
+    let service = Service::with_audio_sink(32, 8_000_000, None, Box::new(RestartSink)).unwrap();
+    next_event(&service);
+    service
+        .submit(Request::Edit(Command::AddTrack { name: "pan".into() }))
+        .unwrap();
+    let added = next_event(&service);
+    let Created::Track(track) = added.created.unwrap() else {
+        panic!("track")
+    };
+    let state = added.state;
+    let initial_pan = state.project.track(track).unwrap().balance();
+    let revision = state.revision;
+    let generation = state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context()
+        .project_generation;
+
+    let browser = BrowserDirectory::new();
+    let handle = *cx.add_window(|_, _| gpui::Empty);
+    let (mut old, old_backend) = headless_status_output();
+    let old_control = old.take_client().unwrap();
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            let editor = window.replace_root(cx, |window, cx| {
+                EditorView::new_for_test_with_environment(
+                    window,
+                    cx,
+                    service,
+                    Arc::clone(&browser.1),
+                )
+            });
+            editor.update(cx, |view, cx| {
+                view.project_generation = generation;
+                view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+                view.state = Some(state);
+                view.selected_track = Some(track);
+                view.audio = Some(crate::EditorAudio {
+                    control: old_control,
+                    sample_rate: 48_000,
+                    label: "degraded fixture".into(),
+                    spectrum_error: None,
+                    mode: hex_session::DocumentAudioMode::Resident,
+                });
+                view.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![42]);
+                cx.notify();
+            });
+            editor
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1280.0), px(800.0)));
+    visual.run_until_parked();
+
+    let selector = Box::leak(format!("track-pan-{}-slider", track.value()).into_boxed_str());
+    let rail = visual.debug_bounds(selector).unwrap();
+    let from = rail.center();
+    let to = point(from.x, from.y - px(20.0));
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+
+    let (recovery, target_pan) = editor.read_with(&visual, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert!(view.recovery.holds_mixer_edit());
+        assert_eq!(view.status, "restarting audio · pan will update when ready");
+        (
+            view.recovery.generation().unwrap(),
+            view.track_gain_controls
+                .displayed_mixer_value(generation, super::MixerKey::Balance(track))
+                .unwrap(),
+        )
+    });
+    assert!((target_pan - initial_pan).abs() > 1e-3);
+
+    drop(old_backend);
+    old.publication.close();
+    drop(old);
+    let restart = editor.read_with(&visual, |view, _| next_event(&view.service));
+    editor.update(&mut visual, |view, _| view.receive(restart));
+
+    let (mut fresh, mut callback) = headless_status_output();
+    fresh
+        .publication
+        .control()
+        .unwrap()
+        .publish(Playback::new(
+            hex_engine::Project::new(48_000, Vec::new()).unwrap(),
+        ))
+        .unwrap();
+    callback.render(&mut [[0.0; 2]; 64]).unwrap();
+    let fresh_control = fresh.take_client().unwrap();
+    editor.update(&mut visual, |view, _| {
+        view.audio = Some(crate::EditorAudio {
+            control: fresh_control,
+            sample_rate: 48_000,
+            label: "fresh fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.degraded_plugins = Default::default();
+        view.applied_project_revision = Some(revision);
+        assert!(view.recovery.opened(recovery));
+        assert!(view.recovery.restored(recovery));
+        assert!(!view.finish_audio_recovery_tick());
+    });
+    callback.render(&mut [[0.0; 2]; 64]).unwrap();
+    editor.update(&mut visual, |view, _| {
+        assert!(view.finish_audio_recovery_tick());
+    });
+    let committed = editor.read_with(&visual, |view, _| next_event(&view.service));
+    editor.update(&mut visual, |view, cx| {
+        view.receive(committed);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        let canonical = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .balance();
+        assert!((canonical - target_pan).abs() < 1e-4);
+        assert!(view.error.is_none(), "{:?}", view.error);
+    });
+    editor.update(&mut visual, |view, _| {
+        view.audio.take().unwrap().control.close();
+    });
+    drop(callback);
+    fresh.publication.close();
+    drop(fresh);
 }
 
 #[gpui::test]

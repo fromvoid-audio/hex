@@ -78,6 +78,13 @@ pub fn commit_owned_numeric_edit(
             target,
             GestureTarget::MainGain
                 | GestureTarget::ReturnGain { .. }
+                | GestureTarget::TrackGain { .. }
+                | GestureTarget::TrackBalance { .. }
+        ) && view.has_degraded_vst3_output())
+        || (matches!(
+            target,
+            GestureTarget::MainGain
+                | GestureTarget::ReturnGain { .. }
                 | GestureTarget::ReturnSend { .. }
         ) && view.document_audio_mode != hex_session::DocumentAudioMode::Resident)
     {
