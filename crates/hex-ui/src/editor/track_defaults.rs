@@ -46,7 +46,7 @@ fn empty_track_key(request: &Request) -> Option<(Option<TrackId>, u32)> {
 }
 
 pub(super) struct State {
-    path: PathBuf,
+    path: Option<PathBuf>,
     committed: TrackDefaults,
     loading: bool,
     saving: bool,
@@ -55,7 +55,7 @@ pub(super) struct State {
     binding: Option<Binding>,
 }
 impl State {
-    pub(super) fn new(path: PathBuf) -> Self {
+    pub(super) fn new(path: Option<PathBuf>) -> Self {
         Self {
             path,
             committed: TrackDefaults::default(),
@@ -87,7 +87,13 @@ impl State {
 
 impl EditorView {
     pub(super) fn start_track_defaults_load(&mut self, cx: &mut Context<Self>) {
-        let path = self.track_defaults.path.clone();
+        let Some(path) = self.track_defaults.path.clone() else {
+            self.track_defaults.loading = false;
+            self.track_defaults.writable = false;
+            self.track_defaults.error =
+                Some("track defaults unavailable · home directory is unset".into());
+            return;
+        };
         #[cfg(test)]
         let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
@@ -132,9 +138,13 @@ impl EditorView {
         if preferences == state.committed {
             return;
         }
+        let Some(path) = state.path.clone() else {
+            state.writable = false;
+            state.error = Some("track defaults unavailable · home directory is unset".into());
+            return;
+        };
         state.saving = true;
         state.error = None;
-        let path = state.path.clone();
         #[cfg(test)]
         let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
@@ -598,7 +608,7 @@ mod tests {
         let parent = files.root().join("not-a-directory");
         std::fs::write(&parent, b"keep").unwrap();
         editor.update(&mut visual, |v, cx| {
-            v.track_defaults.path = parent.join("track-defaults.json");
+            v.track_defaults.path = Some(parent.join("track-defaults.json"));
             v.save_track_default_gain(0.5, cx);
         });
         wait(&editor, &mut visual);
@@ -632,7 +642,7 @@ mod tests {
         let path = files.root().join("config/bad-track-defaults.json");
         std::fs::write(&path, b"invalid").unwrap();
         editor.update(&mut visual, |v, cx| {
-            v.track_defaults = State::new(path.clone());
+            v.track_defaults = State::new(Some(path.clone()));
             v.start_track_defaults_load(cx);
         });
         wait(&editor, &mut visual);

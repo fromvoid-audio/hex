@@ -20,7 +20,7 @@ struct Writes {
 }
 
 pub(super) struct State {
-    path: PathBuf,
+    path: Option<PathBuf>,
     directory: Option<PathBuf>,
     loading: bool,
     writable: bool,
@@ -34,10 +34,10 @@ pub(super) struct State {
 impl State {
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn test_path(&self) -> &std::path::Path {
-        &self.path
+        self.path.as_deref().unwrap_or(std::path::Path::new(""))
     }
 
-    pub(super) fn new(path: PathBuf) -> Self {
+    pub(super) fn new(path: Option<PathBuf>) -> Self {
         Self {
             path,
             directory: None,
@@ -53,18 +53,15 @@ impl State {
     }
 }
 
-pub(super) fn default_preferences_path() -> PathBuf {
-    #[cfg(test)]
-    {
-        PathBuf::new()
-    } // Resolved to the retained #414 environment before startup.
-    #[cfg(not(test))]
-    {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/"));
-        hex_preferences::project_directory_preferences_path(&home)
-    }
+pub(super) fn preferences_path_for_home(home: Option<&std::path::Path>) -> Option<PathBuf> {
+    home.filter(|path| !path.as_os_str().is_empty())
+        .map(hex_preferences::project_directory_preferences_path)
+}
+
+#[cfg(not(test))]
+pub(super) fn default_preferences_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    preferences_path_for_home(home.as_deref())
 }
 
 fn usable_directory(directory: Option<PathBuf>) -> Option<PathBuf> {
@@ -73,7 +70,12 @@ fn usable_directory(directory: Option<PathBuf>) -> Option<PathBuf> {
 
 impl EditorView {
     pub(super) fn start_project_directory_load(&mut self, cx: &mut Context<Self>) {
-        let path = self.project_directory.path.clone();
+        let Some(path) = self.project_directory.path.clone() else {
+            self.project_directory.loading = false;
+            self.project_directory.writable = false;
+            self.project_directory.directory = None;
+            return;
+        };
         #[cfg(test)]
         let environment = Arc::clone(&self.test_environment);
         #[cfg(test)]
@@ -164,6 +166,13 @@ impl EditorView {
         if !self.project_directory.writable {
             return;
         }
+        let Some(path) = self.project_directory.path.clone() else {
+            self.project_directory.writable = false;
+            if let Ok(mut writes) = self.project_directory.writes.lock() {
+                writes.pending = None;
+            }
+            return;
+        };
         let writes = Arc::clone(&self.project_directory.writes);
         let start = match writes.lock() {
             Ok(mut writes) if !writes.running && writes.pending.is_some() => {
@@ -175,7 +184,6 @@ impl EditorView {
         if !start {
             return;
         }
-        let path = self.project_directory.path.clone();
         #[cfg(test)]
         let gate = self.project_directory.save_gate.take();
         #[cfg(test)]
@@ -315,3 +323,18 @@ impl TestGate {
 
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests;
+
+#[cfg(test)]
+mod path_tests {
+    use super::preferences_path_for_home;
+    use std::path::Path;
+
+    #[test]
+    fn unset_or_empty_home_returns_none_instead_of_system_library() {
+        assert_eq!(preferences_path_for_home(None), None);
+        assert_eq!(preferences_path_for_home(Some(Path::new(""))), None);
+        let resolved = preferences_path_for_home(Some(Path::new("/Users/tester"))).unwrap();
+        assert!(resolved.starts_with("/Users/tester"));
+        assert!(!resolved.starts_with("/Library/"));
+    }
+}

@@ -114,12 +114,15 @@ struct PreviewSlot {
     error: Rc<RefCell<Option<String>>>,
 }
 
+pub(super) fn preferences_path_for_home(home: Option<&std::path::Path>) -> Option<PathBuf> {
+    home.filter(|path| !path.as_os_str().is_empty())
+        .map(hex_preferences::browser_places_path)
+}
+
 #[cfg(not(test))]
-pub(super) fn default_preferences_path() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/"));
-    hex_preferences::browser_places_path(&home)
+pub(super) fn default_preferences_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    preferences_path_for_home(home.as_deref())
 }
 
 fn clamped_panel_width(requested: f32, window_width: f32) -> f32 {
@@ -207,7 +210,7 @@ pub(super) struct BrowserState {
     pub(super) places: Vec<PathBuf>,
     place_icons: HashMap<PathBuf, String>,
     source_preferences: BrowserPlaces,
-    preferences_path: PathBuf,
+    preferences_path: Option<PathBuf>,
     preferences_loading: bool,
     pub(super) preferences_writable: bool,
     preferences_dirty: bool,
@@ -275,13 +278,15 @@ pub(super) struct BrowserState {
 impl BrowserState {
     pub fn new(
         cx: &mut Context<EditorView>,
-        preferences_path: PathBuf,
+        preferences_path: Option<PathBuf>,
         #[cfg(test)] test_home: Option<PathBuf>,
     ) -> Self {
         #[cfg(not(test))]
         let home = std::env::var_os("HOME")
+            .filter(|value| !value.is_empty())
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/"));
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_default();
         #[cfg(test)]
         let home = test_home.expect("editor test home must be resolved before startup");
         let music = home.join("Music");
@@ -361,19 +366,22 @@ impl BrowserState {
     /// Pure configured application-data location; performs no filesystem work.
     pub(super) fn data_directory(&self) -> Option<&std::path::Path> {
         self.preferences_path
-            .parent()
+            .as_deref()
+            .and_then(|path| path.parent())
             .filter(|path| !path.as_os_str().is_empty())
     }
 
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn test_preferences_path(&self) -> &std::path::Path {
-        &self.preferences_path
+        self.preferences_path
+            .as_deref()
+            .unwrap_or(std::path::Path::new(""))
     }
 
     /// Redirects later saves; an in-flight save keeps its captured path.
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn set_test_preferences_path(&mut self, path: PathBuf) {
-        self.preferences_path = path;
+        self.preferences_path = Some(path);
     }
 
     #[cfg(feature = "ui-test-support")]
@@ -533,7 +541,13 @@ impl EditorView {
     }
 
     pub(super) fn start_browser_places_load(&mut self, cx: &mut Context<Self>) {
-        let path = self.browser.preferences_path.clone();
+        let Some(path) = self.browser.preferences_path.clone() else {
+            self.browser.preferences_loading = false;
+            self.browser.preferences_writable = false;
+            self.browser.places_status =
+                Some("browser preferences unavailable · home directory is unset".into());
+            return;
+        };
         #[cfg(test)]
         let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
@@ -686,8 +700,13 @@ impl EditorView {
         let Some(places) = self.browser.pending_places_save.take() else {
             return;
         };
+        let Some(path) = self.browser.preferences_path.clone() else {
+            self.browser.preferences_writable = false;
+            self.browser.places_status =
+                Some("browser preferences unavailable · home directory is unset".into());
+            return;
+        };
         self.browser.places_save_in_flight = true;
-        let path = self.browser.preferences_path.clone();
         #[cfg(test)]
         let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
@@ -3498,5 +3517,20 @@ mod unit_tests {
                 _ => panic!("raw scroll delta variant changed"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::preferences_path_for_home;
+    use std::path::Path;
+
+    #[test]
+    fn unset_or_empty_home_returns_none_instead_of_system_library() {
+        assert_eq!(preferences_path_for_home(None), None);
+        assert_eq!(preferences_path_for_home(Some(Path::new(""))), None);
+        let resolved = preferences_path_for_home(Some(Path::new("/Users/tester"))).unwrap();
+        assert!(resolved.starts_with("/Users/tester"));
+        assert!(!resolved.starts_with("/Library/"));
     }
 }

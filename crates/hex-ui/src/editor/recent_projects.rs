@@ -10,7 +10,7 @@ mod labels;
 pub(super) use labels::recent_project_label;
 
 pub(super) struct RecentProjectsState {
-    path: PathBuf,
+    path: Option<PathBuf>,
     pub(super) projects: RecentProjects,
     loading: bool,
     writable: bool,
@@ -22,9 +22,9 @@ pub(super) struct RecentProjectsState {
 impl RecentProjectsState {
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn test_path(&self) -> &Path {
-        &self.path
+        self.path.as_deref().unwrap_or(Path::new(""))
     }
-    pub(super) fn new(path: PathBuf) -> Self {
+    pub(super) fn new(path: Option<PathBuf>) -> Self {
         Self {
             path,
             projects: RecentProjects::default(),
@@ -37,17 +37,26 @@ impl RecentProjectsState {
     }
 }
 
+pub(super) fn preferences_path_for_home(home: Option<&std::path::Path>) -> Option<PathBuf> {
+    home.filter(|path| !path.as_os_str().is_empty())
+        .map(hex_preferences::recent_projects_path)
+}
+
 #[cfg(not(test))]
-pub(super) fn default_preferences_path() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/"));
-    hex_preferences::recent_projects_path(&home)
+pub(super) fn default_preferences_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    preferences_path_for_home(home.as_deref())
 }
 
 impl EditorView {
     pub(super) fn start_recent_projects_load(&mut self, cx: &mut Context<Self>) {
-        let path = self.recent_projects.path.clone();
+        let Some(path) = self.recent_projects.path.clone() else {
+            self.recent_projects.loading = false;
+            self.recent_projects.writable = false;
+            self.error = Some("recent projects unavailable · home directory is unset".into());
+            menus::install(cx, self.recent_projects.projects.paths());
+            return;
+        };
         #[cfg(test)]
         let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
@@ -150,8 +159,11 @@ impl EditorView {
         let Some(projects) = self.recent_projects.pending_save.take() else {
             return;
         };
+        let Some(path) = self.recent_projects.path.clone() else {
+            self.recent_projects.writable = false;
+            return;
+        };
         self.recent_projects.save_in_flight = true;
-        let path = self.recent_projects.path.clone();
         #[cfg(test)]
         let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
@@ -467,5 +479,20 @@ mod tests {
             expected,
             "cancelled and failed saves must preserve the persisted list"
         );
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::preferences_path_for_home;
+    use std::path::Path;
+
+    #[test]
+    fn unset_or_empty_home_returns_none_instead_of_system_library() {
+        assert_eq!(preferences_path_for_home(None), None);
+        assert_eq!(preferences_path_for_home(Some(Path::new(""))), None);
+        let resolved = preferences_path_for_home(Some(Path::new("/Users/tester"))).unwrap();
+        assert!(resolved.starts_with("/Users/tester"));
+        assert!(!resolved.starts_with("/Library/"));
     }
 }

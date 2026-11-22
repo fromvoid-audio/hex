@@ -29,7 +29,7 @@ fn open_applied_source(
 
 fn reload_off(view: &mut EditorView, cx: &mut Context<EditorView>) {
     hex_preferences::save_playback_preferences(
-        &view.playback_settings.path,
+        view.playback_settings.path.as_ref().unwrap(),
         PlaybackPreferences { note_chase: false },
     )
     .unwrap();
@@ -191,7 +191,11 @@ fn real_save_changes_policy_only_after_success_and_preserves_failed_bytes(cx: &m
     }
     editor.update(cx, |view, cx| {
         assert!(!view.playback_settings.preferences.note_chase);
-        std::fs::write(&view.playback_settings.path, b"malformed original").unwrap();
+        std::fs::write(
+            view.playback_settings.path.as_ref().unwrap(),
+            b"malformed original",
+        )
+        .unwrap();
         view.save_note_chase(true, cx);
         assert!(!view.playback_settings.preferences.note_chase);
     });
@@ -203,7 +207,7 @@ fn real_save_changes_policy_only_after_success_and_preserves_failed_bytes(cx: &m
         assert!(!view.playback_settings.preferences.note_chase);
         assert!(view.playback_settings.error.is_some());
         assert_eq!(
-            std::fs::read(&view.playback_settings.path).unwrap(),
+            std::fs::read(view.playback_settings.path.as_ref().unwrap()).unwrap(),
             b"malformed original"
         );
     });
@@ -214,7 +218,11 @@ fn malformed_real_load_preserves_bytes_and_drops_waiting_start(cx: &mut TestAppC
     let fixture = open_applied_source(cx, Vec::new());
     let editor = fixture.editor.clone();
     editor.update(cx, |view, cx| {
-        std::fs::write(&view.playback_settings.path, b"malformed original").unwrap();
+        std::fs::write(
+            view.playback_settings.path.as_ref().unwrap(),
+            b"malformed original",
+        )
+        .unwrap();
         view.playback_settings.loading = true;
         view.last_transport_command = None;
         view.start_playback_preferences_load(cx);
@@ -228,7 +236,7 @@ fn malformed_real_load_preserves_bytes_and_drops_waiting_start(cx: &mut TestAppC
         assert!(view.playback_settings.pending.is_none());
         assert_eq!(view.last_transport_command, None);
         assert_eq!(
-            std::fs::read(&view.playback_settings.path).unwrap(),
+            std::fs::read(view.playback_settings.path.as_ref().unwrap()).unwrap(),
             b"malformed original"
         );
     });

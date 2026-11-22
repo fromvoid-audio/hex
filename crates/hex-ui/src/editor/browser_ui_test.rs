@@ -3475,6 +3475,8 @@ fn samples_catalog_combines_roots_and_active_place_indexed_search(cx: &mut TestA
         let database = view
             .browser
             .preferences_path
+            .as_ref()
+            .unwrap()
             .with_extension("samples-v1.db");
         assert_eq!(
             hex_library::catalog::SampleCatalog::load(&database).unwrap(),
@@ -5600,7 +5602,7 @@ fn browser_place_icons_catalog_uses_same_bounds_expanded_and_collapsed(cx: &mut 
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     editor.update(visual, |view, cx| {
-        view.browser.preferences_path = directory.0.join("icon-preferences.json");
+        view.browser.preferences_path = Some(directory.0.join("icon-preferences.json"));
         view.browser.preferences_loading = false;
         view.queue_browser_places_save(cx);
     });
@@ -5700,7 +5702,10 @@ fn browser_place_icons_preference_fixture_bounds_startup_before_workers(cx: &mut
             view.browser.places,
             vec![view.browser.music.clone(), view.browser.home.clone()]
         );
-        assert_eq!(view.browser.preferences_path, config);
+        assert_eq!(
+            view.browser.preferences_path.as_deref(),
+            Some(config.as_path())
+        );
     });
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();

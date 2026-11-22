@@ -72,28 +72,33 @@ impl EditorView {
         let database = self
             .browser
             .preferences_path
-            .with_extension("samples-v1.db");
+            .as_ref()
+            .map(|path| path.with_extension("samples-v1.db"));
         #[cfg(test)]
         let test_environment = Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             if load {
-                let path = database.clone();
-                #[cfg(test)]
-                let load_environment = Arc::clone(&test_environment);
-                let cached = cx
-                    .background_executor()
-                    .spawn(async move {
-                        #[cfg(test)]
-                        let _test_environment = load_environment;
-                        // A refused cache is kept aside, then rebuilt by this scan.
-                        SampleCatalog::load(&path).inspect_err(|error| {
-                            if error.kind() == std::io::ErrorKind::InvalidData {
-                                let _ = SampleCatalog::preserve_corrupt(&path);
-                            }
-                        })
-                    })
-                    .await;
+                let cached = if let Some(path) = database.clone() {
+                    #[cfg(test)]
+                    let load_environment = Arc::clone(&test_environment);
+                    Some(
+                        cx.background_executor()
+                            .spawn(async move {
+                                #[cfg(test)]
+                                let _test_environment = load_environment;
+                                // A refused cache is kept aside, then rebuilt by this scan.
+                                SampleCatalog::load(&path).inspect_err(|error| {
+                                    if error.kind() == std::io::ErrorKind::InvalidData {
+                                        let _ = SampleCatalog::preserve_corrupt(&path);
+                                    }
+                                })
+                            })
+                            .await,
+                    )
+                } else {
+                    None
+                };
                 if this
                     .update(cx, |view, cx| {
                         if view.browser.samples.loaded {
@@ -101,11 +106,11 @@ impl EditorView {
                         }
                         view.browser.samples.loaded = true;
                         match cached {
-                            Ok(mut catalog) if roots == view.sample_roots() => {
+                            Some(Ok(mut catalog)) if roots == view.sample_roots() => {
                                 catalog.retain_roots(&roots);
                                 view.apply_sample_catalog(catalog, cx);
                             }
-                            Err(error) => {
+                            Some(Err(error)) => {
                                 view.browser.samples.status =
                                     Some(format!("rebuilding sample database · {error}"))
                             }
@@ -140,8 +145,10 @@ impl EditorView {
                     // An unchanged catalog is not rewritten or synced.
                     let saved = if scan.cancelled {
                         Ok(false)
+                    } else if let Some(path) = database.as_deref() {
+                        scan.catalog.save(path)
                     } else {
-                        scan.catalog.save(&database)
+                        Ok(false)
                     };
                     #[cfg(test)]
                     if let Some(gate) = gate {

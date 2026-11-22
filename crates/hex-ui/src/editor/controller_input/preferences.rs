@@ -16,10 +16,16 @@ pub(super) struct Preferences {
 }
 
 impl ControllerInput {
-    pub(in crate::editor) fn new(path: PathBuf) -> Self {
+    pub(in crate::editor) fn new(path: Option<PathBuf>) -> Self {
         let mut state = Self::default();
-        state.preferences.path = Some(path);
-        state.preferences.loading = true;
+        if let Some(path) = path {
+            state.preferences.path = Some(path);
+            state.preferences.loading = true;
+        } else {
+            state.preferences.unwritable = true;
+            state.preferences.error =
+                Some("midi input settings unavailable · home directory is unset".into());
+        }
         state
     }
 }
