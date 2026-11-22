@@ -42,28 +42,37 @@ impl NativeAudioSink {
         {
             return Ok(());
         }
-        loop {
-            if files.shutdown.load(Acquire)
+        #[cfg(all(test, feature = "allocation-probe"))]
+        let timeout = self.resident_files_deadline;
+        #[cfg(not(all(test, feature = "allocation-probe")))]
+        let timeout = STARTUP_OPEN_DEADLINE;
+        let deadline = std::time::Instant::now() + timeout;
+        let cancellation = self.request_cancellation.clone();
+        let is_cancelled = || {
+            files.shutdown.load(Acquire)
                 || files.cancel.is_some_and(|cancel| cancel.load(Acquire))
-                || (self.plugins.preparing_edit(metadata.context)
-                    && self
-                        .request_cancellation
-                        .as_ref()
-                        .is_some_and(hex_session::service::RequestCancellation::is_cancelled))
-            {
+                || cancellation.as_ref().is_some_and(|cancel| {
+                    if private_output {
+                        cancel.is_shutting_down()
+                    } else {
+                        cancel.is_cancelled()
+                    }
+                })
+        };
+        loop {
+            if is_cancelled() {
                 self.retire_resident_files(files.sources);
                 return Err("ordinary file publication cancelled".into());
             }
-            if private_output {
-                self.check_replacement_deadline()?;
+            if private_output && let Err(error) = self.check_replacement_deadline() {
+                self.retire_resident_files(files.sources);
+                return Err(error);
             }
-            let cancellation = self.request_cancellation.clone();
-            let preparing_edit = self.plugins.preparing_edit(metadata.context);
-            if self.poll_resident_files(files.sources, || {
-                files.shutdown.load(Acquire)
-                    || files.cancel.is_some_and(|flag| flag.load(Acquire))
-                    || (preparing_edit && cancellation.as_ref().is_some_and(|c| c.is_cancelled()))
-            })? {
+            if std::time::Instant::now() >= deadline {
+                self.retire_resident_files(files.sources);
+                return Err("timed out preparing ordinary audio files".into());
+            }
+            if self.poll_resident_files(files.sources, &is_cancelled)? {
                 return Ok(());
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
@@ -217,5 +226,248 @@ impl NativeAudioSink {
         }) {
             domain.request_retirement(control);
         }
+    }
+}
+
+#[cfg(all(test, feature = "allocation-probe"))]
+mod tests {
+    use super::*;
+    use crate::native_audio::tests::{Files, native_fixture};
+    use hex_audio::worker_fixture::{HeadlessBackend, open_with_reliable_action_outcomes};
+    use hex_session::service::{Event, Request, Service};
+    use std::{
+        io::Write,
+        path::Path,
+        sync::Mutex,
+        time::{Duration, Instant},
+    };
+
+    fn write_wav(path: &Path, frames: u32) {
+        let bytes = frames * 2;
+        let mut file = std::fs::File::create(path).unwrap();
+        file.write_all(b"RIFF").unwrap();
+        file.write_all(&(36 + bytes).to_le_bytes()).unwrap();
+        file.write_all(b"WAVEfmt ").unwrap();
+        file.write_all(&16u32.to_le_bytes()).unwrap();
+        file.write_all(&1u16.to_le_bytes()).unwrap();
+        file.write_all(&1u16.to_le_bytes()).unwrap();
+        file.write_all(&48_000u32.to_le_bytes()).unwrap();
+        file.write_all(&96_000u32.to_le_bytes()).unwrap();
+        file.write_all(&2u16.to_le_bytes()).unwrap();
+        file.write_all(&16u16.to_le_bytes()).unwrap();
+        file.write_all(b"data").unwrap();
+        file.write_all(&bytes.to_le_bytes()).unwrap();
+        for index in 0..frames {
+            let sample = if index % 2 == 0 { 4096i16 } else { -4096i16 };
+            file.write_all(&sample.to_le_bytes()).unwrap();
+        }
+    }
+
+    struct StalledHarness {
+        service: Service,
+        audio_events: std::sync::mpsc::Receiver<EditorAudioEvent>,
+        audio: Option<EditorAudio>,
+        backend: Arc<Mutex<Option<HeadlessBackend>>>,
+    }
+
+    impl StalledHarness {
+        fn new(resident_files_deadline: Duration) -> Self {
+            let (send, audio_events) = std::sync::mpsc::sync_channel(8);
+            let mut sink = NativeAudioSink::new(send);
+            sink.resident_files_deadline = resident_files_deadline;
+            let backend = Arc::new(Mutex::new(None));
+            let callback = Arc::clone(&backend);
+            sink.project_rate_probe = Box::new(|| Some(48_000));
+            sink.output_factory = Some(Box::new(move |rate| {
+                let project_hz = rate.unwrap_or(48_000);
+                let (mut output, native) = match open_with_reliable_action_outcomes(project_hz) {
+                    Ok(pair) => pair,
+                    Err(error) if error == "audio output is open or still shutting down" => {
+                        return Ok(None);
+                    }
+                    Err(error) => return Err(error.into()),
+                };
+                output.label = "resident-files test".into();
+                output.route = Some(hex_audio::OutputRoute {
+                    device: "fixture".into(),
+                    nominal_hz: 48_000,
+                });
+                *callback.lock().unwrap() = Some(native);
+                Ok(Some(output))
+            }));
+            let service = Service::with_audio_sink_and_native_reservation(
+                16,
+                64,
+                None,
+                Box::new(sink),
+                AudioPolicy::new().unwrap().resident_native,
+            )
+            .unwrap();
+            let mut harness = Self {
+                service,
+                audio_events,
+                audio: None,
+                backend,
+            };
+            harness.wait_initial_ready();
+            harness
+        }
+
+        fn pump_audio_events(&mut self) {
+            while let Ok(event) = self.audio_events.try_recv() {
+                if let EditorAudioEvent::Opened { audio, .. } = event {
+                    self.audio = Some(audio);
+                }
+            }
+        }
+
+        fn render_once(&self) {
+            let mut pcm = [[0.0; 2]; 64];
+            let mut host = [0.0; 128];
+            if let Some(callback) = self.backend.lock().unwrap().as_mut() {
+                callback.render_direct(&mut pcm, &mut host).unwrap();
+            }
+        }
+
+        fn wait_initial_ready(&mut self) {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut got_service_event = false;
+            loop {
+                self.pump_audio_events();
+                self.render_once();
+                if let Ok(event) = self.service.try_event() {
+                    assert!(event.error.is_none(), "{:?}", event.error);
+                    got_service_event = true;
+                }
+                let applied = self
+                    .audio
+                    .as_ref()
+                    .and_then(|audio| audio.status())
+                    .and_then(|status| status.recording_source())
+                    .is_some();
+                if got_service_event && applied {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "initial service ready timed out");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        fn recv_event(&mut self, render: bool, timeout: Duration) -> Event {
+            let deadline = Instant::now() + timeout;
+            loop {
+                if render {
+                    self.render_once();
+                }
+                if let Ok(event) = self.service.try_event() {
+                    return event;
+                }
+                assert!(Instant::now() < deadline, "timed out waiting for event");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
+    #[test]
+    fn same_rate_publication_times_out_and_retires_domain_when_callback_stalls() {
+        let _native = native_fixture();
+        let files = Files::new();
+        let wav = files.0.join("stalled.wav");
+        write_wav(&wav, 512);
+        let mut h = StalledHarness::new(Duration::from_millis(150));
+
+        // Do not render the callback: endpoint installation stalls on a same-rate publication.
+        let started = Instant::now();
+        h.service
+            .submit(Request::ImportToNewTrack {
+                path: wav.clone(),
+                before_track: None,
+                start: 0,
+            })
+            .unwrap();
+        let event = h.recv_event(false, Duration::from_secs(2));
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "stalled same-rate publication took too long: {elapsed:?}"
+        );
+        let error = event
+            .error
+            .as_deref()
+            .expect("expected error event on timeout");
+        assert!(
+            error.contains("timed out preparing ordinary audio files"),
+            "unexpected timeout error: {error}"
+        );
+
+        // Once the callback resumes, the retired candidate domain is reclaimed and a new
+        // same-rate streamed import succeeds cleanly.
+        for _ in 0..8 {
+            h.render_once();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        h.service
+            .submit(Request::ImportToNewTrack {
+                path: wav,
+                before_track: None,
+                start: 0,
+            })
+            .unwrap();
+        let recovered = h.recv_event(true, Duration::from_secs(3));
+        assert!(
+            recovered.error.is_none(),
+            "expected import recovery after retired domain reclamation, got {:?}",
+            recovered.error
+        );
+        assert_eq!(recovered.state.project.tracks().len(), 1);
+    }
+
+    #[test]
+    fn same_rate_publication_honors_request_cancellation_without_plugin_edit() {
+        let _native = native_fixture();
+        let files = Files::new();
+        let wav = files.0.join("cancelled.wav");
+        write_wav(&wav, 512);
+        // Long deadline ensures cancellation—not timeout—exits the poll loop.
+        let mut h = StalledHarness::new(Duration::from_secs(5));
+
+        let started = Instant::now();
+        h.service
+            .submit(Request::ImportToNewTrack {
+                path: wav,
+                before_track: None,
+                start: 0,
+            })
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        // Advancing document intent cancels the in-flight same-rate import unconditionally
+        // even with no plugin edit active.
+        h.service
+            .submit(Request::NewWithAudioMode {
+                mode: hex_session::DocumentAudioMode::Resident,
+                reservation: None,
+            })
+            .unwrap();
+
+        let first = h.recv_event(false, Duration::from_secs(2));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "cancellation waited for full 5s deadline"
+        );
+        let error = first
+            .error
+            .as_deref()
+            .expect("expected error event on cancellation");
+        assert!(
+            error.contains("ordinary file publication cancelled"),
+            "unexpected cancellation error: {error}"
+        );
+
+        let second = h.recv_event(true, Duration::from_secs(3));
+        assert!(
+            second.project_replaced && second.error.is_none(),
+            "expected NewWithAudioMode to complete after cancellation, got {:?}",
+            second.error
+        );
     }
 }
