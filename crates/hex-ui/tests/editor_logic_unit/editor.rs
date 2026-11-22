@@ -12,6 +12,22 @@ pub(super) use mode::EditorMode;
 #[path = "../../src/editor/session_navigation.rs"]
 mod session_navigation;
 
+#[allow(dead_code)]
+#[path = "../../src/editor/audio_admission.rs"]
+mod audio_admission;
+
+#[allow(dead_code)]
+#[path = "../../src/editor/recovery_state.rs"]
+mod recovery_state;
+
+#[allow(dead_code)]
+#[path = "../../src/editor/playback_candidate.rs"]
+mod playback_candidate;
+use playback_candidate::{PendingPlayback, PlaybackCandidate};
+
+#[path = "arrangement_seek.rs"]
+mod arrangement_seek;
+
 #[path = "controller.rs"]
 mod controller;
 

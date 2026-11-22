@@ -309,7 +309,7 @@ ADDITIVE_TEST_FEATURES: dict[str, tuple[str, ...]] = {
     "hex-engine": ("instrument-test-support",),
     "hex-export": ("instrument-test-support",),
     "hex-desktop": ("recording-fault-test-support",),
-    "hex-audio": ("stream-test-support",),
+    "hex-audio": ("stream-test-support", "worker-test-support"),
     "hex-stream": ("test-support",),
     "hex-plugin-host": ("test-support",),
     "hex-media": ("test-support",),
@@ -329,7 +329,7 @@ SINGLE_RUN_COMPANION_FEATURES: dict[str, frozenset[str]] = {
 
 
 # Test-only cfg exclusions whose default lib module runs explicitly in merge plans.
-CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication_unit_tests::"
+CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication::"
 CONTROLLER_SESSION_ACTION_UNIT = "editor::controller::session_action_unit_tests::"
 CONTROLLER_SOURCE_BINDING_UNIT = "editor::controller::source_binding_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
@@ -347,7 +347,6 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/clip_selection.rs": ("editor::clip_selection::unit_tests::",),
     "src/editor/trim.rs": ("editor::trim::tests::",),
     "src/editor/changelog.rs": ("editor::changelog::tests::",),
-    "src/editor/device_panel/device_meter.rs": ("editor::device_panel::device_meter::tests::",),
     "src/editor/device_panel/utility_panel.rs": ("editor::device_panel::utility_panel::tests::",),
     "src/editor/controller_input/monitoring.rs": ("editor::controller_input::monitoring::unit_tests::",),
     "src/editor/controller_input.rs": ("editor::controller_input::tests::",),
@@ -409,10 +408,9 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/device_panel/eq8_panel/group.rs": ("editor::device_panel::eq8_panel::group::tests::",),
     "src/editor/device_panel/eq8_panel/selection.rs": ("editor::device_panel::eq8_panel::selection::tests::",),
     "src/editor/device_panel/eq_panel.rs": ("editor::device_panel::eq_panel::tests::",),
-    "src/editor/loop_rail.rs": ("editor::loop_rail::tests::",),
     "src/editor/fade_handles.rs": ("editor::fade_handles::tests::",),
     "src/editor/controller/submission.rs": ("editor::controller::submission::observation_tests::",),
-    "src/editor/controller.rs": (CONTROLLER_PUBLICATION_UNIT, CONTROLLER_SESSION_ACTION_UNIT,
+    "src/editor/controller.rs": (CONTROLLER_SESSION_ACTION_UNIT,
                                    CONTROLLER_SOURCE_BINDING_UNIT),
     "src/editor/arrangement_audio_panel.rs": ("editor::arrangement_audio_panel::tests::",),
     "src/editor/arrangement_audio_panel/controls.rs": ("editor::arrangement_audio_panel::controls::tests::",),
@@ -421,13 +419,11 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/device_panel/operator_panel/envelope.rs": ("editor::device_panel::operator_panel::envelope::tests::",),
     "src/editor/device_panel/operator_panel/filter_response.rs": ("editor::device_panel::operator_panel::filter_response::tests::",),
     "src/editor/device_panel/operator_panel/harmonics.rs": ("editor::device_panel::operator_panel::harmonics::tests::",),
-    "src/editor/drag.rs": ("editor::drag::tests::",),
     "src/editor/tracks.rs": ("editor::tracks::midi_trim_unit_tests::",),
     "src/editor/pending_clip_move.rs": ("editor::pending_clip_move::tests::",),
     "src/editor/midi_loop.rs": ("editor::midi_ruler::loop_brace::tests::",),
     "src/editor/midi_origin_view.rs": ("editor::midi_origin_view::tests::",),
     "src/editor/midi_loop_notes.rs": ("editor::midi_loop_notes::tests::",),
-    "src/editor/midi_ruler.rs": ("editor::midi_ruler::geometry_tests::",),
     "src/editor/waveform_geometry.rs": ("editor::waveform_geometry::tests::",),
     "src/editor/waveform_stretch.rs": ("editor::waveform_stretch::tests::",),
 }
@@ -633,6 +629,8 @@ UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
                    "editor::group_overview::model::": "unit_editor_logic",
                    "editor::browser::tree::state::": "unit_editor_logic",
                    "editor::arrangement_map::model::": "unit_editor_logic",
+                   "editor::arrangement_seek::admission::": "unit_editor_logic",
+                   "editor::controller::publication::": "unit_editor_logic",
                    "editor::controller::session_feedback::": "unit_editor_logic",
                    "editor::waveform::paint_geometry::": "unit_editor_logic",
                    "editor::waveform_geometry::grid::": "unit_editor_logic",
@@ -640,13 +638,18 @@ UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
                    "editor::waveform_loop::accepted_root::": "unit_editor_logic",
                    "editor::waveform_stretch::accepted_root::": "unit_editor_logic",
                    "editor::waveform_stretch::projection::": "unit_editor_logic",
-                   "editor::drag::geometry::": "unit_editor_logic",
+                   "editor::drag::geometry::": "unit_timeline",
+                   "editor::drag::logic::": "unit_timeline",
+                   "editor::loop_rail::geometry::": "unit_timeline",
                    "output_meter::logic::": "unit_editor_logic",
                    "editor::overview_waveform::": "unit_editor_logic",
                    "editor::waveform_columns::": "unit_editor_logic",
+                   "editor::device_panel::device_meter::logic::": "unit_device",
+                   "editor::device_panel::header_style::": "unit_editor_logic",
                    "editor::device_panel::eq_panel::axes::": "unit_editor_logic",
                    "editor::device_panel::eq_panel::response::": "unit_editor_logic",
                    "editor::session_audio_panel::playhead::": "unit_editor_logic",
+                   "editor::device_panel::vst3_parameters::cache::": "unit_device",
                    "editor::device_panel::vst3_parameters::row_projection::": "unit_device",
                    "editor::midi_cue::timing::": "unit_timeline",
                    "editor::waveform_source::": "unit_editor_logic",
@@ -669,6 +672,8 @@ UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
                    "editor::midi_drag::": "unit_piano_roll",
                    "editor::midi_group_drag::": "unit_piano_roll",
                    "editor::midi_canvas::geometry::": "unit_piano_roll",
+                   "editor::midi_pitch_viewport::": "unit_piano_roll",
+                   "editor::midi_ruler::geometry::": "unit_piano_roll",
                    "editor::midi_scene::": "unit_piano_roll",
                    "editor::midi_selection::": "unit_piano_roll",
                    "editor::midi_source_controls::": "unit_piano_roll",
@@ -829,8 +834,12 @@ UI_MODULE_TEST_DEPENDENCIES = {
     "editor::midi_canvas::audition_tests::": ("editor::controller_input::monitoring::unit_tests::",),
     "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::": ("editor::device_panel::eq_panel::tests::",),
     "editor::device_panel::tests::eq_ui_tests::": ("editor::device_panel::eq_panel::tests::",),
-    "editor::device_panel::tests::header_style_tests::": ("editor::device_panel::header_style_unit_tests::",),
-    "editor::arrangement_seek::tests::": ("editor::arrangement_seek::unit_tests::",),
+    "editor::device_panel::tests::header_style_tests::": (
+        "editor::device_panel::header_style::",
+        "editor::device_panel::header_style_unit_tests::",
+    ),
+    "editor::arrangement_seek::admission::": ("editor::arrangement_seek::unit_tests::",),
+    "editor::arrangement_seek::admission::tests::": ("editor::arrangement_seek::unit_tests::",),
     "editor::arrangement_sections::": ("editor::arrangement_seek::unit_tests::",),
     "section_appearance::": (
         "editor::arrangement_sections::tests::section_insertion_uses_edges_and_does_not_move_a_clicked_source",
@@ -856,6 +865,7 @@ UI_MODULE_TEST_DEPENDENCIES = {
     "editor::browser::audition::": ("editor::browser::audition_geometry::",),
     "editor::browser::random::": ("editor::browser::random_rank::",),
     "editor::browser::scrollbar::": ("editor::browser::scrollbar_geometry::",),
+    "editor::controller::publication::publication_unit_tests::": (CONTROLLER_PUBLICATION_UNIT,),
     "editor::controller::project_replacement_tests::": (CONTROLLER_PUBLICATION_UNIT,),
     "editor::controller::verified_gain_tests::": (CONTROLLER_PUBLICATION_UNIT,),
     "editor::arrangement_focus::visibility::": (
@@ -905,7 +915,7 @@ UI_PREFIX_COHORTS = [{"editor::device_panel::utility_panel::tests::",
                      "editor::automation_view::tests::earlier_completion_cannot_retire_released_gain_preview_and_own_refusal_does",
                      "editor::gain_lane::tests::native::occupied_pointer_move_refuses_before_actor_and_keeps_visible_draft"},
                     {"editor::midi_loop_notes::tests::",
-                     "editor::midi_ruler::geometry_tests::",
+                     "editor::midi_ruler::geometry::",
                      "editor::midi_ruler::loop_brace::tests::",
                      "editor::midi_loop_notes::tests::rendered_long_loop_paints_every_repeat_without_a_sample_badge",
                      "editor::midi_loop_notes::tests::rendered_tiled_loop_paints_one_sprite_per_visible_tile",
@@ -952,7 +962,7 @@ UI_PREFIX_COHORTS = [{"editor::device_panel::utility_panel::tests::",
                      "editor::browser::ui_test::place_correctness_refresh_retains_identity_only_after_current_success",
                      "editor::browser::ui_test::browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity",
                      "editor::browser::ui_test::browser_history_ui_test::browser_history_missing_place_remains_recoverable_and_late_scan_cannot_retarget"},
-                    {"editor::loop_rail::tests::",
+                    {"editor::loop_rail::geometry::",
                      "editor::loop_rail::loop_bar_ui_tests::review_ui_tests::minimum_frame_bar_body_keeps_move_even_when_pointer_rounds_to_end",
                      "editor::loop_rail::loop_bar_ui_tests::review_ui_tests::narrow_loop_center_drag_preserves_whole_range_at_two_zoom_levels",
                      "editor::loop_rail::loop_bar_ui_tests::review_ui_tests::viewport_edge_caps_resize_the_existing_loop_instead_of_painting_a_new_range",
@@ -1038,7 +1048,7 @@ UI_PREFIX_COHORTS = [{"editor::device_panel::utility_panel::tests::",
                       "editor::waveform::resize_tests::trim_keeps_sample_varied_waveforms_visible_with_warp_on_and_off"},
                      {"editor::waveform_geometry::grid::",
                       "editor::waveform::resize_tests::silent_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack"},
-                     {"editor::drag::geometry::", "editor::drag::tests::",
+                     {"editor::drag::geometry::", "editor::drag::logic::",
                       "editor::clip_drag_ui_test::rendered_move_retains_destination_until_real_worker_ack",
                       "editor::drag::group_drag_ui_test::stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_release"},
                      {"editor::session_grid::actions::", "editor::delete_ui_tests::",
@@ -1435,11 +1445,15 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                     names.update(consumers)
             if any("editor::arrangement_seek::unit_tests::".startswith(name) for name in names):
                 names.update((
-                    "editor::arrangement_seek::tests::post_loop_cursor_survives_actual_seek_worker_and_fenced_callback_installation",
+                    "editor::arrangement_seek::admission::tests::post_loop_cursor_survives_actual_seek_worker_and_fenced_callback_installation",
                     "editor::arrangement_sections::tests::section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels",
                     "editor::edit_cursor_ui_test::stateful_space_queues_play_from_without_a_seek_worker",
                 ))
-            if any("editor::device_panel::header_style_unit_tests::".startswith(name) for name in names):
+            if any(
+                "editor::device_panel::header_style_unit_tests::".startswith(name)
+                or "editor::device_panel::header_style::".startswith(name)
+                for name in names
+            ):
                 names.update((
                     "editor::device_panel::tests::header_style_tests::retained_source_path_indicator_is_rendered_with_the_existing_chain",
                     "editor::device_panel::tests::header_style_tests::device_shell_outline_is_visible_rounded_and_tracks_selection_across_owners",
@@ -1456,7 +1470,7 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                     "editor::controller_input::hardware_step_discontinuity_excludes_old_keys_and_cancel_refuses_false_rest",
                     "editor::midi_canvas::audition_tests::configured_controller_keeps_its_root_during_note_and_marquee_audition",
                 ))
-            if any("editor::device_panel::device_meter::tests::".startswith(name) for name in names):
+            if any("editor::device_panel::device_meter::logic::".startswith(name) for name in names):
                 names.update((
                     "editor::device_panel::tests::clicking_a_device_meter_clears_its_held_overload_line",
                 ))

@@ -12,7 +12,7 @@
 //! Arrangement clock mappings.
 use crate::input_devices::InputDeviceId;
 mod coordinated;
-#[cfg(feature = "allocation-probe")]
+#[cfg(feature = "worker-test-support")]
 pub(crate) mod fixture;
 mod monitor_stream;
 pub use monitor_stream::{MonitorBlock, MonitorStream, MonitorStreamError};

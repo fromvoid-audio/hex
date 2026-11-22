@@ -158,14 +158,22 @@ impl HeadlessBackend {
     /// headless callback is quiescent on the test control thread. Never use a
     /// Session worker's polling cadence as the native worker's clock. None is
     /// closed/unsupported/contended; true is diagnostic, not native admission.
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(all(
+        feature = "allocation-probe",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ))]
     pub fn native_workers_idle_on_control(&mut self) -> Option<bool> {
         let owner = self.data.as_mut().and_then(Guard::owner_mut)?;
         let mut result = None;
         owner.run(|callback, _| result = callback.native_workers_idle_on_control());
         result
     }
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(all(
+        feature = "allocation-probe",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ))]
     pub fn native_worker_phase_for_test(&mut self) -> Option<usize> {
         let owner = self.data.as_mut().and_then(Guard::owner_mut)?;
         let mut phase = None;
@@ -174,7 +182,11 @@ impl HeadlessBackend {
     }
     /// Observe the exact endpoint's contained fault on test control. This
     /// copies diagnostics only; no source, endpoint or readiness is admitted.
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(all(
+        feature = "allocation-probe",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ))]
     pub fn native_source_fault_on_control(
         &mut self,
         binding: hex_lattice_contract::ForeignProcessorBinding,
@@ -197,7 +209,11 @@ impl HeadlessBackend {
     /// Hold original native Work on a separate test control thread. The
     /// callback entry ends before taking that exclusion; native state and its
     /// actual owners remain in Root. Never call from a measured render scope.
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(all(
+        feature = "allocation-probe",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ))]
     pub fn with_native_source_work_held_on_control<R>(
         &mut self,
         run: impl FnOnce() -> R,

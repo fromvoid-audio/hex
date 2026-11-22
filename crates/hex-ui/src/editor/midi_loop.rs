@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn loop_hits_keep_clipped_edges_honest_and_tiny_endpoints_accessible() {
         let beat = hex_project::BeatTime::ONE.raw();
-        let base = super::super::geometry_tests::context();
+        let base = super::super::geometry::test_context();
         let c = Context {
             values: SourceValues {
                 loop_start: beat,

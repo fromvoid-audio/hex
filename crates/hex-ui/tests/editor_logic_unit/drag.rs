@@ -1,5 +1,5 @@
 #[allow(dead_code)]
-#[path = "../../src/editor/drag/geometry.rs"]
-mod geometry;
+#[path = "../../src/editor/drag/lane_bounds.rs"]
+mod lane_bounds;
 
-pub(super) use geometry::LaneBounds;
+pub(super) use lane_bounds::LaneBounds;

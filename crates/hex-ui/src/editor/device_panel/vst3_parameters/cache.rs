@@ -283,7 +283,7 @@ fn validate_row(
     Ok(())
 }
 
-#[cfg(all(test, feature = "ui-test-support"))]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
     use std::{

@@ -47,7 +47,7 @@ use std::time::Instant;
 // is needed when a later post-cut ticket remains queued.
 const COMMANDS: usize = 32;
 
-#[cfg(feature = "allocation-probe")]
+#[cfg(feature = "worker-test-support")]
 impl Callback {
     /// Read-only headless control observation while the callback is quiescent.
     /// Empty is queue state, not graph/source application or native readiness.
@@ -715,7 +715,7 @@ impl Status {
         self.publication_pending.load(Acquire)
     }
 
-    #[cfg(feature = "allocation-probe")]
+    #[cfg(feature = "worker-test-support")]
     pub(crate) fn headless_shutdown_requested(&self) -> bool {
         self.closing.load(Acquire)
     }

@@ -386,7 +386,7 @@ fn clip_preview_requires_exact_applied_revision_and_current_gesture() {
 
 #[test]
 fn applied_clip_preview_invalidates_only_the_previous_canonical_audio() {
-    use super::super::audio_admission::AdmissionState;
+    use crate::editor::audio_admission::AdmissionState;
     let project = ProjectRevision {
         generation: 2,
         revision: 40,
@@ -456,7 +456,7 @@ fn preview_candidate(
 
 #[test]
 fn actual_current_ack_restores_recovery_without_a_submitted_event() {
-    let mut recovery = super::super::recovery_state::RecoveryState::default();
+    let mut recovery = crate::editor::recovery_state::RecoveryState::default();
     let generation = recovery.begin(640).unwrap();
     assert!(recovery.opened(generation));
     assert_eq!(recovery.seek_needed(true), None);
@@ -470,7 +470,7 @@ fn actual_current_ack_restores_recovery_without_a_submitted_event() {
 
 #[test]
 fn coalesced_submission_keeps_actual_audible_context_when_newer_edit_refuses() {
-    use super::super::audio_admission::{AudioAdmissionStatus, ProjectRevision};
+    use crate::editor::audio_admission::{AudioAdmissionStatus, ProjectRevision};
     let mut admission = AudioAdmissionStatus::default();
     let mode = hex_session::DocumentAudioMode::VerifiedStreaming;
     let source = hex_audio::prepared::AppliedAudioSource {
@@ -528,7 +528,7 @@ fn coalesced_submission_keeps_actual_audible_context_when_newer_edit_refuses() {
     reconcile_verified_applied_source(&mut admission, mode, Some(13), 2, Some(8), Some(actual_b));
     assert_eq!(
         admission.current().unwrap().state,
-        super::super::audio_admission::AdmissionState::Applied
+        crate::editor::audio_admission::AdmissionState::Applied
     );
     assert!(!admission.unpublished_refusal(
         ProjectRevision {

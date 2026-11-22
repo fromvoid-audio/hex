@@ -1,4 +1,6 @@
 // Runtime consumers use more methods than this unit-only target.
+#[path = "device_meter.rs"]
+mod device_meter;
 #[path = "eq_panel.rs"]
 mod eq_panel;
 #[allow(dead_code)]

@@ -398,7 +398,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
     );
     let mut pending_slot = Some(pending);
     let mut status = String::new();
-    let mut error = None;
+    let mut error: Option<String> = None;
     assert!(resolve_prepared_seek_terminal(
         &mut pending_slot,
         &mut status,
@@ -550,7 +550,7 @@ fn invalidating_published_seek_cancels_callback_candidate_and_waits_for_terminal
 
     let mut pending_slot = Some(pending);
     let mut status = String::from("arrangement seek ready · waiting for audio");
-    let mut error = None;
+    let mut error: Option<String> = None;
     assert!(resolve_prepared_seek_terminal(
         &mut pending_slot,
         &mut status,

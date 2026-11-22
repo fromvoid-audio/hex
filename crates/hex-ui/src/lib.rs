@@ -31,7 +31,7 @@ pub use controller_input::install_controller_input;
 pub use diagnostics::{install_action_diagnostics, install_audio_diagnostics, install_session_log};
 mod editor;
 mod editor_backend;
-#[cfg(feature = "ui-test-support")]
+#[cfg(any(feature = "ui-test-support", all(test, feature = "ui-unit-tier")))]
 mod test_wait;
 pub use editor_backend::{
     EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationState,

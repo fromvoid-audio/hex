@@ -33,7 +33,7 @@ pub(crate) struct NativeCallbackOwner {
     probe: Option<DropProbe>,
 }
 impl NativeCallbackOwner {
-    #[cfg(feature = "allocation-probe")]
+    #[cfg(feature = "worker-test-support")]
     pub(crate) fn borrowed_status(&self) -> &Status {
         &self.status
     }
