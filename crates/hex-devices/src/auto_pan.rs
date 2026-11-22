@@ -288,7 +288,7 @@ impl NativeDeviceMetadata for AutoPanDefinition {
         AUTO_PAN_TYPE_ID
     }
     fn display_name(&self) -> Option<&'static str> {
-        Some("auto pan")
+        Some("pan")
     }
     fn state_version(&self) -> u32 {
         AUTO_PAN_STATE_VERSION

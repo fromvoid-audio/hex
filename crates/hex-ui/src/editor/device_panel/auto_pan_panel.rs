@@ -56,7 +56,7 @@ pub(super) fn preview(
             .parameters
             .iter()
             .find(|p| p.descriptor.id == id)
-            .ok_or("missing auto pan parameter")?;
+            .ok_or("missing pan parameter")?;
         canonical_values[index] = parameter.value;
         *value = effective_parameter_value(
             view,
@@ -69,7 +69,7 @@ pub(super) fn preview(
     }
     let Some(entry) = view.state.as_ref().and_then(|s| s.project.device(device)) else {
         view.device_panel.auto_pan_previews.remove(&device);
-        return Err("missing auto pan".to_owned());
+        return Err("missing pan".to_owned());
     };
     let state = entry.state();
     let variant = entry.active_variant();

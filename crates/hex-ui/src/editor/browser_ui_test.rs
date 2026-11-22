@@ -812,14 +812,14 @@ fn command_f_opens_all_search_and_replaces_query_from_editor_and_results(cx: &mu
     cx.simulate_keystrokes(handle, "down");
     editor.read_with(cx, |view, _| assert_eq!(view.browser.selected_index, 1));
     cx.simulate_keystrokes(handle, "cmd-f");
-    cx.simulate_input(handle, "utility");
+    cx.simulate_input(handle, "mix");
     editor.read_with(cx, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).text(), "utility");
+        assert_eq!(view.browser.search.read(cx).text(), "mix");
         assert!(view.browser_visible_entries(cx).is_empty());
         let devices = view.browser_visible_devices(cx);
         assert_eq!(devices.len(), 1);
-        assert_eq!(devices[0].1.name.to_lowercase(), "utility");
-        assert_eq!(view.browser_selected_label(cx).to_lowercase(), "utility");
+        assert_eq!(devices[0].1.name.to_lowercase(), "mix");
+        assert_eq!(view.browser_selected_label(cx).to_lowercase(), "mix");
         assert!(!view.browser.results_focused);
     });
     cx.simulate_keystrokes(handle, "down");
@@ -861,12 +861,12 @@ fn command_f_commits_clip_name_draft_then_routes_typing_to_browser(cx: &mut Test
     .expect("rename focus");
     cx.simulate_input(handle, "verse");
     cx.simulate_keystrokes(handle, "cmd-f");
-    cx.simulate_input(handle, "utility");
+    cx.simulate_input(handle, "mix");
     editor.read_with(cx, |view, cx| {
         assert!(view.clip_name_edit.is_none());
         assert!(matches!(&view.last_enqueued_edit,
             Some(Command::RenameClip { clip: target, name }) if *target == clip && name == "verse"));
-        assert_eq!(view.browser.search.read(cx).text(), "utility");
+        assert_eq!(view.browser.search.read(cx).text(), "mix");
         assert_eq!(view.browser.section, BrowserSection::All);
     });
 }
@@ -887,9 +887,9 @@ fn command_f_replaces_entire_query_during_ime_composition(cx: &mut TestAppContex
     })
     .unwrap();
     cx.simulate_keystrokes(handle, "cmd-f");
-    cx.simulate_input(handle, "utility");
+    cx.simulate_input(handle, "mix");
     editor.read_with(cx, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).text(), "utility");
+        assert_eq!(view.browser.search.read(cx).text(), "mix");
     });
 }
 
@@ -946,7 +946,7 @@ fn command_f_device_highlight_waits_for_result_focus(cx: &mut TestAppContext) {
     let (handle, _, _, _directory, _) = browser_drag_fixture(cx);
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.simulate_keystrokes("cmd-f");
-    visual.simulate_input("utility");
+    visual.simulate_input("mix");
     visual.run_until_parked();
     let selector = "browser-device-effect-hex.utility";
     assert_eq!(
@@ -972,7 +972,7 @@ fn command_f_category_click_keeps_query_but_moves_real_focus_in_session(cx: &mut
     let visual = &mut VisualTestContext::from_window(handle, cx);
     for category in ["samples", "devices", "projects", "all"] {
         visual.simulate_keystrokes("cmd-f");
-        visual.simulate_input("utilit");
+        visual.simulate_input("mi");
         visual.run_until_parked();
         let selector = Box::leak(format!("browser-section-{category}").into_boxed_str());
         let bounds = visual.debug_bounds(selector).expect("category");
@@ -988,16 +988,16 @@ fn command_f_category_click_keeps_query_but_moves_real_focus_in_session(cx: &mut
                 )
             });
         });
-        visual.simulate_input("y");
+        visual.simulate_input("x");
         editor.read_with(visual, |view, cx| {
-            assert_eq!(view.browser.search.read(cx).text(), "utilit")
+            assert_eq!(view.browser.search.read(cx).text(), "mi")
         });
         let field = visual.debug_bounds("browser-search").unwrap();
         visual.simulate_click(field.center(), Modifiers::default());
         visual.simulate_keystrokes("right");
-        visual.simulate_input("y");
+        visual.simulate_input("x");
         editor.read_with(visual, |view, cx| {
-            assert_eq!(view.browser.search.read(cx).text(), "utility")
+            assert_eq!(view.browser.search.read(cx).text(), "mix")
         });
     }
     visual.simulate_keystrokes("down enter");
@@ -1064,7 +1064,7 @@ fn command_f_scan_completion_preserves_selected_device(cx: &mut TestAppContext) 
     cx.update(super::super::bind_editor_keys);
     let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
     cx.simulate_keystrokes(handle, "cmd-f");
-    cx.simulate_input(handle, "utility");
+    cx.simulate_input(handle, "mix");
     let request = editor.update(cx, |view, cx| {
         view.browser.listing = None;
         view.browser.loading = true;
@@ -1079,7 +1079,7 @@ fn command_f_scan_completion_preserves_selected_device(cx: &mut TestAppContext) 
     });
     cx.simulate_keystrokes(handle, "down");
     editor.read_with(cx, |view, cx| {
-        assert_eq!(view.browser_selected_label(cx).to_lowercase(), "utility")
+        assert_eq!(view.browser_selected_label(cx).to_lowercase(), "mix")
     });
     editor.update(cx, |view, cx| {
         let directory = view.browser.directory.clone();
@@ -1088,8 +1088,8 @@ fn command_f_scan_completion_preserves_selected_device(cx: &mut TestAppContext) 
             Ok(DirectoryListing {
                 directory: directory.clone(),
                 entries: vec![LibraryEntry {
-                    name: "utility.hex".into(),
-                    path: directory.join("utility.hex"),
+                    name: "mix.hex".into(),
+                    path: directory.join("mix.hex"),
                     kind: EntryKind::Project,
                 }],
                 enumerated_entries: 1,
@@ -1102,7 +1102,7 @@ fn command_f_scan_completion_preserves_selected_device(cx: &mut TestAppContext) 
     editor.read_with(cx, |view, cx| {
         assert_eq!(
             view.browser_selected_label(cx).to_lowercase(),
-            "utility",
+            "mix",
             "late files must not retarget device selection"
         );
         assert_eq!(view.browser.selected_index, 0);
@@ -1123,7 +1123,7 @@ fn command_f_device_click_retains_browser_keys_in_session(cx: &mut TestAppContex
     });
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.simulate_keystrokes("cmd-f");
-    visual.simulate_input("utility");
+    visual.simulate_input("mix");
     visual.run_until_parked();
     let row = visual
         .debug_bounds("browser-device-effect-hex.utility")
@@ -3563,12 +3563,12 @@ fn all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refres
     let (handle, editor, _, indexed, _) = browser_drag_fixture(cx);
     let nested = indexed.0.join("nested");
     std::fs::create_dir_all(&nested).unwrap();
-    let indexed_wav = nested.join("utility-index.wav");
+    let indexed_wav = nested.join("mix-index.wav");
     std::fs::write(&indexed_wav, mono_pcm_wav(16)).unwrap();
     let outside = PreferencesTestDirectory::new();
-    let outside_wav = outside.0.join("utility-outside.wav");
+    let outside_wav = outside.0.join("mix-outside.wav");
     std::fs::write(&outside_wav, mono_pcm_wav(16)).unwrap();
-    let project = outside.0.join("utility.hex");
+    let project = outside.0.join("mix.hex");
     std::fs::write(&project, []).unwrap();
     let visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
@@ -3585,7 +3585,7 @@ fn all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refres
         cx.notify();
     });
     cx.simulate_keystrokes(handle, "cmd-f");
-    cx.simulate_input(handle, "utility");
+    cx.simulate_input(handle, "mix");
     visual.run_until_parked();
     let selected_device = editor.update(cx, |view, cx| {
         assert_eq!(view.browser.section, BrowserSection::All);
@@ -3601,7 +3601,7 @@ fn all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refres
         let devices = view.browser_visible_devices(cx);
         let device_index = devices
             .iter()
-            .position(|(_, entry)| entry.name.to_lowercase() == "utility")
+            .position(|(_, entry)| entry.name.to_lowercase() == "mix")
             .unwrap();
         let identity = (devices[device_index].0, devices[device_index].1.type_id);
         view.browser.selected_index = view
@@ -3611,13 +3611,13 @@ fn all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refres
         cx.notify();
         identity
     });
-    std::fs::write(nested.join("utility-second.wav"), mono_pcm_wav(16)).unwrap();
+    std::fs::write(nested.join("mix-second.wav"), mono_pcm_wav(16)).unwrap();
     editor.update(cx, |view, cx| view.refresh_sample_catalog(cx));
     visual.run_until_parked();
     editor.read_with(cx, |view, cx| {
         assert_eq!(view.browser_visible_entries(cx).len(), 4);
         assert!(matches!(view.browser_selected_item(cx), Some(super::BrowserItemKey::Device(class, id)) if (class, id) == selected_device));
-        assert_eq!(view.browser_selected_label(cx).to_lowercase(), "utility");
+        assert_eq!(view.browser_selected_label(cx).to_lowercase(), "mix");
     });
     let unchanged = editor.read_with(cx, |view, cx| view.browser_visible_entries(cx));
     editor.update(cx, |view, cx| view.refresh_sample_catalog(cx));
@@ -3625,7 +3625,7 @@ fn all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refres
     editor.read_with(cx, |view, cx| {
         assert!(Arc::ptr_eq(&unchanged, &view.browser_visible_entries(cx)))
     });
-    std::fs::write(outside.0.join("utility-third.wav"), mono_pcm_wav(16)).unwrap();
+    std::fs::write(outside.0.join("mix-third.wav"), mono_pcm_wav(16)).unwrap();
     editor.update(cx, |view, cx| {
         view.request_browser_scan(outside.0.clone(), cx)
     });
