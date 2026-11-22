@@ -42,10 +42,14 @@ _MODULE_SCAN_CACHE_STACK: list = []
 
 
 def setUpModule():
-    for planner in (plan, ci.ci_plan):
-        ctx = planner.cache_readonly_module_scans(SCRIPTS.parent)
-        ctx.__enter__()
-        _MODULE_SCAN_CACHE_STACK.append(ctx)
+    try:
+        for planner in (plan, ci.ci_plan):
+            ctx = planner.cache_readonly_module_scans(SCRIPTS.parent)
+            ctx.__enter__()
+            _MODULE_SCAN_CACHE_STACK.append(ctx)
+    except Exception:
+        tearDownModule()
+        raise
 
 
 def tearDownModule():
@@ -7781,10 +7785,16 @@ class ModuleScopeTests(unittest.TestCase):
             root = Path(directory).resolve()
             src = root / "crates/owner/src"
             (src / "alpha/beta").mkdir(parents=True)
-            (src / "lib.rs").write_text("mod alpha;\n")
+            (src / "custom").mkdir(parents=True)
+            (src / "lib.rs").write_text(
+                'mod alpha;\n#[path = "custom/entry.rs"]\nmod delta;\nmod empty_mod;\nmod missing_mod;\n'
+            )
             (src / "alpha.rs").write_text("mod beta;\n#[test]\nfn alpha_case() {}\n")
             (src / "alpha/beta.rs").write_text("mod gamma;\n")
             (src / "alpha/beta/gamma.rs").write_text("pub fn leaf() {}\n")
+            (src / "custom/entry.rs").write_text('#[cfg(test)]\n#[path = "shared_tests.rs"]\nmod tests;\n')
+            (src / "custom/shared_tests.rs").write_text("#[gpui::test]\nfn nested_case() {}\n")
+            (src / "empty_mod.rs").write_text("")
             inventory = [{"name": "owner", "manifest": "crates/owner/Cargo.toml",
                           "features": {}, "dependencies": [], "targets": []}]
             reads: dict[Path, int] = {}
@@ -7797,15 +7807,50 @@ class ModuleScopeTests(unittest.TestCase):
 
             with patch.object(Path, "read_text", counting_read_text):
                 filters = plan.module_test_filters(
-                    root, ["crates/owner/src/alpha/beta/gamma.rs"], inventory, ["owner"]
+                    root,
+                    [
+                        "crates/owner/src/alpha/beta/gamma.rs",
+                        "crates/owner/src/custom/entry.rs",
+                    ],
+                    inventory,
+                    ["owner"],
                 )
-            self.assertEqual(filters, {"owner": ["alpha::"]})
-            self.assertEqual(len(reads), 4)
+            self.assertEqual(filters, {"owner": ["alpha::", "delta::"]})
+            self.assertEqual(len(reads), 7)
             self.assertTrue(all(count == 1 for count in reads.values()), reads)
+
+            reads.clear()
+            with patch.object(Path, "read_text", counting_read_text):
+                fallback_filters = plan.module_test_filters(
+                    root,
+                    [
+                        "crates/owner/src/alpha/beta/gamma.rs",
+                        "crates/owner/src/custom/shared_tests.rs",
+                        "crates/owner/src/empty_mod.rs",
+                        "crates/owner/src/nonexistent.rs",
+                    ],
+                    inventory,
+                    ["owner"],
+                )
+            self.assertEqual(fallback_filters, {})
+            self.assertEqual(len(reads), 7)
+            self.assertTrue(all(count == 1 for count in reads.values()), reads)
+
+            reads.clear()
+            with patch.object(Path, "read_text", counting_read_text):
+                self.assertEqual(
+                    plan.module_test_filters(root, ["crates/owner/src/nonexistent.rs"], inventory, ["owner"]),
+                    {},
+                )
+            self.assertEqual(reads, {})
 
     def test_module_scan_cache_is_opt_in_and_scoped_to_workspace_root(self):
         fresh = module("fresh_scan_cache_probe", "ci_plan.py")
         self.assertIsNone(fresh._MODULE_SCAN_CACHE)
+        self.assertIsNone(fresh._MODULE_SCAN_CACHE_ROOT)
+        fresh_ci = module("fresh_local_ci_cache_probe", "local-ci.py")
+        self.assertIsNone(fresh_ci.ci_plan._MODULE_SCAN_CACHE)
+        self.assertIsNone(fresh_ci.ci_plan._MODULE_SCAN_CACHE_ROOT)
         with tempfile.TemporaryDirectory() as cached_dir, tempfile.TemporaryDirectory() as other_dir:
             cached_root = Path(cached_dir).resolve()
             other_root = Path(other_dir).resolve()
@@ -7851,6 +7896,7 @@ class ModuleScopeTests(unittest.TestCase):
                     {},
                 )
             self.assertIsNone(fresh._MODULE_SCAN_CACHE)
+            self.assertIsNone(fresh._MODULE_SCAN_CACHE_ROOT)
 
 class ProfileManifestTests(unittest.TestCase):
     """Profile-only root manifest changes test the retuned packages (policy v6)."""
