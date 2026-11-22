@@ -160,10 +160,9 @@ pub(super) fn event(
         let Some(axes) = axes else {
             return;
         };
-        match snapshot(&bands, [0.0, 0.0], rate).and_then(|initial| {
-            view.device_gesture
-                .begin_snapshot(view.project_generation, device, initial)
-        }) {
+        match snapshot(&bands, [0.0, 0.0], rate)
+            .and_then(|initial| view.begin_device_snapshot_gesture(device, initial))
+        {
             Ok(key) => {
                 if let Some(control) = view.device_panel.eq8_graphs.get_mut(&device) {
                     control.group_drag = Some(Drag {
@@ -264,8 +263,7 @@ pub(super) fn disable(view: &mut EditorView, device: DeviceId, cx: &mut Context<
         .and_then(|initial| {
             let disabled = DeviceParameterSnapshot::new(&disabled)
                 .map_err(|_| "eq8 group parameters unavailable")?;
-            view.device_gesture
-                .begin_snapshot(view.project_generation, device, initial)?;
+            view.begin_device_snapshot_gesture(device, initial)?;
             let result = view.device_gesture.finish_snapshot(disabled);
             if result.is_err() {
                 let _ = view.cancel_device_gesture();

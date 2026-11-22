@@ -574,6 +574,10 @@ fn ready(view: &mut EditorView, cx: &mut Context<EditorView>) -> bool {
     if !finalize_controls(view, cx) {
         return false;
     }
+    if let Err(error) = view.check_device_gesture_admission() {
+        view.device_panel.message = Some(error.into());
+        return false;
+    }
     if view.worker_requests_pending != 0
         || !view.pending_requests.is_empty()
         || !view.device_gesture_barriers.is_empty()
@@ -1007,8 +1011,7 @@ fn begin_creation(
         let snapshot =
             EqNodeCreationSnapshot::new(node, expected_variant, next_id).map_err(str::to_owned)?;
         let key = view
-            .device_gesture
-            .begin_eq_creation(view.project_generation, device, snapshot)
+            .begin_eq_creation_gesture(device, snapshot)
             .map_err(str::to_owned)?;
         if let Err(error) = view.device_gesture.change_eq_creation(snapshot) {
             let _ = view.cancel_device_gesture();

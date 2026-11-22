@@ -117,6 +117,25 @@ impl Recorder {
     pub(super) fn blocks_edits(&self) -> bool {
         !matches!(self.stage, Stage::Idle) || self.record_after_monitor.is_some()
     }
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn set_test_blocks_edits(&mut self, track: hex_project::TrackId, blocking: bool) {
+        self.record_after_monitor = blocking.then_some(Binding {
+            source: AppliedAudioSource {
+                context: hex_engine::AudioSourceContext {
+                    project_generation: 0,
+                    editor_revision: 0,
+                },
+                audio_revision: 1,
+                output_identity: 1,
+            },
+            track,
+            context: AudioBatchContext {
+                project_generation: 0,
+                revision: 0,
+                active_gesture: false,
+            },
+        });
+    }
     pub(super) fn needs_poll(&self) -> bool {
         self.blocks_edits() || self.retiring_monitor_output.is_some() || self.paused_input.pending()
     }

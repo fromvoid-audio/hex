@@ -58,6 +58,25 @@ pub(super) struct EditorCapture {
 }
 
 impl Recorder {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(in crate::editor) fn set_test_busy(&mut self, device: DeviceId, busy: bool) {
+        self.editor_take = busy.then_some(EditorCapture {
+            request_id: 1,
+            key: GestureKey {
+                generation: 0,
+                token: 1,
+            },
+            arm: EditorArm {
+                generation: 0,
+                revision: 0,
+                target: PluginEditorRecordingTarget::Group(
+                    Vst3GroupTarget::new(device, [1; 16], &[0, 1]).expect("valid test group"),
+                ),
+            },
+            cancelling: false,
+        });
+    }
+
     pub(in crate::editor) fn permits_original_editor_window(&self, request: &Request) -> bool {
         let Request::TogglePluginEditor {
             project_generation,

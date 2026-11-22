@@ -245,10 +245,8 @@ pub(super) fn group_event(
             .filter_map(|id| state.node(*id).ok().copied())
             .map(|node| (node, node_position(&node, rate)))
             .collect();
-        let result = group_snapshot(&nodes, [0.0, 0.0], rate).and_then(|initial| {
-            view.device_gesture
-                .begin_snapshot(view.project_generation, device, initial)
-        });
+        let result = group_snapshot(&nodes, [0.0, 0.0], rate)
+            .and_then(|initial| view.begin_device_snapshot_gesture(device, initial));
         match result {
             Ok(key) => {
                 if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
