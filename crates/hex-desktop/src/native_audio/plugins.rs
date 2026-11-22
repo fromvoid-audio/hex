@@ -219,6 +219,7 @@ pub(super) struct Plugins {
     unavailable: Option<String>,
     profile_failed: bool,
     configured: bool,
+    scratch_capacity: usize,
     pub(super) pool_held: bool,
     sources: Vec<Source>,
     paused_monitor_sources: Vec<Binding>,
@@ -360,6 +361,7 @@ impl Plugins {
     pub fn refuse_profile(&mut self, reason: String) {
         self.profile_failed = true;
         self.configured = false;
+        self.scratch_capacity = 0;
         self.unavailable = Some(reason);
     }
     /// A fresh exclusive output Lease proves destruction of the prior Root.
@@ -392,6 +394,7 @@ impl Plugins {
             conversion.output_closed();
         }
         self.configured = false;
+        self.scratch_capacity = 0;
         self.observed_parameters.clear();
         if let Some(gesture) = self.parameter_gesture.as_mut() {
             gesture.recording_output_closed();
@@ -460,19 +463,19 @@ impl Plugins {
             return Err("vst3 output profile is unavailable".into());
         }
         self.sources
-            .try_reserve_exact(policy.capacity)
+            .try_reserve_exact(policy.active_capacity)
             .map_err(|_| "vst3 source records unavailable")?;
-        if self.sources.capacity() != policy.capacity {
+        if self.sources.capacity() != policy.active_capacity {
             return Err("vst3 source record capacity differs".into());
         }
         self.paused_monitor_sources
-            .try_reserve_exact(policy.capacity)
+            .try_reserve_exact(policy.active_capacity)
             .map_err(|_| "vst3 monitor source records unavailable")?;
-        if self.paused_monitor_sources.capacity() != policy.capacity {
+        if self.paused_monitor_sources.capacity() != policy.active_capacity {
             return Err("vst3 monitor source record capacity differs".into());
         }
         let monitor_bytes = policy
-            .capacity
+            .active_capacity
             .checked_mul(
                 std::mem::size_of::<Binding>()
                     + std::mem::size_of::<hex_engine::PausedMonitorForeignBinding>(),
@@ -486,7 +489,7 @@ impl Plugins {
             .and_then(|n| {
                 n.checked_add(
                     policy
-                        .capacity
+                        .active_capacity
                         .checked_mul(std::mem::size_of::<editor_close::Worker>())?,
                 )
             })
@@ -508,9 +511,10 @@ impl Plugins {
             return Err("vst3 control data reservation exceeded".into());
         }
         control
-            .configure_native_source_preparation(policy.capacity, policy.source)
+            .configure_native_source_preparation(policy.pool_capacity, policy.source)
             .map_err(str::to_owned)?;
         self.configured = true;
+        self.scratch_capacity = policy.scratch_capacity;
         self.pool_held = true;
         Ok(())
     }
@@ -580,7 +584,9 @@ impl Plugins {
                 Ok(())
             })
             .is_ok()
-            && control.has_vacant_native_source_slots_on_control(needed)
+            && needed
+                .checked_add(self.scratch_capacity)
+                .is_some_and(|slots| control.has_vacant_native_source_slots_on_control(slots))
     }
     /// The exact successor has applied. Keep the old bindings until Root
     /// returns their graph, tail and endpoint obligations on control.
@@ -1893,5 +1899,53 @@ mod powered_off_document_tests {
             },
             Some(boot)
         ));
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn active_capacity_control_bytes_fit_reservation() {
+        let policy = crate::audio_policy::AudioPolicy::new().unwrap();
+        let active = policy.plugins.active_capacity;
+        let monitor_bytes = active
+            * (std::mem::size_of::<Binding>()
+                + std::mem::size_of::<hex_engine::PausedMonitorForeignBinding>());
+        let control_bytes = active * std::mem::size_of::<Source>()
+            + monitor_bytes
+            + active * std::mem::size_of::<editor_close::Worker>()
+            + std::mem::size_of::<Plugins>()
+            + 8192
+            + hex_audio::plugin_effects::EffectSourceMetadata::MAX_DATA_BYTES;
+        assert!(
+            control_bytes < crate::audio_policy::PLUGIN_CONTROL_DATA_BYTES,
+            "control_bytes={control_bytes} must stay under PLUGIN_CONTROL_DATA_BYTES={}",
+            crate::audio_policy::PLUGIN_CONTROL_DATA_BYTES
+        );
+    }
+
+    #[cfg(all(
+        target_os = "macos",
+        target_arch = "aarch64",
+        feature = "allocation-probe"
+    ))]
+    #[test]
+    fn paused_monitor_slot_check_preserves_reserved_scratch_headroom() {
+        let policy = crate::audio_policy::AudioPolicy::new().unwrap();
+        let scratch = policy.plugins.scratch_capacity;
+        // Verify that reserving scratch headroom requires `count + scratch`
+        // vacant slots in Root: when only `scratch` slots remain, requesting
+        // 1 paused monitor slot fails while `scratch` slots remain available
+        // for control-side captures (save/canonical_bases/gesture scratch).
+        let _serial = hex_audio::worker_fixture::serial_output();
+        let (mut output, backend) =
+            hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+        let control = output.publication.control().unwrap();
+        policy.configure(control).unwrap();
+        control
+            .configure_native_source_preparation(scratch, policy.plugins.source)
+            .unwrap();
+        assert!(control.has_vacant_native_source_slots_on_control(scratch));
+        assert!(!control.has_vacant_native_source_slots_on_control(scratch + 1));
+        drop(backend);
+        output.publication.close();
     }
 }

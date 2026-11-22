@@ -262,7 +262,10 @@ impl Plugins {
             if !self.configured || count > self.paused_monitor_sources.capacity() {
                 return Err("vst3 monitor sources exceed the reserved capacity".into());
             }
-            if !control.has_vacant_native_source_slots_on_control(count) {
+            let needed = count
+                .checked_add(self.scratch_capacity)
+                .ok_or("vst3 monitor source capacity overflow")?;
+            if !control.has_vacant_native_source_slots_on_control(needed) {
                 return Err("vst3 monitor source capacity is unavailable".into());
             }
             replacements

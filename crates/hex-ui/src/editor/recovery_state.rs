@@ -5,6 +5,9 @@ use hex_session::service::Request;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum DeferredEditKind {
     NativeEffect,
+    PluginEffect,
+    RemoveDevice,
+    ToggleDeviceBypass,
     SampleDrop,
     TimeDuplicate,
     LoopRegion,
