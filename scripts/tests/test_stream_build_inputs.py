@@ -69,7 +69,10 @@ class StreamBuildInputsTests(unittest.TestCase):
             self.assertIn(marker, observe(guarded=False))
             missing = "cargo:rerun-if-changed=" + str(home / "config.toml")
             self.assertNotIn(missing, observe())
-            self.assertIn(missing, observe(guarded=False))
+            self.assertNotIn(missing, observe(guarded=False))
+            recursive_home = "cargo:rerun-if-changed=" + str(home) + "\n"
+            self.assertNotIn(recursive_home, observe())
+            self.assertNotIn(recursive_home, observe(guarded=False))
             for path in (home / "config.toml", observed / ".cargo/config", observed.parent / ".cargo/config.toml"):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("unsupported config")
@@ -80,7 +83,7 @@ class StreamBuildInputsTests(unittest.TestCase):
                 self.assertNotIn(marker, observe(changes={name: "unsupported"}))
             (registry / "lib.rs").write_text("tampered")
             self.assertNotIn(marker, observe())
-            print("ACTUAL_STREAM_INPUTS: pins PASS; guarded/raw missing watches differ; ancestor/home configs, source overrides and tamper all refused")
+            print("ACTUAL_STREAM_INPUTS: pins PASS; no missing-file or recursive-home watches; ancestor/home configs, source overrides and tamper all refused")
 
 
 if __name__ == "__main__":

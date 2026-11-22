@@ -18,9 +18,6 @@ fn main() {
     println!("cargo:rerun-if-changed=../../Cargo.lock");
     println!("cargo:rerun-if-env-changed=CARGO_HOME");
     println!("cargo:rerun-if-env-changed=HEX_GUARDED_CARGO_CONFIG_FINGERPRINT");
-    let guarded_config = env::var("HEX_GUARDED_CARGO_CONFIG_FINGERPRINT")
-        .ok()
-        .is_some_and(|value| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()));
     println!("cargo:rustc-check-cfg=cfg(hex_stream_rtrb_source_observation_matches)");
     let source = env::var_os("CARGO_HOME")
         .map(PathBuf::from)
@@ -40,13 +37,13 @@ fn main() {
     for directory in config_dirs {
         for name in ["config", "config.toml"] {
             let path = directory.join(name);
-            // Supported entrypoints fingerprint absent config paths before
-            // Cargo and refuse a changed snapshot at completion. Raw Cargo
-            // keeps the conservative missing-file refresh behavior.
-            if path.exists() || !guarded_config {
-                println!("cargo:rerun-if-changed={}", path.display());
-            }
+            // Supported entrypoints fingerprint absent config paths via
+            // HEX_GUARDED_CARGO_CONFIG_FINGERPRINT before and after Cargo.
+            // Never emit nonexistent rerun-if-changed paths (or recursive
+            // ~/.cargo watches), which force every raw Cargo invocation to
+            // recompile hex-stream -> hex-audio -> hex-ui.
             if path.exists() {
+                println!("cargo:rerun-if-changed={}", path.display());
                 return;
             }
         }
