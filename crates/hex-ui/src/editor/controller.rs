@@ -1705,7 +1705,7 @@ impl EditorView {
                         output,
                         runtime_audio: None,
                     });
-                } else if reason == hex_engine::PlaybackHandoffRejection::SessionRuntime {
+                } else if is_paused_republish_rejection(reason) {
                     visible_change |= record_paused_republish_rejection(
                         &mut self.paused_republish,
                         &mut self.deferred_play,
@@ -1742,7 +1742,7 @@ impl EditorView {
                     &mut self.error,
                     &format!("preview rejected: {}", reason.message()),
                 );
-            } else if reason == hex_engine::PlaybackHandoffRejection::SessionRuntime
+            } else if is_paused_republish_rejection(reason)
                 && let Some(output) = audio.control.output_identity()
                 && !matches!(
                     self.paused_republish,
@@ -1763,6 +1763,7 @@ impl EditorView {
                     generation: self.project_generation,
                     output,
                     audio_revision,
+                    reason,
                 });
             }
         }
@@ -5119,6 +5120,7 @@ impl EditorView {
             generation,
             output,
             audio_revision,
+            reason,
         } = republish
         {
             if generation != self.project_generation
@@ -5155,11 +5157,8 @@ impl EditorView {
                 generation,
                 revision: candidate.state.revision,
             };
-            self.audio_admission.rejected(
-                project,
-                audio_revision,
-                hex_engine::PlaybackHandoffRejection::SessionRuntime.message(),
-            );
+            self.audio_admission
+                .rejected(project, audio_revision, reason.message());
             return record_paused_republish_rejection(
                 &mut self.paused_republish,
                 &mut self.deferred_play,
@@ -5171,7 +5170,7 @@ impl EditorView {
                 project,
                 Some(output),
                 audio_revision,
-                hex_engine::PlaybackHandoffRejection::SessionRuntime,
+                reason,
             );
         }
         let (project, output) = match republish {
@@ -5811,6 +5810,14 @@ impl EditorView {
 }
 
 // Called only after exact current context/output identity has been reconciled.
+const fn is_paused_republish_rejection(reason: hex_engine::PlaybackHandoffRejection) -> bool {
+    matches!(
+        reason,
+        hex_engine::PlaybackHandoffRejection::SessionRuntime
+            | hex_engine::PlaybackHandoffRejection::ForeignTailSourcePaused
+    )
+}
+
 #[allow(clippy::too_many_arguments)] // Disjoint EditorView fields borrowed alongside active audio control.
 fn record_paused_republish_rejection(
     paused_republish: &mut Option<super::audio_admission::PausedRepublish>,
@@ -5840,19 +5847,21 @@ fn record_paused_republish_rejection(
         return false;
     }
     let mut changed = false;
-    if matches!(
-        *paused_republish,
-        Some(
-            PausedRepublish::Submitted {
-                project: previous,
-                output: previous_output,
-                ..
-            } | PausedRepublish::Exhausted {
-                project: previous,
-                output: previous_output,
-            }
-        ) if previous == project && previous_output == output
-    ) {
+    if reason == hex_engine::PlaybackHandoffRejection::ForeignTailSourcePaused
+        || matches!(
+            *paused_republish,
+            Some(
+                PausedRepublish::Submitted {
+                    project: previous,
+                    output: previous_output,
+                    ..
+                } | PausedRepublish::Exhausted {
+                    project: previous,
+                    output: previous_output,
+                }
+            ) if previous == project && previous_output == output
+        )
+    {
         *paused_republish = Some(PausedRepublish::Exhausted { project, output });
         *deferred_play = None;
         changed |= replace_status(status, "stop playback to apply edit");
@@ -7566,5 +7575,93 @@ mod source_binding_unit_tests {
             12,
             context
         ));
+    }
+}
+
+#[cfg(test)]
+mod paused_republish_unit_tests {
+    use super::super::audio_admission::{AudioAdmissionStatus, PausedRepublish, ProjectRevision};
+    use super::{ViewState, is_paused_republish_rejection, record_paused_republish_rejection};
+    use hex_engine::{PlaybackAction, PlaybackCommand, PlaybackHandoffRejection};
+    use std::sync::Arc;
+
+    #[test]
+    fn foreign_tail_source_paused_exhausts_paused_republish_and_clears_deferred_play() {
+        assert!(is_paused_republish_rejection(
+            PlaybackHandoffRejection::SessionRuntime
+        ));
+        assert!(is_paused_republish_rejection(
+            PlaybackHandoffRejection::ForeignTailSourcePaused
+        ));
+        let project = ProjectRevision {
+            generation: 2,
+            revision: 110,
+        };
+        let state = ViewState {
+            canonical_audio_source: None,
+            comparison_audio: None,
+            project: Arc::new(hex_project::Project::new(48_000).unwrap()),
+            waveforms: Default::default(),
+            source_overviews: Default::default(),
+            audio_clip_waveforms: Default::default(),
+            midi_preview: Default::default(),
+            gain_preview: Ok(Default::default()),
+            timeline_frames: 48_000,
+            can_undo: false,
+            can_redo: false,
+            revision: project.revision,
+            unsaved: false,
+            document_path: None,
+        };
+        let mut admission = AudioAdmissionStatus::default();
+        admission.canonical_revision(project);
+        admission.published(project, 2506);
+        admission.rejected(
+            project,
+            2506,
+            PlaybackHandoffRejection::ForeignTailSourcePaused.message(),
+        );
+
+        for initial in [
+            None,
+            Some(PausedRepublish::Submitted {
+                project,
+                output: 2,
+                rejected_audio_revision: 2505,
+            }),
+        ] {
+            let mut paused_republish = initial;
+            let mut deferred_play = Some((
+                PlaybackAction::Transport(PlaybackCommand::Play),
+                None,
+                project.generation,
+            ));
+            let mut status = String::from("applying audio update at the paused cursor");
+            let mut error = None;
+
+            assert!(record_paused_republish_rejection(
+                &mut paused_republish,
+                &mut deferred_play,
+                &mut status,
+                &mut error,
+                project.generation,
+                Some(&state),
+                &admission,
+                project,
+                Some(2),
+                2506,
+                PlaybackHandoffRejection::ForeignTailSourcePaused,
+            ));
+            assert_eq!(
+                paused_republish,
+                Some(PausedRepublish::Exhausted { project, output: 2 })
+            );
+            assert!(deferred_play.is_none());
+            assert_eq!(status, "stop playback to apply edit");
+            assert_eq!(
+                error.as_deref(),
+                Some(PlaybackHandoffRejection::ForeignTailSourcePaused.message())
+            );
+        }
     }
 }

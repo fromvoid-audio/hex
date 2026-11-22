@@ -56,6 +56,270 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn foreign_tail_source_busy_refuses_instead_of_retrying_forever() {
+        use super::super::view::Correlation;
+        use super::{StateView, StreamInstall, Workspace};
+        use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
+        use hex_engine::playback::Playback;
+        use hex_engine::{
+            AudioSourceContext, PlaybackAction, PlaybackCommand, PlaybackHandoffError,
+            PreparedRevision, SessionPlaybackError, SineTable, StreamedSourceMetadata,
+        };
+        use hex_lattice::{
+            DevicePreparationContext, NativeDeviceDefinition, NativeDeviceRegistry, OutputTail,
+            PreparedForeignProcessor, PreparedProcessorFactory, ProcessorChainOwner,
+            ProcessorInstanceIdentity, StereoMatrix,
+        };
+        use hex_lattice_contract::{
+            DeviceContractError, DeviceTypeId, ForeignProcessorBinding, NativeDeviceMetadata,
+            NativeDeviceState, ParameterDescriptor, ParameterId, ParameterValue,
+        };
+        use hex_project::{Command, Created, Editor, Project};
+        use hex_stream::{ProtectionRole, ReadinessArtifact};
+        use std::collections::BTreeMap;
+        use std::sync::{Arc, atomic::AtomicBool};
+
+        const KIND: DeviceTypeId = DeviceTypeId::from_static("test.foreign.stream.busy");
+        struct ForeignDef {
+            identity: ProcessorInstanceIdentity,
+            binding: ForeignProcessorBinding,
+        }
+        impl NativeDeviceMetadata for ForeignDef {
+            fn type_id(&self) -> DeviceTypeId {
+                KIND
+            }
+            fn state_version(&self) -> u32 {
+                1
+            }
+            fn descriptors(&self) -> &'static [ParameterDescriptor] {
+                &[]
+            }
+            fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+                NativeDeviceState::new(KIND, 1, vec![1])
+            }
+            fn migrate_state(
+                &self,
+                value: &NativeDeviceState,
+            ) -> Result<NativeDeviceState, DeviceContractError> {
+                Ok(value.clone())
+            }
+            fn read_parameter(
+                &self,
+                _: &NativeDeviceState,
+                _: ParameterId,
+            ) -> Result<ParameterValue, DeviceContractError> {
+                Err(DeviceContractError::UnknownParameter)
+            }
+            fn patch_parameter(
+                &self,
+                _: &NativeDeviceState,
+                _: ParameterId,
+                _: ParameterValue,
+            ) -> Result<NativeDeviceState, DeviceContractError> {
+                Err(DeviceContractError::UnknownParameter)
+            }
+        }
+        impl NativeDeviceDefinition for ForeignDef {
+            fn prepare_matrix(
+                &self,
+                _: &NativeDeviceState,
+            ) -> Result<StereoMatrix, DeviceContractError> {
+                Ok(StereoMatrix::identity())
+            }
+            fn prepare_runtime_factory(
+                &self,
+                _: &NativeDeviceState,
+                _: &DevicePreparationContext<'_>,
+            ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
+                Err(DeviceContractError::UnsupportedProcessingClass)
+            }
+            fn prepare_instance_runtime_factory(
+                &self,
+                identity: ProcessorInstanceIdentity,
+                _: &NativeDeviceState,
+                _: &DevicePreparationContext<'_>,
+            ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
+                if identity != self.identity {
+                    return Err(DeviceContractError::InvalidId);
+                }
+                let prepared = PreparedForeignProcessor::new(8, 0, 16)?
+                    .with_binding(self.binding)?
+                    .with_output_tail(OutputTail::Unbounded);
+                Ok(Some(PreparedProcessorFactory::Foreign(prepared)))
+            }
+        }
+
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "audio".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: "clip.wav".into(),
+                sample_rate: 48_000,
+                frames: 4096,
+            })
+            .unwrap()
+        else {
+            panic!("asset");
+        };
+        editor
+            .execute(Command::PlaceClip {
+                track,
+                asset,
+                start: 0,
+                duration: 4096,
+                source_offset: 0,
+                source_length: 4096,
+                looping: false,
+            })
+            .unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: NativeDeviceState::new(KIND, 1, vec![1]).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("device");
+        };
+        let identity =
+            ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, device.value()).unwrap();
+        let binding = ForeignProcessorBinding {
+            root: 1,
+            instance: device.value(),
+            graph: 1,
+            epoch: 1,
+        };
+        let def = ForeignDef { identity, binding };
+        let defs: [&dyn NativeDeviceDefinition; 1] = [&def];
+        let registry = NativeDeviceRegistry::new(&defs).unwrap();
+        let key = StreamSourceKey::new(2, asset);
+        let metadata = StreamedSourceMetadata::new(
+            key,
+            48_000,
+            48_000,
+            4096,
+            4096,
+            hex_project::IDENTITY_CONVERSION,
+            [2; 32],
+        )
+        .unwrap();
+        let sources = BTreeMap::from([(
+            asset,
+            hex_engine::compile::PreparedAudioSource::Streamed(Arc::new(metadata)),
+        )]);
+        let cancel = AtomicBool::new(false);
+        let sine = Arc::new(SineTable::new());
+        let resources = PreparedDeviceResources::prepare_on_control(
+            &ResidentDeviceAssets::default(),
+            editor.project(),
+            1 << 20,
+            &cancel,
+        )
+        .unwrap();
+        let compile = |project: &Project| {
+            let revision = PreparedRevision::prepare_with_prepared_audio_sources_device_resources_and_effect_registry(
+                project,
+                &sources,
+                key.generation(),
+                Arc::clone(&sine),
+                None,
+                &hex_engine::audio_transform::AudioTransformPreparation::default(),
+                &resources,
+                100_000,
+                &cancel,
+                &registry,
+                None,
+            )
+            .unwrap();
+            Playback::try_from_prepared_with_device_resources(Arc::new(revision), &resources)
+                .unwrap()
+        };
+
+        let mut previous = compile(editor.project());
+        previous
+            .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+            .unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device,
+                state: NativeDeviceState::new(KIND, 1, vec![2]).unwrap(),
+            })
+            .unwrap();
+        let mut candidate = compile(editor.project());
+
+        let old_context = AudioSourceContext {
+            project_generation: 2,
+            editor_revision: 1,
+        };
+        let new_context = AudioSourceContext {
+            project_generation: 2,
+            editor_revision: 2,
+        };
+        let mut old_workspace = None;
+        let mut old_view = StateView {
+            runtime: Some(previous.stream_playback(old_context)),
+            streaming: &mut old_workspace,
+            domain_refs: [None; 2],
+            context_generation: 2,
+            correlation: Correlation {
+                root: 1,
+                owner: ReadinessArtifact::Ordinary { publication: 1 },
+            },
+        };
+        let mut candidate_workspace = Some(Workspace::prepare(8).unwrap());
+        let mut candidate_view = StateView {
+            runtime: Some(candidate.stream_playback(new_context)),
+            streaming: &mut candidate_workspace,
+            domain_refs: [None; 2],
+            context_generation: 2,
+            correlation: Correlation {
+                root: 1,
+                owner: ReadinessArtifact::Ordinary { publication: 2 },
+            },
+        };
+        let mut domains = [None, None];
+        let mut install = StreamInstall {
+            domains: &mut domains,
+            pending_play: false,
+            command_prefix: 0,
+            frames: 256,
+            fenced_restart: false,
+            foreign_continuation: false,
+            confirmed_fade: None,
+            tempo_cut: None,
+        };
+
+        // A live conflicting foreign endpoint is not transient: streamed demand
+        // must refuse it immediately so the callback can reject the publication
+        // and release publication_pending instead of retrying forever.
+        let result = candidate_view.prepare_stream_window(
+            Some(&mut old_view),
+            &mut install,
+            ProtectionRole::Candidate,
+        );
+        assert!(
+            result.is_err(),
+            "conflicting live foreign endpoint must be refused, not deferred: {result:?}"
+        );
+        assert_eq!(
+            candidate_workspace
+                .as_mut()
+                .unwrap()
+                .take_handoff_diagnostic(),
+            Some(PlaybackHandoffError::Session(
+                SessionPlaybackError::ForeignTailSourceBusy
+            ))
+        );
+    }
 }
 pub(crate) enum TempoStreamWindow<'a> {
     Forecast(&'a hex_engine::session_playback::PreparedTempoAnchor),
@@ -264,15 +528,7 @@ impl StateView<'_> {
                     Err(_) if overflow.get() => {
                         Err(hex_engine::Invalid("exact stream demand capacity exceeded"))
                     }
-                    Err(error)
-                        if error.is_transient()
-                            || matches!(
-                                error,
-                                hex_engine::PlaybackHandoffError::Session(
-                                    hex_engine::SessionPlaybackError::ForeignTailSourceBusy
-                                )
-                            ) =>
-                    {
+                    Err(error) if error.is_transient() => {
                         // Preview has the same temporary release/tail pressure
                         // as the actual handoff. Keep the exact candidate in its
                         // deferred carrier and let the predecessor drain before
