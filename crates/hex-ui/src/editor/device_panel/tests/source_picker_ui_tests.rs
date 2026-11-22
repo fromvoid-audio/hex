@@ -2350,7 +2350,7 @@ fn source_picker_adds_first_utility(cx: &mut TestAppContext, from_contributor: b
             .iter()
             .position(|item| {
                 theme::text(crate::editor::context_menu::context_item_label(item))
-                    .contains("add utility to source")
+                    .contains("add mix to source")
             })
             .expect("source add action");
         let EditorContextAction::SourcePicker(choice) = &menu.items[index].action else {
@@ -2779,7 +2779,7 @@ fn source_picker_appends_utility(cx: &mut TestAppContext, from_contributor: bool
             .iter()
             .position(|item| {
                 theme::text(crate::editor::context_menu::context_item_label(item))
-                    .contains("add utility to source")
+                    .contains("add mix to source")
             })
             .expect("append action");
         let EditorContextAction::SourcePicker(choice) = &menu.items[index].action else {
@@ -2932,7 +2932,7 @@ fn source_picker_hides_utility_append_for_other_effect_types(cx: &mut TestAppCon
         let menu = view.context_menu.as_ref().unwrap();
         assert!(menu.items.iter().all(|item| {
             !theme::text(crate::editor::context_menu::context_item_label(item))
-                .contains("add utility to source")
+                .contains("add mix to source")
         }));
     });
 }

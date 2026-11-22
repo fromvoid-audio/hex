@@ -298,7 +298,7 @@ fn browser_result_rows_use_compact_native_text_and_keep_selected_hover(cx: &mut 
         ),
         (
             BrowserSection::All,
-            "utility",
+            "mix",
             "browser-device-effect-hex.utility",
             "browser-device-label-effect-hex.utility",
             None,
@@ -1227,8 +1227,8 @@ fn all_search_devices_precede_samples_and_refresh_keeps_activation_identity(
     use crate::editor::browser::BrowserItemKey;
     cx.update(crate::editor::bind_editor_keys);
     let (handle, editor, track, directory, wave) = browser_drag_fixture(cx);
-    let first = directory.0.join("a utility.wav");
-    let last = directory.0.join("z utility.wav");
+    let first = directory.0.join("a mix.wav");
+    let last = directory.0.join("z mix.wav");
     for path in [&first, &last] {
         std::fs::copy(&wave, path).unwrap();
     }
@@ -1242,7 +1242,7 @@ fn all_search_devices_precede_samples_and_refresh_keeps_activation_identity(
         .as_mut()
         .unwrap()
         .classes[0]
-        .name = "utility plugin".into();
+        .name = "mix plugin".into();
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     editor.update(&mut visual, |view, cx| {
@@ -1254,7 +1254,7 @@ fn all_search_devices_precede_samples_and_refresh_keeps_activation_identity(
         );
     });
     visual.simulate_keystrokes("cmd-f");
-    visual.simulate_input("UtIlItY");
+    visual.simulate_input("MiX");
     visual.run_until_parked();
     editor.read_with(&visual, |view, cx| {
         assert_eq!(view.browser_visible_devices(cx).len(), 1);
@@ -1293,7 +1293,7 @@ fn all_search_devices_precede_samples_and_refresh_keeps_activation_identity(
     // These are the same receive methods used by asynchronous catalog workers.
     // New device/sample matches shift global indices without changing selection.
     let extra = directory.0.join("0 utility.vst3");
-    let earlier = directory.0.join("0 utility.wav");
+    let earlier = directory.0.join("0 mix.wav");
     std::fs::copy(&wave, &earlier).unwrap();
     editor.update(&mut visual, |view, cx| {
         let mut refreshed = catalog;
@@ -1306,7 +1306,7 @@ fn all_search_devices_precede_samples_and_refresh_keeps_activation_identity(
             .as_mut()
             .unwrap()
             .classes[0]
-            .name = "another utility plugin".into();
+            .name = "another mix plugin".into();
         refreshed.entries.extend(added.entries);
         view.apply_plugin_catalog(refreshed, cx);
         assert_eq!(view.browser_selected_sample(cx), Some(first.clone()));
