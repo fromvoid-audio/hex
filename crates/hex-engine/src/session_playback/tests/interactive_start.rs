@@ -1197,4 +1197,183 @@ mod note_chase {
                 .all(|sample| *sample == 0.0)
         );
     }
+
+    #[test]
+    fn analytic_play_from_after_note_end_does_not_leak_pre_cursor_release_tail() {
+        // At 120 bpm and 48 kHz, a 1/16 note starting at 0 has gate_end = 1_500
+        // and hex.instrument.sine's 50 ms release tail runs through frame 3_900.
+        // A second note starts later at beat 1 (frame 24_000).
+        for compensated in [false, true] {
+            let mut snapshot = project(1.0, 0, 1 << 28).snapshot();
+            let second_id = snapshot.next_id;
+            snapshot.next_id += 1;
+            let clips = match &mut snapshot.tracks[0].content {
+                TrackContentSnapshot::Instrument(clips)
+                | TrackContentSnapshot::Hybrid {
+                    midi_clips: clips, ..
+                } => clips,
+                TrackContentSnapshot::Audio(_) => panic!("midi fixture"),
+            };
+            clips[0].length_raw = 2 << 32;
+            clips[0].notes.push(MidiNoteSnapshot {
+                active: true,
+                id: second_id,
+                start_raw: 1 << 32,
+                duration_raw: 1 << 28,
+                pitch: 64,
+                channel: 0,
+                velocity: 100,
+            });
+            if compensated {
+                snapshot.main_devices.push(DeviceSnapshot {
+                    modulation: Default::default(),
+                    parent: None,
+                    automation: Vec::new(),
+                    comparison: None,
+                    id: snapshot.next_id,
+                    bypassed: false,
+                    state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+                });
+                snapshot.next_id += 1;
+            }
+            let base = Project::from_snapshot(snapshot).unwrap();
+            let prepared = revision(&base, Arc::new(hex_devices::SineTable::new()));
+            let latency = prepared.arrangement().main_latency_frames() as usize;
+
+            for stop_action in [
+                None,
+                Some(SessionPlaybackCommand::Pause),
+                Some(SessionPlaybackCommand::Stop),
+            ] {
+                for destination in [1_500, 1_501, 2_000] {
+                    for block in [1, 17, 64, 256] {
+                        let mut runtime = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+                        if let Some(stop) = stop_action {
+                            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+                            let played =
+                                render_checkpoint_partitioned(&mut runtime, &[64], 512 + latency);
+                            assert!(
+                                played.iter().flatten().any(|sample| *sample != 0.0),
+                                "note sounds before stopping"
+                            );
+                            runtime.apply(stop).unwrap();
+                            let _ = render_checkpoint_partitioned(&mut runtime, &[64], 64);
+                        }
+                        runtime.play_from(destination).unwrap();
+                        let tail_window =
+                            render_checkpoint_partitioned(&mut runtime, &[block], 2_500 + latency);
+                        assert!(
+                            tail_window.iter().flatten().all(|sample| *sample == 0.0),
+                            "compensated={compensated}, stop={stop_action:?}, destination={destination}, block={block}: pre-cursor release tail leaked"
+                        );
+                    }
+                }
+            }
+
+            // Boundary precision: one frame before gate_end still chases under
+            // NoteChase::On, and a later note after the cursor still sounds.
+            let mut chased = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+            chased.play_from(1_499).unwrap();
+            let chased_out = render_checkpoint_partitioned(&mut chased, &[64], 64 + latency);
+            assert!(
+                chased_out.iter().flatten().any(|sample| *sample != 0.0),
+                "compensated={compensated}: gate-active note at gate_end - 1 still chases"
+            );
+
+            let mut later = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+            later.play_from(23_900).unwrap();
+            let later_out = render_checkpoint_partitioned(&mut later, &[64], 256 + latency);
+            assert!(
+                later_out[..100 + latency]
+                    .iter()
+                    .flatten()
+                    .all(|sample| *sample == 0.0),
+                "compensated={compensated}: silence before later note onset"
+            );
+            assert!(
+                later_out[100 + latency..]
+                    .iter()
+                    .flatten()
+                    .any(|sample| *sample != 0.0),
+                "compensated={compensated}: later note onset plays normally"
+            );
+        }
+    }
+
+    #[test]
+    fn analytic_play_from_after_note_end_stays_silent_across_pause_and_note_edit_handoff() {
+        let base = project(1.0, 0, 1 << 28);
+        let prepared = revision(&base, Arc::new(hex_devices::SineTable::new()));
+
+        // Pause immediately after PlayFrom at gate_end must not capture a
+        // phantom release tail from the pre-cursor note.
+        let mut paused = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+        paused.play_from(1_500).unwrap();
+        let prefix = render_checkpoint_partitioned(&mut paused, &[17], 34);
+        assert!(prefix.iter().flatten().all(|sample| *sample == 0.0));
+        paused.apply(SessionPlaybackCommand::Pause).unwrap();
+        assert_eq!(paused.release_voice_count(), 0);
+        let while_paused = render_checkpoint_partitioned(&mut paused, &[64], 512);
+        assert!(while_paused.iter().flatten().all(|sample| *sample == 0.0));
+
+        // Painting a new later note or editing tempo after PlayFrom must not
+        // revive the rejected pre-cursor note's release tail.
+        let mut edited_snapshot = base.snapshot();
+        let added_id = edited_snapshot.next_id;
+        edited_snapshot.next_id += 1;
+        let clips = match &mut edited_snapshot.tracks[0].content {
+            TrackContentSnapshot::Instrument(clips)
+            | TrackContentSnapshot::Hybrid {
+                midi_clips: clips, ..
+            } => clips,
+            TrackContentSnapshot::Audio(_) => panic!("midi fixture"),
+        };
+        clips[0].notes.push(MidiNoteSnapshot {
+            active: true,
+            id: added_id,
+            start_raw: 1 << 31,
+            duration_raw: 1 << 28,
+            pitch: 67,
+            channel: 0,
+            velocity: 100,
+        });
+        let edited = Project::from_snapshot(edited_snapshot).unwrap();
+        let edited_prepared = revision(&edited, Arc::new(hex_devices::SineTable::new()));
+
+        let mut running = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+        running.play_from(1_500).unwrap();
+        let _ = render_checkpoint_partitioned(&mut running, &[17], 34);
+        let mut successor = SessionPlayback::new(edited_prepared).unwrap();
+        successor.try_inherit_state_from(&mut running).unwrap();
+        let after_edit = render_checkpoint_partitioned(&mut successor, &[1, 64], 2_400);
+        assert!(
+            after_edit.iter().flatten().all(|sample| *sample == 0.0),
+            "live note edit handoff must not revive pre-cursor release tail"
+        );
+
+        // Faster tempo edit must not revive a gate_end that ended at/before start.
+        let mut tempo_snapshot =
+            project_at_tempo(1.0, 0, 1 << 29, Tempo::new(60_000_000).unwrap()).snapshot();
+        tempo_snapshot.sample_rate = 8_000;
+        let slow = Project::from_snapshot(tempo_snapshot.clone()).unwrap();
+        let mut slow_runtime =
+            SessionPlayback::new(revision(&slow, Arc::new(hex_devices::SineTable::new()))).unwrap();
+        // At 60 bpm and 8 kHz, 1/8 beat is 1_000 frames (gate_end = 1_000).
+        slow_runtime.play_from(1_000).unwrap();
+        tempo_snapshot.tempo_points = vec![TempoPoint::new(
+            BeatTime::ZERO,
+            Tempo::new(240_000_000).unwrap(),
+        )];
+        let fast = Project::from_snapshot(tempo_snapshot).unwrap();
+        let mut fast_runtime =
+            SessionPlayback::new(revision(&fast, Arc::new(hex_devices::SineTable::new()))).unwrap();
+        fast_runtime
+            .try_inherit_state_from(&mut slow_runtime)
+            .unwrap();
+        let after_tempo = render_checkpoint_partitioned(&mut fast_runtime, &[1, 17], 512);
+        assert!(
+            after_tempo.iter().flatten().all(|sample| *sample == 0.0),
+            "tempo handoff must not revive pre-cursor release tail"
+        );
+    }
 }

@@ -640,27 +640,35 @@ trait DensitySpan {
     fn end(&self) -> u64;
 }
 
-/// Canonical beat bucket captured by one interactive no-chase action. Both
-/// bounds are retained across tempo changes, including the beat-domain sentinel;
-/// rounding them back into a candidate's frames would lose onset identity.
+/// Canonical beat bucket captured by one interactive start action. Bounds are
+/// retained across tempo changes, including the beat-domain sentinel; rounding
+/// them back into a candidate's frames would lose onset/gate-end identity.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct InteractiveOnsetFloor {
+    pub(crate) note_chase: crate::NoteChase,
     pub(crate) onset_raw: u128,
     pub(crate) after_start_frame_raw: u128,
 }
 
 impl CompiledNoteSpan {
-    /// One explicit interactive start excludes historical onsets and a gate
-    /// synthetically clipped exactly to that destination. Later clip onsets
-    /// and later loop occurrences retain their existing playback law.
+    /// One explicit interactive start never reconstructs release tails from
+    /// notes whose gate ended at or before the destination. With note chase off
+    /// it also excludes historical onsets and a gate synthetically clipped
+    /// exactly to that destination. Later clip onsets and later loop
+    /// occurrences retain their existing playback law.
     pub(crate) fn admitted_at_interactive_start(
         &self,
         floor: Option<InteractiveOnsetFloor>,
     ) -> bool {
-        floor.is_none_or(|floor| {
-            let onset = u128::from(self.onset_beat.raw());
-            onset >= floor.onset_raw
-                && (!self.starts_inside_gate || onset >= floor.after_start_frame_raw)
+        floor.is_none_or(|floor| match floor.note_chase {
+            crate::NoteChase::On => {
+                u128::from(self.gate_end_beat.raw()) >= floor.after_start_frame_raw
+            }
+            crate::NoteChase::Off => {
+                let onset = u128::from(self.onset_beat.raw());
+                onset >= floor.onset_raw
+                    && (!self.starts_inside_gate || onset >= floor.after_start_frame_raw)
+            }
         })
     }
 }
