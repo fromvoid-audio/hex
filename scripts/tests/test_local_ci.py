@@ -2135,7 +2135,10 @@ class LocalCiRunnerTests(unittest.TestCase):
                         redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                     self.assertEqual(local_ci.main(arguments), 0)
 
-                self.assertEqual(observed, ["0"] * (3 if scoped else 2) + ["1"])
+                # Preflight metadata deduplication: both scoped and unscoped
+                # fresh-target runs invoke cargo metadata only twice (once
+                # --no-deps and once --all-features), both under CARGO_CACHE_RUSTC_INFO=0.
+                self.assertEqual(observed, ["0", "0"])
                 runner, = runners
                 cache = runner.summary["target_cache"]
                 self.assertEqual(cache["action"], "claim-fresh")
@@ -4246,6 +4249,171 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         self.assertEqual({str(p.relative_to(target)): hashlib.sha256(p.read_bytes()).hexdigest()
                           for p in target.rglob("*") if p.is_file()}, before)
         print("real Cargo source/version name collision refused before cleanup; artifacts preserved", flush=True)
+
+
+class MergeBudgetAndPreflightTests(unittest.TestCase):
+    def _entry(self, step_id, argv, duration, *, build=None, rust=None, carried=False):
+        return {
+            "step_id": step_id,
+            "argv": list(argv),
+            "duration_seconds": duration,
+            "execution": "carried" if carried else "executed",
+            "timing_estimates": {
+                "cargo_build_phase_seconds": build,
+                "rust_harness_seconds": rust,
+                "python_harness_seconds": None,
+                "unclassified_seconds": None,
+            },
+        }
+
+    def test_total_merge_budget_catches_build_heavy_overrun_with_phase_breakdown(self):
+        steps = [
+            self._entry("format", ("cargo", "fmt", "-p", "hex-ui", "--check"), 0.5),
+            self._entry("affected-clippy", ("cargo", "clippy", "-p", "hex-ui", "--all-targets"), 120.0, build=120.0),
+            self._entry("consumer-clippy", ("cargo", "clippy", "-p", "hex-desktop", "--lib", "--bins"), 95.0, build=95.0),
+            self._entry("ui-unit-unit_editor_logic",
+                        ("cargo", "test", "-p", "hex-ui", "--features", "ui-unit-tier", "--test", "unit_editor_logic"),
+                        130.0, build=126.05, rust=0.42),
+            self._entry("carried-tests", ("cargo", "test", "-p", "hex-engine"), 500.0, build=10.0, rust=490.0, carried=True),
+        ]
+        budget = local_ci.merge_test_budget(steps, None, total_wall_seconds=353.0)
+        self.assertEqual(budget["total_limit_seconds"], 180.0)
+        self.assertEqual(budget["total_seconds"], 353.0)
+        self.assertTrue(budget["total_exceeded"])
+        self.assertFalse(budget["test_exceeded"])
+        self.assertTrue(budget["exceeded"])
+        self.assertEqual(budget["test_seconds"], 3.95)
+        self.assertEqual(budget["phases"], {
+            "preflight": 7.5,
+            "build": 126.05,
+            "clippy": 215.0,
+            "test": 3.95,
+            "other": 0.5,
+        })
+        self.assertEqual(budget["unit_budget"]["limit_seconds"], 1.0)
+        self.assertFalse(budget["unit_budget"]["exceeded"])
+        self.assertEqual(budget["unit_budget"]["checked_steps"], 1)
+
+    def test_unit_tier_budget_flags_one_second_or_slower_unit_steps(self):
+        steps = [
+            self._entry("ui-unit-unit_editor_logic",
+                        ("cargo", "test", "-p", "hex-ui", "--features", "ui-unit-tier", "--test", "unit_editor_logic"),
+                        2.5, build=2.1, rust=0.35),
+            self._entry("ui-default-lib-unit-tests",
+                        ("cargo", "test", "-p", "hex-ui", "--lib"),
+                        4.2, build=2.9, rust=1.25),
+            self._entry("sandbox-unit-tests",
+                        ("cargo", "test", "-p", "hex-sandbox", "--features", "ui-unit-tier"),
+                        3.0, build=1.8, rust=1.0),
+            self._entry("ui-feature-tests",
+                        ("cargo", "test", "-p", "hex-ui", "--lib", "--features", "ui-test-support"),
+                        12.0, build=4.0, rust=7.5),
+        ]
+        budget = local_ci.merge_test_budget(steps, None, total_wall_seconds=25.0)
+        self.assertFalse(budget["total_exceeded"])
+        self.assertFalse(budget["exceeded"])
+        self.assertTrue(budget["unit_budget"]["exceeded"])
+        self.assertEqual(budget["unit_budget"]["checked_steps"], 3)
+        self.assertEqual(budget["unit_budget"]["violations"], [
+            {"step_id": "ui-default-lib-unit-tests", "seconds": 1.25},
+            {"step_id": "sandbox-unit-tests", "seconds": 1.0},
+        ])
+
+    def test_quick_steps_scope_rustfmt_to_changed_packages_with_all_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1"}
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=root, env=env, text=True).strip()
+            git("init", "-q")
+            git("config", "user.name", "quick fixture")
+            git("config", "user.email", "quick@example.invalid")
+            for pkg in ("hex-project", "hex-engine"):
+                (root / f"crates/{pkg}/src").mkdir(parents=True)
+                (root / f"crates/{pkg}/Cargo.toml").write_text(f'[package]\nname = "{pkg}"\nversion = "0.1.0"\n')
+                (root / f"crates/{pkg}/src/lib.rs").write_text("pub fn v() -> u32 { 1 }\n")
+            (root / "Cargo.toml").write_text('[workspace]\nmembers = ["crates/*"]\n')
+            git("add", ".")
+            git("commit", "-qm", "base")
+            base = git("rev-parse", "HEAD")
+
+            # Clean tree without base -> falls back to --all.
+            clean_fmt = next(s for s in local_ci.quick_steps(root, env) if s.step_id == "format")
+            self.assertEqual(clean_fmt.argv, ("cargo", "fmt", "--all", "--check"))
+
+            # Dirty file in hex-project -> scoped to -p hex-project.
+            (root / "crates/hex-project/src/lib.rs").write_text("pub fn v() -> u32 { 2 }\n")
+            dirty_fmt = next(s for s in local_ci.quick_steps(root, env) if s.step_id == "format")
+            self.assertEqual(dirty_fmt.argv, ("cargo", "fmt", "-p", "hex-project", "--check"))
+
+            # Committed range with --base/--source -> scoped to -p hex-project.
+            git("commit", "-qam", "edit project")
+            head = git("rev-parse", "HEAD")
+            range_fmt = next(s for s in local_ci.quick_steps(root, env, base=base, source=head)
+                             if s.step_id == "format")
+            self.assertEqual(range_fmt.argv, ("cargo", "fmt", "-p", "hex-project", "--check"))
+
+            # Root Cargo.toml or rustfmt.toml change -> falls back to --all.
+            (root / "rustfmt.toml").write_text("edition = \"2024\"\n")
+            fallback_fmt = next(s for s in local_ci.quick_steps(root, env) if s.step_id == "format")
+            self.assertEqual(fallback_fmt.argv, ("cargo", "fmt", "--all", "--check"))
+
+    def test_start_tree_fuses_runtime_inputs_and_deduplicates_preflight_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1"}
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=root, env=env, text=True).strip()
+            git("init", "-q")
+            git("config", "user.name", "preflight fixture")
+            git("config", "user.email", "preflight@example.invalid")
+            (root / "src").mkdir()
+            (root / "src/lib.rs").write_text("pub fn ok() {}\n")
+            (root / "README.md").write_text("# prose\n")
+            script = root / "tool.sh"
+            script.write_text("#!/bin/sh\n")
+            script.chmod(0o755)
+            git("add", ".")
+            git("commit", "-qm", "init")
+
+            expected_runtime = local_ci.ci_plan.runtime_inputs(root, env)
+            fake_metadata = {
+                "target_directory": str(root / "target"),
+                "workspace_root": str(root.resolve()),
+                "workspace_members": ["pkg 0.1.0 (path+file:///pkg)"],
+                "packages": [{
+                    "id": "pkg 0.1.0 (path+file:///pkg)",
+                    "name": "pkg",
+                    "version": "0.1.0",
+                    "manifest_path": str(root / "Cargo.toml"),
+                }],
+            }
+            runner = local_ci.LocalCiRunner(
+                root, mode="merge", run_id="dedup-test", env=env, min_free_bytes=0,
+                steps=(local_ci.Step("noop", ("true",)),), preflight_metadata=fake_metadata,
+            )
+            with patch.object(local_ci.ci_plan, "runtime_inputs",
+                              side_effect=AssertionError("start_tree must not rescan via ci_plan.runtime_inputs")):
+                self.assertTrue(runner._capture_repository_state("start_tree"))
+            self.assertEqual(runner.summary["runtime_inputs"], expected_runtime)
+
+            # _resolve_cargo_identity consumes preflight_metadata without spawning cargo metadata.
+            with patch.object(local_ci.subprocess, "run",
+                              side_effect=AssertionError("must reuse preflight_metadata")):
+                self.assertTrue(runner._resolve_cargo_identity())
+            self.assertEqual(runner.cargo_identity["workspace_packages"][0]["name"], "pkg")
+            self.assertIsNone(runner._preflight_metadata)
+
+            # Teardown _dependency_context skips _release_scope when cached.
+            runner._release_metadata = fake_metadata
+            runner._reuse_release_metadata = True
+            with patch.object(runner, "_release_scope",
+                              side_effect=AssertionError("teardown must reuse _release_metadata")), \
+                    patch.object(runner, "_path_dependency_inputs", return_value=[]), \
+                    patch.object(runner, "_release_build_inputs", return_value="a" * 64):
+                ctx = runner._dependency_context()
+            runner._reuse_release_metadata = False
+            self.assertEqual(ctx["sha256"], "a" * 64)
 
 
 if __name__ == "__main__":

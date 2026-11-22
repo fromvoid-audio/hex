@@ -295,38 +295,194 @@ def log_timing_estimates(text: str, duration: float) -> dict[str, float | None]:
     return result
 
 
-# Merge test-execution budget (user policy, 1 November 2026): owner-boundary
-# merge checks aim to keep test setup and execution, excluding Cargo's build
-# phase, under one minute. Exceeding it is a warning, not a merge failure (user
-# decision, 1 November 2026; overruns are investigated in Pulse #4100). Carried
-# steps cost nothing in this run and are excluded.
+# Merge budgets:
+# - Total merge verification (including preflight, build, Clippy, and tests):
+#   <= 180s (3 minutes) so work lands on a ~15-minute cadence.
+# - Test execution excluding build phase: <= 60s (owner-boundary policy).
+# - Pure unit-tier test execution: < 1.0s per step.
+# Exceeding a budget prints a warning with phase/step breakdown; it does not
+# fail an otherwise green merge (record recurring overruns in Pulse).
 MERGE_TEST_BUDGET_SECONDS = 60.0
+MERGE_TOTAL_BUDGET_SECONDS = 180.0
+UNIT_TEST_BUDGET_SECONDS = 1.0
 
 
-def merge_test_budget(entries: list, reason: str | None) -> dict:
-    """Test-only seconds of executed test steps: wall time minus the build phase.
+def _is_unit_tier_step(step_id: str, argv: tuple[str, ...]) -> bool:
+    """True for pure unit-tier test steps subject to the < 1.0s execution budget."""
+    if (step_id.startswith("ui-unit-") or step_id in UI_UNIT_STEP_IDS
+            or step_id in {"ui-default-lib-unit-tests", "ui-default-standalone-tests", "sandbox-unit-tests"}
+            or step_id.startswith("module-tests-")):
+        return True
+    return runs_rust_tests(argv) and any(
+        argv[i + 1].startswith("unit_") for i, arg in enumerate(argv[:-1]) if arg == "--test"
+    )
 
-    Harness overhead and doctest compilation count as test time, so this is a
-    conservative upper bound. Lint, format and build-only steps are excluded.
+
+def merge_test_budget(
+    entries: list,
+    reason: str | None,
+    *,
+    total_wall_seconds: float | None = None,
+) -> dict:
+    """Compute total merge wall-clock (<= 180s), test-only (<= 60s), and unit (< 1s) budgets.
+
+    Carried steps cost nothing in this run and are excluded.
     """
     spent = []
+    unit_over = []
+    unit_checked = 0
+    phase_build = 0.0
+    phase_clippy = 0.0
+    phase_test = 0.0
+    phase_other = 0.0
     for entry in entries:
         if not isinstance(entry, dict) or entry.get("execution") == "carried":
             continue
+        duration = entry.get("duration_seconds")
+        if not isinstance(duration, (int, float)):
+            continue
         timing = entry.get("timing_estimates") or {}
         argv = tuple(entry.get("argv") or ())
-        tests = (runs_rust_tests(argv) or timing.get("rust_harness_seconds") is not None
-                 or timing.get("python_harness_seconds") is not None)
-        if not tests or not isinstance(entry.get("duration_seconds"), (int, float)):
+        step_id = str(entry.get("step_id") or "")
+        is_clippy = argv[:2] == ("cargo", "clippy")
+        is_test = (runs_rust_tests(argv) or timing.get("rust_harness_seconds") is not None
+                   or timing.get("python_harness_seconds") is not None)
+        is_build = argv[:2] == ("cargo", "build")
+        if is_clippy:
+            phase_clippy += duration
+        elif is_test:
+            build_part = min(duration, float(timing.get("cargo_build_phase_seconds") or 0.0))
+            test_part = max(0.0, duration - build_part)
+            phase_build += build_part
+            phase_test += test_part
+            spent.append((round(test_part, 3), step_id))
+            if _is_unit_tier_step(step_id, argv):
+                unit_checked += 1
+                harness = timing.get("rust_harness_seconds")
+                unit_sec = round(float(harness) if isinstance(harness, (int, float)) else test_part, 3)
+                if unit_sec >= UNIT_TEST_BUDGET_SECONDS:
+                    unit_over.append((unit_sec, step_id))
+        elif is_build:
+            phase_build += duration
+        else:
+            phase_other += duration
+    executed_steps_total = phase_build + phase_clippy + phase_test + phase_other
+    if total_wall_seconds is not None:
+        phase_preflight = max(0.0, total_wall_seconds - executed_steps_total)
+        total_seconds = round(total_wall_seconds, 3)
+    else:
+        phase_preflight = 0.0
+        total_seconds = round(executed_steps_total, 3)
+    test_total = round(sum(seconds for seconds, _ in spent), 3)
+    total_exceeded = total_seconds > MERGE_TOTAL_BUDGET_SECONDS
+    test_exceeded = test_total > MERGE_TEST_BUDGET_SECONDS
+    return {
+        "limit_seconds": MERGE_TEST_BUDGET_SECONDS,
+        "test_seconds": test_total,
+        "test_exceeded": test_exceeded,
+        "total_limit_seconds": MERGE_TOTAL_BUDGET_SECONDS,
+        "total_seconds": total_seconds,
+        "total_exceeded": total_exceeded,
+        "exceeded": total_exceeded or test_exceeded,
+        "phases": {
+            "preflight": round(phase_preflight, 3),
+            "build": round(phase_build, 3),
+            "clippy": round(phase_clippy, 3),
+            "test": round(phase_test, 3),
+            "other": round(phase_other, 3),
+        },
+        "unit_budget": {
+            "limit_seconds": UNIT_TEST_BUDGET_SECONDS,
+            "exceeded": bool(unit_over),
+            "checked_steps": unit_checked,
+            "violations": [{"step_id": step, "seconds": seconds}
+                           for seconds, step in sorted(unit_over, reverse=True)],
+        },
+        "slowest": [{"step_id": step, "seconds": seconds}
+                    for seconds, step in sorted(spent, reverse=True)[:3]],
+        "over_budget_reason": reason,
+    }
+
+
+def _workspace_crate_dirs(root: Path) -> dict[str, str]:
+    """Map relative crate directory (e.g. 'crates/hex-ui') to package name without Cargo."""
+    mapping: dict[str, str] = {}
+    crates_dir = root / "crates"
+    if not crates_dir.is_dir():
+        return mapping
+    for manifest in sorted(crates_dir.glob("*/Cargo.toml")):
+        try:
+            text = manifest.read_text(errors="replace")
+        except OSError:
             continue
-        seconds = max(0.0, entry["duration_seconds"] - (timing.get("cargo_build_phase_seconds") or 0.0))
-        spent.append((round(seconds, 3), entry.get("step_id")))
-    total = round(sum(seconds for seconds, _ in spent), 3)
-    return {"limit_seconds": MERGE_TEST_BUDGET_SECONDS, "test_seconds": total,
-            "exceeded": total > MERGE_TEST_BUDGET_SECONDS,
-            "slowest": [{"step_id": step, "seconds": seconds}
-                        for seconds, step in sorted(spent, reverse=True)[:3]],
-            "over_budget_reason": reason}
+        in_package = False
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if line.startswith("["):
+                in_package = line == "[package]"
+                continue
+            if in_package:
+                match = re.match(r'^name\s*=\s*"([^"]+)"', line)
+                if match:
+                    rel = manifest.parent.relative_to(root).as_posix()
+                    mapping[rel] = match.group(1)
+                    break
+    return mapping
+
+
+def quick_steps(
+    root: Path,
+    env: dict[str, str],
+    *,
+    base: str | None = None,
+    source: str | None = None,
+) -> tuple[Step, ...]:
+    """Scope `cargo fmt --check` in `--quick` to changed workspace packages when available."""
+    changed: list[str] = []
+    try:
+        if base:
+            ref_source = source or "HEAD"
+            diff = command_output(["git", "diff", "--name-only", "-z", base, ref_source], root, env)
+            if diff.returncode != 0:
+                return QUICK_STEPS
+            changed.extend(p for p in diff.stdout.split("\0") if p)
+        if not base or source in (None, "HEAD"):
+            status = command_output(["git", "status", "--porcelain=v1", "--untracked-files=all", "-z"], root, env)
+            if status.returncode != 0:
+                return QUICK_STEPS
+            entries = status.stdout.split("\0")
+            index = 0
+            while index < len(entries):
+                entry = entries[index]
+                index += 1
+                if len(entry) < 4:
+                    continue
+                code = entry[:2]
+                path = entry[3:]
+                if path:
+                    changed.append(path)
+                if "R" in code or "C" in code:
+                    if index < len(entries) and entries[index]:
+                        changed.append(entries[index])
+                    index += 1
+    except OSError:
+        return QUICK_STEPS
+    if not changed:
+        return QUICK_STEPS
+    crate_dirs = _workspace_crate_dirs(root)
+    packages: set[str] = set()
+    for path in changed:
+        if path in {"Cargo.toml", "rustfmt.toml", ".rustfmt.toml"}:
+            return QUICK_STEPS
+        owner = next((pkg for prefix, pkg in crate_dirs.items() if path.startswith(prefix + "/")), None)
+        if owner is not None:
+            packages.add(owner)
+        elif path.endswith(".rs"):
+            return QUICK_STEPS
+    if not packages:
+        return QUICK_STEPS
+    fmt_argv = ("cargo", "fmt", *(arg for pkg in sorted(packages) for arg in ("-p", pkg)), "--check")
+    return tuple(Step("format", fmt_argv) if step.step_id == "format" else step for step in QUICK_STEPS)
 
 
 def edit_selection(inventory: list[dict], *, package: str, test_filter: str,
@@ -1382,11 +1538,15 @@ class LocalCiRunner:
         resume_report: Path | None = None,
         carry_report: Path | None = None,
         over_budget_reason: str | None = None,
+        preflight_metadata: dict | None = None,
+        quick_base: str | None = None,
+        quick_source: str | None = None,
     ) -> None:
         self.root = root.resolve()
         # The CLI retains its existing policy path; imported runners require a source witness.
         self._cli_policy_bound = False
         self.over_budget_reason = over_budget_reason
+        self._preflight_metadata = preflight_metadata
         default_floor = DEFAULT_FULL_MIN_FREE_BYTES if mode in {"full", "merge", "release"} else 0
         self.min_free_bytes = default_floor if min_free_bytes is None else min_free_bytes
         if (
@@ -1411,7 +1571,8 @@ class LocalCiRunner:
         native_acceptance_opt_in = bool(ci_plan.python_tests.native_acceptance_inputs(self.env))
         sharded_full_python = mode == "full" and plan is None and not native_acceptance_opt_in
         self.steps = steps if steps is not None else (
-            QUICK_STEPS if mode == "quick" and plan is None else
+            quick_steps(self.root, self.env, base=quick_base, source=quick_source)
+            if mode == "quick" and plan is None else
             qualification_steps(mode, plan, native_acceptance_opt_in=native_acceptance_opt_in,
                                 sharded_full_python=sharded_full_python)
         )
@@ -1450,6 +1611,7 @@ class LocalCiRunner:
         self.target_owner_path: Path | None = None
         self.target_owner_claimed = False
         self._release_metadata = None
+        self._reuse_release_metadata = False
         self._plan_metadata = None
         self._dependency_inputs = None
         self._compiler_inputs = None
@@ -1517,28 +1679,59 @@ class LocalCiRunner:
             return False
         dirty_files = [line for line in status.stdout.splitlines() if line]
         digest = hashlib.sha256()
-        paths = sorted(path for path in tracked.stdout.split(b"\0") if path)
+        collect_runtime = key == "start_tree"
+        runtime_digest = hashlib.sha256() if collect_runtime else None
+        runtime_symlinks: list[str] = []
+        runtime_exclusions: list[str] = []
+        paths = sorted(set(path for path in tracked.stdout.split(b"\0") if path), key=os.fsdecode)
         try:
             for relative in paths:
+                name = os.fsdecode(relative)
                 digest.update(len(relative).to_bytes(8, "big"))
                 digest.update(relative)
-                path = self.root / os.fsdecode(relative)
+                path = self.root / name
+                is_meta = collect_runtime and ci_plan.metadata_path(name)
+                if is_meta:
+                    runtime_exclusions.append(name)
                 try:
                     metadata = path.lstat()
                 except FileNotFoundError:
                     digest.update(b"missing\0")
+                    if runtime_digest is not None and not is_meta:
+                        for value in (name.encode(), b"0", b"<missing>"):
+                            runtime_digest.update(len(value).to_bytes(8, "big"))
+                            runtime_digest.update(value)
                     continue
-                if path.is_symlink():
+                if stat.S_ISLNK(metadata.st_mode):
+                    target_bytes = os.fsencode(os.readlink(path))
                     digest.update(b"symlink\0")
-                    digest.update(os.fsencode(os.readlink(path)))
-                elif path.is_file():
+                    digest.update(target_bytes)
+                    if collect_runtime:
+                        runtime_symlinks.append(name)
+                        if not is_meta:
+                            for value in (name.encode(), str(0o120000).encode(), target_bytes):
+                                runtime_digest.update(len(value).to_bytes(8, "big"))
+                                runtime_digest.update(value)
+                elif stat.S_ISREG(metadata.st_mode):
                     digest.update(b"file\0")
-                    with path.open("rb") as source:
-                        while chunk := source.read(1024 * 1024):
-                            digest.update(chunk)
+                    if runtime_digest is not None and not is_meta:
+                        data = path.read_bytes()
+                        digest.update(data)
+                        mode = 0o100755 if metadata.st_mode & 0o111 else 0o100644
+                        for value in (name.encode(), str(mode).encode(), data):
+                            runtime_digest.update(len(value).to_bytes(8, "big"))
+                            runtime_digest.update(value)
+                    else:
+                        with path.open("rb") as source:
+                            while chunk := source.read(1024 * 1024):
+                                digest.update(chunk)
                     digest.update(str(metadata.st_mode & 0o111).encode("ascii"))
                 else:
                     digest.update(f"other:{metadata.st_mode}\0".encode("ascii"))
+                    if runtime_digest is not None and not is_meta:
+                        for value in (name.encode(), b"0", b"<missing>"):
+                            runtime_digest.update(len(value).to_bytes(8, "big"))
+                            runtime_digest.update(value)
         except OSError as error:
             self.summary["repository_error"] = f"could not hash repository contents: {error}"
             return False
@@ -1550,7 +1743,12 @@ class LocalCiRunner:
         }
         self.summary[key] = snapshot
         if key == "start_tree":
-            self.summary["runtime_inputs"] = ci_plan.runtime_inputs(self.root, self.env)
+            self.summary["runtime_inputs"] = {
+                "version": ci_plan.POLICY_VERSION,
+                "sha256": runtime_digest.hexdigest(),
+                "symlinks": runtime_symlinks,
+                "metadata_exclusions": runtime_exclusions,
+            }
             if self.mode in {"full", "merge", "release"}:
                 try:
                     ci_plan.require_qualifying_inputs(self.summary["runtime_inputs"])
@@ -1673,30 +1871,41 @@ class LocalCiRunner:
                 reservation.close()
                 self.summary["cargo_metadata_error"] = str(error)
                 return False
+        cached_metadata = self._preflight_metadata
+        self._preflight_metadata = None
+        if cached_metadata is not None:
+            metadata = cached_metadata
+        else:
+            try:
+                result = subprocess.run(
+                    command,
+                    cwd=self.root,
+                    env=(self.env if reservation is None else dict(self.env, CARGO_CACHE_RUSTC_INFO="0")),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            except OSError as error:
+                if reservation is not None:
+                    reservation.close()
+                self.summary["cargo_metadata_error"] = f"could not resolve Cargo target: {error}"
+                return False
+            if result.returncode != 0:
+                if reservation is not None:
+                    reservation.close()
+                self.summary["cargo_metadata_error"] = {
+                    "exit_code": result.returncode,
+                    "stderr": result.stderr.strip(),
+                }
+                return False
+            try:
+                metadata = json.loads(result.stdout)
+            except json.JSONDecodeError as error:
+                if reservation is not None:
+                    reservation.close()
+                self.summary["cargo_metadata_error"] = f"Cargo metadata was incomplete or invalid: {error}"
+                return False
         try:
-            result = subprocess.run(
-                command,
-                cwd=self.root,
-                env=(self.env if reservation is None else dict(self.env, CARGO_CACHE_RUSTC_INFO="0")),
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        except OSError as error:
-            if reservation is not None:
-                reservation.close()
-            self.summary["cargo_metadata_error"] = f"could not resolve Cargo target: {error}"
-            return False
-        if result.returncode != 0:
-            if reservation is not None:
-                reservation.close()
-            self.summary["cargo_metadata_error"] = {
-                "exit_code": result.returncode,
-                "stderr": result.stderr.strip(),
-            }
-            return False
-        try:
-            metadata = json.loads(result.stdout)
             raw_target = metadata["target_directory"]
             raw_workspace_root = metadata["workspace_root"]
             members = metadata["workspace_members"]
@@ -2252,7 +2461,11 @@ class LocalCiRunner:
     def _dependency_context(self) -> dict:
         # Full feature metadata includes optional/dev path dependencies. Read it
         # inside the target lock, before even Python's private Cargo fixtures.
-        self._release_scope()
+        # Teardown validation sets `_reuse_release_metadata` to reuse the
+        # captured metadata while still re-hashing manifests, lockfile,
+        # toolchain binaries, and path deps.
+        if not self._reuse_release_metadata or self._release_metadata is None:
+            self._release_scope()
         self._path_inputs = self._path_dependency_inputs()
         return {"version": 1, "sha256": self._release_build_inputs(["guarded-dev-inputs-v1"]),
                 "packages": self._path_inputs}
@@ -3291,7 +3504,10 @@ class LocalCiRunner:
                         failed = True
                 if self.mode == "merge" and not failed:
                     self.summary["test_budget"] = merge_test_budget(
-                        self.summary["steps"], self.over_budget_reason)
+                        self.summary["steps"],
+                        self.over_budget_reason,
+                        total_wall_seconds=time.monotonic() - self.started_monotonic,
+                    )
                 partial = self.mode not in {"full", "merge", "release"} or self.plan is not None and not self.plan["qualifies_merge"]
                 self.summary["verification_status"] = "failed" if failed else ("partial" if partial else "passed")
                 self.summary["status"] = self.summary["verification_status"]
@@ -3316,7 +3532,12 @@ class LocalCiRunner:
                             try:
                                 if (error := self._execution_policy_error()) is not None:
                                     raise TargetCacheError("runner policy changed during checks: " + error)
-                                if self._dependency_context() != self._dependency_inputs:
+                                self._reuse_release_metadata = True
+                                try:
+                                    teardown_deps = self._dependency_context()
+                                finally:
+                                    self._reuse_release_metadata = False
+                                if teardown_deps != self._dependency_inputs:
                                     raise TargetCacheError("dependency inputs changed during guarded checks")
                                 self._completed_workspace_inputs()
                                 self._write_target_owner(self.target_owner_path, self.git_identity, checked=self.summary.get("exit_code") == 0)
@@ -3494,8 +3715,20 @@ def main(argv: list[str] | None = None) -> int:
 def _run_cli(arguments, parser, reservation: FreshTargetReservation | None) -> int:
     mode = "quick" if arguments.quick else "full"
     plan = None
-    if arguments.profile in {"merge", "edit", "health"} or arguments.base or arguments.source:
-        if arguments.quick or not arguments.profile or not arguments.base or not arguments.source:
+    preflight_metadata = None
+    quick_base = None
+    quick_source = None
+    if arguments.quick:
+        if arguments.profile:
+            parser.error("--profile cannot be combined with --quick")
+        if arguments.reuse_report:
+            parser.error("--reuse-report requires an explicit merge plan")
+        if arguments.package or arguments.test_filter or arguments.features or arguments.lib or arguments.test is not None:
+            parser.error("package/filter/features require an explicit edit plan")
+        quick_base = arguments.base
+        quick_source = arguments.source
+    elif arguments.profile in {"merge", "edit", "health"} or arguments.base or arguments.source:
+        if not arguments.profile or not arguments.base or not arguments.source:
             parser.error("scoped profiles require --profile, --base and --source; cannot combine --quick")
         try:
             metadata_env = dict(os.environ)
@@ -3515,6 +3748,7 @@ def _run_cli(arguments, parser, reservation: FreshTargetReservation | None) -> i
                 raise ValueError("CLI planner changed before resolution: " + error)
             plan = ci_plan.resolve(ROOT, profile=arguments.profile, base=arguments.base,
                                    source=arguments.source, metadata=metadata, env=metadata_env)
+            preflight_metadata = metadata
             if arguments.reuse_report:
                 plan = reusable_plan(ROOT, plan, arguments.reuse_report, env=metadata_env)
             if arguments.package or arguments.test_filter or arguments.features or arguments.lib or arguments.test is not None:
@@ -3528,8 +3762,6 @@ def _run_cli(arguments, parser, reservation: FreshTargetReservation | None) -> i
         except (ValueError, KeyError, TypeError, OSError, subprocess.CalledProcessError, TargetCacheError) as error:
             parser.error(f"cannot resolve conservative check plan: {error}")
         mode = arguments.profile
-    elif arguments.profile and arguments.quick:
-        parser.error("--profile cannot be combined with --quick")
     elif arguments.reuse_report:
         parser.error("--reuse-report requires an explicit merge plan")
     elif arguments.package or arguments.test_filter or arguments.features or arguments.lib or arguments.test is not None:
@@ -3544,6 +3776,9 @@ def _run_cli(arguments, parser, reservation: FreshTargetReservation | None) -> i
         resume_report=arguments.resume_report,
         carry_report=arguments.carry_report,
         over_budget_reason=arguments.over_budget_reason,
+        preflight_metadata=preflight_metadata,
+        quick_base=quick_base,
+        quick_source=quick_source,
     )
     runner._cli_policy_bound = reservation is None
     try:
@@ -3558,12 +3793,26 @@ def _run_cli(arguments, parser, reservation: FreshTargetReservation | None) -> i
     if carried:
         print(f"{len(carried)} step(s) carried from {runner.summary['carry']['report']}, not re-executed")
     budget = runner.summary.get("test_budget")
-    if isinstance(budget, dict) and budget.get("exceeded"):
-        slowest = ", ".join(f"{s['step_id']} {s['seconds']:.0f}s" for s in budget["slowest"])
+    if isinstance(budget, dict):
         verdict = (f"reason: {budget['over_budget_reason']}" if budget.get("over_budget_reason") else
                    "not a merge failure; record a recurring slow suite in Pulse")
-        print(f"warning: merge test time {budget['test_seconds']:.0f}s exceeds the "
-              f"{budget['limit_seconds']:.0f}s budget ({slowest}); {verdict}", file=sys.stderr)
+        if budget.get("total_exceeded"):
+            phases = budget.get("phases") or {}
+            phase_text = ", ".join(
+                f"{name} {phases.get(name, 0.0):.1f}s"
+                for name in ("preflight", "build", "clippy", "test", "other")
+            )
+            print(f"warning: total merge wall time {budget['total_seconds']:.1f}s exceeds the "
+                  f"{budget['total_limit_seconds']:.0f}s budget ({phase_text}); {verdict}", file=sys.stderr)
+        if budget.get("test_exceeded"):
+            slowest = ", ".join(f"{s['step_id']} {s['seconds']:.0f}s" for s in budget["slowest"])
+            print(f"warning: merge test time {budget['test_seconds']:.0f}s exceeds the "
+                  f"{budget['limit_seconds']:.0f}s budget ({slowest}); {verdict}", file=sys.stderr)
+        unit_budget = budget.get("unit_budget")
+        if isinstance(unit_budget, dict) and unit_budget.get("exceeded"):
+            offenders = ", ".join(f"{v['step_id']} {v['seconds']:.2f}s" for v in unit_budget["violations"])
+            print(f"warning: unit-tier execution exceeded {unit_budget['limit_seconds']:.1f}s "
+                  f"({offenders}); {verdict}", file=sys.stderr)
     print(f"local ci {runner.summary['status']}: {runner.summary_path}")
     if mode == "health" and runner.summary["status"] == "failed":
         print(f"main is red after merge {plan['source']}: owning checks did not pass; "

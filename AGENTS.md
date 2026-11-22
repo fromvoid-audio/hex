@@ -311,9 +311,11 @@ missing owner boundary test: add the regression at the owner instead of widening
 merge checks. Within an owner crate, merges test only the changed modules'
 own test subtrees (a module without tests falls back to its nearest tested
 ancestor), so give each module its own boundary tests and split large modules
-along their responsibilities. Keep each merge's test setup and execution,
-excluding build time, under one minute. `scripts/local-ci.py --profile merge` reports this
-budget as a warning, not a merge failure (user decision, 1 November 2026; see
+along their responsibilities. Keep pure unit-tier test suites under 1 second (`< 1s`), test setup and execution
+excluding build time under one minute, and total merge verification (including
+preflight, compilation, Clippy, and tests) within 3 minutes (`<= 180s`).
+`scripts/local-ci.py --profile merge` reports these budgets and phase breakdowns
+as warnings, not merge failures (user decision, 1 November 2026; see
 `docs/local-ci.md`). Merge when every other check is green. A recurring
 over-budget owner suite is a test-design bug: record it in Pulse.
 
