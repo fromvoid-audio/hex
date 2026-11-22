@@ -764,9 +764,9 @@ publication. Use the verified fixture receipts from the commands above.
 ```sh
 HEX_VST3_MACOS_RECEIPT="$PWD/artifacts/vst3-local-controlled/controlled-macos.json" \
 HEX_VST3_INSTANCE_RECEIPT="$PWD/artifacts/vst3-local-instance/controlled-macos.json" \
-  cargo test --locked --release -p hex-desktop --features allocation-probe --bin hex-desktop \
+  cargo test --locked --release -p hex-desktop --features ui-test-support --test native_vst3_plugins \
   -- --ignored --exact --test-threads=1 \
-  native_audio::tests::plugins::capture_source_guard::late_editor_value_remains_on_original_worker_after_unlaned_publication
+  plugins::capture_source_guard::late_editor_value_remains_on_original_worker_after_unlaned_publication
 ```
 
 Measure first and repeated invocations separately and record both process wall
@@ -815,8 +815,8 @@ revisions. Smaller callbacks feed fragments into the fixed transport quantum.
 
 ```sh
 HEX_PLAYBACK_PROFILE_BLOCK=256 cargo test --release --locked -p hex-desktop \
-  --features allocation-probe --bin hex-desktop \
-  -- native_audio::tests::plugins::performance_profile \
+  --features ui-test-support --test native_vst3_plugins \
+  -- plugins::performance_profile \
   --ignored --nocapture --test-threads=1
 ```
 

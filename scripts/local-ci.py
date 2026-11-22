@@ -259,10 +259,15 @@ FULL_STEPS = (
     # disjoint test processes each own one, so their chains run concurrently.
     Step("desktop-allocation-probe", ("python3", "scripts/test_shards.py", "--shards", "4", "--",
                                       "cargo", "test", "-p", "hex-desktop", "--features", "allocation-probe", "--locked")),
+    Step("desktop-ui-tests", ("cargo", "test", "-p", "hex-desktop", "--bins", "--features", "ui-test-support",
+                              "--locked", "--",
+                              "native_audio::tests::resident_preview::browser_limiter_insertion",
+                              "native_audio::tests::sampler::")),
     Step("stream-allocation-probe", ("cargo", "test", "-p", "hex-stream", "--features", "allocation-probe", "--locked")),
     Step("workspace-clippy", ("cargo", "clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings")),
     Step("prepared-export-instrument-clippy", ("cargo", "clippy", "-p", "hex-export", "--all-targets", "--features", "instrument-test-support", "--locked", "--", "-D", "warnings")),
     Step("ui-feature-clippy", ("cargo", "clippy", "-p", "hex-ui", "--all-targets", "--features", "ui-test-support", "--locked", "--", "-D", "warnings")),
+    Step("desktop-ui-clippy", ("cargo", "clippy", "-p", "hex-desktop", "--all-targets", "--features", "ui-test-support", "--locked", "--", "-D", "warnings")),
     Step("ui-unit-clippy", ("cargo", "clippy", "-p", "hex-ui", "--all-targets", "--features", "ui-unit-tier", "--locked", "--", "-D", "warnings")),
     Step("sandbox-unit-clippy", ("cargo", "clippy", "-p", "hex-sandbox", "--all-targets", "--features", "ui-unit-tier", "--locked", "--", "-D", "warnings")),
     Step("audio-feature-clippy", ("cargo", "clippy", "-p", "hex-audio", "-p", "hex-desktop", "-p", "hex-plugin-host", "--all-targets", "--features", "allocation-probe", "--locked", "--", "-D", "warnings")),
@@ -776,7 +781,7 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
     covered_features = {"hex-plugin-host": {"allocation-probe"}, "hex-ui": {"ui-test-support", "ui-unit-tier"}, "hex-export": {"instrument-test-support"},
                         "hex-sandbox": {"ui-unit-tier"},
                         "hex-audio": {"allocation-probe"}, "hex-stream": {"allocation-probe"},
-                        "hex-desktop": {"allocation-probe"}}
+                        "hex-desktop": {"allocation-probe", "ui-test-support"}}
     # Every consumer's reviewed feature configurations lint in ONE invocation:
     # separate invocations recompiled the shared dependency chain per feature
     # (55-112 s against 38-42 s measured, 1 November 2026). The default-feature
@@ -787,6 +792,9 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
             continue
         if step.step_id in UI_UNIT_STEP_IDS | {"ui-unit-clippy"} and (
                 "hex-ui" not in by_name or "ui-unit-tier" not in by_name["hex-ui"]["features"]):
+            continue
+        if step.step_id in {"desktop-ui-tests", "desktop-ui-clippy"} and (
+                "hex-desktop" not in by_name or "ui-test-support" not in by_name["hex-desktop"]["features"]):
             continue
         owners = [step.argv[i + 1] for i, arg in enumerate(step.argv) if arg == "-p"]
         # Feature test suites run for tested owners; feature lints for every consumer.
@@ -813,6 +821,19 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         for owner in set(owners) - set(selected):
             index = argv.index(owner)
             del argv[index - 1:index + 1]
+        if step.step_id == "desktop-ui-tests" and "hex-desktop" in module_filters:
+            split = argv.index("--")
+            ui_filters = argv[split + 1:]
+            overlapping = sorted({
+                max(ui_filter, name, key=len)
+                for ui_filter in ui_filters
+                for name in module_filters["hex-desktop"]
+                if ui_filter.startswith(name) or name.startswith(ui_filter)
+            })
+            if not overlapping:
+                continue
+            steps.append(Step(step.step_id, (*argv[:split], "--", *overlapping)))
+            continue
         if step.step_id == "sandbox-unit-tests" and "hex-sandbox" in module_filters:
             # Scoped changes use the owning module filters in place of the
             # full/health theme filter, not both filters together.

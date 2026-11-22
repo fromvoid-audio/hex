@@ -64,7 +64,7 @@ fn trace() -> Vec<i32> {
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn native_effect_save_reopens_component_and_controller_into_independent_instance() {
-    const NAME: &str = "native_audio::tests::plugins::state::save::reopen::native_effect_save_reopens_component_and_controller_into_independent_instance";
+    const NAME: &str = "plugins::state::save::reopen::native_effect_save_reopens_component_and_controller_into_independent_instance";
     if std::env::var_os("HEX_DESKTOP_SAVE_REOPEN_CHILD").is_none() {
         let files = Files::new();
         let child = std::process::Command::new(std::env::current_exe().unwrap())

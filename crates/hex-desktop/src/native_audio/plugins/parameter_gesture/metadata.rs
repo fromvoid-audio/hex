@@ -218,8 +218,9 @@ fn find_target(
 }
 
 #[cfg(all(test, feature = "allocation-probe"))]
+#[allow(dead_code)]
 impl Plugins {
-    pub(in crate::native_audio) fn lookup_authored_target_for_test(
+    pub(crate) fn lookup_authored_target_for_test(
         control: &mut PublicationControl,
         binding: Binding,
         id: u32,

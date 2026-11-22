@@ -22,12 +22,25 @@ mod unsealed_admission;
 mod verified_insert;
 mod verified_main_history;
 mod whole_return_removal;
-use super::resident_preview::ResidentHarness;
-use super::*;
+use crate::audio_policy::AudioPolicy;
+use crate::native_audio::tests::resident_preview::ResidentHarness;
+use crate::native_audio::tests::*;
+use crate::{resident_lifecycle, resident_preview, resident_sections, verified_gain};
 use hex_audio::plugin_effects::{EffectPresentation, Hosting};
+use hex_engine::AudioSourceContext;
 use hex_project::{Command, Created};
-use hex_session::service::{
-    PluginEffectControl, PluginEffectDestination, PluginEffectInsertion, PluginEffectSelection,
+use hex_session::{
+    DocumentAudioMode,
+    service::{
+        CanonicalAudioSourceSnapshot, PluginEffectControl, PluginEffectDestination,
+        PluginEffectInsertion, PluginEffectSelection, Service, WorkerAudioSink,
+    },
+};
+use hex_ui::{EditorAudioEvent, EditorPublicationState};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering::Acquire},
+    mpsc,
 };
 
 fn host() -> Hosting {

@@ -23,10 +23,10 @@ use std::sync::{
 
 mod document_output;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-mod plugins;
+pub(crate) mod plugins;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 #[path = "native_audio/plugins_unavailable.rs"]
-mod plugins;
+pub(crate) mod plugins;
 mod resident;
 mod resident_files;
 mod route_follow;
@@ -37,7 +37,7 @@ mod verified_gain;
 mod verified_graph_edit;
 use verified_gain::{PreviewWatermark, VerifiedKey, VerifiedSource};
 #[cfg(all(test, feature = "allocation-probe"))]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(all(test, feature = "allocation-probe"))]
 type OutputFactory = Box<
@@ -77,27 +77,27 @@ impl Domain {
         let _ = control.retire_audio_candidate_domain(self.token);
     }
 }
-struct Submitted {
+pub(crate) struct Submitted {
     resident_copy_frames: u64,
     // Correlate the actual install ACK with this exact submitted project and
     // overlay. The weak identity does not retain its media or project payload.
     source: hex_audio::prepared::AppliedAudioSource,
     canonical: std::sync::Weak<CanonicalAudioSourceSnapshot>,
-    key: VerifiedKey,
+    pub(crate) key: VerifiedKey,
     ticket: AudioCandidateTicket,
     domain: Option<AudioCandidateDomainToken>,
 }
-struct Preparation {
+pub(crate) struct Preparation {
     resident_copy_frames: u64,
     builtin_effects: bool,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     hosted_effects: Vec<hex_audio::plugin_effects::EffectBinding>,
-    token: AudioCandidatePreparationToken,
-    snapshot: VerifiedSource,
+    pub(crate) token: AudioCandidatePreparationToken,
+    pub(crate) snapshot: VerifiedSource,
     catalog: u64,
-    domain: Option<AudioCandidateDomainToken>,
-    bound: bool,
-    built: bool,
+    pub(crate) domain: Option<AudioCandidateDomainToken>,
+    pub(crate) bound: bool,
+    pub(crate) built: bool,
     cancelling: bool,
 }
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -139,19 +139,19 @@ struct VerifiedPageHold {
     armed: SyncSender<(mpsc::Receiver<()>, SyncSender<()>)>,
 }
 
-pub(super) struct NativeAudioSink {
+pub(crate) struct NativeAudioSink {
     audio_diagnostics: hex_audio::audio_diagnostics::AudioDiagnosticsFlags,
-    plugins: plugins::Plugins,
+    pub(crate) plugins: plugins::Plugins,
     request_cancellation: Option<hex_session::service::RequestCancellation>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     stopped_foreign_history: Option<StoppedForeignHistory>,
     #[cfg(all(test, feature = "allocation-probe"))]
     native_graph_gate: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
     #[cfg(all(test, feature = "allocation-probe"))]
-    native_graph_busy_observer: Option<SyncSender<()>>,
+    pub(crate) native_graph_busy_observer: Option<SyncSender<()>>,
     #[cfg(all(test, feature = "allocation-probe"))]
     verified_page_hold: Option<VerifiedPageHold>,
-    policy: Result<AudioPolicy, String>,
+    pub(crate) policy: Result<AudioPolicy, String>,
     resident: resident::Resident,
     // Selected before initialization; applies to every resident graph, including an empty project.
     // Production resident publication stays on the canonical worker; VerifiedStreaming
@@ -162,7 +162,7 @@ pub(super) struct NativeAudioSink {
     // no new output can open, so one bounded slot suffices across replacements.
     pending_release_event: Option<EditorAudioEvent>,
     pending_open_event: Option<EditorAudioEvent>,
-    pending_observation: Option<EditorAudioEvent>,
+    pub(crate) pending_observation: Option<EditorAudioEvent>,
     // One coalesced status may wait behind an accepted ordinary submission. Status changes
     // never overwrite the exact tuple needed to complete keyboard/restore/gain/seek tracking.
     pending_status_observation: Option<EditorAudioEvent>,
@@ -180,16 +180,16 @@ pub(super) struct NativeAudioSink {
     route_watch: Option<hex_audio::OutputRouteWatch>,
     route_seen: u64,
     route_follow: route_follow::RouteFollow,
-    desired: Option<Arc<CanonicalAudioSourceSnapshot>>,
+    pub(crate) desired: Option<Arc<CanonicalAudioSourceSnapshot>>,
     verified_preview: Option<VerifiedSource>,
     verified_edit: Option<verified_graph_edit::Edit>,
     verified_clip_control: verified_clip_move::VerifiedClipControl,
     preview_watermark: Option<PreviewWatermark>,
     verified_last: Option<VerifiedKey>,
-    verified_blocked: Option<VerifiedKey>,
+    pub(crate) verified_blocked: Option<VerifiedKey>,
     output: Option<WorkerPreparedOutput>,
     output_generation: Option<u64>,
-    output_identity: Option<u64>,
+    pub(crate) output_identity: Option<u64>,
     // Last worker-relinquished endpoint, retained until a fresh Lease opens.
     // Sampler preflight may retire it before a replacement arrives. This
     // identity retains no output, media, or native resource ownership.
@@ -212,10 +212,10 @@ pub(super) struct NativeAudioSink {
     project_rate_probe: Box<dyn Fn() -> Option<u32> + Send>,
     next_catalog: u64,
     domains: [Option<Domain>; 2],
-    preparation: Option<Preparation>,
-    submitted: [Option<Submitted>; RUNTIME_CELLS],
+    pub(crate) preparation: Option<Preparation>,
+    pub(crate) submitted: [Option<Submitted>; RUNTIME_CELLS],
     last_context: Option<AudioSourceContext>,
-    last_state: Option<(AudioSourceContext, &'static str, Option<u64>)>,
+    pub(crate) last_state: Option<(AudioSourceContext, &'static str, Option<u64>)>,
     blocked: Option<AudioSourceContext>,
     sampler: Option<sampler::Sampler>,
     sampler_parameter: Option<sampler::EditPending>,
@@ -240,7 +240,7 @@ const STARTUP_OPEN_DEADLINE: std::time::Duration = std::time::Duration::from_sec
 const STARTUP_OPEN_TIMEOUT: &str = "audio output did not open in time; editing continues without audio. use restart audio to retry";
 
 impl NativeAudioSink {
-    fn new(events: SyncSender<EditorAudioEvent>) -> Self {
+    pub(crate) fn new(events: SyncSender<EditorAudioEvent>) -> Self {
         Self {
             audio_diagnostics: Default::default(),
             plugins: plugins::Plugins::default(),
@@ -765,7 +765,7 @@ impl NativeAudioSink {
             }
         }
     }
-    fn drive_verified(&mut self, output: &mut WorkerPreparedOutput) {
+    pub(crate) fn drive_verified(&mut self, output: &mut WorkerPreparedOutput) {
         let Some(control) = output.publication.control() else {
             return;
         };

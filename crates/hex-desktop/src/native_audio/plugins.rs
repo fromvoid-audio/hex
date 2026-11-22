@@ -133,15 +133,17 @@ struct Pending {
     facts_attempt_from_session: bool,
 }
 #[cfg(all(test, feature = "allocation-probe"))]
-pub(super) struct FactsGate {
-    pub(super) reached: mpsc::SyncSender<()>,
+#[allow(dead_code)]
+pub(crate) struct FactsGate {
+    pub(crate) reached: mpsc::SyncSender<()>,
     resume: mpsc::Receiver<()>,
     binding: Option<Binding>,
     notified: bool,
 }
 #[cfg(all(test, feature = "allocation-probe"))]
+#[allow(dead_code)]
 impl FactsGate {
-    pub(super) fn new(reached: mpsc::SyncSender<()>, resume: mpsc::Receiver<()>) -> Self {
+    pub(crate) fn new(reached: mpsc::SyncSender<()>, resume: mpsc::Receiver<()>) -> Self {
         Self {
             reached,
             resume,
@@ -170,30 +172,31 @@ impl FactsGate {
     }
 }
 #[cfg(all(test, feature = "allocation-probe"))]
+#[allow(dead_code)]
 #[derive(Clone, Copy, Default)]
-pub(super) struct PreparationObservation {
-    pub(super) output: Option<u64>,
-    pub(super) binding: Option<Binding>,
+pub(crate) struct PreparationObservation {
+    pub(crate) output: Option<u64>,
+    pub(crate) binding: Option<Binding>,
     /// First two accepted (device, binding, completed prefix) facts; no custody authority.
-    pub(super) source_bindings: [Option<(u64, Binding, Option<u64>)>; 2],
+    pub(crate) source_bindings: [Option<(u64, Binding, Option<u64>)>; 2],
     /// Last prepared device and its accepted flag, including staged insertions.
-    pub(super) newest_source: Option<(u64, Binding, bool)>,
-    pub(super) pending: bool,
-    pub(super) accepted: bool,
-    pub(super) retiring: bool,
-    pub(super) native: Option<Progress>,
-    pub(super) attempts: u64,
-    pub(super) facts_attempt_from_session: bool,
-    pub(super) facts_ready_for_session: bool,
-    pub(super) restore_refused: bool,
-    pub(super) observed_latency_receipt: bool,
+    pub(crate) newest_source: Option<(u64, Binding, bool)>,
+    pub(crate) pending: bool,
+    pub(crate) accepted: bool,
+    pub(crate) retiring: bool,
+    pub(crate) native: Option<Progress>,
+    pub(crate) attempts: u64,
+    pub(crate) facts_attempt_from_session: bool,
+    pub(crate) facts_ready_for_session: bool,
+    pub(crate) restore_refused: bool,
+    pub(crate) observed_latency_receipt: bool,
     /// Last accepted binding whose live recovery batch returned. This copied
     /// receipt may outlive its source; readers must match the current binding.
-    pub(super) recovery_read_binding: Option<Binding>,
-    pub(super) editor_receipts: [Option<hex_audio::plugin_worker::ParameterEdit>; 16],
-    pub(super) editor_receipt_count: usize,
-    pub(super) hold_pending_read: Option<Binding>,
-    pub(super) held_pending_read: Option<Binding>,
+    pub(crate) recovery_read_binding: Option<Binding>,
+    pub(crate) editor_receipts: [Option<hex_audio::plugin_worker::ParameterEdit>; 16],
+    pub(crate) editor_receipt_count: usize,
+    pub(crate) hold_pending_read: Option<Binding>,
+    pub(crate) held_pending_read: Option<Binding>,
 }
 #[cfg(all(test, feature = "allocation-probe"))]
 impl std::fmt::Debug for PreparationObservation {
@@ -212,7 +215,7 @@ impl std::fmt::Debug for PreparationObservation {
     }
 }
 #[derive(Default)]
-pub(super) struct Plugins {
+pub(crate) struct Plugins {
     host: Option<Hosting>,
     transport_space: bool,
     initialized: bool,
@@ -220,7 +223,7 @@ pub(super) struct Plugins {
     profile_failed: bool,
     configured: bool,
     scratch_capacity: usize,
-    pub(super) pool_held: bool,
+    pub(crate) pool_held: bool,
     sources: Vec<Source>,
     paused_monitor_sources: Vec<Binding>,
     pending: Option<Pending>,
@@ -253,7 +256,7 @@ pub(super) struct Plugins {
     )>,
     hosted_move: Option<hosted_move::MoveRoute>,
     edit: Option<AudioSourceContext>,
-    pub(super) catalog: Option<std::path::PathBuf>,
+    pub(crate) catalog: Option<std::path::PathBuf>,
     degraded: degraded::DegradedReport<Binding>,
     degraded_changed: Option<(u64, u64, Vec<u64>)>,
     diagnostics: Option<hex_diagnostics::DiagnosticsHandle>,
@@ -267,22 +270,22 @@ pub(super) struct Plugins {
     #[cfg(all(test, feature = "allocation-probe"))]
     presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
     #[cfg(all(test, feature = "allocation-probe"))]
-    pub(super) completed: Option<Arc<std::sync::atomic::AtomicU64>>,
+    pub(crate) completed: Option<Arc<std::sync::atomic::AtomicU64>>,
     #[cfg(all(test, feature = "allocation-probe"))]
-    pub(super) queued: Option<Arc<AtomicBool>>,
+    pub(crate) queued: Option<Arc<AtomicBool>>,
     #[cfg(all(test, feature = "allocation-probe"))]
-    pub(super) records: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    pub(crate) records: Option<Arc<std::sync::atomic::AtomicUsize>>,
     #[cfg(all(test, feature = "allocation-probe"))]
-    pub(super) facts_gate: Option<FactsGate>,
+    pub(crate) facts_gate: Option<FactsGate>,
     #[cfg(all(test, feature = "allocation-probe"))]
-    pub(super) replay_capture_gate: Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>,
+    pub(crate) replay_capture_gate: Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>,
     #[cfg(all(test, feature = "allocation-probe"))]
-    pub(super) progress: Option<Arc<std::sync::Mutex<PreparationObservation>>>,
+    pub(crate) progress: Option<Arc<std::sync::Mutex<PreparationObservation>>>,
     #[cfg(all(test, feature = "allocation-probe"))]
-    pub(super) failure_observation: Option<Arc<std::sync::Mutex<Option<String>>>>,
+    pub(crate) failure_observation: Option<Arc<std::sync::Mutex<Option<String>>>>,
 }
 
-pub(super) fn catalog_path_from_home(home: &std::path::Path) -> Option<std::path::PathBuf> {
+pub(crate) fn catalog_path_from_home(home: &std::path::Path) -> Option<std::path::PathBuf> {
     let path = hex_preferences::browser_places_path(home).with_file_name("plugin-catalog.json");
     if path.as_os_str().len() > 4096 {
         return None;
@@ -302,7 +305,7 @@ impl Plugins {
     }
 
     #[cfg(all(test, feature = "allocation-probe"))]
-    pub(super) fn with_fixture(
+    pub(crate) fn with_fixture(
         host: Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
     ) -> Self {

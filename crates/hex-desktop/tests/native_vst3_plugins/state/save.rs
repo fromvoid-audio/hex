@@ -306,7 +306,7 @@ fn stopped_save_includes_vst3_editor_input_admitted_during_save() {
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn native_effect_save_delayed_capture_keeps_pcm_and_drains_cancelled_request() {
-    const NAME: &str = "native_audio::tests::plugins::state::save::native_effect_save_delayed_capture_keeps_pcm_and_drains_cancelled_request";
+    const NAME: &str = "plugins::state::save::native_effect_save_delayed_capture_keeps_pcm_and_drains_cancelled_request";
     let Some(cancel) = std::env::var_os("HEX_DESKTOP_SAVE_CAPTURE_CHILD") else {
         for cancel in ["0", "1"] {
             let files = Files::new();
