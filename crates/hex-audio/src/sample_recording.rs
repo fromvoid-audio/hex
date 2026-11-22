@@ -198,6 +198,7 @@ impl Control {
         target_os = "macos",
         target_arch = "aarch64"
     ))]
+    #[allow(dead_code)]
     pub(crate) fn start_bound_main_for_test(
         &mut self,
         source: crate::prepared::AppliedAudioSource,

@@ -322,9 +322,9 @@ ADDITIVE_TEST_FEATURES: dict[str, tuple[str, ...]] = {
 SINGLE_RUN_COMPANION_FEATURES: dict[str, frozenset[str]] = {
     "hex-ui": frozenset({"ui-unit-tier"}),
     "hex-desktop": frozenset({"allocation-probe", "ui-test-support"}),
-    "hex-audio": frozenset({"allocation-probe"}),
+    "hex-audio": frozenset({"allocation-probe", "vst3-sdk-tests"}),
     "hex-stream": frozenset({"allocation-probe"}),
-    "hex-plugin-host": frozenset({"allocation-probe"}),
+    "hex-plugin-host": frozenset({"allocation-probe", "vst3-sdk-tests"}),
 }
 
 

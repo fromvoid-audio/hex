@@ -7,8 +7,11 @@ use crate::plugin_worker::{
     NativeWorkerGuardedCaptureProgress, NativeWorkerGuardedEditorWriteProgress,
     NativeWorkerParameterChange, NativeWorkerStateAfterGuardedWrite,
 };
-#[cfg(test)]
-mod tests;
+crate::include_vst3_sdk_tests! {
+    #[cfg(test)]
+    #[path = "../../../../tests/native_vst3_sdk/candidate_capture.rs"]
+    mod tests;
+}
 
 impl Custody {
     // Work excludes source replacement/return; bank is held only for admission

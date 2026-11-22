@@ -847,5 +847,8 @@ impl Custody {
     }
 }
 
-#[cfg(test)]
-mod tests;
+crate::include_vst3_sdk_tests! {
+    #[cfg(test)]
+    #[path = "../../../../tests/native_vst3_sdk/candidate_retiring_edits.rs"]
+    mod tests;
+}

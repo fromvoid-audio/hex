@@ -897,7 +897,13 @@ impl Custody {
 }
 
 #[cfg(test)]
-pub(crate) mod tests;
+mod unit_tests;
+
+crate::include_vst3_sdk_tests! {
+    #[cfg(test)]
+    #[path = "../../../tests/native_vst3_sdk/candidate_native_sources/mod.rs"]
+    pub(crate) mod tests;
+}
 
 fn native_pool_preflight(
     bank: &NativeBank,

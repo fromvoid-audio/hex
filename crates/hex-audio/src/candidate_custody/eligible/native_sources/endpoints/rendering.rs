@@ -18,6 +18,7 @@ impl NativeEndpointBank {
             .transport_fault_for_test()
     }
     #[cfg(all(test, feature = "allocation-probe"))]
+    #[allow(dead_code)]
     pub(crate) fn test_pending_requests(&self, binding: Binding) -> Option<usize> {
         Some(
             self.entries
@@ -32,6 +33,7 @@ impl NativeEndpointBank {
         )
     }
     #[cfg(all(test, feature = "allocation-probe"))]
+    #[allow(dead_code)]
     pub(crate) fn test_committed_frames(&self, binding: Binding) -> Option<u64> {
         self.entries
             .iter()

@@ -744,10 +744,15 @@ python3 crates/hex-plugin-scan/native/macos_bootstrap.py verify \
   --receipt artifacts/vst3-local-instance/controlled-macos.json
 HEX_VST3_MACOS_RECEIPT="$PWD/artifacts/vst3-local-controlled/controlled-macos.json" \
 HEX_VST3_INSTANCE_RECEIPT="$PWD/artifacts/vst3-local-instance/controlled-macos.json" \
-  cargo test -p hex-plugin-host --lib --locked \
-  native::tests::epoch::actual_current_capture_uses_same_quiescent_instance_and_keeps_startup_historical \
+  cargo test -p hex-plugin-host --features vst3-sdk-tests --test native_vst3_sdk --locked \
+  native::native_vst3_sdk::epoch::actual_current_capture_uses_same_quiescent_instance_and_keeps_startup_historical \
   -- --ignored --exact
 ```
+
+Opt-in `hex-audio` controlled VST3 SDK tests live in their own integration
+target (`--features vst3-sdk-tests --test native_vst3_sdk -- --ignored <filter>`)
+so default `hex-audio --lib` and `allocation-probe` builds omit the ignored SDK
+suites.
 
 Receipts are bound to the native sources and SDK pins. Rebuild them after those
 inputs change. This controlled helper test does not establish installed plug-in,

@@ -81,6 +81,7 @@ impl NativeWorker {
         Ok((slot.edits_pending || slot.edits_result.is_some()).then_some(slot.recovery_edits))
     }
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn pending_edit_result_nonempty_for_test(&self) -> Option<bool> {
         let slot = self.reaper.completed.capture.try_lock().ok()?;
         slot.edits_result

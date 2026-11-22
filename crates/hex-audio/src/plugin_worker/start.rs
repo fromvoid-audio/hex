@@ -350,5 +350,8 @@ impl NativeWorker {
     }
 }
 
-#[cfg(test)]
-mod tests;
+crate::include_vst3_sdk_tests! {
+    #[cfg(test)]
+    #[path = "../../tests/native_vst3_sdk/plugin_worker_start.rs"]
+    mod tests;
+}

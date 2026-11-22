@@ -13,6 +13,13 @@ workspace = true
 allocation-probe = []
 # Queue witness for owning audio tests; not an admission or readiness fact.
 test-support = []
+# Opt-in native macOS arm64 VST3 SDK integration suite; absent from normal builds.
+vst3-sdk-tests = ["allocation-probe", "test-support"]
+
+[[test]]
+name = "native_vst3_sdk"
+path = "src/native_vst3_sdk_test.rs"
+required-features = ["vst3-sdk-tests"]
 
 [dev-dependencies]
 allocation-counter = "=0.8.1"

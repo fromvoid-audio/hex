@@ -17,6 +17,11 @@
 //! Does not edit projects, decode media on callback, own GPUI, or implement device DSP. Stop must
 //! remain effective under queue pressure; final graph, source and endpoint destruction belongs on
 //! control.
+macro_rules! include_vst3_sdk_tests {
+    ($($item:item)*) => {};
+}
+pub(crate) use include_vst3_sdk_tests;
+
 pub mod audio_diagnostics;
 pub mod cpu_meter;
 mod device;

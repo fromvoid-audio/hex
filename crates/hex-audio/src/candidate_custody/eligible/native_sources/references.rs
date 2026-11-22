@@ -130,6 +130,7 @@ impl Bank {
 ))]
 impl CandidateRoot {
     /// Delegate to the actual reference fence without retaining a graph.
+    #[allow(dead_code)]
     pub(crate) fn check_native_borrow_nodes_for_test(
         &self,
         nodes: &[hex_lattice::PreparedRuntimeInstance],

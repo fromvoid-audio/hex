@@ -81,6 +81,7 @@ impl NativeWorkerParameterChange {
     }
 }
 #[cfg(test)]
+#[allow(dead_code)]
 impl NativeWorkerParameterChange {
     pub(crate) fn original_worker_released_on_control(&self) -> bool {
         self.source.upgrade().is_none()

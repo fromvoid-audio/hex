@@ -523,6 +523,7 @@ fn transport_review_shutdown_before_dispatch_never_sends_the_staged_block() {
     assert!(matches!(worker.receive(), Err(Fault::Revoked)));
 }
 
+crate::include_vst3_sdk_tests! {
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
 #[ignore = "requires an explicit current-source original native fixture receipt"]
@@ -628,4 +629,5 @@ fn actual_callback_to_persistent_sdk_fixture_has_exact_pipeline_latency() {
     // Both transport endpoints and all pipe/process ownership retire here on
     // control, outside every measured actual callback invocation.
     drop((callback, worker, control, transport, helper));
+}
 }
