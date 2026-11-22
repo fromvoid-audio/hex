@@ -337,6 +337,8 @@ pub(super) fn render_return_effect(
                 super::overdrive_panel::render_body(view, cx, id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.rattle") {
                 super::rattle_panel::render_body(view, cx, device, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.filter") {
+                super::filter_panel::render_body(view, cx, device, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.gate") {
                 super::gate_panel::render_body(view, cx, id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.auto-pan") {

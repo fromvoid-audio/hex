@@ -493,7 +493,7 @@ mod tests {
     #[test]
     fn catalog_and_batched_values_use_registered_metadata_and_current_state() {
         let catalog = native_device_catalog().unwrap();
-        assert_eq!(catalog.len(), 11);
+        assert_eq!(catalog.len(), 12);
         let utility = catalog
             .iter()
             .find(|entry| entry.name == "utility")
@@ -664,7 +664,12 @@ mod tests {
     fn instrument_facades_resolve_only_the_instrument_registry() {
         let effects = native_device_catalog_for_class(NativeDeviceClass::Effect).unwrap();
         let instruments = native_device_catalog_for_class(NativeDeviceClass::Instrument).unwrap();
-        assert_eq!(effects.len(), 11);
+        assert_eq!(effects.len(), 12);
+        assert!(
+            effects.iter().any(
+                |entry| entry.type_id == hex_devices::filter::TYPE_ID && entry.name == "filter"
+            )
+        );
         assert!(effects.iter().any(|entry| entry.name == "rattle"));
         assert!(effects.iter().any(|entry| entry.name == "utility"));
         assert!(effects.iter().any(|entry| entry.name == "eq"));
