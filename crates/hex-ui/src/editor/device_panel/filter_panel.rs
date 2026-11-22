@@ -12,6 +12,8 @@ use hex_lattice_contract::{NativeDeviceState, ParameterId, ParameterValue};
 use hex_project::Device;
 
 pub(super) const FRAME_WIDTH: f32 = 458.0;
+const DIAL_GAP: f32 = 3.0;
+const DIAL_PAIR_WIDTH: f32 = 2.0 * hex_widgets::MICRO_DIAL_WIDTH + DIAL_GAP;
 const MORPH_MODE: ParameterValue = ParameterValue::Choice(4);
 const STATIC_CONTROLS: [u32; 5] = [1, 2, 3, 4, 5];
 
@@ -140,23 +142,23 @@ pub(super) fn render_body(
                 },
             )
     };
-    use ControlPresentation::{CompactDial, CompactSelector};
+    use ControlPresentation::{CompactSelector, MicroDial};
     let filter = device_composition::rail_column()
         .child(control(1, CompactSelector, None))
         .child(control(2, CompactSelector, None))
         .child(
             div()
                 .flex()
-                .gap(px(3.0))
-                .child(control(3, CompactDial, None))
-                .child(control(4, CompactDial, None)),
+                .gap(px(DIAL_GAP))
+                .child(control(3, MicroDial, None))
+                .child(control(4, MicroDial, None)),
         )
         .child(
             div()
                 .flex()
-                .gap(px(3.0))
-                .child(control(6, CompactDial, Some("mix")))
-                .when(is_morph, |row| row.child(control(5, CompactDial, None))),
+                .gap(px(DIAL_GAP))
+                .child(control(6, MicroDial, Some("mix")))
+                .when(is_morph, |row| row.child(control(5, MicroDial, None))),
         );
     let lfo = device_composition::rail_column()
         .child(theme::text("lfo"))
@@ -164,16 +166,16 @@ pub(super) fn render_body(
         .child(
             div()
                 .flex()
-                .gap(px(3.0))
-                .child(control(8, CompactDial, Some("rate")))
-                .child(control(7, CompactDial, Some("amount"))),
+                .gap(px(DIAL_GAP))
+                .child(control(8, MicroDial, Some("rate")))
+                .child(control(7, MicroDial, Some("amount"))),
         )
-        .child(control(10, CompactDial, Some("phase")));
+        .child(control(10, MicroDial, Some("phase")));
     let envelope = device_composition::rail_column()
         .child(theme::text("envelope"))
-        .child(control(11, CompactDial, Some("amount")))
-        .child(control(13, CompactDial, Some("attack")))
-        .child(control(12, CompactDial, Some("release")));
+        .child(control(11, MicroDial, Some("amount")))
+        .child(control(13, MicroDial, Some("attack")))
+        .child(control(12, MicroDial, Some("release")));
     let style = theme::device_style(theme::DeviceStyleRole::Display);
     let preview = points
         .and_then(|points| {
@@ -204,10 +206,14 @@ pub(super) fn render_body(
         .text_size(px(8.0))
         .gap(px(4.0))
         .py(px(3.0))
-        .child(dense_rail(filter).w(px(94.0)).flex_shrink_0())
+        .child(dense_rail(filter).w(px(DIAL_PAIR_WIDTH)).flex_shrink_0())
         .child(main)
-        .child(dense_rail(lfo).w(px(94.0)).flex_shrink_0())
-        .child(dense_rail(envelope).w(px(53.0)).flex_shrink_0())
+        .child(dense_rail(lfo).w(px(DIAL_PAIR_WIDTH)).flex_shrink_0())
+        .child(
+            dense_rail(envelope)
+                .w(px(hex_widgets::MICRO_DIAL_WIDTH))
+                .flex_shrink_0(),
+        )
         .id(ElementId::Name(
             format!("device-body-{}", id.value()).into(),
         ))

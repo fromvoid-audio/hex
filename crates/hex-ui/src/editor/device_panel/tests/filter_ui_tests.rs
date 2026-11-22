@@ -32,14 +32,22 @@ fn filter_panel_exposes_controls_and_wet_response(cx: &mut TestAppContext) {
             format!("filter-response-{}", device.value()).into_boxed_str(),
         ))
         .unwrap();
+    let body = visual
+        .debug_bounds(Box::leak(
+            format!("device-body-{}", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
     assert!(response.size.width >= px(100.0));
     assert!(response.size.height >= px(80.0));
     for parameter in [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13] {
         let selector =
             Box::leak(format!("device-{}-parameter-{parameter}", device.value()).into_boxed_str());
-        assert!(
-            visual.debug_bounds(selector).is_some(),
-            "filter parameter {parameter}"
-        );
+        let control = visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("filter parameter {parameter}"));
+        assert!(control.origin.x >= body.origin.x);
+        assert!(control.origin.x + control.size.width <= body.origin.x + body.size.width);
+        assert!(control.origin.y >= body.origin.y);
+        assert!(control.origin.y + control.size.height <= body.origin.y + body.size.height);
     }
 }
