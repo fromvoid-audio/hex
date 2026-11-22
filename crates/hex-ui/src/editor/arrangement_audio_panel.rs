@@ -399,10 +399,18 @@ pub(super) fn view(
                 .child(theme::text("waveform unavailable")),
         );
     }
+    let display_source_start = view
+        .audio_clip_controls
+        .play_start_preview_clip(view, clip_id)
+        .map_or(window.source_start, hex_project::Clip::source_offset);
+    let display_play_start = view
+        .audio_clip_controls
+        .play_start_source_frame(view, clip_id)
+        .unwrap_or_else(|| window.source_start.saturating_add(window.source_phase));
     if window.asset_frames > 0 {
         canvas_region = canvas_region
             .children(source_marker(
-                window.source_start,
+                display_source_start,
                 viewport,
                 "source-start-marker",
                 theme::color(theme::PaletteRole::Primary),
@@ -414,9 +422,7 @@ pub(super) fn view(
                 theme::color(theme::PaletteRole::Primary),
             ))
             .children(source_marker(
-                view.audio_clip_controls
-                    .play_start_source_frame(view, clip_id)
-                    .unwrap_or_else(|| window.source_start.saturating_add(window.source_phase)),
+                display_play_start,
                 viewport,
                 "play-start-marker",
                 theme::color(theme::PaletteRole::Secondary),
@@ -462,10 +468,10 @@ pub(super) fn view(
             .debug_selector(|| "arrangement-audio-source-range".into())
             .child(theme::text(format!(
                 "source {}–{} / {} frames · play at {}{}",
-                window.source_start,
+                display_source_start,
                 window.source_end,
                 window.asset_frames,
-                window.source_start.saturating_add(window.source_phase),
+                display_play_start,
                 if window.source_looping {
                     " · loop on"
                 } else {

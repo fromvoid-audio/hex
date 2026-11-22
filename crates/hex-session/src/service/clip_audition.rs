@@ -1104,7 +1104,10 @@ mod tests {
             phase: 4_800,
         };
         let phase_edit = PlayStartEdit::from_audio_command(&phase_cmd).unwrap();
-        assert_eq!(phase_edit.command(), phase_cmd);
+        assert!(matches!(
+            phase_edit.command(),
+            Command::SetClipSourcePhase { clip, phase: 4_800 } if clip == source.anchor
+        ));
         let phase_target = Target::PlayStart(ArrangementPlayStartAudition {
             context: source.context,
             edit: phase_edit,
@@ -1119,7 +1122,16 @@ mod tests {
             source_length: 45_600,
         };
         let trim_edit = PlayStartEdit::from_audio_command(&trim_cmd).unwrap();
-        assert_eq!(trim_edit.command(), trim_cmd);
+        assert!(matches!(
+            trim_edit.command(),
+            Command::TrimClip {
+                clip,
+                start: 0,
+                duration: 48_000,
+                source_offset: 2_400,
+                source_length: 45_600,
+            } if clip == source.anchor
+        ));
         let trim_target = Target::PlayStart(ArrangementPlayStartAudition {
             context: source.context,
             edit: trim_edit,

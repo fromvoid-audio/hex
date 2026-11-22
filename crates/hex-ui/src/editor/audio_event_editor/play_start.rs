@@ -27,7 +27,9 @@ impl EditorView {
         let state = self.state.as_ref()?;
         let id = self.detail_clip_id()?;
         let clip = self
-            .pending_clip_loop_audio(id)
+            .audio_clip_controls
+            .play_start_preview_clip(self, id)
+            .or_else(|| self.pending_clip_loop_audio(id))
             .or_else(|| state.project.clip(id))?;
         hex_project::AudioViewProjection::new(clip, state.project.tempo_map())
             .ok()?
