@@ -43,9 +43,20 @@ fn load_arrangement(
     input: &Path,
 ) -> Result<(Project, BTreeMap<hex_project::AssetId, Audio>), Box<dyn Error>> {
     let project = hex_storage::load(input)?;
+    if project.devices().any(|device| {
+        device
+            .authored_states()
+            .any(|state| !state.asset_references().is_empty())
+    }) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "projects with device-referenced audio assets are not supported by hex-cli offline render/export; export from the desktop app",
+        )
+        .into());
+    }
     let mut referenced_assets = BTreeSet::new();
     for clip in project.tracks().iter().flat_map(|track| track.clips()) {
-        referenced_assets.insert(clip.asset());
+        referenced_assets.extend(clip.referenced_assets());
     }
 
     let project_dir = input

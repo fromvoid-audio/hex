@@ -711,3 +711,171 @@ fn export_project_format_option_writes_pcm24_and_float32_that_decode_to_the_rend
     assert!(String::from_utf8_lossy(&refused.stderr).contains("unknown export format"));
     assert!(!directory.path().join("bad.wav").exists());
 }
+
+#[test]
+fn render_and_export_load_nested_retained_audio_roots() {
+    let directory = TempDir::new();
+    let first_wav = directory.path().join("first.wav");
+    let second_wav = directory.path().join("second.wav");
+    fs::write(&first_wav, wav(&[16384, 16384])).unwrap();
+    fs::write(&second_wav, wav(&[-8192, -8192])).unwrap();
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported {
+        track,
+        clip: first_clip,
+        ..
+    } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "audio".into(),
+            path: first_wav,
+            sample_rate: 48_000,
+            frames: 2,
+        })
+        .unwrap()
+    else {
+        panic!("expected imported first clip");
+    };
+    let Created::Imported {
+        track: second_track,
+        clip: second_clip,
+        ..
+    } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "other".into(),
+            path: second_wav,
+            sample_rate: 48_000,
+            frames: 2,
+        })
+        .unwrap()
+    else {
+        panic!("expected imported second clip");
+    };
+    editor
+        .execute(Command::MoveClip {
+            clip: second_clip,
+            track,
+            start: 2,
+        })
+        .unwrap();
+    editor.execute(Command::RemoveTrack(second_track)).unwrap();
+    editor
+        .execute(Command::GroupClips(vec![first_clip, second_clip]))
+        .unwrap();
+    let unique_assets: std::collections::BTreeSet<_> = editor.project().tracks()[0].clips()[0]
+        .referenced_assets()
+        .collect();
+    assert_eq!(
+        unique_assets.len(),
+        2,
+        "grouped clip should reference both primary and nested retained audio assets"
+    );
+    hex_storage::save_new(directory.path().join("grouped.hex"), editor.project()).unwrap();
+
+    let rendered = run(
+        directory.path(),
+        &["render-project", "grouped.hex", "rendered.wav"],
+    );
+    assert!(
+        rendered.status.success(),
+        "render-project failed: {}",
+        String::from_utf8_lossy(&rendered.stderr)
+    );
+    let rendered_pcm =
+        decode_wav_file(directory.path().join("rendered.wav"), Limits::new(4096, 16))
+            .expect("decode rendered wav")
+            .audio()
+            .frames()
+            .to_vec();
+    assert_eq!(rendered_pcm.len(), 4);
+    assert!((rendered_pcm[0][0] - 0.5).abs() < 1e-3);
+    assert!((rendered_pcm[2][0] - (-0.25)).abs() < 1e-3);
+
+    let exported = run(
+        directory.path(),
+        &[
+            "export-project",
+            "grouped.hex",
+            "exported.wav",
+            "0",
+            "4",
+            "--format=float32",
+        ],
+    );
+    assert!(
+        exported.status.success(),
+        "export-project failed: {}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    let exported_pcm =
+        decode_wav_file(directory.path().join("exported.wav"), Limits::new(4096, 16))
+            .expect("decode exported wav")
+            .audio()
+            .frames()
+            .to_vec();
+    assert_eq!(
+        exported_pcm,
+        [[0.5, 0.5], [0.5, 0.5], [-0.25, -0.25], [-0.25, -0.25]]
+    );
+}
+
+#[test]
+fn render_and_export_refuse_device_referenced_audio_assets_explicitly() {
+    let directory = TempDir::new();
+    let sample_wav = directory.path().join("sampler.wav");
+    fs::write(&sample_wav, wav(&[8192, 8192, 8192, 8192])).unwrap();
+
+    let sampler_type =
+        hex_engine::native_device_catalog_for_class(hex_engine::NativeDeviceClass::Instrument)
+            .expect("registered instrument catalog")
+            .into_iter()
+            .find(|entry| entry.name == "sampler")
+            .expect("sampler is registered")
+            .type_id;
+    let empty_sampler = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        sampler_type,
+    )
+    .expect("empty sampler default");
+    let (template, source_slot) =
+        hex_engine::sampler_replacement_template_on_control(&empty_sampler, 4)
+            .expect("sampler replacement template");
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "sampler".into(),
+        })
+        .unwrap()
+    else {
+        panic!("expected midi track");
+    };
+    editor
+        .execute(Command::ImportDeviceAssetIntoNewInstrument {
+            destination: hex_project::InstrumentLoadDestination::Track {
+                track,
+                placement: hex_project::InstrumentLoadPlacement::First,
+            },
+            path: sample_wav,
+            sample_rate: 48_000,
+            frames: 4,
+            state: template,
+            source_slot,
+        })
+        .unwrap();
+    hex_storage::save_new(directory.path().join("sampler.hex"), editor.project()).unwrap();
+
+    for args in [
+        &["render-project", "sampler.hex", "out.wav"][..],
+        &["export-project", "sampler.hex", "out.wav", "0", "4"][..],
+    ] {
+        let output = run(directory.path(), args);
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("device-referenced audio assets are not supported by hex-cli"),
+            "unexpected stderr: {stderr}"
+        );
+        assert!(!directory.path().join("out.wav").exists());
+    }
+}
