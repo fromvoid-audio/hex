@@ -64,11 +64,7 @@ impl PreparedNativeProcessor for PreparedFilter {
         size_of::<FilterRuntime>()
     }
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
-        let runtime = FilterRuntime::new(*self);
-        // The sealed storage ledger charges this Copy-bounded payload.
-        fn inline<T: Copy>(_value: &T) {}
-        inline(&runtime);
-        Box::new(runtime)
+        Box::new(FilterRuntime::new(*self))
     }
     fn supports_smoothed_bypass(&self) -> bool {
         true
@@ -81,6 +77,7 @@ impl PreparedNativeProcessor for PreparedFilter {
     }
 }
 
+/// Copy-bounded payload charged by the sealed host storage ledger.
 #[derive(Clone, Copy)]
 pub struct FilterRuntime {
     base: PreparedFilter,
@@ -122,7 +119,7 @@ impl NativeProcessorRuntime for FilterRuntime {
                 .envelope
                 .render(std::slice::from_ref(&input), &mut envelope);
             let envelope = f64::from(envelope[0]) * self.base.envelope_depth;
-            for channel in 0..2 {
+            for (channel, sample) in frame.iter_mut().enumerate() {
                 let lfo = if self.base.lfo_depth == 0.0 {
                     0.0
                 } else {
@@ -138,7 +135,7 @@ impl NativeProcessorRuntime for FilterRuntime {
                     self.frame
                 };
                 let output = self.lane[channel].process(f64::from(input[channel]), coefficients);
-                frame[channel] = output.clamp(f64::from(f32::MIN), f64::from(f32::MAX)) as f32;
+                *sample = output.clamp(f64::from(f32::MIN), f64::from(f32::MAX)) as f32;
             }
             self.phase = (self.phase + self.base.phase_step).fract();
         }
