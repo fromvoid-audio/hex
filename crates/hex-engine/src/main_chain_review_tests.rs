@@ -1,5 +1,6 @@
 //! Recoverable renderer failures must close every speculative bus transaction.
 use super::*;
+use std::sync::Arc;
 #[test]
 fn main_render_error_closes_transaction_for_immediate_handoff_and_retry() {
     use hex_lattice::conformance::owned_delay;
