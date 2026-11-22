@@ -188,14 +188,12 @@ pub(super) fn render(
         }
         Mode::Curve => {
             let [input, reduction, output] = meters(device, reading, threshold_db);
-            div()
-                .flex()
-                .size_full()
-                .gap(px(4.0))
-                .child(input)
-                .child(transfer(device, curve, reading.detector))
-                .child(reduction)
-                .child(output)
+            div().flex().size_full().gap(px(4.0)).children([
+                input,
+                transfer(device, curve, reading.detector),
+                reduction,
+                output,
+            ])
         }
         Mode::Activity => activity(device, &display.history, now),
     }
@@ -259,7 +257,7 @@ fn meters(device: DeviceId, reading: Reading, threshold_db: Option<f32>) -> [Div
     ]
 }
 
-fn meter_column(label: &str, reading: String, meter: Div) -> Div {
+fn meter_column(label: &str, reading: String, level: Div) -> Div {
     div()
         .w(px(32.0))
         .flex_shrink_0()
@@ -269,7 +267,7 @@ fn meter_column(label: &str, reading: String, meter: Div) -> Div {
         .items_center()
         .gap(px(2.0))
         .child(theme::text(label))
-        .child(div().w(px(10.0)).flex_1().min_h_0().child(meter))
+        .child(div().w(px(10.0)).flex_1().min_h_0().child(level))
         .child(theme::text(reading))
 }
 

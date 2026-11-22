@@ -293,7 +293,7 @@ pub(super) fn render_return_effect(
             cx.notify();
         })),
     );
-    let meter_strip = super::device_meter::render(view, device, cx);
+    let output = super::device_meter::render(view, device, cx);
     let rendered = match &device_view {
         _ if view.device_panel.collapsed.contains(&id) => fold::frame(
             view,
@@ -452,5 +452,5 @@ pub(super) fn render_return_effect(
             cx,
         ))
         .child(rendered)
-        .child(meter_strip)
+        .child(output)
 }

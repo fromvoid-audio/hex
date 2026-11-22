@@ -189,7 +189,7 @@ pub(super) fn render_body(
         });
     let reading = super::device_meter::compressor_reading(view, model);
     let graph = display::render(view, cx, device, mode, reading, threshold_db, curve);
-    let modes = display::mode_buttons(view, cx, device, mode);
+    let tabs = display::mode_buttons(view, cx, device, mode);
     let field = |label: &str, control: Div| {
         div()
             .flex()
@@ -251,7 +251,7 @@ pub(super) fn render_body(
                 .child(field("mix", mix)),
         )
         .children(sidechain)
-        .child(modes);
+        .child(tabs);
     let main = crate::device_composition::plot_column(toolbar, graph, footer).text_size(px(8.0));
     crate::device_composition::split_body(rail, main)
         .id(ElementId::Name(

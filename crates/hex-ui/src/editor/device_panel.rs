@@ -2696,7 +2696,7 @@ fn render_effect(
     );
     let leading = bypass_action(view, device, NativeDeviceClass::Effect, cx);
     let header_actions = device_actions(view, device, selected, device_view.is_ok(), cx);
-    let meter_strip = device_meter::render(view, device, cx);
+    let output = device_meter::render(view, device, cx);
     let rendered = match &device_view {
         _ if view.device_panel.collapsed.contains(&device_id) => fold::frame(
             view,
@@ -2856,7 +2856,7 @@ fn render_effect(
             cx,
         ))
         .child(rendered)
-        .child(meter_strip)
+        .child(output)
 }
 
 fn duplicate_device_action(
