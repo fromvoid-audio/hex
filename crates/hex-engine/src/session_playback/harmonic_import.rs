@@ -230,135 +230,137 @@ fn append_track(
     spans: &mut MidiSpanBuffer,
 ) -> Result<(), SessionPlaybackError> {
     let route = effective_midi_route(&previous.revision, &previous.routes, index)?;
-    match route.owner {
-        RouteOwner::Arrangement => {
-            let track = previous
-                .revision
-                .arrangement()
-                .tracks()
-                .get(index)
-                .ok_or(SessionPlaybackError::UnknownTrack)?;
-            let cut = previous.arrangement_frame;
-            let old_floor = previous.interactive_note_onset_floor();
-            let mut failure = None;
-            track
-                .for_each_active_midi_span(cut, old_floor, |span, sampler| {
-                    if failure.is_some() {
-                        return;
-                    }
-                    if previous
-                        .historical_floor_for(index)
-                        .is_some_and(|floor| span.onset_beat < floor)
-                    {
-                        return;
-                    }
-                    if previous.arrangement_loop_pass > 0
-                        && previous.loop_region().is_some_and(|region| {
-                            region.enabled()
-                                && span.start < region.start()
-                                && span.gate_end <= region.start()
-                        })
-                    {
-                        return;
-                    }
-                    failure = out
-                        .push(
-                            previous,
-                            route,
-                            previous.arrangement_loop_pass,
-                            sampler,
-                            span.start,
-                            span.gate_end,
-                            span.end,
-                            previous.arrangement_frame,
-                            span.clip,
-                            span.note,
-                            span.iteration,
-                            span.onset_beat,
-                            span.gate_end_beat,
-                            span.pitch,
-                            span.channel,
-                            span.velocity,
-                            true,
-                            None,
+    if previous.playing {
+        match route.owner {
+            RouteOwner::Arrangement => {
+                let track = previous
+                    .revision
+                    .arrangement()
+                    .tracks()
+                    .get(index)
+                    .ok_or(SessionPlaybackError::UnknownTrack)?;
+                let cut = previous.arrangement_frame;
+                let old_floor = previous.interactive_note_onset_floor();
+                let mut failure = None;
+                track
+                    .for_each_active_midi_span(cut, old_floor, |span, sampler| {
+                        if failure.is_some() {
+                            return;
+                        }
+                        if previous
+                            .historical_floor_for(index)
+                            .is_some_and(|floor| span.onset_beat < floor)
+                        {
+                            return;
+                        }
+                        if previous.arrangement_loop_pass > 0
+                            && previous.loop_region().is_some_and(|region| {
+                                region.enabled()
+                                    && span.start < region.start()
+                                    && span.gate_end <= region.start()
+                            })
+                        {
+                            return;
+                        }
+                        failure = out
+                            .push(
+                                previous,
+                                route,
+                                previous.arrangement_loop_pass,
+                                sampler,
+                                span.start,
+                                span.gate_end,
+                                span.end,
+                                previous.arrangement_frame,
+                                span.clip,
+                                span.note,
+                                span.iteration,
+                                span.onset_beat,
+                                span.gate_end_beat,
+                                span.pitch,
+                                span.channel,
+                                span.velocity,
+                                true,
+                                None,
+                            )
+                            .err();
+                    })
+                    .map_err(|e| SessionPlaybackError::Arrangement(e.0))?;
+                if let Some(error) = failure {
+                    return Err(error);
+                }
+            }
+            RouteOwner::Session { clip, origin, .. } => {
+                let clip = crate::session_inventory::EffectiveSessionMidi::new(
+                    previous.revision.session(),
+                    previous.midi_admission.as_ref(),
+                )
+                .midi_clip_for_track(clip, route.id)
+                .ok_or(SessionPlaybackError::UnknownClip)?;
+                if clip.track != route.id {
+                    return Err(SessionPlaybackError::ClipTrackMismatch);
+                }
+                let clock = timing_view_for(
+                    previous.revision.session(),
+                    previous.periodic_tempo(),
+                    previous.anchor,
+                );
+                let frame = previous.performance_frame;
+                let end = frame
+                    .checked_add(1)
+                    .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                if let Some(floor) = previous.historical_floor_for(index) {
+                    clip.instrument_template()
+                        .query_after_onset_with_origin_and_note_chase(
+                            origin,
+                            &clock,
+                            (frame, end),
+                            spans,
+                            floor,
+                            route.owner.note_chase(),
                         )
-                        .err();
-                })
-                .map_err(|e| SessionPlaybackError::Arrangement(e.0))?;
-            if let Some(error) = failure {
-                return Err(error);
-            }
-        }
-        RouteOwner::Session { clip, origin, .. } => {
-            let clip = crate::session_inventory::EffectiveSessionMidi::new(
-                previous.revision.session(),
-                previous.midi_admission.as_ref(),
-            )
-            .midi_clip_for_track(clip, route.id)
-            .ok_or(SessionPlaybackError::UnknownClip)?;
-            if clip.track != route.id {
-                return Err(SessionPlaybackError::ClipTrackMismatch);
-            }
-            let clock = timing_view_for(
-                previous.revision.session(),
-                previous.periodic_tempo(),
-                previous.anchor,
-            );
-            let frame = previous.performance_frame;
-            let end = frame
-                .checked_add(1)
-                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-            if let Some(floor) = previous.historical_floor_for(index) {
-                clip.instrument_template()
-                    .query_after_onset_with_origin_and_note_chase(
+                } else {
+                    clip.instrument_template().query_with_origin_and_note_chase(
                         origin,
                         &clock,
                         (frame, end),
                         spans,
-                        floor,
                         route.owner.note_chase(),
                     )
-            } else {
-                clip.instrument_template().query_with_origin_and_note_chase(
-                    origin,
-                    &clock,
-                    (frame, end),
-                    spans,
-                    route.owner.note_chase(),
-                )
+                }
+                .map_err(SessionPlaybackError::Midi)?;
+                for span in spans.spans() {
+                    let sampler = span
+                        .voice
+                        .ok_or(SessionPlaybackError::SharedAnalyticContext)?;
+                    out.push(
+                        previous,
+                        route,
+                        if previous.revision.source_routing().source(index).is_some() {
+                            route.current_incarnation
+                        } else {
+                            0
+                        },
+                        sampler,
+                        span.start_frame,
+                        span.gate_end_frame,
+                        span.end_frame,
+                        frame,
+                        span.clip,
+                        span.note,
+                        span.iteration,
+                        span.onset_beat,
+                        span.gate_end_beat,
+                        span.pitch,
+                        span.channel,
+                        span.velocity,
+                        true,
+                        None,
+                    )?;
+                }
             }
-            .map_err(SessionPlaybackError::Midi)?;
-            for span in spans.spans() {
-                let sampler = span
-                    .voice
-                    .ok_or(SessionPlaybackError::SharedAnalyticContext)?;
-                out.push(
-                    previous,
-                    route,
-                    if previous.revision.source_routing().source(index).is_some() {
-                        route.current_incarnation
-                    } else {
-                        0
-                    },
-                    sampler,
-                    span.start_frame,
-                    span.gate_end_frame,
-                    span.end_frame,
-                    frame,
-                    span.clip,
-                    span.note,
-                    span.iteration,
-                    span.onset_beat,
-                    span.gate_end_beat,
-                    span.pitch,
-                    span.channel,
-                    span.velocity,
-                    true,
-                    None,
-                )?;
-            }
+            RouteOwner::SessionAudio { .. } | RouteOwner::Silence => {}
         }
-        RouteOwner::SessionAudio { .. } | RouteOwner::Silence => {}
     }
     // Current-owner bridges have already been suppressed in the route query.
     // Import them once; detached historical generations keep their original law.
