@@ -19,19 +19,20 @@
 //! ([`crate::WorkerPreparedOutput::route`]) and requests the existing bounded
 //! recovery open.
 //!
-//! The watch thread shares only this state. Dropping the watch requests stop
-//! and wakes the thread, which exits after at most one in-flight probe. The
-//! thread is not joined, so a blocked device query can never stall the owner.
+//! The watch thread shares only this state. Dropping the watch requests stop,
+//! wakes the thread, and joins it within a short bounded wait so normal
+//! teardown leaves no detached thread while a blocked OS device query can never
+//! stall the owner indefinitely.
 use cpal::traits::{DeviceTrait, HostTrait};
 use std::{
     sync::{
-        Arc, Mutex, PoisonError,
+        Arc, Condvar, Mutex, PoisonError,
         atomic::{
             AtomicBool, AtomicU64,
             Ordering::{Acquire, Release},
         },
     },
-    thread::Thread,
+    thread::JoinHandle,
     time::Duration,
 };
 
@@ -94,18 +95,22 @@ impl Debounce {
     }
 }
 
+const DROP_JOIN_BOUND: Duration = Duration::from_millis(50);
+
 #[derive(Default)]
 struct Shared {
     latest: Mutex<Option<OutputRoute>>,
     /// Incremented after each publication; 0 means nothing published yet.
     generation: AtomicU64,
     stop: AtomicBool,
+    exited: Mutex<bool>,
+    exited_signal: Condvar,
 }
 
 /// Owner of the default-route sampling thread.
 pub struct OutputRouteWatch {
     shared: Arc<Shared>,
-    thread: Thread,
+    handle: Option<JoinHandle<()>>,
 }
 impl OutputRouteWatch {
     /// Starts sampling the actual default output route.
@@ -131,13 +136,22 @@ impl OutputRouteWatch {
                             .unwrap_or_else(PoisonError::into_inner) = Some(route);
                         watched.generation.fetch_add(1, Release);
                     }
+                    if watched.stop.load(Acquire) {
+                        break;
+                    }
                     std::thread::park_timeout(interval);
                 }
+                let mut exited = watched
+                    .exited
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                *exited = true;
+                watched.exited_signal.notify_all();
             })
             .map_err(|error| format!("could not start output route watch: {error}"))?;
         Ok(Self {
             shared,
-            thread: handle.thread().clone(),
+            handle: Some(handle),
         })
     }
 
@@ -159,7 +173,24 @@ impl OutputRouteWatch {
 impl Drop for OutputRouteWatch {
     fn drop(&mut self) {
         self.shared.stop.store(true, Release);
-        self.thread.unpark();
+        if let Some(handle) = self.handle.take() {
+            handle.thread().unpark();
+            let guard = self
+                .shared
+                .exited
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let (guard, _) = self
+                .shared
+                .exited_signal
+                .wait_timeout_while(guard, DROP_JOIN_BOUND, |exited| !*exited)
+                .unwrap_or_else(PoisonError::into_inner);
+            let exited = *guard;
+            drop(guard);
+            if exited {
+                let _ = handle.join();
+            }
+        }
     }
 }
 
@@ -233,13 +264,37 @@ mod tests {
         assert_eq!(Some(published), route("speakers", 48_000));
         assert_eq!(watch.latest_if_newer(&mut seen), None);
         drop(watch);
-        // The probe (and its sender) is dropped only when the thread exits.
+        // Drop joins the worker before returning, so the probe sender is already dropped.
         loop {
-            match probe_calls.recv_timeout(Duration::from_secs(5)) {
+            match probe_calls.try_recv() {
                 Ok(()) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                Err(mpsc::RecvTimeoutError::Timeout) => panic!("watch thread did not exit"),
+                Err(mpsc::TryRecvError::Disconnected) => break,
+                Err(mpsc::TryRecvError::Empty) => {
+                    panic!("watch thread was still alive after drop(watch)")
+                }
             }
         }
+    }
+
+    #[test]
+    fn drop_does_not_hang_if_probe_is_blocked() {
+        let (entered, probe_entered) = mpsc::sync_channel(1);
+        let (release, wait_release) = mpsc::sync_channel(1);
+        let watch = OutputRouteWatch::spawn_with(Duration::from_secs(60), move || {
+            let _ = entered.try_send(());
+            let _ = wait_release.recv();
+            None
+        })
+        .unwrap();
+        probe_entered
+            .recv_timeout(Duration::from_secs(5))
+            .expect("probe started");
+        let start = Instant::now();
+        drop(watch);
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "drop stalled on blocked probe"
+        );
+        let _ = release.send(());
     }
 }
