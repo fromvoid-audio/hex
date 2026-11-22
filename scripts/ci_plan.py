@@ -256,22 +256,50 @@ def classify(paths: list[str], inventory: list[dict]) -> tuple[str, list[str], l
 
 
 # Reviewed test-only features that add APIs/tests without changing default behavior,
-# so a package's default `cargo test` is a subset of its feature run (doctests
-# excepted; --all-targets omits them, so plans keep a --doc run). Default-feature
-# compilation stays proven by affected clippy. Reviewed 31 October 2026:
+# so a package's default `cargo test` is a subset of its combined feature run
+# (doctests excepted; --all-targets omits them, so plans keep a --doc run).
+# Default-feature compilation and cfg(not(feature)) branches stay proven by
+# default affected-clippy.
 # - hex-ui ui-test-support: enables gpui/test-support (test executor/platform and
 #   debug selectors only) and hex-session's overview hooks. Complementary
 #   library unit tests are explicitly scheduled by their module prefixes.
 #   Its separately selected ui-unit-tier companion gates source-local tests only.
-# - hex-session source-overview-test-support: an optional observer hook, None by default.
+# - hex-session: source-overview-test-support, recording-fault-test-support, and
+#   recovery-checkpoint-test-support are purely additive hooks/fault injectors
+#   combined into one single test build.
 # - hex-engine/hex-export instrument-test-support: probe/fixture modules only.
-# allocation-probe installs a counting global allocator and has cfg(not) gates;
-# it is deliberately absent and keeps both runs.
-ADDITIVE_TEST_FEATURES = {
-    "hex-ui": "ui-test-support",
-    "hex-session": "source-overview-test-support",
-    "hex-engine": "instrument-test-support",
-    "hex-export": "instrument-test-support",
+# - hex-desktop/recording-fault-test-support, hex-audio/stream-test-support,
+#   hex-stream/test-support, hex-plugin-host/test-support, hex-media/test-support,
+#   hex-mts/test-support, hex-lattice/conformance: reviewed additive test-support
+#   features folded so default+feature test once instead of spawning redundant
+#   builds. allocation-probe installs a counting global allocator and keeps its
+#   own isolated run via SINGLE_RUN_COMPANION_FEATURES.
+ADDITIVE_TEST_FEATURES: dict[str, tuple[str, ...]] = {
+    "hex-ui": ("ui-test-support",),
+    "hex-session": (
+        "recording-fault-test-support",
+        "recovery-checkpoint-test-support",
+        "source-overview-test-support",
+    ),
+    "hex-engine": ("instrument-test-support",),
+    "hex-export": ("instrument-test-support",),
+    "hex-desktop": ("recording-fault-test-support",),
+    "hex-audio": ("stream-test-support",),
+    "hex-stream": ("test-support",),
+    "hex-plugin-host": ("test-support",),
+    "hex-media": ("test-support",),
+    "hex-mts": ("test-support",),
+    "hex-lattice": ("conformance",),
+}
+# Non-additive companion features that retain their own dedicated test steps
+# (such as allocation-probe or ui-unit-tier) without disqualifying the package's
+# reviewed additive features from folding default+feature into a single run.
+SINGLE_RUN_COMPANION_FEATURES: dict[str, frozenset[str]] = {
+    "hex-ui": frozenset({"ui-unit-tier"}),
+    "hex-desktop": frozenset({"allocation-probe"}),
+    "hex-audio": frozenset({"allocation-probe"}),
+    "hex-stream": frozenset({"allocation-probe"}),
+    "hex-plugin-host": frozenset({"allocation-probe"}),
 }
 
 
@@ -380,10 +408,21 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
 }
 UI_DEFAULT_LIB_UNIT_CFG = '#[cfg(all(test, not(feature = "ui-test-support")))]'
 
-# These test-only gates preserve the reviewed test registrations.
+# These reviewed gates are test-only fallbacks or None-hook equivalents whose
+# default cfg(not(feature)) branch remains compiled and linted by default Clippy.
+REVIEWED_EQUIVALENT_FEATURE_CFGS: dict[tuple[str, str], str] = {
+    ("hex-ui", "src/editor/clip_boundary.rs"): '#[cfg(not(any(test, feature = "ui-test-support")))]',
+    ("hex-ui", "src/editor/trim/geometry.rs"): '#[cfg(all(test, any(feature = "ui-unit-tier", not(feature = "ui-test-support"))))]',
+    ("hex-session", "src/service/resident_audio/tests/native_automation_recording.rs"): '#[cfg(not(feature = "recording-fault-test-support"))]',
+    ("hex-desktop", "src/native_audio/tests/plugins/instruments.rs"): '#[cfg(not(feature = "recording-fault-test-support"))]',
+    ("hex-stream", "tests/reference_channel.rs"): '#[cfg(not(feature = "test-support"))]',
+    ("hex-audio", "src/candidate_custody.rs"): '#[cfg(not(feature = "stream-test-support"))]',
+    ("hex-audio", "src/candidate_custody/eligible/preparation.rs"): '#[cfg(not(feature = "stream-test-support"))]',
+    ("hex-audio", "src/prepared/eligible_publication/tests/device_removal.rs"): '#[cfg(not(feature = "stream-test-support"))]',
+    ("hex-audio", "src/prepared/eligible_publication/tests/ordinary.rs"): '#[cfg(not(feature = "stream-test-support"))]',
+}
 UI_FEATURE_EQUIVALENT_TEST_CFGS = {
-    "src/editor/clip_boundary.rs": '#[cfg(not(any(test, feature = "ui-test-support")))]',
-    "src/editor/trim/geometry.rs": '#[cfg(all(test, any(feature = "ui-unit-tier", not(feature = "ui-test-support"))))]',
+    rel: cfg for (pkg, rel), cfg in REVIEWED_EQUIVALENT_FEATURE_CFGS.items() if pkg == "hex-ui"
 }
 UI_UNIT_TIER_TEST_CFGS = frozenset({
     '#[cfg(all(test, feature = "ui-unit-tier"))]',
@@ -417,17 +456,18 @@ def cache_readonly_module_scans(workspace_root: Path):
         _MODULE_SCAN_CACHE_ROOT = previous_root
 
 
-def _package_feature_gated(directory: Path, package_name: str, feature: str, has_unit_tier: bool) -> bool:
+def _package_feature_gated(
+    directory: Path, package_name: str, features: tuple[str, ...], has_unit_tier: bool
+) -> bool:
     resolved_dir = directory.resolve()
     cache_key = None
     if (_MODULE_SCAN_CACHE is not None and _MODULE_SCAN_CACHE_ROOT is not None
             and resolved_dir.is_relative_to(_MODULE_SCAN_CACHE_ROOT)):
-        cache_key = ("single_run", resolved_dir, package_name, feature, has_unit_tier)
+        cache_key = ("single_run", resolved_dir, package_name, features, has_unit_tier)
         if cache_key in _MODULE_SCAN_CACHE:
             return bool(_MODULE_SCAN_CACHE[cache_key])
-    needle = f'feature = "{feature}"'
+    needles = tuple(f'feature = "{feature}"' for feature in features)
     unit_sources = UI_DEFAULT_LIB_UNIT_MODULES if package_name == "hex-ui" else {}
-    equivalent_tests = UI_FEATURE_EQUIVALENT_TEST_CFGS if package_name == "hex-ui" else {}
     check_companion = package_name == "hex-ui" and has_unit_tier
     companion = 'feature = "ui-unit-tier"'
     gated = False
@@ -435,15 +475,19 @@ def _package_feature_gated(directory: Path, package_name: str, feature: str, has
         if not source.is_file():
             continue
         relative = source.relative_to(directory)
+        # Examples are not executed by unit/module test runs and stay checked
+        # in default configuration by affected-clippy (Pulse #8985).
+        if relative.parts and relative.parts[0] == "examples":
+            continue
         in_src = check_companion and len(relative.parts) > 1 and relative.parts[0] == "src"
         text = source.read_text(errors="replace")
-        if needle not in text and (not in_src or companion not in text):
+        if not any(needle in text for needle in needles) and (not in_src or companion not in text):
             continue
         rel = relative.as_posix()
-        equivalent = equivalent_tests.get(rel)
+        equivalent = REVIEWED_EQUIVALENT_FEATURE_CFGS.get((package_name, rel))
         for line in text.splitlines():
             stripped = line.strip()
-            if ("not(" in line and needle in line
+            if ("not(" in line and any(needle in line for needle in needles)
                     and (stripped != UI_DEFAULT_LIB_UNIT_CFG or rel not in unit_sources)
                     and stripped != equivalent):
                 gated = True
@@ -461,24 +505,27 @@ def _package_feature_gated(directory: Path, package_name: str, feature: str, has
 
 
 def single_run_packages(root: Path, affected: list[str], inventory: list[dict]) -> dict[str, str]:
-    """Affected packages with a reviewed feature test configuration.
+    """Affected packages with a reviewed additive feature test configuration.
 
-    A negative gate in Rust source keeps both default and feature runs. The
-    exact test-only cfg in known hex-ui modules has its own default lib step.
+    An unreviewed negative gate in Rust `src/` or `tests/` keeps both default
+    and feature runs. Non-tested `examples/` and explicitly reviewed equivalent
+    fallbacks remain linted in default configuration by `affected-clippy`.
     """
     selected = {}
     for package in inventory:
-        feature = ADDITIVE_TEST_FEATURES.get(package["name"])
-        if package["name"] not in affected or not feature:
+        reviewed = ADDITIVE_TEST_FEATURES.get(package["name"])
+        if package["name"] not in affected or not reviewed:
             continue
-        companions = {"ui-unit-tier"} if package["name"] == "hex-ui" else set()
-        if set(package["features"]) - {"default"} - companions != {feature}:
+        companions = SINGLE_RUN_COMPANION_FEATURES.get(package["name"], frozenset())
+        declared = set(package["features"]) - {"default"} - companions
+        if not declared or not declared.issubset(reviewed):
             continue
+        features = tuple(sorted(declared))
         directory = root / Path(package["manifest"]).parent
         if not _package_feature_gated(
-            directory, package["name"], feature, "ui-unit-tier" in package["features"]
+            directory, package["name"], features, "ui-unit-tier" in package["features"]
         ):
-            selected[package["name"]] = feature
+            selected[package["name"]] = ",".join(features)
     return selected
 
 
