@@ -70,6 +70,7 @@ pub(super) use source_picker::bind_keys as bind_source_picker_keys;
 pub(super) use source_picker::focus_from_workspace as focus_source_picker_from_workspace;
 mod device_meter;
 pub(super) use device_meter::tick_hovered as tick_hovered_meter;
+mod filter_panel;
 mod fold;
 mod gate_panel;
 mod keyboard;
@@ -203,6 +204,7 @@ pub(super) struct DevicePanelState {
     compressor_previews: HashMap<DeviceId, compressor_panel::PreviewCache>,
     compressor_modes: HashMap<DeviceId, compressor_panel::display::Mode>,
     compressor_displays: HashMap<DeviceId, compressor_panel::display::DisplayState>,
+    filter_previews: HashMap<DeviceId, filter_panel::Preview>,
     pub(super) compressor_sidechains: compressor_panel::sidechain::Controls,
     auto_pan_previews: HashMap<DeviceId, auto_pan_panel::PreviewCache>,
     reverb_previews: HashMap<DeviceId, reverb_panel::PreviewCache>,
@@ -712,6 +714,7 @@ fn clear_owner_state(
     view.device_panel.eq8_responses.clear();
     view.device_panel.saturator_previews.clear();
     view.device_panel.compressor_previews.clear();
+    view.device_panel.filter_previews.clear();
     view.device_panel.compressor_displays.clear();
     if full_reset {
         view.device_panel.compressor_modes.clear();
@@ -1835,6 +1838,9 @@ fn retire_transfer_previews(
     panel.saturator_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.saturator"))
     });
+    panel.filter_previews.retain(|device, _| {
+        type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.filter"))
+    });
     panel.compressor_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.compressor"))
     });
@@ -1885,6 +1891,7 @@ fn device_card_width(
         (NativeDeviceClass::Effect, Some("hex.saturator")) => saturator_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.limiter")) => limiter_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.compressor")) => compressor_panel::FRAME_WIDTH,
+        (NativeDeviceClass::Effect, Some("hex.filter")) => filter_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.gate")) => gate_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.reverb")) => reverb_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.delay")) => delay_panel::FRAME_WIDTH,
@@ -2741,6 +2748,8 @@ fn render_effect(
                 overdrive_panel::render_body(view, cx, device_id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.rattle") {
                 rattle_panel::render_body(view, cx, device, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.filter") {
+                filter_panel::render_body(view, cx, device, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.gate") {
                 gate_panel::render_body(view, cx, device_id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.auto-pan") {
