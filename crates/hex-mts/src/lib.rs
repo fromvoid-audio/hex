@@ -264,6 +264,11 @@ impl Worker {
     pub fn start() -> std::io::Result<Self> {
         Self::start_with(transport::Native::default)
     }
+    /// In-memory publisher for headless UI tests; never loads the system MTS library.
+    #[cfg(feature = "test-support")]
+    pub fn start_test_mock() -> std::io::Result<Self> {
+        Self::start_with(transport::Memory::default)
+    }
     fn start_with<T: Transport + 'static>(
         factory: impl FnOnce() -> T + Send + 'static,
     ) -> std::io::Result<Self> {

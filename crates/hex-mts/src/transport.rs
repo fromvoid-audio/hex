@@ -36,3 +36,30 @@ impl Transport for Native {
             .map(|count| count.get())
     }
 }
+
+#[cfg(feature = "test-support")]
+#[derive(Default)]
+pub(super) struct Memory {
+    owned: bool,
+}
+#[cfg(feature = "test-support")]
+impl Transport for Memory {
+    fn acquire(&mut self, _recover: bool) -> Result<(), Error> {
+        if self.owned {
+            return Err(Error::ExistingMaster);
+        }
+        self.owned = true;
+        Ok(())
+    }
+    fn release(&mut self) {
+        self.owned = false;
+    }
+    fn publish(&mut self, _publication: &TuningPublication) {}
+    fn clients(&self) -> Result<u32, Error> {
+        if self.owned {
+            Ok(0)
+        } else {
+            Err(Error::LibraryUnavailable)
+        }
+    }
+}

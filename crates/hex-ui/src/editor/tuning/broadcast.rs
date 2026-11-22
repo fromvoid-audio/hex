@@ -1,5 +1,7 @@
-//! Explicit project ownership. The blocked owner can request a shared MTS
-//! reset with the same control used to start and stop broadcasting.
+//! Project-scoped MTS-ESP broadcast lifecycle. Enabling project tuning—or
+//! loading a project with tuning enabled—automatically claims MTS broadcast;
+//! disabling tuning or replacing the project releases it. Manual toggling and
+//! explicit blocked-master recovery remain available through the same control.
 use super::*;
 use hex_mts::{ClientId, Handle, Owner, Publication, Revision, Snapshot, State};
 
@@ -15,6 +17,7 @@ pub(in crate::editor) struct Broadcast {
     sent: Option<ProjectTuning>,
     snapshot: Option<Snapshot>,
     error: Option<String>,
+    auto_enable_pending: bool,
 }
 impl Broadcast {
     pub(in crate::editor) fn observe(
@@ -23,23 +26,53 @@ impl Broadcast {
         revision: u64,
         tuning: ProjectTuning,
     ) {
+        let project_changed = self.accepted.is_none() || generation != self.generation;
         if generation != self.generation {
+            self.error = None;
             self.disable();
             self.generation = generation;
             self.serial = 0;
             self.sent = None;
+            self.auto_enable_pending = false;
         }
+        let was_enabled = !project_changed && self.accepted.is_some_and(ProjectTuning::enabled);
         self.accepted = Some(tuning);
         self.revision = revision;
+        if tuning.enabled() {
+            if !was_enabled && self.owner.is_none() {
+                self.auto_enable_pending = true;
+            }
+            self.try_auto_enable();
+        } else {
+            self.auto_enable_pending = false;
+            if was_enabled && self.owner.is_some() {
+                self.disable();
+            }
+        }
         if self.owner.is_some() && self.sent != Some(tuning) {
             self.send(false);
         }
     }
+    fn try_auto_enable(&mut self) {
+        if !self.auto_enable_pending || self.owner.is_some() {
+            return;
+        }
+        let Some(client) = self.client else {
+            return;
+        };
+        self.auto_enable_pending = false;
+        self.owner = Some(Owner {
+            client,
+            generation: self.generation,
+        });
+        self.send(true);
+    }
     fn disable(&mut self) {
-        if let (Some(handle), Some(owner)) = (&self.handle, self.owner.take())
-            && let Err(error) = handle.disable(owner)
-        {
-            self.error = Some(error.to_string());
+        if let (Some(handle), Some(owner)) = (&self.handle, self.owner.take()) {
+            if let Err(error) = handle.disable(owner) {
+                self.error = Some(error.to_string());
+            }
+            self.snapshot = handle.snapshot().ok();
         }
         self.sent = None;
     }
@@ -89,6 +122,10 @@ impl Broadcast {
                 }
             }
         }
+        self.snapshot = self
+            .handle
+            .as_ref()
+            .and_then(|handle| handle.snapshot().ok());
     }
     pub(in crate::editor) fn tick(&mut self, cx: &gpui::App) -> bool {
         if self.handle.is_none() {
@@ -102,20 +139,37 @@ impl Broadcast {
                 }
             }
         }
+        let had_owner = self.owner.is_some();
+        let had_error = self.error.is_some();
+        self.try_auto_enable();
         let snapshot = self
             .handle
             .as_ref()
             .and_then(|handle| handle.snapshot().ok());
-        let changed = self.snapshot != snapshot;
+        let changed = self.snapshot != snapshot
+            || self.owner.is_some() != had_owner
+            || self.error.is_some() != had_error;
         self.snapshot = snapshot;
         changed
     }
     fn toggle(&mut self, generation: u64, revision: u64, tuning: ProjectTuning) {
+        self.auto_enable_pending = false;
         if self.owner.is_some() {
             self.disable();
             return;
         }
-        self.observe(generation, revision, self.accepted.unwrap_or(tuning));
+        let tuning = if generation != self.generation {
+            self.error = None;
+            self.disable();
+            self.generation = generation;
+            self.serial = 0;
+            self.sent = None;
+            tuning
+        } else {
+            self.accepted.unwrap_or(tuning)
+        };
+        self.accepted = Some(tuning);
+        self.revision = revision;
         if let Some(client) = self.client {
             self.owner = Some(Owner { client, generation });
             self.send(true);
@@ -273,6 +327,265 @@ fn blocked_mts_replaces_broadcast_with_one_direct_force_claim(cx: &mut gpui::Tes
         );
         assert_eq!(view.tuning.broadcast.force_claim_owner(), None);
     });
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod auto_broadcast_tests {
+    use super::*;
+    use gpui::{Modifiers, TestAppContext, VisualTestContext};
+    use std::path::PathBuf;
+    use std::sync::{Arc, atomic::Ordering::Relaxed};
+
+    struct Scratch(PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn scratch() -> Scratch {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "hex-tuning-mts-auto-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Relaxed)
+        ));
+        std::fs::create_dir(&path).unwrap();
+        Scratch(path)
+    }
+
+    fn settle(editor: &gpui::Entity<EditorView>, cx: &mut VisualTestContext) {
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            let done = editor.update(cx, |view, cx| {
+                view.tick(cx);
+                view.state.is_some()
+                    && view.tuning.client.snapshot().is_none()
+                    && view.worker_requests_pending == 0
+                    && view.pending_requests.is_empty()
+                    && !view.saving_project
+                    && !view.opening_project
+            });
+            if done {
+                cx.run_until_parked();
+                return;
+            }
+            assert!(Instant::now() < deadline, "editor did not settle");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    fn wait_mts(handle: &Handle, predicate: impl Fn(Snapshot) -> bool) -> Snapshot {
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            let snapshot = handle.snapshot().unwrap();
+            if predicate(snapshot) {
+                return snapshot;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "mts snapshot did not reach expected state: {snapshot:?}"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    fn custom_enabled_tuning(hz: f64) -> ProjectTuning {
+        let base = ProjectTuning::default();
+        let mut scale = base.scale();
+        scale.set_reference(60, hz, 0).unwrap();
+        ProjectTuning::new(true, scale, base.audition()).unwrap()
+    }
+
+    #[gpui::test]
+    fn tuning_enabled_saves_per_project_and_auto_enables_mts_on_toggle_and_reload(
+        cx: &mut TestAppContext,
+    ) {
+        let mut worker = hex_mts::Worker::start_test_mock().unwrap();
+        let publisher = worker.handle();
+        cx.update(|cx| crate::mts::install_mts_publisher(cx, publisher.clone()));
+        let dir = scratch();
+        let path = dir.0.join("tuned-project.sqlite");
+
+        let (window, editor) = crate::editor::clip_drag_ui_test::editor_window(
+            cx,
+            hex_project::Project::new(48_000).unwrap(),
+            Arc::default(),
+        );
+        let mut visual = VisualTestContext::from_window(window, cx);
+        settle(&editor, &mut visual);
+        assert_eq!(publisher.snapshot().unwrap().state, State::Disabled);
+        assert!(publisher.snapshot().unwrap().owner.is_none());
+
+        // Open tuning and click "enable tuning".
+        editor.update(&mut visual, |view, cx| {
+            view.tuning.open = true;
+            view.sync_tuning(cx);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let enable_button = visual.debug_bounds("tuning-enable").unwrap().center();
+        visual.simulate_mouse_down(enable_button, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(enable_button, MouseButton::Left, Modifiers::default());
+        settle(&editor, &mut visual);
+
+        editor.read_with(&visual, |view, _| {
+            assert!(view.state.as_ref().unwrap().project.tuning().enabled());
+            assert!(view.tuning.broadcast.owner.is_some());
+        });
+        let enabled_snapshot = wait_mts(&publisher, |s| s.state == State::Active);
+        assert_eq!(enabled_snapshot.desired, enabled_snapshot.published);
+        assert!(enabled_snapshot.owner.is_some());
+
+        // Close tuning, save the project, then switch to a fresh project with tuning off.
+        editor.update(&mut visual, |view, cx| {
+            view.tuning.open = false;
+            view.saving_project = true;
+            assert!(view.enqueue(Request::SaveNew(path.clone())));
+            cx.notify();
+        });
+        settle(&editor, &mut visual);
+        assert!(path.exists());
+
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::NewWithAudioMode {
+                mode: hex_session::DocumentAudioMode::Resident,
+                reservation: None,
+            }));
+        });
+        settle(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert!(!view.state.as_ref().unwrap().project.tuning().enabled());
+            assert!(view.tuning.broadcast.owner.is_none());
+        });
+        wait_mts(&publisher, |s| {
+            s.state == State::Disabled && s.owner.is_none()
+        });
+
+        // Reload the saved project with the tuning panel closed: tuning stays on
+        // and MTS broadcast automatically turns on for the new generation.
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Open(path.clone())));
+        });
+        settle(&editor, &mut visual);
+        let reloaded_generation = editor.read_with(&visual, |view, _| {
+            assert!(!view.tuning.open);
+            assert!(view.state.as_ref().unwrap().project.tuning().enabled());
+            assert!(view.tuning.broadcast.owner.is_some());
+            view.project_generation
+        });
+        let reloaded_snapshot = wait_mts(&publisher, |s| {
+            s.state == State::Active
+                && s.owner
+                    .is_some_and(|owner| owner.generation == reloaded_generation)
+        });
+        assert_eq!(reloaded_snapshot.desired, reloaded_snapshot.published);
+
+        // Shut down the worker cleanly after dropping the window's ownership.
+        editor.update(&mut visual, |view, _| {
+            view.tuning.broadcast.disable();
+        });
+        wait_mts(&publisher, |s| s.state == State::Disabled);
+        worker.shutdown();
+    }
+
+    #[gpui::test]
+    fn manual_mts_overrides_and_disable_transitions_are_respected(cx: &mut TestAppContext) {
+        let mut worker = hex_mts::Worker::start_test_mock().unwrap();
+        let publisher = worker.handle();
+        cx.update(|cx| crate::mts::install_mts_publisher(cx, publisher.clone()));
+
+        let tuned_a = custom_enabled_tuning(432.0);
+        let tuned_b = custom_enabled_tuning(444.0);
+        let disabled = tuned_b.with_enabled(false);
+
+        // 1. Observe before tick: auto-enables once tick attaches the publisher.
+        let mut broadcast = Broadcast::default();
+        broadcast.observe(0, 1, tuned_a);
+        assert!(broadcast.owner.is_none());
+        assert!(broadcast.error.is_none());
+        let changed = cx.update(|cx| broadcast.tick(cx));
+        assert!(changed);
+        assert!(broadcast.owner.is_some());
+        wait_mts(&publisher, |s| s.state == State::Active);
+
+        // 2. Manual toggle OFF while tuning stays ON: further edits stay OFF.
+        broadcast.toggle(0, 1, tuned_a);
+        assert!(broadcast.owner.is_none());
+        wait_mts(&publisher, |s| {
+            s.state == State::Disabled && s.owner.is_none()
+        });
+        broadcast.observe(0, 2, tuned_b);
+        assert!(
+            broadcast.owner.is_none(),
+            "subsequent edits must not override a manual MTS turn-off"
+        );
+        assert_eq!(publisher.snapshot().unwrap().owner, None);
+
+        // 3. Reloading a project with tuning ON re-enables MTS automatically.
+        broadcast.observe(1, 0, tuned_b);
+        assert!(broadcast.owner.is_some());
+        let gen1 = wait_mts(&publisher, |s| {
+            s.state == State::Active && s.owner.is_some_and(|owner| owner.generation == 1)
+        });
+        assert_eq!(gen1.desired, gen1.published);
+
+        // 4. Turning tuning OFF disables MTS automatically.
+        broadcast.observe(1, 1, disabled);
+        assert!(broadcast.owner.is_none());
+        wait_mts(&publisher, |s| {
+            s.state == State::Disabled && s.owner.is_none()
+        });
+
+        // 5. Explicitly turning MTS ON while tuning is OFF persists across edits
+        //    and releases on switching to a project with tuning OFF.
+        broadcast.toggle(1, 1, disabled);
+        assert!(broadcast.owner.is_some());
+        wait_mts(&publisher, |s| s.state == State::Active);
+        broadcast.observe(1, 2, disabled);
+        assert!(broadcast.owner.is_some());
+        broadcast.observe(2, 0, ProjectTuning::default());
+        assert!(broadcast.owner.is_none());
+        wait_mts(&publisher, |s| {
+            s.state == State::Disabled && s.owner.is_none()
+        });
+
+        // 6. Another Hex project holding MTS prevents stealing and does not spam retries.
+        let foreign_owner = Owner {
+            client: publisher.new_client().unwrap(),
+            generation: 99,
+        };
+        publisher
+            .enable(
+                Publication::new(
+                    Revision {
+                        owner: foreign_owner,
+                        serial: 1,
+                        project_revision: 0,
+                    },
+                    tuned_a,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        wait_mts(&publisher, |s| {
+            s.state == State::Active && s.owner == Some(foreign_owner)
+        });
+        broadcast.observe(3, 0, tuned_a);
+        assert!(broadcast.owner.is_none());
+        assert_eq!(
+            broadcast.error.as_deref(),
+            Some("another hex project owns mts")
+        );
+        assert_eq!(publisher.snapshot().unwrap().owner, Some(foreign_owner));
+        // Subsequent edits on generation 3 stay failed without retrying or stealing.
+        broadcast.observe(3, 1, tuned_b);
+        assert!(broadcast.owner.is_none());
+        assert_eq!(publisher.snapshot().unwrap().owner, Some(foreign_owner));
+
+        publisher.disable(foreign_owner).unwrap();
+        drop(broadcast);
+        worker.shutdown();
+    }
 }
 
 // A Linux UI fixture exercises the real unavailable backend without acquiring
