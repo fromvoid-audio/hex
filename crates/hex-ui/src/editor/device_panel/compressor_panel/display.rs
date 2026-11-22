@@ -199,7 +199,7 @@ pub(super) fn render(
                 output,
             ])
         }
-        Mode::Activity => activity(device, &display.history, now),
+        Mode::Activity => activity(device, &display.history, now, threshold_db),
     }
 }
 
@@ -331,7 +331,7 @@ fn detector_marker(curve: &CompressorTransferCurve, detector: f32) -> Option<[f3
     Some([x, y + (curve.points[upper][1] - y) * index.fract()])
 }
 
-fn activity(device: DeviceId, history: &History, now: Instant) -> Div {
+fn activity(device: DeviceId, history: &History, now: Instant, threshold_db: Option<f32>) -> Div {
     let colors = theme::meter_colors();
     let style = theme::device_style(theme::DeviceStyleRole::Display);
     let traces = [
@@ -394,6 +394,15 @@ fn activity(device: DeviceId, history: &History, now: Instant) -> Div {
                             }
                             if let Ok(path) = grid.build() {
                                 window.paint_path(path, rgb(style.rail));
+                            }
+                            if let Some(db) = threshold_db {
+                                let y = (-db / 60.0).clamp(0.0, 1.0);
+                                let mut threshold = PathBuilder::stroke(px(0.5));
+                                threshold.move_to(position(0.0, y));
+                                threshold.line_to(position(1.0, y));
+                                if let Ok(path) = threshold.build() {
+                                    window.paint_path(path, rgb(style.border));
+                                }
                             }
                             for (lane, (_, color)) in traces.into_iter().enumerate() {
                                 let mut trace = PathBuilder::stroke(px(1.0));
