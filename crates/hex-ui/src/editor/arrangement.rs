@@ -1349,7 +1349,9 @@ impl EditorView {
             .tooltip(|_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     kind: crate::tooltips::Kind::Help,
-                    description: "drag to seek".into(),
+                    description:
+                        "drag to seek · option-click or drag to lock play start · hold cmd to invert snap"
+                            .into(),
                 })
                 .into()
             })
@@ -1367,8 +1369,25 @@ impl EditorView {
                             return;
                         }
                         let started = mouse_entity.update(cx, |view, cx| {
-                            if view.begin_scrub(f32::from(event.position.x), seek_viewport, bounds)
-                            {
+                            if event.modifiers.alt {
+                                if view.begin_ruler_locked_play_start_drag(
+                                    event.position,
+                                    event.modifiers,
+                                    seek_viewport,
+                                    bounds,
+                                    cx,
+                                ) {
+                                    view.focus.focus(window);
+                                    cx.notify();
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else if view.begin_scrub(
+                                f32::from(event.position.x),
+                                seek_viewport,
+                                bounds,
+                            ) {
                                 view.focus.focus(window);
                                 cx.notify();
                                 true
