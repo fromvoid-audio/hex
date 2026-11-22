@@ -10,7 +10,9 @@ pub use render_work::{RenderWorkMeter, RenderWorkSample};
 pub struct DynamicsMeter {
     pub reduction_db: [f32; 2],
     pub clipped: bool,
-    /// Peak after the processor's input gain, before dynamics processing.
+    /// Peak level at the processor's metered input, in linear amplitude.
+    /// Limiter reports its post-input-gain peak. Compressor reports its
+    /// detector envelope peak, which may follow an external sidechain.
     pub post_input_peak: f32,
 }
 

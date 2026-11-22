@@ -178,25 +178,15 @@ impl Settings {
         // documented effective cutoff, not a rewrite of canonical state.
         let frequency = f64::from(f32::from_bits(self.words[4])).min(0.45 * f64::from(rate));
         let resonance = f64::from(f32::from_bits(self.words[5])) / 100.0;
-        let q = std::f64::consts::FRAC_1_SQRT_2
-            + (20.0 - std::f64::consts::FRAC_1_SQRT_2) * resonance * resonance;
-        let morph = f64::from(f32::from_bits(self.words[6])) / 100.0;
-        let weights = match self.words[1] {
-            0 => [1.0, 0.0, 0.0],
-            1 => [0.0, 0.0, 1.0],
-            2 => [0.0, 1.0 / q, 0.0],
-            3 => [1.0, 0.0, 1.0],
-            _ if morph <= 0.5 => [1.0 - 2.0 * morph, 2.0 * morph / q, 0.0],
-            _ => [0.0, (2.0 - 2.0 * morph) / q, 2.0 * morph - 1.0],
-        };
         Ok(Prepared {
-            frame: Frame {
-                g: (std::f64::consts::PI * frequency / f64::from(rate)).tan(),
-                k: 1.0 / q,
-                weights,
-                wet: f64::from(self.words[0]),
-                cascade: f64::from(self.words[2]),
-            },
+            frame: Frame::clean_filter(
+                (std::f64::consts::PI * frequency / f64::from(rate)).tan(),
+                self.words[1],
+                resonance,
+                f64::from(f32::from_bits(self.words[6])) / 100.0,
+                f64::from(self.words[0]),
+                f64::from(self.words[2]),
+            ),
             rate,
         })
     }
@@ -215,6 +205,45 @@ pub(crate) struct Frame {
     cascade: f64,
 }
 impl Frame {
+    /// Coefficients for the clean low, high, band, notch and morph sections.
+    /// Callers validate authored ranges and prewarp a bounded cutoff.
+    pub(crate) fn clean_filter(
+        g: f64,
+        mode: u32,
+        resonance: f64,
+        morph: f64,
+        wet: f64,
+        cascade: f64,
+    ) -> Self {
+        let q = std::f64::consts::FRAC_1_SQRT_2
+            + (20.0 - std::f64::consts::FRAC_1_SQRT_2) * resonance * resonance;
+        let weights = match mode {
+            0 => [1.0, 0.0, 0.0],
+            1 => [0.0, 0.0, 1.0],
+            2 => [0.0, 1.0 / q, 0.0],
+            3 => [1.0, 0.0, 1.0],
+            _ if morph <= 0.5 => [1.0 - 2.0 * morph, 2.0 * morph / q, 0.0],
+            _ => [0.0, (2.0 - 2.0 * morph) / q, 2.0 * morph - 1.0],
+        };
+        Self {
+            g,
+            k: 1.0 / q,
+            weights,
+            wet,
+            cascade,
+        }
+    }
+
+    pub(crate) fn with_cutoff_offset(self, octaves: f64, rate: u32) -> Self {
+        let minimum = std::f64::consts::PI * 20.0 / f64::from(rate);
+        let maximum = std::f64::consts::PI * 0.45;
+        let angle = (self.g.atan() * octaves.exp2()).clamp(minimum, maximum);
+        Self {
+            g: angle.tan(),
+            ..self
+        }
+    }
+
     /// Inactive history sentinel; activation installs the prepared target coefficients.
     pub(crate) const fn dry() -> Self {
         Self {
@@ -249,6 +278,13 @@ pub(crate) struct Carrier {
     states: [[f64; 2]; 2],
 }
 impl Carrier {
+    pub(crate) fn is_quiet(self) -> bool {
+        self.states
+            .into_iter()
+            .flatten()
+            .all(|level| level.abs() < 1e-12)
+    }
+
     pub(crate) fn process(&mut self, input: f64, frame: Frame) -> f64 {
         let mut x = input;
         let mut first = 0.0;

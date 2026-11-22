@@ -4208,7 +4208,7 @@ fn run_worker(
                     hex_engine::NativeDeviceClass::Effect,
                     hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
                 )
-                .map_err(|_| "utility is unavailable")?;
+                .map_err(|_| "mix is unavailable")?;
                 Ok(Command::InsertNestedDevice {
                     parent: *instrument,
                     state,

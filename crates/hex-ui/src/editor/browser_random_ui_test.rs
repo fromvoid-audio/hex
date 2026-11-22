@@ -82,17 +82,17 @@ fn random_pick_obeys_all_search_projection_and_empty_results_leave_playback_unch
         view.browser.section = BrowserSection::All;
         view.browser.listing.as_mut().unwrap().entries = vec![
             LibraryEntry {
-                name: "utility folder".into(),
-                path: directory.0.join("utility folder"),
+                name: "mix folder".into(),
+                path: directory.0.join("mix folder"),
                 kind: EntryKind::Directory,
             },
             LibraryEntry {
-                name: "utility audio.wav".into(),
+                name: "mix audio.wav".into(),
                 path: path.clone(),
                 kind: EntryKind::WaveAudio,
             },
             LibraryEntry {
-                name: "utility project.hex".into(),
+                name: "mix project.hex".into(),
                 path: directory.0.join("project.hex"),
                 kind: EntryKind::Project,
             },
@@ -100,7 +100,7 @@ fn random_pick_obeys_all_search_projection_and_empty_results_leave_playback_unch
         view.browser.samples.invalidate_listing();
         view.browser
             .search
-            .update(cx, |input, cx| input.set_text("utility", cx));
+            .update(cx, |input, cx| input.set_text("mix", cx));
         cx.notify();
     });
     visual.run_until_parked();

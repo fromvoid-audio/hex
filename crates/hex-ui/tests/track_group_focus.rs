@@ -532,6 +532,196 @@ fn gap_queries_deduplicate_adjacent_rows_and_handle_all_hidden_or_all_visible() 
     assert!(!state.hidden_before(usize::MAX) && !state.hidden_after(usize::MAX));
 }
 
+#[test]
+fn gap_queries_exclude_folded_and_tag_filtered_gaps_with_zero_false_positives() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let add = |editor: &mut Editor, name: &str| {
+        let Created::Track(id) = editor
+            .execute(Command::AddTrack { name: name.into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        id
+    };
+    let tracks: Vec<_> = (0..6).map(|i| add(&mut editor, &format!("t{i}"))).collect();
+    let Created::Track(interior_group) = editor
+        .execute(Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&[tracks[1]]).unwrap(),
+            name: "interior".into(),
+        })
+        .unwrap()
+    else {
+        panic!("interior group")
+    };
+    let Created::Track(trailing_group) = editor
+        .execute(Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&[tracks[4], tracks[5]]).unwrap(),
+            name: "trailing".into(),
+        })
+        .unwrap()
+    else {
+        panic!("trailing group")
+    };
+    let Created::ArrangementSection(section) = editor
+        .execute(Command::AddArrangementSection {
+            name: "s0".into(),
+            color: hex_project::ElementColor::Cyan,
+            start: BeatTime::from_quarters(1).unwrap(),
+            end: BeatTime::from_quarters(2).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("section")
+    };
+    // Put clips inside the section on all tracks that will remain visible under folding.
+    for track in [tracks[0], tracks[2], tracks[3]] {
+        editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::from_quarters(1).unwrap(),
+                length: BeatTime::ONE,
+            })
+            .unwrap();
+    }
+    let tag = hex_project::TrackTag::new("keep").unwrap();
+    for track in [tracks[2], tracks[3], trailing_group, tracks[4]] {
+        editor
+            .execute(Command::SetTrackTags {
+                track,
+                tags: vec![tag.clone()],
+            })
+            .unwrap();
+    }
+    let project = editor.project();
+    let index = |id| {
+        project
+            .tracks()
+            .iter()
+            .position(|track| track.id() == id)
+            .unwrap()
+    };
+
+    // 1. Folded groups only (interior + trailing): section focus hides zero tracks in console_indices.
+    // Give the folded children clips in the focused section so folding alone hides them.
+    let mut editor2 = Editor::new(project.clone(), 16).unwrap();
+    for track in [tracks[1], tracks[4]] {
+        editor2
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::from_quarters(1).unwrap(),
+                length: BeatTime::ONE,
+            })
+            .unwrap();
+    }
+    let project2 = editor2.project();
+    let idx2 = |id| {
+        project2
+            .tracks()
+            .iter()
+            .position(|track| track.id() == id)
+            .unwrap()
+    };
+    let mut state = State::default();
+    state.enabled = true;
+    state.toggle_fold(interior_group);
+    state.toggle_fold(trailing_group);
+    state.rebuild(1, 1, project2, &[section], None);
+    // All non-folded tracks intersect the section, so indices == console_indices despite non-contiguous gaps!
+    assert_eq!(state.console_indices, state.indices);
+    assert_eq!(
+        state.indices,
+        vec![
+            idx2(tracks[0]),
+            idx2(interior_group),
+            idx2(tracks[2]),
+            idx2(tracks[3]),
+            idx2(trailing_group),
+        ]
+    );
+    for &i in &state.indices {
+        assert!(!state.hidden_before(i));
+        assert!(!state.hidden_after(i));
+    }
+    assert!(!state.all_tracks_hidden());
+
+    // 2. Tag filtering only (unfold groups, filter to `keep`): leading/interior/trailing tracks
+    // excluded by tag must not trigger hidden_before / hidden_after.
+    state.toggle_fold(interior_group);
+    state.toggle_fold(trailing_group);
+    state.set_tag_filter(Some(tag.clone()));
+    state.rebuild(1, 1, project2, &[section], None);
+    assert_eq!(state.console_indices, state.indices);
+    assert_eq!(
+        state.indices,
+        vec![
+            idx2(tracks[2]),
+            idx2(tracks[3]),
+            idx2(trailing_group),
+            idx2(tracks[4]),
+        ]
+    );
+    for &i in &state.indices {
+        assert!(!state.hidden_before(i));
+        assert!(!state.hidden_after(i));
+    }
+    assert!(!state.all_tracks_hidden());
+
+    // Tag filter with 0 matches while section focus is active must NOT trigger all_tracks_hidden.
+    state.set_tag_filter(Some(hex_project::TrackTag::new("empty").unwrap()));
+    state.rebuild(1, 1, project2, &[section], None);
+    assert!(state.console_indices.is_empty());
+    assert!(state.indices.is_empty());
+    assert!(!state.all_tracks_hidden());
+
+    // 3. Mixed fold + tag + section focus: only gaps within console_indices trigger cues.
+    // On `project` (where tracks[4] has NO clip in `section`, so trailing_group also has NO clip):
+    // unfold trailing_group, fold interior_group, tag filter `keep` + clip on tracks[2..=3]:
+    // console_indices = [tracks[2], tracks[3], trailing_group, tracks[4]]
+    // indices         = [tracks[2], tracks[3]] (trailing_group + tracks[4] hidden by section focus)
+    state = State::default();
+    state.enabled = true;
+    state.toggle_fold(interior_group);
+    state.set_tag_filter(Some(tag));
+    state.rebuild(2, 1, project, &[section], None);
+    assert_eq!(
+        state.console_indices,
+        vec![
+            index(tracks[2]),
+            index(tracks[3]),
+            index(trailing_group),
+            index(tracks[4]),
+        ]
+    );
+    assert_eq!(state.indices, vec![index(tracks[2]), index(tracks[3])]);
+    assert!(
+        !state.hidden_before(index(tracks[2])),
+        "tracks[0..=1] excluded by tag, not section focus"
+    );
+    assert!(!state.hidden_before(index(tracks[3])));
+    assert!(!state.hidden_after(index(tracks[2])));
+    assert!(
+        state.hidden_after(index(tracks[3])),
+        "trailing_group & tracks[4] hidden by section focus"
+    );
+    assert!(!state.all_tracks_hidden());
+
+    // 4. Disabling or clearing section focus clears all gap queries while keeping fold/tag intact.
+    state.enabled = false;
+    state.rebuild(2, 1, project, &[section], None);
+    for &i in &state.indices {
+        assert!(!state.hidden_before(i) && !state.hidden_after(i));
+    }
+    assert!(!state.all_tracks_hidden());
+
+    state.enabled = true;
+    state.rebuild(2, 1, project, &[], None);
+    for &i in &state.indices {
+        assert!(!state.hidden_before(i) && !state.hidden_after(i));
+    }
+    assert!(!state.all_tracks_hidden());
+}
+
 #[cfg(test)]
 mod source_tag_projection_tests {
     use super::visibility::*;

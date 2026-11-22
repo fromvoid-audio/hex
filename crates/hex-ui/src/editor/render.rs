@@ -1131,6 +1131,7 @@ impl Render for EditorView {
                 if view.cancel_trim_gesture(cx)
                     | view.cancel_track_resize(cx)
                     | view.cancel_track_reorder()
+                    | view.cancel_locked_play_start_drag()
                 {
                     cx.stop_active_drag(window);
                     cx.stop_propagation();

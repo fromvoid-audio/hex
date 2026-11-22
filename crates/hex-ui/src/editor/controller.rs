@@ -3143,6 +3143,8 @@ impl EditorView {
             self.session_copy_source = None;
             self.session_track_start = 0;
             self.midi_selection.clear();
+            self.arrangement_focus.reset();
+            self.reconcile_arrangement_focus();
         } else if let Some(state) = self.state.clone() {
             let previous_clip = self.detail_clip_id();
             if self.session_copy_source.is_some_and(|clip| {
