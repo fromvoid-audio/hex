@@ -652,41 +652,78 @@ fn coordinate(
     input.recording_ready = Some(Arc::clone(&ready));
     let (send_input, input_result) = mpsc::sync_channel(1);
     let writer_path = path.clone();
-    if let Err(error) = thread::Builder::new()
+    let writer_handle = match thread::Builder::new()
         .name("hex-input-take-writer".into())
         .spawn(move || {
             let result = writer(input, &writer_path);
             let _ = send_input.try_send(result);
-        })
-    {
-        output.stop();
-        return failure(path, None, CoordinatedFailure::InputWorkerStart(error));
-    }
+        }) {
+        Ok(handle) => handle,
+        Err(error) => {
+            output.stop();
+            return failure(path, None, CoordinatedFailure::InputWorkerStart(error));
+        }
+    };
+    let wait_writer_exit =
+        |path: PathBuf, writer_handle: thread::JoinHandle<()>, reason: CoordinatedFailure| {
+            let abort_start = Instant::now();
+            loop {
+                match input_result.try_recv() {
+                    Ok(_) | Err(TryRecvError::Disconnected) => {
+                        let _ = writer_handle.join();
+                        return failure(path, None, reason);
+                    }
+                    Err(TryRecvError::Empty) => {}
+                }
+                if abort_start.elapsed() >= timeouts.stop {
+                    return failure(path, None, CoordinatedFailure::InputStopTimeout);
+                }
+                thread::sleep(POLL);
+            }
+        };
     let mut stop_requested = None;
     let take = loop {
         if ready.load(Acquire) & 2 != 0 && ready.load(Acquire) & 1 == 0 {
             stop.stop_on_control();
             output.stop();
-            return failure(path, None, CoordinatedFailure::CancelledBeforeInput);
+            return wait_writer_exit(
+                path,
+                writer_handle,
+                CoordinatedFailure::CancelledBeforeInput,
+            );
         }
         match index.poll(&mut output) {
             Err(error) => {
                 stop.stop_on_control();
-                return failure(path, None, CoordinatedFailure::OutputIndex(error));
+                output.stop();
+                return wait_writer_exit(
+                    path,
+                    writer_handle,
+                    CoordinatedFailure::OutputIndex(error),
+                );
             }
             Ok(Some(end)) => {
                 stop.stop_on_control();
-                return failure(path, None, CoordinatedFailure::OutputStopped(end));
+                return wait_writer_exit(
+                    path,
+                    writer_handle,
+                    CoordinatedFailure::OutputStopped(end),
+                );
             }
             Ok(None) => {}
         }
         match input_result.try_recv() {
-            Ok(Ok(take)) => break take,
+            Ok(Ok(take)) => {
+                let _ = writer_handle.join();
+                break take;
+            }
             Ok(Err(error)) => {
+                let _ = writer_handle.join();
                 output.stop();
                 return failure(path, None, CoordinatedFailure::InputWrite(error));
             }
             Err(TryRecvError::Disconnected) => {
+                let _ = writer_handle.join();
                 output.stop();
                 return failure(path, None, CoordinatedFailure::InputWorkerExited);
             }
@@ -1458,17 +1495,21 @@ mod tests {
         let (input, _) = mock_input(false);
         let (_control, mut callback, reader, map) = output();
         let (entered, writer_entered) = mpsc::sync_channel(1);
-        let (release, wait_release) = mpsc::sync_channel(1);
+        let writer_done = Arc::new(AtomicBool::new(false));
+        let done_flag = Arc::clone(&writer_done);
         let mut job = spawn_with_writer(
             input,
             reader,
             temp.0.clone(),
             Duration::from_millis(500),
-            Duration::from_millis(100),
+            Duration::from_millis(200),
             move |input, _| {
                 entered.send(()).unwrap();
-                wait_release.recv().unwrap();
+                while !input.worker.shared.stop.load(Acquire) {
+                    thread::sleep(Duration::from_millis(1));
+                }
                 drop(input);
+                done_flag.store(true, Release);
                 Err(io::Error::other("preparation cancelled"))
             },
         )
@@ -1478,11 +1519,11 @@ mod tests {
         assert!(!job.input_capturing_on_control());
         job.stop_on_control();
         let outcome = wait_result(&mut job, &mut callback, &map, &mut offset);
+        assert!(writer_done.load(Acquire));
         assert!(matches!(
             failed(outcome).0,
             CoordinatedFailure::CancelledBeforeInput
         ));
-        release.send(()).unwrap();
     }
 
     #[test]
@@ -1738,6 +1779,87 @@ mod tests {
             Some(CoordinatedFailure::InputStopTimeout)
         ));
         release.send(()).unwrap();
+        writer_exited
+            .recv_timeout(Duration::from_millis(500))
+            .unwrap();
+    }
+
+    #[test]
+    fn early_output_stop_waits_for_writer_teardown_and_respects_stop_timeout() {
+        // 1. Writer takes a moment to flush and release InputCapture after output stops;
+        //    coordinate() must not return OutputStopped until the writer has exited.
+        let temp = Temp::new();
+        let (input, _) = mock_input(false);
+        let (_control, mut callback, reader, map) = output();
+        let (entered, writer_entered) = mpsc::sync_channel(1);
+        let writer_closed = Arc::new(AtomicBool::new(false));
+        let closed_in_writer = Arc::clone(&writer_closed);
+        let mut job = spawn_with_writer(
+            input,
+            reader,
+            temp.0.clone(),
+            Duration::from_millis(500),
+            Duration::from_millis(500),
+            move |input, _| {
+                input.recording_ready.as_ref().unwrap().store(1, Release);
+                entered.send(()).unwrap();
+                // Wait until coordinator asks input to stop, then simulate brief flush.
+                while !input.worker.shared.stop.load(Acquire) {
+                    thread::sleep(POLL);
+                }
+                thread::sleep(Duration::from_millis(15));
+                drop(input);
+                closed_in_writer.store(true, Release);
+                Err(io::Error::other("aborted"))
+            },
+        )
+        .unwrap();
+        let mut offset = 0;
+        wait_started(&mut callback, &map, &writer_entered, &mut offset);
+        // Stop the output callback directly without stopping the input job first.
+        callback.end(End::Stopped);
+        let outcome = wait_result(&mut job, &mut callback, &map, &mut offset);
+        assert!(
+            writer_closed.load(Acquire),
+            "coordinate() returned before writer finished closing and releasing InputCapture"
+        );
+        assert!(matches!(
+            failed(outcome).0,
+            CoordinatedFailure::OutputStopped(End::Stopped)
+        ));
+
+        // 2. If the writer hangs past timeouts.stop on early abort, report InputStopTimeout.
+        let temp = Temp::new();
+        let (input, _) = mock_input(false);
+        let (_control, mut callback, reader, map) = output();
+        let (entered, writer_entered) = mpsc::sync_channel(1);
+        let (release, wait_release) = mpsc::sync_channel(1);
+        let (exited, writer_exited) = mpsc::sync_channel(1);
+        let mut job = spawn_with_writer(
+            input,
+            reader,
+            temp.0.clone(),
+            Duration::from_millis(500),
+            Duration::from_millis(25),
+            move |input, _| {
+                input.recording_ready.as_ref().unwrap().store(1, Release);
+                entered.send(()).unwrap();
+                let _ = wait_release.recv();
+                drop(input);
+                let _ = exited.send(());
+                Err(io::Error::other("stalled"))
+            },
+        )
+        .unwrap();
+        let mut offset = 0;
+        wait_started(&mut callback, &map, &writer_entered, &mut offset);
+        callback.end(End::Stopped);
+        let outcome = wait_result(&mut job, &mut callback, &map, &mut offset);
+        assert!(matches!(
+            failed(outcome).0,
+            CoordinatedFailure::InputStopTimeout
+        ));
+        let _ = release.send(());
         writer_exited
             .recv_timeout(Duration::from_millis(500))
             .unwrap();
