@@ -2150,6 +2150,7 @@ impl EditorView {
                 || self.pending_fade.is_some()
                 || self.clip_gain.has_displayed()
                 || self.audio_clip_controls.gain_preview(self).is_some()
+                || self.audio_clip_controls.has_play_start_preview()
                 || self.shows_audio_clip_loop_preview()
                 || self.audio_event_editor.gesture.is_some()
                 || self.held_arrangement_event_clip().is_some();
