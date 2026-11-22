@@ -1358,8 +1358,13 @@ impl EditorView {
             .children([labels])
             .children([canvas(
                 |_, _, _| (),
-                move |bounds, _, window, _cx| {
-                    entity.update(_cx, |view, _| view.update_scrub_geometry(bounds));
+                move |bounds, _, window, cx| {
+                    entity.update(cx, |view, cx| {
+                        if view.cancel_locked_play_start_drag_on_ruler_change(bounds) {
+                            cx.defer_in(window, |_, _, cx| cx.notify());
+                        }
+                        view.update_scrub_geometry(bounds);
+                    });
                     let mouse_entity = entity.clone();
                     window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                         if !phase.bubble()

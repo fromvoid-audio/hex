@@ -134,7 +134,8 @@ impl EditorView {
             .map(|mut cursor| {
                 if let Some(drag) = self.locked_play_start_drag
                     && drag.moved
-                    && drag.generation == self.project_generation
+                    && matches!(drag.kind, LockedPlayStartDragKind::Marker { .. })
+                    && self.locked_play_start_drag_valid(drag)
                 {
                     cursor.frame = drag.preview_frame;
                 }
@@ -157,13 +158,18 @@ impl EditorView {
         self.locked_play_start_drag.take().is_some()
     }
 
-    pub(super) fn cancel_locked_play_start_drag_on_ruler_change(&mut self, bounds: Bounds<Pixels>) {
+    pub(super) fn cancel_locked_play_start_drag_on_ruler_change(
+        &mut self,
+        bounds: Bounds<Pixels>,
+    ) -> bool {
         if self.locked_play_start_drag.is_some_and(|drag| {
             drag.timeline_left != f32::from(bounds.origin.x)
                 || drag.timeline_width != f32::from(bounds.size.width)
         }) {
             self.locked_play_start_drag = None;
+            return true;
         }
+        false
     }
 
     fn locked_play_start_drag_modifiers(modifiers: Modifiers) -> bool {
@@ -178,15 +184,26 @@ impl EditorView {
         self.mode == EditorMode::Arrangement
             && self.context_menu.is_none()
             && !super::device_panel::picker_is_open(self)
+            && !super::device_panel::source_naming(self)
+            && !(self.clip_view_open
+                && self.device_panel_active
+                && self.device_panel.add_menu_is_open(self.state.as_deref()))
+            && self.send_menu_track.is_none()
             && !self.track_name.is_editing()
             && self.clip_name_edit.is_none()
             && !self.sections.naming()
             && !self.sections.held()
+            && !self.locators.naming()
             && !self.changelog.is_open()
             && !self.project_tempo_editing(cx)
             && !self.gain_numeric_editing(cx)
             && !self.clip_numeric_editing(cx)
+            && !self.sampler_parameter.numeric_draft_active()
+            && !self.track_gain_controls.has_pending_draft(cx)
+            && super::device_panel::pending_send(self, cx).is_none()
             && !self.opening_project
+            && !self.project_open.busy()
+            && self.pending_open_path.is_none()
             && !self.close_prompt_open
             && !self.save_dialog_open
             && !self.export_dialog_open
@@ -194,6 +211,14 @@ impl EditorView {
             && !self.theme_settings.open
             && !self.tuning.open
             && !self.controller_input_is_open()
+            && self.missing_media.is_none()
+            && !self.update_preparing()
+            && self.pointer_down.is_none()
+            && !self.gain_lane.pointer_is_active()
+            && !self.automation_view.devices.pointer_active()
+            && !self.project_spectrum.resize_is_active()
+            && !self.clip_detail_resize.is_active()
+            && !self.device_panel.navigation.is_active()
             && self.time_selection_gesture.is_none()
             && self.time_range_move_gesture.is_none()
             && self.arrangement_pan.is_none()
@@ -232,7 +257,16 @@ impl EditorView {
             && self.mode == EditorMode::Arrangement
             && self.context_menu.is_none()
             && !super::device_panel::picker_is_open(self)
+            && !super::device_panel::source_naming(self)
+            && !(self.clip_view_open
+                && self.device_panel_active
+                && self.device_panel.add_menu_is_open(self.state.as_deref()))
+            && self.send_menu_track.is_none()
+            && !self.locators.naming()
+            && !self.sections.held()
             && !self.opening_project
+            && !self.project_open.busy()
+            && self.pending_open_path.is_none()
             && !self.close_prompt_open
             && !self.save_dialog_open
             && !self.export_dialog_open
@@ -241,6 +275,8 @@ impl EditorView {
             && !self.tuning.open
             && !self.changelog.is_open()
             && !self.controller_input_is_open()
+            && self.missing_media.is_none()
+            && !self.update_preparing()
             && drag.generation == self.project_generation
             && self
                 .state
@@ -517,9 +553,9 @@ impl EditorView {
             .filter(|cursor| cursor.track.is_none() && self.cursor_is_current(*cursor))
     }
 
-    fn lock_play_start(&mut self, clip_editor_start: Option<u64>, cx: &mut Context<Self>) {
+    fn lock_play_start(&mut self, clip_editor_start: Option<u64>, cx: &mut Context<Self>) -> bool {
         if !self.play_start_marker_available(cx) {
-            return;
+            return false;
         }
         if clip_editor_start.is_some() || self.normalized_time_selection().is_none() {
             // Pin the active transport frame without editing the clip.
@@ -541,6 +577,7 @@ impl EditorView {
             });
         }
         cx.notify();
+        true
     }
 
     pub(super) fn place_edit_cursor(
@@ -1031,14 +1068,17 @@ impl EditorView {
                                         event.modifiers,
                                         cx,
                                     ) {
+                                        view.focus.focus(window);
                                         cx.notify();
                                     }
                                 } else {
                                     let current = clip_editor_start.filter(|frame| {
                                         view.focused_clip_editor_play_start(window) == Some(*frame)
                                     });
-                                    if clip_editor_start.is_none() || current.is_some() {
-                                        view.lock_play_start(current, cx);
+                                    if (clip_editor_start.is_none() || current.is_some())
+                                        && view.lock_play_start(current, cx)
+                                    {
+                                        view.focus.focus(window);
                                     }
                                 }
                                 cx.stop_propagation();

@@ -4015,3 +4015,522 @@ fn ruler_option_click_and_drag_places_locked_play_start_with_cmd_snap_and_escape
     });
     fixture.finish(cx);
 }
+
+#[gpui::test]
+fn ruler_option_lock_edge_cases_focus_blur_deactivation_zoom_and_modals(cx: &mut TestAppContext) {
+    use super::musical_time::SnapGrid;
+    use super::worker_ui_fixture::{self, WorkerUiFixture};
+    use std::sync::atomic::Ordering::Acquire;
+
+    cx.update(super::bind_editor_keys);
+    let mut fixture = worker_ui_fixture::open_with_section_support(
+        cx,
+        vec![
+            Command::AddMidiTrack {
+                name: "midi".into(),
+            },
+            Command::AddArrangementLocator { frame: 48_000 },
+        ],
+        false,
+        true,
+    );
+    let editor = fixture.editor.clone();
+    let (track, locator_id) = editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        (
+            project.tracks()[0].id(),
+            project.arrangement_locators()[0].id(),
+        )
+    });
+    let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+    visual.run_until_parked();
+
+    let render = |fixture: &mut WorkerUiFixture, visual: &mut VisualTestContext| {
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        editor.update(visual, |view, cx| {
+            while let Ok(event) = view.service.try_event() {
+                view.receive(event);
+            }
+            if view.tick(cx) {
+                cx.notify();
+            }
+        });
+        visual.run_until_parked();
+    };
+
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Edit(
+            Command::PlaceMidiClip {
+                track,
+                start: BeatTime::from_quarters(1).unwrap(),
+                length: BeatTime::from_quarters(2).unwrap(),
+            },
+        )));
+    });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let clip = loop {
+        render(&mut fixture, &mut visual);
+        let ready = editor.read_with(&visual, |view, _| {
+            view.state.as_ref().unwrap().project.tracks()[0]
+                .midi_clips()
+                .first()
+                .map(|c| c.id())
+        });
+        if let Some(clip) = ready {
+            break clip;
+        }
+        assert!(Instant::now() < deadline, "clip edit timed out");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+
+    let lane = editor.read_with(&visual, |view, _| view.drag_lanes[&track]);
+    let ruler = visual.debug_bounds("timeline-ruler").unwrap();
+    let ruler_at = |fraction| point(ruler.left() + ruler.size.width * fraction, ruler.center().y);
+    let free_frame_at = |visual: &VisualTestContext, x: gpui::Pixels| {
+        editor.read_with(visual, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            let viewport = view.visible_viewport(state.timeline_frames);
+            super::seek::pointer_to_frame(
+                f32::from(x),
+                f32::from(ruler.left()),
+                f32::from(ruler.size.width),
+                viewport,
+            )
+            .unwrap()
+        })
+    };
+
+    let opt = Modifiers {
+        alt: true,
+        ..Modifiers::default()
+    };
+    let opt_cmd = Modifiers {
+        alt: true,
+        platform: true,
+        ..Modifiers::default()
+    };
+    let opt_ctrl = Modifiers {
+        alt: true,
+        control: true,
+        ..Modifiers::default()
+    };
+    let opt_cmd_shift = Modifiers {
+        alt: true,
+        platform: true,
+        shift: true,
+        ..Modifiers::default()
+    };
+
+    // 1. time_selection and selected_clip are preserved across press, drag, and commit.
+    let expected_selection = super::time_selection::TimeSelection {
+        anchor_track: Some(track),
+        end_track: Some(track),
+        anchor_frame: 24_000,
+        end_frame: 72_000,
+    };
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            view.select_clip_header(track, clip, Modifiers::default(), window, cx);
+            view.time_selection = Some(expected_selection);
+            cx.notify();
+        });
+    });
+    visual.run_until_parked();
+    let press_pt = ruler_at(0.287);
+    let drag_pt = ruler_at(0.517);
+    visual.simulate_mouse_down(press_pt, MouseButton::Left, opt);
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.locked_play_start_drag_active());
+        assert_eq!(view.time_selection, Some(expected_selection));
+        assert_eq!(view.selected_clip, Some(clip));
+    });
+    visual.simulate_mouse_move(drag_pt, MouseButton::Left, opt);
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.time_selection, Some(expected_selection));
+        assert_eq!(view.selected_clip, Some(clip));
+    });
+    visual.simulate_mouse_up(drag_pt, MouseButton::Left, opt);
+    visual.run_until_parked();
+    let initial_locked = editor.read_with(&visual, |view, _| {
+        assert!(!view.locked_play_start_drag_active());
+        assert_eq!(view.time_selection, Some(expected_selection));
+        assert_eq!(view.selected_clip, Some(clip));
+        view.valid_locked_play_start().unwrap().frame
+    });
+
+    // Clear time_selection and selected_clip for subsequent marker/cursor checks.
+    editor.update(&mut visual, |view, cx| {
+        view.time_selection = None;
+        view.selected_clip = None;
+        cx.notify();
+    });
+    visual.run_until_parked();
+
+    // 2. SnapGrid::Off inversion: Option-click places free frame; Option+Cmd snaps to grid.
+    editor.update(&mut visual, |view, cx| {
+        view.snap_grid = SnapGrid::Off;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let off_free_pt = ruler_at(0.313);
+    let off_free_expected = free_frame_at(&visual, off_free_pt.x);
+    visual.simulate_click(off_free_pt, opt);
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.valid_locked_play_start().unwrap().frame,
+            off_free_expected,
+            "SnapGrid::Off Option-click must place free frame"
+        );
+    });
+    let off_snap_pt = ruler_at(0.413);
+    let off_snap_free = free_frame_at(&visual, off_snap_pt.x);
+    visual.simulate_click(off_snap_pt, opt_cmd);
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        let locked = view.valid_locked_play_start().unwrap().frame;
+        assert_ne!(
+            locked, off_snap_free,
+            "SnapGrid::Off with Cmd must invert to snapped placement"
+        );
+    });
+    editor.update(&mut visual, |view, cx| {
+        view.snap_grid = SnapGrid::Adaptive;
+        cx.notify();
+    });
+    visual.run_until_parked();
+
+    // 3. Releasing Option mid-drag continues dragging and commits on plain MouseUp.
+    let rel_start = ruler_at(0.35);
+    let rel_end = ruler_at(0.613);
+    let rel_end_free = free_frame_at(&visual, rel_end.x);
+    visual.simulate_mouse_down(rel_start, MouseButton::Left, opt);
+    visual.simulate_mouse_move(rel_end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.locked_play_start_drag_active());
+    });
+    visual.simulate_mouse_up(rel_end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let committed_after_opt_release = editor.read_with(&visual, |view, _| {
+        assert!(!view.locked_play_start_drag_active());
+        let frame = view.valid_locked_play_start().unwrap().frame;
+        assert_ne!(frame, rel_end_free, "plain MouseUp stays snapped");
+        assert_ne!(frame, initial_locked);
+        frame
+    });
+
+    // 4. Focus blur, window deactivation, zoom/viewport invalidation, ruler bounds shift,
+    //    and mode switch cancel RulerPlace and restore prior state without stopping playback.
+    visual.simulate_keystrokes("space");
+    render(&mut fixture, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.audio_status().unwrap().playing.load(Acquire));
+    });
+
+    // 4a. Arranger focus blur while locked & playing.
+    visual.simulate_mouse_down(ruler_at(0.25), MouseButton::Left, opt);
+    visual.simulate_mouse_move(ruler_at(0.75), MouseButton::Left, opt);
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.locked_play_start_drag_active());
+        assert_ne!(
+            view.valid_locked_play_start().unwrap().frame,
+            committed_after_opt_release
+        );
+    });
+    visual.update(|window, cx| {
+        editor.read_with(cx, |view, cx| view.browser.search.read(cx).focus(window));
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.locked_play_start_drag_active());
+        assert_eq!(
+            view.valid_locked_play_start().unwrap().frame,
+            committed_after_opt_release
+        );
+        assert!(view.audio_status().unwrap().playing.load(Acquire));
+    });
+    visual.simulate_mouse_up(ruler_at(0.75), MouseButton::Left, opt);
+    visual.run_until_parked();
+
+    // 4b. Window deactivation while locked & playing.
+    visual.update(|window, cx| {
+        window.activate_window();
+        editor.read(cx).focus.focus(window);
+    });
+    visual.run_until_parked();
+    visual.simulate_mouse_down(ruler_at(0.25), MouseButton::Left, opt);
+    visual.simulate_mouse_move(ruler_at(0.77), MouseButton::Left, opt);
+    visual.run_until_parked();
+    assert!(editor.read_with(&visual, |view, _| view.locked_play_start_drag_active()));
+    visual.deactivate_window();
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.locked_play_start_drag_active());
+        assert_eq!(
+            view.valid_locked_play_start().unwrap().frame,
+            committed_after_opt_release
+        );
+        assert!(view.audio_status().unwrap().playing.load(Acquire));
+    });
+    visual.simulate_mouse_up(ruler_at(0.77), MouseButton::Left, opt);
+    visual.update(|window, cx| {
+        window.activate_window();
+        editor.read(cx).focus.focus(window);
+    });
+    visual.run_until_parked();
+
+    // 4c. Viewport invalidation via wheel zoom mid-drag while playing.
+    visual.simulate_mouse_down(ruler_at(0.25), MouseButton::Left, opt);
+    visual.simulate_mouse_move(ruler_at(0.79), MouseButton::Left, opt);
+    visual.run_until_parked();
+    assert!(editor.read_with(&visual, |view, _| view.locked_play_start_drag_active()));
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: ruler.center(),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-80.0))),
+        ..Default::default()
+    });
+    render(&mut fixture, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.locked_play_start_drag_active());
+        assert_eq!(
+            view.valid_locked_play_start().unwrap().frame,
+            committed_after_opt_release
+        );
+        assert!(view.audio_status().unwrap().playing.load(Acquire));
+    });
+    visual.simulate_mouse_up(ruler_at(0.79), MouseButton::Left, opt);
+    visual.run_until_parked();
+
+    // Reset viewport zoom for subsequent bounds/coordinate tests.
+    editor.update(&mut visual, |view, cx| {
+        view.viewport = None;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let ruler = visual.debug_bounds("timeline-ruler").unwrap();
+    let ruler_at = |fraction| point(ruler.left() + ruler.size.width * fraction, ruler.center().y);
+
+    // 4d. Ruler bounds shift (toggling browser sidebar) cancels drag and repaints immediately.
+    visual.simulate_mouse_down(ruler_at(0.25), MouseButton::Left, opt);
+    visual.simulate_mouse_move(ruler_at(0.72), MouseButton::Left, opt);
+    visual.run_until_parked();
+    assert!(editor.read_with(&visual, |view, _| view.locked_play_start_drag_active()));
+    editor.update(&mut visual, |view, cx| {
+        view.browser.open = !view.browser.open;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.locked_play_start_drag_active());
+        assert_eq!(
+            view.valid_locked_play_start().unwrap().frame,
+            committed_after_opt_release
+        );
+    });
+    visual.simulate_mouse_up(ruler_at(0.72), MouseButton::Left, opt);
+    editor.update(&mut visual, |view, cx| {
+        view.browser.open = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let ruler = visual.debug_bounds("timeline-ruler").unwrap();
+    let ruler_at = |fraction| point(ruler.left() + ruler.size.width * fraction, ruler.center().y);
+
+    // 4e. Mode switch cancels drag immediately (without waiting for tick).
+    visual.simulate_mouse_down(ruler_at(0.25), MouseButton::Left, opt);
+    assert!(editor.read_with(&visual, |view, _| view.locked_play_start_drag_active()));
+    editor.update(&mut visual, |view, cx| {
+        view.set_mode(super::EditorMode::Session);
+        assert!(!view.locked_play_start_drag_active());
+        view.set_mode(super::EditorMode::Arrangement);
+        cx.notify();
+    });
+    visual.simulate_mouse_up(ruler_at(0.25), MouseButton::Left, opt);
+    visual.run_until_parked();
+
+    // Stop playback, test focus blur over double-Escape play_start_at_beginning reset.
+    visual.simulate_keystrokes("escape");
+    render(&mut fixture, &mut visual);
+    visual.simulate_keystrokes("escape");
+    render(&mut fixture, &mut visual);
+    editor.read_with(&visual, |view, _| assert!(view.play_start_at_beginning));
+    visual.simulate_mouse_down(ruler_at(0.45), MouseButton::Left, opt);
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("locked-play-start-top").is_some());
+    assert!(visual.debug_bounds("transport-start-top").is_none());
+    visual.update(|window, cx| {
+        editor.read_with(cx, |view, cx| view.browser.search.read(cx).focus(window));
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.locked_play_start_drag_active());
+        assert!(view.play_start_at_beginning);
+        assert!(view.valid_locked_play_start().is_none());
+    });
+    assert!(visual.debug_bounds("transport-start-top").is_some());
+    visual.simulate_mouse_up(ruler_at(0.45), MouseButton::Left, opt);
+    visual.run_until_parked();
+
+    // 5. Option-click unlocked time-marker-top-start and drag off-ruler (vertical & horizontal).
+    visual.update(|window, cx| editor.read(cx).focus.focus(window));
+    visual.simulate_click(
+        point(px(lane.left + lane.width * 0.15), px(lane.top + 20.0)),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let unlocked_frame = editor.read_with(&visual, |view, _| {
+        assert!(view.valid_locked_play_start().is_none());
+        view.edit_cursor.unwrap().frame
+    });
+    let unlocked_marker = visual.debug_bounds("time-marker-top-start").unwrap();
+    let (vp_start, vp_end) = editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        let vp = view.visible_viewport(state.timeline_frames);
+        (vp.start, vp.end().unwrap())
+    });
+    visual.simulate_mouse_down(unlocked_marker.center(), MouseButton::Left, opt);
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.locked_play_start_drag_active());
+    });
+    // Drag horizontally past left and right edges (clamped to viewport bounds).
+    visual.simulate_mouse_move(
+        point(ruler.left() - px(40.0), ruler.center().y),
+        MouseButton::Left,
+        opt,
+    );
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.valid_locked_play_start().unwrap().frame, vp_start);
+    });
+    visual.simulate_mouse_move(
+        point(ruler.right() + px(40.0), ruler.center().y),
+        MouseButton::Left,
+        opt,
+    );
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.valid_locked_play_start().unwrap().frame, vp_end);
+    });
+    // Drag vertically off the ruler down onto the track lane and release outside ruler bounds.
+    let off_ruler_target = point(ruler_at(0.62).x, px(lane.top + 24.0));
+    visual.simulate_mouse_move(off_ruler_target, MouseButton::Left, opt_cmd);
+    visual.simulate_mouse_up(off_ruler_target, MouseButton::Left, opt_cmd);
+    visual.run_until_parked();
+    let expected_off_ruler = free_frame_at(&visual, off_ruler_target.x);
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.locked_play_start_drag_active());
+        assert!(view.time_selection_gesture.is_none());
+        let locked = view.valid_locked_play_start().unwrap().frame;
+        assert_eq!(locked, expected_off_ruler);
+        assert_ne!(locked, unlocked_frame);
+    });
+
+    // 6. Invalid modifiers (Option+Ctrl, Option+Cmd+Shift) and modal/naming guards
+    //    (context_menu, locators.naming()), plus plain ruler scrub sanity check.
+    let before_invalid = editor.read_with(&visual, |view, _| {
+        view.valid_locked_play_start().unwrap().frame
+    });
+    for invalid in [opt_ctrl, opt_cmd_shift] {
+        visual.simulate_click(ruler_at(0.22), invalid);
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.valid_locked_play_start().unwrap().frame,
+                before_invalid
+            );
+            assert!(!view.scrub_active());
+        });
+    }
+
+    // context_menu guard
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            view.open_track_context_menu(ruler_at(0.2), Some(track), window, cx);
+        });
+    });
+    visual.run_until_parked();
+    visual.simulate_click(ruler_at(0.22), opt);
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.valid_locked_play_start().unwrap().frame,
+            before_invalid
+        );
+        assert!(!view.scrub_active());
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+
+    // locators.naming() guard
+    let locator_selector: &'static str =
+        Box::leak(format!("locator-name-{}", locator_id.value()).into_boxed_str());
+    let locator_bounds = visual.debug_bounds(locator_selector).unwrap();
+    visual.simulate_click(locator_bounds.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("cmd-r");
+    visual.run_until_parked();
+    assert!(editor.read_with(&visual, |view, _| view.locators.naming()));
+    visual.simulate_click(ruler_at(0.22), opt);
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.valid_locked_play_start().unwrap().frame,
+            before_invalid
+        );
+        assert!(!view.scrub_active());
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| assert!(!view.locators.naming()));
+
+    // Plain ruler press activates scrub without unlocking/replacing locked_play_start.
+    visual.simulate_mouse_down(ruler_at(0.35), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.scrub_active());
+        assert!(!view.locked_play_start_drag_active());
+        assert_eq!(
+            view.valid_locked_play_start().unwrap().frame,
+            before_invalid
+        );
+    });
+    visual.simulate_mouse_up(ruler_at(0.35), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    render(&mut fixture, &mut visual);
+
+    // 7. Regression for focus fix: Escape during locked marker drag after Browser focus.
+    visual.update(|window, cx| {
+        editor.read_with(cx, |view, cx| view.browser.search.read(cx).focus(window));
+    });
+    visual.run_until_parked();
+    let locked_top = visual.debug_bounds("locked-play-start-top").unwrap();
+    visual.simulate_mouse_down(locked_top.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(ruler_at(0.85), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        let view = editor.read(cx);
+        assert!(view.locked_play_start_drag_active());
+        assert!(
+            view.focus.is_focused(window),
+            "dragging locked marker must transfer focus to arranger so Escape cancels the drag"
+        );
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.locked_play_start_drag_active());
+        assert_eq!(
+            view.valid_locked_play_start().unwrap().frame,
+            before_invalid
+        );
+    });
+    visual.simulate_mouse_up(ruler_at(0.85), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+
+    fixture.finish(cx);
+}

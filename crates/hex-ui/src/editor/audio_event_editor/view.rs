@@ -1446,6 +1446,10 @@ pub(in crate::editor) fn view(
             cx.notify();
         }))
         .on_action(cx.trace(|view, _: &super::super::CancelDragOrStop, _, cx| {
+            if view.locked_play_start_drag_active() {
+                cx.propagate();
+                return;
+            }
             if !view.cancel_audio_loop_gesture() {
                 view.advance_selection_intent();
                 view.audio_event_editor.gesture = None;
