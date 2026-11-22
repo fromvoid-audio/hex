@@ -59,7 +59,7 @@ pub fn write_takes(mut reader: Reader, directory: &Path) -> io::Result<Takes> {
         files.push((source, path, file));
     }
     reader.ready();
-    let mut written = 0;
+    let mut written: u64 = 0;
     let mut timing_index = Vec::new();
     let mut write_error = None;
     let mut encoded = [0; FRAMES * FRAME_BYTES as usize];
@@ -68,7 +68,12 @@ pub fn write_takes(mut reader: Reader, directory: &Path) -> io::Result<Takes> {
             if write_error.is_some() {
                 return;
             }
-            let end = written + frames as u64;
+            let Some(end) = written.checked_add(frames as u64) else {
+                write_error = Some(io::Error::other(
+                    "sample recording exceeded the WAV size limit",
+                ));
+                return;
+            };
             if end > MAX_FRAMES {
                 write_error = Some(io::Error::other(
                     "sample recording exceeded the WAV size limit",
@@ -118,7 +123,11 @@ pub fn write_takes(mut reader: Reader, directory: &Path) -> io::Result<Takes> {
     let timing: Arc<[TimingSpan]> = timing_index.into();
     let mut takes = Vec::with_capacity(files.len());
     for (source, path, mut file) in files {
-        file.set_len(HEADER + written * FRAME_BYTES)?;
+        let len = written
+            .checked_mul(FRAME_BYTES)
+            .and_then(|bytes| HEADER.checked_add(bytes))
+            .ok_or_else(|| io::Error::other("invalid sample recording WAV size"))?;
+        file.set_len(len)?;
         file.seek(SeekFrom::Start(0))?;
         write_header(&mut file, rate, written)?;
         file.sync_all()?;
@@ -171,18 +180,52 @@ pub(super) mod write_fault {
 }
 
 pub(crate) fn write_header(file: &mut impl Write, rate: u32, frames: u64) -> io::Result<()> {
-    let bytes = u32::try_from(frames * FRAME_BYTES)
-        .map_err(|_| io::Error::other("invalid sample recording WAV size"))?;
+    let bytes = frames
+        .checked_mul(FRAME_BYTES)
+        .and_then(|bytes| u32::try_from(bytes).ok())
+        .ok_or_else(|| io::Error::other("invalid sample recording WAV size"))?;
+    let riff_size = bytes
+        .checked_add(36)
+        .ok_or_else(|| io::Error::other("invalid sample recording WAV size"))?;
+    let byte_rate = rate
+        .checked_mul(8)
+        .ok_or_else(|| io::Error::other("invalid sample recording WAV sample rate"))?;
     file.write_all(b"RIFF")?;
-    file.write_all(&(36 + bytes).to_le_bytes())?;
+    file.write_all(&riff_size.to_le_bytes())?;
     file.write_all(b"WAVEfmt ")?;
     file.write_all(&16u32.to_le_bytes())?;
     file.write_all(&3u16.to_le_bytes())?; // IEEE float
     file.write_all(&2u16.to_le_bytes())?;
     file.write_all(&rate.to_le_bytes())?;
-    file.write_all(&(rate * 8).to_le_bytes())?;
+    file.write_all(&byte_rate.to_le_bytes())?;
     file.write_all(&8u16.to_le_bytes())?;
     file.write_all(&32u16.to_le_bytes())?;
     file.write_all(b"data")?;
     file.write_all(&bytes.to_le_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_header_checks_wav_size_and_byte_rate_overflow() {
+        let mut ok = Vec::new();
+        write_header(&mut ok, 48_000, MAX_FRAMES).unwrap();
+        assert_eq!(ok.len(), HEADER as usize);
+
+        for (rate, frames) in [
+            (48_000, MAX_FRAMES + 1),
+            (48_000, u64::MAX),
+            (u32::MAX, 16),
+            (u32::MAX / 8 + 1, 0),
+        ] {
+            let mut buf = Vec::new();
+            assert!(
+                write_header(&mut buf, rate, frames).is_err(),
+                "expected overflow error for rate={rate}, frames={frames}"
+            );
+            assert!(buf.is_empty());
+        }
+    }
 }

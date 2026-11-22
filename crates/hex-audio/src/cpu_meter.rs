@@ -12,15 +12,19 @@ pub struct CpuMeter {
     rate: AtomicU32,
 }
 
+/// Callback period in nanoseconds for a non-empty block at a nonzero sample rate.
+pub(crate) fn callback_deadline_ns(frames: usize, rate: u32) -> Option<u64> {
+    u64::try_from(frames)
+        .ok()
+        .and_then(|n| n.checked_mul(1_000_000_000))
+        .and_then(|n| n.checked_div(u64::from(rate)))
+        .filter(|n| *n != 0)
+}
+
 impl CpuMeter {
     /// Called by the output callback after timing its work. No allocation or locks.
     pub(crate) fn record(&self, elapsed_ns: u64, frames: usize, rate: u32) {
-        let Some(deadline) = u64::try_from(frames)
-            .ok()
-            .and_then(|n| n.checked_mul(1_000_000_000))
-            .and_then(|n| n.checked_div(u64::from(rate)))
-            .filter(|n| *n != 0)
-        else {
+        let Some(deadline) = callback_deadline_ns(frames, rate) else {
             return;
         };
         let load = elapsed_ns.saturating_mul(10_000) / deadline;
