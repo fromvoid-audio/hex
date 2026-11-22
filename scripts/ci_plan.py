@@ -41,6 +41,22 @@ UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
 RUNTIME_CONSUMERS = {"hex-devices": {"hex-storage"}}
+# Reviewed device-persistence unit modules in hex-storage covering opaque
+# device state, presets, modulation/automation schemas, and serial units.
+# Scopes non-compressor hex-devices edits without running unrelated storage
+# integration binaries (e.g. 16s audio_events, 6s provenance).
+DEVICE_STORAGE_TEST_FILTERS = (
+    "files::",
+    "preset::",
+    "schema::bound_source_effects::",
+    "schema::device_automation::",
+    "schema::device_automation_touch::",
+    "schema::device_modulation::",
+    "schema::native_sources::",
+    "schema::sampler_crossfade::",
+    "schema::serial_units::",
+    "schema::sidechain::",
+)
 # Both consumers compile this exact storage source through theme.rs by path.
 PATH_RUNTIME_CONSUMERS = {"crates/hex-storage/src/text.rs": {"hex-ui", "hex-sandbox"},
                           "crates/hex-ui/src/theme.rs": {"hex-sandbox"},
@@ -1104,7 +1120,14 @@ UI_INTEGRATION_PAIRS = {"editor::automation_take_recovery::unit_tests::": "edito
                         "editor::poll_cadence::tests::": "editor::poll_cadence::ui_tests::",
                         "theme::": "editor::theme_settings::tests::"}
 MOD_LINE = re.compile(r"(pub(\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
+INLINE_MOD_LINE = re.compile(r"(pub(\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{")
 PATH_ATTRIBUTE = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
+_RUST_STR_OR_COMMENT = re.compile(r'//.*$|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])\'')
+
+
+def _brace_delta(line: str) -> int:
+    cleaned = _RUST_STR_OR_COMMENT.sub("", line)
+    return cleaned.count("{") - cleaned.count("}")
 
 
 def _scan_source_modules(
@@ -1119,16 +1142,26 @@ def _scan_source_modules(
         cache_key = ("modules", resolved_source, resolved_workspace)
         if cache_key in _MODULE_SCAN_CACHE:
             return _MODULE_SCAN_CACHE[cache_key]
-    root_file = next((source_root / name for name in ("lib.rs", "main.rs")
-                      if (source_root / name).is_file()), None)
-    if root_file is None:
+    root_files: list[Path] = []
+    for name in ("lib.rs", "main.rs"):
+        candidate = source_root / name
+        if candidate.is_file():
+            root_files.append(candidate.resolve())
+    bin_dir = source_root / "bin"
+    if bin_dir.is_dir():
+        for entry in sorted(bin_dir.iterdir()):
+            if entry.is_file() and entry.suffix == ".rs":
+                root_files.append(entry.resolve())
+            elif entry.is_dir() and (entry / "main.rs").is_file():
+                root_files.append((entry / "main.rs").resolve())
+    if not root_files:
         if cache_key is not None:
             _MODULE_SCAN_CACHE[cache_key] = None
         return None
-    root_resolved = root_file.resolve()
-    paths: dict[Path, str] = {root_resolved: ""}
+    root_set = frozenset(root_files)
+    paths: dict[Path, str] = {r: "" for r in root_files}
     tested_subtrees: set[str] = set()
-    pending = [root_resolved]
+    pending = list(reversed(root_files))
     while pending:
         parent = pending.pop()
         text = parent.read_text(errors="replace")
@@ -1142,28 +1175,42 @@ def _scan_source_modules(
                 tested_subtrees.add(ancestor)
                 ancestor = ancestor.rpartition("::")[0]
         lines = text.splitlines()
+        depth = 0
+        inline_mods: list[tuple[int, str]] = []
+        base = parent.parent if (parent in root_set or parent.name == "mod.rs") else parent.with_suffix("")
         for index, line in enumerate(lines):
-            match = MOD_LINE.fullmatch(line.rstrip())
-            if not match:
-                continue
-            attributes, cursor = [], index - 1
-            while cursor >= 0 and lines[cursor].startswith(("#[", "//")):
-                attributes.append(lines[cursor].strip())
-                cursor -= 1
-            name = match.group(3)
-            explicit = next((PATH_ATTRIBUTE.fullmatch(a).group(1) for a in attributes
-                             if PATH_ATTRIBUTE.fullmatch(a)), None)
-            base = parent.parent if parent.name in {"mod.rs", "lib.rs", "main.rs"} else parent.with_suffix("")
-            targets = [parent.parent / explicit] if explicit else [base / f"{name}.rs", base / name / "mod.rs"]
-            targets = [t.resolve() for t in targets]
-            if resolved_workspace is not None and any(not t.is_relative_to(resolved_workspace) for t in targets):
-                raise ValueError("source module path escapes the verified workspace")
-            target = next((t for t in targets if t.is_file()), None)
-            if target is None or target in paths:
-                continue
-            prefix = paths[parent]
-            paths[target] = f"{prefix}::{name}" if prefix else name
-            pending.append(target)
+            stripped = line.strip()
+            inline_match = INLINE_MOD_LINE.match(stripped)
+            match = MOD_LINE.fullmatch(stripped)
+            if match:
+                attributes, cursor = [], index - 1
+                while cursor >= 0 and lines[cursor].lstrip().startswith(("#[", "//")):
+                    attributes.append(lines[cursor].strip())
+                    cursor -= 1
+                name = match.group(3)
+                explicit = next((PATH_ATTRIBUTE.fullmatch(a).group(1) for a in attributes
+                                 if PATH_ATTRIBUTE.fullmatch(a)), None)
+                inline_parts = [mod_name for _, mod_name in inline_mods]
+                mod_dir = base.joinpath(*inline_parts) if inline_parts else base
+                if explicit:
+                    targets = ([mod_dir / explicit, parent.parent / explicit]
+                               if inline_parts else [parent.parent / explicit])
+                else:
+                    targets = [mod_dir / f"{name}.rs", mod_dir / name / "mod.rs"]
+                targets = [t.resolve() for t in targets]
+                if resolved_workspace is not None and any(not t.is_relative_to(resolved_workspace) for t in targets):
+                    raise ValueError("source module path escapes the verified workspace")
+                target = next((t for t in targets if t.is_file()), None)
+                if target is not None and target not in paths:
+                    parts = [p for p in (paths[parent], *inline_parts, name) if p]
+                    paths[target] = "::".join(parts)
+                    pending.append(target)
+            depth_before = depth
+            depth = max(0, depth + _brace_delta(line))
+            if inline_match and depth > depth_before:
+                inline_mods.append((depth_before, inline_match.group(3)))
+            while inline_mods and depth <= inline_mods[-1][0]:
+                inline_mods.pop()
     result = (paths, frozenset(tested_subtrees))
     if cache_key is not None:
         _MODULE_SCAN_CACHE[cache_key] = result
@@ -1308,10 +1355,12 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
             owner_filters.add(prefix)
             if owner == "hex-ui":
                 owner_filters.update(UI_MODULE_TEST_DEPENDENCIES.get(prefix, ()))
-    # The real viewport is an input to the waveform grid. Select its owner
-    # when that source changes, including the grid's geometry consumers.
-    if "crates/hex-ui/src/editor/viewport.rs" in executable and "hex-ui" in tested:
-        filters.setdefault("hex-ui", set()).update({"editor::waveform_geometry::grid::", "editor::arrangement_map::model::"})
+    # Device-only edits exercise hex-storage's reviewed device-persistence
+    # contract tests rather than unrelated storage integration binaries.
+    if ("hex-storage" in tested
+            and any(owner_package(p, inventory) == "hex-devices" for p in executable)
+            and not any(owner_package(p, inventory) == "hex-storage" for p in executable)):
+        filters.setdefault("hex-storage", set()).update(DEVICE_STORAGE_TEST_FILTERS)
     if "crates/hex-ui/src/editor/navigation_metrics.rs" in executable and "hex-ui" in tested:
         # Keep the ignored profiler and a real rendered waveform ACK consumer.
         filters.setdefault("hex-ui", set()).update((
@@ -1335,9 +1384,11 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
         if owner in whole:
             continue
         if owner == "hex-ui":
-            # Pairs and shared unit dependencies can introduce one another;
-            # close over both before dropping paths covered by an ancestor.
-            while True:
+            # Bounded cohort expansion (at most 2 passes across direct pairs and
+            # cohorts, never an unbounded fixed-point closure). Cross-boundary
+            # consumers such as viewport.rs are added explicitly below so they
+            # cannot trigger unrelated mega-cohorts (e.g. browser/sampler).
+            for _ in range(2):
                 before = len(names)
                 for module, integration in UI_INTEGRATION_PAIRS.items():
                     if any(module.startswith(name) or name.startswith(module)
@@ -1355,6 +1406,16 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                         names.update(cohort)
                 if len(names) == before:
                     break
+            # Direct viewport consumers stay explicit without expanding the
+            # unrelated waveform overview/browser/sampler or full arrangement cohorts.
+            if "crates/hex-ui/src/editor/viewport.rs" in executable:
+                names.update((
+                    "editor::waveform_geometry::grid::",
+                    "editor::waveform_geometry::tests::",
+                    "editor::waveform::resize_tests::silent_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack",
+                    "editor::arrangement_map::model::",
+                    "editor::arrangement_focus::visibility::",
+                ))
             # These exact consumers cover their owners without expanding shared cohorts.
             for unit, consumers in (
                 (WAVEFORM_PAINT_GEOMETRY_UNIT, WAVEFORM_PAINT_GEOMETRY_TESTS),
@@ -1608,16 +1669,14 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
     known_consumers = {"hex-devices", "hex-engine", "hex-audio", "hex-ui", "hex-storage",
                        "hex-desktop", "hex-cli", "hex-export", "hex-session", "hex-media", "hex-stream",
                        "hex-sandbox"}
-    reviewed_features = {"hex-engine": {"instrument-test-support"}, "hex-export": {"instrument-test-support"},
-                         # Stream test hooks gate no compressor code or tests; compressor
-                         # plans still lint those configurations (local-ci boundary_steps).
-                         "hex-audio": {"allocation-probe", "stream-test-support"}, "hex-desktop": {"allocation-probe"},
-                         "hex-ui": {"ui-test-support", "ui-unit-tier"}, "hex-session": {"source-overview-test-support"},
-                         "hex-stream": {"allocation-probe", "test-support"},
-                         # One-shot verified-WAV read fault injection; it does not
-                         # change compressor processing or its host contract.
-                         "hex-media": {"test-support"},
-                         "hex-sandbox": {"ui-test-support", "ui-unit-tier"}}
+    # Derive reviewed consumer features from the authoritative reviewed feature
+    # registries so new reviewed test-support features don't silently disable
+    # the compressor boundary, while any unreviewed feature still widens it.
+    reviewed_features = {
+        name: set(ADDITIVE_TEST_FEATURES.get(name, ())) | set(SINGLE_RUN_COMPANION_FEATURES.get(name, ()))
+        for name in known_consumers
+    }
+    reviewed_features["hex-sandbox"] |= {"ui-test-support", "ui-unit-tier"}
     narrow = bool(executable) and set(executable) <= compressor and set(affected) <= known_consumers
     narrow = narrow and all(set(p["features"]) <= reviewed_features.get(p["name"], set())
                             for p in inventory if p["name"] in affected)

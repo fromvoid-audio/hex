@@ -98,6 +98,14 @@ ARRANGEMENT_CONSUMERS = [
     "section_surface::geometry::",
 ]
 
+VIEWPORT_DIRECT_CONSUMERS = [
+    "editor::arrangement_focus::visibility::",
+    "editor::arrangement_map::model::",
+    "editor::waveform::resize_tests::silent_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack",
+    "editor::waveform_geometry::grid::",
+    "editor::waveform_geometry::tests::",
+]
+
 
 class PlannerSourceLoaderTests(unittest.TestCase):
     def test_nested_policy_descriptors_close_when_wrapping_fails(self):
@@ -1014,34 +1022,35 @@ class ScopeTests(unittest.TestCase):
         live_scope, live_affected, _ = plan.classify([path], live_inventory)
         self.assertNotIn("hex-plugin-host", live_affected)
         live_boundary = plan.boundary_selection(root, [path], live_inventory, live_affected)
-        # Keep the narrow-case fixture independent of newly added features.
-        # An unreviewed live feature must widen the plan, not break this test
-        # or be silently added to the production allowlist.
-        reviewed = {"hex-engine": {"instrument-test-support"},
-                    "hex-export": {"instrument-test-support"},
-                    "hex-audio": {"allocation-probe", "stream-test-support"},
-                    "hex-desktop": {"allocation-probe"},
-                    "hex-ui": {"ui-test-support"},
-                    "hex-session": {"source-overview-test-support"},
-                    "hex-stream": {"allocation-probe", "test-support"},
-                    "hex-media": {"test-support"},
-                    "hex-sandbox": {"ui-test-support", "ui-unit-tier"}}
+        # Live compressor.rs must select the narrow compressor boundary when all
+        # consumer features are reviewed; adding an unreviewed feature widens it.
+        reviewed = {
+            name: set(plan.ADDITIVE_TEST_FEATURES.get(name, ()))
+            | set(plan.SINGLE_RUN_COMPANION_FEATURES.get(name, ()))
+            for name in live_affected
+        }
+        reviewed["hex-sandbox"] = reviewed.get("hex-sandbox", set()) | {"ui-test-support", "ui-unit-tier"}
         unreviewed = {p["name"]: set(p["features"]) - reviewed.get(p["name"], set())
                       for p in live_inventory if p["name"] in live_affected}
         if any(unreviewed.values()):
             self.assertEqual(live_boundary["kind"], "packages")
-            self.assertEqual(live_boundary["lint_packages"], live_affected)
-            live_steps = ci.planned_steps({"scope": live_scope, "affected_packages": live_affected,
-                                           "boundary": live_boundary, "cargo_inventory": live_inventory})
-            lint_commands = [",".join(step.argv) for step in live_steps
-                             if step.argv[:2] == ("cargo", "clippy")]
-            for package, features in unreviewed.items():
-                for feature in features - {"default"}:
-                    self.assertTrue(any(f"{package}/{feature}" in command for command in lint_commands))
         else:
-            # Other safe-widening causes, such as a new macro boundary, may
-            # also make the real workspace require package coverage.
-            self.assertIn(live_boundary["kind"], {"compressor", "packages"})
+            self.assertEqual(live_boundary["kind"], "compressor")
+        # Adding an unreviewed feature on any consumer widens back to packages
+        # and still lints the unreviewed feature.
+        extra_feature_inventory = [
+            {**p, "features": {**p["features"], "unreviewed-compressor-check": []}}
+            if p["name"] == "hex-session" else p
+            for p in live_inventory
+        ]
+        extra_boundary = plan.boundary_selection(root, [path], extra_feature_inventory, live_affected)
+        self.assertEqual(extra_boundary["kind"], "packages")
+        self.assertEqual(extra_boundary["lint_packages"], live_affected)
+        extra_steps = ci.planned_steps({"scope": live_scope, "affected_packages": live_affected,
+                                        "boundary": extra_boundary, "cargo_inventory": extra_feature_inventory})
+        lint_commands = [",".join(step.argv) for step in extra_steps
+                         if step.argv[:2] == ("cargo", "clippy")]
+        self.assertTrue(any("hex-session/unreviewed-compressor-check" in command for command in lint_commands))
         reversed_inventory = [{**p, "dependencies": p["dependencies"] + [{"name": "hex-audio"}]}
                               if p["name"] == "hex-plugin-host" else p for p in live_inventory]
         _, reversed_affected, _ = plan.classify([path], reversed_inventory)
@@ -1873,6 +1882,100 @@ class SingleRunFeatureTests(unittest.TestCase):
         self.assertIn("hex-desktop", comp_steps["consumer-clippy"].argv)
         self.assertIn("--lib", comp_steps["affected-feature-clippy"].argv)
         self.assertIn("--bins", comp_steps["affected-feature-clippy"].argv)
+
+    def test_compressor_narrow_boundary_active_on_live_workspace(self):
+        root, inventory = self.live()
+        path = "crates/hex-devices/src/compressor.rs"
+        _, affected, _ = plan.classify([path], inventory)
+        boundary = plan.boundary_selection(root, [path], inventory, affected)
+        self.assertEqual(boundary["kind"], "compressor")
+        self.assertEqual(boundary["test_packages"], [])
+        self.assertEqual(len(boundary["tests"]), 8)
+
+    def test_hex_devices_scopes_hex_storage_runtime_consumer_to_device_persistence(self):
+        root, inventory = self.live()
+        path = "crates/hex-devices/src/auto_pan.rs"
+        _, affected, _ = plan.classify([path], inventory)
+        boundary = plan.boundary_selection(root, [path], inventory, affected)
+        self.assertEqual(boundary["kind"], "packages")
+        self.assertEqual(boundary["test_packages"], ["hex-devices", "hex-storage"])
+        self.assertEqual(boundary["module_filters"]["hex-storage"], sorted(plan.DEVICE_STORAGE_TEST_FILTERS))
+        steps = {s.step_id: s for s in ci.planned_steps({
+            "scope": "rust", "affected_packages": affected, "boundary": boundary,
+            "cargo_inventory": inventory, "paths": [path]})}
+        self.assertNotIn("affected-tests", steps)
+        storage_step = steps["module-tests-hex-storage"].argv
+        self.assertEqual(storage_step[:6], ("cargo", "test", "-p", "hex-storage", "--locked", "--lib"))
+        self.assertIn("preset::", storage_step)
+        self.assertIn("files::", storage_step)
+
+    def test_scan_source_modules_maps_bin_targets_and_indented_inline_mods(self):
+        root, inventory = self.live()
+        # Indented inline mod declarations inside mod tests { ... } blocks map cleanly.
+        inline_cases = (
+            ("hex-desktop", "crates/hex-desktop/src/native_sources/tests/granular.rs",
+             "native_sources::tests::granular"),
+            ("hex-engine", "crates/hex-engine/src/audio_candidate/storage/tests/powered_off.rs",
+             "audio_candidate::storage::tests::powered_off"),
+            ("hex-engine", "crates/hex-engine/src/audio_candidate/storage/tests/reserved_dry.rs",
+             "audio_candidate::storage::tests::reserved_dry"),
+            ("hex-lattice", "crates/hex-lattice/src/instrument_runtime/tests/active_occurrences.rs",
+             "instrument_runtime::tests::active_occurrences"),
+            ("hex-session", "crates/hex-session/src/service/verified_gain/tests/group.rs",
+             "service::verified_gain::tests::group"),
+            ("hex-ui", "crates/hex-ui/src/editor/device_panel/vst3_parameters/tests/gesture_release.rs",
+             "editor::device_panel::vst3_parameters::tests::gesture_release"),
+        )
+        for pkg, rel, expected_mod in inline_cases:
+            with self.subTest(rel=rel):
+                src_root = root / f"crates/{pkg}/src"
+                modules = plan.module_paths(src_root, workspace_root=root)
+                self.assertIsNotNone(modules)
+                self.assertEqual(modules[(root / rel).resolve()], expected_mod)
+        # Multi-binary crates map src/bin/*.rs and bin submodules, and local-ci
+        # keeps both --lib and --bins when module-scoping lib+bin crates.
+        bin_cases = (
+            ("hex-clap-scan", "crates/hex-clap-scan/src/bin/hex-clap-offline.rs", ""),
+            ("hex-clap-scan", "crates/hex-clap-scan/src/macos_gain.rs", "macos_gain"),
+            ("hex-clap-scan", "crates/hex-clap-scan/src/macos_scan.rs", "macos_scan"),
+            ("hex-clap-scan", "crates/hex-clap-scan/src/macos_cli.rs", "common"),
+            ("hex-plugin-scan", "crates/hex-plugin-scan/src/bin/hex-vst3-scan-macos.rs", ""),
+            ("hex-plugin-scan", "crates/hex-plugin-scan/src/macos_owner.rs", "owner"),
+        )
+        for pkg, rel, expected_mod in bin_cases:
+            with self.subTest(rel=rel):
+                src_root = root / f"crates/{pkg}/src"
+                modules = plan.module_paths(src_root, workspace_root=root)
+                self.assertIsNotNone(modules)
+                self.assertIn((root / rel).resolve(), modules)
+                if expected_mod == "":
+                    self.assertEqual(modules[(root / rel).resolve()], "")
+                else:
+                    self.assertTrue(modules[(root / rel).resolve()].endswith(expected_mod))
+        # Module-scoped bin submodule in a lib+bin crate passes --lib --bins.
+        owner_path = "crates/hex-plugin-scan/src/macos_owner.rs"
+        _, scan_affected, _ = plan.classify([owner_path], inventory)
+        scan_boundary = plan.boundary_selection(root, [owner_path], inventory, scan_affected)
+        self.assertEqual(scan_boundary["module_filters"]["hex-plugin-scan"], ["owner::"])
+        scan_steps = {s.step_id: s for s in ci.planned_steps({
+            "scope": "rust", "affected_packages": scan_affected, "boundary": scan_boundary,
+            "cargo_inventory": inventory, "paths": [owner_path]})}
+        self.assertEqual(scan_steps["module-tests-hex-plugin-scan"].argv,
+                         ("cargo", "test", "-p", "hex-plugin-scan", "--locked", "--lib", "--bins", "--", "owner::"))
+
+    def test_viewport_edit_stays_bounded_without_browser_or_sampler_explosion(self):
+        root, inventory = self.live()
+        path = "crates/hex-ui/src/editor/viewport.rs"
+        _, affected, _ = plan.classify([path], inventory)
+        boundary = plan.boundary_selection(root, [path], inventory, affected)
+        filters = boundary["module_filters"]["hex-ui"]
+        self.assertEqual(filters, sorted([
+            "editor::musical_time::", "editor::seek::", "editor::signed_frame_viewport::", "editor::viewport::",
+            *VIEWPORT_DIRECT_CONSUMERS,
+        ]))
+        for unrelated in ("browser", "sampler_parameter", "overview_waveform", "waveform_columns",
+                          "fade_handles", "audio_event_editor"):
+            self.assertFalse(any(unrelated in f for f in filters), f"unexpected {unrelated} in {filters}")
 
     def test_standalone_ui_unit_inputs_run_only_the_owning_targets(self):
         root, inventory = self.live()
@@ -3065,7 +3168,7 @@ class ModuleScopeTests(unittest.TestCase):
         timeline = ["editor::musical_time::", "editor::seek::", "editor::signed_frame_viewport::", viewport]
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/viewport.rs"], inventory, [owner]),
-            {owner: sorted([*timeline, *GRID_CONSUMERS, *ARRANGEMENT_CONSUMERS])})
+            {owner: sorted([*timeline, *VIEWPORT_DIRECT_CONSUMERS])})
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/mod.rs"], inventory, [owner]),
             {owner: ["editor::", "output_meter::logic::", "output_meter::tests::",
@@ -6103,7 +6206,8 @@ class ModuleScopeTests(unittest.TestCase):
         rendered = "editor::waveform::resize_tests::silent_left_prefix_keeps_waveform_and_geometry_through_real_worker_ack"
         for source in ("waveform_geometry/grid.rs", "viewport.rs"):
             names = plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + source], inventory, [owner])
-            for required in (grid, geometry, rendered, *GRID_CONSUMERS):
+            expected_reqs = (grid, geometry, rendered, *GRID_CONSUMERS) if source != "viewport.rs" else (grid, geometry, rendered)
+            for required in expected_reqs:
                 self.assertTrue(any(required.startswith(selected) for selected in names[owner]))
             boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
                         "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
@@ -6116,7 +6220,8 @@ class ModuleScopeTests(unittest.TestCase):
             self.assertTrue(cache_step.requires_tests)
             self.assertIn(geometry, cache_step.argv)
             feature = next(step for step in steps if step.step_id == "ui-feature-tests")
-            for required in (geometry, rendered, *GRID_CONSUMERS):
+            feature_reqs = (geometry, rendered, *GRID_CONSUMERS) if source != "viewport.rs" else (geometry, rendered)
+            for required in feature_reqs:
                 self.assertTrue(any(required.startswith(arg) for arg in feature.argv))
         # A rendered consumer edit must select the new unit owner in reverse.
         rendered_source = plan.module_test_filters(
@@ -6235,7 +6340,7 @@ class ModuleScopeTests(unittest.TestCase):
                       "targets": [{"kind": ["lib"]}]}]
         timeline = ["editor::musical_time::", "editor::seek::", "editor::signed_frame_viewport::", "editor::viewport::"]
         for path in ("musical_time.rs", "seek.rs", "signed_frame_viewport.rs", "viewport.rs"):
-            expected = sorted([*timeline, *GRID_CONSUMERS, *ARRANGEMENT_CONSUMERS]) if path == "viewport.rs" else timeline
+            expected = sorted([*timeline, *VIEWPORT_DIRECT_CONSUMERS]) if path == "viewport.rs" else timeline
             self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/" + path], inventory, [owner]),
                              {owner: expected})
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/tests/unit_timeline.rs"], inventory, [owner]),
