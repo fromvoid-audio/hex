@@ -43,3 +43,7 @@ pub struct DeviceAssetReference {
     pub slot: DeviceAssetSlot,
     pub asset: DeviceAssetKey,
 }
+
+#[cfg(test)]
+#[path = "device_assets_tests.rs"]
+mod tests;

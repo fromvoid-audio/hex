@@ -245,3 +245,7 @@ impl Kernel {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "interpolation_tests.rs"]
+mod tests;

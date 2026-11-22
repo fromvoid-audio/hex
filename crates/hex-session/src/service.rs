@@ -149,8 +149,6 @@ mod conversion_selection_tests;
 mod correlated_save_tests;
 mod device_defaults;
 #[cfg(test)]
-mod effect_bus_tests;
-#[cfg(test)]
 mod format_upgrade_tests;
 #[cfg(test)]
 mod import_reuse_tests;

@@ -87,3 +87,7 @@ fn index(id: ParameterId) -> Option<usize> {
     let i = id.value().checked_sub(FIRST_ID)? as usize;
     (i < COUNT).then_some(i)
 }
+
+#[cfg(test)]
+#[path = "fine_tests.rs"]
+mod tests;

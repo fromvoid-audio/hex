@@ -1,5 +1,5 @@
 //! Alias and passband measurements for pitched-up reconstruction (#4089).
-use super::*;
+use super::super::*;
 
 const RATE: u32 = 48_000;
 const FRAMES: usize = 1_024;

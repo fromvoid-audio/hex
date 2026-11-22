@@ -793,6 +793,3 @@ pub fn waveform_preview(
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod automation_tests;

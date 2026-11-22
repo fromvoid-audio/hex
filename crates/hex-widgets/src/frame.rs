@@ -384,3 +384,7 @@ pub fn vertical_device_name(name: impl Into<SharedString>) -> impl IntoElement {
     )
     .size_full()
 }
+
+#[cfg(test)]
+#[path = "frame_tests.rs"]
+mod tests;

@@ -1,8 +1,6 @@
-use super::super::{
-    layout::*,
-    tests::{fixture, key},
-};
-use super::{enable::*, store::Store};
+use super::super::super::tests::{fixture, key};
+use super::super::store::Store;
+use super::*;
 use hex_lattice::{
     AnalyticContinuation, AnalyticContinuationFormat, AnalyticContinuationId,
     AnalyticParameterFrame,
@@ -256,7 +254,7 @@ fn unchanged_provider_is_the_oracle_for_owner_levels_and_interrupted_clock() {
 
 #[test]
 fn complete_owner_capacities_and_corrupt_staged_decode_refusal_are_visible() {
-    use super::super::{adapter::Root, leases::Refusal};
+    use super::super::super::{adapter::Root, leases::Refusal};
     let (roots, record, _) = fixture();
     let mut store = Store::new(7, 1142, roots);
     assert_eq!((size_of::<Store>(), size_of::<Root>()), (128, 48));

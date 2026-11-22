@@ -1455,12 +1455,6 @@ mod canonical_reuse_tests;
 #[cfg(test)]
 mod capture_proof;
 #[cfg(test)]
-mod enable_continuation_tests;
-#[cfg(test)]
-mod enable_tests;
-#[cfg(test)]
-mod fine_tests;
-#[cfg(test)]
 mod fixed_tests;
 #[cfg(test)]
 mod tests;

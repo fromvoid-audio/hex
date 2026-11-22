@@ -1,4 +1,4 @@
-use super::*;
+use super::super::*;
 
 #[test]
 fn enable_migration_preserves_each_valid_prefix_and_defaults_every_oscillator_on() {

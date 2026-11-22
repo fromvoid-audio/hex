@@ -291,3 +291,7 @@ pub fn rectangle_surface_pixels(left: f32, top: f32, width: f32, height: f32) ->
         })
         .when(!valid, |this| this.invisible())
 }
+
+#[cfg(test)]
+#[path = "rectangle_tests.rs"]
+mod tests;

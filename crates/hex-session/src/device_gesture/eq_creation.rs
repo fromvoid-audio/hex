@@ -294,3 +294,7 @@ impl GestureMachine {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "eq_creation_tests.rs"]
+mod tests;

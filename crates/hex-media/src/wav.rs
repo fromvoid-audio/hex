@@ -555,3 +555,7 @@ fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, ImportError> {
         .ok_or(ImportError::Invalid("truncated field"))?;
     Ok(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
 }
+
+#[cfg(test)]
+#[path = "wav_tests.rs"]
+mod tests;

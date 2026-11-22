@@ -119,8 +119,6 @@ pub use style::{
 };
 
 #[cfg(test)]
-mod frame_tests;
-#[cfg(test)]
 mod tests;
 
 mod text_caret;
@@ -155,8 +153,6 @@ pub use rectangle::{
     RectangleSelection, RectangleSelectionPolicy, rectangle_body, rectangle_border_width,
     rectangle_edge, rectangle_pointer, rectangle_surface, rectangle_surface_pixels,
 };
-#[cfg(test)]
-mod rectangle_tests;
 
 mod waveform_plot;
 pub use waveform_plot::{

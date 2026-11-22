@@ -5549,9 +5549,24 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertEqual(plan.module_test_filters(root, ["crates/hex-ui/src/editor/device_panel/numeric_display.rs"], inventory, [owner]),
                          {owner: names})
         eq = "editor::device_panel::eq_panel::state_edit::"
-        for path in ("crates/hex-ui/src/editor/device_panel/eq_panel/state_edit.rs",
-                     "crates/hex-ui/src/editor/device_panel/eq_panel/state_edit/legacy.rs"):
-            self.assertEqual(plan.module_test_filters(root, [path], inventory, [owner]), {owner: [eq]})
+        self.assertEqual(
+            plan.module_test_filters(
+                root,
+                ["crates/hex-ui/src/editor/device_panel/eq_panel/state_edit.rs"],
+                inventory,
+                [owner],
+            ),
+            {owner: [eq]},
+        )
+        self.assertEqual(
+            plan.module_test_filters(
+                root,
+                ["crates/hex-ui/src/editor/device_panel/eq_panel/state_edit/legacy.rs"],
+                inventory,
+                [owner],
+            ),
+            {owner: ["editor::device_panel::eq_panel::state_edit::legacy_tests::"]},
+        )
         selection = "editor::device_panel::eq_panel::selection::"
         slope = "editor::device_panel::eq_panel::slope::"
         group = "editor::device_panel::eq_panel::group_move::"
@@ -8031,7 +8046,8 @@ class ModuleScopeTests(unittest.TestCase):
 
     def crate(self, root: Path) -> list[dict]:
         files = {
-            "src/lib.rs": "mod parent;\nmod plain;\n#[cfg(test)]\n#[path = \"plain_tests.rs\"]\nmod plain_tests;\n",
+            "src/lib.rs": "mod orphan;\nmod parent;\nmod plain;\n#[cfg(test)]\n#[path = \"plain_tests.rs\"]\nmod plain_tests;\n",
+            "src/orphan.rs": "pub fn orphan() {}\n",
             "src/parent.rs": "mod child;\nmod untested;\n#[test] fn parent_case() {}\n",
             "src/parent/child.rs": "#[cfg(test)] mod tests { #[test] fn child_case() {} }\n",
             "src/parent/untested.rs": "pub fn helper() {}\n",
@@ -8056,14 +8072,44 @@ class ModuleScopeTests(unittest.TestCase):
             # A broader selected module subsumes a narrower one.
             self.assertEqual(select("crates/owner/src/parent.rs", "crates/owner/src/parent/child.rs"),
                              {"owner": ["parent::"]})
-            # #[path] files map to their declared module.
+            # #[path] files map to their declared module, and a verified sibling test pairs with its owner.
             self.assertEqual(select("crates/owner/src/plain_tests.rs"), {"owner": ["plain_tests::"]})
-            # No tested ancestor below the root, the root itself, or non-src inputs: whole crate.
-            self.assertEqual(select("crates/owner/src/plain.rs"), {})
+            self.assertEqual(select("crates/owner/src/plain.rs"), {"owner": ["plain_tests::"]})
+            # No tested ancestor or sibling below the root, the root itself, or non-src inputs: whole crate.
+            self.assertEqual(select("crates/owner/src/orphan.rs"), {})
             self.assertEqual(select("crates/owner/src/lib.rs", "crates/owner/src/parent/child.rs"), {})
             self.assertEqual(select("crates/owner/tests/it.rs"), {})
             (root / "crates/owner/src/plain.rs").write_text('include!("generated.rs");\n')
             self.assertEqual(select("crates/owner/src/parent/child.rs"), {})
+
+    def test_detached_sibling_test_modules_select_narrow_owner_subtrees(self):
+        root = SCRIPTS.parent
+        cases = [
+            ("hex-devices", "crates/hex-devices/src/auto_pan/automation.rs", ["auto_pan::automation::"]),
+            ("hex-devices", "crates/hex-devices/src/sampler/plan.rs", ["sampler::plan::"]),
+            ("hex-engine", "crates/hex-engine/src/session_audio_preparation.rs", ["audio_preparation::session_source_tests::"]),
+            ("hex-engine", "crates/hex-engine/src/session_playback/return_effect_tails.rs", ["session_playback::tests::return_effect_tail_tests::"]),
+            ("hex-engine", "crates/hex-engine/src/session_playback/stream_actions.rs", ["session_playback::tests::stream_action_tests::"]),
+            ("hex-lattice-contract", "crates/hex-lattice-contract/src/device_assets.rs", ["device_assets::"]),
+            ("hex-media", "crates/hex-media/src/wav.rs", ["wav::"]),
+            ("hex-project", "crates/hex-project/src/audio_edit/content.rs", ["audio_edit::content::"]),
+            ("hex-session", "crates/hex-session/src/service/effect_bus.rs", ["service::effect_bus::"]),
+            ("hex-storage", "crates/hex-storage/src/automation_draft/completed.rs", ["automation_draft::tests::completed_tests::"]),
+            ("hex-widgets", "crates/hex-widgets/src/frame.rs", ["frame::"]),
+            ("hex-ui", "crates/hex-ui/src/editor/activation.rs", ["editor::activation_ui_test::"]),
+            ("hex-ui", "crates/hex-ui/src/editor/track_reorder.rs", ["editor::track_reorder_ui_test::"]),
+            ("hex-ui", "crates/hex-ui/src/editor/adaptive_grid_density.rs", ["editor::musical_time::density_tests::"]),
+            ("hex-ui", "crates/hex-ui/src/editor/audio_event_editor/play_start.rs", ["editor::audio_event_editor::workflow_tests::saved_start_tests::"]),
+        ]
+        for owner, path, expected in cases:
+            with self.subTest(owner=owner, path=path):
+                features = {"ui-test-support": [], "ui-unit-tier": []} if owner == "hex-ui" else {}
+                inventory = [{"name": owner, "manifest": f"crates/{owner}/Cargo.toml",
+                              "features": features, "dependencies": [], "targets": [{"kind": ["lib"]}]}]
+                self.assertEqual(
+                    plan.module_test_filters(root, [path], inventory, [owner]),
+                    {owner: expected},
+                )
 
     def test_log_viewer_scrollbar_geometry_selects_nested_unit_and_real_consumers(self):
         root = SCRIPTS.parent

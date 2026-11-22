@@ -1,4 +1,4 @@
-use super::*;
+use super::super::*;
 const ID: ParameterId = ParameterId::from_static(1);
 const DESCRIPTOR: ParameterDescriptor = ParameterDescriptor {
     id: ID,

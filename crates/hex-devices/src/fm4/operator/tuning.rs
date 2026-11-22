@@ -96,3 +96,7 @@ pub(super) fn prepared_steps_with_table(
     }
     Ok(steps)
 }
+
+#[cfg(test)]
+#[path = "tuning_tests.rs"]
+mod tests;

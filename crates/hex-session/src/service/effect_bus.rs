@@ -37,3 +37,7 @@ pub(super) fn insertion_command(
         },
     })
 }
+
+#[cfg(test)]
+#[path = "effect_bus_tests.rs"]
+mod tests;

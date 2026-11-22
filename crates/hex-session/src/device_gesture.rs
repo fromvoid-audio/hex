@@ -4,8 +4,6 @@ use hex_engine::{NativeDeviceClass, PreparedRevision};
 use hex_project::{DeviceId, Project, ReturnId, TrackId};
 use std::sync::Arc;
 mod eq_creation;
-#[cfg(test)]
-mod eq_creation_tests;
 mod plugin_parameter;
 mod preparation;
 pub use eq_creation::EqNodeCreationSnapshot;

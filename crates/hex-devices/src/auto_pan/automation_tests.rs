@@ -1,4 +1,4 @@
-use super::*;
+use super::super::*;
 use hex_lattice::{EMPTY_DEVICE_RESOURCES, NativeParameterAutomation};
 
 struct Values {

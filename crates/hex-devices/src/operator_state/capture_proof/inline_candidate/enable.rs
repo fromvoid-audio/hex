@@ -149,3 +149,7 @@ pub(in crate::operator_state::capture_proof) fn pool_bytes() -> usize {
         + slots.capacity() * size_of::<CompactSlot>()
         + (current.capacity() + staging.capacity()) * size_of::<Handle>()
 }
+
+#[cfg(test)]
+#[path = "enable_tests.rs"]
+mod tests;
