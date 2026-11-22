@@ -439,6 +439,12 @@ never bypass this workflow without an explicit user instruction.
 - Attach every created PR to the current Codex task. Confirm the actual merge
   result before reporting completion, then update the local checkout without
   overwriting unrelated or unsaved work.
+- Clear merged PR worktrees once the merge is confirmed. Remove the task's
+  dedicated worktree with `git worktree remove` (never force-removing a dirty
+  worktree or deleting another session's active worktree) and run
+  `git worktree prune` when stale entries remain, freeing per-worktree Cargo
+  `target/` caches. Keep the primary checkout and any designated persistent
+  integration checkout intact.
 
 This is a repository workflow rule; it does not claim that GitHub branch
 protection or automated review enforcement is configured.
