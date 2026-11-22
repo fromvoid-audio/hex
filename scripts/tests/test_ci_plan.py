@@ -8111,6 +8111,38 @@ class ModuleScopeTests(unittest.TestCase):
                     {owner: expected},
                 )
 
+    def test_hex_ui_model_edits_stay_inside_leaf_crate_without_ui_test_targets(self):
+        root = SCRIPTS.parent
+        inventory = [
+            {"name": "hex-ui-model", "manifest": "crates/hex-ui-model/Cargo.toml",
+             "features": {}, "dependencies": [], "targets": [{"kind": ["lib"]}]},
+            {"name": "hex-ui", "manifest": "crates/hex-ui/Cargo.toml",
+             "features": {"ui-test-support": [], "ui-unit-tier": []},
+             "dependencies": ["hex-ui-model"], "targets": [{"kind": ["lib"]}]},
+        ]
+        for module in ("viewport", "waveform_grid", "fade_handle_geometry", "pending_edit", "trim_geometry"):
+            path = f"crates/hex-ui-model/src/{module}.rs"
+            with self.subTest(path=path):
+                boundary = plan.boundary_selection(root, [path], inventory, ["hex-ui-model", "hex-ui"])
+                self.assertEqual(boundary["test_packages"], ["hex-ui-model"])
+                self.assertEqual(boundary["module_filters"], {"hex-ui-model": [f"{module}::"]})
+                steps = ci.planned_steps({
+                    "scope": "rust",
+                    "affected_packages": ["hex-ui-model", "hex-ui"],
+                    "boundary": boundary,
+                    "cargo_inventory": inventory,
+                    "paths": [path],
+                })
+                step_ids = [step.step_id for step in steps]
+                self.assertIn("module-tests-hex-ui-model", step_ids)
+                self.assertFalse(
+                    any(
+                        step_id.startswith(("ui-feature-", "ui-unit-", "ui-default-", "ui-consumer-"))
+                        for step_id in step_ids
+                    ),
+                    step_ids,
+                )
+
     def test_log_viewer_scrollbar_geometry_selects_nested_unit_and_real_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"

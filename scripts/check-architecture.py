@@ -36,11 +36,13 @@ ALLOWED = {
     'hex-library': set(),
     'hex-preferences': set(),
     'hex-widgets': set(),
+    # Pure GPUI-free UI geometry, viewport, and display-handoff state math.
+    'hex-ui-model': {'hex-project'},
     # Disposable native preview mounts the production UI owners, without audio/session.
-    'hex-sandbox': {'hex-devices', 'hex-preferences', 'hex-project', 'hex-widgets'},
+    'hex-sandbox': {'hex-devices', 'hex-preferences', 'hex-project', 'hex-ui-model', 'hex-widgets'},
     # Concrete catalog/pair custody and control disposal, never an engine->stream edge.
     'hex-audio': {'hex-engine', 'hex-stream', 'hex-plugin-host', 'hex-plugin-state', 'hex-plugin-scan', 'hex-lattice', 'hex-lattice-contract'},
-    'hex-ui': {'hex-plugin-catalog', 'hex-mts', 'hex-tuning', 'hex-midi', 'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-widgets'},
+    'hex-ui': {'hex-plugin-catalog', 'hex-mts', 'hex-tuning', 'hex-midi', 'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-ui-model', 'hex-widgets'},
     # Desktop injects the Session sink and binds neutral source facts to actual
     # audio/stream constructor custody; Session has no device/stream edge.
     'hex-desktop': {'hex-mts', 'hex-midi', 'hex-diagnostics', 'hex-ui', 'hex-audio', 'hex-engine', 'hex-session', 'hex-stream', 'hex-media', 'hex-export', 'hex-plugin-catalog', 'hex-preferences'},

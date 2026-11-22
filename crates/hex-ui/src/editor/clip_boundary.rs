@@ -100,12 +100,7 @@ impl Notch {
     }
 }
 
-pub(super) fn corner_extent(width: f32, height: f32) -> f32 {
-    if !width.is_finite() || !height.is_finite() {
-        return 0.0;
-    }
-    5.0_f32.min(width.max(0.0) / 2.0).min(height.max(0.0) / 2.0)
-}
+pub(super) use hex_ui_model::clip_boundary_geometry::corner_extent;
 
 /// Keep the diagnostic and input bounds of a physical edge; mask only its paint.
 pub(super) fn trailing_edge(notch: Notch, color: u32, hover: u32) -> Div {

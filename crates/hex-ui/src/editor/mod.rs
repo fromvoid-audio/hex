@@ -187,17 +187,6 @@ mod midi_scene;
 mod track_header_cache;
 mod track_lane_canvas;
 use midi_pitch_viewport::PitchViewport;
-
-#[cfg(all(test, feature = "ui-test-support"))]
-impl PitchViewport {
-    fn first_test_pitch(self) -> u8 {
-        self.coverage().start
-    }
-
-    fn test_row_count(self) -> u8 {
-        self.coverage().len() as u8
-    }
-}
 mod midi_selection;
 mod midi_source_controls;
 mod midi_step;

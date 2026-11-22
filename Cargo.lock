@@ -2787,6 +2787,7 @@ dependencies = [
  "hex-devices",
  "hex-preferences",
  "hex-project",
+ "hex-ui-model",
  "hex-widgets",
 ]
 
@@ -2869,11 +2870,19 @@ dependencies = [
  "hex-session",
  "hex-storage",
  "hex-tuning",
+ "hex-ui-model",
  "hex-widgets",
  "image",
  "resvg",
  "serde_json",
  "usvg",
+]
+
+[[package]]
+name = "hex-ui-model"
+version = "0.1.0"
+dependencies = [
+ "hex-project",
 ]
 
 [[package]]

@@ -1,16 +1,3 @@
-//! Pure clip-drag geometry and lane bounds types shared with trim geometry.
-
-/// Clip edge selected once from the original horizontal press.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::editor) enum ClipSnapEdge {
-    Leading,
-    Trailing,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(in crate::editor) struct LaneBounds {
-    pub(in crate::editor) left: f32,
-    pub(in crate::editor) width: f32,
-    pub(in crate::editor) top: f32,
-    pub(in crate::editor) height: f32,
-}
+//! Delegates to [`hex_ui_model::drag_geometry`]; pure types live in `hex-ui-model`.
+#[allow(unused_imports)] // Re-exported for trim and unit-tier geometry consumers.
+pub(in crate::editor) use hex_ui_model::drag_geometry::{ClipSnapEdge, LaneBounds};
