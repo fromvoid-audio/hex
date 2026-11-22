@@ -343,22 +343,7 @@ impl SessionPlayback {
         // Capture the original rounded frame's complete canonical beat bucket
         // before mutating transport. A later tempo edit can collapse distinct
         // old frames into one candidate frame, but cannot change this admission.
-        let interactive_onset_floor = if note_chase == crate::NoteChase::Off {
-            let next = frame
-                .checked_add(1)
-                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-            let timing = base_timing_for(self.revision.session(), self.periodic_tempo_at(frame));
-            Some(crate::midi_compile::InteractiveOnsetFloor {
-                onset_raw: timing
-                    .beat_lower_bound_for_frame(frame)
-                    .map_err(|_| SessionPlaybackError::TempoConversion)?,
-                after_start_frame_raw: timing
-                    .beat_lower_bound_for_frame(next)
-                    .map_err(|_| SessionPlaybackError::TempoConversion)?,
-            })
-        } else {
-            None
-        };
+        let interactive_onset_floor = self.interactive_floor_for(frame, note_chase)?;
         let generation = self.route_state_generation;
         self.install_seek(frame, beat);
         for route in &mut self.routes {
@@ -379,6 +364,29 @@ impl SessionPlayback {
         self.candidate_admission_open = false;
         self.playing = true;
         Ok(())
+    }
+
+    pub(super) fn interactive_floor_for(
+        &self,
+        frame: u64,
+        note_chase: crate::NoteChase,
+    ) -> Result<Option<crate::midi_compile::InteractiveOnsetFloor>, SessionPlaybackError> {
+        if note_chase == crate::NoteChase::On && frame == 0 {
+            return Ok(None);
+        }
+        let next = frame
+            .checked_add(1)
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        let timing = base_timing_for(self.revision.session(), self.periodic_tempo_at(frame));
+        Ok(Some(crate::midi_compile::InteractiveOnsetFloor {
+            note_chase,
+            onset_raw: timing
+                .beat_lower_bound_for_frame(frame)
+                .map_err(|_| SessionPlaybackError::TempoConversion)?,
+            after_start_frame_raw: timing
+                .beat_lower_bound_for_frame(next)
+                .map_err(|_| SessionPlaybackError::TempoConversion)?,
+        }))
     }
 
     pub(crate) fn admits_note_chase(

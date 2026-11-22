@@ -2673,6 +2673,17 @@ impl SessionPlayback {
                     running_audio_restart: running_restart || running_relocate,
                 });
             }
+            let restart_floor = if let Some((frame, _)) = cursor {
+                self.interactive_floor_for(frame, crate::NoteChase::On)?
+            } else if preserve_restart_clock {
+                if confirmed_insert {
+                    previous.interactive_onset_floor
+                } else {
+                    self.interactive_floor_for(previous.arrangement_frame, crate::NoteChase::On)?
+                }
+            } else {
+                None
+            };
             let (restart_track_prefixes, retained_instruments) = if confirmed_insert
                 && cursor.is_none()
                 && groups.is_none()
@@ -2703,6 +2714,7 @@ impl SessionPlayback {
                 // Notes sounding at the cursor are chased when play resumes
                 // (or on the next block when relocating while playing).
                 self.interactive_start_frame = Some(frame);
+                self.interactive_onset_floor = restart_floor;
                 self.playing = running_relocate;
             } else if preserve_restart_clock {
                 self.performance_frame = previous.performance_frame;
@@ -2712,9 +2724,7 @@ impl SessionPlayback {
                 self.historical_floor = previous.historical_floor;
                 self.route_historical_floors = previous.route_historical_floors;
                 self.monitor_source_releases |= previous.monitor_source_releases;
-                if confirmed_insert {
-                    self.interactive_onset_floor = previous.interactive_onset_floor;
-                }
+                self.interactive_onset_floor = restart_floor;
                 self.restart_audio_history(&retained_instruments);
                 self.interactive_start_frame = Some(self.performance_frame);
                 self.playing = previous.playing;
