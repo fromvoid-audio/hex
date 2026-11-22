@@ -394,7 +394,8 @@ fn roundtrip_placed_events(looping: bool, directed: bool) {
 #[test]
 fn musical_event_source_schema_preserves_cropped_and_nested_event_spans() {
     use hex_project::{BeatTime, TrimEdge, WarpMode};
-    let old = hex_storage::decode(include_bytes!("fixtures/warp-resampler/schema64.json")).unwrap();
+    let old =
+        hex_storage::decode(include_bytes!("../fixtures/warp-resampler/schema64.json")).unwrap();
     assert!(
         old.tracks()
             .iter()

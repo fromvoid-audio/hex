@@ -641,3 +641,55 @@ pub(crate) fn time_range(
     *project = candidate;
     Ok(result)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{BeatTime, Command, Editor};
+
+    #[test]
+    fn group_rejects_empty_duplicate_and_unknown_selections() {
+        let mut project = Project::new(48_000).unwrap();
+        assert!(apply(&mut project, Vec::new()).is_err());
+        assert!(apply(&mut project, vec![ClipId(1), ClipId(1)]).is_err());
+        assert!(apply(&mut project, vec![ClipId(999)]).is_err());
+    }
+
+    #[test]
+    fn grouping_two_same_track_midi_clips_spans_their_outer_range() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: "m".into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Clip(a) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(2).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip a")
+        };
+        let Created::Clip(b) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::from_quarters(4).unwrap(),
+                length: BeatTime::from_quarters(2).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip b")
+        };
+        let Created::Clip(grouped) = editor.execute(Command::GroupClips(vec![a, b])).unwrap()
+        else {
+            panic!("grouped clip")
+        };
+        let clip = editor.project().midi_clip(grouped).unwrap();
+        assert_eq!(clip.start(), BeatTime::ZERO);
+        assert_eq!(clip.length(), BeatTime::from_quarters(6).unwrap());
+    }
+}

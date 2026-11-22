@@ -97,3 +97,53 @@ pub(crate) fn duplicate(
     project.replace_midi_clip_volume(clip, volume)?;
     Ok(created)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Command, Editor};
+
+    #[test]
+    fn range_capture_validates_bounds_and_counts_contained_notes() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: "m".into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_quarters(1).unwrap(),
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        let source = editor.project().midi_source(clip).unwrap();
+        assert!(
+            Range::capture(
+                source,
+                BeatTime::from_quarters(2).unwrap(),
+                BeatTime::from_quarters(2).unwrap()
+            )
+            .is_err()
+        );
+        let captured =
+            Range::capture(source, BeatTime::ZERO, BeatTime::from_quarters(2).unwrap()).unwrap();
+        assert_eq!(captured.count, 1);
+        assert_eq!(captured.source_length, BeatTime::from_quarters(4).unwrap());
+    }
+}

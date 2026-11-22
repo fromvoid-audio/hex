@@ -1,7 +1,7 @@
+#[allow(dead_code)]
+use crate::common;
 use hex_project::{BeatTime, Command, Created, Editor, ElementColor, Project};
 use serde_json::json;
-#[allow(dead_code)]
-mod common;
 fn b(n: u64) -> BeatTime {
     BeatTime::from_quarters(n).unwrap()
 }

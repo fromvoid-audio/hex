@@ -165,3 +165,27 @@ impl Project {
         self.replace_gain_envelope(track, points)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pt(beat: u64, gain: f32) -> GainPoint {
+        GainPoint {
+            incoming_gain: None,
+            beat: BeatTime::from_quarters(beat).unwrap(),
+            gain,
+            outgoing: GainInterpolation::Linear,
+        }
+    }
+
+    #[test]
+    fn validate_gain_envelope_enforces_order_and_finite_range() {
+        assert!(validate_gain_envelope(&[pt(0, 1.0), pt(4, 0.5)]).is_ok());
+        assert!(validate_gain_envelope(&[pt(4, 1.0), pt(4, 0.5)]).is_err());
+        assert!(validate_gain_envelope(&[pt(4, 1.0), pt(2, 0.5)]).is_err());
+        assert!(validate_gain_envelope(&[pt(0, -0.1)]).is_err());
+        assert!(validate_gain_envelope(&[pt(0, 2.5)]).is_err());
+        assert!(validate_gain_envelope(&[pt(0, f32::NAN)]).is_err());
+    }
+}

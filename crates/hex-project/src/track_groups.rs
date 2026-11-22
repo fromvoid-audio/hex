@@ -565,3 +565,47 @@ impl Project {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Command, Editor};
+
+    #[test]
+    fn group_and_ungroup_tracks_update_hierarchy_depth_and_subtree_ranges() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(a) = editor
+            .execute(Command::AddTrack { name: "a".into() })
+            .unwrap()
+        else {
+            panic!("track a")
+        };
+        let Created::Track(b) = editor
+            .execute(Command::AddTrack { name: "b".into() })
+            .unwrap()
+        else {
+            panic!("track b")
+        };
+        let selection = TrackSelectionIds::new(&[a, b]).unwrap();
+        let Created::Track(group) = editor
+            .execute(Command::GroupTracks {
+                tracks: selection,
+                name: "drums".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        assert!(editor.project().has_group_tracks());
+        let hierarchy = editor.project().track_hierarchy().unwrap();
+        let group_row = hierarchy.row(group).unwrap();
+        assert_eq!(group_row.kind(), TrackKind::Group);
+        assert_eq!(group_row.depth(), 0);
+        assert_eq!(group_row.subtree_range(), 0..3);
+        assert_eq!(hierarchy.row(a).unwrap().parent_group(), Some(group));
+        assert_eq!(hierarchy.row(b).unwrap().depth(), 1);
+
+        editor.execute(Command::UngroupTrack(group)).unwrap();
+        assert!(!editor.project().has_group_tracks());
+    }
+}

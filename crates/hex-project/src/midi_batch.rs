@@ -157,3 +157,35 @@ fn edit_bounded(
         Ok(Created::None)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn note(start: u64, duration: u64) -> MidiNoteInsert {
+        MidiNoteInsert {
+            active: true,
+            start: BeatTime::from_quarters(start).unwrap(),
+            duration: BeatTime::from_quarters(duration).unwrap(),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        }
+    }
+
+    #[test]
+    fn extended_source_length_grows_to_max_end_and_rejects_overflow() {
+        let base = BeatTime::from_quarters(4).unwrap();
+        assert_eq!(extended_source_length(base, &[note(1, 2)]).unwrap(), base);
+        assert_eq!(
+            extended_source_length(base, &[note(3, 4)]).unwrap(),
+            BeatTime::from_quarters(7).unwrap()
+        );
+        let overflow = MidiNoteInsert {
+            start: BeatTime::from_raw(u64::MAX),
+            duration: BeatTime::from_raw(1),
+            ..note(0, 1)
+        };
+        assert!(extended_source_length(base, &[overflow]).is_err());
+    }
+}

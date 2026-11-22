@@ -355,3 +355,45 @@ fn dag(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Command, Editor};
+
+    #[test]
+    fn audio_feed_rejects_invalid_gain_and_midi_source_resolves_default_track() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(a) = editor
+            .execute(Command::AddTrack { name: "a".into() })
+            .unwrap()
+        else {
+            panic!("track a")
+        };
+        let Created::Track(b) = editor
+            .execute(Command::AddTrack { name: "b".into() })
+            .unwrap()
+        else {
+            panic!("track b")
+        };
+        assert_eq!(editor.project().midi_source_track(a), a);
+        assert!(
+            editor
+                .execute(Command::SetAudioFeed {
+                    source: RoutingOwner::Track(a),
+                    destination: b,
+                    gain: f32::NAN,
+                })
+                .is_err()
+        );
+        editor
+            .execute(Command::SetAudioFeed {
+                source: RoutingOwner::Track(a),
+                destination: b,
+                gain: 0.75,
+            })
+            .unwrap();
+        assert_eq!(editor.project().audio_feeds().len(), 1);
+        assert_eq!(editor.project().audio_feeds()[0].gain(), 0.75);
+    }
+}

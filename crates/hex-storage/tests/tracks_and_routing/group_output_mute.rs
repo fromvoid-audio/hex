@@ -67,7 +67,7 @@ fn group_output_mutes_round_trip_with_tags_and_a_leading_musical_clip() {
         hex_storage::LEADING_AUDIO_ONCE_SCHEMA_VERSION
     );
     assert_eq!(hex_storage::decode(&previous).unwrap(), project);
-    let fixture = include_bytes!("fixtures/warp-resampler/schema64.json");
+    let fixture = include_bytes!("../fixtures/warp-resampler/schema64.json");
     let historic = hex_storage::decode(fixture).unwrap();
     assert!(
         historic

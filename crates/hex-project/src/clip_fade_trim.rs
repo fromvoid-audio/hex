@@ -101,3 +101,63 @@ pub(crate) fn preview(
     }
     Ok(trimmed)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Command, Created, Editor, Project};
+    use std::path::PathBuf;
+
+    #[test]
+    fn preview_rejects_source_past_asset_and_clamps_authored_fade_ramp() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: "a".into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: PathBuf::from("a.wav"),
+                sample_rate: 48_000,
+                frames: 48_000,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        let Created::Clip(clip_id) = editor
+            .execute(Command::PlaceClip {
+                track,
+                asset,
+                start: 0,
+                duration: 48_000,
+                source_offset: 0,
+                source_length: 48_000,
+                looping: false,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(Command::SetClipFades {
+                clip: clip_id,
+                fade_in: 12_000,
+                fade_out: 0,
+            })
+            .unwrap();
+
+        let clip = editor.project().clip(clip_id).unwrap();
+        let tempo = editor.project().tempo_map();
+        assert!(preview(clip, TrimEdge::Left, 4_000, 10_000, tempo).is_err());
+
+        let unchanged = preview(clip, TrimEdge::Left, 0, 48_000, tempo).unwrap();
+        assert_eq!(unchanged.start(), 0);
+
+        // Moving left edge past fade-in top (11_999) clamps at the upper sample.
+        let clamped = preview(clip, TrimEdge::Left, 20_000, 48_000, tempo).unwrap();
+        assert_eq!(clamped.start(), 11_999);
+    }
+}

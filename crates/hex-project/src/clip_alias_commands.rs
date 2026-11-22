@@ -354,3 +354,53 @@ pub(crate) fn apply_settings(project: &mut Project, picked: ClipId) -> Result<Cr
     }
     Ok(Created::None)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{BeatTime, Editor};
+
+    #[test]
+    fn alias_duplicate_links_members_and_make_unique_detaches() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: "m".into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Clip(first) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        let Created::Clips { first: copy, .. } = editor
+            .execute(Command::DuplicateAliasClips(vec![first]))
+            .unwrap()
+        else {
+            panic!("copies")
+        };
+        let shared = editor.project().clip_alias(first);
+        assert!(shared.is_some());
+        assert_eq!(editor.project().clip_alias(copy), shared);
+
+        editor
+            .execute(Command::MakeClipsUnique(vec![copy]))
+            .unwrap();
+        assert!(editor.project().clip_alias(copy).is_none());
+        assert_eq!(editor.project().clip_alias(first), shared);
+    }
+
+    #[test]
+    fn alias_commands_reject_empty_duplicate_and_missing_clip_ids() {
+        let mut project = Project::new(48_000).unwrap();
+        assert!(source(&mut project, ClipId(999)).is_err());
+        assert!(unique(&mut project, Vec::new()).is_err());
+        assert!(unique(&mut project, vec![ClipId(1), ClipId(1)]).is_err());
+    }
+}

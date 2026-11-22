@@ -5,28 +5,28 @@
 //! Rebuilt owning crates between sources (shared dependency cache only).
 //! Schema36 reused a version in two branches: absence of sections identifies the
 //! valid tempo branch; deletion of that whole inventory cannot be distinguished.
+use crate::common;
 use hex_project::{Command, Editor};
 use hex_storage::{
     CURRENT_SCHEMA_VERSION, NEWEST_SCHEMA_VERSION, decode, encode, load_with_token, save_new,
 };
 use serde_json::{Value, json};
-mod common;
 
 // 85e6dfe2181b9b1d9ad5bc3af34843b179a536a5
-const V34: &[u8] = include_bytes!("fixtures/migrations/schema34-85e6dfe2.json");
+const V34: &[u8] = include_bytes!("../fixtures/migrations/schema34-85e6dfe2.json");
 // 8d2e61abe85712683961c9980bdfbb593bb6bdfc
-const V35: &[u8] = include_bytes!("fixtures/migrations/schema35-8d2e61ab.json");
+const V35: &[u8] = include_bytes!("../fixtures/migrations/schema35-8d2e61ab.json");
 // aea1275ca05fc3553815b384567b772473527d3f (global tempo branch)
-const V36_TEMPO: &[u8] = include_bytes!("fixtures/migrations/schema36-aea1275c.json");
+const V36_TEMPO: &[u8] = include_bytes!("../fixtures/migrations/schema36-aea1275c.json");
 // 97e885eb322e6c75c88a10dbf3d35ce994746099 (sections branch)
-const V36_SECTIONS: &[u8] = include_bytes!("fixtures/migrations/schema36-97e885eb.json");
+const V36_SECTIONS: &[u8] = include_bytes!("../fixtures/migrations/schema36-97e885eb.json");
 // Same original encoders, with their own persistence/section fixture builders:
 // edited/looped audio, automation and retained section processing contexts.
 const AUDIO_FIXTURES: [&[u8]; 4] = [
-    include_bytes!("fixtures/migrations/schema34-audio-85e6dfe2.json"),
-    include_bytes!("fixtures/migrations/schema35-audio-8d2e61ab.json"),
-    include_bytes!("fixtures/migrations/schema36-audio-aea1275c.json"),
-    include_bytes!("fixtures/migrations/schema36-audio-97e885eb.json"),
+    include_bytes!("../fixtures/migrations/schema34-audio-85e6dfe2.json"),
+    include_bytes!("../fixtures/migrations/schema35-audio-8d2e61ab.json"),
+    include_bytes!("../fixtures/migrations/schema36-audio-aea1275c.json"),
+    include_bytes!("../fixtures/migrations/schema36-audio-97e885eb.json"),
 ];
 const FIXTURES: [&[u8]; 4] = [V34, V35, V36_TEMPO, V36_SECTIONS];
 fn value(bytes: &[u8]) -> Value {
@@ -434,11 +434,11 @@ fn historical_nested_fields_refuse_missing_unknown_or_mixed_layouts() {
 fn single_parse_chain_is_layout_independent_and_refuses_nested_duplicates() {
     let fixtures: [&[u8]; 6] = [
         V34,
-        include_bytes!("fixtures/clip-activation/schema39-audio-ae200f3c.json"),
-        include_bytes!("fixtures/track-groups/schema43-flat-tracks-15957517.json"),
-        include_bytes!("fixtures/native-sources/schema48-console-loop-677a00f4.json"),
-        include_bytes!("fixtures/alias-projection/schema58-inactive-event.json"),
-        include_bytes!("fixtures/midi-clip-gain/schema61.json"),
+        include_bytes!("../fixtures/clip-activation/schema39-audio-ae200f3c.json"),
+        include_bytes!("../fixtures/track-groups/schema43-flat-tracks-15957517.json"),
+        include_bytes!("../fixtures/native-sources/schema48-console-loop-677a00f4.json"),
+        include_bytes!("../fixtures/alias-projection/schema58-inactive-event.json"),
+        include_bytes!("../fixtures/midi-clip-gain/schema61.json"),
     ];
     for bytes in fixtures {
         let project = decode(bytes).unwrap();

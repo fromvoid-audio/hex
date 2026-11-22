@@ -549,3 +549,29 @@ pub(crate) fn insert_empty(
     };
     insert_on_source_tracks(project, &clipboard, first, frame)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Command, Editor};
+
+    #[test]
+    fn time_range_validates_tracks_bounds_and_captures_empty_span() {
+        assert!(TimeRange::new(Vec::new(), 0, 10).is_err());
+        assert!(TimeRange::new(vec![TrackId(1)], 10, 10).is_err());
+        assert!(TimeRange::new(vec![TrackId(1), TrackId(1)], 0, 10).is_err());
+
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: "a".into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let range = TimeRange::new(vec![track], 0, 48_000).unwrap();
+        assert_eq!(range.duration(), 48_000);
+        let clip = editor.project().capture_time_range(&range).unwrap();
+        assert_eq!(clip.duration(), 48_000);
+        assert_eq!(clip.track_count(), 1);
+    }
+}

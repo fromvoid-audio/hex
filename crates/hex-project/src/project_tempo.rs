@@ -231,3 +231,38 @@ fn crop_colliding_tails(track: &mut crate::Track, tempo: &TempoMap) -> Result<()
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Command, Editor};
+
+    #[test]
+    fn set_project_tempo_updates_map_and_retimes_loop_region_in_beats() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: 96_000,
+                enabled: true,
+            })
+            .unwrap();
+        // 120 -> 240 BPM halves the frame duration of the same 4-beat loop.
+        editor
+            .execute(Command::SetProjectTempo {
+                tempo: Tempo::new(240_000_000).unwrap(),
+            })
+            .unwrap();
+        let region = editor.project().loop_region().unwrap();
+        assert_eq!(region.start(), 0);
+        assert_eq!(region.end(), 48_000);
+        assert_eq!(
+            editor
+                .project()
+                .tempo_map()
+                .tempo_at(BeatTime::ZERO)
+                .micro_bpm(),
+            240_000_000
+        );
+    }
+}

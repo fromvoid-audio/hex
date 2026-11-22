@@ -636,7 +636,7 @@ fn schema_twelve_persists_arrangement_midi_and_session_audio_sources_strictly() 
     };
     let asset = match editor
         .execute(Command::AddAsset {
-            path: "fixtures/session.wav".into(),
+            path: "../fixtures/session.wav".into(),
             sample_rate: 48_000,
             frames: 128,
         })

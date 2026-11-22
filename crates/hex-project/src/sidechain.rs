@@ -156,3 +156,41 @@ impl Project {
         self.sidechains = routes;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Command, Created, DeviceId, Editor};
+
+    #[test]
+    fn sidechain_queries_reject_unknown_device_and_start_empty() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        assert!(editor.project().sidechains().is_empty());
+        assert!(
+            editor
+                .project()
+                .sidechain_destination(DeviceId(999))
+                .is_err()
+        );
+        assert!(
+            editor
+                .project()
+                .eligible_sidechain_sources(DeviceId(999))
+                .is_err()
+        );
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: "a".into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        assert!(
+            editor
+                .execute(Command::SetSidechain {
+                    device: DeviceId(999),
+                    source: Some(track),
+                })
+                .is_err()
+        );
+    }
+}

@@ -1525,3 +1525,29 @@ impl Snapshot {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Command, Created, Editor};
+
+    #[test]
+    fn snapshot_round_trips_project_and_rejects_duplicate_ids() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: "a".into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let snapshot = editor.project().snapshot();
+        let restored = Project::from_snapshot(snapshot.clone()).unwrap();
+        assert_eq!(restored.tracks().len(), 1);
+        assert_eq!(restored.tracks()[0].id(), track);
+
+        let mut dup = snapshot;
+        let cloned = dup.tracks[0].clone();
+        dup.tracks.push(cloned);
+        assert!(Project::from_snapshot(dup).is_err());
+    }
+}

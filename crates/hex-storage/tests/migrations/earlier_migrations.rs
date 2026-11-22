@@ -1,31 +1,31 @@
 //! Files emitted by original public schema20/22/30–33 encoders. Full source
 //! identities, unmodified-source hashes and harnesses accompany the local raw
 //! artifact provenance. Earlier reader-backed fixtures are tested separately.
+use crate::common;
 use hex_project::{Command, Editor};
 use hex_storage::{CURRENT_SCHEMA_VERSION, decode, encode, load_with_token, save_new};
 use serde_json::{Value, json};
-mod common;
 
 const FIXTURES: [&[u8]; 13] = [
-    include_bytes!("fixtures/earlier/schema30-tuning-ac29a1ad.json"),
-    include_bytes!("fixtures/earlier/schema30-device-assets-d34e5a13.json"),
-    include_bytes!("fixtures/earlier/schema31-combined-20cd1de3.json"),
-    include_bytes!("fixtures/earlier/schema32-comparison-5165e305.json"),
-    include_bytes!("fixtures/earlier/schema33-main-7b647514.json"),
-    include_bytes!("fixtures/earlier/schema30-assets-bpm-a0cedd1d.json"),
-    include_bytes!("fixtures/earlier/schema31-combined-bpm-1bab7b84.json"),
-    include_bytes!("fixtures/earlier/schema31-midi-source-5d6c5f73.json"),
-    include_bytes!("fixtures/earlier/schema31-placement-midi-4043b1fa.json"),
-    include_bytes!("fixtures/earlier/schema32-placement-a9278234.json"),
-    include_bytes!("fixtures/earlier/schema32-integrated-e09aa1ac.json"),
-    include_bytes!("fixtures/earlier/schema32-wide-origin-13bd9fa3.json"),
-    include_bytes!("fixtures/earlier/schema31-midi-loop-5d6c5f73.json"),
+    include_bytes!("../fixtures/earlier/schema30-tuning-ac29a1ad.json"),
+    include_bytes!("../fixtures/earlier/schema30-device-assets-d34e5a13.json"),
+    include_bytes!("../fixtures/earlier/schema31-combined-20cd1de3.json"),
+    include_bytes!("../fixtures/earlier/schema32-comparison-5165e305.json"),
+    include_bytes!("../fixtures/earlier/schema33-main-7b647514.json"),
+    include_bytes!("../fixtures/earlier/schema30-assets-bpm-a0cedd1d.json"),
+    include_bytes!("../fixtures/earlier/schema31-combined-bpm-1bab7b84.json"),
+    include_bytes!("../fixtures/earlier/schema31-midi-source-5d6c5f73.json"),
+    include_bytes!("../fixtures/earlier/schema31-placement-midi-4043b1fa.json"),
+    include_bytes!("../fixtures/earlier/schema32-placement-a9278234.json"),
+    include_bytes!("../fixtures/earlier/schema32-integrated-e09aa1ac.json"),
+    include_bytes!("../fixtures/earlier/schema32-wide-origin-13bd9fa3.json"),
+    include_bytes!("../fixtures/earlier/schema31-midi-loop-5d6c5f73.json"),
 ];
 const EXPLICIT_MIDI: [&[u8]; 4] = [
-    include_bytes!("fixtures/earlier/schema20-midi-source-5d6c5f73.json"),
-    include_bytes!("fixtures/earlier/schema20-midi-loop-5d6c5f73.json"),
-    include_bytes!("fixtures/earlier/schema22-midi-source-5d6c5f73.json"),
-    include_bytes!("fixtures/earlier/schema22-midi-loop-5d6c5f73.json"),
+    include_bytes!("../fixtures/earlier/schema20-midi-source-5d6c5f73.json"),
+    include_bytes!("../fixtures/earlier/schema20-midi-loop-5d6c5f73.json"),
+    include_bytes!("../fixtures/earlier/schema22-midi-source-5d6c5f73.json"),
+    include_bytes!("../fixtures/earlier/schema22-midi-loop-5d6c5f73.json"),
 ];
 fn value(bytes: &[u8]) -> Value {
     serde_json::from_slice(bytes).unwrap()
@@ -426,7 +426,7 @@ fn original_explicit20_and22_midi_writers_preserve_policy_and_reject_mixed_layou
 
 #[test]
 fn inline20_cannot_acquire_a_foundation_midi_policy_layout() {
-    let fixture = include_bytes!("fixtures/early/schema20-inline-gain-b9274930.json");
+    let fixture = include_bytes!("../fixtures/early/schema20-inline-gain-b9274930.json");
     assert!(decode(fixture).is_ok());
     let mut bad = value(fixture);
     for track in bad["tracks"].as_array_mut().unwrap() {

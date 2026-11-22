@@ -724,3 +724,53 @@ impl Command {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{BeatTime, Editor};
+
+    #[test]
+    fn edit_clips_applies_to_selection_and_rejects_empty_or_duplicate_ids() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: "m".into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        assert!(
+            editor
+                .execute(Command::EditClips {
+                    clips: Vec::new(),
+                    edit: ClipEdit::Active { active: false },
+                })
+                .is_err()
+        );
+        assert!(
+            editor
+                .execute(Command::EditClips {
+                    clips: vec![clip, clip],
+                    edit: ClipEdit::Active { active: false },
+                })
+                .is_err()
+        );
+        editor
+            .execute(Command::EditClips {
+                clips: vec![clip],
+                edit: ClipEdit::Active { active: false },
+            })
+            .unwrap();
+        assert!(!editor.project().midi_clip(clip).unwrap().active());
+    }
+}

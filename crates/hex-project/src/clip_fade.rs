@@ -420,3 +420,41 @@ fn unit_power(mut value: f64, mut exponent: u16) -> f64 {
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_validates_span_and_ramp_bounds() {
+        assert!(ClipFade::new(0, 0, 0, 0).is_err());
+        assert!(ClipFade::new(100, 100, 0, 0).is_err());
+        assert!(ClipFade::new(100, 0, 101, 0).is_err());
+        assert!(ClipFade::new(100, 0, 0, 101).is_err());
+        let fade = ClipFade::new(100, 0, 40, 60).unwrap();
+        assert_eq!(fade.span(), 100);
+        assert_eq!(fade.fade_in(), 40);
+        assert_eq!(fade.fade_out(), 60);
+        assert!(!fade.is_neutral());
+        assert!(ClipFade::neutral(100).unwrap().is_neutral());
+    }
+
+    #[test]
+    fn gain_at_ramps_endpoints_and_straighten_resets_curvature() {
+        let base = ClipFade::new(100, 0, 20, 20).unwrap();
+        assert!(base.with_shape(0, 0, 2_000, 0).is_err());
+        let fade = base.with_shape(0, 0, 500, -500).unwrap();
+        assert!(fade.ramp_is_curved(false));
+        assert!(fade.ramp_is_curved(true));
+        assert!((fade.gain_at(0) - 0.0).abs() < 1e-6);
+        assert!((fade.gain_at(50) - 1.0).abs() < 1e-6);
+        assert!(fade.gain_at(99) < 0.25);
+
+        let straight = fade.straighten_ramp(false).straighten_ramp(true);
+        assert!(!straight.ramp_is_curved(false));
+        assert!(!straight.ramp_is_curved(true));
+        let mid = straight.curve_midpoint_gain(false);
+        let pos = straight.position_at_gain(false, mid).unwrap();
+        assert!((pos - 0.5).abs() < 1e-4);
+    }
+}

@@ -115,3 +115,45 @@ impl Project {
         Ok((start, frames))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Command, Editor};
+
+    #[test]
+    fn beat_length_rejects_zero_or_reversed_intervals() {
+        let two = BeatTime::from_quarters(2).unwrap();
+        let four = BeatTime::from_quarters(4).unwrap();
+        assert_eq!(beat_length(two, four).unwrap(), two);
+        assert!(beat_length(two, two).is_err());
+        assert!(beat_length(four, two).is_err());
+    }
+
+    #[test]
+    fn midi_bounce_range_returns_exact_frames_and_rejects_missing_clip() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        assert!(editor.project().midi_bounce_range(ClipId(999)).is_err());
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: "m".into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(2).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        // At 120 BPM and 48 kHz, 2 beats = 1 second = 48_000 frames.
+        assert_eq!(
+            editor.project().midi_bounce_range(clip).unwrap(),
+            (0, 48_000)
+        );
+    }
+}

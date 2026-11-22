@@ -288,3 +288,48 @@ impl ClipGroupMovePreview {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{BeatTime, Command, Created, Editor};
+
+    #[test]
+    fn capture_validates_selection_anchor_and_tracks_source_invalidation() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: "m".into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        let project = Arc::new(editor.project().clone());
+        assert!(ClipGroupMovePreview::capture(&project, &[], clip).is_err());
+        assert!(ClipGroupMovePreview::capture(&project, &[clip, clip], clip).is_err());
+        assert!(ClipGroupMovePreview::capture(&project, &[clip], ClipId(999)).is_err());
+
+        let mut preview = ClipGroupMovePreview::capture(&project, &[clip], clip).unwrap();
+        assert!(preview.matches_source(&project));
+        assert!(preview.previews().is_empty());
+        preview
+            .update(
+                &project,
+                track,
+                ClipGroupPosition::Midi(BeatTime::from_quarters(4).unwrap()),
+            )
+            .unwrap();
+        assert_eq!(preview.previews().len(), 1);
+        preview.invalidate();
+        assert!(preview.previews().is_empty());
+    }
+}
