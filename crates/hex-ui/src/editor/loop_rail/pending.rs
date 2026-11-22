@@ -169,6 +169,12 @@ impl EditorView {
         }
     }
 
+    #[cfg(test)]
+    pub(in crate::editor) fn pending_loop_has_focus_intent(&self) -> bool {
+        self.pending_loop
+            .is_some_and(|pending| pending.focus_intent.is_some())
+    }
+
     /// Called only after the exact terminal's canonical snapshot is installed.
     pub(in crate::editor) fn loop_state_installed(&mut self, succeeded: bool) {
         let Some(pending) = self.pending_loop.take() else {
@@ -194,6 +200,7 @@ impl EditorView {
             self.selection_loop_start = Some((epoch, pending.region));
         }
         if !succeeded
+            || self.mode != super::EditorMode::Arrangement
             || pending.generation != self.project_generation
             || pending.focus_intent.is_none()
             || pending.focus_intent != self.selection_intent_epoch
