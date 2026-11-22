@@ -233,9 +233,7 @@ Run `cargo test -p hex-ui --tests --locked` for the default library and
 default standalone unit targets. The six `ui-unit-tier` targets above complete
 the unit tier. These `ui-test-support` invocations form the integration tier,
 including rendered focus and shortcuts, pending-edit receipts, delayed
-acknowledgement repaint, and open/save flows. For each tier, time the combined
-setup and test execution with compilation measured separately. The unit limit
-is 30 seconds and the integration limit is three minutes.
+acknowledgement repaint, and open/save flows. For each tier, time the combined setup and test execution with compilation measured separately. The unit-tier execution budget is under 1 second (`< 1s`) and the total merge verification budget (including preflight, compilation, Clippy, and tests) is 3 minutes (`<= 180s`).
 
 To time the tiers independently, add `--no-run --message-format=json` to each
 Cargo command and collect the test-profile `compiler-artifact` executables.
@@ -354,14 +352,22 @@ track-reorder subtree changes also select the standalone `hex-ui`
 assertions. Changes to those sources also select the rendered consumers in the
 `ui-test-support` library.
 
-**One-minute budget.** Merge runs keep test setup and execution, excluding Cargo's
-build phase, under 60 s. local-ci sums executed test steps (wall time minus the
-reported build phase; carried steps excluded) into `test_budget` in the summary.
-Exceeding the limit prints a warning naming the slowest steps; it does not fail
-the run, and a run that is otherwise green qualifies (user decision,
-1 November 2026; overruns are investigated in Pulse #4100). Record a recurring
-slow owner suite in Pulse, and optionally pass `--over-budget-reason "Pulse #N …"`
-to keep the reason in the summary.
+**Merge and unit budgets.** Merge runs aim to complete total wall-clock
+verification (preflight, compilation, Clippy, and tests) within 3 minutes
+(`<= 180s`), keep test setup and execution (excluding Cargo's build phase)
+under 60 s, and keep pure unit-tier test steps under 1 second (`< 1.0s`).
+local-ci records `total_seconds`, phase breakdown (`preflight`, `build`,
+`clippy`, `test`, `other`), `test_seconds`, and `unit_budget` (carried steps
+excluded) in `test_budget` in the summary. Exceeding a budget prints a warning
+naming the phases or slowest/offending steps; it does not fail the run, and a
+run that is otherwise green qualifies (user decision, 1 November 2026; overruns
+are tracked in Pulse). Record a recurring slow owner suite in Pulse, and
+optionally pass `--over-budget-reason "Pulse #N …"` to keep the reason in the
+summary.
+`scripts/local-ci.py --quick` scopes `cargo fmt --check` to changed workspace
+packages when dirty paths or `--base`/`--source` are available, falling back
+to `--all` when no scoped packages exist or root formatting/manifest inputs
+changed.
 Mixed tooling/Rust changes combine comprehensive Python checks with affected Rust
 configurations. Contributor prose, including AGENTS.md, gets link/path checks;
 executable selector/runner policy gets comprehensive tooling tests and guards.
