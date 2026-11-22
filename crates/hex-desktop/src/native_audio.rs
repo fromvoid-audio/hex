@@ -2451,11 +2451,7 @@ impl WorkerAudioSink for NativeAudioSink {
             return None;
         }
         let expected = hex_audio::prepared::NativeProcessorIdentity::new(owner, device).ok()?;
-        if !self
-            .plugins
-            .is_saved_off_document(context.project_generation, expected)
-            || self.applied_powered_off(context) != Some(expected)
-        {
+        if self.applied_powered_off(context) != Some(expected) {
             return None;
         }
         let control = self.output.as_mut()?.publication.control()?;

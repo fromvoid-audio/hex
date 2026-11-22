@@ -796,3 +796,322 @@ fn running_saved_off_return_power_on_waits_for_consent_and_the_exact_receipt() {
         assert_eq!(assert_aligned_wet(h), wet + 0.0625);
     }
 }
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn running_fitting_saved_off_return_power_on_declicks_without_consent_and_keeps_the_bed() {
+    use hex_engine::DeviceTypeId;
+    use hex_session::device_gesture::{ParameterId, ParameterValue};
+
+    const MAIN_LATENCY: usize = 576; // two 6 ms stock Limiters (288 + 288) >= 512 VST3 bridge
+
+    if launch_restorable_return_fixture() {
+        return;
+    }
+    let _native = native_fixture();
+    let mut off = reopen_saved_off_return();
+    let bed_files = Files::new();
+    let bed_sample = |frame: usize| {
+        if frame >= FRAMES as usize {
+            0.0
+        } else if frame % 173 < 91 {
+            -0.0625
+        } else {
+            0.1875
+        }
+    };
+    let bed_at = |frame: usize| frame.checked_sub(MAIN_LATENCY).map_or(0.0, bed_sample);
+    let bed_wav = {
+        let path = bed_files.wav(48_000, FRAMES);
+        let mut bytes = fs::read(&path).unwrap();
+        for (frame, sample) in bytes[44..].chunks_exact_mut(2).enumerate() {
+            sample.copy_from_slice(&((bed_sample(frame) * 32768.0) as i16).to_le_bytes());
+        }
+        fs::write(&path, bytes).unwrap();
+        path
+    };
+
+    let h = &mut off.harness;
+    let device = off.device;
+    let retired_binding = off.retired_binding;
+    let device_type = off
+        .saved_off
+        .state
+        .project
+        .device(device)
+        .unwrap()
+        .state()
+        .type_id();
+    let mut last_applied = status(h).recording_source().unwrap().audio_revision;
+    let imported_bed = h.run(Request::Import(bed_wav));
+    assert!(imported_bed.error.is_none(), "{:?}", imported_bed.error);
+    last_applied = h.applied(last_applied).0;
+    let bed_track = imported_bed.state.project.tracks()[1].id();
+    let limiter_state = hex_engine::patch_native_device_parameter(
+        &hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.limiter")).unwrap(),
+        ParameterId::new(6).unwrap(),
+        ParameterValue::Choice(2),
+    )
+    .unwrap();
+    let mut ready_state = imported_bed;
+    for _ in 0..2 {
+        ready_state = h.run(Request::Edit(Command::InsertDevice {
+            track: bed_track,
+            before: None,
+            state: limiter_state.clone(),
+        }));
+        assert!(ready_state.error.is_none(), "{:?}", ready_state.error);
+        last_applied = h.applied(last_applied).0;
+    }
+    let predecessor = status(h).recording_source().unwrap();
+    assert_eq!(predecessor.audio_revision, last_applied);
+    let observation = h.submitted_observation().unwrap();
+    assert_eq!(
+        observation.processor_status(device.value(), device_type),
+        Some(hex_engine::PreparedDeviceProcessing::PoweredOff)
+    );
+    assert_eq!(
+        observation.main_latency().unwrap().arrival_frames,
+        MAIN_LATENCY as u32
+    );
+    assert!(status(h).native_effect_source().is_none());
+    assert_eq!(h.plugin_records.load(Acquire), 0);
+
+    let assert_off_with_bed = |h: &ResidentHarness| {
+        let (start, pcm) = render_rolling(h);
+        for (offset, frame) in pcm.into_iter().enumerate() {
+            let at = start + offset;
+            let expected = 1.5 * dry_at(at, MAIN_LATENCY) + bed_at(at);
+            assert!(
+                frame
+                    .into_iter()
+                    .all(|sample| (sample - expected).abs() < 2e-5),
+                "aligned Off Return + native bed at frame {at}: {frame:?} vs {expected}"
+            );
+        }
+    };
+
+    h.enable_confirmed_device_inserts();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::PlayFrom(2048))
+        .unwrap();
+    render(h);
+    for _ in 0..3 {
+        let _ = render_rolling(h);
+    }
+    assert_off_with_bed(h);
+
+    let current = &ready_state.state;
+    let command = Command::SetDeviceBypass {
+        device,
+        bypassed: false,
+    };
+    let mut expected = hex_project::Editor::new(current.project.as_ref().clone(), 8).unwrap();
+    expected.execute(command.clone()).unwrap();
+
+    for cancel in [true, false] {
+        let (prepared, enqueue, _) = h.probe_next_native_publication();
+        let (submitted, resume) = h.probe_next_submitted_device_insert();
+        h.service.submit(Request::Edit(command.clone())).unwrap();
+        let prep_deadline = Instant::now() + Duration::from_secs(2);
+        while prepared.try_recv().is_err() {
+            h.pump();
+            while let Ok(event) = h.service.try_event() {
+                assert!(
+                    !event.request_complete && event.error.is_none(),
+                    "fitting Return On ended before native submission: {:?} {:?}",
+                    event.status,
+                    event.error
+                );
+                assert!(event.device_insert_confirmation.is_none());
+                assert_original(&event, current);
+            }
+            assert_off_with_bed(h);
+            assert_eq!(status(h).recording_source(), Some(predecessor));
+            assert!(
+                Instant::now() < prep_deadline,
+                "private running Return On preparation"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        enqueue.send(()).unwrap();
+        let exact = await_preparation(h, &submitted);
+        resume.send(()).unwrap();
+        assert_eq!(queued_without_callback(h, current, predecessor), exact);
+        assert_eq!(
+            h.submitted_observation()
+                .unwrap()
+                .main_latency()
+                .unwrap()
+                .arrival_frames,
+            MAIN_LATENCY as u32
+        );
+        assert_eq!(
+            h.submitted_observation()
+                .unwrap()
+                .processor_status(device.value(), device_type),
+            Some(hex_engine::PreparedDeviceProcessing::Foreign)
+        );
+        assert_eq!(status(h).recording_source(), Some(predecessor));
+
+        // First block starts the 240-frame Return fade while the 576-frame ring drains.
+        let (first_start, first_pcm) = render_rolling(h);
+        assert_eq!(status(h).recording_source(), Some(predecessor));
+        for (offset, frame) in first_pcm.into_iter().enumerate() {
+            let at = first_start + offset;
+            let base = dry_at(at, MAIN_LATENCY) + bed_at(at);
+            let off_max = base + 0.5 * dry_at(at, MAIN_LATENCY);
+            assert!(
+                frame
+                    .into_iter()
+                    .all(|sample| sample >= base - 2e-5 && sample <= off_max + 2e-5),
+                "unexpected Return fade excursion at frame {at}: {frame:?} not in [{base}, {off_max}]"
+            );
+        }
+
+        if cancel {
+            let deadline = Instant::now() + Duration::from_millis(200);
+            loop {
+                match h
+                    .audio
+                    .as_ref()
+                    .unwrap()
+                    .control
+                    .cancel_fresh_runtime_publication(exact.audio_revision)
+                {
+                    FreshRuntimeCancellationResult::Busy => {
+                        assert!(Instant::now() < deadline, "Return On cancel stayed busy");
+                        std::thread::yield_now();
+                    }
+                    result => {
+                        assert_eq!(result, FreshRuntimeCancellationResult::Cancelled);
+                        break;
+                    }
+                }
+            }
+            let cancelled = terminal_at_cut(h, current, |h| {
+                let _ = render_rolling(h);
+            });
+            let receipt = cancelled.device_insert_complete.unwrap();
+            assert_eq!(receipt.submission, exact);
+            assert_eq!(receipt.outcome, DeviceInsertOutcome::Cancelled);
+            assert_original(&cancelled, current);
+            assert_eq!(status(h).recording_source(), Some(predecessor));
+            assert!(status(h).native_effect_source().is_none());
+            let retire_deadline = Instant::now() + Duration::from_millis(800);
+            while h.plugin_records.load(Acquire) != 0 {
+                h.pump();
+                let _ = render_rolling(h);
+                assert!(
+                    Instant::now() < retire_deadline,
+                    "cancelled Return On worker did not retire"
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            for _ in 0..4 {
+                let _ = render_rolling(h);
+            }
+            assert_off_with_bed(h);
+            continue;
+        }
+
+        let post_blocks =
+            std::cell::RefCell::new(Vec::<(usize, [hex_engine::Frame; BLOCK])>::new());
+        let cut_frame = std::cell::Cell::new(None::<usize>);
+        let on = terminal_at_cut(h, current, |h| {
+            let (start, pcm) = render_rolling(h);
+            if status(h).recording_source() != Some(predecessor) {
+                if cut_frame.get().is_none() {
+                    cut_frame.set(Some(start));
+                }
+                post_blocks.borrow_mut().push((start, pcm));
+            } else {
+                for (offset, frame) in pcm.into_iter().enumerate() {
+                    let at = start + offset;
+                    let base = dry_at(at, MAIN_LATENCY) + bed_at(at);
+                    let off_max = base + 0.5 * dry_at(at, MAIN_LATENCY);
+                    assert!(
+                        frame
+                            .into_iter()
+                            .all(|sample| sample >= base - 2e-5 && sample <= off_max + 2e-5),
+                        "drain excursion at frame {at}: {frame:?} not in [{base}, {off_max}]"
+                    );
+                }
+            }
+        });
+        assert!(on.error.is_none(), "{:?}", on.error);
+        let receipt = on.device_insert_complete.unwrap();
+        assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+        assert_eq!(receipt.submission, exact);
+        assert_eq!(on.state.project.as_ref(), expected.project());
+        assert_eq!(on.state.revision, exact.context.editor_revision);
+        let applied = status(h).recording_source().unwrap();
+        assert_eq!(applied.output_identity, exact.output_identity);
+        assert_eq!(applied.context, exact.context);
+        assert_eq!(applied.audio_revision, exact.audio_revision);
+        assert_eq!(status(h).native_effect_source(), Some(applied));
+        assert!(status(h).playing.load(Acquire));
+
+        let cut = cut_frame.get().expect("cut block observed on callback");
+        let mut post = post_blocks.into_inner();
+        while post.len() < 6 {
+            h.pump();
+            post.push(render_rolling(h));
+        }
+        wait(|| {
+            h.pump();
+            h.plugin_records.load(Acquire) == 1
+                && h.plugin_progress.lock().unwrap().source_bindings[0].is_some_and(
+                    |(id, binding, _)| id == device.value() && binding != retired_binding,
+                )
+        });
+
+        let mut flat = Vec::with_capacity(post.len() * BLOCK);
+        for (block_index, (start, pcm)) in post.into_iter().enumerate() {
+            assert_eq!(start, cut + block_index * BLOCK);
+            flat.extend_from_slice(&pcm);
+        }
+
+        // First 576 frames after cut (512 bridge + 64 Return ring): zero leaked Off PCM,
+        // exact dry track + sample-exact native Limiter bed.
+        for (offset, frame) in flat[..MAIN_LATENCY].iter().enumerate() {
+            let at = cut + offset;
+            let expected_base = dry_at(at, MAIN_LATENCY) + bed_at(at);
+            assert!(
+                frame
+                    .iter()
+                    .all(|&sample| (sample - expected_base).abs() < 2e-5),
+                "post-cut silence/bed mismatch at offset {offset} (frame {at}): {frame:?} vs {expected_base}"
+            );
+        }
+
+        // Next two 256-frame windows carry fresh aligned VST3 wet audio with +0.0625/block ramp.
+        let wet_ratio = |offset: usize| {
+            let at = cut + offset;
+            let base = dry_at(at, MAIN_LATENCY) + bed_at(at);
+            let frame = flat[offset];
+            assert!((frame[0] - frame[1]).abs() < 1e-5);
+            (frame[0] - base) / dry_at(at, MAIN_LATENCY)
+        };
+        let first_wet = wet_ratio(MAIN_LATENCY);
+        assert!(first_wet.is_finite() && first_wet > 0.0, "wet={first_wet}");
+        for offset in MAIN_LATENCY..MAIN_LATENCY + BLOCK {
+            assert!(
+                (wet_ratio(offset) - first_wet).abs() < 2e-4,
+                "first wet window drift at offset {offset}: {} vs {first_wet}",
+                wet_ratio(offset)
+            );
+        }
+        let second_wet = first_wet + 0.0625;
+        for offset in MAIN_LATENCY + BLOCK..MAIN_LATENCY + 2 * BLOCK {
+            assert!(
+                (wet_ratio(offset) - second_wet).abs() < 2e-4,
+                "second wet window drift at offset {offset}: {} vs {second_wet}",
+                wet_ratio(offset)
+            );
+        }
+    }
+}
