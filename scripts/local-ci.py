@@ -536,24 +536,39 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
                          ("hex-sandbox" not in module_filters or
                           any(name.startswith("theme::") for name in module_filters["hex-sandbox"])))
         steps.append(Step(step.step_id, scoped(tuple(argv)), requires_tests=sandbox_theme))
+    single = boundary.get("single_run", {}) if boundary["kind"] == "packages" else {}
     for package in inventory:
-        if package["name"] not in affected:
+        name = package["name"]
+        if name not in affected:
             continue
-        extra = set(package["features"]) - {"default"} - covered_features.get(package["name"], set())
+        extra = set(package["features"]) - {"default"} - covered_features.get(name, set())
         # Preserve each declared configuration; all-features alone can mask
         # mutually exclusive cfg branches. Feature interaction contracts still
         # need reviewed configuration rules rather than a guessed power set.
         # Compressor plans run reviewed contract tests, but still lint every
         # extra configuration so an unexercised cfg branch cannot stop compiling.
-        lint_features.update(f"{package['name']}/{feature}" for feature in extra)
-        if boundary["kind"] == "compressor" or package["name"] not in tested:
+        lint_features.update(f"{name}/{feature}" for feature in extra)
+        if boundary["kind"] == "compressor" or name not in tested:
             continue
-        for index, feature in enumerate(sorted(extra)):
-            steps.append(Step(f"feature-test-{package['name']}-{index}",
-                              scoped(("cargo", "test", "-p", package["name"], "--features", feature,
-                                      "--all-targets", "--locked"))))
+        single_features = set(single[name].split(",")) if name in single else set()
+        uncovered_single = sorted(single_features & extra)
+        remaining_extra = sorted(extra - single_features)
+        if uncovered_single:
+            steps.append(Step(
+                f"feature-test-{name}-0",
+                scoped(("cargo", "test", "-p", name, "--features", ",".join(uncovered_single),
+                        "--all-targets", "--locked")),
+            ))
+        for index, feature in enumerate(remaining_extra, start=1 if uncovered_single else 0):
+            steps.append(Step(
+                f"feature-test-{name}-{index}",
+                scoped(("cargo", "test", "-p", name, "--features", feature,
+                        "--all-targets", "--locked")),
+            ))
     # The normal whole-package run already includes these targets. A lib-only
     # module selection must explicitly retain tests moved to a small unit binary.
+    # Batch multiple targets sharing the same feature set (e.g. ui-unit-tier)
+    # into one `cargo test` invocation to avoid sequential Cargo startup overhead.
     unit_targets: dict[str, set[str]] = {}
     if "hex-ui" in tested:
         for module, target in ci_plan.UI_UNIT_TARGETS.items():
@@ -561,12 +576,25 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
                      if module.startswith(name) or name.startswith(module)}
             if names:
                 unit_targets.setdefault(target, set()).update(names)
+    by_feature: dict[str | None, list[tuple[str, set[str]]]] = {}
     for target, names in sorted(unit_targets.items()):
-        feature = ci_plan.UI_UNIT_FEATURES.get(target)
+        by_feature.setdefault(ci_plan.UI_UNIT_FEATURES.get(target), []).append((target, names))
+    for feature, group in sorted(by_feature.items(), key=lambda item: item[0] or ""):
         feature_args = ("--features", feature) if feature else ()
-        steps.append(Step(f"ui-unit-{target}", ("cargo", "test", "-p", "hex-ui", *feature_args,
-                                                  "--test", target, "--locked", "--", *sorted(names)),
-                          requires_tests=True))
+        if len(group) == 1:
+            target, names = group[0]
+            steps.append(Step(f"ui-unit-{target}",
+                              ("cargo", "test", "-p", "hex-ui", *feature_args,
+                               "--test", target, "--locked", "--", *sorted(names)),
+                              requires_tests=True))
+        else:
+            step_id = f"ui-unit-{feature}" if feature else "ui-unit-default"
+            test_args = tuple(arg for target, _ in group for arg in ("--test", target))
+            all_names = sorted({name for _, names in group for name in names})
+            steps.append(Step(step_id,
+                              ("cargo", "test", "-p", "hex-ui", *feature_args,
+                               *test_args, "--locked", "--", *all_names),
+                              requires_tests=True))
     extra_targets = {target for module, target in ci_plan.UI_EXTRA_TEST_TARGETS.items()
                      if "hex-ui" in tested and any(module.startswith(name) or name.startswith(module)
                                                     for name in module_filters.get("hex-ui", []))}
@@ -581,7 +609,18 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         steps.append(Step("affected-feature-clippy",
                           ("cargo", "clippy", *(a for p in lint_packages for a in ("-p", p)), "--all-targets",
                            "--locked", "--features", ",".join(sorted(lint_features)), "--", "-D", "warnings")))
-    if "hex-desktop" in (tested if boundary["kind"] == "packages" else affected):
+    desktop_compiled = any(
+        runs_rust_tests(step.argv)
+        and not ({"--doc", "--lib", "--test", "--example", "--bench"} & set(step.argv))
+        and any(step.argv[i + 1] == "hex-desktop" for i, arg in enumerate(step.argv) if arg == "-p")
+        for step in steps
+    )
+    desktop_linted = any(
+        step.step_id == "affected-clippy" and "hex-desktop" in step.argv
+        for step in steps
+    )
+    if ("hex-desktop" in (tested if boundary["kind"] == "packages" else affected)
+            and not (desktop_compiled and desktop_linted)):
         steps.append(next(s for s in FULL_STEPS if s.step_id == "desktop-build"))
     return tuple(steps)
 

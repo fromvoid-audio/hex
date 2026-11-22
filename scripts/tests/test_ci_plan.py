@@ -1,4 +1,5 @@
 """Scope boundaries, input freshness, and zero-match qualification regressions."""
+import copy
 import importlib.util
 import hashlib
 import py_compile
@@ -1526,11 +1527,16 @@ class TestOnlyScopeTests(unittest.TestCase):
 
 
 class SingleRunFeatureTests(unittest.TestCase):
+    _live_cache = None
+
     def live(self):
-        root = SCRIPTS.parent
-        metadata = json.loads(subprocess.check_output(
-            ["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"], cwd=root))
-        return root, plan.cargo_inventory(metadata, root)
+        if SingleRunFeatureTests._live_cache is None:
+            root = SCRIPTS.parent
+            metadata = json.loads(subprocess.check_output(
+                ["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"], cwd=root))
+            SingleRunFeatureTests._live_cache = (root, plan.cargo_inventory(metadata, root))
+        root, inventory = SingleRunFeatureTests._live_cache
+        return root, copy.deepcopy(inventory)
 
     def test_reviewed_additive_features_test_once_and_keep_doctests_and_lint(self):
         root, live_inventory = self.live()
@@ -1538,7 +1544,9 @@ class SingleRunFeatureTests(unittest.TestCase):
         _, live_affected, _ = plan.classify([path], live_inventory)
         live_boundary = plan.boundary_selection(root, [path], live_inventory, live_affected)
         session = next(p for p in live_inventory if p["name"] == "hex-session")
-        extra = set(session["features"]) - {"default", "source-overview-test-support"}
+        reviewed_session = set(plan.ADDITIVE_TEST_FEATURES["hex-session"])
+        expected_live_features = ",".join(sorted(reviewed_session & set(session["features"])))
+        extra = set(session["features"]) - {"default"} - reviewed_session
         if extra:
             self.assertNotIn("hex-session", live_boundary["single_run"])
             live_steps = ci.planned_steps({"scope": "rust", "affected_packages": live_affected,
@@ -1547,6 +1555,28 @@ class SingleRunFeatureTests(unittest.TestCase):
             for feature in extra:
                 self.assertTrue(any(s.argv[1] == "test" and "hex-session" in s.argv
                                     and feature in s.argv for s in live_steps))
+        else:
+            self.assertEqual(live_boundary["single_run"], {"hex-session": expected_live_features})
+            live_steps = {s.step_id: s for s in ci.planned_steps({
+                "scope": "rust", "affected_packages": live_affected,
+                "boundary": live_boundary, "cargo_inventory": live_inventory})}
+            self.assertNotIn("affected-tests", live_steps)
+            self.assertIn("feature-test-hex-session-0", live_steps)
+            self.assertNotIn("feature-test-hex-session-1", live_steps)
+            self.assertIn(expected_live_features, live_steps["feature-test-hex-session-0"].argv)
+            self.assertIn("hex-session", live_steps["single-run-doctests"].argv)
+        # Adding an unreviewed extra feature still disqualifies single-run and
+        # restores separate default + per-feature test invocations.
+        unreviewed_inventory = [{**p, "features": {**p["features"], "unreviewed-test-mode": []}}
+                                if p["name"] == "hex-session" else p for p in live_inventory]
+        unreviewed_boundary = plan.boundary_selection(root, [path], unreviewed_inventory, live_affected)
+        self.assertNotIn("hex-session", unreviewed_boundary["single_run"])
+        unreviewed_steps = {s.step_id: s for s in ci.planned_steps({
+            "scope": "rust", "affected_packages": live_affected,
+            "boundary": unreviewed_boundary, "cargo_inventory": unreviewed_inventory})}
+        self.assertIn("affected-tests", unreviewed_steps)
+        self.assertTrue(any(s.argv[1] == "test" and "hex-session" in s.argv
+                            and "unreviewed-test-mode" in s.argv for s in unreviewed_steps.values()))
         # The reviewed one-feature case is a controlled fixture; live packages
         # may acquire extra features that correctly require separate runs.
         inventory = [{**p, "features": {name: value for name, value in p["features"].items()
@@ -1613,6 +1643,120 @@ class SingleRunFeatureTests(unittest.TestCase):
             del inventory[0]["features"]["unknown"]
             (root / "crates/hex-ui/src/lib.rs").write_text('#[cfg(not(feature = "ui-test-support"))]\nfn f() {}\n')
             self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory), {})
+
+    def test_hex_engine_single_run_ignores_example_cfg_not_but_trips_on_src(self):
+        root, inventory = self.live()
+        path = "crates/hex-engine/src/lib.rs"
+        _, affected, _ = plan.classify([path], inventory)
+        boundary = plan.boundary_selection(root, [path], inventory, affected)
+        self.assertEqual(boundary["single_run"], {"hex-engine": "instrument-test-support"})
+        steps = {s.step_id: s for s in ci.planned_steps({
+            "scope": "rust", "affected_packages": affected, "boundary": boundary, "cargo_inventory": inventory})}
+        self.assertNotIn("affected-tests", steps)
+        self.assertIn("feature-test-hex-engine-0", steps)
+        self.assertIn("instrument-test-support", steps["feature-test-hex-engine-0"].argv)
+        self.assertIn("hex-engine", steps["single-run-doctests"].argv)
+        self.assertIn("hex-engine", steps["affected-clippy"].argv)
+        # Controlled fixture: example-only cfg(not(...)) stays eligible,
+        # while any unreviewed cfg(not(...)) under src/ still trips the guard.
+        fixture_inv = [dict(name="hex-engine", manifest="crates/hex-engine/Cargo.toml",
+                            features={"instrument-test-support": []}, dependencies=[], targets=[])]
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory)
+            (tmp / "crates/hex-engine/src").mkdir(parents=True)
+            (tmp / "crates/hex-engine/examples").mkdir(parents=True)
+            (tmp / "crates/hex-engine/examples/bench.rs").write_text(
+                '#[cfg(not(feature = "instrument-test-support"))]\nfn main() {}\n')
+            self.assertEqual(plan.single_run_packages(tmp, ["hex-engine"], fixture_inv),
+                             {"hex-engine": "instrument-test-support"})
+            (tmp / "crates/hex-engine/src/lib.rs").write_text(
+                '#[cfg(not(feature = "instrument-test-support"))]\npub fn fallback() {}\n')
+            self.assertEqual(plan.single_run_packages(tmp, ["hex-engine"], fixture_inv), {})
+
+    def test_workspace_reviewed_additive_features_fold_and_keep_allocation_probe_isolated(self):
+        root, inventory = self.live()
+        cases = (
+            ("hex-audio", "crates/hex-audio/src/lib.rs", "stream-test-support", "audio-allocation-probe"),
+            ("hex-stream", "crates/hex-stream/src/lib.rs", "test-support", "stream-allocation-probe"),
+            ("hex-plugin-host", "crates/hex-plugin-host/src/lib.rs", "test-support", "audio-allocation-probe"),
+            ("hex-desktop", "crates/hex-desktop/src/main.rs", "recording-fault-test-support",
+             "desktop-allocation-probe"),
+            ("hex-media", "crates/hex-media/src/lib.rs", "test-support", None),
+            ("hex-mts", "crates/hex-mts/src/lib.rs", "test-support", None),
+            ("hex-lattice", "crates/hex-lattice/src/lib.rs", "conformance", None),
+        )
+        for pkg, path, expected_features, probe_step in cases:
+            with self.subTest(pkg=pkg):
+                _, affected, _ = plan.classify([path], inventory)
+                boundary = plan.boundary_selection(root, [path], inventory, affected)
+                self.assertEqual(boundary["single_run"], {pkg: expected_features})
+                steps = {s.step_id: s for s in ci.planned_steps({
+                    "scope": "rust", "affected_packages": affected, "boundary": boundary, "cargo_inventory": inventory})}
+                self.assertNotIn("affected-tests", steps)
+                self.assertIn(f"feature-test-{pkg}-0", steps)
+                self.assertNotIn(f"feature-test-{pkg}-1", steps)
+                self.assertIn(expected_features, steps[f"feature-test-{pkg}-0"].argv)
+                self.assertIn(pkg, steps["affected-clippy"].argv)
+                if probe_step is not None:
+                    self.assertIn(probe_step, steps)
+                else:
+                    self.assertIn("single-run-doctests", steps)
+                    self.assertIn(pkg, steps["single-run-doctests"].argv)
+        # Unreviewed cfg(not(feature = ...)) in a crate with reviewed equivalents still disqualifies it.
+        audio_inv = [p for p in inventory if p["name"] == "hex-audio"]
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory)
+            (tmp / "crates/hex-audio/src").mkdir(parents=True)
+            (tmp / "crates/hex-audio/src/unreviewed.rs").write_text(
+                '#[cfg(not(feature = "stream-test-support"))]\npub fn unreviewed() {}\n')
+            self.assertEqual(plan.single_run_packages(tmp, ["hex-audio"], audio_inv), {})
+
+    def test_redundant_desktop_build_omitted_when_tested_and_linted(self):
+        root, inventory = self.live()
+        # Whole-package hex-desktop change compiles binaries in feature-test-hex-desktop-0
+        # and lints them in affected-clippy, so desktop-build is redundant.
+        path = "crates/hex-desktop/src/main.rs"
+        _, affected, _ = plan.classify([path], inventory)
+        boundary = plan.boundary_selection(root, [path], inventory, affected)
+        steps = {s.step_id: s for s in ci.planned_steps({
+            "scope": "rust", "affected_packages": affected, "boundary": boundary, "cargo_inventory": inventory})}
+        self.assertIn("feature-test-hex-desktop-0", steps)
+        self.assertIn("affected-clippy", steps)
+        self.assertNotIn("desktop-build", steps)
+        # Compressor boundary does not run hex-desktop tests, so desktop-build stays planned.
+        comp_path = "crates/hex-devices/src/compressor.rs"
+        _, comp_affected, _ = plan.classify([comp_path], inventory)
+        comp_boundary = {
+            "kind": "compressor",
+            "lint_packages": comp_affected,
+            "test_packages": [],
+            "tests": [{"package": "hex-devices", "lib": True, "filter": "compressor::"}],
+        }
+        comp_steps = {s.step_id: s for s in ci.planned_steps({
+            "scope": "rust", "affected_packages": comp_affected,
+            "boundary": comp_boundary, "cargo_inventory": inventory})}
+        self.assertIn("desktop-build", comp_steps)
+
+    def test_multi_target_ui_unit_modules_batch_shared_feature_into_one_step(self):
+        root, inventory = self.live()
+        paths = [
+            "crates/hex-ui/src/editor/device_automation.rs",
+            "crates/hex-ui/src/editor/trim.rs",
+        ]
+        _, affected, _ = plan.classify(paths, inventory)
+        boundary = plan.boundary_selection(root, paths, inventory, affected)
+        steps = {s.step_id: s for s in ci.planned_steps({
+            "scope": "rust", "affected_packages": affected, "boundary": boundary, "cargo_inventory": inventory})}
+        self.assertIn("ui-unit-ui-unit-tier", steps)
+        self.assertNotIn("ui-unit-unit_automation", steps)
+        self.assertNotIn("ui-unit-unit_editor_logic", steps)
+        argv = steps["ui-unit-ui-unit-tier"].argv
+        self.assertEqual(argv[:6], ("cargo", "test", "-p", "hex-ui", "--features", "ui-unit-tier"))
+        self.assertIn("unit_automation", argv)
+        self.assertIn("unit_editor_logic", argv)
+        self.assertIn("editor::device_automation::", argv)
+        self.assertIn("editor::trim::", argv)
+        self.assertTrue(steps["ui-unit-ui-unit-tier"].requires_tests)
 
     def test_standalone_ui_unit_inputs_run_only_the_owning_targets(self):
         root, inventory = self.live()
