@@ -2319,7 +2319,7 @@ impl WorkerAudioSink for NativeAudioSink {
         let capacity = self
             .policy
             .as_ref()
-            .map_or(0, |policy| policy.plugins.capacity);
+            .map_or(0, |policy| policy.plugins.active_capacity);
         self.plugins
             .prepare_offline_bounce(input, control, capacity)
     }
