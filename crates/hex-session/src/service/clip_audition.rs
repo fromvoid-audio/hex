@@ -12,6 +12,11 @@ use std::{
 mod verified_gain;
 pub(super) use verified_gain::VerifiedGainLane;
 pub use verified_gain::{VerifiedArrangementGainSource, VerifiedArrangementGainUpdate};
+mod verified_play_start;
+pub(super) use verified_play_start::VerifiedPlayStartLane;
+pub use verified_play_start::{
+    VerifiedArrangementPlayStartSource, VerifiedArrangementPlayStartUpdate,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ArrangementStretchAudition {
@@ -320,6 +325,17 @@ pub enum PlayStartEdit {
         clip: ClipId,
         position: u64,
     },
+    AudioSourcePhase {
+        clip: ClipId,
+        phase: u64,
+    },
+    AudioTrimStart {
+        clip: ClipId,
+        start: u64,
+        duration: u64,
+        source_offset: u64,
+        source_length: u64,
+    },
     MidiRegion {
         clip: ClipId,
         source_start: hex_project::BeatTime,
@@ -336,6 +352,33 @@ pub enum PlayStartEdit {
 }
 
 impl PlayStartEdit {
+    /// Reuse the audio inspector's choice of canonical play-start edit for its preview.
+    pub fn from_audio_command(command: &Command) -> Option<Self> {
+        match *command {
+            Command::ResizeAudioClipView {
+                clip,
+                operation: hex_project::AudioViewResizeOperation::PlayStart { position },
+            } => Some(Self::Audio { clip, position }),
+            Command::SetClipSourcePhase { clip, phase } => {
+                Some(Self::AudioSourcePhase { clip, phase })
+            }
+            Command::TrimClip {
+                clip,
+                start,
+                duration,
+                source_offset,
+                source_length,
+            } => Some(Self::AudioTrimStart {
+                clip,
+                start,
+                duration,
+                source_offset,
+                source_length,
+            }),
+            _ => None,
+        }
+    }
+
     /// Reuse the MIDI ruler's choice of canonical edit for its preview.
     pub fn from_midi_command(command: &Command) -> Option<Self> {
         match *command {
@@ -365,18 +408,14 @@ impl PlayStartEdit {
     }
 
     fn from_command(command: &Command) -> Option<Self> {
-        match *command {
-            Command::ResizeAudioClipView {
-                clip,
-                operation: hex_project::AudioViewResizeOperation::PlayStart { position },
-            } => Some(Self::Audio { clip, position }),
-            _ => Self::from_midi_command(command),
-        }
+        Self::from_audio_command(command).or_else(|| Self::from_midi_command(command))
     }
 
-    fn clip(self) -> ClipId {
+    pub fn clip(self) -> ClipId {
         match self {
             Self::Audio { clip, .. }
+            | Self::AudioSourcePhase { clip, .. }
+            | Self::AudioTrimStart { clip, .. }
             | Self::MidiRegion { clip, .. }
             | Self::MidiSource { clip, .. } => clip,
         }
@@ -387,6 +426,20 @@ impl PlayStartEdit {
             Self::Audio { clip, position } => Command::ResizeAudioClipView {
                 clip,
                 operation: hex_project::AudioViewResizeOperation::PlayStart { position },
+            },
+            Self::AudioSourcePhase { clip, phase } => Command::SetClipSourcePhase { clip, phase },
+            Self::AudioTrimStart {
+                clip,
+                start,
+                duration,
+                source_offset,
+                source_length,
+            } => Command::TrimClip {
+                clip,
+                start,
+                duration,
+                source_offset,
+                source_length,
             },
             Self::MidiRegion { clip, source_start } => Command::ResizeMidiClipView {
                 clip,
@@ -738,13 +791,20 @@ impl Mailbox {
 
     fn replace(state: &mut State, intent: Intent) {
         if state.intent != intent {
-            // A continuous gain drag must not starve the audio preview by
-            // cancelling every in-progress value. Keep at most that one
-            // preparation and the latest requested value.
-            let continues_gain = matches!((&state.intent, &intent),
-                (Intent::Held(a @ Target::Gain(_)), Intent::Held(b @ Target::Gain(_)))
-                    if a.same_gesture(b));
-            if !continues_gain && let Some(job) = state.preparing.take() {
+            // A continuous gain or play-start drag must not starve the audio
+            // preview by cancelling every in-progress value. Keep at most that
+            // one preparation and the latest requested value.
+            let continues_coalesced = matches!(
+                (&state.intent, &intent),
+                (
+                    Intent::Held(a @ Target::Gain(_)),
+                    Intent::Held(b @ Target::Gain(_)),
+                ) | (
+                    Intent::Held(a @ Target::PlayStart(_)),
+                    Intent::Held(b @ Target::PlayStart(_)),
+                ) if a.same_gesture(b)
+            );
+            if !continues_coalesced && let Some(job) = state.preparing.take() {
                 job.store(true, Ordering::Release);
             }
             state.intent = intent;
@@ -762,14 +822,14 @@ impl Mailbox {
     }
 }
 
-// Successful move preparation is capped at one attempt per 16 ms (at most
-// 63 starts per second). Refusal, restoration and other clip auditions retain
-// the original slower interval to avoid repeated expensive failures.
+// Successful move and play-start preparations are capped at one attempt per
+// 16 ms (at most 63 starts per second). Refusal, restoration and heavier clip
+// auditions retain the original slower interval to avoid repeated failures.
 const MOVE_PREVIEW_INTERVAL: Duration = Duration::from_millis(16);
 const RETRY_INTERVAL: Duration = Duration::from_millis(32);
 
 fn attempt_interval(kind: Kind, failed: bool, cancelled: bool) -> Duration {
-    if kind == Kind::Move && (!failed || cancelled) {
+    if matches!(kind, Kind::Move | Kind::PlayStart) && (!failed || cancelled) {
         MOVE_PREVIEW_INTERVAL
     } else {
         RETRY_INTERVAL
@@ -1006,6 +1066,73 @@ mod tests {
         assert!(mailbox.lock().intent == Intent::Held(latest));
         mailbox.release(Kind::Gain);
         assert!(preparing.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn newer_play_start_values_coalesce_without_cancelling_the_running_preparation() {
+        let source = target();
+        let play_start = |position| {
+            Target::PlayStart(ArrangementPlayStartAudition {
+                context: source.context,
+                edit: PlayStartEdit::Audio {
+                    clip: source.anchor,
+                    position,
+                },
+            })
+        };
+        let mailbox = Mailbox::default();
+        let first = play_start(12_000);
+        mailbox.set(first.clone());
+        let preparing = mailbox.claim(first).unwrap();
+        let latest = play_start(36_000);
+        mailbox.set(play_start(24_000));
+        mailbox.set(latest.clone());
+        assert!(
+            !preparing.load(Ordering::Acquire),
+            "continuous play-start drag must not starve in-flight preparation"
+        );
+        assert!(mailbox.lock().intent == Intent::Held(latest));
+        mailbox.release(Kind::PlayStart);
+        assert!(preparing.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn play_start_inspector_commands_roundtrip_and_match_release() {
+        let source = target();
+        let phase_cmd = Command::SetClipSourcePhase {
+            clip: source.anchor,
+            phase: 4_800,
+        };
+        let phase_edit = PlayStartEdit::from_audio_command(&phase_cmd).unwrap();
+        assert_eq!(phase_edit.command(), phase_cmd);
+        let phase_target = Target::PlayStart(ArrangementPlayStartAudition {
+            context: source.context,
+            edit: phase_edit,
+        });
+        assert!(phase_target.matches_release(&Request::Edit(phase_cmd)));
+
+        let trim_cmd = Command::TrimClip {
+            clip: source.anchor,
+            start: 0,
+            duration: 48_000,
+            source_offset: 2_400,
+            source_length: 45_600,
+        };
+        let trim_edit = PlayStartEdit::from_audio_command(&trim_cmd).unwrap();
+        assert_eq!(trim_edit.command(), trim_cmd);
+        let trim_target = Target::PlayStart(ArrangementPlayStartAudition {
+            context: source.context,
+            edit: trim_edit,
+        });
+        assert!(trim_target.matches_release(&Request::Edit(trim_cmd)));
+        assert_eq!(
+            attempt_interval(Kind::PlayStart, false, false),
+            MOVE_PREVIEW_INTERVAL
+        );
+        assert_eq!(
+            attempt_interval(Kind::PlayStart, true, false),
+            RETRY_INTERVAL
+        );
     }
 
     fn target() -> ArrangementMoveAudition {

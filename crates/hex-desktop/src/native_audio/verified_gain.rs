@@ -5,6 +5,7 @@ use hex_session::{
     device_gesture::GestureKey,
     service::{
         DevicePreviewIdentity, VerifiedArrangementGainSource, VerifiedArrangementGainUpdate,
+        VerifiedArrangementPlayStartSource, VerifiedArrangementPlayStartUpdate,
         VerifiedDeviceParameterSource, VerifiedTrackGainSource,
     },
 };
@@ -18,6 +19,7 @@ pub(super) struct VerifiedKey {
 enum VerifiedPreviewKey {
     Device(DevicePreviewIdentity),
     ArrangementGain(u64),
+    ArrangementPlayStart(u64),
 }
 impl VerifiedKey {
     pub(super) fn canonical(context: AudioSourceContext) -> Self {
@@ -33,6 +35,7 @@ pub(super) enum VerifiedSource {
     Gain(Arc<VerifiedTrackGainSource>),
     Device(Arc<VerifiedDeviceParameterSource>),
     ArrangementGain(Arc<VerifiedArrangementGainSource>),
+    ArrangementPlayStart(Arc<VerifiedArrangementPlayStartSource>),
 }
 impl VerifiedSource {
     pub(super) fn canonical(&self) -> &CanonicalAudioSourceSnapshot {
@@ -44,6 +47,7 @@ impl VerifiedSource {
             Self::Gain(source) => source.canonical(),
             Self::Device(source) => source.canonical(),
             Self::ArrangementGain(source) => source.canonical(),
+            Self::ArrangementPlayStart(source) => source.canonical(),
         }
     }
     pub(super) fn context(&self) -> AudioSourceContext {
@@ -51,21 +55,21 @@ impl VerifiedSource {
     }
     pub(super) fn preview_identity(&self) -> Option<DevicePreviewIdentity> {
         match self {
-            Self::Canonical(_) | Self::ArrangementGain(_) => None,
+            Self::Canonical(_) | Self::ArrangementGain(_) | Self::ArrangementPlayStart(_) => None,
             Self::Gain(source) => source.preview_identity(),
             Self::Device(source) => source.preview_identity(),
         }
     }
     fn terminal_key(&self) -> Option<GestureKey> {
         match self {
-            Self::Canonical(_) | Self::ArrangementGain(_) => None,
+            Self::Canonical(_) | Self::ArrangementGain(_) | Self::ArrangementPlayStart(_) => None,
             Self::Gain(source) => source.terminal_key(),
             Self::Device(source) => source.terminal_key(),
         }
     }
     fn terminal_sequence(&self) -> Option<u64> {
         match self {
-            Self::Canonical(_) | Self::ArrangementGain(_) => None,
+            Self::Canonical(_) | Self::ArrangementGain(_) | Self::ArrangementPlayStart(_) => None,
             Self::Gain(source) => source.terminal_sequence(),
             Self::Device(source) => source.terminal_sequence(),
         }
@@ -76,6 +80,9 @@ impl VerifiedSource {
             preview: match self {
                 Self::ArrangementGain(source) => {
                     Some(VerifiedPreviewKey::ArrangementGain(source.sequence()))
+                }
+                Self::ArrangementPlayStart(source) => {
+                    Some(VerifiedPreviewKey::ArrangementPlayStart(source.sequence()))
                 }
                 _ => self.preview_identity().map(VerifiedPreviewKey::Device),
             },
@@ -90,6 +97,7 @@ impl VerifiedSource {
             Self::Gain(source) => source.candidate_reservation_quote(),
             Self::Device(source) => source.candidate_reservation_quote(),
             Self::ArrangementGain(source) => source.reservation_quote(None),
+            Self::ArrangementPlayStart(source) => source.reservation_quote(None),
         };
         match plain {
             Ok(quote) => Ok((quote, false)),
@@ -120,6 +128,9 @@ impl VerifiedSource {
             Self::Gain(source) => source.prepare_candidate_on_control(catalog, destination),
             Self::Device(source) => source.prepare_candidate_on_control(catalog, destination),
             Self::ArrangementGain(source) => source.prepare_on_control(catalog, destination, None),
+            Self::ArrangementPlayStart(source) => {
+                source.prepare_on_control(catalog, destination, None)
+            }
         }
     }
     pub(super) fn quote_with_effects(
@@ -131,6 +142,7 @@ impl VerifiedSource {
             Self::Gain(source) => source.reservation_quote_with_effects(effects),
             Self::Device(source) => source.reservation_quote_with_effects(effects),
             Self::ArrangementGain(source) => source.reservation_quote(Some(effects)),
+            Self::ArrangementPlayStart(source) => source.reservation_quote(Some(effects)),
         }
     }
 
@@ -151,6 +163,9 @@ impl VerifiedSource {
                 source.prepare_candidate_with_effects_on_control(catalog, destination, effects)
             }
             Self::ArrangementGain(source) => {
+                source.prepare_on_control(catalog, destination, Some(effects))
+            }
+            Self::ArrangementPlayStart(source) => {
                 source.prepare_on_control(catalog, destination, Some(effects))
             }
         }
@@ -216,6 +231,61 @@ impl NativeAudioSink {
             return false;
         }
         self.verified_preview = Some(VerifiedSource::ArrangementGain(source));
+        true
+    }
+
+    pub(super) fn receive_verified_arrangement_play_start(
+        &mut self,
+        update: VerifiedArrangementPlayStartUpdate,
+    ) -> bool {
+        let source = match update {
+            VerifiedArrangementPlayStartUpdate::Cancel(source) => {
+                if matches!(
+                    self.verified_preview.as_ref(),
+                    Some(VerifiedSource::ArrangementPlayStart(active)) if Arc::ptr_eq(active, &source)
+                ) {
+                    self.verified_preview = None;
+                    return true;
+                }
+                return false;
+            }
+            VerifiedArrangementPlayStartUpdate::Preview(source) => source,
+        };
+        if self
+            .desired
+            .as_ref()
+            .is_none_or(|canonical| !Arc::ptr_eq(canonical, source.canonical()))
+        {
+            return false;
+        }
+        if let Some(preview) = &self.verified_preview {
+            if !matches!(
+                preview,
+                VerifiedSource::ArrangementPlayStart(current) if current.sequence() < source.sequence()
+            ) {
+                return false;
+            }
+            let key = preview.key();
+            if self.verified_last != Some(key) && self.verified_blocked != Some(key) {
+                return false;
+            }
+        }
+        let ready = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .is_some_and(|control| {
+                control.status.playing.load(Acquire)
+                    && !control.status.publication_in_flight()
+                    && control
+                        .status
+                        .applied_audio_source()
+                        .is_some_and(|applied| applied.context == source.canonical().context())
+            });
+        if !ready || self.preparation.is_some() {
+            return false;
+        }
+        self.verified_preview = Some(VerifiedSource::ArrangementPlayStart(source));
         true
     }
 

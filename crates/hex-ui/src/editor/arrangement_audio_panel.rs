@@ -414,7 +414,9 @@ pub(super) fn view(
                 theme::color(theme::PaletteRole::Primary),
             ))
             .children(source_marker(
-                window.source_start.saturating_add(window.source_phase),
+                view.audio_clip_controls
+                    .play_start_source_frame(view, clip_id)
+                    .unwrap_or_else(|| window.source_start.saturating_add(window.source_phase)),
                 viewport,
                 "play-start-marker",
                 theme::color(theme::PaletteRole::Secondary),

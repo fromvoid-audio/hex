@@ -18,6 +18,11 @@ pub(crate) struct Controls {
     key: Option<(ClipId, u64, u64)>,
     capture: Option<ClipWindow>,
     gain_preview: Option<(ClipWindow, hex_project::ClipGain)>,
+    play_start_preview: Option<(
+        ClipWindow,
+        hex_session::service::PlayStartEdit,
+        Option<hex_project::Clip>,
+    )>,
     numbers: BTreeMap<Field, Number>,
     toggles: BTreeMap<bool, Switch>,
     pending: Option<Pending>,
@@ -66,6 +71,7 @@ impl Controls {
     }
     fn retire_bindings(&mut self) {
         self.gain_preview = None;
+        self.play_start_preview = None;
         self.retired_focus
             .extend(self.numbers.iter().map(|(field, n)| RetiredFocus {
                 focus: n.focus.clone(),
@@ -121,12 +127,61 @@ impl Controls {
     pub(crate) fn has_gain_preview(&self) -> bool {
         self.gain_preview.is_some()
     }
+    pub(crate) fn has_play_start_preview(&self) -> bool {
+        self.play_start_preview.is_some()
+    }
     pub(in crate::editor) fn gain_preview(
         &self,
         view: &EditorView,
     ) -> Option<(ClipId, hex_project::ClipGain, hex_project::ClipGain)> {
         let (window, gain) = self.gain_preview?;
         clip_window_is_current(view, window).then_some((window.clip, window.gain, gain))
+    }
+    pub(in crate::editor) fn play_start_audition(
+        &self,
+        view: &EditorView,
+    ) -> Option<hex_session::service::ArrangementPlayStartAudition> {
+        if self.has_pending() {
+            return None;
+        }
+        let (window, edit, _) = self.play_start_preview.as_ref()?;
+        clip_window_is_current(view, *window).then_some(
+            hex_session::service::ArrangementPlayStartAudition {
+                context: hex_engine::AudioSourceContext {
+                    project_generation: window.generation,
+                    editor_revision: window.revision,
+                },
+                edit: *edit,
+            },
+        )
+    }
+    pub(in crate::editor) fn play_start_preview_clip(
+        &self,
+        view: &EditorView,
+        clip: ClipId,
+    ) -> Option<&hex_project::Clip> {
+        let (window, _, preview) = self.play_start_preview.as_ref()?;
+        (window.clip == clip && clip_window_is_current(view, *window))
+            .then_some(preview.as_ref())
+            .flatten()
+    }
+    pub(in crate::editor) fn play_start_source_frame(
+        &self,
+        view: &EditorView,
+        clip: ClipId,
+    ) -> Option<u64> {
+        use hex_session::service::PlayStartEdit;
+        let (window, edit, _) = self.play_start_preview.as_ref()?;
+        if window.clip != clip || !clip_window_is_current(view, *window) {
+            return None;
+        }
+        match *edit {
+            PlayStartEdit::AudioSourcePhase { phase, .. } => {
+                Some(window.source_start.saturating_add(phase))
+            }
+            PlayStartEdit::AudioTrimStart { source_offset, .. } => Some(source_offset),
+            _ => None,
+        }
     }
 }
 fn same_command(a: &Command, b: &Command) -> bool {
@@ -463,6 +518,36 @@ pub(super) fn number(
                     _ => {}
                 }
             }
+            if field == Field::PlayStart {
+                match e.phase {
+                    NumericEventPhase::Change | NumericEventPhase::Commit
+                        if clip_window_is_current(view, window)
+                            && !view.audio_clip_controls.has_pending()
+                            && e.value.is_finite() =>
+                    {
+                        let command = absolute_command(window, Field::PlayStart, e.value, false);
+                        view.audio_clip_controls.play_start_preview = command.and_then(|cmd| {
+                            let edit =
+                                hex_session::service::PlayStartEdit::from_audio_command(&cmd)?;
+                            let preview = view.state.as_ref().and_then(|state| {
+                                let mut editor =
+                                    hex_project::Editor::new(state.project.clone(), 1).ok()?;
+                                editor.execute(cmd).ok()?;
+                                editor.project().clip(window.clip).cloned()
+                            });
+                            Some((window, edit, preview))
+                        });
+                        if e.phase == NumericEventPhase::Change && e.gesture.is_some() {
+                            view.sync_held_play_start_audition();
+                        }
+                    }
+                    NumericEventPhase::Cancel => {
+                        view.audio_clip_controls.play_start_preview = None;
+                        view.sync_held_play_start_audition();
+                    }
+                    _ => {}
+                }
+            }
             if e.phase == NumericEventPhase::Commit {
                 if !view.edit_pending() && clip_window_is_current(view, window) {
                     let multiple = view.selected_clip_ids().len() > 1;
@@ -491,6 +576,8 @@ pub(super) fn number(
                     if let Some(command) = command {
                         if field == Field::Gain {
                             view.finish_gain_audition();
+                        } else if field == Field::PlayStart {
+                            view.finish_held_play_start_audition();
                         }
                         submit(view, window, command);
                     } else {
@@ -678,7 +765,12 @@ impl EditorView {
             self.set_held_gain_audition(None);
             self.service.retire_arrangement_gain_audition();
         }
+        let had_play_start = self.audio_clip_controls.has_play_start_preview();
         let changed = self.audio_clip_controls.reset();
+        if had_play_start {
+            self.sync_held_play_start_audition();
+            self.service.retire_arrangement_play_start_audition();
+        }
         self.retire_sample_bpm_control();
         changed
     }
