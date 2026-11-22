@@ -72,6 +72,9 @@ impl SessionPlayback {
         plan: &mut ImportPlan,
     ) -> Result<bool, SessionPlaybackError> {
         plan.len = 0;
+        if !previous.playing {
+            return Ok(false);
+        }
         let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
         if previous
             .mutable_instruments
