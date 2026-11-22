@@ -545,12 +545,11 @@ fn tool_action(view: &mut EditorView, key: Key, index: usize, cx: &mut Context<E
     let Ok(snapshot) = snapshot(key.1, values) else {
         return;
     };
-    if view
-        .device_gesture
-        .begin_snapshot(view.project_generation, key.0, snapshot)
-        .is_ok()
-    {
-        let _ = view.device_gesture.finish_snapshot(snapshot);
+    match view.begin_device_snapshot_gesture(key.0, snapshot) {
+        Ok(_) => {
+            let _ = view.device_gesture.finish_snapshot(snapshot);
+        }
+        Err(error) => view.device_panel.message = Some(error.into()),
     }
     cx.notify();
 }
@@ -601,11 +600,12 @@ fn handle(view: &mut EditorView, key: Key, event: BarEditorEvent, cx: &mut Conte
         else {
             return;
         };
-        let Ok(gesture_key) =
-            view.device_gesture
-                .begin_snapshot(view.project_generation, key.0, snapshot)
-        else {
-            return;
+        let gesture_key = match view.begin_device_snapshot_gesture(key.0, snapshot) {
+            Ok(key) => key,
+            Err(error) => {
+                view.device_panel.message = Some(error.into());
+                return;
+            }
         };
         let Some(control) = view.device_panel.operator_harmonics.get_mut(&key) else {
             let _ = view.cancel_device_gesture();

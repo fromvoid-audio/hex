@@ -2,7 +2,8 @@ mod catalog_barrier;
 use super::EditorView;
 pub(super) use catalog_barrier::CatalogBarrierState;
 use hex_session::device_gesture::{
-    GesturePhase, GestureTarget, ParameterPairValue, ParameterValue,
+    DeviceParameterSnapshot, EqNodeCreationSnapshot, GestureKey, GesturePhase, GestureTarget,
+    ParameterPairValue, ParameterValue,
 };
 use hex_session::service::{Request, SubmitError};
 use std::collections::VecDeque;
@@ -106,7 +107,32 @@ pub(super) fn actor_retired_gesture(
             && ack.is_some_and(|ack| ack.reason.is_some() && Some(ack.key) == local_key))
 }
 
+fn device_gesture_admission_error(
+    audio_recording: bool,
+    close_frozen: bool,
+    automation_busy: bool,
+) -> Result<(), &'static str> {
+    if audio_recording {
+        return Err("finish the audio recording before changing a device");
+    }
+    if close_frozen {
+        return Err("close is pending · device gestures are unavailable");
+    }
+    if automation_busy {
+        return Err("finish the current automation touch first");
+    }
+    Ok(())
+}
+
 impl EditorView {
+    pub(super) fn check_device_gesture_admission(&self) -> Result<(), &'static str> {
+        device_gesture_admission_error(
+            self.audio_recorder.blocks_edits(),
+            self.automation_close_preflight.frozen(),
+            self.native_automation_recorder.busy(),
+        )
+    }
+
     /// Start the worker-owned native parameter edit used by device controls.
     #[allow(dead_code)] // The native device panel binds this interaction contract in its own request.
     pub fn begin_device_gesture(
@@ -114,15 +140,7 @@ impl EditorView {
         target: GestureTarget,
         initial: ParameterValue,
     ) -> Result<(), &'static str> {
-        if self.audio_recorder.blocks_edits() {
-            return Err("finish the audio recording before changing a device");
-        }
-        if self.automation_close_preflight.frozen() {
-            return Err("close is pending · device gestures are unavailable");
-        }
-        if self.native_automation_recorder.busy() {
-            return Err("finish the current automation touch first");
-        }
+        self.check_device_gesture_admission()?;
         self.device_gesture
             .begin(self.project_generation, target, initial)?;
         Ok(())
@@ -135,14 +153,39 @@ impl EditorView {
         second: hex_lattice_contract::ParameterId,
         initial: ParameterPairValue,
     ) -> Result<(), &'static str> {
-        if self.audio_recorder.blocks_edits() {
-            return Err("finish the audio recording before changing a device");
-        }
-        if self.automation_close_preflight.frozen() {
-            return Err("close is pending · device gestures are unavailable");
-        }
+        self.check_device_gesture_admission()?;
         self.device_gesture
             .begin_pair(self.project_generation, device, first, second, initial)?;
+        Ok(())
+    }
+
+    pub(super) fn begin_device_snapshot_gesture(
+        &mut self,
+        device: hex_project::DeviceId,
+        initial: DeviceParameterSnapshot,
+    ) -> Result<GestureKey, &'static str> {
+        self.check_device_gesture_admission()?;
+        self.device_gesture
+            .begin_snapshot(self.project_generation, device, initial)
+    }
+
+    pub(super) fn begin_eq_creation_gesture(
+        &mut self,
+        device: hex_project::DeviceId,
+        snapshot: EqNodeCreationSnapshot,
+    ) -> Result<GestureKey, &'static str> {
+        self.check_device_gesture_admission()?;
+        self.device_gesture
+            .begin_eq_creation(self.project_generation, device, snapshot)
+    }
+
+    pub(super) fn begin_track_gains_gesture(
+        &mut self,
+        group: hex_project::RelativeTrackGains,
+    ) -> Result<(), &'static str> {
+        self.check_device_gesture_admission()?;
+        self.device_gesture
+            .begin_track_gains(self.project_generation, group)?;
         Ok(())
     }
 
@@ -818,10 +861,136 @@ mod unit_tests {
         }
     }
 
+    #[test]
+    fn admission_blocker_precedence_covers_all_three_guards() {
+        use super::device_gesture_admission_error;
+        assert_eq!(device_gesture_admission_error(false, false, false), Ok(()));
+        assert_eq!(
+            device_gesture_admission_error(true, true, true),
+            Err("finish the audio recording before changing a device")
+        );
+        assert_eq!(
+            device_gesture_admission_error(false, true, true),
+            Err("close is pending · device gestures are unavailable")
+        );
+        assert_eq!(
+            device_gesture_admission_error(false, false, true),
+            Err("finish the current automation touch first")
+        );
+    }
+
     fn other_key() -> hex_session::device_gesture::GestureKey {
         hex_session::device_gesture::GestureKey {
             generation: 0,
             token: 2,
         }
+    }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod admission_tests {
+    use super::*;
+    use gpui::{TestAppContext, VisualTestContext};
+    use hex_devices::eq::{Node, NodeId};
+    use hex_lattice_contract::ParameterId;
+    use hex_project::{Command, Editor, Project, RelativeTrackGains};
+
+    #[gpui::test]
+    fn all_device_and_track_gain_gesture_entries_refuse_under_all_three_blockers(
+        cx: &mut TestAppContext,
+    ) {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        editor
+            .execute(Command::InsertTrackWithDevice {
+                name: "a".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap();
+        editor
+            .execute(Command::AddTrack { name: "b".into() })
+            .unwrap();
+        let tracks: Vec<_> = editor.project().tracks().iter().map(|t| t.id()).collect();
+        let device = editor.project().tracks()[0].instrument().unwrap().id();
+        let group = RelativeTrackGains::capture(editor.project(), tracks[0], &tracks).unwrap();
+        let project = editor.project().clone();
+
+        let (handle, view) = crate::editor::rendered_test_fixture::editor_window(
+            cx,
+            project,
+            std::sync::Arc::default(),
+        );
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+
+        let first = ParameterId::new(1).unwrap();
+        let second = ParameterId::new(2).unwrap();
+        let snapshot =
+            DeviceParameterSnapshot::new(&[(first, ParameterValue::Float(0.5))]).unwrap();
+        let eq_node = Node::new(NodeId::new(1).unwrap(), 1_000.0, 0.0, 0).unwrap();
+        let eq_creation =
+            EqNodeCreationSnapshot::new(eq_node, hex_project::DeviceVariant::A, 1).unwrap();
+        let track = tracks[0];
+
+        let assert_all_refused = |view: &mut EditorView, expected: &'static str| {
+            assert_eq!(
+                view.begin_device_gesture(
+                    GestureTarget::TrackGain { track },
+                    ParameterValue::Float(1.0),
+                ),
+                Err(expected)
+            );
+            assert_eq!(
+                view.begin_device_pair_gesture(
+                    device,
+                    first,
+                    second,
+                    ParameterPairValue {
+                        first: ParameterValue::Float(0.5),
+                        second: ParameterValue::Float(0.5),
+                    },
+                ),
+                Err(expected)
+            );
+            assert_eq!(
+                view.begin_device_snapshot_gesture(device, snapshot),
+                Err(expected)
+            );
+            assert_eq!(
+                view.begin_eq_creation_gesture(device, eq_creation),
+                Err(expected)
+            );
+            assert_eq!(view.begin_track_gains_gesture(group), Err(expected));
+            assert!(view.device_gesture.snapshot().is_none());
+            assert!(view.device_gesture.next_request().is_none());
+        };
+
+        // 1. Audio recording active
+        view.update(&mut visual, |view, _| {
+            view.audio_recorder.set_test_blocks_edits(track, true);
+            assert!(view.audio_recorder.blocks_edits());
+            assert_all_refused(view, "finish the audio recording before changing a device");
+            view.audio_recorder.set_test_blocks_edits(track, false);
+        });
+
+        // 2. Native automation touch busy
+        view.update(&mut visual, |view, _| {
+            view.native_automation_recorder.set_test_busy(device, true);
+            assert!(view.native_automation_recorder.busy());
+            assert_all_refused(view, "finish the current automation touch first");
+            view.native_automation_recorder.set_test_busy(device, false);
+        });
+
+        // 3. Automation close preflight frozen
+        handle
+            .update(&mut visual, |_, window, cx| {
+                view.update(cx, |view, cx| {
+                    view.request_quit(window, cx);
+                    assert!(view.automation_close_preflight.frozen());
+                    assert_all_refused(view, "close is pending · device gestures are unavailable");
+                });
+            })
+            .unwrap();
     }
 }

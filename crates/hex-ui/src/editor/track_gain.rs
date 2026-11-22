@@ -241,8 +241,7 @@ fn dispatch_track_gain(
             let group = hex_project::RelativeTrackGains::capture(&state.project, track, &selected)
                 .map_err(|error| error.0)?;
             if group.len() > 1 {
-                view.device_gesture
-                    .begin_track_gains(view.project_generation, group)?;
+                view.begin_track_gains_gesture(group)?;
                 lease.set(
                     view.device_gesture
                         .snapshot()
