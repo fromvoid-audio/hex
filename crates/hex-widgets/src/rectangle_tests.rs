@@ -1,4 +1,4 @@
-use super::rectangle::*;
+use super::*;
 use gpui::Modifiers;
 use std::cell::Cell;
 

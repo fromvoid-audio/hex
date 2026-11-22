@@ -1,5 +1,5 @@
 //! Independent typed-PCM oracles for the host adapter's scalar-only voice plan.
-use super::*;
+use super::super::*;
 use hex_lattice::DeviceResourcePcm;
 
 #[test]

@@ -272,3 +272,7 @@ pub fn require_parameter_writable<D: NativeDeviceMetadata + ?Sized>(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "parameter_semantics_tests.rs"]
+mod tests;

@@ -889,3 +889,7 @@ impl VerifiedWavReader {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "verified_stream_tests.rs"]
+mod tests;

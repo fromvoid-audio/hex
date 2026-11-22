@@ -153,3 +153,7 @@ impl PreparedAnalyticContinuation for PreparedOperatorContext {
         Ok([sample, sample])
     }
 }
+
+#[cfg(test)]
+#[path = "enable_continuation_tests.rs"]
+mod tests;

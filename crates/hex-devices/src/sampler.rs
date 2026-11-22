@@ -197,10 +197,6 @@ fn finite_range(value: f64, min: f64, max: f64) -> bool {
 }
 
 #[cfg(test)]
-mod interpolation_tests;
-#[cfg(test)]
 mod lifetime_tests;
-#[cfg(test)]
-mod plan_tests;
 #[cfg(test)]
 mod tests;

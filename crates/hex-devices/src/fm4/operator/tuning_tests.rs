@@ -1,4 +1,4 @@
-use super::*;
+use super::super::*;
 
 #[test]
 fn review_ratio_mixed_fixed_and_velocity_paths_refuse_zero_phase_quantization() {
@@ -241,7 +241,7 @@ fn nyquist_modulator_is_silenced_for_that_note_only() {
         let lfo = patch.prepare_lfo_note(120, 100).expect("lfo note admitted");
         assert_eq!(
             PreparedOperatorConfiguration::lfo_steps(&lfo)[3],
-            super::tuning::SILENCED_STEP
+            super::SILENCED_STEP
         );
     }
 }

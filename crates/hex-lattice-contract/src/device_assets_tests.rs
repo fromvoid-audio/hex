@@ -1,4 +1,4 @@
-use super::*;
+use super::super::*;
 
 fn reference(slot: u32, asset: u64) -> DeviceAssetReference {
     DeviceAssetReference {

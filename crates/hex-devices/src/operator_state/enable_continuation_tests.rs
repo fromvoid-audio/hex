@@ -1,5 +1,5 @@
 //! Observable provider PCM and refusal checks; no engine ownership assumptions.
-use super::*;
+use super::super::*;
 use hex_lattice::{AnalyticContinuation, AnalyticContinuationError, AnalyticContinuationId};
 
 fn context(state: &NativeDeviceState) -> Box<dyn PreparedSharedAnalyticContext> {

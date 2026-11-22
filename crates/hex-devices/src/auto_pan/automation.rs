@@ -170,3 +170,7 @@ impl AutoPanRuntime {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "automation_tests.rs"]
+mod tests;

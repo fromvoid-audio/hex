@@ -224,3 +224,7 @@ impl AudioClipEdit {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "content_tests.rs"]
+mod tests;

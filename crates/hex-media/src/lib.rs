@@ -29,13 +29,7 @@ mod verified_stream;
 mod wav;
 
 #[cfg(test)]
-mod wav_tests;
-
-#[cfg(test)]
 mod resample_stream_tests;
-
-#[cfg(test)]
-mod verified_stream_tests;
 
 #[cfg(test)]
 mod resample_plan_tests;

@@ -1,4 +1,4 @@
-use super::*;
+use super::super::*;
 use crate::device_gesture::{GestureKey, GestureRequest, GestureTarget};
 use hex_engine::NativeDeviceClass;
 use hex_lattice_contract::{DeviceTypeId, ParameterValue};
@@ -278,7 +278,7 @@ fn effect_bus_worker_refusal_does_not_finalize_an_unrelated_live_gesture() {
 #[test]
 fn overdrive_track_return_main_parameters_history_and_file_roundtrip() {
     use hex_lattice_contract::ParameterId;
-    let directory = super::service_tests::TestDir::new();
+    let directory = super::super::service_tests::TestDir::new();
     let path = directory.0.join("overdrive.hex");
     let service = Service::new(48_000, 32, 8_000_000).unwrap();
     receive(&service);

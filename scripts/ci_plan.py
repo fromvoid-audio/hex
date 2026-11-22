@@ -1356,16 +1356,42 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                                       or any(name.startswith(prefix) for name in UI_UNIT_TARGETS)):
                 return True
             return candidate in tested_subtrees
-        while module and not has_tests(module):
-            module = module.rpartition("::")[0]
-        if not module:
+        selected_modules: list[str] = []
+        if has_tests(module):
+            selected_modules.append(module)
+        else:
+            # Prefer verified sibling test files (`*_tests.rs`, `*_test.rs`,
+            # `*_ui_test.rs`, `*_ui_tests.rs`, or singular `foo_tests.rs` for
+            # `foos.rs`) before climbing to a broad ancestor or WHOLE_PACKAGE.
+            stem = file.parent.name if file.name == "mod.rs" else file.stem
+            parent_dir = file.parent.parent if file.name == "mod.rs" else file.parent
+            stems = [stem]
+            if stem.endswith("s") and len(stem) > 1:
+                stems.append(stem[:-1])
+            for candidate_stem in stems:
+                for suffix in ("_tests.rs", "_test.rs", "_ui_test.rs", "_ui_tests.rs"):
+                    sibling = (parent_dir / f"{candidate_stem}{suffix}").resolve()
+                    if sibling == file or not sibling.is_file():
+                        continue
+                    sibling_module = modules.get(sibling)
+                    if (sibling_module
+                            and has_tests(sibling_module)
+                            and sibling_module not in selected_modules):
+                        selected_modules.append(sibling_module)
+        if not selected_modules:
+            while module and not has_tests(module):
+                module = module.rpartition("::")[0]
+            if module:
+                selected_modules.append(module)
+        if not selected_modules:
             whole.add(owner)
         else:
-            prefix = module + "::"
             owner_filters = filters.setdefault(owner, set())
-            owner_filters.add(prefix)
-            if owner == "hex-ui":
-                owner_filters.update(UI_MODULE_TEST_DEPENDENCIES.get(prefix, ()))
+            for target_module in selected_modules:
+                prefix = target_module + "::"
+                owner_filters.add(prefix)
+                if owner == "hex-ui":
+                    owner_filters.update(UI_MODULE_TEST_DEPENDENCIES.get(prefix, ()))
     # Device-only edits exercise hex-storage's reviewed device-persistence
     # contract tests rather than unrelated storage integration binaries.
     if ("hex-storage" in tested

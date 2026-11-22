@@ -1,4 +1,4 @@
-use super::*;
+use super::super::*;
 
 #[test]
 fn fine_offsets_have_stable_domains_and_round_trip_independently() {

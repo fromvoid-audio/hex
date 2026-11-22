@@ -1778,8 +1778,6 @@ pub(crate) fn offset_frame(frame: u64, offset: i8) -> Result<u64, Invalid> {
 }
 
 #[cfg(test)]
-mod content_tests;
-#[cfg(test)]
 mod fade_clock_tests;
 
 #[cfg(test)]

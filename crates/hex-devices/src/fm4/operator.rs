@@ -235,5 +235,3 @@ pub(super) fn scale_operator_amplitudes(
 
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod tuning_tests;

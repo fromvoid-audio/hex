@@ -246,3 +246,7 @@ impl<'a> PreparedSamplerPlan<'a> {
         }))
     }
 }
+
+#[cfg(test)]
+#[path = "plan_tests.rs"]
+mod tests;
