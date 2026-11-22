@@ -1,6 +1,7 @@
 """Deterministic local check selection; this module never builds or mutates Git."""
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -391,6 +392,74 @@ UI_UNIT_TIER_TEST_CFGS = frozenset({
 })
 
 
+_MODULE_SCAN_CACHE: dict[tuple, object] | None = None
+_MODULE_SCAN_CACHE_ROOT: Path | None = None
+
+
+@contextlib.contextmanager
+def cache_readonly_module_scans(workspace_root: Path):
+    """Cache source-tree scans under one immutable workspace root (test helper).
+
+    Only scans whose root lies inside `workspace_root` are cached; temporary
+    fixtures outside that root always read fresh from disk. Disabled by default
+    so live `local-ci.py` runs always read fresh on-disk state.
+    """
+    global _MODULE_SCAN_CACHE, _MODULE_SCAN_CACHE_ROOT
+    resolved_root = workspace_root.resolve()
+    previous_cache = _MODULE_SCAN_CACHE
+    previous_root = _MODULE_SCAN_CACHE_ROOT
+    _MODULE_SCAN_CACHE = {}
+    _MODULE_SCAN_CACHE_ROOT = resolved_root
+    try:
+        yield _MODULE_SCAN_CACHE
+    finally:
+        _MODULE_SCAN_CACHE = previous_cache
+        _MODULE_SCAN_CACHE_ROOT = previous_root
+
+
+def _package_feature_gated(directory: Path, package_name: str, feature: str, has_unit_tier: bool) -> bool:
+    resolved_dir = directory.resolve()
+    cache_key = None
+    if (_MODULE_SCAN_CACHE is not None and _MODULE_SCAN_CACHE_ROOT is not None
+            and resolved_dir.is_relative_to(_MODULE_SCAN_CACHE_ROOT)):
+        cache_key = ("single_run", resolved_dir, package_name, feature, has_unit_tier)
+        if cache_key in _MODULE_SCAN_CACHE:
+            return bool(_MODULE_SCAN_CACHE[cache_key])
+    needle = f'feature = "{feature}"'
+    unit_sources = UI_DEFAULT_LIB_UNIT_MODULES if package_name == "hex-ui" else {}
+    equivalent_tests = UI_FEATURE_EQUIVALENT_TEST_CFGS if package_name == "hex-ui" else {}
+    check_companion = package_name == "hex-ui" and has_unit_tier
+    companion = 'feature = "ui-unit-tier"'
+    gated = False
+    for source in directory.rglob("*.rs"):
+        if not source.is_file():
+            continue
+        relative = source.relative_to(directory)
+        in_src = check_companion and len(relative.parts) > 1 and relative.parts[0] == "src"
+        text = source.read_text(errors="replace")
+        if needle not in text and (not in_src or companion not in text):
+            continue
+        rel = relative.as_posix()
+        equivalent = equivalent_tests.get(rel)
+        for line in text.splitlines():
+            stripped = line.strip()
+            if ("not(" in line and needle in line
+                    and (stripped != UI_DEFAULT_LIB_UNIT_CFG or rel not in unit_sources)
+                    and stripped != equivalent):
+                gated = True
+                break
+            if (in_src and companion in line
+                    and stripped not in UI_UNIT_TIER_TEST_CFGS
+                    and stripped != equivalent):
+                gated = True
+                break
+        if gated:
+            break
+    if cache_key is not None:
+        _MODULE_SCAN_CACHE[cache_key] = gated
+    return gated
+
+
 def single_run_packages(root: Path, affected: list[str], inventory: list[dict]) -> dict[str, str]:
     """Affected packages with a reviewed feature test configuration.
 
@@ -406,24 +475,9 @@ def single_run_packages(root: Path, affected: list[str], inventory: list[dict]) 
         if set(package["features"]) - {"default"} - companions != {feature}:
             continue
         directory = root / Path(package["manifest"]).parent
-        needle = f'feature = "{feature}"'
-        unit_sources = UI_DEFAULT_LIB_UNIT_MODULES if package["name"] == "hex-ui" else {}
-        equivalent_tests = UI_FEATURE_EQUIVALENT_TEST_CFGS if package["name"] == "hex-ui" else {}
-        gated = any("not(" in line and needle in line
-                    and (line.strip() != UI_DEFAULT_LIB_UNIT_CFG
-                         or source.relative_to(directory).as_posix() not in unit_sources)
-                    and line.strip() != equivalent_tests.get(source.relative_to(directory).as_posix())
-                    for source in directory.rglob("*.rs") if source.is_file()
-                    for line in source.read_text(errors="replace").splitlines())
-        if package["name"] == "hex-ui" and "ui-unit-tier" in package["features"]:
-            # Fail closed if the reviewed test-only companion ever gates
-            # production code or gains an unreviewed expression.
-            companion = 'feature = "ui-unit-tier"'
-            gated |= any(companion in line and line.strip() not in UI_UNIT_TIER_TEST_CFGS
-                         and line.strip() != equivalent_tests.get(source.relative_to(directory).as_posix())
-                         for source in directory.joinpath("src").rglob("*.rs") if source.is_file()
-                         for line in source.read_text(errors="replace").splitlines())
-        if not gated:
+        if not _package_feature_gated(
+            directory, package["name"], feature, "ui-unit-tier" in package["features"]
+        ):
             selected[package["name"]] = feature
     return selected
 
@@ -431,19 +485,24 @@ def single_run_packages(root: Path, affected: list[str], inventory: list[dict]) 
 TEST_CFG = re.compile(r"#\[cfg\((test|all\(test\b[^()]*(\([^()]*\)[^()]*)*\))\)\]")
 
 
-def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[str]]]]:
-    """Map each declared module file to (declaring file, attributes) pairs.
-
-    Only top-level `mod NAME;` lines (no indentation) are indexed; `#[path]` is
-    resolved relative to the declaring file's directory, as rustc does outside
-    inline modules. Declarations nested in inline modules are not indexed, so
-    their files stay unproven rather than misattributed.
-    """
+def _scan_module_declarations(source_root: Path) -> tuple[bool, dict[Path, list[tuple[Path, list[str]]]]]:
+    resolved_root = source_root.resolve()
+    cache_key = None
+    if (_MODULE_SCAN_CACHE is not None and _MODULE_SCAN_CACHE_ROOT is not None
+            and resolved_root.is_relative_to(_MODULE_SCAN_CACHE_ROOT)):
+        cache_key = ("declarations", resolved_root)
+        if cache_key in _MODULE_SCAN_CACHE:
+            return _MODULE_SCAN_CACHE[cache_key]
     declaration = re.compile(r"(pub(\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
     path_attribute = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
     found: dict[Path, list[tuple[Path, list[str]]]] = {}
+    has_include = False
     for parent in sorted(f for f in source_root.rglob("*.rs") if f.is_file()):
-        lines = parent.read_text(errors="replace").splitlines()
+        text = parent.read_text(errors="replace")
+        if "include!(" in text:
+            has_include = True
+        lines = text.splitlines()
+        parent_resolved = parent.resolve()
         for index, line in enumerate(lines):
             match = declaration.fullmatch(line.rstrip())
             if not match:
@@ -462,8 +521,26 @@ def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[s
                 base = parent.parent if parent.name in {"mod.rs", "lib.rs", "main.rs"} else parent.with_suffix("")
                 targets = [base / f"{name}.rs", base / name / "mod.rs"]
             for target in targets:
-                found.setdefault(target.resolve(), []).append((parent.resolve(), attributes))
-    return found
+                found.setdefault(target.resolve(), []).append((parent_resolved, attributes))
+    result = (has_include, found)
+    if cache_key is not None:
+        _MODULE_SCAN_CACHE[cache_key] = result
+    return result
+
+
+def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[str]]]]:
+    """Map each declared module file to (declaring file, attributes) pairs.
+
+    Only top-level `mod NAME;` lines (no indentation) are indexed; `#[path]` is
+    resolved relative to the declaring file's directory, as rustc does outside
+    inline modules. Declarations nested in inline modules are not indexed, so
+    their files stay unproven rather than misattributed.
+    """
+    _, found = _scan_module_declarations(source_root)
+    return {
+        target: [(parent, list(attributes)) for parent, attributes in entries]
+        for target, entries in found.items()
+    }
 
 
 TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
@@ -975,24 +1052,40 @@ MOD_LINE = re.compile(r"(pub(\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;"
 PATH_ATTRIBUTE = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 
 
-def module_paths(source_root: Path, *, workspace_root: Path | None = None) -> dict[Path, str] | None:
-    """Rust module path of every file reachable from the crate root.
-
-    Walks top-level `mod NAME;` declarations from lib.rs (or main.rs), resolving
-    `#[path]` as rustc does. Returns None when the crate includes source text
-    (`include!`), so a module filter can never miss included tests.
-    """
+def _scan_source_modules(
+    source_root: Path, *, workspace_root: Path | None = None
+) -> tuple[dict[Path, str], frozenset[str]] | None:
+    """Walk reachable crate modules once, collecting module paths and tested subtrees."""
+    resolved_source = source_root.resolve()
+    resolved_workspace = None if workspace_root is None else workspace_root.resolve()
+    cache_key = None
+    if (_MODULE_SCAN_CACHE is not None and _MODULE_SCAN_CACHE_ROOT is not None
+            and resolved_source.is_relative_to(_MODULE_SCAN_CACHE_ROOT)):
+        cache_key = ("modules", resolved_source, resolved_workspace)
+        if cache_key in _MODULE_SCAN_CACHE:
+            return _MODULE_SCAN_CACHE[cache_key]
     root_file = next((source_root / name for name in ("lib.rs", "main.rs")
                       if (source_root / name).is_file()), None)
     if root_file is None:
+        if cache_key is not None:
+            _MODULE_SCAN_CACHE[cache_key] = None
         return None
-    paths: dict[Path, str] = {root_file.resolve(): ""}
-    pending = [root_file.resolve()]
+    root_resolved = root_file.resolve()
+    paths: dict[Path, str] = {root_resolved: ""}
+    tested_subtrees: set[str] = set()
+    pending = [root_resolved]
     while pending:
         parent = pending.pop()
         text = parent.read_text(errors="replace")
         if "include!(" in text:
+            if cache_key is not None:
+                _MODULE_SCAN_CACHE[cache_key] = None
             return None
+        if TEST_ATTRIBUTE.search(text):
+            ancestor = paths[parent]
+            while ancestor:
+                tested_subtrees.add(ancestor)
+                ancestor = ancestor.rpartition("::")[0]
         lines = text.splitlines()
         for index, line in enumerate(lines):
             match = MOD_LINE.fullmatch(line.rstrip())
@@ -1008,7 +1101,7 @@ def module_paths(source_root: Path, *, workspace_root: Path | None = None) -> di
             base = parent.parent if parent.name in {"mod.rs", "lib.rs", "main.rs"} else parent.with_suffix("")
             targets = [parent.parent / explicit] if explicit else [base / f"{name}.rs", base / name / "mod.rs"]
             targets = [t.resolve() for t in targets]
-            if workspace_root is not None and any(not t.is_relative_to(workspace_root.resolve()) for t in targets):
+            if resolved_workspace is not None and any(not t.is_relative_to(resolved_workspace) for t in targets):
                 raise ValueError("source module path escapes the verified workspace")
             target = next((t for t in targets if t.is_file()), None)
             if target is None or target in paths:
@@ -1016,7 +1109,21 @@ def module_paths(source_root: Path, *, workspace_root: Path | None = None) -> di
             prefix = paths[parent]
             paths[target] = f"{prefix}::{name}" if prefix else name
             pending.append(target)
-    return paths
+    result = (paths, frozenset(tested_subtrees))
+    if cache_key is not None:
+        _MODULE_SCAN_CACHE[cache_key] = result
+    return result
+
+
+def module_paths(source_root: Path, *, workspace_root: Path | None = None) -> dict[Path, str] | None:
+    """Rust module path of every file reachable from the crate root.
+
+    Walks top-level `mod NAME;` declarations from lib.rs (or main.rs), resolving
+    `#[path]` as rustc does. Returns None when the crate includes source text
+    (`include!`), so a module filter can never miss included tests.
+    """
+    scan = _scan_source_modules(source_root, workspace_root=workspace_root)
+    return None if scan is None else dict(scan[0])
 
 
 def doc_example_owners(root: Path, paths: list[str], inventory: list[dict]) -> list[str]:
@@ -1077,7 +1184,7 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
     """
     filters: dict[str, set[str]] = {}
     whole: set[str] = set()
-    resolved: dict[str, dict[Path, str] | None] = {}
+    resolved: dict[str, tuple[dict[Path, str], frozenset[str]] | None] = {}
     executable = [p for p in paths if not metadata_path(p)]
     for path in executable:
         owner = owner_package(path, inventory)
@@ -1120,9 +1227,13 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
             whole.add(owner)
             continue
         if owner not in resolved:
-            resolved[owner] = module_paths(directory / "src", workspace_root=root)
-        modules = resolved[owner]
-        module = None if modules is None else modules.get(file)
+            resolved[owner] = _scan_source_modules(directory / "src", workspace_root=root)
+        scan = resolved[owner]
+        if scan is None:
+            whole.add(owner)
+            continue
+        modules, tested_subtrees = scan
+        module = modules.get(file)
         if not module:
             whole.add(owner)
             continue
@@ -1131,9 +1242,7 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
             if owner == "hex-ui" and (prefix in UI_MODULE_TEST_DEPENDENCIES
                                       or any(name.startswith(prefix) for name in UI_UNIT_TARGETS)):
                 return True
-            return any(TEST_ATTRIBUTE.search(f.read_text(errors="replace"))
-                       for f, name in modules.items()
-                       if name == candidate or name.startswith(candidate + "::"))
+            return candidate in tested_subtrees
         while module and not has_tests(module):
             module = module.rpartition("::")[0]
         if not module:
@@ -1371,9 +1480,9 @@ def test_only_owner(root: Path, path: str, inventory: list[dict]) -> str | None:
     if relative.parts[0] != "src":
         return None
     source_root = directory / "src"
-    if any("include!(" in f.read_text(errors="replace") for f in source_root.rglob("*.rs") if f.is_file()):
+    has_include, declarations = _scan_module_declarations(source_root)
+    if has_include:
         return None
-    declarations = module_declarations(source_root)
 
     def gated(module: Path, seen: frozenset) -> bool:
         uses = declarations.get(module, [])

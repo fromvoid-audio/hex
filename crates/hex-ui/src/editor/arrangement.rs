@@ -212,8 +212,16 @@ impl EditorView {
                                     .text_xs()
                                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                                     .child(theme::text(
-                                        if self.arrangement_focus.projection.enabled {
+                                        if self.arrangement_focus.projection.all_tracks_hidden() {
                                             "no clips in selected sections · q clears section focus"
+                                        } else if self
+                                            .arrangement_focus
+                                            .projection
+                                            .tag_filter()
+                                            .is_some()
+                                            && !state.project.tracks().is_empty()
+                                        {
+                                            "no tracks match tag filter"
                                         } else {
                                             "no tracks · import audio or add a track"
                                         },

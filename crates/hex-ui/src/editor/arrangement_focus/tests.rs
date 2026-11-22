@@ -4,7 +4,7 @@ use gpui::{
     Entity, KeyDownEvent, Keystroke, Modifiers, MouseButton, TestAppContext, VisualTestContext,
     point, px, size,
 };
-use hex_project::{Command, Created};
+use hex_project::{Command, Created, LoopRegion};
 use std::sync::Arc;
 
 #[path = "fixture.rs"]
@@ -554,6 +554,34 @@ fn focused_hidden_runs_are_marked_without_adding_row_space(cx: &mut TestAppConte
         )
     });
     let pixel = visual.update(|window, _| px(1.0 / window.scale_factor().max(1.0)));
+    let scale = visual.update(|window, _| window.scale_factor());
+    let line_color: gpui::Background = hidden_tracks::line_color().into();
+    let secondary_color: gpui::Background =
+        gpui::rgb(theme::color(theme::PaletteRole::Secondary)).into();
+    let assert_dashed_lane_cue = |visual: &mut VisualTestContext, name: &'static str| {
+        assert_eq!(
+            visual.rendered_background(name),
+            None,
+            "gap cue must never paint a solid full-width bar"
+        );
+        let quads = visual.rendered_filled_quads(name);
+        let dashes: Vec<_> = quads
+            .iter()
+            .filter(|(bounds, bg)| {
+                *bg == line_color
+                    && bounds.size.height == pixel.scale(scale)
+                    && bounds.size.width <= px(4.0).scale(scale)
+            })
+            .collect();
+        assert!(
+            dashes.len() >= 2,
+            "gap cue must render multiple dashed neutral segments"
+        );
+        assert!(
+            quads.iter().all(|(_, bg)| *bg != secondary_color),
+            "gap cue must never use PaletteRole::Secondary"
+        );
+    };
     for (name, track, bottom) in [
         (before(f.tracks[1].value()), f.tracks[1], false),
         (before(f.tracks[3].value()), f.tracks[3], false),
@@ -561,6 +589,12 @@ fn focused_hidden_runs_are_marked_without_adding_row_space(cx: &mut TestAppConte
     ] {
         let mark = visual.debug_bounds(name).expect("hidden track gap marker");
         let row = visual.debug_bounds(lane(track.value())).unwrap();
+        let divider = visual
+            .debug_bounds(selector("lane-right-divider", track.value()))
+            .unwrap();
+        let header = visual
+            .debug_bounds(selector("arrangement-track-header", track.value()))
+            .unwrap();
         assert_eq!(mark.size.height, pixel);
         assert_eq!(row.size.height, height, "markers never add row height");
         if bottom {
@@ -568,14 +602,12 @@ fn focused_hidden_runs_are_marked_without_adding_row_space(cx: &mut TestAppConte
         } else {
             assert_eq!(mark.top(), row.top());
         }
+        assert_eq!(mark.left(), row.left());
         assert!(
-            mark.size.width > row.size.width,
-            "marker includes header and lane"
+            mark.right() <= divider.left() && mark.right() <= header.left(),
+            "gap cue must stay inside timeline lane before lane-right-divider and header"
         );
-        assert_eq!(
-            visual.rendered_background(name),
-            Some(gpui::rgb(theme::color(theme::PaletteRole::Secondary)).into())
-        );
+        assert_dashed_lane_cue(&mut visual, name);
     }
     assert!(
         visual.debug_bounds(after(f.tracks[1].value())).is_none(),
@@ -590,6 +622,12 @@ fn focused_hidden_runs_are_marked_without_adding_row_space(cx: &mut TestAppConte
         .debug_bounds("section-hidden-all")
         .expect("one all-hidden run");
     assert_eq!(empty.size.height, pixel);
+    let main_header = visual.debug_bounds("main-track-header").unwrap();
+    assert!(
+        empty.right() < main_header.left(),
+        "empty-state gap cue must stay bounded to the timeline lane"
+    );
+    assert_dashed_lane_cue(&mut visual, "section-hidden-all");
     visual.simulate_keystrokes("q");
     visual.run_until_parked();
     for track in &f.tracks {
@@ -688,4 +726,356 @@ fn only_selected_sections_in_q_focus_receive_the_pattern(cx: &mut TestAppContext
             .debug_bounds("arrangement-section-focus-hatch-1")
             .is_none()
     );
+}
+
+#[gpui::test]
+fn hidden_track_cues_ignore_folds_tags_and_clear_across_edits_scroll_and_exit(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, mut f) = open(cx);
+    // Group tracks[2] so folding its parent creates a non-contiguous visible track index gap.
+    let Created::Track(group) = f
+        .model
+        .execute(Command::GroupTracks {
+            tracks: hex_project::TrackSelectionIds::new(&[f.tracks[2]]).unwrap(),
+            name: "group".into(),
+        })
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    // Add extra tracks with clips in section 0 so we can scroll offscreen and back.
+    let mut extras = Vec::new();
+    for index in 0..10 {
+        let Created::Track(track) = f
+            .model
+            .execute(Command::AddTrack {
+                name: format!("extra {index}"),
+            })
+            .unwrap()
+        else {
+            panic!("extra track")
+        };
+        f.model
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: hex_project::BeatTime::from_quarters(2).unwrap(),
+                length: hex_project::BeatTime::ONE,
+            })
+            .unwrap();
+        extras.push(track);
+    }
+    // Put a clip in section 0 on tracks[0] and tracks[4] too, and tag tracks[1], tracks[3], extras.
+    // Then fold `group` and filter by tag `keep`: tracks[0], group, tracks[2], tracks[4] are
+    // excluded from console_indices by fold/tag, while tracks[1], tracks[3], and extras remain.
+    let tag = hex_project::TrackTag::new("keep").unwrap();
+    for track in [f.tracks[1], f.tracks[3]]
+        .into_iter()
+        .chain(extras.iter().copied())
+    {
+        f.model
+            .execute(Command::SetTrackTags {
+                track,
+                tags: vec![tag.clone()],
+            })
+            .unwrap();
+    }
+    // Also place a clip in section 0 on tracks[2] inside `group`, and fold `group`.
+    f.model
+        .execute(Command::PlaceMidiClip {
+            track: f.tracks[2],
+            start: hex_project::BeatTime::from_quarters(2).unwrap(),
+            length: hex_project::BeatTime::ONE,
+        })
+        .unwrap();
+    replace(&mut visual, &editor, f.model.project().clone());
+
+    let before = |id: TrackId| selector("section-hidden-before", id.value());
+    let after = |id: TrackId| selector("section-hidden-after", id.value());
+    let assert_no_gap_cues = |visual: &mut VisualTestContext, ids: &[TrackId]| {
+        for &id in ids {
+            assert!(
+                visual.debug_bounds(before(id)).is_none(),
+                "unexpected before cue on track {}",
+                id.value()
+            );
+            assert!(
+                visual.debug_bounds(after(id)).is_none(),
+                "unexpected after cue on track {}",
+                id.value()
+            );
+        }
+    };
+
+    let all_ids: Vec<_> = f
+        .tracks
+        .iter()
+        .copied()
+        .chain([group])
+        .chain(extras.iter().copied())
+        .collect();
+
+    // 1. Fold `group` and enable section focus on section 0 where tracks[0] & tracks[4] have no clips:
+    // Verify folded child f.tracks[2] produces no gap cue when tracks[3] (tagged `keep`) is shown,
+    // and when tag filter `keep` is active (excluding tracks[0], group, tracks[2], tracks[4])
+    // ALL remaining tracks intersect section 0 -> non-contiguous canonical indices, ZERO cues!
+    editor.update(&mut visual, |v, cx| {
+        v.arrangement_focus.projection.toggle_fold(group);
+        v.arrangement_focus.projection.set_tag_filter(Some(tag));
+        v.reconcile_arrangement_focus();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("q");
+    visual.run_until_parked();
+    select_section(&mut visual, 0, false);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.arrangement_focus.projection.enabled);
+        // Tracks 0, group, 2, 4 are filtered out by tag/fold -> non-contiguous canonical indices!
+        assert!(
+            v.arrangement_track_indices()
+                .windows(2)
+                .any(|w| w[1] - w[0] > 1)
+        );
+        assert_eq!(
+            v.arrangement_track_indices(),
+            v.arrangement_focus.projection.console_indices.as_slice()
+        );
+    });
+    assert_no_gap_cues(&mut visual, &all_ids);
+
+    // 2. Clear tag filter while keeping `group` folded: `group` remains visible because its folded
+    // child `tracks[2]` intersects section 0, while `tracks[0]` and `tracks[4]` are hidden by
+    // section focus and folded child `tracks[2]` is omitted by folding (not section focus).
+    editor.update(&mut visual, |v, cx| {
+        v.arrangement_focus.projection.set_tag_filter(None);
+        v.reconcile_arrangement_focus();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    // Deactivate clips[0] on tracks[1] so tracks[1] is also hidden by section focus, leaving
+    // `group`, `tracks[3]`, and `extras` visible: `before(group)` marks hidden `tracks[0..=1]`,
+    // `before(tracks[3])` stays None because `tracks[2]` is hidden by folding, and
+    // `before(extras[0])` marks hidden `tracks[4]`.
+    f.model
+        .execute(Command::SetClipActive {
+            clip: f.clips[0],
+            active: false,
+        })
+        .unwrap();
+    replace(&mut visual, &editor, f.model.project().clone());
+    assert!(visual.debug_bounds(before(group)).is_some());
+    assert!(
+        visual.debug_bounds(before(f.tracks[3])).is_none(),
+        "folded child between group and tracks[3] must not emit a gap cue"
+    );
+    assert!(visual.debug_bounds(before(extras[0])).is_some());
+    assert_no_gap_cues(&mut visual, &extras[1..]);
+
+    // 3. Distinction from `track-insertion-line`: start track reorder drag while section focus is active.
+    let source = visual
+        .debug_bounds(selector("track-name", extras[0].value()))
+        .unwrap();
+    let target = visual
+        .debug_bounds(selector("arrangement-track-header", f.tracks[3].value()))
+        .unwrap();
+    let to = point(source.center().x, target.top() + px(1.0));
+    visual.simulate_mouse_down(source.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(to, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    let insertion = visual
+        .debug_bounds("track-insertion-line")
+        .expect("reorder insertion line must appear");
+    assert_eq!(
+        visual.rendered_background("track-insertion-line"),
+        Some(gpui::rgb(theme::color(theme::PaletteRole::Secondary)).into())
+    );
+    let cue_bounds = visual.debug_bounds(before(extras[0])).unwrap();
+    assert!(
+        insertion.size.width > cue_bounds.size.width,
+        "full-row Secondary reorder line spans header + lane, distinct from lane-bounded gap cue"
+    );
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("track-insertion-line").is_none());
+
+    // 4. Edit (re-activate clips[0]) + selection change + scroll offscreen and back.
+    f.model
+        .execute(Command::SetClipActive {
+            clip: f.clips[0],
+            active: true,
+        })
+        .unwrap();
+    replace(&mut visual, &editor, f.model.project().clone());
+    // Re-activating clips[0] reveals f.tracks[1] above the anchored top row (`group`), so scroll
+    // to item 0 to inspect the newly revealed row before scrolling offscreen and back.
+    editor.update(&mut visual, |v, cx| {
+        v.track_scroll.list.scroll_to(gpui::ListOffset {
+            item_ix: 0,
+            offset_in_item: px(0.0),
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(before(f.tracks[1])).is_some());
+    assert!(visual.debug_bounds(before(extras[0])).is_some());
+    // Scroll down in a shorter window so top rows go offscreen, then scroll back to top.
+    visual.simulate_resize(size(px(1280.0), px(380.0)));
+    visual.run_until_parked();
+    editor.update(&mut visual, |v, cx| {
+        v.track_scroll.list.scroll_to(gpui::ListOffset {
+            item_ix: 5,
+            offset_in_item: px(0.0),
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    // Click an extra track header to test selection change while scrolled.
+    let extra_header = visual
+        .debug_bounds(selector("track-name", extras[5].value()))
+        .unwrap()
+        .center();
+    visual.simulate_click(extra_header, Modifiers::default());
+    visual.run_until_parked();
+    editor.update(&mut visual, |v, cx| {
+        v.track_scroll.list.scroll_to(gpui::ListOffset {
+            item_ix: 0,
+            offset_in_item: px(0.0),
+        });
+        cx.notify();
+    });
+    visual.simulate_resize(size(px(1280.0), px(800.0)));
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(before(f.tracks[1])).is_some());
+
+    // 5. Exit section focus with Q: every section-hidden-* cue clears cleanly.
+    visual.simulate_keystrokes("q");
+    visual.run_until_parked();
+    assert_no_gap_cues(&mut visual, &all_ids);
+}
+
+#[gpui::test]
+fn section_focus_lifecycle_guards_empty_state_project_replace_and_mode_switch(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, f) = open(cx);
+    // 1. Toggling arrangement focus with state == None must remain a no-op.
+    editor.update(&mut visual, |v, cx| {
+        let saved = v.state.take();
+        v.toggle_arrangement_focus();
+        assert!(!v.arrangement_focus.projection.enabled);
+        v.state = saved;
+        cx.notify();
+    });
+    visual.run_until_parked();
+
+    // 2. Active section focus resets eagerly on project_replaced.
+    visual.simulate_keystrokes("q");
+    visual.run_until_parked();
+    select_section(&mut visual, 0, false);
+    assert!(
+        visual
+            .debug_bounds(selector("section-hidden-before", f.tracks[1].value()))
+            .is_some()
+    );
+    editor.update(&mut visual, |v, _| {
+        v.service
+            .submit(hex_session::service::Request::NewWithAudioMode {
+                mode: hex_session::DocumentAudioMode::Resident,
+                reservation: None,
+            })
+            .unwrap();
+    });
+    let deadline = crate::test_wait::hang_deadline();
+    loop {
+        if let Ok(event) = editor.read_with(&visual, |v, _| v.service.try_event()) {
+            let replaced = event.project_replaced;
+            editor.update(&mut visual, |v, cx| {
+                v.receive(event);
+                cx.notify();
+            });
+            if replaced {
+                break;
+            }
+        } else {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "replacement event before deadline"
+            );
+            std::thread::yield_now();
+        }
+    }
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert!(!v.arrangement_focus.projection.enabled);
+        assert!(v.arrangement_focus.pending_restore.is_none());
+    });
+    for &track in &f.tracks {
+        assert!(
+            visual
+                .debug_bounds(selector("section-hidden-before", track.value()))
+                .is_none()
+        );
+        assert!(
+            visual
+                .debug_bounds(selector("section-hidden-after", track.value()))
+                .is_none()
+        );
+    }
+
+    // 3. Switching Arrangement -> Session mid-loop-ACK cancels pending loop focus and
+    // loop_state_installed in Session mode must not enable arrangement focus.
+    let empty_project = Project::new(48_000).unwrap();
+    replace(&mut visual, &editor, empty_project);
+    // Empty project with Q enabled and no sections selected must not show "no clips in selected sections".
+    visual.simulate_keystrokes("q");
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert!(v.arrangement_focus.projection.enabled);
+        assert!(!v.arrangement_focus.projection.all_tracks_hidden());
+    });
+    visual.simulate_keystrokes("q");
+    visual.run_until_parked();
+
+    // Restore fixture project with sections for pending-loop mode switch check.
+    let mut model = f.model;
+    replace(&mut visual, &editor, model.project().clone());
+    select_section(&mut visual, 1, false);
+    let region = editor.read_with(&visual, |v, _| {
+        let (start, end) = v.section_loop_bounds().unwrap().unwrap();
+        LoopRegion::new(start, end, true).unwrap()
+    });
+    editor.update(&mut visual, |v, cx| {
+        v.submit_selection_loop_preview(region, true);
+        assert!(v.pending_loop_has_focus_intent());
+        v.set_mode(crate::editor::EditorMode::Session);
+        assert!(
+            !v.pending_loop_has_focus_intent(),
+            "leaving Arrangement cancels pending loop focus intent"
+        );
+        cx.notify();
+    });
+    visual.run_until_parked();
+    model
+        .execute(Command::SetLoopRegion {
+            start: region.start(),
+            end: region.end(),
+            enabled: region.enabled(),
+        })
+        .unwrap();
+    replace(&mut visual, &editor, model.project().clone());
+    editor.update(&mut visual, |v, cx| {
+        v.loop_state_installed(true);
+        assert!(
+            !v.arrangement_focus.projection.enabled,
+            "loop ACK in Session mode must not arm Arrangement focus"
+        );
+        v.set_mode(crate::editor::EditorMode::Arrangement);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert!(!v.arrangement_focus.projection.enabled);
+    });
 }
