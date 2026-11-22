@@ -271,9 +271,121 @@ FULL_STEPS = (
 )
 
 
+# Packages containing process-wide static Mutex fixtures (NATIVE_FIXTURE in
+# hex-desktop, serial_output() in hex-audio, CHECKPOINT_GATE in hex-session).
+# When cargo-nextest is unavailable, fallback execution shards these crates via
+# scripts/test_shards.py so concurrent tests do not serialize inside one process.
+MUTEX_SHARDED_PACKAGES = frozenset({"hex-desktop", "hex-audio", "hex-session"})
+
+
 def runs_rust_tests(argv: tuple[str, ...]) -> bool:
-    """Plain `cargo test` or the same command run through the test sharder."""
-    return argv[:2] == ("cargo", "test") or argv[:2] == ("python3", "scripts/test_shards.py")
+    """Plain `cargo test`, `cargo nextest run`, or the same run via `test_shards.py`."""
+    return (argv[:2] == ("cargo", "test")
+            or argv[:3] == ("cargo", "nextest", "run")
+            or argv[:2] == ("python3", "scripts/test_shards.py"))
+
+
+def nextest_argv(
+    argv: tuple[str, ...],
+    *,
+    requires_tests: bool = True,
+    unit_tier: bool = False,
+) -> tuple[str, ...] | None:
+    """Translate an eligible `cargo test` or `test_shards.py` argv to `cargo nextest run`.
+
+    Doctests (`--doc`) return None because cargo-nextest does not execute doctests.
+    """
+    profile_args = ("--profile", "unit") if unit_tier else ()
+    if argv[:2] == ("python3", "scripts/test_shards.py"):
+        if "--" not in argv:
+            return None
+        split = argv.index("--")
+        shard_opts = argv[2:split]
+        inner = argv[split + 1:]
+        if inner[:2] != ("cargo", "test") or "--doc" in inner:
+            return None
+        allow_empty = "--allow-empty" in shard_opts
+        filters: list[str] = []
+        skips: list[str] = []
+        i = 0
+        while i < len(shard_opts):
+            opt = shard_opts[i]
+            if opt == "--filter" and i + 1 < len(shard_opts):
+                filters.append(shard_opts[i + 1])
+                i += 2
+            elif opt == "--skip" and i + 1 < len(shard_opts):
+                skips.append(shard_opts[i + 1])
+                i += 2
+            else:
+                i += 1
+        no_tests = "--no-tests=pass" if (allow_empty or not requires_tests) else "--no-tests=fail"
+        tail: list[str] = list(filters)
+        for skip in skips:
+            tail.extend(("--skip", skip))
+        return ("cargo", "nextest", "run", *profile_args, no_tests, *inner[2:],
+                *(("--", *tail) if tail else ()))
+    if argv[:2] != ("cargo", "test"):
+        return None
+    if "--" in argv:
+        split = argv.index("--")
+        cargo_args = argv[2:split]
+        test_args = argv[split + 1:]
+    else:
+        cargo_args = argv[2:]
+        test_args = ()
+    if "--doc" in cargo_args or "--no-run" in cargo_args:
+        return None
+    if any(flag in test_args for flag in ("--list", "--format")):
+        return None
+    no_tests = "--no-tests=fail" if requires_tests else "--no-tests=pass"
+    return ("cargo", "nextest", "run", *profile_args, no_tests, *cargo_args,
+            *(("--", *test_args) if test_args else ()))
+
+
+def sharded_fallback_argv(
+    argv: tuple[str, ...],
+    *,
+    requires_tests: bool = True,
+    shards: int = 4,
+) -> tuple[str, ...] | None:
+    """Wrap single-package Mutex-heavy `cargo test` commands with `test_shards.py`."""
+    if argv[:2] != ("cargo", "test"):
+        return None
+    if "--" in argv:
+        split = argv.index("--")
+        cargo_args = argv[2:split]
+        test_args = argv[split + 1:]
+    else:
+        cargo_args = argv[2:]
+        test_args = ()
+    if any(flag in cargo_args for flag in ("--doc", "--no-run", "--workspace")):
+        return None
+    if any(arg.startswith("-") for arg in test_args):
+        return None
+    pkgs = [cargo_args[i + 1] for i in range(len(cargo_args) - 1) if cargo_args[i] == "-p"]
+    if len(pkgs) != 1 or pkgs[0] not in MUTEX_SHARDED_PACKAGES:
+        return None
+    shard_flags: list[str] = ["--shards", str(shards)]
+    if not requires_tests:
+        shard_flags.append("--allow-empty")
+    for flt in test_args:
+        shard_flags.extend(("--filter", flt))
+    return ("python3", "scripts/test_shards.py", *shard_flags, "--", "cargo", "test", *cargo_args)
+
+
+def _parse_rust_passed_counts(text: str) -> list[int]:
+    """Extract passing Rust test counts from either `cargo nextest` or libtest logs."""
+    nextest_summaries = re.findall(
+        r"^\s*Summary \[\s*\d+(?:\.\d+)?s\] \d+ tests? run: (\d+) passed([^\n]*)$",
+        text,
+        re.MULTILINE,
+    )
+    if nextest_summaries:
+        return [
+            int(passed) for passed, rest in nextest_summaries
+            if not re.search(r"\b(?:failed|timed out|aborted)\b", rest)
+        ]
+    return [int(n) for n in re.findall(r"test result: ok\. (\d+) passed;", text)]
 
 
 def log_timing_estimates(text: str, duration: float) -> dict[str, float | None]:
@@ -285,7 +397,10 @@ def log_timing_estimates(text: str, duration: float) -> dict[str, float | None]:
     build = [3600 * float(h or 0) + 60 * float(m or 0) + float(s)
              for h, m, s in re.findall(
                  r"^\s*Finished [^\n]* in (?:(\d+)h )?(?:(\d+)m )?(\d+(?:\.\d+)?)s", text, re.MULTILINE)]
-    rust = [float(s) for s in re.findall(r"^test result: [^\n]*finished in (\d+(?:\.\d+)?)s", text, re.MULTILINE)]
+    nextest_rust = [float(s) for s in re.findall(
+        r"^\s*Summary \[\s*(\d+(?:\.\d+)?)s\] \d+ tests? run:", text, re.MULTILINE)]
+    rust = nextest_rust if nextest_rust else [
+        float(s) for s in re.findall(r"^test result: [^\n]*finished in (\d+(?:\.\d+)?)s", text, re.MULTILINE)]
     python = [float(s) for s in re.findall(r"^Ran \d+ tests? in (\d+(?:\.\d+)?)s", text, re.MULTILINE)]
     result = {name: sum(values) if values and math.isfinite(sum(values)) else None
               for name, values in (("cargo_build_phase_seconds", build),
@@ -1541,12 +1656,18 @@ class LocalCiRunner:
         preflight_metadata: dict | None = None,
         quick_base: str | None = None,
         quick_source: str | None = None,
+        test_runner: str | None = None,
     ) -> None:
         self.root = root.resolve()
         # The CLI retains its existing policy path; imported runners require a source witness.
         self._cli_policy_bound = False
         self.over_budget_reason = over_budget_reason
         self._preflight_metadata = preflight_metadata
+        self.env = dict(os.environ if env is None else env)
+        resolved_runner = test_runner if test_runner is not None else self.env.get("HEX_TEST_RUNNER", "auto")
+        if resolved_runner not in {"auto", "nextest", "cargo"}:
+            raise ValueError(f"unsupported test runner: {resolved_runner!r}")
+        self.test_runner = resolved_runner
         default_floor = DEFAULT_FULL_MIN_FREE_BYTES if mode in {"full", "merge", "release"} else 0
         self.min_free_bytes = default_floor if min_free_bytes is None else min_free_bytes
         if (
@@ -1567,7 +1688,6 @@ class LocalCiRunner:
         self.adopt_target = adopt_target
         self.target_state_dir = target_state_dir
         self.run_id = run_id or f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
-        self.env = dict(os.environ if env is None else env)
         native_acceptance_opt_in = bool(ci_plan.python_tests.native_acceptance_inputs(self.env))
         sharded_full_python = mode == "full" and plan is None and not native_acceptance_opt_in
         self.steps = steps if steps is not None else (
@@ -1992,8 +2112,47 @@ class LocalCiRunner:
         return step.uses_cargo_target or bool(
             len(step.argv) > 1
             and step.argv[0] == "cargo"
-            and step.argv[1] in {"build", "check", "test", "clippy", "run", "bench", "doc", "clean", "rustc"}
-        )
+            and step.argv[1] in {"build", "check", "test", "nextest", "clippy", "run", "bench", "doc", "clean", "rustc"}
+        ) or step.argv[:2] == ("python3", "scripts/test_shards.py")
+
+    def _is_temp_cargo_stub(self) -> bool:
+        path_env = self.env.get("PATH", "")
+        cargo_bin = shutil.which("cargo", path=path_env)
+        if not cargo_bin:
+            return True
+        tmp_root = Path(tempfile.gettempdir()).resolve()
+        try:
+            return Path(cargo_bin).resolve().is_relative_to(tmp_root)
+        except OSError:
+            return False
+
+    def _nextest_available(self) -> bool:
+        if self._is_temp_cargo_stub():
+            return False
+        return shutil.which("cargo-nextest", path=self.env.get("PATH", "")) is not None
+
+    def _effective_step_argv(self, step: Step) -> tuple[str, ...]:
+        """Select cargo-nextest (or sharded fallback) for eligible Rust test steps."""
+        if not runs_rust_tests(step.argv) or step.argv[:3] == ("cargo", "nextest", "run"):
+            return step.argv
+        if self.test_runner == "cargo":
+            return step.argv
+        if self.test_runner == "nextest" or (self.test_runner == "auto" and self._nextest_available()):
+            use_unit_profile = (
+                _is_unit_tier_step(step.step_id, step.argv)
+                and (self.root / ".config/nextest.toml").is_file()
+            )
+            translated = nextest_argv(
+                step.argv,
+                requires_tests=step.requires_tests,
+                unit_tier=use_unit_profile,
+            )
+            return translated if translated is not None else step.argv
+        if self.test_runner == "auto" and not self._is_temp_cargo_stub():
+            sharded = sharded_fallback_argv(step.argv, requires_tests=step.requires_tests)
+            if sharded is not None:
+                return sharded
+        return step.argv
 
     @staticmethod
     def _directory_identity(path: Path) -> dict[str, int] | None:
@@ -3169,12 +3328,15 @@ class LocalCiRunner:
         if step.step_id == "runner-tests" and self.summary.get("plan") and "python_tests" in self.summary["plan"]:
             selection = self.summary["plan"]["python_tests"]
             print("python self-tests: " + json.dumps(selection, sort_keys=True), flush=True)
+        effective_argv = self._effective_step_argv(step)
+        if effective_argv != step.argv:
+            entry["executed_argv"] = list(effective_argv)
         try:
             with log_path.open("w", encoding="utf-8") as log, \
                     terminal_progress(f"checking {step.step_id}", announce=False):
                 phase = "running command"
                 result = subprocess.run(
-                    list(step.argv),
+                    list(effective_argv),
                     cwd=self.root,
                     env=self.env,
                     stdout=log,
@@ -3185,12 +3347,15 @@ class LocalCiRunner:
             entry["status"] = "passed" if result.returncode == 0 else "failed"
             phase = "reading step log"
             text = log_path.read_text(errors="replace")
-            rust_counts = [int(n) for n in re.findall(r"test result: ok\. (\d+) passed;", text)]
+            rust_counts = _parse_rust_passed_counts(text)
             python_counts = [int(n) for n in re.findall(r"^Ran (\d+) tests? in ", text, re.MULTILINE)]
             skipped = [int(n) for n in re.findall(r"^OK \(skipped=(\d+)\)", text, re.MULTILINE)]
             entry["test_results"] = {"rust_passed_by_binary": rust_counts,
                                      "python_executions": python_counts, "python_skipped": skipped}
-            if step.requires_tests and result.returncode == 0 and sum(rust_counts) + sum(python_counts) - sum(skipped) <= 0:
+            if step.requires_tests and (
+                (result.returncode == 0 and sum(rust_counts) + sum(python_counts) - sum(skipped) <= 0)
+                or (effective_argv[:3] == ("cargo", "nextest", "run") and result.returncode == 4 and sum(rust_counts) <= 0)
+            ):
                 entry["status"] = "failed"
                 entry["error"] = "requested test scope executed no passing tests; zero-match/all-skipped is not qualification"
         except FileNotFoundError as error:
@@ -3293,7 +3458,7 @@ class LocalCiRunner:
                         log.seek(max(0, log.tell() - 65536))
                         tail = log.read(65536).decode("utf-8", errors="replace")
                     lines = self._diagnostic_text(tail).splitlines()
-                    marker = r"^\s*(?:error(?:\[|:)|thread .*panicked at|---- .* stdout ----|FAIL:|ERROR:|Traceback \()"
+                    marker = r"^\s*(?:error(?:\[|:)|thread .*panicked at|---- .* stdout ----|FAIL:|FAIL \[|--- STD(?:ERR|OUT):|ERROR:|Traceback \()"
                     start = next((i for i, line in enumerate(lines) if re.search(marker, line)), None)
                     if start is not None:
                         excerpt = "\n".join(line[:240] for line in lines[start:start + 20])[:4000]
@@ -3305,7 +3470,7 @@ class LocalCiRunner:
                         "missing executable" if "required executable not found" in error else
                         "log I/O failure" if "log I/O failure" in error else
                         "compiler failure" if re.search(r"error\[E\d+\]|error:.*could not compile|--> .*:\d+:\d+", excerpt) else
-                        "test failure" if re.search(r"panicked at|stdout ----|FAIL:|ERROR:|Traceback", excerpt) else
+                        "test failure" if re.search(r"panicked at|stdout ----|FAIL:|FAIL \[|--- STD(?:ERR|OUT):|ERROR:|Traceback", excerpt) else
                         "command failure")
         if publication and (step is None or step["status"] not in {"failed", "interrupted"}):
             category = "report publication failure"
@@ -3677,6 +3842,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="generate notes before freezing source, then exit without running sealed checks")
     parser.add_argument("--changelog-base", help="explicit first-generation Git baseline")
     parser.add_argument("--changelog-through", default="HEAD", help="immutable generation range end")
+    parser.add_argument("--test-runner", choices=("auto", "nextest", "cargo"), default=None,
+                        help="Rust test execution backend: auto (nextest when installed, else sharded cargo), nextest, or cargo")
     arguments = parser.parse_args(argv)
     if arguments.fresh_target and (arguments.quick or arguments.adopt_target
                                    or arguments.resume_report or arguments.prepare_changelog):
@@ -3779,6 +3946,7 @@ def _run_cli(arguments, parser, reservation: FreshTargetReservation | None) -> i
         preflight_metadata=preflight_metadata,
         quick_base=quick_base,
         quick_source=quick_source,
+        test_runner=arguments.test_runner,
     )
     runner._cli_policy_bound = reservation is None
     try:

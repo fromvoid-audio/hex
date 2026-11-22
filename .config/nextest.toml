@@ -1,0 +1,26 @@
+# Workspace cargo-nextest configuration for hex.
+# Runs each Rust test in an isolated process so static process-wide Mutex
+# fixtures in hex-desktop, hex-audio, and hex-session execute concurrently
+# without serializing inside a single test process.
+
+[store]
+dir = "target/nextest"
+
+[profile.default]
+fail-fast = false
+status-level = "fail"
+final-status-level = "slow"
+slow-timeout = { period = "15s", terminate-after = 4 }
+
+# Pure unit-tier profile: flags any test exceeding the < 1s unit budget.
+[profile.unit]
+fail-fast = false
+status-level = "fail"
+final-status-level = "slow"
+slow-timeout = { period = "1s" }
+
+[profile.ci]
+fail-fast = false
+status-level = "fail"
+final-status-level = "slow"
+slow-timeout = { period = "15s", terminate-after = 4 }

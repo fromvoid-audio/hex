@@ -560,7 +560,7 @@ class ReportStepAdmissionTests(unittest.TestCase):
                         self.assertRaisesRegex(ValueError, "historical report selection"):
                     local_ci.validate_report_steps(evidence, allow_carried=allow_carried)
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             report = root / "old.json"
             report.write_text(json.dumps(evidence))
             runner = local_ci.LocalCiRunner(root, mode="merge", plan={"scope": "full"}, carry_report=report)
@@ -582,7 +582,7 @@ class ReportStepAdmissionTests(unittest.TestCase):
 
     def test_module_source_cannot_escape_verified_workspace(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
+            root = Path(directory).resolve().resolve()
             (root / "src").mkdir()
             (root / "src/lib.rs").write_text('#[path = "/outside.rs"]\nmod outside;\n')
             with self.assertRaisesRegex(ValueError, "escapes the verified workspace"):
@@ -851,7 +851,7 @@ class SuppliedSelectionTests(unittest.TestCase):
 class SuppliedGitScopeTests(unittest.TestCase):
     def test_altered_git_scope_refuses_before_steps_or_target_access(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
+            root = Path(directory).resolve().resolve()
             env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
             def git(*args):
                 return subprocess.check_output(["git", *args], cwd=root, env=env, text=True).strip()
@@ -4321,7 +4321,7 @@ class MergeBudgetAndPreflightTests(unittest.TestCase):
 
     def test_quick_steps_scope_rustfmt_to_changed_packages_with_all_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1"}
             def git(*args):
                 return subprocess.check_output(["git", *args], cwd=root, env=env, text=True).strip()
@@ -4360,7 +4360,7 @@ class MergeBudgetAndPreflightTests(unittest.TestCase):
 
     def test_start_tree_fuses_runtime_inputs_and_deduplicates_preflight_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1"}
             def git(*args):
                 return subprocess.check_output(["git", *args], cwd=root, env=env, text=True).strip()
@@ -4414,6 +4414,130 @@ class MergeBudgetAndPreflightTests(unittest.TestCase):
                 ctx = runner._dependency_context()
             runner._reuse_release_metadata = False
             self.assertEqual(ctx["sha256"], "a" * 64)
+
+
+class NextestRunnerTests(unittest.TestCase):
+    def test_workspace_nextest_config_sets_unit_one_second_slow_timeout(self):
+        config = (local_ci.ROOT / ".config/nextest.toml").read_text()
+        self.assertIn("[profile.unit]", config)
+        self.assertIn('slow-timeout = { period = "1s" }', config)
+        scope, affected, _ = local_ci.ci_plan.classify([".config/nextest.toml"], [])
+        self.assertEqual((scope, affected), ("tooling", []))
+
+    def test_nextest_argv_translation_preserves_filters_profiles_and_doctests(self):
+        # Standard cargo test -> cargo nextest run with --no-tests=fail.
+        self.assertEqual(
+            local_ci.nextest_argv(
+                ("cargo", "test", "-p", "hex-session", "--lib", "--locked", "--", "service::recovery::"),
+                requires_tests=True,
+                unit_tier=False,
+            ),
+            ("cargo", "nextest", "run", "--no-tests=fail",
+             "-p", "hex-session", "--lib", "--locked", "--", "service::recovery::"),
+        )
+        # Unit-tier adds --profile unit; requires_tests=False adds --no-tests=pass.
+        self.assertEqual(
+            local_ci.nextest_argv(
+                ("cargo", "test", "-p", "hex-ui", "--features", "ui-unit-tier", "--test", "unit_editor_logic", "--locked"),
+                requires_tests=False,
+                unit_tier=True,
+            ),
+            ("cargo", "nextest", "run", "--profile", "unit", "--no-tests=pass",
+             "-p", "hex-ui", "--features", "ui-unit-tier", "--test", "unit_editor_logic", "--locked"),
+        )
+        # Doctests return None so cargo test --doc is preserved.
+        self.assertIsNone(local_ci.nextest_argv(("cargo", "test", "--doc", "-p", "hex-session", "--locked")))
+        # test_shards.py command translates filters/skips/allow-empty cleanly.
+        self.assertEqual(
+            local_ci.nextest_argv(
+                ("python3", "scripts/test_shards.py", "--shards", "4", "--allow-empty",
+                 "--filter", "native_audio::", "--skip", "slow_case", "--",
+                 "cargo", "test", "-p", "hex-desktop", "--features", "allocation-probe", "--locked"),
+                requires_tests=True,
+            ),
+            ("cargo", "nextest", "run", "--no-tests=pass",
+             "-p", "hex-desktop", "--features", "allocation-probe", "--locked",
+             "--", "native_audio::", "--skip", "slow_case"),
+        )
+
+    def test_sharded_fallback_wraps_mutex_heavy_crates_only(self):
+        self.assertEqual(
+            local_ci.sharded_fallback_argv(
+                ("cargo", "test", "-p", "hex-desktop", "--bins", "--locked", "--", "native_audio::"),
+                requires_tests=True,
+            ),
+            ("python3", "scripts/test_shards.py", "--shards", "4", "--filter", "native_audio::", "--",
+             "cargo", "test", "-p", "hex-desktop", "--bins", "--locked"),
+        )
+        self.assertEqual(
+            local_ci.sharded_fallback_argv(
+                ("cargo", "test", "-p", "hex-audio", "--lib", "--locked"),
+                requires_tests=False,
+            ),
+            ("python3", "scripts/test_shards.py", "--shards", "4", "--allow-empty", "--",
+             "cargo", "test", "-p", "hex-audio", "--lib", "--locked"),
+        )
+        # Non-Mutex crate or doctests stay unsharded.
+        self.assertIsNone(local_ci.sharded_fallback_argv(("cargo", "test", "-p", "hex-project", "--lib", "--locked")))
+        self.assertIsNone(local_ci.sharded_fallback_argv(("cargo", "test", "--doc", "-p", "hex-session", "--locked")))
+
+    def test_nextest_summary_parsing_timing_zero_test_refusal_and_failure_excerpt(self):
+        pass_log = (
+            "   Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s\n"
+            "    Summary [   0.380s] 63 tests run: 63 passed, 778 skipped\n"
+        )
+        self.assertEqual(local_ci._parse_rust_passed_counts(pass_log), [63])
+        timing = local_ci.log_timing_estimates(pass_log, 1.0)
+        self.assertEqual(timing["cargo_build_phase_seconds"], 0.42)
+        self.assertEqual(timing["rust_harness_seconds"], 0.38)
+
+        # Passing with leaky note still counts passing tests.
+        leaky_log = "    Summary [   2.100s] 10 tests run: 10 passed (1 leaky), 2 skipped\n"
+        self.assertEqual(local_ci._parse_rust_passed_counts(leaky_log), [10])
+
+        # Failing summary does not count as passing; zero-test summary yields [0].
+        fail_log = (
+            "        FAIL [   0.016s] ( 1/10) hex-audio device::tests::broken\n"
+            "    Summary [   1.029s] 10 tests run: 9 passed, 1 failed, 0 skipped\n"
+        )
+        self.assertEqual(local_ci._parse_rust_passed_counts(fail_log), [])
+        zero_log = "    Summary [   0.000s] 0 tests run: 0 passed, 79 skipped\n"
+        self.assertEqual(local_ci._parse_rust_passed_counts(zero_log), [0])
+
+        # Budget calculation uses nextest timing estimates cleanly.
+        budget = local_ci.merge_test_budget([
+            {
+                "step_id": "ui-unit-unit_editor_logic",
+                "argv": ["cargo", "nextest", "run", "--profile", "unit", "-p", "hex-ui"],
+                "duration_seconds": 1.0,
+                "execution": "executed",
+                "timing_estimates": timing,
+            }
+        ], None, total_wall_seconds=1.5)
+        self.assertEqual(budget["unit_budget"]["checked_steps"], 1)
+        self.assertFalse(budget["unit_budget"]["exceeded"])
+
+        # Failure excerpt recognizes nextest FAIL [ ... ] as test failure.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            runner = local_ci.LocalCiRunner(
+                root, mode="quick", run_id="nx-fail", min_free_bytes=0,
+                steps=(local_ci.Step("unit", ("cargo", "nextest", "run", "-p", "hex-audio")),),
+            )
+            runner.output_dir.mkdir(parents=True)
+            log_file = runner.output_dir / "01-unit.log"
+            log_file.write_text(fail_log)
+            runner.summary["status"] = "failed"
+            runner.summary["steps"] = [{
+                "step_id": "unit", "argv": ["cargo", "nextest", "run", "-p", "hex-audio"],
+                "status": "failed", "exit_code": 100, "log": str(log_file.relative_to(root)), "error": None,
+            }]
+            out = io.StringIO()
+            with redirect_stdout(out):
+                runner._print_failure_details()
+            rendered = out.getvalue()
+            self.assertIn("step: unit (test failure)", rendered)
+            self.assertIn("FAIL [   0.016s]", rendered)
 
 
 if __name__ == "__main__":
