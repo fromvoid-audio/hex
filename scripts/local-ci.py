@@ -397,7 +397,7 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         # tests, examples and benches would build and link only to match nothing.
         if "--doc" not in argv and not {"--test", "--example", "--bench", "--lib", "--bins"} & set(argv):
             kinds = {kind for owner in owners for target in by_name[owner]["targets"] for kind in target["kind"]}
-            selector = ("--lib",) if "lib" in kinds else ("--bins",)
+            selector = ("--lib", "--bins") if {"lib", "bin"} <= kinds else ("--lib",) if "lib" in kinds else ("--bins",)
             argv = (*(a for a in argv if a != "--all-targets"), *selector)
         if argv[:2] == ("python3", "scripts/test_shards.py"):
             split = argv.index("--")
