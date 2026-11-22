@@ -1072,3 +1072,134 @@ fn directed_frame_repeat_start_matches_processed_pcm_through_receipt_and_roundtr
         });
     }
 }
+
+#[gpui::test]
+fn audio_play_start_realigns_event_grid_through_drag_delayed_ack_and_history(
+    cx: &mut TestAppContext,
+) {
+    let (_files, mut visual, editor, clip) = open(cx);
+    editor.update(&mut visual, |v, cx| {
+        v.audio_event_editor.grid = super::super::SnapGrid::Quarter;
+        cx.notify();
+    });
+    visual.run_until_parked();
+
+    let body = visual.debug_bounds("audio-events-waveform").unwrap();
+    let initial_beat_two = visual.debug_bounds("clip-grid-line-24000").unwrap().left();
+    assert!(
+        (f32::from(initial_beat_two - body.left()) / f32::from(body.size.width) - 0.25).abs()
+            < 0.004,
+        "beat 1.2 initially sits at one quarter of the 4-beat clip",
+    );
+
+    let handle = visual
+        .debug_bounds("audio-play-start-handle")
+        .unwrap()
+        .center();
+    let free = Modifiers {
+        platform: true,
+        ..Default::default()
+    };
+    let shifted = point(handle.x + body.size.width * 0.15, handle.y);
+
+    // Held drag realigns the grid live; Escape restores the original grid.
+    visual.simulate_mouse_down(handle, MouseButton::Left, free);
+    visual.simulate_mouse_move(shifted, MouseButton::Left, free);
+    visual.run_until_parked();
+    let held_marker = visual
+        .debug_bounds("audio-play-start-marker")
+        .unwrap()
+        .left();
+    let held_beat_two = visual.debug_bounds("clip-grid-line-24000").unwrap().left();
+    assert!(
+        (f32::from(held_beat_two - held_marker) / f32::from(body.size.width) - 0.25).abs() < 0.004,
+        "held play-start drag realigns beat 1.2 relative to the dragged marker",
+    );
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(shifted, MouseButton::Left, free);
+    visual.run_until_parked();
+    assert!(
+        (f32::from(visual.debug_bounds("clip-grid-line-24000").unwrap().left() - initial_beat_two))
+            .abs()
+            < 1.0,
+        "escape restores the original grid alignment",
+    );
+
+    // Release holds the realigned grid across delayed-ACK repaints without flicker.
+    visual.simulate_mouse_down(handle, MouseButton::Left, free);
+    visual.simulate_mouse_move(shifted, MouseButton::Left, free);
+    visual.run_until_parked();
+    let released_beat_two = visual.debug_bounds("clip-grid-line-24000").unwrap().left();
+    visual.simulate_mouse_up(shifted, MouseButton::Left, free);
+    let event = terminal(&mut visual, &editor);
+    assert!(event.error.is_none(), "{:?}", event.error);
+    for _ in 0..2 {
+        repaint(&mut visual, &editor);
+        let pending_beat_two = visual.debug_bounds("clip-grid-line-24000").unwrap().left();
+        assert!(
+            (f32::from(pending_beat_two - released_beat_two)).abs() < 0.5,
+            "pending play-start receipt must keep the realigned grid without release flicker",
+        );
+    }
+
+    editor.update(&mut visual, |v, cx| {
+        v.receive(event);
+        cx.notify();
+    });
+    repaint(&mut visual, &editor);
+    let acked_marker = visual
+        .debug_bounds("audio-play-start-marker")
+        .unwrap()
+        .left();
+    let acked_beat_two = visual.debug_bounds("clip-grid-line-24000").unwrap().left();
+    assert!(
+        (f32::from(acked_beat_two - released_beat_two)).abs() < 0.5,
+        "canonical ACK keeps the exact realigned grid",
+    );
+    assert!(
+        (f32::from(acked_beat_two - acked_marker) / f32::from(body.size.width) - 0.25).abs()
+            < 0.004,
+        "beat 1.2 sits one quarter note after the accepted play start",
+    );
+
+    // Snapping and cursor playback start follow the realigned grid.
+    editor.update(&mut visual, |v, _| {
+        let state = v.state.as_ref().unwrap();
+        let source = state.project.clip(clip).unwrap();
+        let play_start = AudioViewProjection::new(source, state.project.tempo_map())
+            .unwrap()
+            .play_start_position()
+            .unwrap()
+            .unwrap();
+        assert!(play_start > 10_000 && play_start < 20_000);
+        assert_eq!(
+            v.event_snap_position(play_start + 24_000 + 2_000, false),
+            Some(play_start + 24_000),
+            "event snapping uses the play-start-aligned quarter-note grid",
+        );
+        v.audio_event_editor.cursor = play_start;
+        assert_eq!(
+            v.audio_editor_cursor_play_start(),
+            Some(source.start()),
+            "cursor at the new play start maps to clip.start()",
+        );
+    });
+
+    // Undo and Redo realign the grid with history.
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+    pump(&editor, &mut visual);
+    assert!(
+        (f32::from(visual.debug_bounds("clip-grid-line-24000").unwrap().left() - initial_beat_two))
+            .abs()
+            < 1.0,
+        "undo restores the original grid",
+    );
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
+    pump(&editor, &mut visual);
+    assert!(
+        (f32::from(visual.debug_bounds("clip-grid-line-24000").unwrap().left() - acked_beat_two))
+            .abs()
+            < 1.0,
+        "redo restores the realigned grid",
+    );
+}

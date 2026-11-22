@@ -68,13 +68,52 @@ impl EditorView {
             .shifted(self.event_project_frame(root, editor_bounds(root).0)?)
     }
 
+    /// Display-only project window for grid lines and ruler ticks. Follows the
+    /// held play-start drag and its pending receipt so the grid realigns live
+    /// without release flicker while play-start snapping retains the canonical
+    /// pre-drag grid.
+    pub(super) fn display_event_project_window(
+        &self,
+        root: &AudioClipEdit,
+    ) -> Option<SignedFrameViewport> {
+        let state = self.state.as_ref()?;
+        let clip = state.project.clip(self.detail_clip_id()?)?;
+        let tempo = state.project.tempo_map();
+        let origin = self.display_event_grid_origin(clip, root, tempo);
+        let grid_origin = root
+            .root_frame_at(origin, tempo)
+            .or_else(|_| root.root_frame_at(event_grid_origin(clip, root, tempo), tempo))
+            .ok()?;
+        let first = root.root_frame_at(editor_bounds(root).0, tempo).ok()?;
+        self.event_frame_window(root)
+            .shifted(i128::from(clip.start()) + i128::from(first) - i128::from(grid_origin))
+    }
+
+    fn display_event_grid_origin(
+        &self,
+        clip: &hex_project::Clip,
+        root: &AudioClipEdit,
+        tempo: &hex_project::TempoMap,
+    ) -> u64 {
+        if let Some(position) = self.held_audio_play_start_position() {
+            return position;
+        }
+        if let Some(pending) = self.pending_clip_loop_audio(clip.id()) {
+            let pending_root = pending.audio_event_root();
+            return event_grid_origin(pending, &pending_root, tempo);
+        }
+        event_grid_origin(clip, root, tempo)
+    }
+
     /// The project frame of an event-editor grid position. The crop and
     /// projected root clock are shared with the pointer and ruler geometry.
     fn event_project_frame(&self, root: &AudioClipEdit, position: u64) -> Option<i128> {
         let state = self.state.as_ref()?;
         let clip = state.project.clip(self.detail_clip_id()?)?;
         let tempo = state.project.tempo_map();
-        let grid_origin = root.root_frame_at(event_grid_origin(root), tempo).ok()?;
+        let grid_origin = root
+            .root_frame_at(event_grid_origin(clip, root, tempo), tempo)
+            .ok()?;
         let frame = root.root_frame_at(position, tempo).ok()?;
         Some(i128::from(clip.start()) + i128::from(frame) - i128::from(grid_origin))
     }
@@ -138,7 +177,9 @@ impl EditorView {
         let state = self.state.as_ref()?;
         let tempo = state.project.tempo_map();
         let clip = state.project.clip(self.detail_clip_id()?)?;
-        let origin = root.root_frame_at(event_grid_origin(root), tempo).ok()?;
+        let origin = root
+            .root_frame_at(event_grid_origin(clip, root, tempo), tempo)
+            .ok()?;
         let (a, b) = content_bounds(root);
         let first = root.root_frame_at(a, tempo).ok()?;
         let end = root.root_frame_at(b, tempo).ok()?;

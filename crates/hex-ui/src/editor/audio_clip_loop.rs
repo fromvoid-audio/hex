@@ -164,7 +164,11 @@ impl EditorView {
         let previous = g.preview;
         if (x - g.down_x).abs() >= 3.0 {
             let tempo = state.project.tempo_map();
-            let first = g.root.root_frame_at(event_grid_origin(&g.root), tempo).ok();
+            let first = state.project.clip(g.clip).and_then(|clip| {
+                g.root
+                    .root_frame_at(event_grid_origin(clip, &g.root, tempo), tempo)
+                    .ok()
+            });
             let horizon = g
                 .root
                 .root_frame_at(g.root.domain.clock.length(), tempo)

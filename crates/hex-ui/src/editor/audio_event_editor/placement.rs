@@ -355,7 +355,10 @@ impl EditorView {
         let state = self.state.as_ref()?;
         let clip = state.project.clip(self.detail_clip_id()?)?;
         let first = root
-            .root_frame_at(event_grid_origin(root), state.project.tempo_map())
+            .root_frame_at(
+                event_grid_origin(clip, root, state.project.tempo_map()),
+                state.project.tempo_map(),
+            )
             .ok()?;
         let frame = i128::from(clip.start()) + raw - i128::from(first);
         let snapped = self

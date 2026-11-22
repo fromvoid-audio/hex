@@ -93,17 +93,72 @@ pub(super) const fn default_gate_raw(remaining: u64, grid: MidiGrid) -> u64 {
     }
 }
 
-pub(super) fn snap_raw(raw: u64, grid: MidiGrid) -> u64 {
+pub(super) fn first_grid_at_or_after(min: u64, step: u64, origin: u64) -> Option<u64> {
+    if step == 0 {
+        return None;
+    }
+    let origin = i128::from(origin);
+    let step = i128::from(step);
+    let diff = i128::from(min) - origin;
+    let index = -(-diff).div_euclid(step);
+    u64::try_from(origin.checked_add(index.checked_mul(step)?)?).ok()
+}
+
+pub(super) fn last_grid_at_or_before(max: u64, step: u64, origin: u64) -> Option<u64> {
+    if step == 0 {
+        return None;
+    }
+    let origin = i128::from(origin);
+    let step = i128::from(step);
+    let diff = i128::from(max) - origin;
+    let index = diff.div_euclid(step);
+    u64::try_from(origin.checked_add(index.checked_mul(step)?)?).ok()
+}
+
+pub(super) fn snap_signed_aligned(raw: i128, grid: MidiGrid, origin: u64) -> i128 {
     let Some(step) = grid.step_raw() else {
         return raw;
     };
-    snap_clamped(i128::from(raw), 0, u64::MAX, step)
+    let origin = i128::from(origin);
+    let step = i128::from(step.max(1));
+    let diff = raw.saturating_sub(origin);
+    let quotient = diff.div_euclid(step);
+    let remainder = diff.rem_euclid(step);
+    let snapped_index = quotient.saturating_add(i128::from(remainder >= step - remainder));
+    origin.saturating_add(snapped_index.saturating_mul(step))
+}
+
+pub(super) fn snap_raw_aligned(raw: u64, grid: MidiGrid, origin: u64) -> u64 {
+    let Some(step) = grid.step_raw() else {
+        return raw;
+    };
+    let snapped = snap_signed_aligned(i128::from(raw), grid, origin);
+    let min = first_grid_at_or_after(0, step, origin).unwrap_or(0);
+    let max = last_grid_at_or_before(u64::MAX, step, origin).unwrap_or(u64::MAX);
+    if min <= max {
+        snapped.clamp(i128::from(min), i128::from(max)) as u64
+    } else {
+        snapped.clamp(0, i128::from(u64::MAX)) as u64
+    }
+}
+
+#[cfg(all(test, feature = "ui-unit-tier"))]
+pub(super) fn snap_raw(raw: u64, grid: MidiGrid) -> u64 {
+    snap_raw_aligned(raw, grid, 0)
 }
 
 /// Creation starts at the grid line at or before the pointer. Move/resize
 /// deltas retain their existing nearest-grid policy.
+pub(super) fn creation_start_aligned(raw: u64, grid: MidiGrid, origin: u64) -> u64 {
+    let Some(step) = grid.step_raw() else {
+        return raw;
+    };
+    last_grid_at_or_before(raw, step, origin).unwrap_or(0)
+}
+
+#[cfg(all(test, feature = "ui-unit-tier"))]
 pub(super) fn creation_start(raw: u64, grid: MidiGrid) -> u64 {
-    grid.step_raw().map_or(raw, |step| raw / step * step)
+    creation_start_aligned(raw, grid, 0)
 }
 
 /// Free creation starts one logical pixel wide. The prepared playback minimum
@@ -509,13 +564,6 @@ pub(super) fn pitch_at_point(y: f32, bounds: [f32; 4], pitch: super::PitchViewpo
         return None;
     }
     Some(pitch.drag_pitch_at((f64::from(y) - f64::from(top)) / f64::from(height)))
-}
-
-fn snap_clamped(raw: i128, min: u64, max: u64, step: u64) -> u64 {
-    let raw = raw.clamp(i128::from(min), i128::from(max));
-    let grid = i128::from(step.max(1));
-    let snapped = ((raw + grid / 2) / grid) * grid;
-    snapped.clamp(i128::from(min), i128::from(max)) as u64
 }
 
 #[cfg(all(test, feature = "ui-unit-tier"))]
@@ -1305,5 +1353,44 @@ mod creation_geometry_tests {
             beat / 4,
             "step editing keeps its independent default"
         );
+    }
+
+    #[test]
+    fn play_start_origin_aligns_snapping_and_creation_without_u64_overflow() {
+        let beat = BeatTime::ONE.raw();
+        let step = beat / 4;
+        let origin = beat / 3;
+        assert_eq!(
+            snap_raw_aligned(origin, MidiGrid::Sixteenth, origin),
+            origin
+        );
+        assert_eq!(
+            snap_raw_aligned(origin + step / 2 - 1, MidiGrid::Sixteenth, origin),
+            origin
+        );
+        assert_eq!(
+            snap_raw_aligned(origin + step / 2, MidiGrid::Sixteenth, origin),
+            origin + step
+        );
+        assert_eq!(
+            creation_start_aligned(origin + 1, MidiGrid::Sixteenth, origin),
+            origin
+        );
+        assert_eq!(
+            creation_start_aligned(origin - 1, MidiGrid::Sixteenth, origin),
+            origin - step
+        );
+        // Before the first positive grid line (origin - step = beat/12), creation clamps to 0.
+        assert_eq!(
+            creation_start_aligned(beat / 12 - 1, MidiGrid::Sixteenth, origin),
+            0
+        );
+        assert_eq!(first_grid_at_or_after(0, step, origin), Some(origin - step));
+        assert_eq!(
+            last_grid_at_or_before(u64::MAX, step, origin).map(|v| (v - origin) % step),
+            Some(0)
+        );
+        assert_eq!(first_grid_at_or_after(0, 0, origin), None);
+        assert_eq!(last_grid_at_or_before(u64::MAX, 0, origin), None);
     }
 }

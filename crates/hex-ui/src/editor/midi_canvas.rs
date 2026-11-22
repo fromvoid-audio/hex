@@ -106,6 +106,10 @@ impl EditorView {
         let beat_span = self.piano_beat_span;
         let pitch = self.piano_pitch;
         let grid = self.midi_snap_grid;
+        let grid_origin = self
+            .midi_display_play_start()
+            .unwrap_or(source_values.source_start);
+        let canonical_grid_origin = source_values.source_start;
         let notes = source.notes();
         let key = super::midi_scene::SceneKey {
             generation,
@@ -451,16 +455,22 @@ impl EditorView {
                 }
                 let raw_span = beat_span.raw();
                 let step = grid.step_raw().unwrap_or(BeatTime::ONE.raw()).max(1);
-                if let Some(ticks) =
-                    super::midi_viewport_grid::ticks(beat_start, raw_span, step, 256)
-                {
+                if let Some(ticks) = super::midi_viewport_grid::ticks_with_origin(
+                    beat_start,
+                    raw_span,
+                    step,
+                    256,
+                    grid_origin,
+                ) {
                     let grid_step = i128::from(step);
+                    let origin = i128::from(grid_origin);
                     for index in 0..256_i128 {
                         let beat = ticks.first + index * i128::from(ticks.stride);
                         if beat > ticks.last {
                             break;
                         }
-                        let raw = beat.saturating_mul(grid_step);
+                        let relative = beat.saturating_mul(grid_step);
+                        let raw = origin.saturating_add(relative);
                         let x = (raw.saturating_sub(beat_start) as f64 / raw_span as f64) as f32
                             * width;
                         quad(
@@ -469,7 +479,10 @@ impl EditorView {
                             0.0,
                             1.0,
                             height,
-                            if raw % i128::from(super::midi_viewport_grid::ACCENT_PERIOD) == 0 {
+                            if relative
+                                .rem_euclid(i128::from(super::midi_viewport_grid::ACCENT_PERIOD))
+                                == 0
+                            {
                                 theme::color(theme::PaletteRole::Border)
                             } else {
                                 theme::color(theme::PaletteRole::Grid)
@@ -834,6 +847,7 @@ impl EditorView {
                     minimum_gate: 1,
                     grid,
                     effective_grid: grid,
+                    grid_origin: canonical_grid_origin,
                     snap_modifier: false,
                     pitch_modifier: false,
                     view_start: beat_start,
@@ -1148,6 +1162,7 @@ impl EditorView {
                                 beat_span,
                                 authoring_length,
                                 effective_grid,
+                                canonical_grid_origin,
                             ) else {
                                 return;
                             };
@@ -1190,6 +1205,7 @@ impl EditorView {
                             beat_span,
                             authoring_length,
                             effective_grid,
+                            canonical_grid_origin,
                         ) else {
                             return;
                         };

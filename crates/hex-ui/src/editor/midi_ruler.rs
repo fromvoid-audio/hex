@@ -101,16 +101,17 @@ struct Gesture {
 // Bounds are inclusive and ordered by the validated source context. Restrict
 // snapping to legal grid points, rather than snapping then landing off-grid at a
 // raw boundary. A sub-grid interval with no grid point keeps the legal raw clamp.
-fn clamp_loop_grid(raw: u64, first: u64, last: u64, grid: MidiGrid) -> u64 {
-    if let Some(step) = grid.step_raw() {
-        let wide_step = u128::from(step);
-        let snapped_first = u128::from(first).div_ceil(wide_step) * wide_step;
-        let snapped_last = last / step * step;
-        if snapped_first <= u128::from(snapped_last) {
-            return raw.clamp(snapped_first as u64, snapped_last);
-        }
+fn clamp_loop_grid(raw: i128, first: u64, last: u64, grid: MidiGrid, origin: u64) -> u64 {
+    if let Some(step) = grid.step_raw()
+        && let (Some(snapped_first), Some(snapped_last)) = (
+            midi_drag::first_grid_at_or_after(first, step, origin),
+            midi_drag::last_grid_at_or_before(last, step, origin),
+        )
+        && snapped_first <= snapped_last
+    {
+        return raw.clamp(i128::from(snapped_first), i128::from(snapped_last)) as u64;
     }
-    raw.clamp(first, last)
+    raw.clamp(i128::from(first), i128::from(last)) as u64
 }
 impl Gesture {
     fn update(&mut self, x: f32, invert_snap: bool) -> bool {
@@ -126,9 +127,10 @@ impl Gesture {
                 .round()
                 .clamp(-(u64::MAX as f64), u64::MAX as f64) as i128;
             let grid = midi_drag::effective_grid(self.context.grid, invert_snap);
+            let origin = original.source_start;
             let moved = |start: u64| {
-                let raw = (i128::from(start) + ticks).clamp(0, i128::from(u64::MAX)) as u64;
-                midi_drag::snap_raw(raw, grid)
+                let raw = i128::from(start) + ticks;
+                midi_drag::snap_signed_aligned(raw, grid, origin)
             };
             match self.handle {
                 Handle::Start => {
@@ -145,12 +147,23 @@ impl Gesture {
                                 .saturating_sub(1),
                         );
                     }
-                    let last = grid.step_raw().map_or(last, |step| last / step * step);
-                    next.source_start = moved(original.source_start).min(last).max(first);
+                    let last = grid
+                        .step_raw()
+                        .and_then(|step| midi_drag::last_grid_at_or_before(last, step, origin))
+                        .filter(|&grid_last| grid_last >= first)
+                        .unwrap_or(last);
+                    next.source_start = moved(original.source_start)
+                        .clamp(i128::from(first), i128::from(last))
+                        as u64;
                 }
                 Handle::LoopStart => {
-                    next.loop_start =
-                        clamp_loop_grid(moved(original.loop_start), 0, original.loop_end - 1, grid)
+                    next.loop_start = clamp_loop_grid(
+                        moved(original.loop_start),
+                        0,
+                        original.loop_end - 1,
+                        grid,
+                        origin,
+                    )
                 }
                 Handle::LoopEnd => {
                     let first = if original.looping {
@@ -163,6 +176,7 @@ impl Gesture {
                         first,
                         original.source_length,
                         grid,
+                        origin,
                     );
                 }
                 Handle::LoopBody => {
@@ -177,6 +191,7 @@ impl Gesture {
                         first,
                         original.source_length - length,
                         grid,
+                        origin,
                     );
                     next.loop_end = next.loop_start + length;
                 }
@@ -449,11 +464,8 @@ impl EditorView {
             .map(|g| g.preview)
             .or_else(|| self.pending_clip_loop_midi(clip))
     }
-    pub(super) fn midi_source_ruler(&mut self, cx: &mut ViewContext<Self>) -> Div {
-        let start = self.piano_beat_start;
-        let span = self.piano_beat_span.raw().max(1);
-        let marker = self
-            .midi_ruler
+    pub(super) fn midi_display_play_start(&self) -> Option<u64> {
+        self.midi_ruler
             .gesture
             .map(|gesture| gesture.preview.source_start)
             .or_else(|| {
@@ -461,7 +473,12 @@ impl EditorView {
                     .and_then(|id| self.pending_clip_loop_midi(id))
                     .map(|v| v.source_start)
             })
-            .or_else(|| self.midi_clip().map(|source| source.source_start().raw()));
+            .or_else(|| self.midi_clip().map(|source| source.source_start().raw()))
+    }
+    pub(super) fn midi_source_ruler(&mut self, cx: &mut ViewContext<Self>) -> Div {
+        let start = self.piano_beat_start;
+        let span = self.piano_beat_span.raw().max(1);
+        let marker = self.midi_display_play_start();
         let rendered = self.midi_ruler_context(CanvasBounds {
             x: 0.0,
             y: 0.0,
@@ -498,12 +515,17 @@ impl EditorView {
                 .unwrap_or(hex_project::BeatTime::ONE.raw()),
         );
         let step = i128::from(step);
-        let first = -(-start).div_euclid(step);
+        let origin = i128::from(marker.unwrap_or(0));
+        let relative_start = start.saturating_sub(origin);
+        let first = -(-relative_start).div_euclid(step);
         for index in 0..=8_i128 {
-            let Some(raw) = first
+            let Some(relative) = first
                 .checked_add(index)
                 .and_then(|value| value.checked_mul(step))
             else {
+                break;
+            };
+            let Some(raw) = origin.checked_add(relative) else {
                 break;
             };
             let Some(offset) = raw
@@ -513,13 +535,12 @@ impl EditorView {
                 break;
             };
             let fraction = (offset as f64 / span as f64) as f32;
+            let beats = relative as f64 / hex_project::BeatTime::ONE.raw() as f64;
+            let beats = if beats == 0.0 { 0.0 } else { beats };
             ruler = ruler.children(super::timeline_strip::ruler_tick(
                 fraction,
-                format!(
-                    "{:.2}b",
-                    raw as f64 / hex_project::BeatTime::ONE.raw() as f64
-                ),
-                raw % i128::from(super::midi_viewport_grid::ACCENT_PERIOD) == 0,
+                format!("{beats:.2}b"),
+                relative.rem_euclid(i128::from(super::midi_viewport_grid::ACCENT_PERIOD)) == 0,
                 false,
                 false,
             ));
@@ -887,10 +908,10 @@ mod geometry_tests {
         assert_eq!(leading.preview.loop_start, 4 * beat - 1);
         let short = Context {
             values: SourceValues {
-                source_start: beat + 2,
-                source_length: beat + 4,
+                source_start: beat + 3,
+                source_length: beat + 5,
                 loop_start: beat + 1,
-                loop_end: beat + 3,
+                loop_end: beat + 4,
                 looping: true,
                 ..base.values
             },
@@ -898,10 +919,10 @@ mod geometry_tests {
         };
         assert!(short.valid());
         for (handle, x, first, last) in [
-            (Handle::LoopEnd, -f32::MAX, beat + 1, beat + 3),
-            (Handle::LoopEnd, f32::MAX, beat + 1, beat + 4),
-            (Handle::LoopBody, -f32::MAX, beat + 1, beat + 3),
-            (Handle::LoopBody, f32::MAX, beat + 2, beat + 4),
+            (Handle::LoopEnd, -f32::MAX, beat + 1, beat + 4),
+            (Handle::LoopEnd, f32::MAX, beat + 1, beat + 5),
+            (Handle::LoopBody, -f32::MAX, beat + 1, beat + 4),
+            (Handle::LoopBody, f32::MAX, beat + 2, beat + 5),
         ] {
             let mut g = Gesture {
                 context: short,
@@ -920,15 +941,15 @@ mod geometry_tests {
         let step = MidiGrid::Sixteenth.step_raw().unwrap();
         let last_grid = u64::MAX / step * step;
         assert_eq!(
-            clamp_loop_grid(u64::MAX, 1, u64::MAX, MidiGrid::Sixteenth),
+            clamp_loop_grid(i128::from(u64::MAX), 1, u64::MAX, MidiGrid::Sixteenth, 0),
             last_grid
         );
         assert_eq!(
-            clamp_loop_grid(0, u64::MAX - 1, u64::MAX, MidiGrid::Sixteenth),
+            clamp_loop_grid(0, u64::MAX - 1, u64::MAX, MidiGrid::Sixteenth, 0),
             u64::MAX - 1
         );
         assert_eq!(
-            clamp_loop_grid(0, beat + 1, beat + 3, MidiGrid::Off),
+            clamp_loop_grid(0, beat + 1, beat + 3, MidiGrid::Off, 0),
             beat + 1
         );
         let mut off = Gesture {

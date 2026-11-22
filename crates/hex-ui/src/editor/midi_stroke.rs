@@ -2,7 +2,7 @@
 //!
 //! Hex's off-grid quarter-beat lattice and lowest-ID baseline overlap choice
 //! are explicit stroke policies; neither is claimed as measured Live behavior.
-use super::midi_drag::{MidiGrid, creation_gate, creation_start};
+use super::midi_drag::{MidiGrid, creation_gate, creation_start_aligned, last_grid_at_or_before};
 use hex_project::{ClipId, Command, MAX_NOTES, MidiNoteInsert, NoteId};
 use std::{
     collections::{HashMap, HashSet},
@@ -40,6 +40,7 @@ pub(super) struct StrokeContext {
     pub(super) minimum_gate: u64,
     pub(super) grid: MidiGrid,
     pub(super) effective_grid: MidiGrid,
+    pub(super) grid_origin: u64,
     pub(super) snap_modifier: bool,
     pub(super) pitch_modifier: bool,
     pub(super) view_start: i128,
@@ -192,8 +193,10 @@ impl MidiStroke {
         }
         let anchor = match context.effective_grid.step_raw() {
             Some(step) => {
-                let last_grid = (clip_length - 1) / step * step;
-                creation_start(down.beat_raw, context.effective_grid).min(last_grid)
+                let last_grid =
+                    last_grid_at_or_before(clip_length - 1, step, context.grid_origin).unwrap_or(0);
+                creation_start_aligned(down.beat_raw, context.effective_grid, context.grid_origin)
+                    .min(last_grid)
             }
             None => down.beat_raw,
         };
@@ -729,6 +732,7 @@ mod tests {
             minimum_gate: 1,
             grid,
             effective_grid: grid,
+            grid_origin: 0,
             snap_modifier: false,
             pitch_modifier: false,
             view_start: 0,

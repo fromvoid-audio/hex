@@ -197,6 +197,7 @@ impl EditorView {
             minimum_gate: self.midi_minimum_creation_gate()?,
             grid: self.midi_snap_grid,
             effective_grid: midi_drag::effective_grid(self.midi_snap_grid, modifiers.snap),
+            grid_origin: clip.source_start().raw(),
             snap_modifier: modifiers.snap,
             pitch_modifier: modifiers.pitch,
             view_start: self.piano_beat_start,
@@ -215,6 +216,7 @@ pub(super) fn same_rendered_frame(current: StrokeContext, rendered: StrokeContex
         && current.clip == rendered.clip
         && current.clip_length == rendered.clip_length
         && current.grid == rendered.grid
+        && current.grid_origin == rendered.grid_origin
         && current.view_start == rendered.view_start
         && current.view_span == rendered.view_span
         && current.pitch == rendered.pitch
@@ -348,6 +350,7 @@ mod tests {
             minimum_gate: 1,
             grid: midi_drag::MidiGrid::Sixteenth,
             effective_grid: midi_drag::MidiGrid::Sixteenth,
+            grid_origin: 0,
             snap_modifier: false,
             pitch_modifier: false,
             view_start: 0,

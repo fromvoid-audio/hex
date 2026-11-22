@@ -13,6 +13,19 @@ pub(super) struct Ticks {
 }
 /// At most `limit` sampled source-grid lines, including signed blank space.
 pub(super) fn ticks(start: i128, span: u64, step: u64, limit: u64) -> Option<Ticks> {
+    ticks_with_origin(start, span, step, limit, 0)
+}
+
+/// At most `limit` sampled source-grid lines anchored to `origin` (typically
+/// the clip's playback start), including signed blank space. Returned indices
+/// are relative to `origin`: line `beat` sits at `origin + beat * step`.
+pub(super) fn ticks_with_origin(
+    start: i128,
+    span: u64,
+    step: u64,
+    limit: u64,
+    origin: u64,
+) -> Option<Ticks> {
     if span == 0
         || step == 0
         || limit == 0
@@ -21,9 +34,10 @@ pub(super) fn ticks(start: i128, span: u64, step: u64, limit: u64) -> Option<Tic
     {
         return None;
     }
+    let relative_start = start.checked_sub(i128::from(origin))?;
     let wide_step = i128::from(step);
-    let first = -(-start).div_euclid(wide_step);
-    let last = (start + i128::from(span)).div_euclid(wide_step);
+    let first = -(-relative_start).div_euclid(wide_step);
+    let last = (relative_start + i128::from(span)).div_euclid(wide_step);
     let count = (last - first + 1).max(0) as u128;
     let stride = u64::try_from(count.div_ceil(u128::from(limit)).max(1)).ok()?;
     let first = -(-first).div_euclid(i128::from(stride)) * i128::from(stride);
@@ -146,6 +160,36 @@ mod tests {
         assert_eq!(
             (position, prefix),
             (-i128::from(2 * ACCENT_PERIOD), 2 * ACCENT_PERIOD)
+        );
+    }
+
+    #[test]
+    fn play_start_origin_realigns_ticks_and_preserves_phase_under_prefix_translation() {
+        let beat = BeatTime::ONE.raw();
+        let step = beat / 4;
+        let origin = beat / 3;
+        let aligned = ticks_with_origin(0, 4 * beat, step, 256, origin).unwrap();
+        assert_eq!(aligned.stride, 1);
+        assert_eq!(aligned.first, -1);
+        assert_eq!(
+            i128::from(origin) + aligned.first * i128::from(step),
+            i128::from(beat / 12)
+        );
+        assert_eq!(
+            i128::from(origin) + aligned.last * i128::from(step),
+            origin as i128 + 14 * i128::from(step)
+        );
+        // Line index 0 lands directly on play start and carries the four-beat accent.
+        assert!((aligned.first..=aligned.last).contains(&0));
+        assert_eq!(0_i128.rem_euclid(i128::from(ACCENT_PERIOD)), 0);
+        // Translating both viewport start and play start by a source prefix keeps
+        // identical relative grid indices and pixel offsets.
+        let prefix = ACCENT_PERIOD;
+        let shifted =
+            ticks_with_origin(i128::from(prefix), 4 * beat, step, 256, origin + prefix).unwrap();
+        assert_eq!(
+            (shifted.first, shifted.last, shifted.stride),
+            (aligned.first, aligned.last, aligned.stride)
         );
     }
 }
