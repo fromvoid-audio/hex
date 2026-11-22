@@ -5,7 +5,7 @@
 const MIN_FIT_ROWS: u8 = 3;
 
 /// Vertical zoom of an Arrangement MIDI thumbnail onto the pitches its clip
-/// actually uses, like Live: a wide range draws thin notes, a single pitch
+/// actually uses: a wide range draws thin notes, a single pitch
 /// draws thick ones. Derive it from the clip's whole prepared samples, not the
 /// visible crop, so the zoom stays put while scrolling and during gestures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

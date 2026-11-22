@@ -7,7 +7,7 @@ const NYQUIST: u128 = 1_u128 << 63;
 /// Prepared normalized target, with f64 applied coefficients. Source-boundary
 /// interpolation must retain f64 values rather than requantize these to f32.
 /// L1 normalization bounds waveform peak by one at every phase, including after
-/// rate-dependent partial removal; it is an original Hex law, not Live parity.
+/// rate-dependent partial removal; it is an original Hex law.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct HarmonicSpectrum {
     coefficients: [f64; PARTIALS],

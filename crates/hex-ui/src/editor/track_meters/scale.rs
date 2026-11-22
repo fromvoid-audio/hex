@@ -6,11 +6,8 @@ const REFERENCE_HEIGHT: f64 = 1080.0;
 const UNITY_HEIGHT: f64 = 969.0;
 pub(super) const UNITY_FRACTION: f32 = (UNITY_HEIGHT / REFERENCE_HEIGHT) as f32;
 
-// Heights above the bottom of the expanded meter in Ableton's Live 12 manual
-// (Mixing, "Additional Mixer Features", ProSessionMixerSizes.png). The image
-// shows labeled ticks down to -60 dB. Keep Hex's endpoints and use an exact
-// midpoint at -24 dB, within one pixel of the reference tick. Interpolation
-// matches the visible scale without assuming Live's internal meter law.
+// Piecewise meter tick heights above the bottom of the expanded meter,
+// with labeled ticks down to -60 dB and an exact midpoint at -24 dB.
 const TICKS: [(f64, f64); 13] = [
     (FLOOR_DB, 0.0),
     (-60.0, 61.0),

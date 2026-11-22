@@ -1,7 +1,7 @@
 //! Pure, bounded continuous MIDI drawing resolution.
 //!
 //! Hex's off-grid quarter-beat lattice and lowest-ID baseline overlap choice
-//! are explicit stroke policies; neither is claimed as measured Live behavior.
+//! are explicit stroke policies.
 use super::midi_drag::{MidiGrid, creation_gate, creation_start_aligned, last_grid_at_or_before};
 use hex_project::{ClipId, Command, MAX_NOTES, MidiNoteInsert, NoteId};
 use std::{

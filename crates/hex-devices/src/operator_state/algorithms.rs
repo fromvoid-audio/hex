@@ -1,8 +1,7 @@
 //! Canonical acyclic four-operator topologies, independent of oscillator levels.
 //!
-//! The order and node arrangements follow the Live 12 manual's algorithm
-//! illustration. The modulation scale remains Hex's original 0.25 turns;
-//! this catalog makes no numerical or sonic compatibility claim.
+//! Standard eleven four-operator FM routing topologies. The modulation scale
+//! uses Hex's original 0.25 turns.
 use hex_lattice_contract::{
     DeviceContractError, ParameterDescriptor, ParameterKind, ParameterPresentation, ParameterValue,
 };

@@ -14,7 +14,7 @@
 //! gain-applied input before the limiting stages. Ceiling/output changes remain
 //! effective at the current output frame; blends report weighted attenuation
 //! and clipping from contributing branches. This is an original transition law,
-//! not seamless historical-state reconstruction or a Live-parity claim.
+//! not seamless historical-state reconstruction.
 use super::super::{
     decode,
     state::{Settings, parameter::*},

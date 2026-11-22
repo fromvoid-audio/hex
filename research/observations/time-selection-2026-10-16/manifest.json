@@ -33,7 +33,7 @@
   "host_load": {
     "before": "16:49  up 3 days, 22:31, 3 users, load averages: 9.02 7.49 7.33",
     "after": "16:51  up 3 days, 22:33, 3 users, load averages: 7.11 7.13 7.20",
-    "observations": "Uncontrolled desktop host. Ableton Live active at both boundaries; another Hex audio-test process present before and Clippy processes after. No compiler/test was launched by this profiling chat during capture. No claim of idle-machine isolation."
+    "observations": "Uncontrolled desktop host. Another audio app active at both boundaries; another Hex audio-test process present before and Clippy processes after. No compiler/test was launched by this profiling chat during capture. No claim of idle-machine isolation."
   },
   "native_window_points": [
     1240,

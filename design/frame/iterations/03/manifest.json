@@ -1,7 +1,7 @@
 {
   "iteration": 3,
   "acceptedDate": "2026-10-08",
-  "revision": "hex-live-r70",
+  "revision": "hex-layout-r70",
   "themeRevision": "hex-theme-r46",
   "status": "user-approved current visual implementation reference",
   "supersedes": "../02/",
@@ -20,13 +20,9 @@
   "files": {
     "README.md": "88a890892ea47e79d4a572f45af1c404ca2f6423c5e0fecb4acb50c271f55dfc",
     "arrangement.png": "98e126be0a39f13489a412a4b59b51c4ea5b575afddda27ed3e625b7c01ed8f1",
-    "build_live_study.py": "0f33b923bf1ff6fa33b75f484fde7c5eba0cdd786b2bfdce378328206da8a4ec",
     "clip-colors.json": "b71d3962f93710ec1e0f1016015662ed244e91ee7e14162143877929410dea16",
     "clip_palette.py": "64f4ed193d7b526006b819f8cfe3283dd1ca792cc8edb43023b357cc115e09ae",
-    "hex-live-r70.json": "747d2a671026fec64290198db9d1bfdda5b4faaa2c6ddd66ecf23ef9a628900c",
     "hex.frame.json": "cc732c80cb52d4e7b8c0cb29bd7556682edda453bfb41ddbf0dc0a8631848398",
-    "live-layout-styleguide.json": "a8e0434f3fd35a86263e00b3b30a4252b12c0d4e253a14f56c33c16df29d8b89",
-    "load.js": "c5bc108271b66fd97076ecc2b6cd8f1e7ed04f218bc1a394c709787d03a1197a",
     "palette.png": "27523b6b49a4b534733c8a5599aa2324cbfbaf65fd3b3bbf78a6d04dd6d2f12d",
     "review.json": "43205ae3bf853f59f1f32fd0b2a1e48602240506fb646176ac2ed865ed493a31",
     "serve.py": "efee206acb7303de6fb017ece5e4a65a47cfde1a9752681400dcc8025f453ac7",

@@ -13,7 +13,7 @@ pub(in crate::editor) struct HeldKey {
 
 pub(in crate::editor) struct ComputerKeyboard {
     pub enabled: bool,
-    /// MIDI 60 is middle C, displayed as c3 in Live's octave convention.
+    /// MIDI 60 is middle C, displayed as c3.
     pub base_pitch: u8,
     pub velocity: u8,
     pub(super) held: [Option<HeldKey>; NOTE_KEYS.len()],

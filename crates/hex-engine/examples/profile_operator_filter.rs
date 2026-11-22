@@ -1,4 +1,4 @@
-//! Offline original filter overhead; not a CPAL deadline or Live comparison.
+//! Offline original filter overhead; not a CPAL deadline measurement.
 #[allow(dead_code)]
 #[path = "support/operator_feedback_fixture.rs"]
 mod fixture;

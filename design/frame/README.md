@@ -36,8 +36,7 @@ Use **State** to review selectors, menus, panel layouts, envelope point values, 
 
 ## Earlier design and implementation reference
 
-Two editable 1900 × 1120 desktop concepts closely follow the user-supplied Live
-screenshots' layout and widgets with a neutral charcoal / sci-fi accent theme and Hex's
+Two editable 1900 × 1120 desktop concepts explore a compact workstation layout and widgets with a neutral charcoal / sci-fi accent theme and Hex's
 lowercase Ioskeley Mono typography. Arrangement has the overview, timeline,
 right-side track controls and device dock. Session has twelve track columns,
 six scenes, routing, six sends per channel, faders, solo/arm indicators, narrow
@@ -62,9 +61,6 @@ Open http://127.0.0.1:8780/. Frame remains unmodified. Use the State picker or
 the two top-right prototype controls to switch arrangement/session. View switching,
 play/pause/stop and scene launching change illustrative prototype state only.
 
-- `hex-live-r70.json`: canonical structured Frame document.
-- `build_live_study.py`: reproducible geometry generator for the canonical document.
-- `live-layout-styleguide.json`: unified theme tokens, custom-color policy and density rules.
 - `hex.frame.json`: portable Frame project; import through Frame's Project menu.
 - `arrangement.png`, `session.png`, and `palette.png`: full-resolution Frame exports.
 - `clip-colors.json`: custom-picker policy and example saved swatches.
@@ -115,8 +111,7 @@ https://github.com/rebelot/kanagawa.nvim (8 October 2026).
 
 Browser tags are now individual outlined rectangles, replacing continuous dark
 bars in content, type, sounds, drums and the footer. Each uses a 15 px height,
-dark `#211f1f` border and existing 17 px row positions. This implements the user's
-supplied cropped Live browser reference (clipboard ID
+dark `#211f1f` border and existing 17 px row positions. This implements the compact browser tag reference (clipboard ID
 `bd692965-d265-4e7b-9876-d914691ce444`); tag behavior remains illustrative.
 
 The current preview uses 127.0.0.1:8780. Its accumulated browser revision history

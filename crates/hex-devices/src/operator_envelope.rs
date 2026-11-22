@@ -2,7 +2,7 @@
 //!
 //! Levels are linear amplitudes and times are seconds. The configured decay
 //! and release durations end at a relative 1e-5 cutoff, then snap to their
-//! exact target. These equations are original, not measured Live transfer laws.
+//! exact target. These equations are original Hex transfer laws.
 
 use crate::Invalid;
 

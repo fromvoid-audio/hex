@@ -1,4 +1,4 @@
-//! Native Live-style delay composition. Only graph entity and disclosure are
+//! Native delay panel composition. Only graph entity and disclosure are
 //! view-local; every sound control uses the shared binding/Session contracts.
 use super::*;
 use crate::device_composition::plot;

@@ -2,8 +2,8 @@
 //!
 //! The provider owns its versioned state, bounded owned transaction histories and
 //! committed gain-reduction readings. The host owns graph admission, latency
-//! compensation, metering endpoints and retirement. Control inventory follows
-//! Live 12; proprietary transfer/release laws and acoustic identity are unverified.
+//! compensation, metering endpoints and retirement. Transfer and release laws
+//! are original Hex implementations.
 use hex_lattice::{NativeDeviceDefinition, PreparedProcessorFactory, StereoMatrix};
 use hex_lattice_contract::{DeviceContractError, NativeDeviceState};
 use std::sync::Arc;

@@ -152,7 +152,7 @@ fn compensated_tempo_anchor_preserves_samples_and_clock_inner() {
             super::handoff::COMPENSATED_TIMING_CHANGED
         ))
     );
-    // Live: paused or playing, the cursor keeps its beat under the new map
+    // Paused or playing, the cursor keeps its beat under the new map
     // (Pulse #4118); playing, audio restarts as Play-from at that beat.
     assert_eq!(paused.arrangement_frame(), 600);
     let mut tempo_live = SessionPlayback::new(prepare(&tempo_changed)).unwrap();

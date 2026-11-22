@@ -1,4 +1,4 @@
-//! Compact Ableton-inspired Utility composition backed by shared descriptor controls.
+//! Compact Utility composition backed by shared descriptor controls.
 use super::{
     ControlPresentation, DeviceControlIdentity, EditorView, numeric_display::NumericDisplayCodec,
     parameter_control_with_presentation,

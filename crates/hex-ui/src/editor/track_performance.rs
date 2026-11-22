@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 const REFRESH: Duration = Duration::from_millis(100);
 const STALE: Duration = Duration::from_secs(3);
 // Percent of the rendered audio duration, in hundredths. This scale is Hex's
-// diagnostic choice; the public Live manual does not specify its thresholds.
+// diagnostic choice for Hex's track performance meter.
 const THRESHOLDS: [u32; 6] = [10, 50, 100, 250, 500, 1000];
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]

@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 fn fixture() -> Value {
     let mut snapshot = Project::new(48_000).unwrap().snapshot();
     snapshot.import_provenance =
-        Some(ImportProvenance::new("ableton-live-set", 1, 1, vec![0, 255, 42]).unwrap());
+        Some(ImportProvenance::new("external-project", 1, 1, vec![0, 255, 42]).unwrap());
     let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
         .execute(Command::AddTrack {

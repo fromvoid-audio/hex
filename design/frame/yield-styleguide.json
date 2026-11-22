@@ -11,7 +11,7 @@
     "use coral for selection and primary action",
     "keep transport and track context visible",
     "prototype states do not establish audio or device behavior",
-    "preserve Live density; minimal dead space, small gutters, compact controls and contiguous panels"
+    "preserve compact density; minimal dead space, small gutters, compact controls and contiguous panels"
   ],
   "tokens": {
     "palette": [

@@ -815,7 +815,7 @@ pub enum Command {
     SetTrackGains {
         gains: Vec<(TrackId, f32)>,
     },
-    /// Set original Hex stereo balance; this is not a measured Live pan law.
+    /// Set original Hex stereo balance.
     Balance {
         track: TrackId,
         balance: f32,

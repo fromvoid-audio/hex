@@ -619,8 +619,8 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-alt-down", MoveSceneDown, Some("hex_editor")),
         KeyBinding::new("e", SplitClip, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-l", ToggleLoop, Some("hex_editor && !hex_text_editing")),
-        // Live's `b` toggles draw mode; hex keeps that inside the midi editor
-        // (`hex_midi`). Arrangement has no draw mode, so `b` bounces there.
+        // `b` toggles draw mode inside the midi editor (`hex_midi`).
+        // Arrangement has no draw mode, so `b` bounces there.
         KeyBinding::new(
             "b",
             BounceToNewTracks,

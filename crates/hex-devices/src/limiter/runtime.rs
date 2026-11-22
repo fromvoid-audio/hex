@@ -22,8 +22,7 @@
 //! detector window covering an outgoing sample available. Anticipated attack
 //! avoids an instantaneous gain discontinuity before the transient. Independent
 //! dense reconstructed-output tests cover modulation and intersample peaks;
-//! this finite model does not prove every DAC's continuous-time behavior or
-//! acoustic identity with Live's unpublished reconstruction/release laws.
+//! this finite model does not prove every DAC's continuous-time behavior.
 //! The detector reconstructs the pre-gain input, so gain that moves inside the
 //! detector window can create untracked intersample peaks. On gated-burst
 //! fixtures the standard BS.1770-4 4x meter reads up to about +0.25 dB above

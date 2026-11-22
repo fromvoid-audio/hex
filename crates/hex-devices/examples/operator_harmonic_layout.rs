@@ -62,7 +62,7 @@ struct CompactRuntime<const H: usize> {
     // Preserve exact authored bits, including signed zero and inactive LFO.
     canonical_v6: [u8; V6_BYTES],
     // Target authoring values, f32 throughout. This is a layout alternative,
-    // not a selected persistence format or confirmed Live amplitude domain.
+    // not a selected persistence format.
     target_partials: [[f32; H]; OSCILLATORS],
     // Reserve a range/normalization/authoring-mode word per oscillator.
     target_settings: [[u32; 3]; OSCILLATORS],

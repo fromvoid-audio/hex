@@ -1,5 +1,5 @@
 //! Release profiler for registered Operator feedback rendering and live retargets.
-//! Offline SessionPlayback only; this is not a CPAL deadline or Live comparison.
+//! Offline SessionPlayback only; this is not a CPAL deadline measurement.
 #[path = "support/operator_feedback_fixture.rs"]
 mod fixture;
 

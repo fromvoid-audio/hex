@@ -284,7 +284,7 @@ pub fn check_candidate(missing: &MissingMedia, path: &Path) -> CandidateFit {
     CandidateFit::Matches
 }
 
-/// Live-style relative resolve: after `chosen` was located at `new_path`, maps
+/// Relative resolve: after `chosen` was located at `new_path`, maps
 /// every other unresolved item under the same moved folder to the new folder.
 ///
 /// The moved roots are the old and new paths minus their longest common

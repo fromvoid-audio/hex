@@ -2,7 +2,7 @@
 //! Version 1 is the exact three-f32 minimal delay on this branch: milliseconds,
 //! feedback and mix. Migration preserves its free stereo timing and dry/wet,
 //! disables the new filter and modulation, and retains its repitch transition.
-//! Version 2 adds the independently authored Live-style control inventory.
+//! Version 2 adds the independently authored delay control inventory.
 //! All27 controls expose shared owned-transaction automation. Authored targets
 //! remain separate from this canonical saved state.
 use super::DelayDefinition;

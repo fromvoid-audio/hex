@@ -1,6 +1,6 @@
 //! Finite, asset-free throughput probe; run with `cargo run --release --locked
 //! -p hex-devices --example profile_overdrive`. This does not measure physical
-//! device deadlines or establish Ableton sound/performance parity.
+//! device deadlines.
 use hex_devices::overdrive::{OVERDRIVE_DEFINITION as d, parameter};
 use hex_lattice::{
     DevicePreparationContext, EMPTY_DEVICE_RESOURCES, NativeDeviceDefinition, TuningTable,

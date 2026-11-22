@@ -1,4 +1,4 @@
-"""Synthetic comparator controls: not a Live/reference dataset."""
+"""Synthetic comparator controls: not an external reference dataset."""
 import copy
 import hashlib
 import importlib.util

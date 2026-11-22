@@ -96,7 +96,7 @@ impl Tempo {
 }
 
 /// Time signature. Numerators up to 99 and power-of-two denominators are Hex's
-/// supported display range; this is not a claim about Live's internal limits.
+/// supported display range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Meter {
     numerator: u8,

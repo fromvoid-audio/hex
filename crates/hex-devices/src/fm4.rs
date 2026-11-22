@@ -31,7 +31,7 @@ pub struct Oscillator {
 }
 
 impl Oscillator {
-    /// Original bounded domains, not measured Live parameter transfer laws.
+    /// Original bounded parameter domains.
     pub fn new(ratio: f64, level: f64, phase_turns: f64) -> Result<Self, Invalid> {
         if !ratio.is_finite() || !(1.0 / 128.0..=128.0).contains(&ratio) {
             return Err(Invalid("fm ratio must be finite and between 1/128 and 128"));

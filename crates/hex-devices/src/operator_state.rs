@@ -499,7 +499,7 @@ pub struct OperatorSettings {
 }
 
 impl OperatorSettings {
-    /// Original defaults; no measured Live transfer/default compatibility claim.
+    /// Original Hex defaults.
     pub fn defaults() -> Self {
         let mut fields = [0.0; FIELD_COUNT];
         for descriptor in PARAMETERS.iter().take(FLOAT_PARAMETER_COUNT) {

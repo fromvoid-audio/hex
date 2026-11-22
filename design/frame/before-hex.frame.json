@@ -4,18 +4,18 @@
   "archive": {
     "version": 1,
     "designId": "hex-yield-workstation",
-    "sourceRevisionId": "hex-live-r22",
-    "currentRevisionId": "hex-live-r22",
+    "sourceRevisionId": "hex-layout-r22",
+    "currentRevisionId": "hex-layout-r22",
     "revisions": [
       {
-        "revisionId": "hex-live-r20",
+        "revisionId": "hex-layout-r20",
         "capturedAt": "2026-10-08T09:44:45.376Z",
         "parentRevisionId": null,
         "document": {
           "version": 1,
           "id": "hex-yield-workstation",
           "name": "hex / yield workstation",
-          "revisionId": "hex-live-r20",
+          "revisionId": "hex-layout-r20",
           "width": 1900,
           "height": 1120,
           "background": "#252927",
@@ -109781,14 +109781,14 @@
         }
       },
       {
-        "revisionId": "hex-live-r21",
+        "revisionId": "hex-layout-r21",
         "capturedAt": "2026-10-08T09:46:10.399Z",
-        "parentRevisionId": "hex-live-r20",
+        "parentRevisionId": "hex-layout-r20",
         "document": {
           "version": 1,
           "id": "hex-yield-workstation",
           "name": "hex / yield workstation",
-          "revisionId": "hex-live-r21",
+          "revisionId": "hex-layout-r21",
           "width": 1900,
           "height": 1120,
           "background": "#252927",
@@ -219554,14 +219554,14 @@
         }
       },
       {
-        "revisionId": "hex-live-r22",
+        "revisionId": "hex-layout-r22",
         "capturedAt": "2026-10-08T09:46:59.403Z",
-        "parentRevisionId": "hex-live-r21",
+        "parentRevisionId": "hex-layout-r21",
         "document": {
           "version": 1,
           "id": "hex-yield-workstation",
           "name": "hex / yield workstation",
-          "revisionId": "hex-live-r22",
+          "revisionId": "hex-layout-r22",
           "width": 1900,
           "height": 1120,
           "background": "#252927",
@@ -329339,18 +329339,18 @@
   "feedback": {
     "version": 3,
     "design": "hex-yield-workstation",
-    "revisionId": "hex-live-r22",
+    "revisionId": "hex-layout-r22",
     "width": 1900,
     "height": 1120,
     "lines": [],
     "notes": []
   },
   "styleguide": {
-    "id": "hex-live-layout",
+    "id": "hex-compact-layout",
     "name": "hex / yield workstation",
     "summary": "Softer Yield Editorial Terminal surfaces, reference-led geometry, 64 smoky clip colors.",
     "document": "Adapted from Yield default theme and the supplied original Yield concept. Background/surface #252927, overlay #303532, control wells #202422, hairlines #363c39, primary text #d8d7d3, muted text #a4aaa6, coral accent #e95843. Surface colors are deliberately lightened for a softer Hex concept; they are not claimed exact current Yield tokens. Clip palette: 56 low-chroma shades in eight hue families plus eight utility colors, specified in clip-colors.json.",
-    "prompt": "Keep the original Yield concept softness: gently lifted charcoal surfaces, low contrast wells and separators, warm text and restrained coral accents. Use 64 smoky coordinated clip colors instead of a bright rainbow. Match Live compact layout and widget placement; use lowercase Ioskeley Mono.",
+    "prompt": "Keep the original Yield concept softness: gently lifted charcoal surfaces, low contrast wells and separators, warm text and restrained coral accents. Use 64 smoky coordinated clip colors instead of a bright rainbow. Match compact layout and widget placement; use lowercase Ioskeley Mono.",
     "rules": [
       "all app text is lowercase",
       "all app text uses Ioskeley Mono",
@@ -329358,7 +329358,7 @@
       "Yield coral remains the primary interface accent; clip colors are low-chroma, smoky and coordinated; utility colors are available for neutral or standout elements",
       "keep transport and track context visible",
       "prototype states do not establish audio or device behavior",
-      "preserve Live density; minimal dead space, small gutters, compact controls and contiguous panels"
+      "preserve compact density; minimal dead space, small gutters, compact controls and contiguous panels"
     ],
     "tokens": {
       "palette": [

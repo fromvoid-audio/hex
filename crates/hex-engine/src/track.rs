@@ -275,7 +275,7 @@ impl PreparedTrackMix {
 }
 
 impl Track {
-    /// Overlapping clips are summed in this prototype; Live overlap semantics are unverified.
+    /// Overlapping clips are summed.
     pub fn new(clips: Vec<Clip>, gain: f32, muted: bool) -> Result<Self, Invalid> {
         Self::with_balance(clips, gain, muted, 0.0)
     }

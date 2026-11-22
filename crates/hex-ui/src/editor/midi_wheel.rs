@@ -1,4 +1,4 @@
-//! Piano-roll wheel navigation, following Live's editor conventions.
+//! Piano-roll wheel navigation conventions.
 //!
 //! Plain vertical wheel scrolls pitch, horizontal (trackpad) or Shift-wheel pans
 //! time, Cmd-wheel zooms time around the pointer and Alt-wheel zooms pitch.

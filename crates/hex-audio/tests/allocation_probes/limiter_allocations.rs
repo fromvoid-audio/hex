@@ -1,5 +1,5 @@
 //! Real prepared native Limiter graph through the callback publication path.
-//! This proves bounded allocation behavior only, not device deadlines or Live parity.
+//! This proves bounded allocation behavior only, not device deadlines.
 
 use allocation_counter::measure;
 use hex_audio::prepared;

@@ -1,5 +1,5 @@
 //! Optimized headless Vector runtime-pair profile. This is not physical callback,
-//! listening, allocation instrumentation, or numerical Live compatibility proof.
+//! listening, or allocation instrumentation proof.
 use hex_devices::operator_state::{OPERATOR_METADATA, OPERATOR_STATE_VERSION, parameter};
 use hex_lattice::{
     NativeInstrumentDefinition, NativeInstrumentEvent, NativeInstrumentRuntimeLimits,
@@ -288,7 +288,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         option_env!("HEX_PROFILE_SOURCE_SHA256").unwrap_or("unrecorded")
     );
     println!(
-        "protocol=begin_block/process_block_with_internal_preflight/commit_block; initialization,note_admission,buffer_clear,checksum,storage,timing_sample_append are outside timing; legacy and operator use the same authored sine/serial/FM/filter/LFO parameters; operator mode uses2x oscillator/FM and carrier filter evaluation with8th-order Butterworth decimation, held output-rate envelopes/LFO, and4096-frame finite drain; no Live numerical parity or physical callback/deadline claim; allocator inactivity is source inspection only, not instrumentation"
+        "protocol=begin_block/process_block_with_internal_preflight/commit_block; initialization,note_admission,buffer_clear,checksum,storage,timing_sample_append are outside timing; legacy and operator use the same authored sine/serial/FM/filter/LFO parameters; operator mode uses2x oscillator/FM and carrier filter evaluation with8th-order Butterworth decimation, held output-rate envelopes/LFO, and4096-frame finite drain; no physical callback/deadline claim; allocator inactivity is source inspection only, not instrumentation"
     );
     run(variant, Path::new(&directory))
 }

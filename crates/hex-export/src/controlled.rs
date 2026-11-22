@@ -342,7 +342,7 @@ pub fn render_prepared_controlled(
 
 /// Controlled range export under an explicit publication policy.
 ///
-/// Main output is latency-compensated, as in Live: file frame 0 is timeline
+/// Main output is latency-compensated: file frame 0 is timeline
 /// frame `start` and the file holds exactly `frames` frames. History is
 /// reconstructed causally, then `frames + main latency` frames render and the
 /// first `main latency` output frames are discarded, so compensation consumes

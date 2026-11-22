@@ -58,7 +58,7 @@ fn fixture() -> Project {
     .unwrap();
     let mut s = e.project().snapshot();
     s.import_provenance =
-        Some(ImportProvenance::new("ableton-live-set", 1, 1, vec![255, 0, 42]).unwrap());
+        Some(ImportProvenance::new("external-project", 1, 1, vec![255, 0, 42]).unwrap());
     s.tracks[0].devices.push(hex_project::DeviceSnapshot {
         modulation: Default::default(),
         parent: None,
@@ -238,7 +238,7 @@ fn schema22_epoch_only_save_history_retains_base_feeds_sends_provenance_and_opaq
 fn schema24_combined_model_roundtrip_keeps_trimmed_devices_routes_automation_and_opaque_data() {
     let mut snapshot = Project::new(48_000).unwrap().snapshot();
     snapshot.import_provenance =
-        Some(ImportProvenance::new("ableton-live-set", 1, 1, vec![0, 255, 42, 7]).unwrap());
+        Some(ImportProvenance::new("external-project", 1, 1, vec![0, 255, 42, 7]).unwrap());
     let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
     let Created::Track(track) = editor
         .execute(Command::InsertTrackWithDevice {

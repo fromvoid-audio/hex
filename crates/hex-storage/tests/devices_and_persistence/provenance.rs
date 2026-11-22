@@ -1,4 +1,4 @@
-//! Arbitrary byte evidence, not generated Ableton-format or musical fixtures.
+//! Arbitrary byte evidence, not generated external-format or musical fixtures.
 use hex_project::{Command, Created, Editor, ImportProvenance, MAX_IMPORT_DOCUMENT_BYTES, Project};
 use hex_storage::{LEGACY_READER_DOCUMENT_BYTES, decode, encode, load, save_new};
 use serde_json::{Value, json};
@@ -8,7 +8,7 @@ use std::{
 };
 
 fn evidence(bytes: Vec<u8>) -> ImportProvenance {
-    ImportProvenance::new("ableton-live-set", 1, 1, bytes).unwrap()
+    ImportProvenance::new("external-project", 1, 1, bytes).unwrap()
 }
 fn project(bytes: Vec<u8>) -> Project {
     let mut snapshot = Project::new(48_000).unwrap().snapshot();
@@ -51,17 +51,17 @@ fn exact_original_bytes_survive_edits_history_and_save_reopen() {
 
 #[test]
 fn bounded_envelopes_and_versions_are_strict() {
-    assert!(ImportProvenance::new("ableton-live-set", 1, 1, vec![]).is_err());
+    assert!(ImportProvenance::new("external-project", 1, 1, vec![]).is_err());
     for (kind, version, adapter) in [
         ("other", 1, 1),
-        ("ableton-live-set", 2, 1),
-        ("ableton-live-set", 1, 2),
+        ("external-project", 2, 1),
+        ("external-project", 1, 2),
     ] {
         assert!(ImportProvenance::new(kind, version, adapter, vec![0]).is_err());
     }
     assert!(
         ImportProvenance::new(
-            "ableton-live-set",
+            "external-project",
             1,
             1,
             vec![0; MAX_IMPORT_DOCUMENT_BYTES + 1]

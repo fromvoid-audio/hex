@@ -182,7 +182,7 @@ pub(super) fn graph(
 
 // Fixed stage fractions, independent of all other parameters. The 1ms pivot
 // keeps short attacks usable; decay/release use their authored 1ms minimum.
-// This logarithmic display law is original, not measured Live numerical parity.
+// This logarithmic display law is an original Hex mapping.
 fn stage_width(seconds: f32, min: f32, max: f32) -> f32 {
     let seconds = f64::from(seconds.clamp(min, max));
     let fraction = if min == 0.0 {

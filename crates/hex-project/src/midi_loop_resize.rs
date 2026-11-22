@@ -15,7 +15,7 @@ pub enum MidiViewResizeOperation {
     /// boundary, then reapplies direction; it is not an inverse reflected-seam
     /// gesture. Notes/hidden source content are never rewritten.
     CycleEnd { beat: BeatTime },
-    /// Move a forward one-shot's source start marker. Like Live's unlooped
+    /// Move a forward one-shot's source start marker. For an unlooped
     /// region, the Arrangement clip begins at the marker: its start moves by
     /// the same beats while its end and every note keep their song beat.
     /// Looped and directed clips keep their source controls instead.

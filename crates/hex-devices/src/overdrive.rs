@@ -13,8 +13,7 @@
 //! the same 11-frame latency and advances the ordinary wet filter/envelope/tail
 //! history behind its bounded aligned dry ramp.
 //! No callback allocation, resources, host-contract changes or project-schema
-//! changes are needed. This is an independent implementation; the supplied image
-//! establishes controls/defaults, not measured Ableton transfer functions or parity.
+//! changes are needed. This is an independent original implementation.
 
 mod automation;
 

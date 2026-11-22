@@ -102,10 +102,8 @@ browser, device-catalog and engineering improvements belong to later roadmap
 versions unless a concrete dependency makes them necessary here. Completed and
 cancelled issue history remains unchanged.
 
-This is a hex policy, not an Ableton parity claim. Previously verified Live
-documentation says device edits generally work without interruption and turning
-off devices retains latency. Deletion timing and a Live interruption dialog were
-not verified. No new reference runtime study is asserted here.
+This is an independent hex policy: device edits should work without interruption
+and turning off devices retains latency.
 
 Fade lengths, cut mechanics and compensation capacity need bounded
 implementation decisions and evidence; this brief does not choose them or

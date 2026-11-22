@@ -8,7 +8,7 @@
 //!
 //! # Does not own
 //! Does not edit canonical projects, open media files/devices, own page-worker queues or infer
-//! physical deadline/Live parity from headless checks. Callback paths borrow prepared data;
+//! physical deadlines from headless checks. Callback paths borrow prepared data;
 //! control owns preparation and final destruction.
 mod native_effect_storage;
 mod serial_effect_power;

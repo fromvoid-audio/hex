@@ -13,14 +13,14 @@ pub struct ImportProvenance {
 }
 impl ImportProvenance {
     /// Validate an envelope before retaining its allocation. Version 1 supports
-    /// only the Live-set source kind and adapter contract version 1.
+    /// only the external-project source kind and adapter contract version 1.
     pub fn new(
         kind: &str,
         version: u32,
         adapter_version: u32,
         original_bytes: Vec<u8>,
     ) -> Result<Self, Invalid> {
-        if kind != "ableton-live-set" || version != 1 || adapter_version != 1 {
+        if kind != "external-project" || version != 1 || adapter_version != 1 {
             return Err(Invalid("unsupported import provenance kind or version"));
         }
         if original_bytes.is_empty() || original_bytes.len() > MAX_IMPORT_DOCUMENT_BYTES {
@@ -32,7 +32,7 @@ impl ImportProvenance {
         })
     }
     pub fn kind(&self) -> &'static str {
-        "ableton-live-set"
+        "external-project"
     }
     pub fn version(&self) -> u32 {
         1
@@ -68,14 +68,14 @@ mod tests {
     #[test]
     fn import_provenance_validates_kind_version_and_byte_bounds() {
         assert!(ImportProvenance::new("unknown", 1, 1, vec![1]).is_err());
-        assert!(ImportProvenance::new("ableton-live-set", 2, 1, vec![1]).is_err());
-        assert!(ImportProvenance::new("ableton-live-set", 1, 2, vec![1]).is_err());
-        assert!(ImportProvenance::new("ableton-live-set", 1, 1, Vec::new()).is_err());
+        assert!(ImportProvenance::new("external-project", 2, 1, vec![1]).is_err());
+        assert!(ImportProvenance::new("external-project", 1, 2, vec![1]).is_err());
+        assert!(ImportProvenance::new("external-project", 1, 1, Vec::new()).is_err());
 
-        let prov = ImportProvenance::new("ableton-live-set", 1, 1, b"<Ableton/>".to_vec()).unwrap();
-        assert_eq!(prov.kind(), "ableton-live-set");
+        let prov = ImportProvenance::new("external-project", 1, 1, b"<Project/>".to_vec()).unwrap();
+        assert_eq!(prov.kind(), "external-project");
         assert_eq!(prov.version(), 1);
         assert_eq!(prov.adapter_version(), 1);
-        assert_eq!(prov.original_bytes(), b"<Ableton/>");
+        assert_eq!(prov.original_bytes(), b"<Project/>");
     }
 }

@@ -1,4 +1,4 @@
-//! Fixed global controller assignments. Original Hex transfer laws, not measured Live curves.
+//! Fixed global controller assignments using original Hex transfer laws.
 use hex_lattice_contract::{
     DeviceContractError, ParameterDescriptor, ParameterId, ParameterKind, ParameterPresentation,
     ParameterValue,

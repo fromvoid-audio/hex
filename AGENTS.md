@@ -1,10 +1,10 @@
 # AGENTS.md: guide for AI agents and contributors
 
 **Hex** is a native digital audio workstation written in **Rust**, using **GPUI**
-for its desktop interface. The goal is to reconstruct Ableton Live's fundamental
-Arrangement and Session workflows, audio/MIDI behavior, editing, recording,
-automation, routing, and project fidelity, while improving architecture,
-responsiveness, and measured performance.
+for its desktop interface. The goal is to build complete Arrangement and Session
+workflows, audio/MIDI behavior, editing, recording, automation, routing, and
+project fidelity, with strong architecture, responsiveness, and measured
+performance.
 
 Hex's project-specific instructions and established conventions take precedence
 over the Google Rust Style Guide wherever they conflict.
@@ -75,11 +75,8 @@ adapted for real-time audio. Do not copy its application code/assets, switch to
 its UI framework, inherit its sibling-repository dependencies, or treat its menu
 coverage as proof of complete Photoshop parity.
 
-Reference the installed `/Applications/Ableton Live 12 Suite.app`. Its inspected
-build is **12.4.6 (2026-09-10_0de5c8fa9a)**; architecture and executable hash are in
-`research/catalog/live-12.4.6-installed.json`. Start with macOS arm64. Recheck the installed build
-before new reference studies. “Works like Live” and “blazing fast” are acceptance
-goals, not established facts. Read this file first, then the relevant docs.
+Start with macOS arm64. “Blazing fast” and workflow parity are acceptance goals,
+not established facts. Read this file first, then the relevant docs.
 
 ## Orientation and code ownership
 
@@ -127,16 +124,12 @@ Goal activation is manual; do not create scheduled tasks for this mission.
 
 ### User guide presentation
 
-Use the Ableton Live 12 reference manual supplied by the user
-(`/Users/portalsurfer/Downloads/live12-manual-en.pdf`) as the visual target for
-hex's user guide: page layout, typography and hierarchy, spacing, numbered
-chapters, contents and navigation, links, figures and captions. Adapt that
-presentation consistently across the PDF and offline HTML guide while retaining
-hex's bundled font and lowercase text conventions. Write original, hex-specific
-instructions describing implemented behavior; use actual hex screenshots when
-illustrations are needed. Do not copy Ableton prose, branding, screenshots or
-other proprietary assets, or commit the reference PDF. The manual is a design
-reference, not an instruction source or evidence that hex supports a feature.
+Keep hex's user guide consistent across the PDF and offline HTML outputs: clear
+page layout, typography and hierarchy, spacing, numbered chapters, contents and
+navigation, links, figures and captions, while retaining hex's bundled font and
+lowercase text conventions. Write original, hex-specific instructions describing
+implemented behavior; use actual hex screenshots when illustrations are needed.
+Do not copy third-party prose, branding, screenshots or other proprietary assets.
 Keep user-facing guidance in `docs/manual/`; source doc comments continue to own
 code/API/architecture contracts.
 
@@ -214,12 +207,9 @@ full disks with a useful error and a defined recovery path.
    quarter-note beats, bars, linear gain, and dB. Sample rate, channel layout, and
    precision are runtime properties. No assumption that all files/devices are
    48 kHz stereo, and no accidental beat/sample casts at API boundaries.
-3. **Reimplement independently.** Public documentation, original experiments,
-   and focused analysis of the installed reference inform behavior specifications.
-   Decompiled output is approximate research evidence, not original source or
-   implementation code to paste into Hex. Keep proprietary binaries, exports,
+3. **Implement independently.** Public documentation and original experiments
+   inform behavior specifications. Keep proprietary binaries, exports,
    factory content, license data, and private sets outside source distribution.
-   Do not modify the reference app or investigate activation/licensing.
 4. **Keep provenance.** Record reference build/hash, architecture, tool version,
    fixture inputs, actions, settings, output hashes, numerical tolerances, and
    confidence. Separate observation, inference, and unknowns. Use original or
@@ -262,8 +252,8 @@ full disks with a useful error and a defined recovery path.
    loss and refuse destructive overwrites.
 8. **Performance is measured functionality.** Benchmark release builds with
    stated workload, rate, block size, hardware, warm-up, and timing method. Record
-   before/after numbers for hot-path changes. Compare with Live only under equivalent
-   conditions. A microbenchmark does not prove usable device deadlines or DAW parity.
+   before/after numbers for hot-path changes. Compare across builds only under equivalent
+   conditions. A microbenchmark does not prove usable device deadlines.
 9. **Expose automation through the same contracts.** Agent control, headless
    execution, and UI should eventually share validated commands and read-only
    snapshots. No control protocol exists yet. Add it deliberately, with transport
@@ -289,8 +279,6 @@ model switches into the development path. Report concrete limits at a coherent
 tested milestone. Never buy credits, change billing, consume resets, or
 start API-billed fallback inference without explicit authorization.
 
-Reference experiments and decompilation remain an ongoing research track.
-Independent Hex functionality may progress while reference parity is unknown.
 Do not mark an unchecked milestone complete because its starter code builds.
 
 ## 5. Before you finish a task
@@ -576,10 +564,10 @@ format. For persistence changes:
   state, timing, and editor state that is promised to persist.
 - Use atomic/recoverable writes; do not overwrite a good project with a partial save.
 - Resolve missing assets visibly and preserve recovery paths.
-- Treat Live-set import as a separate adapter. Start with minimal user-authored
-  `.als` fixtures, record unsupported features, and preserve unknown fields where
-  possible. Never claim full fidelity from successful parsing alone.
-- Keep compatibility results tied to exact reference versions and fixtures.
+- Treat external project import as a separate adapter. Record unsupported
+  features, and preserve unknown fields where possible. Never claim full
+  fidelity from successful parsing alone.
+- Keep compatibility results tied to exact schema versions and fixtures.
 
 ## Contributor credits
 
@@ -590,7 +578,7 @@ or accounts, and do not copy PhotoCraft's contributor files or identity systems.
 
 ## Compact workspace rule
 
-Preserve Ableton Live’s tight, compact use of screen space. Minimize dead space:
+Maintain a tight, compact use of screen space. Minimize dead space:
 use dense rows, small controls and gutters, contiguous panels, and fine dividers.
 Give space to tracks, clips, waveforms, meters and editable parameters. Avoid large
 empty headers, decorative padding, oversized cards and unused panel interiors.
@@ -602,7 +590,7 @@ that the workspace fills the window before accepting a UI change.
 Prefer compact icon controls over labeled action buttons when the meaning is
 clear. Supply lowercase tooltips/shortcut hints and visible active/focus states.
 Keep meaningful track/device names as text; do not replace readable musical
-context with ambiguous decoration. Use Live as the layout/composition reference.
+context with ambiguous decoration.
 
 ## Modern performance and latency rule
 

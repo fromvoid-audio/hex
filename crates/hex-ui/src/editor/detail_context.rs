@@ -1,6 +1,6 @@
 //! Clip editor subject retained from an Arrangement cursor or time selection.
 //!
-//! As in Live, placing the point cursor or pressing a time selection inside a
+//! Placing the point cursor or pressing a time selection inside a
 //! clip body shows that clip in the clip editor without making it a whole-clip
 //! (object) selection. Whole-clip selection stays `selected_clip` plus
 //! `clip_selection`; it alone highlights the clip, hides the point cursor and

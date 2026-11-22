@@ -1,6 +1,6 @@
 # parameter snapshot measurement
 
-17 October 2026; original Hex control-side experiment, not a Live reference study.
+17 October 2026; original Hex control-side experiment.
 Exact source, tool, workload and measurement boundaries are in
 [measurement.json](measurement.json); raw aggregates are
 [before](operator-release-before.csv) and [after](operator-release-after.csv).

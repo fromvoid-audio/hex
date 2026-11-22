@@ -13,8 +13,8 @@
 //! current instrument) renames an automatic-named track to the instrument's
 //! display name in the same history edit, so one Undo restores both. The name
 //! stays automatic afterwards, so a later instrument load renames it again,
-//! matching Live, which keeps following the device only while the name is
-//! device-derived. Effects never rename, and removing an instrument keeps the
+//! following the device only while the name remains device-derived.
+//! Effects never rename, and removing an instrument keeps the
 //! current name. Duplicated tracks copy the origin with the name.
 
 use crate::{Command, Created, DeviceId, Invalid, Project, TrackDeviceSlot, TrackId};

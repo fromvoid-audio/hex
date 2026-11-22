@@ -1,15 +1,14 @@
 # hex
 
 hex is a native Rust digital audio workstation using GPUI and CPAL. It is active
-alpha software for macOS arm64. Feature completeness, Live compatibility and
+alpha software for macOS arm64. Feature completeness and
 native listening acceptance are ongoing work, tracked in [Pulse](https://pulse.iocore.dev/).
 The private repository does not currently select a distribution license.
 
 ## Professional performance target
 
-hex aims to match Ableton Live and Bitwig Studio on comparable production and
-live performance workloads, then substantially surpass both in reliable track
-and device capacity, editing responsiveness, and low-latency performance.
+hex aims for high reliable track and device capacity, editing responsiveness,
+and low-latency performance on demanding production and performance workloads.
 
 Dense sessions with native devices and hosted plug-ins should keep audio
 continuous and editing responsive. Live instruments and monitoring should run

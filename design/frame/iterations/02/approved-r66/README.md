@@ -1,15 +1,13 @@
 # hex UI iteration 2
 
 Accepted by the user on 8 October 2026. This frozen snapshot is the visual
-reference for subsequent native GPUI implementation. Frame revision: hex-live-r66.
+reference for subsequent native GPUI implementation. Frame revision: hex-layout-r66.
 
 ## Reference files
 
 - `arrangement.png` and `session.png`: full-size 1900 × 1120 playback concepts.
 - `hex.frame.json`: portable editable Frame project, including view states.
-- `hex-live-r66.json`: structured geometry and prototype state document.
 - `theme-palette.json` and `theme-palette.png`: theme tokens and color board.
-- `live-layout-styleguide.json`: compact layout and style constraints.
 - `clip-colors.json`: custom color picker with at most 64 user-saved swatches.
 - `review.json`: zero reported visual issues; eight prototype scenarios passed.
 - `manifest.json`: revision identity and SHA-256 hashes of saved source/artifacts.

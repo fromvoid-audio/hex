@@ -1,4 +1,4 @@
-//! Arrangement time selection to clip editor viewport, as in Live.
+//! Arrangement time selection to clip editor viewport.
 //!
 //! Completing a dragged Arrangement time selection over the clip editor's
 //! subject (`detail_clip_id`) fits the clip editor to exactly that range in

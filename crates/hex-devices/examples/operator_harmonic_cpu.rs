@@ -1,5 +1,5 @@
 //! Design-only reconstruction microbenchmark, not a registered instrument.
-//! Original additive/table fixture; no claims about Live or complete Operator DSP.
+//! Original additive/table fixture; not a complete Operator DSP benchmark.
 use std::{hint::black_box, time::Instant};
 const N: usize = 2048;
 const V: usize = 16;

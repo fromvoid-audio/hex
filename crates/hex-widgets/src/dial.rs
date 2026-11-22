@@ -32,7 +32,7 @@ impl DialLayout {
     }
 }
 
-// The installed Live reference starts at six o'clock and ends at three
+// The dial arc starts at six o'clock and ends at three
 // o'clock after a clockwise 270-degree sweep. The lower-right gap holds text.
 #[cfg(test)]
 const START: f32 = std::f32::consts::FRAC_PI_2;

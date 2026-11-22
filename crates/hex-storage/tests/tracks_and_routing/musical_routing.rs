@@ -152,7 +152,7 @@ fn schema25_combines_roots_session_gain_routes_lanes_provenance_and_host_trims()
     .unwrap();
     let mut snapshot = e.project().snapshot();
     snapshot.import_provenance =
-        Some(ImportProvenance::new("ableton-live-set", 1, 1, vec![0, 42, 255]).unwrap());
+        Some(ImportProvenance::new("external-project", 1, 1, vec![0, 42, 255]).unwrap());
     let device = snapshot.tracks[0].instrument.as_mut().unwrap();
     device.state = device
         .state

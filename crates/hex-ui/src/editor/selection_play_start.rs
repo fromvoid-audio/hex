@@ -11,7 +11,7 @@ pub(super) struct SelectedClipPlayStart {
 }
 
 impl EditorView {
-    /// Whole Arrangement selection supplies Play's start, as in Live: the earliest
+    /// Whole Arrangement selection supplies Play's start: the earliest
     /// selected clip or Main section start in frames. Audio starts are
     /// frame-anchored; MIDI and section beats convert through the tempo map, and
     /// one that maps beyond the frame range is skipped. An offscreen start still

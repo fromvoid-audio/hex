@@ -10,7 +10,7 @@ use std::{
 fn fixture() -> Project {
     let mut snapshot = Project::new(48_000).unwrap().snapshot();
     snapshot.import_provenance =
-        Some(ImportProvenance::new("ableton-live-set", 1, 1, vec![255, 0, 42]).unwrap());
+        Some(ImportProvenance::new("external-project", 1, 1, vec![255, 0, 42]).unwrap());
     let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
     for version in [9, 10] {
         let Created::ReturnTrack(id) = editor

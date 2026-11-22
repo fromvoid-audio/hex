@@ -1,4 +1,4 @@
-//! Original linear ADSR law in output-frame units, not measured Live curves.
+//! Original linear ADSR law in output-frame units.
 use super::{Invalid, finite_range};
 
 #[derive(Clone, Copy, Debug, PartialEq)]

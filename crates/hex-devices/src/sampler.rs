@@ -8,7 +8,7 @@
 //! frame intervals. Pitch/rate conversion, reverse, Classic loops (with an optional seam crossfade), One-Shot/Slice gate laws and
 //! envelope ages share the same bounded scalar preparation. Voices borrow immutable PCM without
 //! per-note scan, copy or owning handle; sample queries remain deterministic across block sizes.
-//! These original laws do not establish Live parity or native deadline acceptance.
+//! These original laws do not establish native deadline acceptance.
 mod binding;
 pub mod catalog;
 pub mod control;

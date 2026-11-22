@@ -8,8 +8,7 @@ const HISTORY_FLOOR: f64 = 1.0e-30;
 
 /// Control-prepared coefficients and settings; construction validates all input.
 /// Bass mono uses an original fourth-order Linkwitz–Riley high-pass on the side
-/// signal. Audition uses the corresponding low-pass on the mid signal. Exact
-/// Live responses have not been measured.
+/// signal. Audition uses the corresponding low-pass on the mid signal.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PreparedUtilityFilters {
     sample_rate: u32,
