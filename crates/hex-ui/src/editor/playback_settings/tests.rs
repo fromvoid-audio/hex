@@ -916,3 +916,43 @@ fn section_gesture_keeps_its_loaded_policy_through_a_held_loop_receipt(cx: &mut 
     }
     fixture.finish(cx);
 }
+
+#[gpui::test]
+fn offline_toggle_records_play_from_diagnostic_only_when_settings_are_ready(
+    cx: &mut TestAppContext,
+) {
+    let editor = editor(cx);
+    editor.update(cx, |view, _| {
+        assert!(view.audio.is_none());
+        assert!(!view.playback_settings.loading);
+        view.edit_cursor = Some(super::super::edit_cursor::EditCursor {
+            track: None,
+            frame: 48_000,
+            generation: view.project_generation,
+            pulse_color: 0xffffff,
+            pulse_started: std::time::Instant::now(),
+        });
+
+        view.playback_settings.loading = true;
+        view.last_transport_command = None;
+        view.toggle_play();
+        assert_eq!(view.last_transport_command, None);
+        assert!(view.playback_settings.pending.is_none());
+        assert!(view.pending_audio_commands.is_empty());
+
+        view.playback_settings.loading = false;
+        view.error = None;
+        view.toggle_play();
+        assert_eq!(
+            view.last_transport_command,
+            Some(PlaybackCommand::PlayFrom(48_000))
+        );
+        assert!(view.playback_settings.pending.is_none());
+        assert!(view.pending_audio_commands.is_empty());
+        assert!(
+            view.error
+                .as_deref()
+                .is_some_and(|message| message.contains("unavailable"))
+        );
+    });
+}

@@ -2178,6 +2178,20 @@ impl EditorView {
         match self.play_toggle_action(device_playing, start_frame) {
             arrangement_seek::ToggleAction::Pause => self.pause_from_play_toggle(),
             arrangement_seek::ToggleAction::PlayFrom(frame) => {
+                // Offline UI tests construct `EditorView` without an audio
+                // output (`self.audio == None`) and inspect
+                // `last_transport_command` as a routing diagnostic, matching
+                // `pause_from_play_toggle`. Live audio fencing in
+                // `queue_normal_play` still runs unchanged.
+                #[cfg(test)]
+                if self.audio.is_none()
+                    && !self.playback_settings.loading
+                    && !self.has_degraded_vst3_output()
+                    && self.pending_audio_commands.is_empty()
+                    && self.stopped_playback_restore.is_none()
+                {
+                    self.last_transport_command = Some(PlaybackCommand::PlayFrom(frame));
+                }
                 self.queue_normal_play(frame);
             }
             arrangement_seek::ToggleAction::Unavailable => {
