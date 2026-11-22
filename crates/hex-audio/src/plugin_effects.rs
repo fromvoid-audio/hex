@@ -750,6 +750,7 @@ impl NativeEffectCallback {
         self.transport.fault()
     }
     #[cfg(all(test, feature = "allocation-probe"))]
+    #[allow(dead_code)]
     pub(crate) fn pending_requests_for_test(&self) -> usize {
         self.transport.pending_requests_for_test()
     }
@@ -1073,7 +1074,14 @@ impl NativeEffectCallback {
 }
 
 #[cfg(test)]
-mod tests;
+mod unit_tests;
 
-#[cfg(test)]
-mod dense_tests;
+crate::include_vst3_sdk_tests! {
+    #[cfg(test)]
+    #[path = "../tests/native_vst3_sdk/plugin_effects.rs"]
+    mod tests;
+
+    #[cfg(test)]
+    #[path = "../tests/native_vst3_sdk/plugin_effects_dense.rs"]
+    mod dense_tests;
+}

@@ -182,6 +182,7 @@ impl EffectTransport {
     }
 
     #[cfg(all(test, feature = "allocation-probe"))]
+    #[allow(dead_code)]
     pub(super) fn pending_requests_for_test(&self) -> usize {
         match self {
             Self::Ordinary(callback) => callback.pending_requests_for_test(),

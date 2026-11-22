@@ -603,6 +603,7 @@ impl CandidateRoot {
     }
 }
 
+crate::include_vst3_sdk_tests! {
 #[cfg(test)]
 mod tests {
     use super::super::tests::{dispose, root, source_reservation, start};
@@ -1139,4 +1140,5 @@ mod tests {
             matches!(returned.disposal,PreparationDisposal::Reaped(retired) if retired.status.success() && retired.terminal.is_some_and(|terminal| terminal.blocks==4 && terminal.frames==32))
         );
     }
+}
 }

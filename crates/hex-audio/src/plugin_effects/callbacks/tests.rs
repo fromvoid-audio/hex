@@ -8,6 +8,7 @@ const QUANTUM: usize = 4;
 /// Both endpoints declare only the copied 2Q bridge latency.
 const LATENCY_CALLBACKS: usize = 2;
 
+crate::include_vst3_sdk_tests! {
 #[test]
 #[ignore = "requires explicit source-bound original SDK receipts"]
 fn actual_foreign_instrument_notes_follow_accepted_callback_segments() {
@@ -142,6 +143,7 @@ fn actual_foreign_instrument_notes_follow_accepted_callback_segments() {
     let retirement = worker.retire_on_control().unwrap();
     assert!(retirement.failure.is_none() && retirement.native.status.success());
     assert_eq!(retirement.native.terminal.unwrap().blocks, 4);
+}
 }
 
 /// Copied graph facts for one endpoint, so a node can be built while the

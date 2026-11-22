@@ -5,6 +5,7 @@ use crate::plugin_effects::{AuthoredSelection, NativeEffect};
 
 impl Custody {
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(in crate::candidate_custody) fn start_native_effect(
         &self,
         binding: Binding,
@@ -96,6 +97,7 @@ impl Custody {
 
 impl CandidateRoot {
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn start_native_effect(&self, binding: Binding) -> Result<(), &'static str> {
         self.start_native_effect_with_authored_selection(binding, None)
     }

@@ -262,6 +262,7 @@ impl Hosting {
         }
     }
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn from_test_build(build: InstanceBuild, limits: native::Limits) -> Self {
         Self {
             build,

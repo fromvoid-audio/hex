@@ -1994,6 +1994,29 @@ class SingleRunFeatureTests(unittest.TestCase):
              "--locked", "--", "native_audio::tests::sampler::"),
         )
 
+    def test_audio_and_plugin_host_vst3_sdk_tests_are_opt_in_and_decoupled(self):
+        root, inventory = self.live()
+        audio = next(p for p in inventory if p["name"] == "hex-audio")
+        host = next(p for p in inventory if p["name"] == "hex-plugin-host")
+        self.assertNotIn("hex-engine/instrument-test-support", audio["features"]["allocation-probe"])
+        self.assertIn("vst3-sdk-tests", audio["features"])
+        self.assertIn("vst3-sdk-tests", host["features"])
+        for pkg, path in (("hex-audio", "crates/hex-audio/src/cpu_meter.rs"),
+                          ("hex-plugin-host", "crates/hex-plugin-host/src/protocol.rs")):
+            with self.subTest(pkg=pkg):
+                _, affected, _ = plan.classify([path], inventory)
+                boundary = plan.boundary_selection(root, [path], inventory, affected)
+                steps = {s.step_id: s for s in ci.planned_steps({
+                    "scope": "rust", "affected_packages": affected, "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                self.assertNotIn(f"feature-test-{pkg}-1", steps)
+                for step in steps.values():
+                    if ci.runs_rust_tests(step.argv):
+                        self.assertNotIn("vst3-sdk-tests", step.argv)
+                clippy_argv = steps["affected-feature-clippy"].argv
+                feature_arg = clippy_argv[clippy_argv.index("--features") + 1]
+                self.assertIn(f"{pkg}/vst3-sdk-tests", feature_arg.split(","))
+
     def test_viewport_edit_stays_bounded_without_browser_or_sampler_explosion(self):
         root, inventory = self.live()
         path = "crates/hex-ui/src/editor/viewport.rs"

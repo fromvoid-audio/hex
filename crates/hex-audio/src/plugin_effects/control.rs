@@ -81,6 +81,7 @@ pub(crate) struct NativeEffectControl {
 }
 impl NativeEffect {
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn pending_edit_result_nonempty_for_test(&self) -> Option<bool> {
         self.worker.pending_edit_result_nonempty_for_test()
     }
@@ -305,6 +306,7 @@ impl NativeEffect {
         Ok((control, self.callback))
     }
 }
+#[allow(dead_code)]
 impl NativeEffectControl {
     #[cfg(test)]
     pub(crate) fn pending_edit_result_nonempty_for_test(&self) -> Option<bool> {

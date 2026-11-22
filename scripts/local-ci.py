@@ -271,6 +271,7 @@ FULL_STEPS = (
     Step("ui-unit-clippy", ("cargo", "clippy", "-p", "hex-ui", "--all-targets", "--features", "ui-unit-tier", "--locked", "--", "-D", "warnings")),
     Step("sandbox-unit-clippy", ("cargo", "clippy", "-p", "hex-sandbox", "--all-targets", "--features", "ui-unit-tier", "--locked", "--", "-D", "warnings")),
     Step("audio-feature-clippy", ("cargo", "clippy", "-p", "hex-audio", "-p", "hex-desktop", "-p", "hex-plugin-host", "--all-targets", "--features", "allocation-probe", "--locked", "--", "-D", "warnings")),
+    Step("vst3-sdk-clippy", ("cargo", "clippy", "-p", "hex-audio", "-p", "hex-plugin-host", "--all-targets", "--features", "vst3-sdk-tests", "--locked", "--", "-D", "warnings")),
     Step("stream-feature-clippy", ("cargo", "clippy", "-p", "hex-stream", "--all-targets", "--features", "allocation-probe", "--locked", "--", "-D", "warnings")),
     Step("desktop-build", ("cargo", "build", "-p", "hex-desktop", "--locked")),
 )
@@ -778,9 +779,9 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
                           ("cargo", "clippy", *consumer_packages, "--lib", "--bins", "--locked", "--", "-D", "warnings")))
     # Keep separate default/feature configurations, including feature-gated
     # examples and allocation probes. Do not deduplicate by overlapping names.
-    covered_features = {"hex-plugin-host": {"allocation-probe"}, "hex-ui": {"ui-test-support", "ui-unit-tier"}, "hex-export": {"instrument-test-support"},
+    covered_features = {"hex-plugin-host": {"allocation-probe", "vst3-sdk-tests"}, "hex-ui": {"ui-test-support", "ui-unit-tier"}, "hex-export": {"instrument-test-support"},
                         "hex-sandbox": {"ui-unit-tier"},
-                        "hex-audio": {"allocation-probe"}, "hex-stream": {"allocation-probe"},
+                        "hex-audio": {"allocation-probe", "vst3-sdk-tests"}, "hex-stream": {"allocation-probe"},
                         "hex-desktop": {"allocation-probe", "ui-test-support"}}
     # Every consumer's reviewed feature configurations lint in ONE invocation:
     # separate invocations recompiled the shared dependency chain per feature
@@ -800,6 +801,8 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         # Feature test suites run for tested owners; feature lints for every consumer.
         scope = tested if runs_rust_tests(step.argv) else affected
         selected = [p for p in owners if p in scope]
+        if step.step_id == "vst3-sdk-clippy":
+            selected = [p for p in selected if "vst3-sdk-tests" in by_name[p]["features"]]
         if not selected or boundary["kind"] == "compressor" and runs_rust_tests(step.argv):
             continue
         if standalone_ui and selected == ["hex-ui"] and runs_rust_tests(step.argv):

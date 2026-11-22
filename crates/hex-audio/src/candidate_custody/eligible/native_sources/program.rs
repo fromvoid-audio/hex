@@ -93,6 +93,7 @@ impl CandidateRoot {
         })?
     }
 }
+crate::include_vst3_sdk_tests! {
 #[cfg(test)]
 mod tests {
     use super::super::tests::*;
@@ -352,4 +353,5 @@ mod tests {
         dispose(root, binding);
         outer.announce_retirement();
     }
+}
 }

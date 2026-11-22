@@ -17,7 +17,12 @@ mod guarded;
 mod stopped;
 pub use guarded::{NativeWorkerGuardedCaptureProgress, NativeWorkerStateAfterGuardedWrite};
 #[cfg(test)]
-mod tests;
+mod unit_tests;
+crate::include_vst3_sdk_tests! {
+    #[cfg(test)]
+    #[path = "../../tests/native_vst3_sdk/plugin_worker_capture/mod.rs"]
+    mod tests;
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -179,6 +184,7 @@ pub struct NativeWorkerCapture {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 impl NativeWorkerCapture {
     pub(crate) fn original_worker_released_on_control(&self) -> bool {
         self.source.upgrade().is_none()

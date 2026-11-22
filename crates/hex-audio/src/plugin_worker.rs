@@ -1712,5 +1712,8 @@ mod tests {
     }
 }
 
-#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
-pub(crate) mod native_tests;
+crate::include_vst3_sdk_tests! {
+    #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+    #[path = "../tests/native_vst3_sdk/plugin_worker_native.rs"]
+    pub(crate) mod native_tests;
+}

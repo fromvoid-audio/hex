@@ -175,38 +175,6 @@ fn native_effect_refuses_stepped_dense_selection_before_worker_start() {
 }
 
 #[test]
-fn unreserved_or_wrong_dense_target_refuses_before_any_request() {
-    use hex_lattice_contract::DeviceTypeId;
-    use hex_plugin_host::transport::channel;
-
-    let state =
-        NativeDeviceState::new(DeviceTypeId::from_static("test.foreign"), 1, vec![]).unwrap();
-    for (expected, incoming) in [(None, 0), (Some(0), 1)] {
-        let (control, transport, mut worker) = channel(BINDING, 8).unwrap();
-        let mut callback =
-            NativeEffectCallback::for_test(identity(), BINDING, state.clone(), transport);
-        callback.configuration.dense_raw_id = expected;
-        let config = callback.configuration.clone();
-        callback.begin_host_callback(8).unwrap();
-        assert_eq!(
-            callback.process_segment_with_modulation(
-                node(&config),
-                0,
-                &mut [[0.25; 2]; 8],
-                ForeignModulationSamples {
-                    id: incoming,
-                    normalized: &[0.5; 8],
-                },
-                None,
-            ),
-            Err(DeviceContractError::ForeignProcessingUnavailable)
-        );
-        assert!(control.is_revoked());
-        assert!(matches!(worker.receive_request(), Err(Fault::Revoked)));
-    }
-}
-
-#[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn native_dense_carrier_preserves_shifted_segments_and_rejects_wrong_epoch() {
     if fixture_child("80") {

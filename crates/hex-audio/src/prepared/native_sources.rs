@@ -1959,6 +1959,7 @@ impl Callback {
     /// waiting, allocation, or ownership transfer. This is not graph, source,
     /// transport, state, or publication authority; callers must validate each.
     #[cfg(all(test, feature = "allocation-probe"))]
+    #[allow(dead_code)]
     pub(super) fn reserve_native_parameter_input_observation(
         &self,
         binding: Binding,
@@ -2148,7 +2149,13 @@ impl Callback {
 }
 
 #[cfg(test)]
-mod tests;
+mod unit_tests;
+
+crate::include_vst3_sdk_tests! {
+    #[cfg(test)]
+    #[path = "../../tests/native_vst3_sdk/prepared_native_sources/mod.rs"]
+    mod tests;
+}
 
 #[cfg(test)]
 mod parameter_source_tests {

@@ -22,8 +22,10 @@ use std::{
 };
 mod eligible;
 pub(crate) use eligible::DomainEnvelope;
-#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
-pub(crate) use eligible::native_sources::tests as native_source_test_fixture;
+crate::include_vst3_sdk_tests! {
+    #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) use eligible::native_sources::tests as native_source_test_fixture;
+}
 pub(crate) use eligible::publication::{
     Active as ActiveEligibleCandidate, FinalReturn as EligibleFinalReturn, InstallDecision,
     Queued as QueuedEligibleCandidate, Returned as ReturnedEligibleCandidate, StageAction,
