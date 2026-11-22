@@ -83,7 +83,7 @@ pub fn install_audio_diagnostics(cx: &mut App, flags: AudioDiagnosticsFlags) {
     if flags.enabled()
         && let Ok(handle) = &diagnostics.handle
     {
-        let _ = handle.record_typed(Level::Info, Category::Audio, &format!("audio_diag v=1 stage=configuration build={:?} flags={flags:?} capacity={} drain_budget={} receipt_time=control", crate::build_info::LABEL,
+        let _ = handle.record_typed(Level::Info, Category::Audio, &format!("audio_diag v=1 stage=configuration build={:?} flags={flags:?} capacity={} drain_budget={} receipt_time=control", crate::build_info::label_text(),
             hex_audio::audio_diagnostics::TRACE_CAPACITY, MAX_DRAIN_PER_POLL));
     }
 }
