@@ -676,7 +676,7 @@ impl Inputs<'_> {
             && let Some(previous) = predecessor
             && let Some(submission) = previous.submission
             && prepared.needs_foreign_history_pruning_from(&previous.prepared)
-            && submission.matches_applied(sink.resident_publication_readiness())
+            && submission.matches_stopped_history_predecessor(sink.resident_publication_readiness())
         {
             sink.begin_stopped_foreign_history(submission, context)
                 .map_err(SessionError::NativeAudio)?;
@@ -1007,6 +1007,16 @@ impl Inputs<'_> {
                 });
                 playback = playback_with_loop(snapshot, None)?;
                 continue;
+            }
+            if self.stopped_history
+                && matches!(
+                    policy,
+                    ResidentPublicationPolicy::InheritRuntime
+                        | ResidentPublicationPolicy::InheritRuntimeAt(_)
+                )
+            {
+                sink.confirm_stopped_foreign_history(metadata.context, accepted)
+                    .map_err(SessionError::NativeAudio)?;
             }
             break (accepted, selected);
         };
@@ -1607,7 +1617,7 @@ pub(super) fn prepare_import_playback(
         power_on: None,
         running_power_off: None,
         hosted_move: None,
-        stopped_history: false,
+        stopped_history: position.is_none(),
         predecessor: None,
         native: NativeSamplerSources::Committed(input.native),
         limits: input.limits.ok_or(SessionError::Invalid(
@@ -1620,42 +1630,48 @@ pub(super) fn prepare_import_playback(
         current,
         legacy: input.legacy.to_vec(),
     };
-    let mut snapshot = inputs.prepare(
-        input.project,
-        sink,
-        input.media,
-        input.table,
-        input.transforms,
-        input.waveforms,
-        context,
-    )?;
-    snapshot.source_origin = ResidentSourceOrigin::CanonicalCandidate;
-    admit()?;
-    if let Some(position) = position {
-        inputs.publish_fenced_bounce(&mut snapshot, input.project, sink, context, position)?;
-    } else if let ImportPlayback::Browser {
-        track,
-        start,
-        timing,
-    } = mode
-    {
-        let (policy, section_loop) =
-            inherited_runtime(sink, context, ResidentPublicationPolicy::InheritRuntime)?;
-        let mut playback = playback_with_loop(&snapshot, section_loop)?;
-        playback.arm_browser_audition(track, start, timing);
-        let metadata = canonical_metadata(&snapshot, context);
-        inputs.publish_tagged_playback(
-            &mut snapshot,
+    let result = (|| {
+        let mut snapshot = inputs.prepare(
             input.project,
             sink,
-            metadata,
-            policy,
-            playback,
+            input.media,
+            input.table,
+            input.transforms,
+            input.waveforms,
+            context,
         )?;
-    } else {
-        inputs.publish(&mut snapshot, input.project, sink, context)?;
+        snapshot.source_origin = ResidentSourceOrigin::CanonicalCandidate;
+        admit()?;
+        if let Some(position) = position {
+            inputs.publish_fenced_bounce(&mut snapshot, input.project, sink, context, position)?;
+        } else if let ImportPlayback::Browser {
+            track,
+            start,
+            timing,
+        } = mode
+        {
+            let (policy, section_loop) =
+                inherited_runtime(sink, context, ResidentPublicationPolicy::InheritRuntime)?;
+            let mut playback = playback_with_loop(&snapshot, section_loop)?;
+            playback.arm_browser_audition(track, start, timing);
+            let metadata = canonical_metadata(&snapshot, context);
+            inputs.publish_tagged_playback(
+                &mut snapshot,
+                input.project,
+                sink,
+                metadata,
+                policy,
+                playback,
+            )?;
+        } else {
+            inputs.publish(&mut snapshot, input.project, sink, context)?;
+        }
+        Ok(snapshot)
+    })();
+    if inputs.stopped_history {
+        sink.finish_resident_effect_edit(context, result.is_ok());
     }
-    Ok(snapshot)
+    result
 }
 
 /// Planning hint derived from the same owners as final publication admission.
@@ -1942,7 +1958,7 @@ impl Session {
         // Both closures run synchronously and never overlap. Checked borrows preserve an explicit
         // failure if that contract changes, without storing a sink in Session or a UI event.
         let sink = std::cell::RefCell::new(sink);
-        self.import_device_asset_prepared(
+        let result = self.import_device_asset_prepared(
             decoded,
             cancel,
             destination,
@@ -1956,7 +1972,7 @@ impl Session {
                     power_on: None,
                     running_power_off: None,
                     hosted_move: None,
-                    stopped_history: false,
+                    stopped_history: true,
                     predecessor: None,
                     native: NativeSamplerSources::Staged(stage),
                     limits,
@@ -1990,7 +2006,7 @@ impl Session {
                     power_on: None,
                     running_power_off: None,
                     hosted_move: None,
-                    stopped_history: false,
+                    stopped_history: true,
                     predecessor: None,
                     native: NativeSamplerSources::Staged(stage),
                     limits,
@@ -2007,7 +2023,10 @@ impl Session {
                 inputs.publish(snapshot, project, &mut **sink, context)?;
                 Ok(())
             },
-        )
+        );
+        sink.into_inner()
+            .finish_resident_effect_edit(context, result.is_ok());
+        result
     }
     pub(super) fn sampler_resident_edit(
         &mut self,
@@ -2435,7 +2454,7 @@ impl Session {
             power_on: None,
             running_power_off: None,
             hosted_move: None,
-            stopped_history: false,
+            stopped_history: true,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -2452,18 +2471,22 @@ impl Session {
                 .flat_map(|media| [&media.source_audio, &media.audio])
                 .collect(),
         };
-        let mut snapshot = inputs.prepare(
-            self.project(),
-            sink,
-            &self.media_bank(),
-            self.sine_table(),
-            &self.audio_transforms,
-            &self.audio_clip_waveforms,
-            context,
-        )?;
-        snapshot.source_origin = ResidentSourceOrigin::CanonicalCandidate;
-        inputs.publish(&mut snapshot, self.project(), sink, context)?;
-        Ok(snapshot)
+        let result = (|| {
+            let mut snapshot = inputs.prepare(
+                self.project(),
+                sink,
+                &self.media_bank(),
+                self.sine_table(),
+                &self.audio_transforms,
+                &self.audio_clip_waveforms,
+                context,
+            )?;
+            snapshot.source_origin = ResidentSourceOrigin::CanonicalCandidate;
+            inputs.publish(&mut snapshot, self.project(), sink, context)?;
+            Ok(snapshot)
+        })();
+        sink.finish_resident_effect_edit(context, result.is_ok());
+        result
     }
 
     /// Recompile the same canonical project after the native owner renewed its
@@ -2549,9 +2572,10 @@ impl Session {
         current: &Snapshot,
         cancel: Option<&AtomicBool>,
     ) -> Result<(Arc<Project>, Snapshot), SessionError> {
-        let inputs = self.resident_seek_inputs(admission, Some(current), cancel)?;
+        let mut inputs = self.resident_seek_inputs(admission, Some(current), cancel)?;
+        inputs.stopped_history = true;
         let mut editor = hex_project::Editor::new(self.project().clone(), 1)?;
-        let (_, prepared) = editor.execute_prepared_transition(command, |source, candidate| {
+        let result = editor.execute_prepared_transition(command, |source, candidate| {
             let mut snapshot = inputs.prepare_transition(
                 source,
                 candidate,
@@ -2591,7 +2615,9 @@ impl Session {
             };
             inputs.publish_tagged(&mut snapshot, &project, sink, metadata)?;
             Ok::<_, SessionError>((project, snapshot))
-        })?;
+        });
+        sink.finish_resident_effect_edit(context, result.is_ok());
+        let (_, prepared) = result?;
         Ok(prepared)
     }
     /// Restore canonical audio as a successor to a preview that may have
@@ -2606,23 +2632,28 @@ impl Session {
     ) -> Result<Snapshot, SessionError> {
         let inputs = Inputs {
             native_parameter_input: current.prepared.native_parameter_input_target(),
+            stopped_history: true,
             ..self.resident_seek_inputs(admission, Some(current), None)?
         };
         let project = self.project();
-        let mut snapshot = inputs.prepare_with_gain(
-            project,
-            sink,
-            &self.media_bank(),
-            self.sine_table(),
-            &self.audio_transforms,
-            &self.audio_clip_waveforms,
-            current.prepared.gain_recording_track(),
-            None,
-            context,
-            None,
-        )?;
-        inputs.publish(&mut snapshot, project, sink, context)?;
-        Ok(snapshot)
+        let result = (|| {
+            let mut snapshot = inputs.prepare_with_gain(
+                project,
+                sink,
+                &self.media_bank(),
+                self.sine_table(),
+                &self.audio_transforms,
+                &self.audio_clip_waveforms,
+                current.prepared.gain_recording_track(),
+                None,
+                context,
+                None,
+            )?;
+            inputs.publish(&mut snapshot, project, sink, context)?;
+            Ok(snapshot)
+        })();
+        sink.finish_resident_effect_edit(context, result.is_ok());
+        result
     }
 
     pub(super) fn prepare_resident_gain_recording(
@@ -2633,21 +2664,26 @@ impl Session {
         admission: sampler_export::Admission<'_>,
         current: &Snapshot,
     ) -> Result<Snapshot, SessionError> {
-        let inputs = self.resident_seek_inputs(admission, Some(current), None)?;
-        let mut snapshot = inputs.prepare_with_gain(
-            self.project(),
-            sink,
-            &self.media_bank(),
-            self.sine_table(),
-            &self.audio_transforms,
-            &self.audio_clip_waveforms,
-            Some(track),
-            None,
-            context,
-            None,
-        )?;
-        inputs.publish(&mut snapshot, self.project(), sink, context)?;
-        Ok(snapshot)
+        let mut inputs = self.resident_seek_inputs(admission, Some(current), None)?;
+        inputs.stopped_history = true;
+        let result = (|| {
+            let mut snapshot = inputs.prepare_with_gain(
+                self.project(),
+                sink,
+                &self.media_bank(),
+                self.sine_table(),
+                &self.audio_transforms,
+                &self.audio_clip_waveforms,
+                Some(track),
+                None,
+                context,
+                None,
+            )?;
+            inputs.publish(&mut snapshot, self.project(), sink, context)?;
+            Ok(snapshot)
+        })();
+        sink.finish_resident_effect_edit(context, result.is_ok());
+        result
     }
     pub(super) fn prepare_resident_native_parameter_recording(
         &self,
@@ -2659,19 +2695,24 @@ impl Session {
     ) -> Result<Snapshot, SessionError> {
         let inputs = Inputs {
             native_parameter_input: input,
+            stopped_history: true,
             ..self.resident_seek_inputs(admission, Some(current), None)?
         };
-        let mut snapshot = inputs.prepare(
-            self.project(),
-            sink,
-            &self.media_bank(),
-            self.sine_table(),
-            &self.audio_transforms,
-            &self.audio_clip_waveforms,
-            context,
-        )?;
-        inputs.publish(&mut snapshot, self.project(), sink, context)?;
-        Ok(snapshot)
+        let result = (|| {
+            let mut snapshot = inputs.prepare(
+                self.project(),
+                sink,
+                &self.media_bank(),
+                self.sine_table(),
+                &self.audio_transforms,
+                &self.audio_clip_waveforms,
+                context,
+            )?;
+            inputs.publish(&mut snapshot, self.project(), sink, context)?;
+            Ok(snapshot)
+        })();
+        sink.finish_resident_effect_edit(context, result.is_ok());
+        result
     }
 
     pub(super) fn bounce_history_snapshot(
@@ -2981,7 +3022,7 @@ impl Session {
             power_on: None,
             running_power_off: None,
             hosted_move: None,
-            stopped_history: false,
+            stopped_history: true,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -3002,7 +3043,9 @@ impl Session {
         let table = self.sine_table();
         let transforms = &self.audio_transforms;
         let waveforms = &self.audio_clip_waveforms;
-        self.editor
+        let mut finish_context = context;
+        let result = self
+            .editor
             .execute_prepared_transition(command, |source, target| {
                 crate::comparison_transition::prepare_comparison(
                     source,
@@ -3019,13 +3062,16 @@ impl Session {
                         } else {
                             context
                         };
+                        finish_context = context;
                         let mut snapshot = inputs
                             .prepare(target, sink, &media, table, transforms, waveforms, context)?;
                         inputs.publish(&mut snapshot, target, sink, context)?;
                         Ok((Arc::clone(&snapshot.prepared), snapshot))
                     },
                 )
-            })
+            });
+        sink.finish_resident_effect_edit(finish_context, result.is_ok());
+        result
     }
     pub(super) fn history_resident_snapshot(
         &mut self,
@@ -3103,11 +3149,12 @@ impl Session {
             power_on: None,
             running_power_off: None,
             hosted_move: None,
-            stopped_history: matches!(&transition, Transition::History { .. })
-                || matches!(&transition, Transition::Command(command)
-                if matches!(command.as_ref(), Command::ReplaceDeviceAutomationTarget {
-                    target: hex_project::DeviceAutomationTarget::Vst3 { .. }, ..
-                })),
+            stopped_history: !matches!(
+                &transition,
+                Transition::BounceHistory { .. }
+                    | Transition::SectionCommand { .. }
+                    | Transition::SectionHistory { .. }
+            ),
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -3156,6 +3203,7 @@ impl Session {
             );
         let explicit_tuning = matches!(&transition, Transition::Command(command)
             if matches!(command.as_ref(), Command::SetTuning(..)));
+        let mut finish_context = context;
         let prepare = |source: &Project, project: &Project| {
             let changed = source != project;
             let context = if !changed {
@@ -3166,6 +3214,7 @@ impl Session {
             } else {
                 context
             };
+            finish_context = context;
             let prepare_started = Instant::now();
             let mut snapshot = inputs.prepare_transition(
                 source,
@@ -3232,8 +3281,6 @@ impl Session {
                     .map_err(SessionError::NativeAudio)?;
             } else {
                 let accepted = inputs.publish(&mut snapshot, project, sink, context)?;
-                sink.confirm_stopped_foreign_history(context, accepted)
-                    .map_err(SessionError::NativeAudio)?;
                 if plugin_parameter {
                     sink.confirm_plugin_parameter_publication(context, accepted)
                         .map_err(|error| match error {
@@ -3289,7 +3336,7 @@ impl Session {
             }
         };
         let finish_started = Instant::now();
-        sink.finish_resident_effect_edit(context, result.is_ok());
+        sink.finish_resident_effect_edit(finish_context, result.is_ok());
         if let Some(phases) = phases {
             phases.finish = finish_started.elapsed();
             phases.prepare = prepare_time;

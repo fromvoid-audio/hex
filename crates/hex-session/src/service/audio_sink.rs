@@ -796,6 +796,68 @@ impl ResidentGraphSubmission {
             publication_in_flight: false,
         } if output_identity == self.output_identity && audio_revision == self.audio_revision && context == self.context)
     }
+
+    /// Compare with the sink's latest publication observation to see whether
+    /// `self` is installed (including after a later candidate was refused) or
+    /// still in flight awaiting installation. The sink must still verify exact
+    /// stopped installation and hold the fence before pruning foreign history.
+    pub fn matches_stopped_history_predecessor(
+        self,
+        readiness: ResidentPublicationReadiness,
+    ) -> bool {
+        match readiness {
+            ResidentPublicationReadiness::Applied {
+                submission:
+                    ResidentRuntimeLoop {
+                        output_identity,
+                        audio_revision,
+                        source_context: Some(context),
+                        ..
+                    },
+                ..
+            }
+            | ResidentPublicationReadiness::Pending {
+                submission:
+                    ResidentRuntimeLoop {
+                        output_identity,
+                        audio_revision,
+                        source_context: Some(context),
+                        ..
+                    },
+                ..
+            } => {
+                output_identity == self.output_identity
+                    && audio_revision == self.audio_revision
+                    && context == self.context
+            }
+            ResidentPublicationReadiness::Refused {
+                submission:
+                    ResidentRuntimeLoop {
+                        output_identity, ..
+                    },
+                applied_revision,
+                ..
+            } => output_identity == self.output_identity && applied_revision == self.audio_revision,
+            ResidentPublicationReadiness::NoOutput
+            | ResidentPublicationReadiness::Idle { .. }
+            | ResidentPublicationReadiness::Applied {
+                submission:
+                    ResidentRuntimeLoop {
+                        source_context: None,
+                        ..
+                    },
+                ..
+            }
+            | ResidentPublicationReadiness::Pending {
+                submission:
+                    ResidentRuntimeLoop {
+                        source_context: None,
+                        ..
+                    },
+                ..
+            } => false,
+        }
+    }
 }
 
 /// Borrow the compiled clock associated with the exact outgoing graph.
@@ -3561,5 +3623,106 @@ mod tests {
             );
             assert_eq!(cycle[grace], IDLE_POLL_INTERVAL);
         }
+    }
+
+    #[test]
+    fn submission_matches_stopped_history_predecessor_across_applied_pending_and_refused() {
+        let context = hex_engine::AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 2,
+        };
+        let submission = ResidentGraphSubmission {
+            output_identity: 1,
+            audio_revision: 11,
+            context,
+        };
+        let runtime = ResidentRuntimeLoop {
+            source_origin: ResidentSourceOrigin::Unknown,
+            output_identity: 1,
+            audio_revision: 11,
+            source_context: Some(context),
+            section_loop: None,
+        };
+        assert!(submission.matches_stopped_history_predecessor(
+            ResidentPublicationReadiness::Applied {
+                submission: runtime,
+                publication_in_flight: false,
+            }
+        ));
+        assert!(submission.matches_stopped_history_predecessor(
+            ResidentPublicationReadiness::Applied {
+                submission: runtime,
+                publication_in_flight: true,
+            }
+        ));
+        assert!(submission.matches_stopped_history_predecessor(
+            ResidentPublicationReadiness::Pending {
+                submission: runtime,
+                applied_revision: 10,
+                publication_in_flight: true,
+            }
+        ));
+        // A later candidate (12) refused while 11 remained applied still matches 11.
+        assert!(submission.matches_stopped_history_predecessor(
+            ResidentPublicationReadiness::Refused {
+                submission: ResidentRuntimeLoop {
+                    audio_revision: 12,
+                    ..runtime
+                },
+                applied_revision: 11,
+                publication_in_flight: false,
+            }
+        ));
+        assert!(
+            !submission.matches_stopped_history_predecessor(ResidentPublicationReadiness::NoOutput)
+        );
+        assert!(!submission.matches_stopped_history_predecessor(
+            ResidentPublicationReadiness::Idle {
+                output_identity: 1,
+                applied_revision: 11,
+                publication_in_flight: false,
+            }
+        ));
+        // If 11 itself was refused (10 remained applied), 11 is not installed.
+        assert!(!submission.matches_stopped_history_predecessor(
+            ResidentPublicationReadiness::Refused {
+                submission: runtime,
+                applied_revision: 10,
+                publication_in_flight: false,
+            }
+        ));
+        assert!(!submission.matches_stopped_history_predecessor(
+            ResidentPublicationReadiness::Pending {
+                submission: ResidentRuntimeLoop {
+                    audio_revision: 10,
+                    ..runtime
+                },
+                applied_revision: 10,
+                publication_in_flight: true,
+            }
+        ));
+        assert!(!submission.matches_stopped_history_predecessor(
+            ResidentPublicationReadiness::Pending {
+                submission: ResidentRuntimeLoop {
+                    output_identity: 2,
+                    ..runtime
+                },
+                applied_revision: 10,
+                publication_in_flight: true,
+            }
+        ));
+        assert!(!submission.matches_stopped_history_predecessor(
+            ResidentPublicationReadiness::Pending {
+                submission: ResidentRuntimeLoop {
+                    source_context: Some(hex_engine::AudioSourceContext {
+                        editor_revision: 3,
+                        ..context
+                    }),
+                    ..runtime
+                },
+                applied_revision: 10,
+                publication_in_flight: true,
+            }
+        ));
     }
 }

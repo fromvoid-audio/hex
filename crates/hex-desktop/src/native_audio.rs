@@ -2193,6 +2193,9 @@ impl WorkerAudioSink for NativeAudioSink {
         if self.stopped_foreign_history.is_some() {
             return Err("stopped vst3 history fence is already held".into());
         }
+        if self.plugins.override_publication_source(context).is_some() {
+            return Ok(false);
+        }
         let Some(control) = self
             .output
             .as_mut()
@@ -2200,13 +2203,42 @@ impl WorkerAudioSink for NativeAudioSink {
         else {
             return Ok(false);
         };
-        let Some(source) = control.status.native_effect_source().filter(|source| {
-            source.output_identity == predecessor.output_identity
-                && source.audio_revision == predecessor.audio_revision
-                && source.context == predecessor.context
-                && !control.status.playing.load(Acquire)
-        }) else {
-            return Ok(false);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+        let source = loop {
+            if self
+                .request_cancellation
+                .as_ref()
+                .is_some_and(|cancel| cancel.is_cancelled())
+            {
+                return Err("stopped vst3 history cancelled".into());
+            }
+            if control.output_identity() != Some(predecessor.output_identity)
+                || control.status.playing.load(Acquire)
+                || control.status.device_fault.load(Acquire)
+                || control.status.render_fault.load(Acquire)
+            {
+                return Ok(false);
+            }
+            if let Some(source) = control.status.native_effect_source().filter(|source| {
+                source.output_identity == predecessor.output_identity
+                    && source.audio_revision == predecessor.audio_revision
+                    && source.context == predecessor.context
+            }) && !control.status.publication_in_flight()
+            {
+                break source;
+            }
+            if control
+                .status
+                .rejected_revision()
+                .is_some_and(|(revision, _)| revision == predecessor.audio_revision)
+                || control.status.applied_revision.load(Acquire) > predecessor.audio_revision
+                || std::time::Instant::now() >= deadline
+            {
+                return Ok(false);
+            }
+            control.reclaim();
+            control.poll_resident_publication();
+            std::thread::sleep(std::time::Duration::from_millis(1));
         };
         let fence = match control.request_native_epoch_fence(source) {
             Ok(fence) => fence,

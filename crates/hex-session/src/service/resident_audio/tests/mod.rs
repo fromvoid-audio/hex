@@ -7,6 +7,7 @@ mod native_automation_recording;
 mod plugin_effect_tests;
 mod retained_open_tests;
 mod source_binding_tests;
+mod stopped_foreign_history;
 mod verified_replacement_tests;
 use super::*;
 use std::sync::{Mutex, atomic::AtomicUsize};
