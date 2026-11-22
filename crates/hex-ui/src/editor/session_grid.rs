@@ -1994,6 +1994,7 @@ impl EditorView {
             if self.time_selection_gesture.is_some() || self.time_range_move_gesture.is_some() {
                 self.cancel_time_selection_gesture();
             }
+            self.cancel_locked_play_start_drag();
             self.cancel_scene_duplicate_selection();
         }
         if mode == EditorMode::Session
