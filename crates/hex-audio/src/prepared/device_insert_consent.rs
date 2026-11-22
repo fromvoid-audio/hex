@@ -14,6 +14,8 @@ pub(super) struct DeviceInsertBasis {
     fence: FreshRuntimeFence,
     transport_epoch: u64,
     pub(super) install_deadline: Instant,
+    #[cfg(test)]
+    clock_advance_ns: AtomicU64,
     pub(super) approved: Option<DeviceInsertConsent>,
     // Only PublicationControl creates an offer. No callback uses this cell.
     offer_deadline: OnceLock<Instant>,
@@ -37,13 +39,29 @@ impl DeviceInsertBasis {
                 |consent| consent.transport_epoch,
             ),
             install_deadline: approved.map_or(deadline, |consent| deadline.min(consent.expires_at)),
+            #[cfg(test)]
+            clock_advance_ns: AtomicU64::new(0),
             approved,
             offer_deadline: OnceLock::new(),
         }
     }
 
+    pub(super) fn install_deadline_reached(&self) -> bool {
+        #[cfg(test)]
+        let now = Instant::now() + Duration::from_nanos(self.clock_advance_ns.load(Acquire));
+        #[cfg(not(test))]
+        let now = Instant::now();
+        now >= self.install_deadline
+    }
+
+    #[cfg(test)]
+    pub(super) fn advance_install_clock(&self, delta: Duration) {
+        let nanos = u64::try_from(delta.as_nanos()).unwrap_or(u64::MAX);
+        self.clock_advance_ns.fetch_add(nanos, Release);
+    }
+
     pub(super) fn cut_is_current(&self, status: &Status, active: Option<&Publication>) -> bool {
-        Instant::now() < self.install_deadline
+        !self.install_deadline_reached()
             && active.is_some_and(|graph| graph.source_context == Some(self.predecessor.context))
             && !Callback::runtime_fence_changed(status, active, self.fence)
             && status.consumed_command.load(Acquire) == self.fence.admitted_command_ticket
@@ -62,7 +80,7 @@ impl DeviceInsertBasis {
         routes: u64,
         retained_routes: u64,
     ) -> bool {
-        Instant::now() < self.install_deadline
+        !self.install_deadline_reached()
             && !Callback::runtime_frontier_changed(
                 status,
                 revision,
@@ -614,7 +632,7 @@ mod tests {
             deadline
         );
         assert_eq!(receipt.state(), PublicationReceiptState::Pending);
-        std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        receipt.advance_install_clock(Duration::from_millis(100));
         let mut pcm = [[0.0; 2]; 257];
         let mut render = || {
             callback.begin_block();

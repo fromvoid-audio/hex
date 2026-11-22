@@ -1631,7 +1631,7 @@ fn device_insert_expires_at_callback_without_control_polling() {
     assert_eq!(receipt.state(), PublicationReceiptState::Pending);
     // Withhold both owners. The next callback must enforce the install
     // deadline independently of a worker which might be occupied by Save.
-    std::thread::sleep(std::time::Duration::from_millis(280));
+    receipt.advance_install_clock(std::time::Duration::from_millis(280));
     let mut pcm = [[0.0; 2]; BLOCK];
     let mut render = || {
         callback.begin_block();

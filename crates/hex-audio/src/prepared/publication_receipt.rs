@@ -175,9 +175,16 @@ impl CancellablePublicationReceipt {
         // deadline. Only a device insert consults it on the callback.
         if self
             .device_insert_basis()
-            .is_some_and(|basis| Instant::now() >= basis.install_deadline)
+            .is_some_and(DeviceInsertBasis::install_deadline_reached)
         {
             self.fence_unapplied_insert(EXPIRED);
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn advance_install_clock(&self, delta: std::time::Duration) {
+        if let Some(basis) = self.device_insert_basis() {
+            basis.advance_install_clock(delta);
         }
     }
 

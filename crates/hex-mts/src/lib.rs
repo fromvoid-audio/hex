@@ -113,11 +113,15 @@ struct Mailbox {
     recover: bool,
     next_client: u64,
     shutdown: bool,
+    #[cfg(test)]
+    last_idle_latest: Option<Revision>,
 }
 #[derive(Default)]
 struct Shared {
     mailbox: Mutex<Mailbox>,
     ready: Condvar,
+    #[cfg(test)]
+    idle: Condvar,
 }
 #[derive(Clone)]
 pub struct Handle(Arc<Shared>);
@@ -253,6 +257,21 @@ impl Handle {
         state.snapshot.state = State::Pending;
         self.0.ready.notify_one();
         Ok(())
+    }
+    #[cfg(test)]
+    fn wait_for_idle_revision(&self, revision: Revision) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let mut state = self.0.mailbox.lock().unwrap();
+        while state.last_idle_latest != Some(revision) {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "timed out waiting for worker idle revision {revision:?}; observed {:?}",
+                state.last_idle_latest
+            );
+            let (next, _) = self.0.idle.wait_timeout(state, remaining).unwrap();
+            state = next;
+        }
     }
 }
 
@@ -418,6 +437,12 @@ fn run(shared: &Shared, mut transport: impl Transport) {
                 }
             }
         }
+        #[cfg(test)]
+        let Ok(mut state) = shared.mailbox.lock() else {
+            transport.release();
+            return;
+        };
+        #[cfg(not(test))]
         let Ok(state) = shared.mailbox.lock() else {
             transport.release();
             return;
@@ -428,6 +453,11 @@ fn run(shared: &Shared, mut transport: impl Transport) {
             || state.latest.map(|p| p.revision) != latest.map(|p| p.revision)
         {
             continue;
+        }
+        #[cfg(test)]
+        {
+            state.last_idle_latest = latest.map(|p| p.revision);
+            shared.idle.notify_all();
         }
         if shared
             .ready
