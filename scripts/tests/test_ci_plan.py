@@ -863,11 +863,13 @@ class ScopeTests(unittest.TestCase):
                          ("hex-ui", [{"name": "hex-widgets", "kind": "dev", "optional": True}]),
                          ("hex-desktop", [{"name": "hex-ui", "kind": None}]))]
 
-    def test_known_scopes_keep_prose_and_all_dev_reverse_dependencies(self):
+    def test_known_scopes_keep_prose_and_direct_dev_reverse_dependencies(self):
         inventory = self.inventory()
         scope, affected, _ = plan.classify(["crates/hex-widgets/src/a.rs", "docs/a.md"], inventory)
         self.assertEqual(scope, "ui")
-        self.assertEqual(affected, ["hex-desktop", "hex-ui", "hex-widgets"])
+        # hex-ui is a direct 1-hop dev-dependency consumer; hex-desktop only
+        # depends on hex-ui's library and must not be pulled through a dev edge.
+        self.assertEqual(affected, ["hex-ui", "hex-widgets"])
         self.assertEqual(plan.classify(["launch", "docs/a.md"], inventory)[0], "tooling")
         self.assertEqual(plan.classify(["docs/a.md"], inventory)[0], "metadata")
         inventory[0]["features"] = {"new-configuration": []}
@@ -876,6 +878,32 @@ class ScopeTests(unittest.TestCase):
         inventory.append(dict(name="hex-engine", manifest="crates/hex-engine/Cargo.toml",
                               dependencies=[{"name": "hex-ui", "kind": "dev"}]))
         self.assertEqual(plan.classify(["crates/hex-ui/src/a.rs"], inventory)[0], "rust")
+
+    def test_dev_dependencies_stop_at_one_hop_without_multi_hop_chain(self):
+        inventory = [
+            dict(name=name, manifest=f"crates/{name}/Cargo.toml", features={}, dependencies=deps, targets=[])
+            for name, deps in (
+                ("hex-devices", []),
+                ("hex-media", [{"name": "hex-devices", "kind": "dev"}]),
+                ("hex-stream", [{"name": "hex-media", "kind": None}]),
+                ("hex-audio", [{"name": "hex-stream", "kind": None}]),
+                ("hex-ui", [{"name": "hex-audio", "kind": None}]),
+                ("hex-desktop", [{"name": "hex-ui", "kind": None}]),
+                ("hex-bench", [{"name": "hex-media", "kind": "dev"}]),
+            )
+        ]
+        # Editing hex-devices keeps its direct 1-hop dev consumer (hex-media)
+        # without pulling the multi-hop chain downstream of hex-media.
+        scope, affected, _ = plan.classify(["crates/hex-devices/src/lib.rs"], inventory)
+        self.assertEqual(scope, "rust")
+        self.assertEqual(affected, ["hex-devices", "hex-media"])
+        # Editing a normal-dependency chain still traverses normal edges and
+        # includes 1-hop dev consumers of that chain, without re-expanding them.
+        inventory.append(dict(name="hex-dsp", manifest="crates/hex-dsp/Cargo.toml",
+                              features={}, dependencies=[], targets=[]))
+        inventory[0]["dependencies"] = [{"name": "hex-dsp", "kind": None}]
+        _, affected_dsp, _ = plan.classify(["crates/hex-dsp/src/lib.rs"], inventory)
+        self.assertEqual(affected_dsp, ["hex-devices", "hex-dsp", "hex-media"])
 
     def test_high_risk_unknown_and_mixed_cannot_be_scoped_away(self):
         inventory = self.inventory()
@@ -1598,13 +1626,27 @@ class SingleRunFeatureTests(unittest.TestCase):
         self.assertIn("hex-session", steps["single-run-doctests"].argv)
         self.assertTrue(any("hex-session" in s.argv and "source-overview-test-support" in s.argv
                             and s.argv[1] == "test" for s in steps.values()))
-        # Every consumer still compiles in every configuration, without running its suites.
-        for name in ("hex-session", "hex-ui", "hex-desktop"):
-            self.assertIn(name, steps["affected-clippy"].argv)
+        # Owner lints all targets; consumers lint production lib/bin targets in
+        # both default and reviewed feature configurations without running suites.
+        self.assertIn("hex-session", steps["affected-clippy"].argv)
+        self.assertIn("--all-targets", steps["affected-clippy"].argv)
+        for name in ("hex-ui", "hex-desktop"):
+            self.assertIn(name, steps["consumer-clippy"].argv)
+        self.assertIn("--lib", steps["consumer-clippy"].argv)
+        self.assertIn("--bins", steps["consumer-clippy"].argv)
+        self.assertNotIn("--all-targets", steps["consumer-clippy"].argv)
         self.assertNotIn("desktop-allocation-probe", steps)
-        features = steps["affected-feature-clippy"].argv[steps["affected-feature-clippy"].argv.index("--features") + 1]
-        self.assertIn("hex-desktop/allocation-probe", features)
-        self.assertIn("hex-ui/ui-test-support", features)
+        owner_features = steps["affected-feature-clippy"].argv[
+            steps["affected-feature-clippy"].argv.index("--features") + 1]
+        self.assertIn("hex-session/source-overview-test-support", owner_features)
+        self.assertIn("--all-targets", steps["affected-feature-clippy"].argv)
+        consumer_features = steps["consumer-feature-clippy"].argv[
+            steps["consumer-feature-clippy"].argv.index("--features") + 1]
+        self.assertIn("hex-desktop/allocation-probe", consumer_features)
+        self.assertIn("hex-ui/ui-test-support", consumer_features)
+        self.assertIn("--lib", steps["consumer-feature-clippy"].argv)
+        self.assertIn("--bins", steps["consumer-feature-clippy"].argv)
+        self.assertNotIn("--all-targets", steps["consumer-feature-clippy"].argv)
         self.assertFalse(any(s.argv[1] == "test" and "hex-ui" in s.argv for s in steps.values()))
         self.assertFalse(steps["single-run-doctests"].requires_tests)
         # A build input keeps every consumer's suites.
@@ -1757,6 +1799,80 @@ class SingleRunFeatureTests(unittest.TestCase):
         self.assertIn("editor::device_automation::", argv)
         self.assertIn("editor::trim::", argv)
         self.assertTrue(steps["ui-unit-ui-unit-tier"].requires_tests)
+
+    def test_consumer_clippy_narrows_non_owners_to_lib_bins_while_owners_keep_all_targets(self):
+        root, inventory = self.live()
+        # 1. hex-project has no features: owner uses --all-targets, 11 consumers
+        #    use --lib --bins in both consumer-clippy and affected-feature-clippy.
+        proj_path = "crates/hex-project/src/lib.rs"
+        _, proj_affected, _ = plan.classify([proj_path], inventory)
+        proj_boundary = plan.boundary_selection(root, [proj_path], inventory, proj_affected)
+        proj_steps = {s.step_id: s for s in ci.planned_steps({
+            "scope": "rust", "affected_packages": proj_affected, "boundary": proj_boundary,
+            "cargo_inventory": inventory, "paths": [proj_path]})}
+        self.assertEqual(proj_steps["affected-clippy"].argv,
+                         ("cargo", "clippy", "-p", "hex-project", "--all-targets", "--locked", "--", "-D", "warnings"))
+        self.assertIn("--lib", proj_steps["consumer-clippy"].argv)
+        self.assertIn("--bins", proj_steps["consumer-clippy"].argv)
+        self.assertNotIn("--all-targets", proj_steps["consumer-clippy"].argv)
+        self.assertNotIn("hex-project", proj_steps["consumer-clippy"].argv)
+        for consumer in ("hex-engine", "hex-session", "hex-ui", "hex-desktop"):
+            self.assertIn(consumer, proj_steps["consumer-clippy"].argv)
+        self.assertIn("--lib", proj_steps["affected-feature-clippy"].argv)
+        self.assertIn("--bins", proj_steps["affected-feature-clippy"].argv)
+        self.assertNotIn("--all-targets", proj_steps["affected-feature-clippy"].argv)
+        self.assertNotIn("consumer-feature-clippy", proj_steps)
+
+        # 2. hex-engine has an owner feature: owner keeps --all-targets in both
+        #    affected-clippy and affected-feature-clippy; consumers get --lib --bins.
+        eng_path = "crates/hex-engine/src/lib.rs"
+        _, eng_affected, _ = plan.classify([eng_path], inventory)
+        eng_boundary = plan.boundary_selection(root, [eng_path], inventory, eng_affected)
+        eng_steps = {s.step_id: s for s in ci.planned_steps({
+            "scope": "rust", "affected_packages": eng_affected, "boundary": eng_boundary,
+            "cargo_inventory": inventory, "paths": [eng_path]})}
+        self.assertEqual(eng_steps["affected-clippy"].argv,
+                         ("cargo", "clippy", "-p", "hex-engine", "--all-targets", "--locked", "--", "-D", "warnings"))
+        self.assertIn("hex-engine/instrument-test-support", eng_steps["affected-feature-clippy"].argv)
+        self.assertIn("--all-targets", eng_steps["affected-feature-clippy"].argv)
+        self.assertIn("--lib", eng_steps["consumer-clippy"].argv)
+        self.assertIn("--bins", eng_steps["consumer-clippy"].argv)
+        self.assertNotIn("--all-targets", eng_steps["consumer-clippy"].argv)
+        self.assertIn("--lib", eng_steps["consumer-feature-clippy"].argv)
+        self.assertIn("--bins", eng_steps["consumer-feature-clippy"].argv)
+        self.assertNotIn("--all-targets", eng_steps["consumer-feature-clippy"].argv)
+
+        # 3. Manifest change tests every affected package -> all stay --all-targets
+        #    with no split consumer-clippy step.
+        manifest_path = "crates/hex-engine/Cargo.toml"
+        manifest_boundary = plan.boundary_selection(root, [manifest_path], inventory, eng_affected)
+        manifest_steps = {s.step_id: s for s in ci.planned_steps({
+            "scope": "rust", "affected_packages": eng_affected, "boundary": manifest_boundary,
+            "cargo_inventory": inventory, "paths": [manifest_path]})}
+        self.assertNotIn("consumer-clippy", manifest_steps)
+        self.assertNotIn("consumer-feature-clippy", manifest_steps)
+        self.assertIn("--all-targets", manifest_steps["affected-clippy"].argv)
+        self.assertIn("--all-targets", manifest_steps["affected-feature-clippy"].argv)
+
+        # 4. Compressor narrow boundary: hex-devices gets --all-targets, consumers get --lib --bins.
+        comp_path = "crates/hex-devices/src/compressor.rs"
+        _, comp_affected, _ = plan.classify([comp_path], inventory)
+        comp_boundary = {
+            "kind": "compressor",
+            "lint_packages": comp_affected,
+            "test_packages": [],
+            "tests": [{"package": "hex-devices", "lib": True, "filter": "compressor::"}],
+        }
+        comp_steps = {s.step_id: s for s in ci.planned_steps({
+            "scope": "rust", "affected_packages": comp_affected, "boundary": comp_boundary,
+            "cargo_inventory": inventory, "paths": [comp_path]})}
+        self.assertEqual(comp_steps["affected-clippy"].argv,
+                         ("cargo", "clippy", "-p", "hex-devices", "--all-targets", "--locked", "--", "-D", "warnings"))
+        self.assertIn("--lib", comp_steps["consumer-clippy"].argv)
+        self.assertIn("--bins", comp_steps["consumer-clippy"].argv)
+        self.assertIn("hex-desktop", comp_steps["consumer-clippy"].argv)
+        self.assertIn("--lib", comp_steps["affected-feature-clippy"].argv)
+        self.assertIn("--bins", comp_steps["affected-feature-clippy"].argv)
 
     def test_standalone_ui_unit_inputs_run_only_the_owning_targets(self):
         root, inventory = self.live()
@@ -5436,13 +5552,25 @@ class ModuleScopeTests(unittest.TestCase):
         feature = steps["ui-feature-tests"]
         self.assertEqual(feature.argv[feature.argv.index("--") + 1:], ("update::",))
         self.assertFalse(feature.requires_tests)
-        self.assertIn(native, steps["affected-clippy"].argv)
-        feature_compile = steps["affected-feature-clippy"].argv
-        self.assertIn(native, feature_compile)
-        features = feature_compile[feature_compile.index("--features") + 1].split(",")
-        self.assertIn("hex-desktop/allocation-probe", features)
-        self.assertIn("hex-ui/ui-test-support", features)
-        self.assertIn("hex-ui/ui-unit-tier", features)
+        self.assertIn(owner, steps["affected-clippy"].argv)
+        self.assertIn("--all-targets", steps["affected-clippy"].argv)
+        self.assertIn(native, steps["consumer-clippy"].argv)
+        self.assertIn("--lib", steps["consumer-clippy"].argv)
+        self.assertIn("--bins", steps["consumer-clippy"].argv)
+        self.assertNotIn("--all-targets", steps["consumer-clippy"].argv)
+        owner_feature_compile = steps["affected-feature-clippy"].argv
+        self.assertIn(owner, owner_feature_compile)
+        self.assertIn("--all-targets", owner_feature_compile)
+        owner_features = owner_feature_compile[owner_feature_compile.index("--features") + 1].split(",")
+        self.assertIn("hex-ui/ui-test-support", owner_features)
+        self.assertIn("hex-ui/ui-unit-tier", owner_features)
+        consumer_feature_compile = steps["consumer-feature-clippy"].argv
+        self.assertIn(native, consumer_feature_compile)
+        self.assertIn("--lib", consumer_feature_compile)
+        self.assertIn("--bins", consumer_feature_compile)
+        self.assertNotIn("--all-targets", consumer_feature_compile)
+        consumer_features = consumer_feature_compile[consumer_feature_compile.index("--features") + 1].split(",")
+        self.assertIn("hex-desktop/allocation-probe", consumer_features)
 
     def test_vst3_scrollbar_thumb_unit_keeps_projection_and_rendered_panel(self):
         root = SCRIPTS.parent

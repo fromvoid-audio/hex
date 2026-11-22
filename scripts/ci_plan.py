@@ -231,15 +231,23 @@ def classify(paths: list[str], inventory: list[dict]) -> tuple[str, list[str], l
         raise ValueError("reviewed path consumers missing from Cargo inventory: " + ", ".join(sorted(missing)))
     if path_consumers:
         reasons.append("path-included source: include reviewed theme consumers")
-    affected = set(changed) | path_consumers
+    # Traverse normal/build dependencies and reviewed runtime edges transitively,
+    # then include direct 1-hop dev-dependency consumers without re-expanding
+    # through test-only chains.
+    prod = set(changed) | path_consumers
     while True:
-        next_affected = affected | {p["name"] for p in inventory
-                                   if any(d["name"] in affected for d in p["dependencies"])}
-        next_affected |= {consumer for owner in affected for consumer in RUNTIME_CONSUMERS.get(owner, set())
-                          if any(p["name"] == consumer for p in inventory)}
-        if next_affected == affected:
+        next_prod = prod | {p["name"] for p in inventory
+                            if any(d["name"] in prod and d.get("kind") != "dev"
+                                   for d in p["dependencies"])}
+        next_prod |= {consumer for owner in prod for consumer in RUNTIME_CONSUMERS.get(owner, set())
+                      if any(p["name"] == consumer for p in inventory)}
+        if next_prod == prod:
             break
-        affected = next_affected
+        prod = next_prod
+    dev_consumers = {p["name"] for p in inventory
+                     if any(d["name"] in prod and d.get("kind") == "dev"
+                            for d in p["dependencies"])} - prod
+    affected = prod | dev_consumers
     if scopes == {"ui"} and affected - UI_PACKAGES - {"hex-desktop"}:
         scopes.add("rust")
         reasons.append("UI has additional consumers: include their package configurations")

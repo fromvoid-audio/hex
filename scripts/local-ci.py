@@ -372,7 +372,6 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         raise ValueError("boundary plan requires nonempty known affected packages")
     if sorted(affected) != sorted(plan["affected_packages"]):
         raise ValueError("boundary consumers do not match resolved Cargo closure")
-    packages = tuple(arg for p in affected for arg in ("-p", p))
     # Main is formatted; only the changed owners' sources can need it.
     owners = boundary.get("test_packages") or affected
     steps = [*(Step("format", ("cargo", "fmt", *(a for p in owners for a in ("-p", p)), "--check"))
@@ -485,7 +484,22 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
                                "--locked", *([test["filter"]] if test["filter"] else []))))
     else:
         raise ValueError("unknown ownership boundary")
-    steps.append(Step("affected-clippy", ("cargo", "clippy", *packages, "--all-targets", "--locked", "--", "-D", "warnings")))
+    if boundary["kind"] == "packages":
+        clippy_owners = sorted(set(tested) & set(affected))
+    else:
+        path_owners = {owner for path in plan.get("paths", [])
+                       if (owner := ci_plan.owner_package(path, inventory)) in set(affected)}
+        clippy_owners = sorted(path_owners) or sorted({tests[0]["package"]} & set(affected))
+    clippy_owner_set = set(clippy_owners)
+    clippy_consumers = [p for p in affected if p not in clippy_owner_set]
+    if clippy_owners:
+        owner_packages = tuple(arg for p in clippy_owners for arg in ("-p", p))
+        steps.append(Step("affected-clippy",
+                          ("cargo", "clippy", *owner_packages, "--all-targets", "--locked", "--", "-D", "warnings")))
+    if clippy_consumers:
+        consumer_packages = tuple(arg for p in clippy_consumers for arg in ("-p", p))
+        steps.append(Step("consumer-clippy" if clippy_owners else "affected-clippy",
+                          ("cargo", "clippy", *consumer_packages, "--lib", "--bins", "--locked", "--", "-D", "warnings")))
     # Keep separate default/feature configurations, including feature-gated
     # examples and allocation probes. Do not deduplicate by overlapping names.
     covered_features = {"hex-plugin-host": {"allocation-probe"}, "hex-ui": {"ui-test-support", "ui-unit-tier"}, "hex-export": {"instrument-test-support"},
@@ -605,10 +619,19 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
                           ("cargo", "test", "-p", "hex-ui", *feature_args, "--test", target, "--locked"),
                           requires_tests=True))
     if lint_features:
-        lint_packages = sorted({feature.split("/")[0] for feature in lint_features})
-        steps.append(Step("affected-feature-clippy",
-                          ("cargo", "clippy", *(a for p in lint_packages for a in ("-p", p)), "--all-targets",
-                           "--locked", "--features", ",".join(sorted(lint_features)), "--", "-D", "warnings")))
+        owner_lint_features = sorted(f for f in lint_features if f.split("/")[0] in clippy_owner_set)
+        consumer_lint_features = sorted(f for f in lint_features if f.split("/")[0] not in clippy_owner_set)
+        if owner_lint_features:
+            owner_feat_packages = sorted({feature.split("/")[0] for feature in owner_lint_features})
+            steps.append(Step("affected-feature-clippy",
+                              ("cargo", "clippy", *(a for p in owner_feat_packages for a in ("-p", p)), "--all-targets",
+                               "--locked", "--features", ",".join(owner_lint_features), "--", "-D", "warnings")))
+        if consumer_lint_features:
+            consumer_feat_packages = sorted({feature.split("/")[0] for feature in consumer_lint_features})
+            steps.append(Step("consumer-feature-clippy" if owner_lint_features else "affected-feature-clippy",
+                              ("cargo", "clippy", *(a for p in consumer_feat_packages for a in ("-p", p)),
+                               "--lib", "--bins", "--locked", "--features", ",".join(consumer_lint_features),
+                               "--", "-D", "warnings")))
     desktop_compiled = any(
         runs_rust_tests(step.argv)
         and not ({"--doc", "--lib", "--test", "--example", "--bench"} & set(step.argv))
@@ -616,7 +639,7 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         for step in steps
     )
     desktop_linted = any(
-        step.step_id == "affected-clippy" and "hex-desktop" in step.argv
+        step.step_id in {"affected-clippy", "consumer-clippy"} and "hex-desktop" in step.argv
         for step in steps
     )
     if ("hex-desktop" in (tested if boundary["kind"] == "packages" else affected)
