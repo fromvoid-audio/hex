@@ -511,3 +511,81 @@ pub(in crate::editor) fn paint_midi_markers(
         window,
     );
 }
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod tests {
+    use super::*;
+
+    fn sample_lane() -> LaneBounds {
+        LaneBounds {
+            left: 10.0,
+            width: 400.0,
+            top: 20.0,
+            height: 60.0,
+        }
+    }
+
+    #[test]
+    fn first_boundary_handle_lives_below_header_rail_and_matches_hit_bounds() {
+        let lane = sample_lane();
+        let viewport = Viewport {
+            start: 0,
+            length: 400,
+        };
+        let controls = geometry(0, 200, Some(100), lane, viewport)
+            .expect("visible clip with in-bounds repeat boundary produces controls");
+        assert!(controls.handles[0].is_none());
+        let handle = controls.handles[1].expect("first-boundary handle present");
+        assert_eq!(handle.kind, LoopHandleKind::FirstBoundary);
+        assert!(handle.top > crate::editor::clip_name::CLIP_NAME_HEIGHT);
+        assert_eq!(handle.left, 100.0 - WIDTH / 2.0);
+        // Inside the handle box hits; header rail above and regions outside do not.
+        assert!(controls.hit(lane.left + 100.0, lane.top + handle.top + 1.0));
+        assert!(!controls.hit(lane.left + 100.0, lane.top + 2.0));
+        assert!(!controls.hit(lane.left + 100.0 + WIDTH, lane.top + handle.top + 1.0));
+        assert!(!controls.hit(lane.left - 1.0, lane.top + handle.top + 1.0));
+    }
+
+    #[test]
+    fn geometry_refuses_invalid_inputs_and_omits_handle_when_clip_is_narrow_or_unlooped() {
+        let lane = sample_lane();
+        let viewport = Viewport {
+            start: 0,
+            length: 400,
+        };
+        assert!(
+            geometry(
+                0,
+                200,
+                Some(100),
+                lane,
+                Viewport {
+                    start: 0,
+                    length: 0
+                }
+            )
+            .is_none()
+        );
+        assert!(
+            geometry(
+                0,
+                200,
+                Some(100),
+                LaneBounds {
+                    width: f32::NAN,
+                    ..lane
+                },
+                viewport
+            )
+            .is_none()
+        );
+        assert!(geometry(500, 600, Some(550), lane, viewport).is_none());
+
+        // Narrow clips (< 24 px) and out-of-range boundaries expose no first-boundary handle.
+        let narrow = geometry(0, 10, Some(5), lane, viewport).expect("narrow clip has controls");
+        assert!(narrow.handles.iter().all(Option::is_none));
+        let boundary_at_edge =
+            geometry(0, 200, Some(200), lane, viewport).expect("visible clip has controls");
+        assert!(boundary_at_edge.handles.iter().all(Option::is_none));
+    }
+}
