@@ -39,12 +39,24 @@ impl SampleShape {
 /// Control-prepared source-coordinate plan. Only slice markers are borrowed;
 /// it stores no PCM, pointer, Arc or ownership receipt. Voice coefficients are
 /// independent of both the source buffers and the marker storage.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct PreparedSamplerPlan<'a> {
     pub(super) sample: SampleShape,
     pub(super) settings: Settings<'a>,
     output_rate: u32,
     envelope: envelope::PreparedEnvelope,
+    interpolation_bank: &'static super::interpolation::Bank,
+}
+
+impl std::fmt::Debug for PreparedSamplerPlan<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedSamplerPlan")
+            .field("sample", &self.sample)
+            .field("settings", &self.settings)
+            .field("output_rate", &self.output_rate)
+            .field("envelope", &self.envelope)
+            .finish()
+    }
 }
 
 impl<'a> PreparedSamplerPlan<'a> {
@@ -97,12 +109,13 @@ impl<'a> PreparedSamplerPlan<'a> {
         }
         // Static reconstruction tables are built here, on control, never on
         // first render.
-        super::interpolation::warm();
+        let interpolation_bank = super::interpolation::warm();
         Ok(Self {
             sample,
             output_rate,
             envelope: settings.envelope.prepare(output_rate)?,
             settings,
+            interpolation_bank,
         })
     }
 
@@ -223,7 +236,10 @@ impl<'a> PreparedSamplerPlan<'a> {
             loop_crossfade,
             reverse: settings.reverse,
             step: step as u64,
-            kernel: super::interpolation::Kernel::for_rate(step / ONE as f64),
+            kernel: super::interpolation::Kernel::for_rate_with_bank(
+                step / ONE as f64,
+                self.interpolation_bank,
+            ),
             channel_gain,
             gate,
             envelope: self.envelope,
