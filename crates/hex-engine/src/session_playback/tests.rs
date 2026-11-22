@@ -13585,6 +13585,9 @@ mod flexible_eq_mode_tests;
 #[path = "compressor_tests.rs"]
 mod compressor_tests;
 
+#[path = "filter_tests.rs"]
+mod filter_tests;
+
 #[path = "gate_tests.rs"]
 mod gate_tests;
 #[path = "silence_effect_tests.rs"]

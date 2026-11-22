@@ -53,13 +53,13 @@ impl Entry {
     fn label(self) -> &'static str {
         match self {
             Self::Vector => "vector / operator",
-            Self::Utility => "utility",
+            Self::Utility => "mix",
             Self::Saturator => "saturator",
             Self::Eq8 => "eq8",
             Self::Eq => "eq",
             Self::Compressor => "compressor",
             Self::Gate => "gate",
-            Self::AutoPan => "auto pan",
+            Self::AutoPan => "pan",
             Self::Instrument => "generic instrument",
             Self::Effect => "generic effect",
             Self::Unsupported => "unsupported state",

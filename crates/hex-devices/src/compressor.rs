@@ -7,7 +7,7 @@
 mod automation;
 
 use hex_lattice::{
-    NativeDeviceDefinition, NativeInstrumentClock, NativeParameterAutomation,
+    DynamicsMeter, NativeDeviceDefinition, NativeInstrumentClock, NativeParameterAutomation,
     NativeProcessorRuntime, OutputTail, PreparedNativeProcessor, StereoAuxiliaryBlock, StereoFrame,
     StereoMatrix,
 };
@@ -543,6 +543,8 @@ impl PreparedNativeProcessor for PreparedCompressor {
             detector_remaining: 0,
             envelope: 0.0,
             gain_db: f64::from(self.settings.makeup_db),
+            reduction_db: 0.0,
+            meter: DynamicsMeter::default(),
             mix: f64::from(self.settings.dry_wet),
             mix_remaining: 0,
         };
@@ -572,6 +574,9 @@ pub struct CompressorRuntime {
     detector_remaining: u32,
     envelope: f64,
     gain_db: f64,
+    /// Smoothed attenuation of the wet path, excluding automated makeup gain.
+    reduction_db: f64,
+    meter: DynamicsMeter,
     mix: f64,
     mix_remaining: u32,
 }
@@ -583,6 +588,8 @@ impl CompressorRuntime {
         self.detector_remaining = 0;
         self.envelope = 0.0;
         self.gain_db = f64::from(self.settings.makeup_db);
+        self.reduction_db = 0.0;
+        self.meter = DynamicsMeter::default();
         self.mix = f64::from(self.settings.dry_wet);
         self.mix_remaining = 0;
     }
@@ -640,6 +647,13 @@ impl CompressorRuntime {
         );
         let target_gain_db = reduction_db + f64::from(self.settings.makeup_db);
         self.gain_db = self.gain_alpha * self.gain_db + (1.0 - self.gain_alpha) * target_gain_db;
+        self.reduction_db =
+            self.gain_alpha * self.reduction_db + (1.0 - self.gain_alpha) * reduction_db;
+        if !bypassed {
+            let peak_reduction = self.meter.reduction_db[0].max(-self.reduction_db as f32);
+            self.meter.reduction_db = [peak_reduction; 2];
+            self.meter.post_input_peak = self.meter.post_input_peak.max(self.envelope as f32);
+        }
         // A finite 5 ms ramp reaches exact endpoints, independently of block
         // partitions. Detector/gain history advances even at fully dry output.
         if self.mix_remaining > 0 {
@@ -737,6 +751,9 @@ impl NativeProcessorRuntime for CompressorRuntime {
     fn is_quiescent(&self) -> bool {
         true
     }
+    fn take_dynamics_meter(&mut self) -> Option<DynamicsMeter> {
+        Some(std::mem::take(&mut self.meter))
+    }
     fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
         previous
             .as_any()
@@ -766,6 +783,10 @@ impl NativeProcessorRuntime for CompressorRuntime {
             };
             self.envelope = previous.envelope;
             self.gain_db = previous.gain_db;
+            self.reduction_db = previous.reduction_db;
+            // A scratch twin starts a new render transaction. Its previous
+            // readings may belong to an aborted block.
+            self.meter = DynamicsMeter::default();
             self.mix = previous.mix;
             self.mix_remaining = if self.settings.dry_wet == previous.settings.dry_wet {
                 // Scratch/rollback twins copy the trajectory without restarting it.

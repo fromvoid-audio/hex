@@ -163,6 +163,33 @@ fn compressor_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut Test
             "one undo restores the entire drag"
         );
     });
+    let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+    visual.run_until_parked();
+    let meters = visual
+        .debug_bounds(selector("compressor-view-meters"))
+        .unwrap();
+    visual.simulate_click(meters.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(selector("compressor-meters")).is_some());
+    assert!(
+        visual
+            .debug_bounds(selector("compressor-transfer"))
+            .is_none()
+    );
+    assert!(visual.debug_bounds(threshold_selector).is_some());
+    // Keyboard selection uses the same view controls as the pointer.
+    visual.simulate_keystrokes("right right");
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(selector("compressor-activity"))
+            .is_some()
+    );
+    assert!(visual.debug_bounds(threshold_selector).is_some());
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, before);
+        assert_eq!(view.worker_requests_pending, 0);
+    });
 }
 
 #[gpui::test]

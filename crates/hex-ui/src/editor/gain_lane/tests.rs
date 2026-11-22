@@ -410,7 +410,7 @@ pub(in crate::editor) mod native {
             assert_eq!(view.worker_requests_pending, 0);
         });
         visual.simulate_keystrokes("escape cmd-f");
-        visual.simulate_input("utility");
+        visual.simulate_input("mix");
         visual.simulate_keystrokes("down escape");
         entity.read_with(visual, |view, cx| {
             assert!(

@@ -405,7 +405,7 @@ fn open(
                 })
                 && source.instrument().state().type_id() == default.type_id())
             .then(|| MenuItem {
-                label: "add source utility",
+                label: "add source mix",
                 swatch: None,
                 checked: false,
                 action: EditorContextAction::SourcePicker(Choice {
@@ -418,7 +418,7 @@ fn open(
                     destination: None,
                     receiver: None,
                     utility_action: Some(SourceUtilityAction::Add(source.instrument().id())),
-                    label: "add utility to source".into(),
+                    label: "add mix to source".into(),
                 }),
             })
         }))
@@ -449,12 +449,12 @@ fn open(
                 })
                 .map(|(index, effect)| {
                     let label = if effects.len() == 1 {
-                        "remove utility from source · stop first".to_string()
+                        "remove mix from source · stop first".to_string()
                     } else {
-                        format!("remove utility {} from source · stop first", index + 1)
+                        format!("remove mix {} from source · stop first", index + 1)
                     };
                     MenuItem {
-                        label: "remove source utility",
+                        label: "remove source mix",
                         swatch: None,
                         checked: false,
                         action: EditorContextAction::SourcePicker(Choice {
@@ -508,17 +508,17 @@ fn open(
                         first.id(),
                         second.id(),
                         hex_session::service::SourceUtilityMove::Later,
-                        format!("move utility {} later · stop first", index + 1),
+                        format!("move mix {} later · stop first", index + 1),
                     ),
                     (
                         second.id(),
                         first.id(),
                         hex_session::service::SourceUtilityMove::Earlier,
-                        format!("move utility {} earlier · stop first", index + 2),
+                        format!("move mix {} earlier · stop first", index + 2),
                     ),
                 ] {
                     actions.push(MenuItem {
-                        label: "move source utility",
+                        label: "move source mix",
                         swatch: None,
                         checked: false,
                         action: EditorContextAction::SourcePicker(Choice {

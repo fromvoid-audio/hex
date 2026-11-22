@@ -10,6 +10,7 @@ use hex_engine::{CompressorTransferCurve, NativeDeviceClass, NativeDeviceView};
 use hex_lattice_contract::{NativeDeviceState, ParameterId, ParameterValue};
 use hex_project::DeviceId;
 
+pub(super) mod display;
 pub(super) mod sidechain;
 
 pub(super) const FRAME_WIDTH: f32 = crate::device_composition::COMPRESSOR_FRAME_WIDTH;
@@ -102,16 +103,21 @@ fn preview(
 pub(super) fn render_body(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
-    device: DeviceId,
-    state: &NativeDeviceState,
+    model: &hex_project::Device,
     device_view: &NativeDeviceView,
 ) -> Stateful<Div> {
-    let curve = preview(view, device, state, device_view);
+    let device = model.id();
+    let mode = view
+        .device_panel
+        .compressor_modes
+        .get(&device)
+        .copied()
+        .unwrap_or_default();
     let identity = DeviceControlIdentity {
         class: NativeDeviceClass::Effect,
         type_id: device_view.type_id,
     };
-    let mode = device_view
+    let detector_value = device_view
         .parameters
         .iter()
         .find(|p| p.descriptor.id == DETECTOR)
@@ -125,7 +131,7 @@ pub(super) fn render_body(
                 p.value,
             )
         });
-    let mode_name = if mode == Some(ParameterValue::Choice(1)) {
+    let mode_name = if detector_value == Some(ParameterValue::Choice(1)) {
         "rms"
     } else {
         "peak"
@@ -162,26 +168,28 @@ pub(super) fn render_body(
     let mix = control(MIX, ControlPresentation::InlineValue);
     let detector = control(DETECTOR, ControlPresentation::CompactSelector);
     let sidechain = sidechain::control(view, cx, device);
-    let mut graph = div()
-        .id(ElementId::Name(
-            format!("compressor-transfer-{}", device.value()).into(),
-        ))
-        .debug_selector(move || format!("compressor-transfer-{}", device.value()))
-        .w_full()
-        .flex_1()
-        .min_h_0();
-    match curve {
-        Ok(curve) => {
-            if let Some(plot) = hex_widgets::curve_plot(
-                curve.points,
-                theme::device_style(theme::DeviceStyleRole::Display),
-                hex_widgets::CurvePlotGrid::Horizontal,
+    let curve =
+        (mode == display::Mode::Curve).then(|| preview(view, device, model.state(), device_view));
+    let threshold_db = device_view
+        .parameters
+        .iter()
+        .find(|parameter| parameter.descriptor.id == THRESHOLD)
+        .and_then(|parameter| {
+            match effective_parameter_value(
+                view,
+                ParameterKey {
+                    device,
+                    parameter: THRESHOLD,
+                },
+                parameter.value,
             ) {
-                graph = graph.child(plot);
+                ParameterValue::Float(db) => Some(db),
+                _ => None,
             }
-        }
-        Err(error) => graph = graph.child(theme::text(format!("preview unavailable · {error}"))),
-    }
+        });
+    let reading = super::device_meter::compressor_reading(view, model);
+    let graph = display::render(view, cx, device, mode, reading, threshold_db, curve);
+    let tabs = display::mode_buttons(view, cx, device, mode);
     let field = |label: &str, control: Div| {
         div()
             .flex()
@@ -201,9 +209,10 @@ pub(super) fn render_body(
     .w(px(64.0))
     .flex_shrink_0();
     let toolbar = div()
-        .h(px(14.0))
+        .h(px(16.0))
         .flex_shrink_0()
         .flex()
+        .items_center()
         .justify_between()
         .child(field("thresh", threshold))
         .child(field("out", output));
@@ -216,22 +225,21 @@ pub(super) fn render_body(
                 .items_center()
                 .child(field("detector", detector)),
         )
-        .child(
-            div()
-                .h(px(10.0))
-                .flex_shrink_0()
-                .text_size(px(7.0))
-                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                .child(
-                    div()
-                        .debug_selector(move || {
-                            format!("compressor-{mode_name}-detector-{}", device.value())
-                        })
-                        .child(theme::text(format!(
-                            "static {mode_name} detector -60…0 → -66…24 db"
-                        ))),
-                ),
-        )
+        .when(mode == display::Mode::Curve, |footer| {
+            footer.child(
+                div()
+                    .h(px(10.0))
+                    .flex_shrink_0()
+                    .text_size(px(7.0))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                    .debug_selector(move || {
+                        format!("compressor-{mode_name}-detector-{}", device.value())
+                    })
+                    .child(theme::text(format!(
+                        "{mode_name} detector -60…0 → -66…24 db"
+                    ))),
+            )
+        })
         .child(
             div()
                 .h(px(14.0))
@@ -242,7 +250,8 @@ pub(super) fn render_body(
                 .child(field("knee", knee))
                 .child(field("mix", mix)),
         )
-        .children(sidechain);
+        .children(sidechain)
+        .child(tabs);
     let main = crate::device_composition::plot_column(toolbar, graph, footer).text_size(px(8.0));
     crate::device_composition::split_body(rail, main)
         .id(ElementId::Name(
