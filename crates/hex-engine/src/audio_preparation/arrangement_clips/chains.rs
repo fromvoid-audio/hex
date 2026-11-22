@@ -219,6 +219,19 @@ impl ChainCustody {
                         hex_devices::compressor::PreparedCompressor,
                     >::declared_parts())?),
                 )
+            } else if state.type_id() == hex_devices::filter::TYPE_ID {
+                let migrated = hex_devices::filter::DEFINITION
+                    .migrate_state(state)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                hex_devices::filter::FilterDefinition::prepare_owned(&migrated, rate, &[])
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                largest_copy = largest_copy.max(migrated.payload().len());
+                (
+                    migrated.payload().len(),
+                    Some(parts(
+                        OwnedShared::<hex_devices::filter::PreparedFilter>::declared_parts(),
+                    )?),
+                )
             } else if state.type_id() == hex_devices::gate::GATE_TYPE_ID {
                 let migrated = hex_devices::gate::GATE_DEFINITION
                     .migrate_state(state)
@@ -441,6 +454,7 @@ impl ChainCustody {
             let saturator = device.state().type_id() == hex_devices::saturator::SATURATOR_TYPE_ID;
             let auto_pan = device.state().type_id() == hex_devices::auto_pan::AUTO_PAN_TYPE_ID;
             let overdrive = device.state().type_id() == hex_devices::overdrive::OVERDRIVE_TYPE_ID;
+            let filter = device.state().type_id() == hex_devices::filter::TYPE_ID;
             let gate = device.state().type_id() == hex_devices::gate::GATE_TYPE_ID;
             let compressor =
                 device.state().type_id() == hex_devices::compressor::COMPRESSOR_TYPE_ID;
@@ -489,6 +503,11 @@ impl ChainCustody {
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?
             } else if compressor {
                 hex_devices::compressor::COMPRESSOR_DEFINITION
+                    .migrate_state(device.state())
+                    .and_then(|state| state.with_host_metadata_from(device.state()))
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
+            } else if filter {
+                hex_devices::filter::DEFINITION
                     .migrate_state(device.state())
                     .and_then(|state| state.with_host_metadata_from(device.state()))
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?
@@ -596,6 +615,7 @@ impl ChainCustody {
                 || saturator
                 || auto_pan
                 || overdrive
+                || filter
                 || gate
                 || compressor
                 || rattle
@@ -653,6 +673,16 @@ impl ChainCustody {
                 Some(
                     OwnedShared::new_owned(
                         hex_devices::compressor::CompressorDefinition::prepare_owned(
+                            &migrated, rate, parameters,
+                        )
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                    )
+                    .into_processor_parts_on_control(),
+                )
+            } else if filter {
+                Some(
+                    OwnedShared::new_owned(
+                        hex_devices::filter::FilterDefinition::prepare_owned(
                             &migrated, rate, parameters,
                         )
                         .map_err(|_| AudioStorageError::UnsupportedGraph)?,

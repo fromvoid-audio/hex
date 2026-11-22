@@ -119,7 +119,7 @@ const DESCRIPTORS: &[ParameterDescriptor] =
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
-enum Waveform {
+pub(crate) enum Waveform {
     Sine,
     Triangle,
     SawUp,
@@ -134,14 +134,14 @@ impl Waveform {
         Self::SawDown,
         Self::Square,
     ];
-    fn from_choice(value: u32) -> Result<Self, DeviceContractError> {
+    pub(crate) fn from_choice(value: u32) -> Result<Self, DeviceContractError> {
         Self::ALL
             .get(value as usize)
             .copied()
             .ok_or(DeviceContractError::InvalidParameterValue)
     }
     /// Ideal shape with exact discontinuities (also the preview geometry).
-    fn lfo(self, phase: f64) -> f64 {
+    pub(crate) fn lfo(self, phase: f64) -> f64 {
         self.lfo_with_edge(phase, 0.0)
     }
 
@@ -288,7 +288,7 @@ impl NativeDeviceMetadata for AutoPanDefinition {
         AUTO_PAN_TYPE_ID
     }
     fn display_name(&self) -> Option<&'static str> {
-        Some("auto pan")
+        Some("pan")
     }
     fn state_version(&self) -> u32 {
         AUTO_PAN_STATE_VERSION
