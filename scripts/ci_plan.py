@@ -405,10 +405,11 @@ def cache_readonly_module_scans(workspace_root: Path):
     so live `local-ci.py` runs always read fresh on-disk state.
     """
     global _MODULE_SCAN_CACHE, _MODULE_SCAN_CACHE_ROOT
+    resolved_root = workspace_root.resolve()
     previous_cache = _MODULE_SCAN_CACHE
     previous_root = _MODULE_SCAN_CACHE_ROOT
     _MODULE_SCAN_CACHE = {}
-    _MODULE_SCAN_CACHE_ROOT = workspace_root.resolve()
+    _MODULE_SCAN_CACHE_ROOT = resolved_root
     try:
         yield _MODULE_SCAN_CACHE
     finally:
@@ -536,7 +537,10 @@ def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[s
     their files stay unproven rather than misattributed.
     """
     _, found = _scan_module_declarations(source_root)
-    return {target: list(entries) for target, entries in found.items()}
+    return {
+        target: [(parent, list(attributes)) for parent, attributes in entries]
+        for target, entries in found.items()
+    }
 
 
 TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")

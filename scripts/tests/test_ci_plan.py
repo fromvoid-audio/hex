@@ -7857,8 +7857,10 @@ class ModuleScopeTests(unittest.TestCase):
             for root in (cached_root, other_root):
                 src = root / "crates/owner/src"
                 src.mkdir(parents=True)
-                (src / "lib.rs").write_text("mod child;\n")
+                (src / "lib.rs").write_text("mod child;\nmod ungated;\n#[cfg(test)]\nmod gated;\n")
                 (src / "child.rs").write_text("pub fn f() {}\n")
+                (src / "ungated.rs").write_text("pub fn u() {}\n")
+                (src / "gated.rs").write_text("pub fn g() {}\n")
             inventory = [{"name": "owner", "manifest": "crates/owner/Cargo.toml",
                           "features": {}, "dependencies": [], "targets": []}]
             # Default (uncached) immediately observes live on-disk edits.
@@ -7890,6 +7892,20 @@ class ModuleScopeTests(unittest.TestCase):
                         {},
                     )
                 self.assertEqual(reads, [])
+                # Mutating returned module_declarations() inner attribute lists must not corrupt cached state.
+                cached_src = cached_root / "crates/owner/src"
+                ungated = (cached_src / "ungated.rs").resolve()
+                gated = (cached_src / "gated.rs").resolve()
+                decls = fresh.module_declarations(cached_src)
+                self.assertEqual(decls[ungated][0][1], [])
+                self.assertEqual(decls[gated][0][1], ["#[cfg(test)]"])
+                decls[ungated][0][1].append("#[cfg(test)]")
+                decls[gated][0][1].clear()
+                decls_after = fresh.module_declarations(cached_src)
+                self.assertEqual(decls_after[ungated][0][1], [])
+                self.assertEqual(decls_after[gated][0][1], ["#[cfg(test)]"])
+                self.assertIsNone(fresh.test_only_owner(cached_root, "crates/owner/src/ungated.rs", inventory))
+                self.assertEqual(fresh.test_only_owner(cached_root, "crates/owner/src/gated.rs", inventory), "owner")
                 (other_root / "crates/owner/src/child.rs").write_text("pub fn removed_test() {}\n")
                 self.assertEqual(
                     fresh.module_test_filters(other_root, ["crates/owner/src/child.rs"], inventory, ["owner"]),
