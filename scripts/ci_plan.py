@@ -63,6 +63,7 @@ PATH_RUNTIME_CONSUMERS = {"crates/hex-storage/src/text.rs": {"hex-ui", "hex-sand
                           "crates/hex-ui/src/theme/device.rs": {"hex-sandbox"}}
 RUNTIME_CONSUMER_NAMES = {name for names in RUNTIME_CONSUMERS.values() for name in names}
 TOOLING = {
+    ".config/nextest.toml",
     "launch", "scripts/launch-restart.py", "scripts/hex-test-build.py",
     "scripts/hex-test-build.json", "scripts/bundle-macos.sh",
     "scripts/ci_plan.py", "scripts/local-ci.py", "scripts/python_test_plan.py", "scripts/ci_checkpoint.py", "scripts/ci_target_storage.py",
