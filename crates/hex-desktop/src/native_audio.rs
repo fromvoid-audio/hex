@@ -207,6 +207,8 @@ pub(super) struct NativeAudioSink {
     #[cfg(all(test, feature = "allocation-probe"))]
     startup_open_deadline: std::time::Duration,
     #[cfg(all(test, feature = "allocation-probe"))]
+    resident_files_deadline: std::time::Duration,
+    #[cfg(all(test, feature = "allocation-probe"))]
     project_rate_probe: Box<dyn Fn() -> Option<u32> + Send>,
     next_catalog: u64,
     domains: [Option<Domain>; 2],
@@ -292,6 +294,8 @@ impl NativeAudioSink {
             initial_open_started: None,
             #[cfg(all(test, feature = "allocation-probe"))]
             startup_open_deadline: STARTUP_OPEN_DEADLINE,
+            #[cfg(all(test, feature = "allocation-probe"))]
+            resident_files_deadline: STARTUP_OPEN_DEADLINE,
             #[cfg(all(test, feature = "allocation-probe"))]
             project_rate_probe: Box::new(|| None),
             next_catalog: 1,
