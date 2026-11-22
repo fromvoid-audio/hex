@@ -8,8 +8,44 @@ pub(super) fn preparation(
     track: TrackId,
     predecessor: ResidentRuntimeLoop,
 ) -> Option<ResidentHostedTrackEffectReorder> {
-    // The Editor already staged a typed ReorderDevices command. The
-    // installed playback owner must still prove runtime routes and clocks.
+    let device = direct_hosted_pair(before, after, track)?;
+    Some(ResidentHostedTrackEffectReorder {
+        track,
+        device,
+        predecessor,
+    })
+}
+
+/// The caller has proved the whole normalized history differs only by order.
+/// The Engine decides whether the native route can fit the running timing.
+pub(super) fn supports_history(before: &Project, after: &Project, track: TrackId) -> bool {
+    let Some(row) = before.track(track) else {
+        return false;
+    };
+    if row.devices().iter().any(is_hosted) {
+        return direct_hosted_pair(before, after, track).is_some();
+    }
+    !row.is_group()
+        && row.instrument().is_none()
+        && row.source_id().is_none()
+        && row.sends().is_empty()
+        && row.devices().iter().all(|device| {
+            device.parent().is_none()
+                && device.automation().is_empty()
+                && device.modulation().is_empty()
+        })
+}
+
+fn is_hosted(device: &hex_project::Device) -> bool {
+    device.state().type_id().as_str() == Ok("hex.vst3")
+}
+
+fn direct_hosted_pair(
+    before: &Project,
+    after: &Project,
+    track: TrackId,
+) -> Option<hex_project::DeviceId> {
+    // The Engine must still prove the installed runtime routes and clocks.
     let [first, second] = before.tracks() else {
         return None;
     };
@@ -48,18 +84,12 @@ pub(super) fn preparation(
     {
         return None;
     }
-    let is_hosted =
-        |device: &hex_project::Device| device.state().type_id().as_str() == Ok("hex.vst3");
     let hosted = match (is_hosted(first), is_hosted(second)) {
         (true, false) => first,
         (false, true) => second,
         _ => return None,
     };
-    Some(ResidentHostedTrackEffectReorder {
-        track,
-        device: hosted.id(),
-        predecessor,
-    })
+    Some(hosted.id())
 }
 
 #[cfg(test)]

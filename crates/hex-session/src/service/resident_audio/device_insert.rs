@@ -1519,7 +1519,7 @@ impl Session {
         } else {
             (None, None)
         };
-        let running_hosted_effect =
+        let running_resident =
             self.audio_mode() == DocumentAudioMode::Resident && sink.resident_playing();
         self.stage_resident_graph_change(
             context,
@@ -1553,8 +1553,24 @@ impl Session {
                         reorder_track: None,
                     }));
                 }
+                if running_resident
+                    && let Some((track, edge)) =
+                        session.editor.stage_track_device_reorder_history(redo)?
+                    && hosted_effect_reorder::supports_history(
+                        session.project(),
+                        edge.project(),
+                        track,
+                    )
+                {
+                    return Ok(Some(StagedResidentChange {
+                        edit: StagedChange::History(edge),
+                        operation: Operation::ResidentMoveHistory,
+                        hosted_instrument_move: None,
+                        reorder_track: Some(track),
+                    }));
+                }
                 Ok(
-                    move_history::stage(&mut session.editor, redo, running_hosted_effect)?.map(
+                    move_history::stage(&mut session.editor, redo, running_resident)?.map(
                         |staged| StagedResidentChange {
                             edit: StagedChange::History(staged.edge),
                             operation: Operation::ResidentMoveHistory,

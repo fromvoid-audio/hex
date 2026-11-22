@@ -1,9 +1,10 @@
 //! Signed same-Track reorder through the actual Resident callback.
 use super::*;
-use hex_project::{DeviceChainOwner, DeviceSelectionIds};
+use hex_audio::plugin_effects::EffectBinding;
+use hex_project::{DeviceChainOwner, DeviceId, DeviceSelectionIds};
 use hex_session::{
     device_gesture::{ParameterId, ParameterValue},
-    service::{DeviceInsertOutcome, GraphEditOperation},
+    service::{DeviceInsertOutcome, GraphEditOperation, ViewState},
 };
 
 const QUANTUM: usize = 256;
@@ -13,6 +14,16 @@ const TOLERANCE: f32 = 3e-6;
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn running_mixed_track_reorder_uses_one_live_cut_and_keeps_the_bed() {
+    run_mixed_track_reorder(false);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn running_mixed_track_reorder_undo_and_redo_keep_the_bed_and_replace_each_worker() {
+    run_mixed_track_reorder(true);
+}
+
+fn run_mixed_track_reorder(check_history: bool) {
     const RATE: u32 = 48_000;
     const FADE: usize = 240;
     const DELAY_QUANTA: usize = 6;
@@ -214,7 +225,7 @@ fn running_mixed_track_reorder_uses_one_live_cut_and_keeps_the_bed() {
     let mut offered = None;
     let mut cut = None;
     let mut faded = false;
-    let fresh = 'publication: loop {
+    let (fresh, installed) = 'publication: loop {
         h.pump();
         while let Ok(event) = h.service.try_event() {
             if !event.request_complete {
@@ -262,7 +273,7 @@ fn running_mixed_track_reorder_uses_one_live_cut_and_keeps_the_bed() {
                         assert_eq!(fresh.root, predecessor.output_identity);
                         assert_eq!(fresh.instance, effect.value());
                         assert_ne!(fresh, original.1);
-                        break 'publication fresh;
+                        break 'publication (fresh, event.state);
                     }
                     DeviceInsertOutcome::Cancelled => {
                         assert_eq!(offered, Some(receipt.submission));
@@ -356,6 +367,181 @@ fn running_mixed_track_reorder_uses_one_live_cut_and_keeps_the_bed() {
             .arrival_frames,
         BRIDGE,
     );
+    if check_history {
+        verify_mixed_reorder_history(
+            &mut h,
+            stored,
+            &installed,
+            effect,
+            fresh,
+            first_wet - cut.unwrap(),
+        );
+    }
+}
+
+fn verify_mixed_reorder_history(
+    harness: &mut ResidentHarness,
+    original: &ViewState,
+    reordered: &Arc<ViewState>,
+    effect: DeviceId,
+    mut previous_binding: EffectBinding,
+    wet_delay: u64,
+) {
+    let mut previous = Arc::clone(reordered);
+    for (request, expected) in [
+        (Request::Undo, original),
+        (Request::Redo, reordered.as_ref()),
+    ] {
+        let predecessor = status(harness).recording_source().unwrap();
+        let prepared = harness
+            .device_insert_probe()
+            .observe_next_foreign_effect_binding(effect);
+        let (publication_ready, enqueue, _busy) = harness.probe_next_native_publication();
+        let (submitted, resume) = harness.probe_next_submitted_device_insert();
+        harness.service.submit(request).unwrap();
+        let stage_deadline = Instant::now() + Duration::from_millis(800);
+        let mut enqueued = false;
+        let exact = loop {
+            harness.pump();
+            if let Ok(exact) = submitted.try_recv() {
+                break exact;
+            }
+            if !enqueued && publication_ready.try_recv().is_ok() {
+                enqueue.send(()).unwrap();
+                enqueued = true;
+            }
+            while let Ok(event) = harness.service.try_event() {
+                assert_eq!(event.state.project, previous.project);
+                assert_eq!(event.state.revision, previous.revision);
+                assert!(
+                    !event.request_complete && event.error.is_none(),
+                    "history ended before submission: status={:?} error={:?} receipt={:?}",
+                    event.status,
+                    event.error,
+                    event.device_insert_complete,
+                );
+            }
+            assert!(
+                Instant::now() < stage_deadline,
+                "hosted reorder history did not stage"
+            );
+            if !enqueued {
+                let start = status(harness).position.load(Acquire);
+                let pcm = instruments::render_replay_block(harness);
+                assert_eq!(
+                    status(harness).position.load(Acquire),
+                    start + QUANTUM as u64
+                );
+                assert_dry_bed(&pcm, start);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        assert_eq!(exact.output_identity, predecessor.output_identity);
+        assert_eq!(exact.context.editor_revision, previous.revision + 1);
+        assert!(exact.audio_revision > predecessor.audio_revision);
+        assert_eq!(status(harness).recording_source(), Some(predecessor));
+        resume.send(()).unwrap();
+        let pending = harness.next();
+        assert!(
+            !pending.request_complete,
+            "history committed before the callback"
+        );
+        assert!(pending.error.is_none(), "{:?}", pending.error);
+        assert_eq!(pending.state.project, previous.project);
+        assert_eq!(pending.state.revision, previous.revision);
+        assert_eq!(status(harness).recording_source(), Some(predecessor));
+
+        let deadline = Instant::now() + Duration::from_millis(800);
+        let mut cut = None;
+        let (terminal, binding, origin) = 'installed: loop {
+            harness.pump();
+            while let Ok(event) = harness.service.try_event() {
+                assert!(event.error.is_none(), "{:?}", event.error);
+                assert!(
+                    event.device_insert_confirmation.is_none(),
+                    "history requested interruption"
+                );
+                if !event.request_complete {
+                    assert_eq!(event.state.project, previous.project);
+                    assert_eq!(event.state.revision, previous.revision);
+                    continue;
+                }
+                let origin = cut.expect("history terminal preceded the exact audio cut");
+                let receipt = event
+                    .device_insert_complete
+                    .expect("history install receipt");
+                assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+                let installed = status(harness).recording_source().unwrap();
+                assert_eq!(installed.output_identity, predecessor.output_identity);
+                assert_eq!(
+                    installed.output_identity,
+                    receipt.submission.output_identity
+                );
+                assert_eq!(installed.audio_revision, receipt.submission.audio_revision);
+                assert_eq!(installed.context, receipt.submission.context);
+                assert_eq!(event.state.revision, previous.revision + 1);
+                assert_eq!(event.state.project, expected.project);
+
+                let (owner, binding) = prepared.try_recv().unwrap().expect("history worker");
+                assert_eq!(
+                    owner,
+                    hex_engine::ProcessorChainOwner::Track(
+                        expected.project.tracks()[0].id().value()
+                    )
+                );
+                assert_eq!(binding.root, predecessor.output_identity);
+                assert_eq!(binding.instance, effect.value());
+                assert_ne!(binding, previous_binding);
+                break 'installed (event.state, binding, origin);
+            }
+
+            let start = status(harness).position.load(Acquire);
+            let pcm = instruments::render_replay_block(harness);
+            assert_eq!(
+                status(harness).position.load(Acquire),
+                start + QUANTUM as u64
+            );
+            assert_dry_bed(&pcm, start);
+            if status(harness).recording_source() != Some(predecessor) {
+                let origin = *cut.get_or_insert(start);
+                assert!(
+                    start < origin + wet_delay,
+                    "history receipt missed the fresh prefix"
+                );
+                assert!(pcm.iter().all(|sample| sample[0] == 0.0));
+            }
+            assert!(Instant::now() < deadline, "history did not install");
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        let retire_deadline = Instant::now() + Duration::from_millis(800);
+        let mut fresh_wet = false;
+        loop {
+            harness.pump();
+            if fresh_wet
+                && harness.plugin_records.load(Acquire) == 1
+                && harness.plugin_progress.lock().unwrap().source_bindings[0]
+                    .is_some_and(|(id, current, _)| id == effect.value() && current == binding)
+            {
+                break;
+            }
+            let start = status(harness).position.load(Acquire);
+            let pcm = instruments::render_replay_block(harness);
+            assert_dry_bed(&pcm, start);
+            if start < origin + wet_delay {
+                assert!(pcm.iter().all(|sample| sample[0] == 0.0));
+            } else if start == origin + wet_delay {
+                assert!(pcm.iter().all(|sample| sample[0] > 0.0));
+                fresh_wet = true;
+            }
+            assert!(
+                Instant::now() < retire_deadline,
+                "history worker did not retire"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        previous_binding = binding;
+        previous = terminal;
+    }
 }
 
 fn status(h: &ResidentHarness) -> &hex_audio::prepared::Status {
@@ -376,6 +562,19 @@ fn write_dry_bed(files: &Files, rate: u32, frames: u32) -> PathBuf {
 fn bed_sample(source_frame: u64) -> i16 {
     // This period is coprime to the bridge quantum and fade.
     512 + (source_frame % 127) as i16 * 8
+}
+
+fn assert_dry_bed(pcm: &[hex_engine::Frame; QUANTUM], start: u64) {
+    for (offset, sample) in pcm.iter().enumerate() {
+        let frame = start + offset as u64;
+        let expected = frame
+            .checked_sub(u64::from(BRIDGE))
+            .map_or(0.0, |source| f32::from(bed_sample(source)) / 32768.0);
+        assert!(
+            (sample[1] - expected).abs() < TOLERANCE,
+            "dry PCM at {frame}"
+        );
+    }
 }
 
 fn assert_block(pcm: [hex_engine::Frame; QUANTUM], start: u64, left_at: impl Fn(usize) -> f32) {
