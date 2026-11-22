@@ -1662,6 +1662,12 @@ pub trait WorkerAudioSink: Send {
     fn worker_idle(&mut self) -> bool {
         false
     }
+    /// Test-only hook to observe each scheduled poll wait and optionally shorten
+    /// waits so cadence tests remain deterministic under load.
+    #[cfg(test)]
+    fn test_poll_wait(&mut self, wait: Duration) -> Duration {
+        wait
+    }
     /// Start a correlated reopen on the existing lifecycle lane. Implementations
     /// must relinquish the old output before returning; readiness is reported
     /// separately without waiting for a Client or UI event delivery.
@@ -2530,7 +2536,13 @@ impl WorkerEvents {
             } else {
                 0
             };
-            match requests.recv_timeout(poll_interval(self.idle_polls)) {
+            let wait = poll_interval(self.idle_polls);
+            #[cfg(test)]
+            let wait = self
+                .audio
+                .as_mut()
+                .map_or(wait, |audio| audio.test_poll_wait(wait));
+            match requests.recv_timeout(wait) {
                 Ok(request) => {
                     self.idle_polls = 0;
                     control_poll(
@@ -2986,6 +2998,26 @@ mod tests {
         polls: AtomicUsize,
         closed: Mutex<Option<thread::ThreadId>>,
         restarts: Mutex<Vec<(u64, u64, thread::ThreadId)>>,
+        waits: Mutex<Vec<Duration>>,
+        wait_changed: std::sync::Condvar,
+        accelerate_polls: AtomicBool,
+        idle_timeout_once: AtomicBool,
+    }
+    impl Observation {
+        fn wait_for_waits(&self, mut ready: impl FnMut(&[Duration]) -> bool) -> Vec<Duration> {
+            let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
+            let mut waits = self.waits.lock().unwrap();
+            while !ready(&waits) {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                assert!(
+                    !remaining.is_zero(),
+                    "timed out waiting for poll waits: {waits:?}"
+                );
+                let (next, _) = self.wait_changed.wait_timeout(waits, remaining).unwrap();
+                waits = next;
+            }
+            waits.clone()
+        }
     }
     struct Sink {
         observed: Arc<Observation>,
@@ -3021,6 +3053,26 @@ mod tests {
         }
         fn worker_idle(&mut self) -> bool {
             self.idle
+        }
+        fn test_poll_wait(&mut self, wait: Duration) -> Duration {
+            {
+                let mut waits = self.observed.waits.lock().unwrap();
+                waits.push(wait);
+                self.observed.wait_changed.notify_all();
+            }
+            if !self.observed.accelerate_polls.load(Ordering::Acquire) {
+                return wait;
+            }
+            if wait == BUSY_POLL_INTERVAL
+                || self
+                    .observed
+                    .idle_timeout_once
+                    .swap(false, Ordering::AcqRel)
+            {
+                Duration::ZERO
+            } else {
+                wait
+            }
         }
         fn close(&mut self) {
             *self.observed.closed.lock().unwrap() = Some(thread::current().id());
@@ -3424,13 +3476,18 @@ mod tests {
     }
     #[test]
     fn idle_sink_backs_off_while_requests_and_busy_sinks_keep_the_prompt_cadence() {
-        let start = |idle| {
+        let start = |idle, idle_timeout_once| {
+            let observed = Arc::new(Observation::default());
+            observed.accelerate_polls.store(true, Ordering::Release);
+            observed
+                .idle_timeout_once
+                .store(idle_timeout_once, Ordering::Release);
             let service = Service::with_audio_sink(
                 16,
                 0,
                 None,
                 Box::new(Sink {
-                    observed: Arc::new(Observation::default()),
+                    observed: observed.clone(),
                     fail: false,
                     idle,
                 }),
@@ -3441,36 +3498,68 @@ mod tests {
                 .recv_timeout(crate::test_wait::HANG_BOUND)
                 .unwrap();
             assert!(initial.error.is_none());
-            service
+            (service, observed)
         };
-        let idle = start(true);
-        let busy = start(false);
-        // Pass the idle worker's grace polls (about 50 ms at the busy cadence).
-        thread::sleep(Duration::from_millis(120));
-        let (idle_start, busy_start) = (idle.worker_wakes(), busy.worker_wakes());
-        thread::sleep(Duration::from_millis(250));
-        let idle_wakes = idle.worker_wakes() - idle_start;
-        let busy_wakes = busy.worker_wakes() - busy_start;
-        // 250 ms is about 3 waits at 100 ms and about 50 at 5 ms.
-        assert!(idle_wakes <= 5, "idle worker woke {idle_wakes} times");
-        assert!(busy_wakes >= 15, "busy worker woke only {busy_wakes} times");
-        // A request ends the idle wait at once instead of at its 100 ms timeout.
+        let (idle, idle_obs) = start(true, true);
+        let (busy, busy_obs) = start(false, false);
+
+        // Idle sink runs IDLE_GRACE_POLLS busy polls, backs off to IDLE_POLL_INTERVAL,
+        // and stays backed off across subsequent idle timeouts.
+        let initial_idle_waits = idle_obs.wait_for_waits(|waits| {
+            waits.iter().filter(|d| **d == IDLE_POLL_INTERVAL).count() >= 2
+        });
+        let grace = IDLE_GRACE_POLLS as usize;
+        assert_eq!(
+            &initial_idle_waits[..grace],
+            vec![BUSY_POLL_INTERVAL; grace].as_slice(),
+            "idle worker should stay on the busy cadence for the full grace window"
+        );
+        assert_eq!(initial_idle_waits[grace], IDLE_POLL_INTERVAL);
+        assert_eq!(initial_idle_waits[grace + 1], IDLE_POLL_INTERVAL);
+
+        // Busy sink stays on BUSY_POLL_INTERVAL past the grace window and never backs off.
+        let busy_waits = busy_obs.wait_for_waits(|waits| waits.len() >= grace + 10);
+        assert!(
+            busy_waits.iter().all(|wait| *wait == BUSY_POLL_INTERVAL),
+            "busy worker unexpectedly backed off: {busy_waits:?}"
+        );
+        assert!(
+            busy.worker_wakes() >= (grace + 10) as u64,
+            "busy worker wakes should track poll iterations"
+        );
+
+        // A request ends the idle wait immediately through the channel receive,
+        // resets the grace window to BUSY_POLL_INTERVAL, and backs off again.
         for name in ["one", "two", "three"] {
-            // After the previous request's grace, inside the next idle wait.
-            thread::sleep(Duration::from_millis(80));
-            let submitted = Instant::now();
+            let start_index = idle_obs.waits.lock().unwrap().len();
             idle.submit(Request::Edit(Command::AddTrack { name: name.into() }))
                 .unwrap();
             let event = idle
                 .events
                 .recv_timeout(crate::test_wait::HANG_BOUND)
                 .unwrap();
-            let latency = submitted.elapsed();
             assert!(event.error.is_none());
-            assert!(
-                latency < Duration::from_millis(40),
-                "idle request waited {latency:?}"
+            let post_waits = idle_obs.wait_for_waits(|waits| {
+                let tail = &waits[start_index..];
+                let after_leading_idle = tail
+                    .iter()
+                    .position(|wait| *wait == BUSY_POLL_INTERVAL)
+                    .map(|idx| &tail[idx..])
+                    .unwrap_or(&[]);
+                after_leading_idle.contains(&IDLE_POLL_INTERVAL)
+            });
+            let tail = &post_waits[start_index..];
+            let busy_start = tail
+                .iter()
+                .position(|wait| *wait == BUSY_POLL_INTERVAL)
+                .expect("request must restore busy grace cadence");
+            let cycle = &tail[busy_start..];
+            assert_eq!(
+                &cycle[..grace],
+                vec![BUSY_POLL_INTERVAL; grace].as_slice(),
+                "request `{name}` should restore full busy grace cadence before backing off"
             );
+            assert_eq!(cycle[grace], IDLE_POLL_INTERVAL);
         }
     }
 }

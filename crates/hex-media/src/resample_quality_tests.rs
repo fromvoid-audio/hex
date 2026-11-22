@@ -151,7 +151,7 @@ fn v2_extreme_rate_pairs_fit_the_table_ceiling_and_stay_finite() {
 /// Release-only quality and throughput report for the PR; run with
 /// `cargo test --release -p hex-media --lib resample_quality_report -- --ignored --nocapture`.
 #[test]
-#[ignore]
+#[ignore = "manual release-only resample quality and throughput report; run with `cargo test --release -p hex-media --lib resample_quality_report -- --ignored --nocapture`"]
 fn resample_quality_report() {
     for version in [ResampleVersion::V1, ResampleVersion::V2] {
         for (from, to) in [(48_000, 44_100), (44_100, 48_000)] {

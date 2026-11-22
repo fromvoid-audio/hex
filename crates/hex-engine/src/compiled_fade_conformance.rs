@@ -228,7 +228,7 @@ mod tests {
     }
     /// Finite software timing only; no device deadline or host parity claim.
     #[test]
-    #[ignore]
+    #[ignore = "manual sparse-fade render cost profile; run with `cargo test --release -p hex-engine --lib compiled_fade_conformance::tests::profile_sparse_fade_render_cost -- --ignored --nocapture`"]
     fn profile_sparse_fade_render_cost() {
         use std::{hint::black_box, time::Instant};
         const BLOCK: usize = 256;

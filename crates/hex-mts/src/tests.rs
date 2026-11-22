@@ -148,9 +148,10 @@ fn existing_master_is_never_taken_over_and_updates_do_not_retry() {
             }
     });
     assert_eq!(handle.recover(owner), Err(ControlError::Stale));
-    handle.publish(publication(owner, 2)).unwrap();
-    // Synchronize against the worker's poll without requesting reacquisition.
-    thread::sleep(Duration::from_millis(150));
+    let update = publication(owner, 2);
+    handle.publish(update).unwrap();
+    // Synchronize deterministically against the worker's idle pass without requesting reacquisition.
+    handle.wait_for_idle_revision(update.revision);
     assert_eq!(probe.acquisitions.load(Ordering::SeqCst), 1);
     assert!(probe.publications.lock().unwrap().is_empty());
     assert_eq!(probe.releases.load(Ordering::SeqCst), 0);

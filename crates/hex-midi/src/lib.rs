@@ -322,6 +322,8 @@ impl Handle {
 struct Outbox {
     ports: Option<(u64, Result<Vec<Port>, String>)>,
     connection: Option<(u64, Result<bool, String>)>,
+    #[cfg(test)]
+    on_full_retain: Option<SyncSender<()>>,
 }
 impl Outbox {
     fn retain(&mut self, event: Event) {
@@ -359,7 +361,13 @@ impl Outbox {
         for event in [ports, connection].into_iter().flatten() {
             match events.try_send(event) {
                 Ok(()) => {}
-                Err(mpsc::TrySendError::Full(event)) => self.retain(event),
+                Err(mpsc::TrySendError::Full(event)) => {
+                    self.retain(event);
+                    #[cfg(test)]
+                    if let Some(signal) = &self.on_full_retain {
+                        let _ = signal.try_send(());
+                    }
+                }
                 Err(mpsc::TrySendError::Disconnected(_)) => {
                     *self = Self::default();
                     return;
@@ -540,8 +548,32 @@ mod native {
         events: SyncSender<Event>,
         stop: Arc<AtomicBool>,
     ) {
+        run_with_outbox(requests, events, stop, Outbox::default());
+    }
+    #[cfg(test)]
+    pub(super) fn run_with_retain_signal(
+        requests: Receiver<Request>,
+        events: SyncSender<Event>,
+        stop: Arc<AtomicBool>,
+        on_full_retain: SyncSender<()>,
+    ) {
+        run_with_outbox(
+            requests,
+            events,
+            stop,
+            Outbox {
+                on_full_retain: Some(on_full_retain),
+                ..Outbox::default()
+            },
+        );
+    }
+    fn run_with_outbox(
+        requests: Receiver<Request>,
+        events: SyncSender<Event>,
+        stop: Arc<AtomicBool>,
+        mut outbox: Outbox,
+    ) {
         let mut active: Option<Active> = None;
-        let mut outbox = Outbox::default();
         while !stop.load(Ordering::Acquire) {
             outbox.flush(&events);
             match requests.recv_timeout(outbox.wait()) {
@@ -621,7 +653,31 @@ mod native {
         events: SyncSender<Event>,
         stop: Arc<AtomicBool>,
     ) {
-        let mut outbox = Outbox::default();
+        run_with_outbox(requests, events, stop, Outbox::default());
+    }
+    #[cfg(test)]
+    pub(super) fn run_with_retain_signal(
+        requests: Receiver<Request>,
+        events: SyncSender<Event>,
+        stop: Arc<AtomicBool>,
+        on_full_retain: SyncSender<()>,
+    ) {
+        run_with_outbox(
+            requests,
+            events,
+            stop,
+            Outbox {
+                on_full_retain: Some(on_full_retain),
+                ..Outbox::default()
+            },
+        );
+    }
+    fn run_with_outbox(
+        requests: Receiver<Request>,
+        events: SyncSender<Event>,
+        stop: Arc<AtomicBool>,
+        mut outbox: Outbox,
+    ) {
         while !stop.load(Ordering::Acquire) {
             outbox.flush(&events);
             match requests.recv_timeout(outbox.wait()) {
@@ -848,9 +904,12 @@ mod tests {
         let (commands, requests) = mpsc::sync_channel(COMMAND_CAPACITY);
         let (filler, results) = mpsc::sync_channel(1);
         let stop = Arc::new(AtomicBool::new(false));
+        let (retained_tx, retained_rx) = mpsc::sync_channel(1);
         let worker = {
             let (events, stop) = (filler.clone(), Arc::clone(&stop));
-            std::thread::spawn(move || native::run(requests, events, stop))
+            std::thread::spawn(move || {
+                native::run_with_retain_signal(requests, events, stop, retained_tx)
+            })
         };
         filler
             .try_send(Event::Connection {
@@ -861,8 +920,8 @@ mod tests {
         commands
             .try_send(Request::Command(Command::Discover { request_id: 9 }))
             .unwrap();
-        // Let the worker answer into the full queue before anything is drained.
-        std::thread::sleep(Duration::from_millis(50));
+        // Wait deterministically until the worker hits the full queue and retains the reply.
+        retained_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         let received = receive_until(&results, Duration::from_secs(2), |event| {
             matches!(event, Event::Ports { request_id: 9, .. })
         });

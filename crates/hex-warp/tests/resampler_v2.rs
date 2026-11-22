@@ -201,7 +201,7 @@ fn v2_passband_stays_flat_below_its_transition() {
 /// Release-only report for the PR; run with
 /// `cargo test --release -p hex-warp --test resampler_v2 -- --ignored --nocapture`.
 #[test]
-#[ignore]
+#[ignore = "manual release-only resampler aliasing and quality report; run with `cargo test --release -p hex-warp --test resampler_v2 -- --ignored --nocapture`"]
 fn resampler_report() {
     for resampler in [Resampler::V1, Resampler::V2] {
         for hz in [6_300.0, 7_000.0, 9_000.0, 11_500.0] {
