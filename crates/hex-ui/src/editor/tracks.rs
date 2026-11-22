@@ -4665,7 +4665,17 @@ mod overlap_tests {
         let e = drag_content_next(&service);
         let source = e.state.project.clip(clip).unwrap().clone();
         assert!(source.audio_edit().is_some());
+        let raw_waveform = Arc::clone(e.state.waveforms.get(&source.asset()).unwrap());
         let ready = e.state.audio_clip_waveforms.get(&clip).unwrap().clone();
+        let expected_source = ready
+            .event_source
+            .as_ref()
+            .map(|event_source| Arc::clone(&event_source.waveform))
+            .unwrap_or_else(|| Arc::clone(&ready.waveform));
+        assert!(
+            !Arc::ptr_eq(&expected_source, &raw_waveform),
+            "ready processed waveform must be distinct from the raw asset waveform"
+        );
         let before = e.state.project.clone();
         let handle = *cx.add_window(|_, _| gpui::Empty);
         let editor = cx
@@ -4728,9 +4738,9 @@ mod overlap_tests {
                 );
                 let (corners, _) = visual.rendered_surface_geometry(selector).unwrap();
                 assert_eq!(
-                    corners.bottom_left > gpui::ScaledPixels::default(),
-                    loop_handles::audio_repeats(&source),
-                    "floating source keeps its loop-bottom tier"
+                    corners,
+                    gpui::Corners::default(),
+                    "floating source keeps square bottom corners"
                 );
             }
 
@@ -4766,13 +4776,20 @@ mod overlap_tests {
                     assert!(paint.mask.top() >= title.bottom());
                     assert!(paint.mask.bottom() <= bounds.bottom());
                 }
+                let rendered = cache.rendered_waveforms();
                 assert!(
-                    cache.rendered_waveforms().iter().any(|sample| {
-                        Arc::ptr_eq(&sample.source, &ready.waveform)
+                    rendered.iter().any(|sample| {
+                        Arc::ptr_eq(&sample.source, &expected_source)
                             && sample.prepared == Some((source.start(), ready.offset))
                             && sample.spans[0] > 0.0
                     }),
                     "clone must use original ready processed root and source offset"
+                );
+                assert!(
+                    !rendered
+                        .iter()
+                        .any(|sample| Arc::ptr_eq(&sample.source, &raw_waveform)),
+                    "processed drag clone must not fall back to the raw asset waveform"
                 );
             });
         }
@@ -4870,11 +4887,20 @@ mod overlap_tests {
                     }),
                     "mixed-group audio must actually paint in both move/copy modes"
                 );
+                let rendered = cache.rendered_waveforms();
                 assert!(
-                    cache
-                        .rendered_waveforms()
+                    rendered.iter().any(|sample| {
+                        Arc::ptr_eq(&sample.source, &expected_source)
+                            && sample.prepared == Some((source.start(), ready.offset))
+                            && sample.spans[0] > 0.0
+                    }),
+                    "mixed-group clone must keep original ready processed root and source offset"
+                );
+                assert!(
+                    !rendered
                         .iter()
-                        .any(|p| Arc::ptr_eq(&p.source, &ready.waveform))
+                        .any(|sample| Arc::ptr_eq(&sample.source, &raw_waveform)),
+                    "mixed-group processed clone must not fall back to the raw asset waveform"
                 );
                 assert_eq!(
                     v.active_clip_drag.as_ref().unwrap().copy_modifier.get(),

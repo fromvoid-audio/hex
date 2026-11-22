@@ -672,14 +672,20 @@ impl WaveformGeometryCache {
             .iter()
             .map(|entry| RenderedWaveformSample {
                 source: Arc::clone(&entry.source),
-                prepared: match entry.key.mapping {
+                prepared: match &entry.key.mapping {
                     WaveformMappingKey::Prepared {
                         timeline_origin,
                         root_offset,
                         ..
-                    } => Some((timeline_origin, root_offset)),
+                    } => Some((*timeline_origin, *root_offset)),
                     WaveformMappingKey::PreparedFade(fade) => {
                         Some((fade.timeline_origin, fade.root_offset))
+                    }
+                    WaveformMappingKey::Frame(key, waveform_frame::Clock::Arrangement) => {
+                        key.prepared_origin()
+                    }
+                    WaveformMappingKey::MusicalEventFade(projection, None) => {
+                        projection.prepared_origin()
                     }
                     _ => None,
                 },

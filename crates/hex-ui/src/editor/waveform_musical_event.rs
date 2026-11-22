@@ -122,6 +122,12 @@ impl Projection {
         Some((Arc::clone(&source.waveform), Arc::new(projection)))
     }
 
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn prepared_origin(&self) -> Option<(u64, u64)> {
+        let (_, _, offset, _) = self.clip.audio_edit()?.projected_domain(&self.tempo).ok()?;
+        Some((self.clip.start(), offset))
+    }
+
     pub(super) fn query(&self, clock: &Clock) -> Option<Query<'_>> {
         if !self.events.sources.is_empty() {
             return None;

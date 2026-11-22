@@ -34,6 +34,14 @@ pub(super) struct Key {
     gain: ClipGain,
 }
 
+impl Key {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn prepared_origin(&self) -> Option<(u64, u64)> {
+        (self.prepared_frames.is_some() || self.grouped.is_some())
+            .then_some((self.start, self.root.view_start))
+    }
+}
+
 struct GroupSources(Arc<AudioEventSourceWaveforms>);
 
 impl std::fmt::Debug for GroupSources {
