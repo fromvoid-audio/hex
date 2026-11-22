@@ -1,4 +1,4 @@
-#[path = "../../hex-devices/tests/support/mod.rs"]
+#[path = "../../../hex-devices/tests/support/mod.rs"]
 mod support;
 use hex_devices::SineTable;
 use hex_engine::{PreparedRevision, Renderer, SessionPlayback, SessionPlaybackCommand};

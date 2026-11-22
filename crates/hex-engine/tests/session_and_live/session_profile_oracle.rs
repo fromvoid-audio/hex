@@ -1,5 +1,5 @@
 //! Regression coverage for the independent mixed-route profiling fixture.
-#[path = "../examples/support/session_fixture.rs"]
+#[path = "../../examples/support/session_fixture.rs"]
 mod fixture;
 
 use hex_engine::{

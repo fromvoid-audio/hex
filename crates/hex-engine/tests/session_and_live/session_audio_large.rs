@@ -1,5 +1,5 @@
 //! Original 100-track PCM regression; headless correctness, not a device deadline test.
-#[path = "../examples/support/session_audio_fixture.rs"]
+#[path = "../../examples/support/session_audio_fixture.rs"]
 mod fixture;
 
 use hex_engine::{

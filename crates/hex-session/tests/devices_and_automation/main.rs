@@ -1,0 +1,15 @@
+mod automation_read_selection;
+mod delay;
+mod device_automation;
+mod device_automation_compressor;
+mod device_automation_delay_mix;
+mod device_automation_eq8_gain;
+mod device_automation_gate;
+mod device_automation_lanes;
+mod device_automation_overdrive;
+mod device_automation_reverb_outputs;
+mod device_comparison;
+mod gain_lane;
+mod gain_recording;
+mod host_gain;
+mod rattle;

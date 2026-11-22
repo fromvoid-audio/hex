@@ -1,0 +1,16 @@
+mod device_automation;
+mod device_automation_auto_pan;
+mod device_automation_compressor;
+mod device_automation_delay_mix;
+mod device_automation_eq8_gain;
+mod device_automation_gate;
+mod device_automation_host;
+mod device_automation_overdrive;
+mod device_automation_override;
+mod device_automation_reverb;
+mod device_automation_reverb_outputs;
+mod device_automation_saturator;
+mod device_automation_utility;
+mod device_chain;
+mod reverb;
+mod serial_units;

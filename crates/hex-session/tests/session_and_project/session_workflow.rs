@@ -1,5 +1,5 @@
 //! Authored Session MIDI history, persistence, and playback through the GPUI worker contract.
-mod common;
+use crate::common;
 
 use common::wait;
 use hex_engine::playback::Playback;
