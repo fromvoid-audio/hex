@@ -97,6 +97,12 @@ pub(super) struct Panel {
     response: Option<(NativeDeviceState, u32, response::Curves)>,
 }
 
+impl Panel {
+    pub(super) fn cancel(&self, cx: &mut Context<EditorView>) {
+        self.entity.update(cx, |graph, cx| graph.cancel(cx));
+    }
+}
+
 struct Creation {
     key: GestureKey,
     terminal: Option<(GesturePhase, u64)>,
