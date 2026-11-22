@@ -190,3 +190,49 @@ impl Project {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Command, Created, Editor};
+    use std::path::PathBuf;
+
+    #[test]
+    fn plain_audio_clip_references_own_asset_and_has_no_retained_roots() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: "a".into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: PathBuf::from("a.wav"),
+                sample_rate: 48_000,
+                frames: 48_000,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        let Created::Clip(clip_id) = editor
+            .execute(Command::PlaceClip {
+                track,
+                asset,
+                start: 0,
+                duration: 24_000,
+                source_offset: 0,
+                source_length: 24_000,
+                looping: false,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        let clip = editor.project().clip(clip_id).unwrap();
+        assert_eq!(clip.referenced_assets().collect::<Vec<_>>(), vec![asset]);
+        assert!(!clip.has_retained_audio_roots());
+        assert!(editor.project().validate_retained_audio_roots().is_ok());
+    }
+}

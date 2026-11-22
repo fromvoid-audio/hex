@@ -68,3 +68,28 @@ pub(crate) fn source_ranges(
     }
     Ok(merged.map(|slot| slot.map(|(start, end)| start..end)))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_ranges_merges_and_wraps_looped_windows_and_rejects_empty_source() {
+        assert!(source_ranges(0, 10, 10, 10, None).is_err());
+        assert_eq!(source_ranges(5, 5, 0, 10, None).unwrap(), [None, None]);
+        assert_eq!(
+            source_ranges(2, 8, 10, 20, None).unwrap(),
+            [Some(12..18), None]
+        );
+        // Loop [4..10] wrapped across boundary splits into two ranges.
+        assert_eq!(
+            source_ranges(14, 18, 0, 10, Some((4, 10))).unwrap(),
+            [Some(4..6), Some(8..10)]
+        );
+        // Span covering at least one full loop collapses to the entire loop.
+        assert_eq!(
+            source_ranges(10, 20, 0, 10, Some((4, 10))).unwrap(),
+            [Some(4..10), None]
+        );
+    }
+}

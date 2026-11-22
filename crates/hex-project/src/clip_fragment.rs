@@ -93,3 +93,60 @@ pub fn preview_clip_fragment_with_tempo(
     crate::audio_edit::move_clip(&mut fragment, destination_start, tempo)?;
     Ok(fragment)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Command, Created, Editor, Project};
+    use std::path::PathBuf;
+
+    #[test]
+    fn preview_fragment_and_prefix_crop_validate_bounds_and_preserve_mapping() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: "a".into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: PathBuf::from("a.wav"),
+                sample_rate: 48_000,
+                frames: 48_000,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        let Created::Clip(clip_id) = editor
+            .execute(Command::PlaceClip {
+                track,
+                asset,
+                start: 10_000,
+                duration: 20_000,
+                source_offset: 2_000,
+                source_length: 20_000,
+                looping: false,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+
+        let clip = editor.project().clip(clip_id).unwrap();
+        let tempo = editor.project().tempo_map();
+        assert!(preview_prefix_crop_with_tempo(clip, 10_000, tempo).is_err());
+        assert!(preview_prefix_crop_with_tempo(clip, 30_001, tempo).is_err());
+        let cropped = preview_prefix_crop_with_tempo(clip, 18_000, tempo).unwrap();
+        assert_eq!(cropped.duration(), 8_000);
+        assert_eq!(cropped.source_length(), 8_000);
+
+        assert!(preview_clip_fragment(clip, 15_000, 15_000, 0).is_err());
+        assert!(preview_clip_fragment(clip, 9_999, 20_000, 0).is_err());
+        let fragment = preview_clip_fragment(clip, 14_000, 22_000, 50_000).unwrap();
+        assert_eq!(fragment.start(), 50_000);
+        assert_eq!(fragment.duration(), 8_000);
+        assert_eq!(fragment.source_offset(), 6_000);
+    }
+}

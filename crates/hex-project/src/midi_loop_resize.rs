@@ -314,3 +314,47 @@ pub(crate) fn apply(
     source.one_shot_boundary = MidiOneShotBoundary::LoopEnd;
     crate::clip_group::replace_midi(project, candidate)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Command, Editor};
+
+    #[test]
+    fn preview_loop_resize_enables_repeat_and_rejects_zero_end() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: "m".into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Clip(clip_id) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        let clip = editor.project().midi_clip(clip_id).unwrap();
+        assert!(
+            clip.preview_loop_resize(MidiViewResizeOperation::RepeatOuterEnd {
+                beat: BeatTime::ZERO,
+            })
+            .is_err()
+        );
+        let resized = clip
+            .preview_loop_resize(MidiViewResizeOperation::RepeatOuterEnd {
+                beat: BeatTime::from_quarters(8).unwrap(),
+            })
+            .unwrap();
+        assert_eq!(resized.length(), BeatTime::from_quarters(8).unwrap());
+        assert_eq!(
+            resized.first_repeat_boundary(),
+            Some(BeatTime::from_quarters(4).unwrap())
+        );
+    }
+}

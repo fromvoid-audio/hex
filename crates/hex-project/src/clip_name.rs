@@ -37,3 +37,53 @@ pub(crate) fn rename(project: &mut Project, id: ClipId, name: String) -> Result<
     }
     Err(Invalid("clip no longer exists"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{BeatTime, Command, Editor};
+
+    #[test]
+    fn rename_updates_clip_name_and_rejects_blank_or_missing_clip() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: "m".into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(Command::RenameClip {
+                clip,
+                name: "lead".into(),
+            })
+            .unwrap();
+        assert_eq!(editor.project().clip_name(clip), Some("lead"));
+        assert!(
+            editor
+                .execute(Command::RenameClip {
+                    clip,
+                    name: "   ".into(),
+                })
+                .is_err()
+        );
+        assert!(
+            editor
+                .execute(Command::RenameClip {
+                    clip: ClipId(999),
+                    name: "other".into(),
+                })
+                .is_err()
+        );
+    }
+}

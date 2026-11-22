@@ -245,3 +245,46 @@ fn place_incoming(
     Project::from_snapshot(project.snapshot())?;
     Ok(created)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Command, Editor};
+
+    #[test]
+    fn apply_rejects_empty_and_duplicate_selections() {
+        let mut project = Project::new(48_000).unwrap();
+        assert!(apply(&mut project, Vec::new()).is_err());
+        assert!(apply(&mut project, vec![ClipId(1), ClipId(1)]).is_err());
+    }
+
+    #[test]
+    fn duplicating_midi_clip_places_copy_at_original_end() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: "m".into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Clip(original) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::from_quarters(1).unwrap(),
+                length: BeatTime::from_quarters(3).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        let Created::Clips { first: copy_id, .. } = editor
+            .execute(Command::DuplicateClips(vec![original]))
+            .unwrap()
+        else {
+            panic!("copies")
+        };
+        let copy = editor.project().midi_clip(copy_id).unwrap();
+        assert_eq!(copy.start(), BeatTime::from_quarters(4).unwrap());
+        assert_eq!(copy.length(), BeatTime::from_quarters(3).unwrap());
+    }
+}

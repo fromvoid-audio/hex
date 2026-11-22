@@ -118,3 +118,25 @@ impl Device {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_variant_toggles_and_comparison_validates_provider_and_trims() {
+        assert_eq!(DeviceVariant::A.other(), DeviceVariant::B);
+        assert_eq!(DeviceVariant::B.other(), DeviceVariant::A);
+
+        let active = crate::default_instrument_state().unwrap();
+        let inactive = crate::default_instrument_state().unwrap();
+        let comparison = DeviceComparison::new(DeviceVariant::A, inactive.clone());
+        assert_eq!(comparison.active(), DeviceVariant::A);
+        assert!(comparison.validate(&active).is_ok());
+
+        let trimmed = active.with_input_gain_millidb(300).unwrap();
+        assert!(comparison.validate(&trimmed).is_err());
+        let synced = comparison.with_global_trims_from(&trimmed).unwrap();
+        assert!(synced.validate(&trimmed).is_ok());
+    }
+}

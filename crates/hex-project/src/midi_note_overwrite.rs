@@ -329,3 +329,39 @@ pub(crate) fn retain_gates(
     source.notes.retain(|note| note.duration != BeatTime::ZERO);
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn insert(start: u64, duration: u64, pitch: u8) -> MidiNoteInsert {
+        MidiNoteInsert {
+            active: true,
+            start: BeatTime::from_quarters(start).unwrap(),
+            duration: BeatTime::from_quarters(duration).unwrap(),
+            pitch,
+            channel: 0,
+            velocity: 100,
+        }
+    }
+
+    #[test]
+    fn overwrite_geometry_trims_earlier_same_pitch_and_preserves_distinct_pitch() {
+        let geometry =
+            MidiNoteOverwriteGeometry::new(&[insert(0, 4, 60), insert(2, 2, 60), insert(1, 3, 64)])
+                .unwrap();
+        assert_eq!(
+            geometry.authored_duration(0),
+            Some(BeatTime::from_quarters(2).unwrap())
+        );
+        assert_eq!(
+            geometry.authored_duration(1),
+            Some(BeatTime::from_quarters(2).unwrap())
+        );
+        assert_eq!(
+            geometry.authored_duration(2),
+            Some(BeatTime::from_quarters(3).unwrap())
+        );
+        assert!(MidiNoteOverwriteGeometry::new(&[insert(0, 1, 128)]).is_err());
+    }
+}

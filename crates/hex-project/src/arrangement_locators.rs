@@ -322,3 +322,95 @@ pub(crate) fn splice_captured(
     validate(&locators, tempo)?;
     Ok(Arc::new(locators))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Editor;
+
+    #[test]
+    fn from_snapshot_validates_names_and_validate_rejects_unsorted_or_duplicate_frames() {
+        let valid = from_snapshot(ArrangementLocatorSnapshot {
+            id: 1,
+            frame: 48_000,
+            name: Some("verse".into()),
+        })
+        .unwrap();
+        assert_eq!(valid.id(), LocatorId(1));
+        assert_eq!(valid.frame(), 48_000);
+        assert_eq!(valid.name(), Some("verse"));
+        assert!(
+            from_snapshot(ArrangementLocatorSnapshot {
+                id: 2,
+                frame: 0,
+                name: Some("   ".into()),
+            })
+            .is_err()
+        );
+
+        let tempo = TempoMap::constant(48_000, crate::Tempo::new(120_000_000).unwrap()).unwrap();
+        let a = ArrangementLocator {
+            id: LocatorId(1),
+            frame: 48_000,
+            name: None,
+        };
+        let dup = ArrangementLocator {
+            id: LocatorId(2),
+            frame: 48_000,
+            name: None,
+        };
+        let earlier = ArrangementLocator {
+            id: LocatorId(3),
+            frame: 24_000,
+            name: None,
+        };
+        assert!(validate(&[earlier.clone(), a.clone()], &tempo).is_ok());
+        assert!(validate(&[a.clone(), dup], &tempo).is_err());
+        assert!(validate(&[a, earlier], &tempo).is_err());
+    }
+
+    #[test]
+    fn add_rename_and_move_locators_maintain_sorted_order() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::ArrangementLocator(late) = editor
+            .execute(Command::AddArrangementLocator { frame: 96_000 })
+            .unwrap()
+        else {
+            panic!("expected locator")
+        };
+        let Created::ArrangementLocator(early) = editor
+            .execute(Command::AddArrangementLocator { frame: 24_000 })
+            .unwrap()
+        else {
+            panic!("expected locator")
+        };
+        editor
+            .execute(Command::RenameArrangementLocator {
+                locator: late,
+                name: Some("chorus".into()),
+            })
+            .unwrap();
+        let frames: Vec<u64> = editor
+            .project()
+            .arrangement_locators()
+            .iter()
+            .map(ArrangementLocator::frame)
+            .collect();
+        assert_eq!(frames, vec![24_000, 96_000]);
+        assert_eq!(
+            editor
+                .project()
+                .arrangement_locator(late)
+                .and_then(ArrangementLocator::name),
+            Some("chorus")
+        );
+        assert!(
+            editor
+                .execute(Command::MoveArrangementLocator {
+                    locator: early,
+                    frame: 96_000,
+                })
+                .is_err()
+        );
+    }
+}

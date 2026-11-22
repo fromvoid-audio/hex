@@ -92,3 +92,26 @@ pub(crate) fn load_instrument(
     }
     Ok(created)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Editor;
+
+    #[test]
+    fn default_track_names_increment_and_mark_automatic_origin() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        assert_eq!(editor.project().next_default_track_name(0), "track 1");
+        assert_eq!(editor.project().next_default_track_name(2), "track 3");
+
+        let Created::Track(first) = editor
+            .execute(Command::InsertDefaultTrack { before_track: None })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        assert_eq!(editor.project().track(first).unwrap().name(), "track 1");
+        assert!(editor.project().track(first).unwrap().automatic_name);
+        assert_eq!(editor.project().next_default_track_name(0), "track 2");
+    }
+}

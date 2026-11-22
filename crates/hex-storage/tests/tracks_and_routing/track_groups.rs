@@ -1,10 +1,10 @@
 //! Complete hierarchy persistence and evidenced schema43 migration.
+use crate::common;
 use hex_project::{Command, Created, Editor, Project, TrackKind, TrackSelectionIds};
 use hex_storage::{decode, encode};
 use serde_json::{Value, json};
-mod common;
 const HISTORICAL: &[u8] =
-    include_bytes!("fixtures/track-groups/schema43-flat-tracks-15957517.json");
+    include_bytes!("../fixtures/track-groups/schema43-flat-tracks-15957517.json");
 fn fixture() -> Editor {
     let mut e = Editor::new(decode(HISTORICAL).unwrap(), 32).unwrap();
     let tracks = e

@@ -2,7 +2,7 @@
 use hex_project::{Command, Created, Editor, Project, TimeRange};
 
 #[allow(dead_code)]
-mod common;
+use crate::common;
 
 fn fixture() -> (Editor, hex_project::TrackId) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();

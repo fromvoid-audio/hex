@@ -281,3 +281,56 @@ impl Plan {
         result.map(|()| validate)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{BeatTime, Created, Editor};
+
+    #[test]
+    fn shared_classifies_shared_vs_local_clip_edits() {
+        assert!(shared(&ClipEdit::Pitch { cents: 200 }));
+        assert!(shared(&ClipEdit::WarpEnabled { enabled: true }));
+        assert!(!shared(&ClipEdit::Gain { millidb: 0 }));
+        assert!(!shared(&ClipEdit::Looping { looping: true }));
+    }
+
+    #[test]
+    fn plan_capture_ignores_non_alias_commands_and_tracks_aliased_midi_writes() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: "m".into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Clip(first) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(Command::DuplicateAliasClips(vec![first]))
+            .unwrap();
+
+        let mut unrelated = Command::AddTrack { name: "x".into() };
+        let empty = Plan::capture(editor.project(), &mut unrelated).unwrap();
+        assert!(empty.writes.is_empty());
+
+        let mut note = Command::AddMidiNote {
+            clip: first,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_quarters(1).unwrap(),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        };
+        let tracked = Plan::capture(editor.project(), &mut note).unwrap();
+        assert_eq!(tracked.writes.len(), 1);
+    }
+}

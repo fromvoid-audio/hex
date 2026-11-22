@@ -1,8 +1,8 @@
 //! Current-format retained sources, strict inventories and prior-schema migration.
+use crate::common;
 use hex_project::{AudioEventEdit, ClipId, Command, Created, Editor, Project};
 use hex_storage::{decode, encode};
 use serde_json::{Value, json};
-mod common;
 fn fixture() -> (Editor, Vec<ClipId>) {
     let mut e = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
     let Created::Imported { track, clip: a, .. } = e
@@ -434,8 +434,8 @@ fn grouping_preserves_directed_child_and_container_views_through_current_codec()
 #[test]
 fn both_evidenced_schema41_producers_migrate_without_losing_inventory() {
     for data in [
-        include_bytes!("fixtures/grouped-audio/schema41-group-04d5ee56.json").as_slice(),
-        include_bytes!("fixtures/grouped-audio/schema41-content-08dfb3a0.json").as_slice(),
+        include_bytes!("../fixtures/grouped-audio/schema41-group-04d5ee56.json").as_slice(),
+        include_bytes!("../fixtures/grouped-audio/schema41-content-08dfb3a0.json").as_slice(),
     ] {
         let original = data.to_vec();
         let old: Value = serde_json::from_slice(data).unwrap();
@@ -517,7 +517,7 @@ fn embedded_root_schema_matches_the_actual_outer_writer_lineage() {
         .remove("audio_event_fades");
     assert!(decode(&bytes(&old_root_in_current)).is_err());
     let mut old: Value = serde_json::from_slice(include_bytes!(
-        "fixtures/grouped-audio/schema41-group-04d5ee56.json"
+        "../fixtures/grouped-audio/schema41-group-04d5ee56.json"
     ))
     .unwrap();
     // Construct a valid published42 child using the complete decoded historical root.
@@ -629,7 +629,7 @@ fn grouped_and_retained_child_fades_roundtrip_with_independent_captured_tempo() 
 
 #[test]
 fn published_schema42_event_fades_migrate_with_every_predecessor_field_intact() {
-    let data = include_bytes!("fixtures/grouped-audio/schema42-event-fades-31545bb9.json");
+    let data = include_bytes!("../fixtures/grouped-audio/schema42-event-fades-31545bb9.json");
     let old: Value = serde_json::from_slice(data).unwrap();
     let project = decode(data).unwrap();
     let encoded = encode(&project).unwrap();

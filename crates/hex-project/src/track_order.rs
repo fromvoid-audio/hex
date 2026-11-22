@@ -140,3 +140,37 @@ impl Project {
         Ok(Created::None)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Command, Editor};
+
+    #[test]
+    fn track_selection_ids_rejects_empty_and_duplicates_and_move_reorders_tracks() {
+        assert!(TrackSelectionIds::new(&[]).is_err());
+        assert!(TrackSelectionIds::new(&[TrackId(1), TrackId(1)]).is_err());
+
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(a) = editor
+            .execute(Command::AddTrack { name: "a".into() })
+            .unwrap()
+        else {
+            panic!("track a")
+        };
+        let Created::Track(b) = editor
+            .execute(Command::AddTrack { name: "b".into() })
+            .unwrap()
+        else {
+            panic!("track b")
+        };
+        editor
+            .execute(Command::MoveTrackBefore {
+                track: b,
+                before: Some(a),
+            })
+            .unwrap();
+        let order: Vec<TrackId> = editor.project().tracks().iter().map(|t| t.id()).collect();
+        assert_eq!(order, vec![b, a]);
+    }
+}

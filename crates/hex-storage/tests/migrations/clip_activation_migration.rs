@@ -4,9 +4,10 @@ use hex_project::{BeatTime, SessionCellContent, SessionCellContentSnapshot, Trac
 #[test]
 fn schema39_migration_defaults_activation_windows_and_preserves_complete_state() {
     for bytes in [
-        include_bytes!("fixtures/clip-activation/schema39-midi-ae200f3c.json").as_slice(),
-        include_bytes!("fixtures/clip-activation/schema39-audio-ae200f3c.json").as_slice(),
-        include_bytes!("fixtures/clip-activation/schema39-session-audio-ae200f3c.json").as_slice(),
+        include_bytes!("../fixtures/clip-activation/schema39-midi-ae200f3c.json").as_slice(),
+        include_bytes!("../fixtures/clip-activation/schema39-audio-ae200f3c.json").as_slice(),
+        include_bytes!("../fixtures/clip-activation/schema39-session-audio-ae200f3c.json")
+            .as_slice(),
     ] {
         let original = bytes.to_vec();
         let project = hex_storage::decode(bytes).unwrap();

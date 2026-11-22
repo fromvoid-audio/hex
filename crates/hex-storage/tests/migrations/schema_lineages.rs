@@ -3,12 +3,12 @@ use hex_project::{Command, Created, Editor, Project};
 use hex_storage::{decode, encode};
 use serde_json::{Value, json};
 
-const MAIN19: &[u8] = include_bytes!("fixtures/lineages/main19.json");
+const MAIN19: &[u8] = include_bytes!("../fixtures/lineages/main19.json");
 const FOUNDATION: [&[u8]; 4] = [
-    include_bytes!("fixtures/lineages/foundation19.json"),
-    include_bytes!("fixtures/lineages/foundation20.json"),
-    include_bytes!("fixtures/lineages/foundation21.json"),
-    include_bytes!("fixtures/lineages/foundation22.json"),
+    include_bytes!("../fixtures/lineages/foundation19.json"),
+    include_bytes!("../fixtures/lineages/foundation20.json"),
+    include_bytes!("../fixtures/lineages/foundation21.json"),
+    include_bytes!("../fixtures/lineages/foundation22.json"),
 ];
 fn bytes(value: &Value) -> Vec<u8> {
     serde_json::to_vec(value).unwrap()

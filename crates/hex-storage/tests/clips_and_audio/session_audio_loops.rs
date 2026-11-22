@@ -1,10 +1,10 @@
 //! Strict schema49 shared receivers/cycles and factual schema47/48 migration.
+#[allow(dead_code)]
+use crate::common;
 use hex_project::{Command, Editor, SessionAudioLoop, SessionCellContent};
 use hex_storage::{decode, encode, load_with_token, save_new};
 use serde_json::{Value, json};
-#[allow(dead_code)]
-mod common;
-const OLD: &[u8] = include_bytes!("fixtures/native-sources/schema47-console-one-shot.json");
+const OLD: &[u8] = include_bytes!("../fixtures/native-sources/schema47-console-one-shot.json");
 fn fixture() -> Editor {
     Editor::new(decode(OLD).unwrap(), 16).unwrap()
 }
@@ -149,7 +149,8 @@ fn current_cycle_inventory_is_mandatory_ordered_complete_and_bounded_by_source()
     assert!(decode(duplicate.as_bytes()).is_err());
 }
 
-const OLD48: &[u8] = include_bytes!("fixtures/native-sources/schema48-console-loop-677a00f4.json");
+const OLD48: &[u8] =
+    include_bytes!("../fixtures/native-sources/schema48-console-loop-677a00f4.json");
 
 #[test]
 fn authentic_schema48_migrates_complete_loop_and_singleton_source_without_rewriting_bytes() {

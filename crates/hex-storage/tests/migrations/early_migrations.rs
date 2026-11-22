@@ -1,90 +1,90 @@
 //! Actual early public writers, plus frozen original-reader oracles for1–12.
 //! Fixture provenance distinguishes these two forms of historical evidence.
+use crate::common;
 use hex_project::{Command, Editor};
 use hex_storage::{decode, encode};
 use serde_json::{Value, json};
-mod common;
 
 const WRITERS: &[&[u8]] = &[
-    include_bytes!("fixtures/early/schema13-hybrid-89674b36.json"),
-    include_bytes!("fixtures/early/schema14-effects-9efed7e1.json"),
-    include_bytes!("fixtures/early/schema15-instrument-a5de1baa.json"),
-    include_bytes!("fixtures/early/schema16-position-65410c68.json"),
-    include_bytes!("fixtures/early/schema17-returns-583bfdc1.json"),
-    include_bytes!("fixtures/early/schema18-provenance-173482a3.json"),
-    include_bytes!("fixtures/early/schema18-output-dc6c050a.json"),
-    include_bytes!("fixtures/early/schema20-inline-gain-b9274930.json"),
-    include_bytes!("fixtures/early/schema21-inline-edit-a9da374e.json"),
-    include_bytes!("fixtures/early/schema20-session-audio-b9274930.json"),
-    include_bytes!("fixtures/early/schema21-session-audio-a9da374e.json"),
-    include_bytes!("fixtures/early/schema22-touch-60c88034.json"),
-    include_bytes!("fixtures/early/schema23-two-trim-c3076a24.json"),
-    include_bytes!("fixtures/early/schema23-combined-3c7c786b.json"),
-    include_bytes!("fixtures/early/schema24-routes-f7c73dd0.json"),
-    include_bytes!("fixtures/early/schema25-audio-e9736fce.json"),
-    include_bytes!("fixtures/early/schema26-names-9f381a6f.json"),
-    include_bytes!("fixtures/early/schema26-events-309d41ae.json"),
-    include_bytes!("fixtures/early/schema27-appearance-e409a8f2.json"),
-    include_bytes!("fixtures/early/schema27-named-events-d8922776.json"),
-    include_bytes!("fixtures/early/schema27-named-fades-0298bf88.json"),
-    include_bytes!("fixtures/early/schema28-appearance-events-819a4cc4.json"),
-    include_bytes!("fixtures/early/schema28-appearance-fades-e50ffea3.json"),
-    include_bytes!("fixtures/early/schema29-combined-caed5306.json"),
-    include_bytes!("fixtures/early/schema29-sample-bpm-a0cedd1d.json"),
-    include_bytes!("fixtures/lineages/main19.json"),
-    include_bytes!("fixtures/lineages/foundation19.json"),
-    include_bytes!("fixtures/lineages/foundation20.json"),
-    include_bytes!("fixtures/lineages/foundation21.json"),
-    include_bytes!("fixtures/lineages/foundation22.json"),
+    include_bytes!("../fixtures/early/schema13-hybrid-89674b36.json"),
+    include_bytes!("../fixtures/early/schema14-effects-9efed7e1.json"),
+    include_bytes!("../fixtures/early/schema15-instrument-a5de1baa.json"),
+    include_bytes!("../fixtures/early/schema16-position-65410c68.json"),
+    include_bytes!("../fixtures/early/schema17-returns-583bfdc1.json"),
+    include_bytes!("../fixtures/early/schema18-provenance-173482a3.json"),
+    include_bytes!("../fixtures/early/schema18-output-dc6c050a.json"),
+    include_bytes!("../fixtures/early/schema20-inline-gain-b9274930.json"),
+    include_bytes!("../fixtures/early/schema21-inline-edit-a9da374e.json"),
+    include_bytes!("../fixtures/early/schema20-session-audio-b9274930.json"),
+    include_bytes!("../fixtures/early/schema21-session-audio-a9da374e.json"),
+    include_bytes!("../fixtures/early/schema22-touch-60c88034.json"),
+    include_bytes!("../fixtures/early/schema23-two-trim-c3076a24.json"),
+    include_bytes!("../fixtures/early/schema23-combined-3c7c786b.json"),
+    include_bytes!("../fixtures/early/schema24-routes-f7c73dd0.json"),
+    include_bytes!("../fixtures/early/schema25-audio-e9736fce.json"),
+    include_bytes!("../fixtures/early/schema26-names-9f381a6f.json"),
+    include_bytes!("../fixtures/early/schema26-events-309d41ae.json"),
+    include_bytes!("../fixtures/early/schema27-appearance-e409a8f2.json"),
+    include_bytes!("../fixtures/early/schema27-named-events-d8922776.json"),
+    include_bytes!("../fixtures/early/schema27-named-fades-0298bf88.json"),
+    include_bytes!("../fixtures/early/schema28-appearance-events-819a4cc4.json"),
+    include_bytes!("../fixtures/early/schema28-appearance-fades-e50ffea3.json"),
+    include_bytes!("../fixtures/early/schema29-combined-caed5306.json"),
+    include_bytes!("../fixtures/early/schema29-sample-bpm-a0cedd1d.json"),
+    include_bytes!("../fixtures/lineages/main19.json"),
+    include_bytes!("../fixtures/lineages/foundation19.json"),
+    include_bytes!("../fixtures/lineages/foundation20.json"),
+    include_bytes!("../fixtures/lineages/foundation21.json"),
+    include_bytes!("../fixtures/lineages/foundation22.json"),
 ];
 const READERS: &[(&[u8], &[u8])] = &[
     (
-        include_bytes!("fixtures/early/schema1-reader-89674b36.json"),
-        include_bytes!("fixtures/early/schema1-oracle13-89674b36.json"),
+        include_bytes!("../fixtures/early/schema1-reader-89674b36.json"),
+        include_bytes!("../fixtures/early/schema1-oracle13-89674b36.json"),
     ),
     (
-        include_bytes!("fixtures/early/schema2-reader-89674b36.json"),
-        include_bytes!("fixtures/early/schema2-oracle13-89674b36.json"),
+        include_bytes!("../fixtures/early/schema2-reader-89674b36.json"),
+        include_bytes!("../fixtures/early/schema2-oracle13-89674b36.json"),
     ),
     (
-        include_bytes!("fixtures/early/schema3-reader-89674b36.json"),
-        include_bytes!("fixtures/early/schema3-oracle13-89674b36.json"),
+        include_bytes!("../fixtures/early/schema3-reader-89674b36.json"),
+        include_bytes!("../fixtures/early/schema3-oracle13-89674b36.json"),
     ),
     (
-        include_bytes!("fixtures/early/schema4-reader-89674b36.json"),
-        include_bytes!("fixtures/early/schema4-oracle13-89674b36.json"),
+        include_bytes!("../fixtures/early/schema4-reader-89674b36.json"),
+        include_bytes!("../fixtures/early/schema4-oracle13-89674b36.json"),
     ),
     (
-        include_bytes!("fixtures/early/schema5-reader-89674b36.json"),
-        include_bytes!("fixtures/early/schema5-oracle13-89674b36.json"),
+        include_bytes!("../fixtures/early/schema5-reader-89674b36.json"),
+        include_bytes!("../fixtures/early/schema5-oracle13-89674b36.json"),
     ),
     (
-        include_bytes!("fixtures/early/schema6-reader-89674b36.json"),
-        include_bytes!("fixtures/early/schema6-oracle13-89674b36.json"),
+        include_bytes!("../fixtures/early/schema6-reader-89674b36.json"),
+        include_bytes!("../fixtures/early/schema6-oracle13-89674b36.json"),
     ),
     (
-        include_bytes!("fixtures/early/schema7-reader-89674b36.json"),
-        include_bytes!("fixtures/early/schema7-oracle13-89674b36.json"),
+        include_bytes!("../fixtures/early/schema7-reader-89674b36.json"),
+        include_bytes!("../fixtures/early/schema7-oracle13-89674b36.json"),
     ),
     (
-        include_bytes!("fixtures/early/schema8-reader-89674b36.json"),
-        include_bytes!("fixtures/early/schema8-oracle13-89674b36.json"),
+        include_bytes!("../fixtures/early/schema8-reader-89674b36.json"),
+        include_bytes!("../fixtures/early/schema8-oracle13-89674b36.json"),
     ),
     (
-        include_bytes!("fixtures/early/schema9-reader-89674b36.json"),
-        include_bytes!("fixtures/early/schema9-oracle13-89674b36.json"),
+        include_bytes!("../fixtures/early/schema9-reader-89674b36.json"),
+        include_bytes!("../fixtures/early/schema9-oracle13-89674b36.json"),
     ),
     (
-        include_bytes!("fixtures/early/schema10-reader-89674b36.json"),
-        include_bytes!("fixtures/early/schema10-oracle13-89674b36.json"),
+        include_bytes!("../fixtures/early/schema10-reader-89674b36.json"),
+        include_bytes!("../fixtures/early/schema10-oracle13-89674b36.json"),
     ),
     (
-        include_bytes!("fixtures/early/schema11-reader-89674b36.json"),
-        include_bytes!("fixtures/early/schema11-oracle13-89674b36.json"),
+        include_bytes!("../fixtures/early/schema11-reader-89674b36.json"),
+        include_bytes!("../fixtures/early/schema11-oracle13-89674b36.json"),
     ),
     (
-        include_bytes!("fixtures/early/schema12-reader-89674b36.json"),
-        include_bytes!("fixtures/early/schema12-oracle13-89674b36.json"),
+        include_bytes!("../fixtures/early/schema12-reader-89674b36.json"),
+        include_bytes!("../fixtures/early/schema12-oracle13-89674b36.json"),
     ),
 ];
 fn value(bytes: &[u8]) -> Value {
@@ -287,25 +287,25 @@ fn historical_files_refuse_unknown_duplicate_missing_and_partial_inventories() {
         }
     }
     let mut mixed = value(include_bytes!(
-        "fixtures/early/schema26-names-9f381a6f.json"
+        "../fixtures/early/schema26-names-9f381a6f.json"
     ));
     mixed["audio_event_state"] = json!([]);
     assert!(decode(&bytes(&mixed)).is_err());
     let mut mixed = value(include_bytes!(
-        "fixtures/early/schema27-named-events-d8922776.json"
+        "../fixtures/early/schema27-named-events-d8922776.json"
     ));
     mixed["fade_shapes"] = json!([]);
     assert!(decode(&bytes(&mixed)).is_err());
     let mut mixed = value(include_bytes!(
-        "fixtures/early/schema28-appearance-fades-e50ffea3.json"
+        "../fixtures/early/schema28-appearance-fades-e50ffea3.json"
     ));
     mixed["audio_event_state"] = json!([]);
     assert!(decode(&bytes(&mixed)).is_err());
-    let mut mixed = value(include_bytes!("fixtures/lineages/foundation19.json"));
+    let mut mixed = value(include_bytes!("../fixtures/lineages/foundation19.json"));
     mixed.as_object_mut().unwrap().remove("routing");
     assert!(decode(&bytes(&mixed)).is_err());
     let mut partial = value(include_bytes!(
-        "fixtures/early/schema22-touch-60c88034.json"
+        "../fixtures/early/schema22-touch-60c88034.json"
     ));
     partial["tracks"][0]
         .as_object_mut()
@@ -349,7 +349,7 @@ fn historical_load_and_save_as_keep_original_bytes_and_tokens() {
 fn source_bearing_project_refuses_schema22_and_current_format_preserves_gain_history() {
     use hex_project::{BeatTime, GainTouchContext, GainTouchSpan, GainTouchStep, Project};
     let base = decode(include_bytes!(
-        "fixtures/early/schema22-touch-60c88034.json"
+        "../fixtures/early/schema22-touch-60c88034.json"
     ))
     .unwrap();
     let b = |n| BeatTime::from_quarters(n).unwrap();
@@ -409,7 +409,7 @@ fn source_bearing_project_refuses_schema22_and_current_format_preserves_gain_his
 
 #[test]
 fn early_nested_metadata_requires_the_exact_evidenced_wire_shape() {
-    let fixture = include_bytes!("fixtures/early/schema21-inline-edit-a9da374e.json");
+    let fixture = include_bytes!("../fixtures/early/schema21-inline-edit-a9da374e.json");
     let original = value(fixture);
     for field in ["domain", "view_start", "view_end", "musical_start_raw"] {
         let mut bad = original.clone();
@@ -438,7 +438,7 @@ fn early_nested_metadata_requires_the_exact_evidenced_wire_shape() {
     );
     assert!(decode(duplicate.as_bytes()).is_err());
     let mut mixed = value(include_bytes!(
-        "fixtures/early/schema29-sample-bpm-a0cedd1d.json"
+        "../fixtures/early/schema29-sample-bpm-a0cedd1d.json"
     ));
     let mut old_edit = mixed["audio_clip_state"][0]["audio_edit"].clone();
     old_edit["domain"]
@@ -465,7 +465,7 @@ fn early_nested_metadata_requires_the_exact_evidenced_wire_shape() {
     bad["assets"] = json!(vec![Value::Null; hex_project::MAX_ASSETS + 1]);
     assert!(decode(&bytes(&bad)).is_err());
     let mut bad = value(include_bytes!(
-        "fixtures/early/schema22-touch-60c88034.json"
+        "../fixtures/early/schema22-touch-60c88034.json"
     ));
     bad["tracks"][0]["gain_envelope"] = json!(vec![
         json!({"beat_raw":0,"gain":1.0,"outgoing":"step"});
@@ -477,8 +477,8 @@ fn early_nested_metadata_requires_the_exact_evidenced_wire_shape() {
 #[test]
 fn original_empty_inline_audio_writers_have_unambiguous_complete_envelopes() {
     for fixture in [
-        include_bytes!("fixtures/early/schema20-empty-b9274930.json").as_slice(),
-        include_bytes!("fixtures/early/schema21-empty-a9da374e.json").as_slice(),
+        include_bytes!("../fixtures/early/schema20-empty-b9274930.json").as_slice(),
+        include_bytes!("../fixtures/early/schema21-empty-a9da374e.json").as_slice(),
     ] {
         let project = decode(fixture).unwrap();
         assert!(project.tracks().is_empty());

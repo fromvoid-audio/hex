@@ -242,3 +242,59 @@ impl Project {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Command, Created, Editor};
+    use std::path::PathBuf;
+
+    #[test]
+    fn sorted_disjoint_accepts_adjacent_intervals_and_rejects_overlap() {
+        let mut adjacent = [(48_000, 96_000), (0, 48_000)];
+        assert!(sorted_disjoint(&mut adjacent).is_ok());
+        assert_eq!(adjacent, [(0, 48_000), (48_000, 96_000)]);
+
+        let mut overlapping = [(0, 48_000), (24_000, 72_000)];
+        assert!(sorted_disjoint(&mut overlapping).is_err());
+    }
+
+    #[test]
+    fn validate_arrangement_occupancy_rejects_unramped_audio_overlap() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: "a".into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: PathBuf::from("a.wav"),
+                sample_rate: 48_000,
+                frames: 96_000,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        editor
+            .execute(Command::PlaceClip {
+                track,
+                asset,
+                start: 0,
+                duration: 48_000,
+                source_offset: 0,
+                source_length: 48_000,
+                looping: false,
+            })
+            .unwrap();
+        assert!(editor.project().validate_arrangement_occupancy().is_ok());
+        let mut overlapping = editor.project().clone();
+        let mut second = overlapping.tracks[0].content.audio_clips[0].clone();
+        second.id = crate::ClipId(999);
+        second.start = 24_000;
+        overlapping.tracks[0].content.audio_clips.push(second);
+        assert!(overlapping.validate_arrangement_occupancy().is_err());
+    }
+}

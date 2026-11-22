@@ -60,3 +60,22 @@ impl Project {
         self.import_provenance.as_ref()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn import_provenance_validates_kind_version_and_byte_bounds() {
+        assert!(ImportProvenance::new("unknown", 1, 1, vec![1]).is_err());
+        assert!(ImportProvenance::new("ableton-live-set", 2, 1, vec![1]).is_err());
+        assert!(ImportProvenance::new("ableton-live-set", 1, 2, vec![1]).is_err());
+        assert!(ImportProvenance::new("ableton-live-set", 1, 1, Vec::new()).is_err());
+
+        let prov = ImportProvenance::new("ableton-live-set", 1, 1, b"<Ableton/>".to_vec()).unwrap();
+        assert_eq!(prov.kind(), "ableton-live-set");
+        assert_eq!(prov.version(), 1);
+        assert_eq!(prov.adapter_version(), 1);
+        assert_eq!(prov.original_bytes(), b"<Ableton/>");
+    }
+}
