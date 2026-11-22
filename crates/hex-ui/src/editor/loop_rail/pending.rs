@@ -169,7 +169,7 @@ impl EditorView {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "ui-test-support"))]
     pub(in crate::editor) fn pending_loop_has_focus_intent(&self) -> bool {
         self.pending_loop
             .is_some_and(|pending| pending.focus_intent.is_some())
