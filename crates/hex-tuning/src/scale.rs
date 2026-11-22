@@ -124,6 +124,7 @@ impl Scale {
         self.count = 7;
         self.period_cents = 1200.0;
         self.cents[..7].copy_from_slice(&[0.0, 200.0, 400.0, 500.0, 700.0, 900.0, 1100.0]);
+        self.cents[7..].fill(0.0);
         self.root_degree = 0;
     }
 
@@ -144,6 +145,7 @@ impl Scale {
         for (index, ratio) in ratios.into_iter().enumerate() {
             self.cents[index] = (1200.0 * ratio.log2()) as f32;
         }
+        self.cents[7..].fill(0.0);
     }
 
     /// Reset the count and pitches to equal divisions.
@@ -773,5 +775,31 @@ mod tests {
         assert_eq!((point.fifths, point.thirds), (1, 0));
         assert_eq!(point.ratio(), (3, 2));
         assert!((error + 1.955).abs() < 0.01);
+    }
+
+    #[test]
+    fn major_tet_and_just_major_zero_trailing_cents_and_round_trip_cleanly() {
+        let mut major = Scale::equal(12);
+        assert!(major.cents()[7..12].iter().any(|&c| c != 0.0));
+        major.set_major_tet();
+        assert_eq!(major, Scale::default());
+        assert!(major.cents()[7..].iter().all(|&c| c == 0.0));
+
+        let encoded = crate::preset::encode("major", major).unwrap();
+        let decoded = crate::preset::decode(&encoded).unwrap();
+        assert_eq!(decoded.scale, Scale::default());
+        assert!(decoded.scale.cents()[7..].iter().all(|&c| c == 0.0));
+
+        let mut just = Scale::equal(12);
+        just.set_just_major();
+        let mut clean_just = Scale::default();
+        clean_just.set_just_major();
+        assert_eq!(just, clean_just);
+        assert!(just.cents()[7..].iter().all(|&c| c == 0.0));
+
+        let encoded_just = crate::preset::encode("just", just).unwrap();
+        let decoded_just = crate::preset::decode(&encoded_just).unwrap();
+        assert_eq!(decoded_just.scale, clean_just);
+        assert!(decoded_just.scale.cents()[7..].iter().all(|&c| c == 0.0));
     }
 }

@@ -178,6 +178,9 @@ pub fn pair_fit(interval: f32) -> f32 {
             })
             .collect()
     });
+    if !interval.is_finite() {
+        return 0.0;
+    }
     let position = interval.clamp(0.0, 2400.0);
     let lower = position.floor() as usize;
     let upper = (lower + 1).min(2400);
@@ -187,6 +190,13 @@ pub fn pair_fit(interval: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn non_finite_intervals_return_zero_fit() {
+        assert_eq!(pair_fit(f32::NAN), 0.0);
+        assert_eq!(pair_fit(f32::INFINITY), 0.0);
+        assert_eq!(pair_fit(f32::NEG_INFINITY), 0.0);
+    }
 
     #[test]
     fn exact_simple_ratios_score_better_than_nearby_mistunings() {
