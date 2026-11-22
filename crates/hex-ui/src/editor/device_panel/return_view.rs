@@ -293,6 +293,7 @@ pub(super) fn render_return_effect(
             cx.notify();
         })),
     );
+    let output = super::device_meter::render(view, device, cx);
     let rendered = match &device_view {
         _ if view.device_panel.collapsed.contains(&id) => fold::frame(
             view,
@@ -326,7 +327,7 @@ pub(super) fn render_return_effect(
             } else if device_view.type_id.as_str() == Ok("hex.limiter") {
                 super::limiter_panel::render_body(view, cx, device, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.compressor") {
-                super::compressor_panel::render_body(view, cx, id, device.state(), device_view)
+                super::compressor_panel::render_body(view, cx, device, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.saturator") {
                 super::saturator_panel::render_body(view, cx, id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.reverb") {
@@ -453,5 +454,5 @@ pub(super) fn render_return_effect(
             cx,
         ))
         .child(rendered)
-        .child(super::device_meter::render(view, device, cx))
+        .child(output)
 }

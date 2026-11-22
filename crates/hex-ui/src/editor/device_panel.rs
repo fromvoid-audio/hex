@@ -202,6 +202,8 @@ pub(super) struct DevicePanelState {
     eq8_responses: HashMap<DeviceId, eq8_panel::ResponseCache>,
     saturator_previews: HashMap<DeviceId, saturator_panel::PreviewCache>,
     compressor_previews: HashMap<DeviceId, compressor_panel::PreviewCache>,
+    compressor_modes: HashMap<DeviceId, compressor_panel::display::Mode>,
+    compressor_displays: HashMap<DeviceId, compressor_panel::display::DisplayState>,
     filter_previews: HashMap<DeviceId, filter_panel::Preview>,
     pub(super) compressor_sidechains: compressor_panel::sidechain::Controls,
     auto_pan_previews: HashMap<DeviceId, auto_pan_panel::PreviewCache>,
@@ -713,6 +715,10 @@ fn clear_owner_state(
     view.device_panel.saturator_previews.clear();
     view.device_panel.compressor_previews.clear();
     view.device_panel.filter_previews.clear();
+    view.device_panel.compressor_displays.clear();
+    if full_reset {
+        view.device_panel.compressor_modes.clear();
+    }
     view.device_panel.auto_pan_previews.clear();
     view.device_panel.reverb_previews.clear();
     view.device_panel.overdrive_previews.clear();
@@ -1838,6 +1844,12 @@ fn retire_transfer_previews(
     panel.compressor_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.compressor"))
     });
+    panel.compressor_modes.retain(|device, _| {
+        type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.compressor"))
+    });
+    panel.compressor_displays.retain(|device, _| {
+        type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.compressor"))
+    });
     panel.overdrive_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.overdrive"))
     });
@@ -2691,6 +2703,7 @@ fn render_effect(
     );
     let leading = bypass_action(view, device, NativeDeviceClass::Effect, cx);
     let header_actions = device_actions(view, device, selected, device_view.is_ok(), cx);
+    let output = device_meter::render(view, device, cx);
     let rendered = match &device_view {
         _ if view.device_panel.collapsed.contains(&device_id) => fold::frame(
             view,
@@ -2724,7 +2737,7 @@ fn render_effect(
             } else if device_view.type_id.as_str() == Ok("hex.limiter") {
                 limiter_panel::render_body(view, cx, device, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.compressor") {
-                compressor_panel::render_body(view, cx, device_id, device.state(), device_view)
+                compressor_panel::render_body(view, cx, device, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.saturator") {
                 saturator_panel::render_body(view, cx, device_id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.reverb") {
@@ -2852,7 +2865,7 @@ fn render_effect(
             cx,
         ))
         .child(rendered)
-        .child(device_meter::render(view, device, cx))
+        .child(output)
 }
 
 fn duplicate_device_action(
