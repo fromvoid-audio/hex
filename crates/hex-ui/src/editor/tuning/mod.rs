@@ -1244,6 +1244,7 @@ impl EditorView {
                             },
                             self.tuning.value.enabled(),
                         )
+                        .debug_selector(|| "tuning-enable".into())
                         .on_click(cx.listener(|view, _, _, cx| {
                             view.tuning_change(
                                 view.tuning.value.with_enabled(!view.tuning.value.enabled()),
