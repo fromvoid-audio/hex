@@ -15,6 +15,7 @@ gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "
 hex-devices = { path = "../hex-devices" }
 hex-preferences = { path = "../hex-preferences" }
 hex-project = { path = "../hex-project" }
+hex-ui-model = { path = "../hex-ui-model" }
 hex-widgets = { path = "../hex-widgets" }
 
 [lints]

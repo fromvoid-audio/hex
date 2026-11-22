@@ -1,0 +1,12 @@
+[package]
+name = "hex-ui-model"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+hex-project = { path = "../hex-project" }
+
+[lints]
+workspace = true
