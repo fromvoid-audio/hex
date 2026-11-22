@@ -33,8 +33,9 @@
 //! access, so it adds no output latency or per-voice state.
 //!
 //! [`warm`] builds the bank (about 0.5 MB, once per process) on control during
-//! plan preparation. Render-time access is one acquire load and bounds-checked
-//! slices, with no allocation, lock or wait.
+//! plan preparation and returns a `&'static Bank` stored on prepared plans and
+//! voice kernels. Render-time tap lookup reads that reference directly with
+//! bounds-checked slices and no `OnceLock` access, allocation, lock or wait.
 //!
 //! Saved projects: the authored sampler state and its schema are unchanged.
 //! Pitched-up voices in existing projects play with less aliasing; unity and
@@ -58,7 +59,7 @@ const CLASSES: usize = 60;
 const PHASES: usize = 32;
 
 /// Precomputed polyphase rows for every rate class.
-struct Bank {
+pub(super) struct Bank {
     /// Rows of `taps` weights, `PHASES + 1` rows per class, classes in order.
     weights: Box<[f32]>,
     /// Sum of each row, for normalization.
@@ -71,8 +72,8 @@ static BANK: OnceLock<Bank> = OnceLock::new();
 
 /// Build the static bank. Call on control before any voice renders; the
 /// bank is built once per process and never freed.
-pub(super) fn warm() {
-    bank();
+pub(super) fn warm() -> &'static Bank {
+    bank()
 }
 
 fn class_rate(class: usize) -> f64 {
@@ -162,11 +163,29 @@ fn bessel_i0(x: f64) -> f64 {
     sum
 }
 
-/// Per-voice kernel: the rate class chosen on control from the voice step.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Per-voice kernel: the rate class chosen on control from the voice step,
+/// paired with the pre-warmed static polyphase bank.
+#[derive(Clone, Copy)]
 pub(super) struct Kernel {
     class: usize,
+    bank: &'static Bank,
 }
+
+impl std::fmt::Debug for Kernel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Kernel")
+            .field("class", &self.class)
+            .finish()
+    }
+}
+
+impl PartialEq for Kernel {
+    fn eq(&self, other: &Self) -> bool {
+        self.class == other.class && std::ptr::eq(self.bank, other.bank)
+    }
+}
+
+impl Eq for Kernel {}
 
 /// One output frame's taps: two adjacent phase rows and their blend.
 /// Weight of tap `i` is `(1 - blend) * lower[i] + blend * upper[i]`, over
@@ -184,20 +203,26 @@ impl Kernel {
     /// `None` for unity or slower playback, which keeps linear interpolation.
     /// Otherwise the class at or above `rate` (its cutoff is never higher than
     /// the voice needs), capped at the highest class.
-    pub(super) fn for_rate(rate: f64) -> Option<Self> {
+    pub(super) fn for_rate_with_bank(rate: f64, bank: &'static Bank) -> Option<Self> {
         if !rate.is_finite() || rate <= 1.0 {
             return None;
         }
         let class = (rate.log2() * CLASSES_PER_OCTAVE - 1e-9).ceil();
         Some(Self {
             class: (class.max(1.0) as usize).min(CLASSES),
+            bank,
         })
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_rate(rate: f64) -> Option<Self> {
+        Self::for_rate_with_bank(rate, bank())
     }
 
     /// Taps for a source position with `fraction` in [0, 1).
     #[inline]
     pub(super) fn taps(self, fraction: f64) -> Option<Taps> {
-        let bank = bank();
+        let bank = self.bank;
         let &(offset, taps) = bank.classes.get(self.class)?;
         let scaled = (fraction * PHASES as f64).clamp(0.0, PHASES as f64);
         let phase = (scaled as usize).min(PHASES - 1);

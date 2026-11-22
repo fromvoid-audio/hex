@@ -331,10 +331,10 @@ impl SourceEffectStages {
     /// the old graph on control. An unpaired candidate keeps its fresh history.
     pub(crate) fn continue_from(&mut self, previous: &mut Self, transfer: SourceEffectTransfer) {
         for (stage, donor) in self.chains.iter_mut().zip(transfer.donors) {
-            if let (Some(stage), Some(index)) = (stage, donor) {
-                let old = previous.chains[index]
-                    .as_mut()
-                    .expect("source effect handoff preflight matched this donor");
+            if let (Some(stage), Some(old)) = (
+                stage,
+                donor.and_then(|index| previous.chains.get_mut(index).and_then(Option::as_mut)),
+            ) {
                 stage.chain.transfer_history_from(&mut old.chain);
             }
         }
