@@ -340,7 +340,7 @@ pub(super) fn render(
     view: &mut EditorView,
     device: &hex_project::Device,
     cx: &mut Context<EditorView>,
-) -> impl IntoElement {
+) -> Stateful<Div> {
     let (levels, held, tooltip_peaks) = sample_levels(view, device);
     let (input_trim, output_trim) = (
         device.state().input_gain_db(),
