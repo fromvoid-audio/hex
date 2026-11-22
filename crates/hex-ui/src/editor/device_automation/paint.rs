@@ -259,6 +259,7 @@ fn plot(
     let revision = state.revision;
     entry.base = view.live_device_automation_base(&entry);
     let base = entry.base;
+    let base_display = entry.display_position(base);
     let entity = cx.entity();
     let label = entry.label.clone();
     div()
@@ -302,7 +303,9 @@ fn plot(
                                 as f32
                                 * rect[2]
                     };
-                    let y = |value: f32| rect[1] + (1.0 - value) * (rect[3] - 8.0) + 4.0;
+                    let y = |value: f32| {
+                        rect[1] + (1.0 - entry.display_position(value)) * (rect[3] - 8.0) + 4.0
+                    };
                     let xy = |beat: BeatTime, value: f32| -> Option<Point<Pixels>> {
                         Some(point(px(x(frame(beat)?)), px(y(value))))
                     };
@@ -318,36 +321,69 @@ fn plot(
                         );
                         let first_index = range.start;
                         let points = all_points.get(range).unwrap_or_default();
-                        if let Some(first) = points.first() {
+                        if !points.is_empty() {
                             let selected = lanes.selected.as_ref();
-                            let paths = super::plot_geometry::reduce(
-                                points.iter().enumerate().filter_map(|(index, value)| {
-                                    let position = xy(value.beat, value.value.get())?;
-                                    Some(super::plot_geometry::PlotPoint {
-                                        x: f32::from(position.x),
-                                        y: f32::from(position.y),
-                                        step: value.outgoing == AutomationInterpolation::Step,
-                                        selected: selected.is_some_and(|selected| {
-                                            selected.contains(
-                                                target,
-                                                PointKey::at(all_points, first_index + index),
-                                            )
-                                        }),
-                                    })
-                                }),
-                                entry.is_discrete(),
-                                window.scale_factor(),
-                            );
+                            let paths = if entry.is_display_linear() {
+                                super::plot_geometry::reduce(
+                                    points.iter().enumerate().filter_map(|(index, value)| {
+                                        let position = xy(value.beat, value.value.get())?;
+                                        Some(super::plot_geometry::PlotPoint {
+                                            x: f32::from(position.x),
+                                            y: f32::from(position.y),
+                                            step: value.outgoing == AutomationInterpolation::Step,
+                                            selected: selected.is_some_and(|selected| {
+                                                selected.contains(
+                                                    target,
+                                                    PointKey::at(all_points, first_index + index),
+                                                )
+                                            }),
+                                        })
+                                    }),
+                                    entry.is_discrete(),
+                                    window.scale_factor(),
+                                )
+                            } else {
+                                super::plot_geometry::reduce_curved(
+                                    points.iter().enumerate().filter_map(|(index, value)| {
+                                        let canonical = value.value.get();
+                                        let position = xy(value.beat, canonical)?;
+                                        Some(super::plot_geometry::CurvedPlotPoint {
+                                            x: f32::from(position.x),
+                                            canonical,
+                                            y: f32::from(position.y),
+                                            step: value.outgoing == AutomationInterpolation::Step,
+                                            selected: selected.is_some_and(|selected| {
+                                                selected.contains(
+                                                    target,
+                                                    PointKey::at(all_points, first_index + index),
+                                                )
+                                            }),
+                                        })
+                                    }),
+                                    entry.is_discrete(),
+                                    window.scale_factor(),
+                                    rect[0],
+                                    rect[0] + rect[2],
+                                    entry.bipolar_zero_canonical(),
+                                    y,
+                                )
+                            };
                             let mut path = PathBuilder::stroke(px(1.5));
-                            path.move_to(point(
-                                px(rect[0]),
-                                px(rect[1] + (1.0 - first.value.get()) * (rect[3] - 8.0) + 4.0),
-                            ));
-                            for &(x, y) in &paths.line {
-                                path.line_to(point(px(x), px(y)));
-                            }
-                            if let Some(&(_, y)) = paths.line.last() {
-                                path.line_to(point(px(rect[0] + rect[2]), px(y)));
+                            if let Some(&(first_x, first_y)) = paths.line.first() {
+                                if first_x > rect[0] {
+                                    path.move_to(point(px(rect[0]), px(first_y)));
+                                    path.line_to(point(px(first_x), px(first_y)));
+                                } else {
+                                    path.move_to(point(px(first_x), px(first_y)));
+                                }
+                                for &(x, y) in &paths.line[1..] {
+                                    path.line_to(point(px(x), px(y)));
+                                }
+                                if let Some(&(last_x, last_y)) = paths.line.last()
+                                    && last_x < rect[0] + rect[2]
+                                {
+                                    path.line_to(point(px(rect[0] + rect[2]), px(last_y)));
+                                }
                             }
                             if let Ok(path) = path.build() {
                                 window.paint_path(path, color);
@@ -554,7 +590,7 @@ fn plot(
                             .left_0()
                             .right_0()
                             .h(px(0.0))
-                            .top(gpui::relative(1.0 - base.clamp(0.0, 1.0)))
+                            .top(gpui::relative(1.0 - base_display.clamp(0.0, 1.0)))
                             .debug_selector(move || {
                                 format!(
                                     "automation-dotted-{}-{}-{main}",
@@ -671,7 +707,7 @@ impl EditorView {
             .iter()
             .enumerate()
             .filter_map(|(index, value)| {
-                let [x, y] = point_position(&state.project, viewport, rect, value)?;
+                let [x, y] = point_position(&state.project, entry, viewport, rect, value)?;
                 let dx = (x - pos[0]).abs();
                 let dy = (y - pos[1]).abs();
                 (dx <= 6.0 && dy <= 6.0).then_some((index, dx * dx + dy * dy))
@@ -972,7 +1008,8 @@ impl EditorView {
         }
         point.outgoing = draft.initial.outgoing;
         let beat_delta = i128::from(point.beat.raw()) - i128::from(draft.initial.beat.raw());
-        let value_delta = point.value.get() - draft.initial.value.get();
+        let display_delta = entry.display_position(point.value.get())
+            - entry.display_position(draft.initial.value.get());
         let mut candidate = Vec::with_capacity(draft.points.len());
         candidate.extend(
             draft
@@ -991,11 +1028,19 @@ impl EditorView {
             else {
                 return;
             };
-            let Some(value) = entry
-                .quantize((original.value.get() + value_delta).clamp(0.0, 1.0))
-                .and_then(|value| AutomationValue::new(value).ok())
-            else {
-                return;
+            let value = if display_delta == 0.0 {
+                original.value
+            } else {
+                let moved_display =
+                    (entry.display_position(original.value.get()) + display_delta).clamp(0.0, 1.0);
+                let Some(value) = entry
+                    .canonical_from_display(moved_display)
+                    .and_then(|value| entry.quantize(value))
+                    .and_then(|value| AutomationValue::new(value).ok())
+                else {
+                    return;
+                };
+                value
             };
             candidate.push((
                 index,
@@ -1031,8 +1076,9 @@ impl EditorView {
 }
 
 /// Pixel center of a painted point, or `None` outside the viewport.
-fn point_position(
+pub(super) fn point_position(
     project: &Project,
+    entry: &Entry,
     viewport: Viewport,
     rect: [f32; 4],
     point: &AutomationPoint,
@@ -1040,7 +1086,7 @@ fn point_position(
     let x = viewport.fraction(project.tempo_map().beat_to_frame(point.beat).ok()?)?;
     Some([
         rect[0] + x * rect[2],
-        rect[1] + (1.0 - point.value.get()) * (rect[3] - 8.0) + 4.0,
+        rect[1] + (1.0 - entry.display_position(point.value.get())) * (rect[3] - 8.0) + 4.0,
     ])
 }
 
@@ -1060,7 +1106,7 @@ fn pointer_beat(
     )
 }
 
-fn curve_insertion(
+pub(super) fn curve_insertion(
     project: &Project,
     entry: &Entry,
     points: &[AutomationPoint],
@@ -1079,7 +1125,7 @@ fn curve_insertion(
         entry.is_discrete(),
         entry.base,
     )?;
-    let y = rect[1] + (1.0 - at_pointer) * (rect[3] - 8.0) + 4.0;
+    let y = rect[1] + (1.0 - entry.display_position(at_pointer)) * (rect[3] - 8.0) + 4.0;
     if (y - pos[1]).abs() > 5.0 {
         return None;
     }
@@ -1104,7 +1150,7 @@ fn curve_insertion(
     })
 }
 
-fn pointer_value(
+pub(super) fn pointer_value(
     project: &Project,
     entry: &Entry,
     grid: super::super::musical_time::SnapGrid,
@@ -1122,8 +1168,8 @@ fn pointer_value(
         return None;
     }
     let beat = pointer_beat(project, grid, viewport, rect, pos[0])?;
-    let value =
-        entry.quantize((1.0 - (pos[1] - rect[1] - 4.0) / (rect[3] - 8.0)).clamp(0.0, 1.0))?;
+    let display = (1.0 - (pos[1] - rect[1] - 4.0) / (rect[3] - 8.0)).clamp(0.0, 1.0);
+    let value = entry.quantize(entry.canonical_from_display(display)?)?;
     Some(AutomationPoint {
         beat,
         value: AutomationValue::new(value).ok()?,

@@ -401,7 +401,7 @@ impl EditorView {
             .filter_map(|point| {
                 let frame = state.project.tempo_map().beat_to_frame(point.beat).ok()?;
                 let x = rect[0] + viewport.fraction(frame)? * rect[2];
-                let y = rect[1] + rect[3] * (1.0 - point.gain / 2.0);
+                let y = rect[1] + rect[3] * (1.0 - gain_display_position(point.gain));
                 ((pos[0] - x).abs() <= 6.0 && (pos[1] - y).abs() <= 6.0).then_some(*point)
             })
             .min_by_key(|point| if Some(point.beat) == selected { 0 } else { 1 });
@@ -482,6 +482,43 @@ fn pointer_beat(
     let beat = project.tempo_map().frame_to_beat(frame).ok()?;
     grid.snap_beat(project, beat, viewport, rect[2])
 }
+fn track_gain_display_spec() -> Option<hex_widgets::NumericSpec> {
+    hex_widgets::NumericSpec::new(
+        0.0,
+        2.0,
+        1.0,
+        hex_widgets::NumericScale::LinearAmplitudeDecibels,
+        1,
+        None::<&str>,
+    )
+    .ok()
+}
+
+/// Normalized vertical lane position (`0.0` bottom .. `1.0` top) matching
+/// `track_gain.rs`'s `NumericScale::LinearAmplitudeDecibels` fader scale.
+pub(super) fn gain_display_position(gain: f32) -> f32 {
+    if !gain.is_finite() {
+        return 0.0;
+    }
+    let clamped = f64::from(gain.clamp(0.0, 2.0));
+    track_gain_display_spec()
+        .and_then(|spec| spec.to_normalized(clamped).ok())
+        .map(|position| position.clamp(0.0, 1.0) as f32)
+        .unwrap_or((clamped / 2.0) as f32)
+}
+
+fn gain_from_display_position(display: f32) -> f32 {
+    if !display.is_finite() {
+        return 0.0;
+    }
+    let clamped = f64::from(display.clamp(0.0, 1.0));
+    track_gain_display_spec()
+        .and_then(|spec| spec.from_normalized(clamped).ok())
+        .map(|gain| (gain as f32).clamp(0.0, 2.0))
+        .unwrap_or((clamped * 2.0) as f32)
+}
+
 fn pointer_gain(rect: [f32; 4], y: f32) -> f32 {
-    ((1.0 - (y - rect[1]) / rect[3]) * 2.0).clamp(0.0, 2.0)
+    let display = (1.0 - (y - rect[1]) / rect[3]).clamp(0.0, 1.0);
+    gain_from_display_position(display)
 }

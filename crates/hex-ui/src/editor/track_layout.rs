@@ -1276,7 +1276,7 @@ mod tests {
         // The reverse order must also preserve the first draft. A press over
         // the sampler while automation owns the pointer cannot start text.
         let first_value = lane_points(&visual, &editor, device, target)[0].value.get();
-        let next = lane_value_point(&mut visual, device, target, 0.3, first_value);
+        let next = lane_value_point(&mut visual, &editor, device, target, 0.3, first_value);
         let sampler_at = visual.debug_bounds(selector).unwrap().center();
         visual.simulate_mouse_down(next, MouseButton::Left, CMD);
         editor.read_with(&visual, |view, _| {
