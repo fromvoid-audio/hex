@@ -1,5 +1,5 @@
 //! Scene duplication and ordering through the GPUI-facing worker contract.
-mod common;
+use crate::common;
 
 use common::wait;
 use hex_engine::playback::Playback;

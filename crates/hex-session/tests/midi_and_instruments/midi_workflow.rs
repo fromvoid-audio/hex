@@ -1,5 +1,5 @@
 //! Authoring and persistence through the same worker contract used by GPUI.
-mod common;
+use crate::common;
 
 use common::wait;
 use hex_project::{BeatTime, Command, Created};

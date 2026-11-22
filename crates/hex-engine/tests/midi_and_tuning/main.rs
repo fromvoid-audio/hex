@@ -1,0 +1,11 @@
+mod fm4_native_admission;
+mod midi_activity;
+mod midi_clip_preview;
+mod midi_compile;
+mod midi_source_prefix;
+mod midi_template;
+mod native_tuning_coverage;
+mod operator_native_admission;
+mod project_tuning;
+mod registered_instrument;
+mod tuning_admission;

@@ -1692,7 +1692,7 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
         tests = [
             {"package": "hex-devices", "lib": True, "filter": "compressor::"},
             {"package": "hex-engine", "lib": True, "filter": "compressor"},
-            {"package": "hex-engine", "test": "device_chain", "filter": ""},
+            {"package": "hex-engine", "test": "devices_and_automation", "filter": "device_chain::"},
             {"package": "hex-storage", "lib": True, "filter": "compressor"},
             {"package": "hex-audio", "lib": True, "filter": "compressor", "features": "allocation-probe"},
             {"package": "hex-audio", "test": "device_comparison", "filter": "", "features": "allocation-probe"},

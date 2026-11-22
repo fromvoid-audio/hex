@@ -1085,7 +1085,7 @@ class ScopeTests(unittest.TestCase):
         self.assertEqual(steps[len(ci.QUICK_STEPS)].step_id, "runner-tests")
         commands = [s.argv for s in steps]
         self.assertTrue(all(s.requires_tests for s in steps if s.argv[:2] == ("cargo", "test")))
-        self.assertTrue(any("device_chain" in a for a in commands))
+        self.assertTrue(any("devices_and_automation" in a and "device_chain::" in a for a in commands))
         self.assertTrue(any("allocation_probe_calibration" in a for a in commands))
         self.assertTrue(any("hex-storage" in a and "compressor" in a for a in commands))
         self.assertTrue(any("allocation-probe" in a and "compressor" in a for a in commands))
