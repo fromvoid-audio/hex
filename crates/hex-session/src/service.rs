@@ -1383,7 +1383,7 @@ pub enum Request {
     /// Desktop Save As with project-folder placement and managed samples.
     SaveProjectAs {
         path: PathBuf,
-        replace_existing: bool,
+        extension_added: bool,
     },
     SaveCurrent,
     /// Explicit user consent to lose older-reader compatibility through a schema
@@ -10080,8 +10080,8 @@ fn run_worker(
                         Request::SaveNew(path) => (path, None),
                         Request::SaveProjectAs {
                             path,
-                            replace_existing,
-                        } => (path, Some(replace_existing)),
+                            extension_added,
+                        } => (path, Some(extension_added)),
                         _ => continue,
                     };
                     // Earlier source intent may cancel the edit ahead of Save,
@@ -10113,10 +10113,10 @@ fn run_worker(
                                         .into(),
                                 );
                             }
-                            Ok(path) => match if let Some(replace_existing) = folder_layout {
+                            Ok(path) => match if let Some(extension_added) = folder_layout {
                                 project_save::save_as(
                                     path,
-                                    replace_existing,
+                                    extension_added,
                                     project,
                                     recovery.as_deref(),
                                     &save_cancellation,

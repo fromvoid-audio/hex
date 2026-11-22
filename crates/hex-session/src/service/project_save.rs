@@ -9,11 +9,27 @@ use std::path::{Path, PathBuf};
 
 pub(super) fn save_as(
     path: PathBuf,
-    replace_existing: bool,
+    extension_added: bool,
     project: Project,
     recovery_path: Option<&Path>,
     cancellation: &RequestCancellation,
 ) -> Result<(DocumentHandle, SaveCurrentCommit), String> {
+    let exists = match std::fs::symlink_metadata(&path) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(display(hex_storage::StorageError::Io(error))),
+    };
+    if extension_added && exists {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        return Err(format!(
+            "{} already exists · choose it by name to replace it",
+            hex_storage::text::verbatim(name)
+        ));
+    }
+    let replace_existing = exists;
     let destination = Destination::prepare(path, replace_existing).map_err(display)?;
     match destination {
         Destination::File(path) => {

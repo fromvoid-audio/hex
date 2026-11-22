@@ -295,9 +295,9 @@ impl EditorView {
     }
 
     fn begin_save_new(&mut self, path: PathBuf) {
-        // The OS replace prompt confirmed only the exact chosen path. The
-        // session replaces an existing file, so never let an appended
-        // extension silently retarget the save onto another existing file.
+        // The OS replace prompt confirmed only the exact chosen path. Pass
+        // `extension_added` to the session worker so the existence/collision
+        // check runs off the UI thread atomically with save admission.
         let extension_added = path.extension().is_none();
         let path = match prepare_save_path(path) {
             Ok(path) => path,
@@ -306,19 +306,9 @@ impl EditorView {
                 return;
             }
         };
-        let replace_existing = std::fs::symlink_metadata(&path).is_ok();
-        if extension_added && replace_existing {
-            let name = path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            self.error =
-                Some(format!("{name} already exists · choose it by name to replace it").into());
-            return;
-        }
         if self.enqueue_device_barrier(Request::SaveProjectAs {
             path,
-            replace_existing,
+            extension_added,
         }) {
             self.saving_project = true;
             self.status = "saving project as".into();
@@ -386,5 +376,17 @@ mod tests {
         let shown = crate::theme::text(&message);
         assert!(shown.contains(&name), "{shown}");
         assert!(shown.contains("choose a name of at most"), "{shown}");
+    }
+
+    #[test]
+    fn save_as_collision_message_preserves_mixed_case_filename_through_theme_text() {
+        let raw = format!(
+            "{} already exists · choose it by name to replace it",
+            hex_session::service::text::verbatim("MySong.hex")
+        );
+        assert_eq!(
+            crate::theme::text(&raw).as_ref(),
+            "MySong.hex already exists · choose it by name to replace it"
+        );
     }
 }

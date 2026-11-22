@@ -75,12 +75,12 @@ fn run(service: &Service, request: Request) -> Event {
     event
 }
 
-fn save_as(service: &Service, path: &Path, replace_existing: bool) -> Event {
+fn save_as(service: &Service, path: &Path) -> Event {
     run(
         service,
         Request::SaveProjectAs {
             path: path.to_path_buf(),
-            replace_existing,
+            extension_added: false,
         },
     )
 }
@@ -122,7 +122,7 @@ fn desktop_save_collects_before_and_after_bounces_and_reopens_a_moved_folder() {
 
     let root = files.0.join("Song");
     let saved = root.join("Song.hex");
-    let first = save_as(&service, &files.0.join("Song.hex"), false);
+    let first = save_as(&service, &files.0.join("Song.hex"));
     assert_eq!(first.state.document_path.as_deref(), Some(saved.as_path()));
     assert!(root.join("samples").is_dir());
     assert!(!files.0.join("Song.hex").exists());
@@ -147,13 +147,13 @@ fn desktop_save_collects_before_and_after_bounces_and_reopens_a_moved_folder() {
         Some(saved.as_path())
     );
     let version = root.join("Song v2.hex");
-    let updated = save_as(&service, &version, false);
+    let updated = save_as(&service, &version);
     assert_eq!(
         updated.state.document_path.as_deref(),
         Some(version.as_path())
     );
     assert!(!root.join("Song v2").exists());
-    save_as(&service, &saved, true);
+    save_as(&service, &saved);
     let moved = files.0.join("Moved Song");
     drop(service);
     fs::rename(&root, &moved).unwrap();
@@ -175,4 +175,48 @@ fn desktop_save_collects_before_and_after_bounces_and_reopens_a_moved_folder() {
     run(&service, Request::SaveNew(old_set.clone()));
     assert!(old_set.is_file());
     assert!(!files.0.join("Existing").exists());
+}
+
+#[test]
+fn extension_added_collision_refuses_in_worker_and_preserves_verbatim_filename() {
+    let files = Files::new();
+    let target = files.0.join("MySong.hex");
+    let existing = hex_project::Project::new(48_000).unwrap();
+    hex_storage::save_new(&target, &existing).unwrap();
+    let original_bytes = fs::read(&target).unwrap();
+
+    let service = Service::new(48_000, 16, 2_000_000).unwrap();
+    assert!(next(&service).error.is_none());
+
+    // Simulate OS Save dialog returning `MySong` without extension so UI appended `.hex`.
+    service
+        .submit(Request::SaveProjectAs {
+            path: target.clone(),
+            extension_added: true,
+        })
+        .unwrap();
+    let refused = next(&service);
+    assert!(refused.save_complete);
+    let raw_error = refused
+        .error
+        .as_deref()
+        .expect("collision error when extension_added is true");
+    let rendered =
+        hex_storage::text::plain(&hex_storage::text::lowercase_outside_verbatim(raw_error));
+    assert_eq!(
+        rendered,
+        "MySong.hex already exists · choose it by name to replace it"
+    );
+    assert_eq!(
+        fs::read(&target).unwrap(),
+        original_bytes,
+        "refused save-as must not modify existing target bytes"
+    );
+
+    // Explicit replacement (`extension_added: false`) replaces the confirmed target cleanly.
+    let replaced = save_as(&service, &target);
+    assert_eq!(
+        replaced.state.document_path.as_deref(),
+        Some(target.as_path())
+    );
 }
