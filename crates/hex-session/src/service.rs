@@ -75,7 +75,7 @@ pub use clip_audition::{
     ArrangementMoveMode, ArrangementPlayStartAudition, ArrangementStretchAudition,
     ClipMovePreviewDestination, ClipMovePreviewIdentity, GainEdit, NewTrackMoveDestination,
     PlayStartEdit, VerifiedArrangementGainSource, VerifiedArrangementGainUpdate,
-    VerifiedClipMoveUpdate,
+    VerifiedArrangementPlayStartSource, VerifiedArrangementPlayStartUpdate, VerifiedClipMoveUpdate,
 };
 mod publication_wait;
 mod resident_audio;
@@ -3141,6 +3141,7 @@ fn run_worker(
     let mut clip_audition_lane = clip_audition::Lane::default();
     let mut verified_clip_audition_lane = clip_audition::VerifiedLane::default();
     let mut verified_gain_lane = clip_audition::VerifiedGainLane::default();
+    let mut verified_play_start_lane = clip_audition::VerifiedPlayStartLane::default();
     let mut device_gesture = GestureMachine::default();
     let mut tuning_gesture = TuningGestureMachine::default();
     if events.resident_publication_enabled()
@@ -3521,6 +3522,14 @@ fn run_worker(
                         sink,
                         verified_available,
                     );
+                    let verified_play_start_pending = verified_play_start_lane.drive(
+                        &clip_audition,
+                        &state,
+                        session.project(),
+                        context,
+                        sink,
+                        verified_available,
+                    );
                     let clip_pending = clip_audition_lane.drive(
                         &clip_audition,
                         &session,
@@ -3567,7 +3576,11 @@ fn run_worker(
                         ),
                         &cancellation,
                     );
-                    clip_pending || verified_pending || verified_gain_pending || notes_pending
+                    clip_pending
+                        || verified_pending
+                        || verified_gain_pending
+                        || verified_play_start_pending
+                        || notes_pending
                 });
                 // Cancelling a preview can prepare a new canonical audio owner.
                 if let Some(snapshot) = resident_snapshot.as_ref()
@@ -4195,7 +4208,7 @@ fn run_worker(
                     hex_engine::NativeDeviceClass::Effect,
                     hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
                 )
-                .map_err(|_| "utility is unavailable")?;
+                .map_err(|_| "mix is unavailable")?;
                 Ok(Command::InsertNestedDevice {
                     parent: *instrument,
                     state,

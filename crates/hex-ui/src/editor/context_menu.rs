@@ -875,7 +875,7 @@ impl EditorView {
                     value,
                 }) {
                     self.device_panel.pending_values.remove(&key);
-                    self.error = Some("could not change Utility width mode".into());
+                    self.error = Some("could not change mix width mode".into());
                 }
                 cx.notify();
             }

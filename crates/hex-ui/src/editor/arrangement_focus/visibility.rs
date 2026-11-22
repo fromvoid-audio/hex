@@ -57,8 +57,6 @@ pub(crate) struct Projection {
     fold_revision: u64,
     pub(crate) ranges: Rc<[(u64, u64)]>,
     pub(crate) indices: Vec<usize>,
-    // Count from the same snapshot as indices, including hidden trailing rows.
-    canonical_count: usize,
     pub(crate) console_indices: Vec<usize>,
     pub(crate) tracks: BTreeSet<TrackId>,
     pub(crate) clips: BTreeSet<ClipId>,
@@ -99,20 +97,29 @@ impl Projection {
         let Ok(row) = self.indices.binary_search(&index) else {
             return false;
         };
+        let Ok(base_row) = self.console_indices.binary_search(&index) else {
+            return false;
+        };
         row.checked_sub(1)
             .and_then(|previous| self.indices.get(previous))
-            .map_or(index > 0, |previous| index.saturating_sub(*previous) > 1)
+            .map_or(base_row > 0, |previous| {
+                base_row
+                    .checked_sub(1)
+                    .and_then(|prev_base| self.console_indices.get(prev_base))
+                    != Some(previous)
+            })
     }
     /// Interior gaps belong to the next row, so no boundary is painted twice.
     pub(super) fn hidden_after(&self, index: usize) -> bool {
         self.section_markers_active()
             && self.indices.last() == Some(&index)
-            && index
-                .checked_add(1)
-                .is_some_and(|next| next < self.canonical_count)
+            && self
+                .console_indices
+                .last()
+                .is_some_and(|&last| index < last)
     }
-    pub(super) fn all_tracks_hidden(&self) -> bool {
-        self.section_markers_active() && self.canonical_count > 0 && self.indices.is_empty()
+    pub(crate) fn all_tracks_hidden(&self) -> bool {
+        self.section_markers_active() && !self.console_indices.is_empty() && self.indices.is_empty()
     }
 
     pub(crate) fn tag_filter(&self) -> Option<&TrackTag> {
@@ -196,7 +203,6 @@ impl Projection {
         self.selected.clear();
         self.selected.extend_from_slice(selected);
         self.ranges = ranges;
-        self.canonical_count = project.tracks().len();
         self.indices.clear();
         self.console_indices.clear();
         self.tracks.clear();

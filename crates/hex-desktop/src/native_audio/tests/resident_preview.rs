@@ -1011,6 +1011,227 @@ fn held_audio_play_start_changes_only_its_clip_during_arrangement_playback() {
 }
 
 #[test]
+fn continuous_play_start_slip_coalesces_looped_phase_and_unlooped_trim_without_editing_history() {
+    use hex_project::Command;
+    use hex_session::service::{ArrangementPlayStartAudition, PlayStartEdit};
+    use std::io::{Seek, SeekFrom, Write};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let (initial, _) = h.applied(0);
+
+    // 3-segment 48 kHz mono WAV: [0..48k)=0.25, [48k..96k)=0.125, [96k..144k)=0.0625.
+    let segment = 48_000_u32;
+    let source = files.constant_wav("continuous-slip.wav", 48_000, segment * 3, &[8192]);
+    {
+        let mut wav = fs::OpenOptions::new().write(true).open(&source).unwrap();
+        let seg_bytes = i64::from(segment) * size_of::<i16>() as i64;
+        wav.seek(SeekFrom::End(-seg_bytes * 2)).unwrap();
+        wav.write_all(&4096_i16.to_le_bytes().repeat(segment as usize))
+            .unwrap();
+        wav.write_all(&2048_i16.to_le_bytes().repeat(segment as usize))
+            .unwrap();
+    }
+    let imported = h.run(Request::Import(source));
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let (applied, _) = h.applied(initial);
+    h.run(Request::Edit(Command::SetClipFades {
+        clip,
+        fade_in: 0,
+        fade_out: 0,
+    }));
+    let (applied, _) = h.applied(applied);
+    let trimmed = h.run(Request::Edit(Command::TrimClip {
+        clip,
+        start: 0,
+        duration: u64::from(segment),
+        source_offset: 0,
+        source_length: u64::from(segment * 3),
+    }));
+    let original = trimmed.state.project.snapshot();
+    let base_revision = trimmed.state.revision;
+    let (applied, metadata) = h.applied(applied);
+
+    let render_level = |h: &ResidentHarness, level: f32, step: &str| {
+        let output = h.render();
+        assert!(
+            output
+                .iter()
+                .flatten()
+                .all(|sample| (sample - level).abs() < 1e-5),
+            "{step}: expected {level}, got {output:?}"
+        );
+    };
+    let wait_level = |h: &mut ResidentHarness, level: f32| {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            h.pump();
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            let before = status.position.load(Acquire);
+            let output = h.render();
+            assert!(status.playing.load(Acquire));
+            assert_eq!(status.position.load(Acquire), before + 64);
+            if output
+                .iter()
+                .flatten()
+                .all(|sample| (sample - level).abs() < 1e-5)
+            {
+                return status.applied_revision.load(Acquire);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "did not hear {level}, last={:?}",
+                output[63]
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    render_level(&h, 0.25, "initial");
+
+    // 1. Unlooped AudioTrimStart continuous slip: rapid targets coalesce without history edits.
+    for offset in [segment / 2, segment, segment * 2] {
+        h.service
+            .audition_arrangement_play_start(Some(ArrangementPlayStartAudition {
+                context: metadata.context,
+                edit: PlayStartEdit::AudioTrimStart {
+                    clip,
+                    start: 0,
+                    duration: u64::from(segment),
+                    source_offset: u64::from(offset),
+                    source_length: u64::from(segment * 3 - offset),
+                },
+            }));
+    }
+    let preview_rev = wait_level(&mut h, 0.0625);
+    assert!(preview_rev > applied);
+    assert!(h.service.try_event().is_err());
+
+    // Refusal during continuous slip preserves applied preview & playback.
+    let (entered, resume, _) = h.probe_next_native_publication();
+    h.refuse.store(true, std::sync::atomic::Ordering::Release);
+    h.service
+        .audition_arrangement_play_start(Some(ArrangementPlayStartAudition {
+            context: metadata.context,
+            edit: PlayStartEdit::AudioTrimStart {
+                clip,
+                start: 0,
+                duration: u64::from(segment),
+                source_offset: u64::from(segment),
+                source_length: u64::from(segment * 2),
+            },
+        }));
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    resume.send(()).unwrap();
+    let unchanged = h.run(Request::QueryDeviceAutomationCloseSafety { request_id: 1 });
+    h.refuse.store(false, std::sync::atomic::Ordering::Release);
+    assert_eq!(unchanged.state.project.snapshot(), original);
+    render_level(&h, 0.0625, "after refusal");
+
+    // Cancel restores 0.25.
+    h.service.audition_arrangement_play_start(None);
+    let restored_rev = wait_level(&mut h, 0.25);
+
+    // Release + single commit + undo + redo.
+    h.service
+        .audition_arrangement_play_start(Some(ArrangementPlayStartAudition {
+            context: metadata.context,
+            edit: PlayStartEdit::AudioTrimStart {
+                clip,
+                start: 0,
+                duration: u64::from(segment),
+                source_offset: u64::from(segment * 2),
+                source_length: u64::from(segment),
+            },
+        }));
+    let preview_rev = wait_level(&mut h, 0.0625);
+    assert!(preview_rev > restored_rev);
+    h.service.finish_arrangement_play_start_audition();
+    render_level(&h, 0.0625, "after release");
+    let committed = h.run(Request::Edit(Command::TrimClip {
+        clip,
+        start: 0,
+        duration: u64::from(segment),
+        source_offset: u64::from(segment * 2),
+        source_length: u64::from(segment),
+    }));
+    assert_eq!(committed.state.revision, base_revision + 1);
+    assert_eq!(
+        committed.state.project.clip(clip).unwrap().source_offset(),
+        u64::from(segment * 2)
+    );
+    let edited = committed.state.project.snapshot();
+    h.service.retire_arrangement_play_start_audition();
+    let (committed_rev, _) = h.applied(preview_rev);
+    render_level(&h, 0.0625, "after trim commit");
+    assert_eq!(h.run(Request::Undo).state.project.snapshot(), original);
+    let (undone_rev, _) = h.applied(committed_rev);
+    render_level(&h, 0.25, "after trim undo");
+    assert_eq!(h.run(Request::Redo).state.project.snapshot(), edited);
+    let (redone_rev, _) = h.applied(undone_rev);
+    render_level(&h, 0.0625, "after trim redo");
+    assert_eq!(h.run(Request::Undo).state.project.snapshot(), original);
+    let (back_rev, _) = h.applied(redone_rev);
+    render_level(&h, 0.25, "after trim second undo");
+
+    // 2. Looped AudioSourcePhase continuous slip.
+    let looped = h.run(Request::Edit(Command::SetClipLooping {
+        clip,
+        looping: true,
+    }));
+    let looped_original = looped.state.project.snapshot();
+    let looped_rev = looped.state.revision;
+    let (_, looped_meta) = h.applied(back_rev);
+    for phase in [segment, segment * 2] {
+        h.service
+            .audition_arrangement_play_start(Some(ArrangementPlayStartAudition {
+                context: looped_meta.context,
+                edit: PlayStartEdit::AudioSourcePhase {
+                    clip,
+                    phase: u64::from(phase),
+                },
+            }));
+    }
+    let _phase_preview = wait_level(&mut h, 0.0625);
+    assert!(h.service.try_event().is_err());
+    h.service.audition_arrangement_play_start(None);
+    wait_level(&mut h, 0.25);
+
+    h.service
+        .audition_arrangement_play_start(Some(ArrangementPlayStartAudition {
+            context: looped_meta.context,
+            edit: PlayStartEdit::AudioSourcePhase {
+                clip,
+                phase: u64::from(segment * 2),
+            },
+        }));
+    let phase_preview = wait_level(&mut h, 0.0625);
+    h.service.finish_arrangement_play_start_audition();
+    let phase_committed = h.run(Request::Edit(Command::SetClipSourcePhase {
+        clip,
+        phase: u64::from(segment * 2),
+    }));
+    assert_eq!(phase_committed.state.revision, looped_rev + 1);
+    h.service.retire_arrangement_play_start_audition();
+    let (phase_applied, _) = h.applied(phase_preview);
+    render_level(&h, 0.0625, "after phase commit");
+    assert_eq!(
+        h.run(Request::Undo).state.project.snapshot(),
+        looped_original
+    );
+    let _ = h.applied(phase_applied);
+    render_level(&h, 0.25, "after phase undo");
+}
+
+#[test]
 fn held_midi_play_start_reschedules_notes_in_the_playing_arrangement() {
     use hex_project::{BeatTime, Command, Created};
     use hex_session::service::{ArrangementPlayStartAudition, PlayStartEdit};

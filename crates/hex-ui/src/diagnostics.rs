@@ -490,8 +490,14 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
             state: P::Fault(_), ..
         } => Level::Error,
         E::PluginParameterTouched { .. } => Level::Debug,
-        E::DegradedPlugins { .. }
-        | E::PluginEditorRetirementIssue {
+        E::DegradedPlugins { devices, .. } => {
+            if devices.is_empty() {
+                Level::Info
+            } else {
+                Level::Warn
+            }
+        }
+        E::PluginEditorRetirementIssue {
             issue: crate::PluginEditorRetirementIssue::TailLatencyPending,
             ..
         }
@@ -590,13 +596,17 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
                 P::Submitted { .. }
                 | P::VerifiedPreviewSubmitted { .. }
                 | P::VerifiedArrangementGainSubmitted { .. }
+                | P::VerifiedArrangementPlayStartSubmitted { .. }
                 | P::ResidentSubmitted { .. } => "submitted",
-                P::Refused(_) | P::VerifiedArrangementGainRefused(_) => "refused",
+                P::Refused(_)
+                | P::VerifiedArrangementGainRefused(_)
+                | P::VerifiedArrangementPlayStartRefused(_) => "refused",
                 P::Fault(_) => "fault",
             };
             let (revision, preview, seek) = match state {
                 P::Submitted { audio_revision }
-                | P::VerifiedArrangementGainSubmitted { audio_revision } => {
+                | P::VerifiedArrangementGainSubmitted { audio_revision }
+                | P::VerifiedArrangementPlayStartSubmitted { audio_revision } => {
                     (Some(*audio_revision), None, None)
                 }
                 P::VerifiedPreviewSubmitted {
@@ -954,6 +964,59 @@ mod tests {
                     && line.contains("stage=worker_refused"))
         );
         assert!(!contents.contains("private fixture path"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[gpui::test]
+    fn degraded_plugins_diagnostic_warns_only_when_devices_are_degraded(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory =
+            std::env::temp_dir().join(format!("hex-ui-degraded-diag-test-{}", std::process::id()));
+        let mut log = hex_diagnostics::SessionLog::start(directory.clone()).unwrap();
+        cx.update(|cx| {
+            install_session_log(cx, Ok(log.handle()));
+            install_audio_diagnostics(cx, AudioDiagnosticsFlags::PUBLICATION);
+            record_audio_backend_event(
+                cx,
+                &crate::EditorAudioEvent::DegradedPlugins {
+                    project_generation: 0,
+                    output_identity: 1,
+                    devices: Vec::new(),
+                },
+            );
+            record_audio_backend_event(
+                cx,
+                &crate::EditorAudioEvent::DegradedPlugins {
+                    project_generation: 0,
+                    output_identity: 1,
+                    devices: vec![42],
+                },
+            );
+        });
+        log.shutdown().unwrap();
+        let contents = std::fs::read_to_string(log.path()).unwrap();
+        assert!(
+            contents.lines().any(|line| {
+                line.contains("level=info category=audio")
+                    && line.contains("stage=degraded_plugins generation=0 output=1 devices=[]")
+            }),
+            "empty degraded set should log at info:\n{contents}"
+        );
+        assert!(
+            !contents.lines().any(|line| {
+                line.contains("level=warn")
+                    && line.contains("stage=degraded_plugins generation=0 output=1 devices=[]")
+            }),
+            "empty degraded set must not warn:\n{contents}"
+        );
+        assert!(
+            contents.lines().any(|line| {
+                line.contains("level=warn category=audio")
+                    && line.contains("stage=degraded_plugins generation=0 output=1 devices=[42]")
+            }),
+            "non-empty degraded set should warn:\n{contents}"
+        );
         std::fs::remove_dir_all(directory).unwrap();
     }
 

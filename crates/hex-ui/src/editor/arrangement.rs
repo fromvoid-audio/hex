@@ -212,8 +212,16 @@ impl EditorView {
                                     .text_xs()
                                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                                     .child(theme::text(
-                                        if self.arrangement_focus.projection.enabled {
+                                        if self.arrangement_focus.projection.all_tracks_hidden() {
                                             "no clips in selected sections · q clears section focus"
+                                        } else if self
+                                            .arrangement_focus
+                                            .projection
+                                            .tag_filter()
+                                            .is_some()
+                                            && !state.project.tracks().is_empty()
+                                        {
+                                            "no tracks match tag filter"
                                         } else {
                                             "no tracks · import audio or add a track"
                                         },
@@ -1349,15 +1357,22 @@ impl EditorView {
             .tooltip(|_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     kind: crate::tooltips::Kind::Help,
-                    description: "drag to seek".into(),
+                    description:
+                        "drag to seek · option-click or drag to lock play start · hold cmd to invert snap"
+                            .into(),
                 })
                 .into()
             })
             .children([labels])
             .children([canvas(
                 |_, _, _| (),
-                move |bounds, _, window, _cx| {
-                    entity.update(_cx, |view, _| view.update_scrub_geometry(bounds));
+                move |bounds, _, window, cx| {
+                    entity.update(cx, |view, cx| {
+                        if view.cancel_locked_play_start_drag_on_ruler_change(bounds) {
+                            cx.defer_in(window, |_, _, cx| cx.notify());
+                        }
+                        view.update_scrub_geometry(bounds);
+                    });
                     let mouse_entity = entity.clone();
                     window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                         if !phase.bubble()
@@ -1367,8 +1382,25 @@ impl EditorView {
                             return;
                         }
                         let started = mouse_entity.update(cx, |view, cx| {
-                            if view.begin_scrub(f32::from(event.position.x), seek_viewport, bounds)
-                            {
+                            if event.modifiers.alt {
+                                if view.begin_ruler_locked_play_start_drag(
+                                    event.position,
+                                    event.modifiers,
+                                    seek_viewport,
+                                    bounds,
+                                    cx,
+                                ) {
+                                    view.focus.focus(window);
+                                    cx.notify();
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else if view.begin_scrub(
+                                f32::from(event.position.x),
+                                seek_viewport,
+                                bounds,
+                            ) {
                                 view.focus.focus(window);
                                 cx.notify();
                                 true

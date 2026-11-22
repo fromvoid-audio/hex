@@ -18,6 +18,7 @@ const TOOLTIP_FLOOR_AMPLITUDE: f32 = 0.000_316_227_76;
 
 pub(super) struct MeterState {
     device_type: Option<hex_lattice_contract::DeviceTypeId>,
+    sampled_peaks: hex_engine::DevicePeaks,
     levels: [f32; 2],
     held: [f32; 2],
     tooltip_peaks: [f32; 2],
@@ -31,6 +32,7 @@ impl Default for MeterState {
     fn default() -> Self {
         Self {
             device_type: None,
+            sampled_peaks: Default::default(),
             levels: [0.0; 2],
             held: [0.0; 2],
             tooltip_peaks: [0.0; 2],
@@ -205,6 +207,39 @@ pub(super) fn dynamics(
     state.update_dynamics(routing, reading, playing, elapsed)
 }
 
+/// Use the same input/output drain as the inter-device meter strip. Dynamics
+/// has its own drain and comes only from the committed, audible endpoint.
+pub(super) fn compressor_reading(
+    view: &EditorView,
+    device: &hex_project::Device,
+) -> Option<super::compressor_panel::display::Reading> {
+    use std::sync::atomic::Ordering::Relaxed;
+
+    let source = audible_meter(view, device)?;
+    // Drain even on Stop so the next play does not inherit an old transient.
+    let dynamics = source.take_dynamics();
+    let status = view.audio_status()?;
+    if !status.playing.load(Relaxed)
+        || status.render_fault.load(Relaxed)
+        || status.device_fault.load(Relaxed)
+        || status.shutdown_complete.load(Relaxed)
+    {
+        return None;
+    }
+    let peaks = view
+        .device_panel
+        .meter_states
+        .get(&device.id())?
+        .sampled_peaks;
+    Some(super::compressor_panel::display::Reading {
+        source: std::ptr::from_ref(source).addr(),
+        input: peaks.input,
+        output: peaks.output[0].max(peaks.output[1]),
+        reduction: dynamics.reduction_db[0],
+        detector: dynamics.post_input_peak,
+    })
+}
+
 fn update_tooltip_peak(current: &mut f32, hold_remaining: &mut f32, peak: f32, elapsed: f32) {
     let valid_peak = if peak.is_nan() || peak < 0.0 {
         0.0
@@ -282,13 +317,14 @@ fn sample_levels(
     // Borrow only while reading peaks: caching an individual endpoint would outlive the
     // charged observation that owns it, especially when this panel is no longer visible.
     let has_source = source.is_some();
-    let peaks = source.map_or([0.0; 2], |source| source.take_peaks().output);
+    let peaks = source.map_or_else(Default::default, hex_engine::DeviceMeter::take_peaks);
     let state = view.device_panel.meter_states.entry(id).or_default();
     state.attach(device.state().type_id(), has_source);
+    state.sampled_peaks = peaks;
     let now = Instant::now();
     let elapsed = now.saturating_duration_since(state.updated).as_secs_f32();
     state.updated = now;
-    state.record(peaks, playing, healthy, elapsed);
+    state.record(peaks.output, playing, healthy, elapsed);
     (state.levels, state.held, state.tooltip_peaks)
 }
 
@@ -304,7 +340,7 @@ pub(super) fn render(
     view: &mut EditorView,
     device: &hex_project::Device,
     cx: &mut Context<EditorView>,
-) -> impl IntoElement {
+) -> Stateful<Div> {
     let (levels, held, tooltip_peaks) = sample_levels(view, device);
     let (input_trim, output_trim) = (
         device.state().input_gain_db(),

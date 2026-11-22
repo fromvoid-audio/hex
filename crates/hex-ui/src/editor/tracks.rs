@@ -2150,6 +2150,7 @@ impl EditorView {
                 || self.pending_fade.is_some()
                 || self.clip_gain.has_displayed()
                 || self.audio_clip_controls.gain_preview(self).is_some()
+                || self.audio_clip_controls.has_play_start_preview()
                 || self.shows_audio_clip_loop_preview()
                 || self.audio_event_editor.gesture.is_some()
                 || self.held_arrangement_event_clip().is_some();
@@ -4197,7 +4198,7 @@ impl gpui::Render for ClipDragGhost {
 mod overlap_tests {
     use super::*;
     use crate::editor::clip_drag_ui_test::{audio_project, editor_window};
-    use hex_project::{Command, Editor};
+    use hex_project::{Command, Editor, Project};
 
     #[gpui::test]
     fn audio_and_midi_grid_paint_stays_below_titles_on_shared_lane_columns(
@@ -4889,5 +4890,238 @@ mod overlap_tests {
             assert!(v.active_clip_drag.is_none());
             assert_eq!(v.state.as_ref().unwrap().project, before);
         });
+    }
+
+    #[gpui::test]
+    fn track_row_focus_gap_cues_stay_in_lane_and_ignore_fold_tag_gaps(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let mut model = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let mut tracks = Vec::new();
+        for name in ["before", "grouped", "folded_sibling", "after"] {
+            let hex_project::Created::Track(id) = model
+                .execute(Command::AddTrack { name: name.into() })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            tracks.push(id);
+        }
+        let hex_project::Created::Track(group) = model
+            .execute(Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[tracks[1], tracks[2]]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        let hex_project::Created::ArrangementSection(section) = model
+            .execute(Command::AddArrangementSection {
+                name: "s0".into(),
+                color: hex_project::ElementColor::Cyan,
+                start: BeatTime::from_quarters(1).unwrap(),
+                end: BeatTime::from_quarters(2).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("section")
+        };
+        // Give `tracks[1]` a clip inside `section` and a native device so its automation lane can expand.
+        model
+            .execute(Command::PlaceMidiClip {
+                track: tracks[1],
+                start: BeatTime::from_quarters(1).unwrap(),
+                length: BeatTime::ONE,
+            })
+            .unwrap();
+        let state = hex_engine::default_native_device_state(
+            hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+        )
+        .unwrap();
+        let hex_project::Created::Device(device) = model
+            .execute(Command::InsertDevice {
+                track: tracks[1],
+                before: None,
+                state,
+            })
+            .unwrap()
+        else {
+            panic!("device")
+        };
+        model
+            .execute(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target: hex_lattice_contract::DeviceAutomationTarget::HostOutputGain,
+                points: vec![hex_project::AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: hex_project::AutomationValue::new(0.5).unwrap(),
+                    outgoing: hex_project::AutomationInterpolation::Step,
+                }],
+            })
+            .unwrap();
+        let tag = hex_project::TrackTag::new("focus").unwrap();
+        for track in [group, tracks[1]] {
+            model
+                .execute(Command::SetTrackTags {
+                    track,
+                    tags: vec![tag.clone()],
+                })
+                .unwrap();
+        }
+        let (_, preview) = hex_engine::compile::project_with_midi_preview(
+            model.project(),
+            &std::collections::BTreeMap::new(),
+        )
+        .unwrap();
+        let (handle, editor) =
+            editor_window(cx, model.project().clone(), std::sync::Arc::new(preview));
+        let mut visual = gpui::VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+        visual.run_until_parked();
+
+        // Expand an extra automation lane on `tracks[1]`.
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                view.automation_view.enabled = true;
+                view.automation_menu_action(
+                    super::super::device_automation::Action::Reveal {
+                        generation: view.project_generation,
+                        owner: super::super::device_panel::DevicePanelOwner::Track(tracks[1]),
+                        used_only: false,
+                    },
+                    window,
+                    cx,
+                );
+                cx.notify();
+            });
+        });
+        visual.run_until_parked();
+
+        let sel = |prefix: &str, id: u64| -> &'static str {
+            Box::leak(format!("{prefix}-{id}").into_boxed_str())
+        };
+        let secondary: gpui::Background = rgb(theme::color(theme::PaletteRole::Secondary)).into();
+        let expected_color: gpui::Background =
+            super::super::arrangement_focus::hidden_tracks::line_color().into();
+
+        // 1. Resting borders with section focus OFF: zero section-hidden cues and no Secondary borders.
+        for &id in &[tracks[0], group, tracks[1], tracks[2], tracks[3]] {
+            assert!(
+                visual
+                    .debug_bounds(sel("section-hidden-before", id.value()))
+                    .is_none()
+            );
+            assert!(
+                visual
+                    .debug_bounds(sel("section-hidden-after", id.value()))
+                    .is_none()
+            );
+        }
+        for border_sel in [
+            sel("lane-separator", tracks[1].value()),
+            sel("lane-right-divider", tracks[1].value()),
+            sel("arrangement-track-header", tracks[1].value()),
+        ] {
+            let quads = visual.rendered_filled_quads(border_sel);
+            assert!(
+                quads.iter().all(|(_, bg)| *bg != secondary),
+                "resting border {border_sel} must never paint PaletteRole::Secondary"
+            );
+        }
+
+        // 2. Section focus ON with tag filter leaving only `group` and `tracks[1]` (non-contiguous
+        // because `tracks[0]` is excluded by tag): zero section-hidden cues!
+        editor.update(&mut visual, |view, cx| {
+            view.sections.selected = Some(section);
+            view.arrangement_focus.projection.set_tag_filter(Some(tag));
+            view.toggle_arrangement_focus();
+            cx.notify();
+        });
+        visual.run_until_parked();
+        for &id in &[group, tracks[1]] {
+            assert!(
+                visual
+                    .debug_bounds(sel("section-hidden-before", id.value()))
+                    .is_none()
+            );
+            assert!(
+                visual
+                    .debug_bounds(sel("section-hidden-after", id.value()))
+                    .is_none()
+            );
+        }
+
+        // 3. Clear tag filter while keeping section focus ON: now `tracks[0]` (before `group`)
+        // and `tracks[2]`, `tracks[3]` (after `tracks[1]`) are hidden by section focus.
+        editor.update(&mut visual, |view, cx| {
+            view.arrangement_focus.projection.set_tag_filter(None);
+            view.reconcile_arrangement_focus();
+            cx.notify();
+        });
+        visual.run_until_parked();
+
+        let before_group = visual
+            .debug_bounds(sel("section-hidden-before", group.value()))
+            .expect("section gap before group");
+        let group_lane = visual
+            .debug_bounds(sel("arrangement-lane", group.value()))
+            .unwrap();
+        let group_divider = visual
+            .debug_bounds(sel("lane-right-divider", group.value()))
+            .unwrap();
+        let group_header = visual
+            .debug_bounds(sel("arrangement-track-header", group.value()))
+            .unwrap();
+        let group_strip = visual
+            .debug_bounds(sel("track-color-strip", group.value()))
+            .unwrap();
+        assert_eq!(before_group.top(), group_lane.top());
+        assert_eq!(before_group.left(), group_lane.left());
+        assert!(before_group.right() <= group_divider.left());
+        assert!(before_group.right() < group_header.left());
+        assert!(before_group.right() < group_strip.left());
+
+        let after_child = visual
+            .debug_bounds(sel("section-hidden-after", tracks[1].value()))
+            .expect("section gap after child with expanded automation lane");
+        let child_lane = visual
+            .debug_bounds(sel("arrangement-lane", tracks[1].value()))
+            .unwrap();
+        let child_divider = visual
+            .debug_bounds(sel("lane-right-divider", tracks[1].value()))
+            .unwrap();
+        let child_header = visual
+            .debug_bounds(sel("arrangement-track-header", tracks[1].value()))
+            .unwrap();
+        let child_rail = visual
+            .debug_bounds(Box::leak(
+                format!("track-group-rail-{}-{}", tracks[1].value(), group.value())
+                    .into_boxed_str(),
+            ))
+            .unwrap();
+        let child_strip = visual
+            .debug_bounds(sel("track-color-strip", tracks[1].value()))
+            .unwrap();
+        let full_height = editor.read_with(&visual, |view, _| view.track_height(tracks[1]));
+        assert!(
+            after_child.bottom() > child_lane.bottom(),
+            "after-cue sits below expanded automation lane, never across track body"
+        );
+        assert_eq!(after_child.bottom(), child_lane.top() + px(full_height));
+        assert_eq!(after_child.left(), child_lane.left());
+        assert!(after_child.right() <= child_divider.left());
+        assert!(after_child.right() < child_header.left());
+        assert!(after_child.right() < child_rail.left());
+        assert!(after_child.right() < child_strip.left());
+
+        for name in [
+            sel("section-hidden-before", group.value()),
+            sel("section-hidden-after", tracks[1].value()),
+        ] {
+            let quads = visual.rendered_filled_quads(name);
+            assert!(quads.iter().any(|(_, bg)| *bg == expected_color));
+            assert!(quads.iter().all(|(_, bg)| *bg != secondary));
+        }
     }
 }

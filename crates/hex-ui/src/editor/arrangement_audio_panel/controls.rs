@@ -18,6 +18,11 @@ pub(crate) struct Controls {
     key: Option<(ClipId, u64, u64)>,
     capture: Option<ClipWindow>,
     gain_preview: Option<(ClipWindow, hex_project::ClipGain)>,
+    play_start_preview: Option<(
+        ClipWindow,
+        hex_session::service::PlayStartEdit,
+        Option<hex_project::Clip>,
+    )>,
     numbers: BTreeMap<Field, Number>,
     toggles: BTreeMap<bool, Switch>,
     pending: Option<Pending>,
@@ -66,6 +71,7 @@ impl Controls {
     }
     fn retire_bindings(&mut self) {
         self.gain_preview = None;
+        self.play_start_preview = None;
         self.retired_focus
             .extend(self.numbers.iter().map(|(field, n)| RetiredFocus {
                 focus: n.focus.clone(),
@@ -121,12 +127,80 @@ impl Controls {
     pub(crate) fn has_gain_preview(&self) -> bool {
         self.gain_preview.is_some()
     }
+    pub(crate) fn has_play_start_preview(&self) -> bool {
+        self.play_start_preview.is_some()
+    }
     pub(in crate::editor) fn gain_preview(
         &self,
         view: &EditorView,
     ) -> Option<(ClipId, hex_project::ClipGain, hex_project::ClipGain)> {
         let (window, gain) = self.gain_preview?;
         clip_window_is_current(view, window).then_some((window.clip, window.gain, gain))
+    }
+    pub(in crate::editor) fn play_start_audition(
+        &self,
+        view: &EditorView,
+    ) -> Option<hex_session::service::ArrangementPlayStartAudition> {
+        if self.has_pending() {
+            return None;
+        }
+        let (window, edit, _) = self.play_start_preview.as_ref()?;
+        clip_window_is_current(view, *window).then_some(
+            hex_session::service::ArrangementPlayStartAudition {
+                context: hex_engine::AudioSourceContext {
+                    project_generation: window.generation,
+                    editor_revision: window.revision,
+                },
+                edit: *edit,
+            },
+        )
+    }
+    fn play_start_preview_matches(
+        &self,
+        view: &EditorView,
+        window: ClipWindow,
+        clip: ClipId,
+    ) -> bool {
+        if window.clip != clip {
+            return false;
+        }
+        if self.has_pending() {
+            view.mode == super::super::EditorMode::Arrangement
+                && view.project_generation == window.generation
+                && view
+                    .detail_audio_clip_data()
+                    .is_some_and(|(track, id, ..)| track == window.track && id == window.clip)
+        } else {
+            clip_window_is_current(view, window)
+        }
+    }
+    pub(in crate::editor) fn play_start_preview_clip(
+        &self,
+        view: &EditorView,
+        clip: ClipId,
+    ) -> Option<&hex_project::Clip> {
+        let (window, _, preview) = self.play_start_preview.as_ref()?;
+        self.play_start_preview_matches(view, *window, clip)
+            .then_some(preview.as_ref())
+            .flatten()
+    }
+    pub(in crate::editor) fn play_start_source_frame(
+        &self,
+        view: &EditorView,
+        clip: ClipId,
+    ) -> Option<u64> {
+        use hex_session::service::PlayStartEdit;
+        let (window, edit, _) = self.play_start_preview.as_ref()?;
+        if !self.play_start_preview_matches(view, *window, clip) {
+            return None;
+        }
+        match *edit {
+            PlayStartEdit::AudioSourcePhase { phase, .. } => {
+                Some(window.source_start.saturating_add(phase))
+            }
+            PlayStartEdit::AudioTrimStart { source_offset, .. } => Some(source_offset),
+            _ => None,
+        }
     }
 }
 fn same_command(a: &Command, b: &Command) -> bool {
@@ -463,6 +537,40 @@ pub(super) fn number(
                     _ => {}
                 }
             }
+            let mut cleared_play_start_preview = false;
+            if field == Field::PlayStart {
+                match e.phase {
+                    NumericEventPhase::Change | NumericEventPhase::Commit
+                        if clip_window_is_current(view, window)
+                            && !view.audio_clip_controls.has_pending()
+                            && e.value.is_finite() =>
+                    {
+                        let had_preview = view.audio_clip_controls.has_play_start_preview();
+                        let command = absolute_command(window, Field::PlayStart, e.value, false);
+                        view.audio_clip_controls.play_start_preview = command.and_then(|cmd| {
+                            let edit =
+                                hex_session::service::PlayStartEdit::from_audio_command(&cmd)?;
+                            let preview = view.state.as_ref().and_then(|state| {
+                                let mut editor =
+                                    hex_project::Editor::new((*state.project).clone(), 1).ok()?;
+                                editor.execute(cmd).ok()?;
+                                editor.project().clip(window.clip).cloned()
+                            });
+                            Some((window, edit, preview))
+                        });
+                        cleared_play_start_preview =
+                            had_preview && view.audio_clip_controls.play_start_preview.is_none();
+                        if e.phase == NumericEventPhase::Change && e.gesture.is_some() {
+                            view.sync_held_play_start_audition();
+                        }
+                    }
+                    NumericEventPhase::Cancel => {
+                        view.audio_clip_controls.play_start_preview = None;
+                        view.sync_held_play_start_audition();
+                    }
+                    _ => {}
+                }
+            }
             if e.phase == NumericEventPhase::Commit {
                 if !view.edit_pending() && clip_window_is_current(view, window) {
                     let multiple = view.selected_clip_ids().len() > 1;
@@ -491,13 +599,23 @@ pub(super) fn number(
                     if let Some(command) = command {
                         if field == Field::Gain {
                             view.finish_gain_audition();
+                        } else if field == Field::PlayStart {
+                            view.finish_held_play_start_audition();
                         }
                         submit(view, window, command);
                     } else {
                         view.retire_clip_detail();
+                        if cleared_play_start_preview {
+                            view.sync_held_play_start_audition();
+                            view.service.retire_arrangement_play_start_audition();
+                        }
                     }
                 } else if !view.audio_clip_controls.has_pending() {
                     view.retire_clip_detail();
+                    if cleared_play_start_preview {
+                        view.sync_held_play_start_audition();
+                        view.service.retire_arrangement_play_start_audition();
+                    }
                 }
             }
             cx.notify();
@@ -678,7 +796,12 @@ impl EditorView {
             self.set_held_gain_audition(None);
             self.service.retire_arrangement_gain_audition();
         }
+        let had_play_start = self.audio_clip_controls.has_play_start_preview();
         let changed = self.audio_clip_controls.reset();
+        if had_play_start {
+            self.sync_held_play_start_audition();
+            self.service.retire_arrangement_play_start_audition();
+        }
         self.retire_sample_bpm_control();
         changed
     }
@@ -928,6 +1051,314 @@ mod ui_tests {
                     }
                 );
             });
+        }
+    }
+
+    #[gpui::test]
+    fn play_start_slider_auditions_live_updates_markers_cancels_and_waits_for_own_terminal(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::{
+            headless_status_output, status_fixture_guard,
+        };
+        use hex_session::DocumentAudioMode;
+        use hex_session::service::PlayStartEdit;
+        use std::sync::atomic::Ordering::Release;
+
+        cx.update(hex_widgets::bind_numeric_control_keys);
+        let _output_guard = status_fixture_guard();
+
+        for (looping, accepted) in [(true, true), (true, false), (false, true), (false, false)] {
+            let (handle, editor, _, clip) =
+                super::super::super::clip_view_ui_test::audio_detail_fixture(cx);
+            let (mut output, _callback) = headless_status_output();
+            let control = output.take_client().unwrap();
+            control.status().unwrap().playing.store(true, Release);
+            editor.update(cx, |v, window_cx| {
+                if looping {
+                    let old = v.state.as_ref().unwrap();
+                    let mut project_editor =
+                        hex_project::Editor::new((*old.project).clone(), 4).unwrap();
+                    project_editor
+                        .execute(Command::SetClipLooping {
+                            clip,
+                            looping: true,
+                        })
+                        .unwrap();
+                    v.state = Some(Arc::new(hex_session::service::ViewState {
+                        canonical_audio_source: old.canonical_audio_source.clone(),
+                        comparison_audio: old.comparison_audio.clone(),
+                        project: Arc::new(project_editor.project().clone()),
+                        waveforms: old.waveforms.clone(),
+                        source_overviews: old.source_overviews.clone(),
+                        audio_clip_waveforms: old.audio_clip_waveforms.clone(),
+                        midi_preview: old.midi_preview.clone(),
+                        gain_preview: old.gain_preview.clone(),
+                        timeline_frames: old.timeline_frames,
+                        can_undo: true,
+                        can_redo: false,
+                        revision: old.revision + 1,
+                        unsaved: true,
+                        document_path: old.document_path.clone(),
+                    }));
+                }
+                v.audio = Some(crate::editor_backend::EditorAudio {
+                    control,
+                    sample_rate: 48_000,
+                    label: "play-start inspector audition fixture".into(),
+                    spectrum_error: None,
+                    mode: DocumentAudioMode::Resident,
+                });
+                v.audio_event_editor.source_view = true;
+                window_cx.notify();
+            });
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            visual.run_until_parked();
+
+            let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
+            let initial_value = editor.read_with(&visual, |v, cx| {
+                v.audio_clip_controls.numbers[&Field::PlayStart]
+                    .entity
+                    .read(cx)
+                    .value()
+            });
+            let initial_marker_left = visual.debug_bounds("play-start-marker").unwrap().left();
+            let clip_selector = Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
+            assert!(visual.debug_bounds(clip_selector).is_some());
+            assert!(
+                visual
+                    .debug_bounds("arrangement-audio-source-range")
+                    .is_some()
+            );
+
+            let hit = visual
+                .debug_bounds("audio-clip-playstart-value")
+                .unwrap()
+                .center();
+            let moved = hit + point(px(0.0), px(-12.0));
+
+            // Held drag updates live audition, Source marker, and Arrangement clip preview.
+            visual.simulate_mouse_down(hit, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+            visual.run_until_parked();
+            editor.read_with(&visual, |v, _| {
+                let state = v.state.as_ref().unwrap();
+                assert_eq!(state.project, before.project);
+                assert!(v.last_enqueued_edit.is_none());
+                assert_eq!(v.worker_requests_pending, 0);
+                let held = v
+                    .service
+                    .held_arrangement_play_start_audition_for_test()
+                    .expect("held play-start audition");
+                assert_eq!(held.context.project_generation, v.project_generation);
+                assert_eq!(held.context.editor_revision, before.revision);
+                if looping {
+                    assert!(matches!(
+                        held.edit,
+                        PlayStartEdit::AudioSourcePhase { clip: c, phase } if c == clip && phase > 0
+                    ));
+                } else {
+                    assert!(matches!(
+                        held.edit,
+                        PlayStartEdit::AudioTrimStart { clip: c, source_offset, .. }
+                            if c == clip && source_offset > 0
+                    ));
+                }
+                assert!(v.audio_clip_controls.has_play_start_preview());
+                assert!(v.audio_scope_preview_active(clip, state));
+                let canonical = state.project.clip(clip).unwrap();
+                let displayed = v.audio_scope_display_clip(canonical, state);
+                assert!(!std::ptr::eq(displayed.as_ref(), canonical));
+            });
+            assert!(
+                visual.debug_bounds("play-start-marker").unwrap().left() > initial_marker_left,
+                "Source tab play-start-marker should move right during held drag"
+            );
+            assert!(visual.debug_bounds(clip_selector).is_some());
+
+            // Escape cancels audition and restores preview/marker without committing.
+            visual.simulate_keystrokes("escape");
+            visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            editor.read_with(&visual, |v, cx| {
+                let state = v.state.as_ref().unwrap();
+                assert!(
+                    v.service
+                        .held_arrangement_play_start_audition_for_test()
+                        .is_none()
+                );
+                assert!(!v.audio_clip_controls.has_play_start_preview());
+                assert!(!v.audio_scope_preview_active(clip, state));
+                assert_eq!(
+                    v.audio_clip_controls.numbers[&Field::PlayStart]
+                        .entity
+                        .read(cx)
+                        .value(),
+                    initial_value
+                );
+                assert!(v.last_enqueued_edit.is_none());
+                assert_eq!(state.project, before.project);
+            });
+            assert_eq!(
+                visual.debug_bounds("play-start-marker").unwrap().left(),
+                initial_marker_left
+            );
+
+            // Release commits once and holds frozen preview until its exact terminal.
+            visual.simulate_mouse_down(hit, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+            visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            let (command, final_value) = editor.read_with(&visual, |v, cx| {
+                assert_eq!(v.worker_requests_pending, 1);
+                assert!(v.audio_clip_controls.has_pending());
+                assert!(
+                    v.service
+                        .held_arrangement_play_start_audition_for_test()
+                        .is_none()
+                );
+                let cmd = v.last_enqueued_edit.clone().unwrap();
+                if looping {
+                    assert!(
+                        matches!(cmd, Command::SetClipSourcePhase { clip: c, .. } if c == clip)
+                    );
+                } else {
+                    assert!(matches!(cmd, Command::TrimClip { clip: c, .. } if c == clip));
+                }
+                (
+                    cmd,
+                    v.audio_clip_controls.numbers[&Field::PlayStart]
+                        .entity
+                        .read(cx)
+                        .value(),
+                )
+            });
+            assert_ne!(final_value, initial_value);
+            let held_marker_left = visual.debug_bounds("play-start-marker").unwrap().left();
+            assert!(held_marker_left > initial_marker_left);
+
+            for _ in 0..2 {
+                let mut intermediate =
+                    super::super::super::arrangement_main_track_ui_test::completed_event(&before);
+                intermediate.request_complete = false;
+                editor.update(&mut visual, |v, cx| {
+                    v.receive(intermediate);
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                editor.read_with(&visual, |v, cx| {
+                    let state = v.state.as_ref().unwrap();
+                    assert!(v.audio_clip_controls.has_pending());
+                    assert_eq!(state.project, before.project);
+                    assert!(v.audio_scope_preview_active(clip, state));
+                    assert_eq!(
+                        v.audio_clip_controls.numbers[&Field::PlayStart]
+                            .entity
+                            .read(cx)
+                            .value(),
+                        final_value
+                    );
+                });
+                assert_eq!(
+                    visual.debug_bounds("play-start-marker").unwrap().left(),
+                    held_marker_left
+                );
+            }
+
+            let mut terminal =
+                super::super::super::arrangement_main_track_ui_test::completed_event(&before);
+            if accepted {
+                let mut oracle = hex_project::Editor::new((*before.project).clone(), 8).unwrap();
+                oracle.execute(command).unwrap();
+                let state = Arc::get_mut(&mut terminal.state).unwrap();
+                state.project = Arc::new(oracle.project().clone());
+                state.can_undo = true;
+            } else {
+                terminal.error = Some("fixture refusal".into());
+            }
+            editor.update(&mut visual, |v, cx| {
+                v.receive(terminal);
+                cx.notify();
+            });
+            visual.run_until_parked();
+            editor.read_with(&visual, |v, cx| {
+                let state = v.state.as_ref().unwrap();
+                assert!(!v.audio_clip_controls.has_pending());
+                assert!(!v.audio_clip_controls.has_play_start_preview());
+                let canonical_clip = state.project.clip(clip).unwrap();
+                let canonical = if looping {
+                    canonical_clip
+                        .source_offset()
+                        .saturating_add(canonical_clip.source_phase()) as f64
+                } else {
+                    canonical_clip.source_offset() as f64
+                };
+                assert_eq!(
+                    v.audio_clip_controls.numbers[&Field::PlayStart]
+                        .entity
+                        .read(cx)
+                        .value(),
+                    canonical
+                );
+                assert_eq!(
+                    canonical,
+                    if accepted {
+                        final_value.round()
+                    } else {
+                        initial_value
+                    }
+                );
+            });
+            assert_eq!(
+                visual.debug_bounds("play-start-marker").unwrap().left(),
+                if accepted {
+                    held_marker_left
+                } else {
+                    initial_marker_left
+                }
+            );
+
+            // Verify VerifiedStreaming mode also sends held play-start auditions cleanly.
+            if looping && accepted {
+                editor.update(&mut visual, |v, cx| {
+                    v.document_audio_mode = DocumentAudioMode::VerifiedStreaming;
+                    v.audio.as_mut().unwrap().mode = DocumentAudioMode::VerifiedStreaming;
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                let hit = visual
+                    .debug_bounds("audio-clip-playstart-value")
+                    .unwrap()
+                    .center();
+                let moved = hit + point(px(0.0), px(-12.0));
+                visual.simulate_mouse_down(hit, MouseButton::Left, Modifiers::default());
+                visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+                visual.run_until_parked();
+                editor.read_with(&visual, |v, _| {
+                    assert!(
+                        v.service
+                            .held_arrangement_play_start_audition_for_test()
+                            .is_some(),
+                        "VerifiedStreaming must allow inspector play-start audition"
+                    );
+                });
+                visual.simulate_keystrokes("escape");
+                visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+                visual.run_until_parked();
+                editor.read_with(&visual, |v, _| {
+                    assert!(
+                        v.service
+                            .held_arrangement_play_start_audition_for_test()
+                            .is_none()
+                    );
+                });
+            }
+
+            editor.update(&mut visual, |v, _| {
+                v.audio = None;
+            });
+            drop(output);
+            drop(_callback);
         }
     }
 }

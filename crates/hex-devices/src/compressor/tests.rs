@@ -32,6 +32,48 @@ fn runtime(state: &NativeDeviceState, sample_rate: u32) -> Box<dyn NativeProcess
 }
 
 #[test]
+fn dynamics_meter_reports_smoothed_wet_reduction_and_sidechain_detector() {
+    let mut state = COMPRESSOR_DEFINITION.default_state().unwrap();
+    for (id, value) in [
+        (parameter::THRESHOLD, -30.0),
+        (parameter::KNEE, 0.0),
+        (parameter::ATTACK, 0.1),
+        (parameter::MAKEUP, 6.0),
+    ] {
+        state = patch(&state, id, value);
+    }
+    let mut processor = runtime(&state, 48_000);
+    let mut main = [[0.1; 2]; 4096];
+    let key = [[1.0; 2]; 4096];
+    let mut scratch = [[0.0; 2]; 4096];
+    let block = StereoAuxiliaryBlock::new(&mut main, Some(&key), &mut scratch, key.len()).unwrap();
+    processor
+        .process_block_with_auxiliary(
+            block,
+            None,
+            None,
+            false,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    let meter = processor.take_dynamics_meter().unwrap();
+    assert!((meter.post_input_peak - 1.0).abs() < 1e-5);
+    for lane in meter.reduction_db {
+        assert!((lane - 22.5).abs() < 0.001);
+    }
+    assert!((main[4095][0] - 0.1 * 10.0_f32.powf((6.0 - 22.5) / 20.0)).abs() < 1e-6);
+    assert_eq!(
+        processor.take_dynamics_meter(),
+        Some(DynamicsMeter::default())
+    );
+    processor.process_bypassed_block(&mut main, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert_eq!(
+        processor.take_dynamics_meter(),
+        Some(DynamicsMeter::default())
+    );
+}
+
+#[test]
 fn defaults_and_generic_codec_roundtrip_seven_floats_and_mode() {
     let registry = registry();
     let state = registry

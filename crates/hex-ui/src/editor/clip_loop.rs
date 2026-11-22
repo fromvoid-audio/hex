@@ -53,7 +53,6 @@ impl EditorView {
     /// Follow held input and transport changes without sending canonical edits.
     pub(super) fn sync_held_play_start_audition(&mut self) {
         let target = (self.mode == super::EditorMode::Arrangement
-            && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && self.clip_view_open
             && !self.device_panel_active
             && self.recovery.generation().is_none()
@@ -63,10 +62,12 @@ impl EditorView {
                 .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire)))
         .then(|| {
             self.held_audio_play_start_audition()
+                .or_else(|| self.audio_clip_controls.play_start_audition(self))
                 .or_else(|| self.held_midi_play_start_audition())
         })
         .flatten();
-        if let Some(target) = &target
+        if self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && let Some(target) = &target
             && let hex_session::service::PlayStartEdit::Audio { clip, .. } = target.edit
             && self.has_degraded_vst3_output()
         {

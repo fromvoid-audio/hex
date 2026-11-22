@@ -56,7 +56,7 @@ impl EditorView {
         {
             self.cancel_scrub();
         }
-        self.cancel_locked_play_start_drag_on_ruler_change(bounds);
+        let _ = self.cancel_locked_play_start_drag_on_ruler_change(bounds);
         self.scrub.bounds = Some(bounds);
     }
 
