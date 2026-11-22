@@ -358,28 +358,43 @@ fn plot(
                         }
                     }
                     if let Ok(preview) = &preview {
+                        let y = |gain: f32| rect[1] + rect[3] * (1.0 - gain_display_position(gain));
                         let mut vertices = Vec::new();
                         if let Some(end) = viewport.end() {
+                            let scale = window.scale_factor();
                             let present =
                                 preview.visit_segments(track_id, viewport.start, end, |segment| {
                                     if let (Some(start), Some(end)) = (
                                         viewport.fraction(segment.start_frame),
                                         viewport.fraction(segment.end_frame),
                                     ) {
-                                        vertices.push((start, segment.start_gain));
-                                        vertices.push((end, segment.end_gain));
+                                        let x0 = rect[0] + start * rect[2];
+                                        let x1 = rect[0] + end * rect[2];
+                                        vertices.push((x0, y(segment.start_gain)));
+                                        super::super::device_automation::plot_geometry::sample_curved_segment(
+                                            x0,
+                                            segment.start_gain,
+                                            x1,
+                                            segment.end_gain,
+                                            rect[0],
+                                            rect[0] + rect[2],
+                                            scale,
+                                            None,
+                                            y,
+                                            |x, y| vertices.push((x, y)),
+                                        );
+                                        vertices.push((x1, y(segment.end_gain)));
                                     }
                                 });
                             if !present {
-                                vertices.extend([(0.0, static_gain), (1.0, static_gain)]);
+                                let static_y = y(static_gain);
+                                vertices
+                                    .extend([(rect[0], static_y), (rect[0] + rect[2], static_y)]);
                             }
                         }
                         let mut path = PathBuilder::stroke(px(1.0));
-                        for (index, (x, gain)) in vertices.into_iter().enumerate() {
-                            let p = gpui_point(
-                                px(rect[0] + x * rect[2]),
-                                px(rect[1] + rect[3] * (1.0 - gain / 2.0)),
-                            );
+                        for (index, (x, y)) in vertices.into_iter().enumerate() {
+                            let p = gpui_point(px(x), px(y));
                             if index == 0 {
                                 path.move_to(p)
                             } else {
@@ -501,7 +516,7 @@ fn plot(
                 div()
                     .absolute()
                     .left(gpui::relative(x))
-                    .top(gpui::relative(1.0 - p.gain / 2.0))
+                    .top(gpui::relative(1.0 - gain_display_position(p.gain)))
                     .ml(px(-3.0))
                     .mt(px(-3.0))
                     .size(px(6.0))

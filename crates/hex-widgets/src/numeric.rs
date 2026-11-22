@@ -18,6 +18,8 @@ pub enum NumericScale {
     LinearAmplitudeDecibels,
 }
 
+const DECIBEL_FLOOR: f64 = 0.05;
+const DECIBEL_FLOOR_DB: f64 = -72.0;
 const DECIBEL_SPLIT: f64 = 0.25;
 const DECIBEL_SPLIT_DB: f64 = -18.0;
 const DECIBEL_FINE_STEP: f64 = 0.1;
@@ -339,9 +341,12 @@ impl NumericSpec {
         }
 
         let position = self.to_normalized(value)?;
-        let split_amplitude = amplitude_at_db(DECIBEL_SPLIT_DB);
-        let crosses_split = self.min < split_amplitude && self.max > split_amplitude;
-        if self.min >= split_amplitude || (crosses_split && position >= DECIBEL_SPLIT) {
+        let floor_amplitude = amplitude_at_db(DECIBEL_FLOOR_DB);
+        let crosses_floor = self.min < floor_amplitude && self.max > floor_amplitude;
+        if self.min >= floor_amplitude
+            || (crosses_floor
+                && (position > DECIBEL_FLOOR || (position == DECIBEL_FLOOR && direction > 0.0)))
+        {
             let current_db = db_at_amplitude(value);
             let delta_db = (if fine {
                 DECIBEL_FINE_STEP
@@ -349,8 +354,17 @@ impl NumericSpec {
                 DECIBEL_STEP
             }) * direction;
             let next_db = current_db + delta_db;
-            let min_db = db_at_amplitude(self.min);
+            let min_db = if self.min > 0.0 {
+                db_at_amplitude(self.min)
+            } else {
+                f64::NEG_INFINITY
+            };
             let max_db = db_at_amplitude(self.max);
+            if crosses_floor && next_db < DECIBEL_FLOOR_DB {
+                return self
+                    .validate(floor_amplitude)
+                    .map_err(|_| NumericError::InvalidValue);
+            }
             if next_db <= min_db {
                 return Ok(self.min);
             }
@@ -361,9 +375,9 @@ impl NumericSpec {
             return self.validate(next).map_err(|_| NumericError::InvalidValue);
         }
 
-        if crosses_split {
+        if crosses_floor {
             let next_position = (position + (if fine { 0.001 } else { 0.01 }) * direction)
-                .clamp(0.0, DECIBEL_SPLIT);
+                .clamp(0.0, DECIBEL_FLOOR);
             return self.from_normalized(next_position);
         }
         self.adjust(value, (if fine { 0.001 } else { 0.01 }) * direction)
@@ -485,16 +499,30 @@ impl NumericSpec {
 }
 
 fn amplitude_to_normalized(value: f64, min: f64, max: f64) -> f64 {
+    let floor_amplitude = amplitude_at_db(DECIBEL_FLOOR_DB);
     let split_amplitude = amplitude_at_db(DECIBEL_SPLIT_DB);
-    if max <= split_amplitude {
+    if max <= floor_amplitude {
         return (value - min) / (max - min);
     }
-    if min >= split_amplitude {
+    if min >= floor_amplitude {
         return (db_at_amplitude(value) - db_at_amplitude(min))
             / (db_at_amplitude(max) - db_at_amplitude(min));
     }
-    if value <= split_amplitude {
-        DECIBEL_SPLIT * (value - min) / (split_amplitude - min)
+    if max <= split_amplitude {
+        return if value <= floor_amplitude {
+            DECIBEL_FLOOR * (value - min) / (floor_amplitude - min)
+        } else {
+            DECIBEL_FLOOR
+                + (1.0 - DECIBEL_FLOOR) * (db_at_amplitude(value) - DECIBEL_FLOOR_DB)
+                    / (db_at_amplitude(max) - DECIBEL_FLOOR_DB)
+        };
+    }
+    if value <= floor_amplitude {
+        DECIBEL_FLOOR * (value - min) / (floor_amplitude - min)
+    } else if value <= split_amplitude {
+        DECIBEL_FLOOR
+            + (DECIBEL_SPLIT - DECIBEL_FLOOR) * (db_at_amplitude(value) - DECIBEL_FLOOR_DB)
+                / (DECIBEL_SPLIT_DB - DECIBEL_FLOOR_DB)
     } else {
         DECIBEL_SPLIT
             + (1.0 - DECIBEL_SPLIT) * (db_at_amplitude(value) - DECIBEL_SPLIT_DB)
@@ -503,17 +531,34 @@ fn amplitude_to_normalized(value: f64, min: f64, max: f64) -> f64 {
 }
 
 fn normalized_to_amplitude(position: f64, min: f64, max: f64) -> f64 {
+    let floor_amplitude = amplitude_at_db(DECIBEL_FLOOR_DB);
     let split_amplitude = amplitude_at_db(DECIBEL_SPLIT_DB);
-    if max <= split_amplitude {
+    if max <= floor_amplitude {
         return min + position * (max - min);
     }
-    if min >= split_amplitude {
+    if min >= floor_amplitude {
         let min_db = db_at_amplitude(min);
         let max_db = db_at_amplitude(max);
         return amplitude_at_db(min_db + position * (max_db - min_db));
     }
-    if position <= DECIBEL_SPLIT {
-        min + (position / DECIBEL_SPLIT) * (split_amplitude - min)
+    if max <= split_amplitude {
+        return if position <= DECIBEL_FLOOR {
+            min + (position / DECIBEL_FLOOR) * (floor_amplitude - min)
+        } else {
+            let max_db = db_at_amplitude(max);
+            let db = DECIBEL_FLOOR_DB
+                + ((position - DECIBEL_FLOOR) / (1.0 - DECIBEL_FLOOR))
+                    * (max_db - DECIBEL_FLOOR_DB);
+            amplitude_at_db(db)
+        };
+    }
+    if position <= DECIBEL_FLOOR {
+        min + (position / DECIBEL_FLOOR) * (floor_amplitude - min)
+    } else if position <= DECIBEL_SPLIT {
+        let db = DECIBEL_FLOOR_DB
+            + ((position - DECIBEL_FLOOR) / (DECIBEL_SPLIT - DECIBEL_FLOOR))
+                * (DECIBEL_SPLIT_DB - DECIBEL_FLOOR_DB);
+        amplitude_at_db(db)
     } else {
         let max_db = db_at_amplitude(max);
         let db = DECIBEL_SPLIT_DB
@@ -684,8 +729,17 @@ mod tests {
         )
         .unwrap();
         let split = amplitude_at_db(DECIBEL_SPLIT_DB);
+        let floor = amplitude_at_db(DECIBEL_FLOOR_DB);
         assert!((spec.from_normalized(DECIBEL_SPLIT).unwrap() - split).abs() < 1.0e-12);
         assert!((spec.to_normalized(split).unwrap() - DECIBEL_SPLIT).abs() < 1.0e-12);
+        assert!((spec.from_normalized(DECIBEL_FLOOR).unwrap() - floor).abs() < 1.0e-12);
+        assert!((spec.to_normalized(floor).unwrap() - DECIBEL_FLOOR).abs() < 1.0e-12);
+        assert!((spec.to_normalized(1.0).unwrap() - 0.5047).abs() < 1.0e-3);
+        let neg36 = spec.to_normalized(amplitude_at_db(-36.0)).unwrap();
+        assert!(
+            neg36 > 0.15 && neg36 < DECIBEL_SPLIT,
+            "-36 db keeps vertical resolution: {neg36}"
+        );
         assert_eq!(spec.from_normalized(0.0).unwrap(), 0.0);
         assert_eq!(spec.from_normalized(1.0).unwrap(), max);
         assert_eq!(spec.format(0.0).unwrap(), "-inf db");
@@ -697,13 +751,37 @@ mod tests {
         assert_eq!(spec.parse("+35.00 db").unwrap(), max);
         assert!(spec.parse("35.01 db").is_err());
 
-        let mut previous = 0.0;
-        for index in 0..=1000 {
-            let position = f64::from(index) / 1000.0;
-            let value = spec.from_normalized(position).unwrap();
-            assert!(value >= previous, "mapping decreased at {position}");
-            assert!((spec.to_normalized(value).unwrap() - position).abs() < 1.0e-10);
-            previous = value;
+        for (lo, hi) in [
+            (0.0, max),
+            (0.0, 16.0),
+            (0.0, 2.0),
+            (0.0, 0.05),
+            (0.001, 1.0),
+            (0.0, 0.0001),
+        ] {
+            let range = NumericSpec::new(
+                lo,
+                hi,
+                lo,
+                NumericScale::LinearAmplitudeDecibels,
+                2,
+                Some("db"),
+            )
+            .unwrap();
+            let mut previous = lo;
+            for index in 0..=1000 {
+                let position = f64::from(index) / 1000.0;
+                let value = range.from_normalized(position).unwrap();
+                assert!(
+                    value >= previous,
+                    "mapping decreased at {position} for {lo}..={hi}"
+                );
+                assert!(
+                    (range.to_normalized(value).unwrap() - position).abs() < 1.0e-10,
+                    "round trip drifted at {position} for {lo}..={hi}"
+                );
+                previous = value;
+            }
         }
     }
 

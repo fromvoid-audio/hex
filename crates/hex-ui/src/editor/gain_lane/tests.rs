@@ -84,7 +84,16 @@ mod unit_tests {
         );
         assert_eq!(pointer_gain(rect, 20.0), 2.0);
         assert_eq!(pointer_gain(rect, 60.0), 0.0);
-        assert_eq!(pointer_gain(rect, 40.0), 1.0);
+        let unity_display = gain_display_position(1.0);
+        assert!(
+            (unity_display - 0.812).abs() < 1.0e-2,
+            "track gain 0 dB matches track volume slider scale: {unity_display}"
+        );
+        let unity_y = rect[1] + rect[3] * (1.0 - unity_display);
+        assert!((pointer_gain(rect, unity_y) - 1.0).abs() < 1.0e-4);
+        assert!(gain_display_position(0.125_892_54) > 0.24);
+        assert!(gain_display_position(0.015_848_932) > 0.15);
+        assert!((gain_display_position(0.000_251_188_64) - 0.05).abs() < 1.0e-3);
         let raw = BeatTime::from_raw(2);
         let mut lane = GainLane {
             track: Some(project.tracks()[0].id()),
@@ -292,7 +301,10 @@ pub(in crate::editor) mod native {
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
         let bounds = visual.debug_bounds("gain-lane-plot").unwrap();
-        let position = gpui_point(bounds.origin.x, bounds.origin.y + bounds.size.height * 0.25);
+        let position = gpui_point(
+            bounds.origin.x,
+            bounds.origin.y + bounds.size.height * (1.0 - gain_display_position(1.5)),
+        );
         visual.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
         entity.update(&mut visual, |view, _| {
             let draft = view.gain_lane.draft.unwrap();
@@ -704,7 +716,10 @@ pub(in crate::editor) mod native {
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
         let bounds = visual.debug_bounds("gain-lane-plot").unwrap();
-        let start = gpui_point(bounds.origin.x, bounds.origin.y + bounds.size.height * 0.25);
+        let start = gpui_point(
+            bounds.origin.x,
+            bounds.origin.y + bounds.size.height * (1.0 - gain_display_position(1.5)),
+        );
         let to = gpui_point(
             bounds.origin.x + bounds.size.width * (24000.0 / 384000.0),
             start.y,

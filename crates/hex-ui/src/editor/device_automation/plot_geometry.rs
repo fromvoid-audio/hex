@@ -262,6 +262,173 @@ pub(super) fn reduce(
     reducer.paths
 }
 
+const MAX_CURVE_DEPTH: u8 = 10;
+const CURVE_TOLERANCE_PX: f32 = 0.25;
+
+/// Sample interior vertices strictly between `(x0, c0)` and `(x1, c1)` for a
+/// segment that interpolates linearly in canonical `c` while painting through
+/// a non-linear display projection `y_for(c)`.
+///
+/// When `split_canonical` is `Some(c_split)` (an asymmetric bipolar scale whose
+/// only slope change occurs at `0.0`), only that exact interior knot is emitted.
+/// Otherwise, the visible span `[vis_left, vis_right]` is adaptively subdivided
+/// to keep chord error within `0.25` logical pixels (stopping at one physical
+/// pixel width at `scale` or `MAX_CURVE_DEPTH`).
+#[allow(clippy::too_many_arguments)]
+pub(in crate::editor) fn sample_curved_segment(
+    x0: f32,
+    c0: f32,
+    x1: f32,
+    c1: f32,
+    vis_left: f32,
+    vis_right: f32,
+    scale: f32,
+    split_canonical: Option<f32>,
+    y_for: impl Fn(f32) -> f32,
+    mut emit: impl FnMut(f32, f32),
+) {
+    if !x0.is_finite()
+        || !x1.is_finite()
+        || !c0.is_finite()
+        || !c1.is_finite()
+        || x1 <= x0
+        || c0 == c1
+        || x1 < vis_left
+        || x0 > vis_right
+    {
+        return;
+    }
+    if let Some(split) = split_canonical {
+        let lo = c0.min(c1);
+        let hi = c0.max(c1);
+        if split > lo && split < hi {
+            let t = (f64::from(split) - f64::from(c0)) / (f64::from(c1) - f64::from(c0));
+            let x = (f64::from(x0) + (f64::from(x1) - f64::from(x0)) * t) as f32;
+            if x > x0 && x < x1 {
+                emit(x, y_for(split));
+            }
+        }
+        return;
+    }
+    let dx = f64::from(x1) - f64::from(x0);
+    let dc = f64::from(c1) - f64::from(c0);
+    let t_start = if x0 < vis_left {
+        ((f64::from(vis_left) - f64::from(x0)) / dx).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let t_end = if x1 > vis_right {
+        ((f64::from(vis_right) - f64::from(x0)) / dx).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    if t_end <= t_start {
+        return;
+    }
+    let xa = (f64::from(x0) + dx * t_start) as f32;
+    let ca = (f64::from(c0) + dc * t_start) as f32;
+    let ya = y_for(ca);
+    let xb = (f64::from(x0) + dx * t_end) as f32;
+    let cb = (f64::from(c0) + dc * t_end) as f32;
+    let yb = y_for(cb);
+    if t_start > 0.0 {
+        emit(xa, ya);
+    }
+    let min_dx = (1.0 / scale.max(1.0)).max(0.25);
+    #[allow(clippy::too_many_arguments)]
+    fn subdivide(
+        xa: f32,
+        ca: f32,
+        ya: f32,
+        xb: f32,
+        cb: f32,
+        yb: f32,
+        depth: u8,
+        min_dx: f32,
+        y_for: &impl Fn(f32) -> f32,
+        emit: &mut impl FnMut(f32, f32),
+    ) {
+        if depth >= MAX_CURVE_DEPTH || (xb - xa) <= min_dx {
+            return;
+        }
+        let xm = 0.5 * (xa + xb);
+        let cm = (0.5 * (f64::from(ca) + f64::from(cb))) as f32;
+        let ym = y_for(cm);
+        let chord = 0.5 * (ya + yb);
+        if depth >= 2 && (ym - chord).abs() <= CURVE_TOLERANCE_PX {
+            return;
+        }
+        subdivide(xa, ca, ya, xm, cm, ym, depth + 1, min_dx, y_for, emit);
+        emit(xm, ym);
+        subdivide(xm, cm, ym, xb, cb, yb, depth + 1, min_dx, y_for, emit);
+    }
+    subdivide(xa, ca, ya, xb, cb, yb, 0, min_dx, &y_for, &mut emit);
+    if t_end < 1.0 {
+        emit(xb, yb);
+    }
+}
+
+/// One displayed automation point with its canonical value for non-linear
+/// display curves.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct CurvedPlotPoint {
+    pub(super) x: f32,
+    pub(super) canonical: f32,
+    pub(super) y: f32,
+    pub(super) step: bool,
+    pub(super) selected: bool,
+}
+
+/// Like [`reduce`], but subdivides continuous segments through `y_for` when
+/// the lane's display scale differs from canonical linear interpolation.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn reduce_curved(
+    points: impl IntoIterator<Item = CurvedPlotPoint>,
+    discrete: bool,
+    scale: f32,
+    vis_left: f32,
+    vis_right: f32,
+    split_canonical: Option<f32>,
+    y_for: impl Fn(f32) -> f32,
+) -> PlotPaths {
+    let points = points.into_iter();
+    let capacity = points.size_hint().0.min(4096);
+    let mut reducer = Reducer {
+        scale,
+        order: 0,
+        column: None,
+        paths: PlotPaths {
+            line: Vec::with_capacity(capacity),
+            markers: Vec::with_capacity(capacity),
+        },
+    };
+    let mut previous: Option<CurvedPlotPoint> = None;
+    for point in points {
+        if let Some(prev) = previous {
+            if prev.step || discrete {
+                reducer.push(point.x, prev.y, None);
+            } else {
+                sample_curved_segment(
+                    prev.x,
+                    prev.canonical,
+                    point.x,
+                    point.canonical,
+                    vis_left,
+                    vis_right,
+                    scale,
+                    split_canonical,
+                    &y_for,
+                    |x, y| reducer.push(x, y, None),
+                );
+            }
+        }
+        reducer.push(point.x, point.y, Some(point.selected));
+        previous = Some(point);
+    }
+    reducer.flush();
+    reducer.paths
+}
+
 #[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::{PlotPoint, recorded_knots, reduce, visible_range, visible_sections};
@@ -568,5 +735,126 @@ mod tests {
                 paths.markers.len()
             );
         }
+    }
+
+    #[test]
+    fn curved_reduction_tracks_amplitude_db_and_bipolar_ramps_without_extra_markers() {
+        let spec = hex_widgets::NumericSpec::new(
+            0.0,
+            f64::from(56.234_13_f32),
+            1.0,
+            hex_widgets::NumericScale::LinearAmplitudeDecibels,
+            2,
+            None::<&str>,
+        )
+        .unwrap();
+        let y_for = |canonical: f32| {
+            let amp = f64::from(canonical.clamp(0.0, 1.0)) * spec.max();
+            let display = spec.to_normalized(amp).unwrap_or(0.0) as f32;
+            4.0 + (1.0 - display) * 56.0
+        };
+        let unity = (1.0 / 56.234_13_f64) as f32;
+        let points = [
+            super::CurvedPlotPoint {
+                x: 0.0,
+                canonical: 0.0,
+                y: y_for(0.0),
+                step: false,
+                selected: true,
+            },
+            super::CurvedPlotPoint {
+                x: 400.0,
+                canonical: unity,
+                y: y_for(unity),
+                step: false,
+                selected: false,
+            },
+            super::CurvedPlotPoint {
+                x: 800.0,
+                canonical: 1.0,
+                y: y_for(1.0),
+                step: false,
+                selected: false,
+            },
+        ];
+        let paths = super::reduce_curved(points, false, 2.0, 0.0, 800.0, None, y_for);
+        assert_eq!(
+            paths.markers.len(),
+            3,
+            "curve subdivision never creates fake markers"
+        );
+        assert!(paths.line.len() > 10, "non-linear ramp is subdivided");
+        assert!(paths.line.len() <= 800 * 2 * 4);
+        // Evaluate the reduced polyline at 80 interior probe positions and verify
+        // sub-pixel accuracy against the true canonical-interpolated display Y.
+        for probe in 1..80 {
+            let x = probe as f32 * 10.0;
+            let exact_c = if x <= 400.0 {
+                unity * (x / 400.0)
+            } else {
+                unity + (1.0 - unity) * ((x - 400.0) / 400.0)
+            };
+            let exact_y = y_for(exact_c);
+            let segment = paths
+                .line
+                .windows(2)
+                .find(|w| w[0].0 <= x && x <= w[1].0)
+                .expect("polyline covers x");
+            let t = if segment[1].0 == segment[0].0 {
+                0.0
+            } else {
+                (x - segment[0].0) / (segment[1].0 - segment[0].0)
+            };
+            let painted_y = segment[0].1 + (segment[1].1 - segment[0].1) * t;
+            assert!(
+                (painted_y - exact_y).abs() <= 0.35,
+                "x={x}: painted={painted_y} exact={exact_y}"
+            );
+        }
+
+        // Asymmetric bipolar (-36..+6 dB) inserts exactly one knot at canonical 0 dB.
+        let bipolar = hex_widgets::NumericSpec::new(
+            -36.0,
+            6.0,
+            0.0,
+            hex_widgets::NumericScale::Bipolar,
+            2,
+            None::<&str>,
+        )
+        .unwrap();
+        let bipolar_y = |canonical: f32| {
+            let value = -36.0 + f64::from(canonical) * 42.0;
+            let display = bipolar.to_normalized(value).unwrap_or(0.0) as f32;
+            4.0 + (1.0 - display) * 56.0
+        };
+        let zero_canonical = (36.0_f64 / 42.0_f64) as f32;
+        let bipolar_paths = super::reduce_curved(
+            [
+                super::CurvedPlotPoint {
+                    x: 0.0,
+                    canonical: 0.0,
+                    y: bipolar_y(0.0),
+                    step: false,
+                    selected: false,
+                },
+                super::CurvedPlotPoint {
+                    x: 420.0,
+                    canonical: 1.0,
+                    y: bipolar_y(1.0),
+                    step: false,
+                    selected: false,
+                },
+            ],
+            false,
+            1.0,
+            0.0,
+            420.0,
+            Some(zero_canonical),
+            bipolar_y,
+        );
+        assert_eq!(bipolar_paths.markers.len(), 2);
+        assert_eq!(bipolar_paths.line.len(), 3);
+        assert!((bipolar_paths.line[1].0 - 360.0).abs() < 1e-3);
+        assert!((bipolar_paths.line[1].1 - 32.0).abs() < 1e-3);
     }
 }

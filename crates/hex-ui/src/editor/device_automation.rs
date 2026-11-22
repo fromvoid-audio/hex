@@ -9,7 +9,7 @@
 #[cfg(all(test, feature = "ui-test-support"))]
 pub(super) mod host_tests;
 mod paint;
-mod plot_geometry;
+pub(super) mod plot_geometry;
 mod range_edit;
 pub(super) use range_edit::RangeEdit;
 mod read_selection;
@@ -74,6 +74,168 @@ enum EntryMetadata {
     Vst3 {
         steps: u32,
     },
+}
+
+#[derive(Clone, Copy)]
+enum DisplayScale {
+    /// Display position equals canonical `AutomationValue` (`0.0..=1.0`).
+    Identity,
+    /// Non-identity float projection using `hex_widgets::NumericScale` so the
+    /// automation lane matches the parameter's control scale.
+    Float {
+        min: f64,
+        max: f64,
+        canonical_log: bool,
+        scale: hex_widgets::NumericScale,
+    },
+}
+
+impl DisplayScale {
+    fn for_metadata(metadata: EntryMetadata) -> Self {
+        match metadata {
+            EntryMetadata::Vst3 { .. } => Self::Identity,
+            EntryMetadata::HostGain => Self::Float {
+                min: f64::from(HostGain::MIN_DB),
+                max: f64::from(HostGain::MAX_DB),
+                canonical_log: false,
+                scale: hex_widgets::NumericScale::Bipolar,
+            },
+            EntryMetadata::Provider {
+                descriptor,
+                semantics,
+            } => {
+                let ParameterKind::Float { min, max, .. } = descriptor.kind else {
+                    return Self::Identity;
+                };
+                if !min.is_finite() || !max.is_finite() || min >= max {
+                    return Self::Identity;
+                }
+                let canonical_log = semantics.normalization
+                    == hex_lattice_contract::ParameterNormalization::PositiveLogarithmic;
+                let scale = match descriptor.presentation {
+                    hex_lattice_contract::ParameterPresentation::LinearAmplitudeDecibels => {
+                        hex_widgets::NumericScale::LinearAmplitudeDecibels
+                    }
+                    hex_lattice_contract::ParameterPresentation::Logarithmic => {
+                        if canonical_log {
+                            return Self::Identity;
+                        }
+                        hex_widgets::NumericScale::Logarithmic
+                    }
+                    hex_lattice_contract::ParameterPresentation::Linear
+                        if min < 0.0 && max > 0.0 =>
+                    {
+                        if !canonical_log && (f64::from(min) + f64::from(max)).abs() <= 1.0e-6 {
+                            return Self::Identity;
+                        }
+                        hex_widgets::NumericScale::Bipolar
+                    }
+                    hex_lattice_contract::ParameterPresentation::Linear => {
+                        if !canonical_log {
+                            return Self::Identity;
+                        }
+                        hex_widgets::NumericScale::Linear
+                    }
+                };
+                Self::Float {
+                    min: f64::from(min),
+                    max: f64::from(max),
+                    canonical_log,
+                    scale,
+                }
+            }
+        }
+    }
+
+    fn is_identity(self) -> bool {
+        matches!(self, Self::Identity)
+    }
+
+    fn bipolar_zero_canonical(self) -> Option<f32> {
+        match self {
+            Self::Float {
+                min,
+                max,
+                canonical_log: false,
+                scale: hex_widgets::NumericScale::Bipolar,
+            } if min < 0.0 && max > 0.0 => Some((-min / (max - min)) as f32),
+            _ => None,
+        }
+    }
+
+    fn spec(self) -> Option<hex_widgets::NumericSpec> {
+        let Self::Float {
+            min, max, scale, ..
+        } = self
+        else {
+            return None;
+        };
+        let default = if scale == hex_widgets::NumericScale::Bipolar {
+            0.0
+        } else {
+            min
+        };
+        hex_widgets::NumericSpec::new(min, max, default, scale, 2, None::<&str>).ok()
+    }
+
+    fn to_display(self, canonical: f32) -> f32 {
+        if !canonical.is_finite() {
+            return 0.0;
+        }
+        let clamped = f64::from(canonical.clamp(0.0, 1.0));
+        let Self::Float {
+            min,
+            max,
+            canonical_log,
+            ..
+        } = self
+        else {
+            return clamped as f32;
+        };
+        let Some(spec) = self.spec() else {
+            return clamped as f32;
+        };
+        let value = if clamped == 0.0 {
+            min
+        } else if clamped == 1.0 {
+            max
+        } else if canonical_log {
+            (min * (max / min).powf(clamped)).clamp(min, max)
+        } else {
+            (min * (1.0 - clamped) + max * clamped).clamp(min, max)
+        };
+        spec.to_normalized(value)
+            .map(|position| position.clamp(0.0, 1.0) as f32)
+            .unwrap_or(clamped as f32)
+    }
+
+    fn to_canonical(self, display: f32) -> Option<f32> {
+        if !display.is_finite() {
+            return None;
+        }
+        let clamped = f64::from(display.clamp(0.0, 1.0));
+        let Self::Float {
+            min,
+            max,
+            canonical_log,
+            ..
+        } = self
+        else {
+            return Some(clamped as f32);
+        };
+        let spec = self.spec()?;
+        let value = spec.from_normalized(clamped).ok()?;
+        let canonical = if value <= min {
+            0.0
+        } else if value >= max {
+            1.0
+        } else if canonical_log {
+            ((value / min).ln() / (max / min).ln()).clamp(0.0, 1.0)
+        } else {
+            ((value - min) / (max - min)).clamp(0.0, 1.0)
+        };
+        Some(canonical as f32)
+    }
 }
 #[derive(Clone, Copy)]
 pub(super) struct TargetKey(DeviceAutomationTarget);
@@ -480,6 +642,21 @@ impl Entry {
                 ..
             }
         )
+    }
+    fn display_scale(&self) -> DisplayScale {
+        DisplayScale::for_metadata(self.metadata)
+    }
+    pub(super) fn display_position(&self, canonical: f32) -> f32 {
+        self.display_scale().to_display(canonical)
+    }
+    fn canonical_from_display(&self, display: f32) -> Option<f32> {
+        self.display_scale().to_canonical(display)
+    }
+    fn is_display_linear(&self) -> bool {
+        self.display_scale().is_identity()
+    }
+    fn bipolar_zero_canonical(&self) -> Option<f32> {
+        self.display_scale().bipolar_zero_canonical()
     }
     fn quantize(&self, value: f32) -> Option<f32> {
         match self.metadata {

@@ -288,18 +288,48 @@ pub(in crate::editor) fn dotted_lane_point(
     point(bounds.left() + bounds.size.width * x, bounds.top())
 }
 
-pub(in crate::editor) fn lane_value_point(
+pub(in crate::editor) fn lane_display_position(
+    visual: &VisualTestContext,
+    editor: &Entity<EditorView>,
+    device: DeviceId,
+    target: DeviceAutomationTarget,
+    canonical: f32,
+) -> f32 {
+    editor.read_with(visual, |view, _| {
+        view.automation_view
+            .devices
+            .main
+            .iter()
+            .chain(&view.automation_view.devices.extra)
+            .find(|entry| entry.target.device == device && entry.target.kind == target)
+            .map_or(canonical, |entry| entry.display_position(canonical))
+    })
+}
+
+fn lane_display_point(
     visual: &mut VisualTestContext,
     device: DeviceId,
     target: DeviceAutomationTarget,
     x: f32,
-    value: f32,
+    display: f32,
 ) -> gpui::Point<Pixels> {
     let bounds = plot(visual, device, target);
     point(
         bounds.left() + bounds.size.width * x,
-        bounds.top() + px(4.0) + (bounds.size.height - px(8.0)) * (1.0 - value),
+        bounds.top() + px(4.0) + (bounds.size.height - px(8.0)) * (1.0 - display),
     )
+}
+
+pub(in crate::editor) fn lane_value_point(
+    visual: &mut VisualTestContext,
+    editor: &Entity<EditorView>,
+    device: DeviceId,
+    target: DeviceAutomationTarget,
+    x: f32,
+    canonical: f32,
+) -> gpui::Point<Pixels> {
+    let display = lane_display_position(visual, editor, device, target, canonical);
+    lane_display_point(visual, device, target, x, display)
 }
 
 fn draw(
@@ -970,12 +1000,12 @@ fn three_point_lane(
         DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(1));
     header_assign(&mut visual, &editor, owner, target);
     let first = dotted_lane_point(&mut visual, device, target, 0.2);
-    let first_center = lane_value_point(&mut visual, device, target, 0.2, 0.5);
+    let first_center = lane_display_point(&mut visual, device, target, 0.2, 0.5);
     lane_drag(&mut visual, first, first_center, CMD);
     pump(&mut visual, &editor);
     let value = lane_points(&visual, &editor, device, target)[0].value.get();
     for x in [0.4, 0.8] {
-        let at = lane_value_point(&mut visual, device, target, x, value);
+        let at = lane_value_point(&mut visual, &editor, device, target, x, value);
         visual.simulate_click(at, CMD);
         pump(&mut visual, &editor);
     }
@@ -1011,8 +1041,15 @@ fn lane_group_move_and_delete_each_undo_in_one_step(cx: &mut TestAppContext) {
     lane_drag(&mut visual, from, to, CMD);
     assert_eq!(selected_beats(&visual, &editor).len(), 2);
 
-    // Dragging one selected point moves both by the same value delta.
-    let first = lane_value_point(&mut visual, device, target, 0.2, points[0].value.get());
+    // Dragging one selected point moves both by the same display-scale delta.
+    let first = lane_value_point(
+        &mut visual,
+        &editor,
+        device,
+        target,
+        0.2,
+        points[0].value.get(),
+    );
     let lower = point(first.x, first.y + px(12.0));
     lane_drag(&mut visual, first, lower, CMD);
     pump(&mut visual, &editor);
@@ -1023,11 +1060,12 @@ fn lane_group_move_and_delete_each_undo_in_one_step(cx: &mut TestAppContext) {
         .zip(&points)
         .map(|(moved, original)| {
             assert_eq!(moved.beat, original.beat, "a vertical drag keeps beats");
-            moved.value.get() - original.value.get()
+            lane_display_position(&visual, &editor, device, target, moved.value.get())
+                - lane_display_position(&visual, &editor, device, target, original.value.get())
         })
         .collect();
     assert!(deltas[0] < -0.05, "{deltas:?}");
-    assert!((deltas[0] - deltas[1]).abs() < 1e-4, "{deltas:?}");
+    assert!((deltas[0] - deltas[1]).abs() < 1e-3, "{deltas:?}");
     assert_eq!(deltas[2], 0.0, "unselected points stay put");
     assert_eq!(selected_beats(&visual, &editor).len(), 2);
     editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
@@ -1052,7 +1090,14 @@ fn lane_group_move_and_delete_each_undo_in_one_step(cx: &mut TestAppContext) {
 fn lane_line_press_adds_a_point_and_drags_it_without_a_time_selection(cx: &mut TestAppContext) {
     let (mut visual, editor, device, target, points) = three_point_lane(cx);
     // Unsnapped (Cmd) so the dragged point lands exactly under the pointer.
-    let from = lane_value_point(&mut visual, device, target, 0.6, points[0].value.get());
+    let from = lane_value_point(
+        &mut visual,
+        &editor,
+        device,
+        target,
+        0.6,
+        points[0].value.get(),
+    );
     let to = lane_point(&mut visual, device, target, [0.6, 0.2]);
     let selector = Box::leak(
         format!(
@@ -1115,7 +1160,12 @@ fn lane_line_press_adds_a_point_and_drags_it_without_a_time_selection(cx: &mut T
         .iter()
         .find(|point| !points.contains(point))
         .expect("new point");
-    assert!(added.value.get() > 0.7, "the drag raised the new point");
+    let added_display = lane_display_position(&visual, &editor, device, target, added.value.get());
+    assert!(
+        added_display > 0.7 && added.value.get() > points[0].value.get(),
+        "the drag raised the new point: display={added_display} canonical={}",
+        added.value.get()
+    );
     assert_eq!(selected_beats(&visual, &editor), [added.beat]);
 
     for (request, expected) in [(Request::Undo, &points), (Request::Redo, &after)] {
@@ -1142,7 +1192,14 @@ fn undo_queued_immediately_after_automation_point_release_restores_the_curve(
     cx: &mut TestAppContext,
 ) {
     let (mut visual, editor, device, target, before) = three_point_lane(cx);
-    let at = lane_value_point(&mut visual, device, target, 0.6, before[0].value.get());
+    let at = lane_value_point(
+        &mut visual,
+        &editor,
+        device,
+        target,
+        0.6,
+        before[0].value.get(),
+    );
     visual.simulate_mouse_down(at, MouseButton::Left, CMD);
     visual.simulate_mouse_up(at, MouseButton::Left, CMD);
     let after = editor.read_with(&visual, |view, _| {
@@ -1776,7 +1833,7 @@ fn last_touched_dotted_line_follows_gesture_preview_through_delayed_ack(cx: &mut
                 .find(|entry| entry.target.owner == owner)
                 .expect("touching the control selects its lane");
             assert_eq!(entry.target.kind, kind);
-            entry.normalized(control.expect("gesture preview")).unwrap()
+            entry.display_position(entry.normalized(control.expect("gesture preview")).unwrap())
         });
         let plot = visual
             .debug_bounds(Box::leak(
@@ -2495,8 +2552,8 @@ fn same_grid_line_keeps_both_points_and_either_can_move_again(cx: &mut TestAppCo
     };
     let first_x = fraction(&visual, 1);
     let right_x = fraction(&visual, 3);
-    let from = lane_value_point(&mut visual, device, target, right_x, 0.2);
-    let to = lane_value_point(&mut visual, device, target, first_x, 0.2);
+    let from = lane_value_point(&mut visual, &editor, device, target, right_x, 0.2);
+    let to = lane_value_point(&mut visual, &editor, device, target, first_x, 0.2);
     let mut joined = points;
     joined[1].beat = joined[0].beat;
     let modifiers = Modifiers::default();
@@ -2533,4 +2590,106 @@ fn same_grid_line_keeps_both_points_and_either_can_move_again(cx: &mut TestAppCo
     lane_drag(&mut visual, to, from, modifiers);
     pump(&mut visual, &editor);
     assert_eq!(lane_points(&visual, &editor, device, target), points);
+}
+
+#[gpui::test]
+fn utility_gain_lane_centers_zero_db_allows_attenuation_drag_and_curved_insertion(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);
+    let target =
+        DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(1));
+    header_assign(&mut visual, &editor, owner, target);
+
+    // 1. Default 0.00 dB dotted line sits near the vertical center (~50.5%),
+    // not crushed at ~1.8% from the bottom.
+    let bounds = plot(&mut visual, device, target);
+    let dotted = dotted_lane_point(&mut visual, device, target, 0.2);
+    let inner_height = f32::from(bounds.size.height) - 8.0;
+    let display_from_bottom =
+        1.0 - (f32::from(dotted.y) - (f32::from(bounds.top()) + 4.0)) / inner_height;
+    assert!(
+        (display_from_bottom - 0.5047).abs() < 0.02,
+        "utility 0 dB dotted line should sit near center (~0.505), got {display_from_bottom}"
+    );
+
+    // 2. Dragging below 0 dB down to display 0.18 (~-36 dB) lands cleanly on an
+    // attenuated positive amplitude with comfortable vertical travel remaining.
+    let attenuated_target = lane_display_point(&mut visual, device, target, 0.2, 0.18);
+    lane_drag(&mut visual, dotted, attenuated_target, CMD);
+    pump(&mut visual, &editor);
+    let first = lane_points(&visual, &editor, device, target);
+    assert_eq!(first.len(), 1);
+    let unity_canonical = (1.0_f64 / f64::from(56.234_13_f32)) as f32;
+    assert!(
+        first[0].value.get() > 0.0 && first[0].value.get() < unity_canonical * 0.1,
+        "dragging to display 0.18 attenuates well below 0 dB: {}",
+        first[0].value.get()
+    );
+    let hit_display = lane_display_position(&visual, &editor, device, target, first[0].value.get());
+    assert!(
+        (hit_display - 0.18).abs() < 0.03,
+        "authored point sits at dragged display position: {hit_display}"
+    );
+
+    // 3. Add a second point at 0 dB at x = 0.8 and verify clicking the true
+    // linear-amplitude midpoint curve inserts a point matching the audible curve.
+    let second_from = lane_value_point(
+        &mut visual,
+        &editor,
+        device,
+        target,
+        0.8,
+        first[0].value.get(),
+    );
+    let second_to = lane_display_point(&mut visual, device, target, 0.8, 0.5047);
+    lane_drag(&mut visual, second_from, second_to, CMD);
+    pump(&mut visual, &editor);
+    let ramp = lane_points(&visual, &editor, device, target);
+    assert_eq!(ramp.len(), 2);
+    let mid_canonical = 0.5 * (ramp[0].value.get() + ramp[1].value.get());
+    let mid_on_curve = lane_value_point(&mut visual, &editor, device, target, 0.5, mid_canonical);
+    visual.simulate_click(mid_on_curve, CMD);
+    pump(&mut visual, &editor);
+    let with_mid = lane_points(&visual, &editor, device, target);
+    assert_eq!(
+        with_mid.len(),
+        3,
+        "clicking the true curved ramp inserts a point"
+    );
+    assert!(
+        (with_mid[1].value.get() - mid_canonical).abs() < 1.0e-3,
+        "inserted midpoint {} matches audible curve {}",
+        with_mid[1].value.get(),
+        mid_canonical
+    );
+}
+
+#[gpui::test]
+fn asymmetric_bipolar_lanes_center_zero_db_vertically(cx: &mut TestAppContext) {
+    let (mut visual, editor, owner, _, device) = window(cx, "hex.saturator", Slot::Track);
+    editor.update(&mut visual, |view, cx| {
+        view.clip_view_open = false;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let sat_output =
+        DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(2));
+    let host_in = DeviceAutomationTarget::HostInputGain;
+    header_assign(&mut visual, &editor, owner, sat_output);
+    header_assign(&mut visual, &editor, owner, host_in);
+    editor.update(&mut visual, |_, cx| cx.notify());
+    visual.run_until_parked();
+
+    for target in [sat_output, host_in] {
+        let bounds = plot(&mut visual, device, target);
+        let dotted = dotted_lane_point(&mut visual, device, target, 0.5);
+        let inner_height = f32::from(bounds.size.height) - 8.0;
+        let display_from_bottom =
+            1.0 - (f32::from(dotted.y) - (f32::from(bounds.top()) + 4.0)) / inner_height;
+        assert!(
+            (display_from_bottom - 0.5).abs() < 0.02,
+            "{target:?} 0 dB dotted line should sit at 50% center, got {display_from_bottom}"
+        );
+    }
 }
