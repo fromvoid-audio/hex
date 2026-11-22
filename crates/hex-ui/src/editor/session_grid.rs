@@ -1985,6 +1985,9 @@ impl EditorView {
 
     pub(super) fn set_mode(&mut self, mode: EditorMode) {
         if self.mode != mode {
+            if self.mode == EditorMode::Arrangement {
+                self.cancel_pending_loop_focus();
+            }
             self.section_loop_key = Default::default();
             self.cancel_arrangement_pan();
             self.cancel_active_browser_audio_drag();
