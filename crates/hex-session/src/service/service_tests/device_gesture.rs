@@ -1800,7 +1800,7 @@ fn whole_project_export_matches_automatic_export_range_including_effect_tail() {
             signal: ExportSignal::Main,
             control: ExportControl::default(),
             format: hex_export::ExportFormat::Pcm16,
-            overwrite: false,
+            publication: ExportPublication::CreateNew,
         })
         .unwrap();
     next_event(&service);

@@ -277,7 +277,8 @@ fn verified_export_refuses_missing_changed_and_short_sources_preserving_existing
                 signal: ExportSignal::Main,
                 control: ExportControl::default(),
                 format: hex_export::ExportFormat::Pcm16,
-                overwrite: true,
+                publication: hex_session::service::ExportPublication::confirmed_save(&output)
+                    .unwrap(),
             },
         );
         assert_eq!(queued.state.project, imported.state.project);
@@ -320,7 +321,7 @@ fn verified_export_cancellation_preserves_destination_and_allows_retry() {
             signal: ExportSignal::Main,
             control,
             format: hex_export::ExportFormat::Pcm16,
-            overwrite: true,
+            publication: hex_session::service::ExportPublication::confirmed_save(&output).unwrap(),
         },
     );
     assert!(exported(&service).result.is_err());
@@ -351,7 +352,7 @@ fn verified_export_never_overwrites_its_original_source_even_with_export_overwri
                 signal: ExportSignal::Main,
                 control: ExportControl::default(),
                 format: hex_export::ExportFormat::Pcm16,
-                overwrite: true,
+                publication: hex_session::service::ExportPublication::CreateNew,
             },
         );
         let error = exported(&service).result.unwrap_err();
@@ -414,7 +415,8 @@ fn verified_export_rechecks_cached_sources_and_cancellation_before_publication()
                 signal: ExportSignal::Main,
                 control: control.clone(),
                 format: hex_export::ExportFormat::Pcm16,
-                overwrite: true,
+                publication: hex_session::service::ExportPublication::confirmed_save(&output)
+                    .unwrap(),
             },
         );
         let error = exported(&service).result.unwrap_err();
@@ -520,7 +522,7 @@ fn verified_export_cancellation_during_page_backed_render_discards_staging() {
             signal: ExportSignal::Main,
             control: control.clone(),
             format: hex_export::ExportFormat::Pcm16,
-            overwrite: false,
+            publication: hex_session::service::ExportPublication::CreateNew,
         },
     );
     assert!(
@@ -570,7 +572,7 @@ fn verified_export_writes_the_requested_format_through_streamed_pages() {
                 signal: ExportSignal::Main,
                 control: ExportControl::default(),
                 format,
-                overwrite: false,
+                publication: hex_session::service::ExportPublication::CreateNew,
             },
         );
         let report = exported(&service).result.unwrap();

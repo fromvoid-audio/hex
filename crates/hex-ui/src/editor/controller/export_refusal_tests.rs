@@ -30,7 +30,7 @@ fn a_busy_queued_range_export_reenables_export_and_close(cx: &mut TestAppContext
                 signal: ExportSignal::Main,
                 control: control.clone(),
                 format: hex_session::service::ExportFormat::Pcm16,
-                overwrite: false,
+                publication: hex_session::service::ExportPublication::CreateNew,
             });
             view.export_pending = true;
             view.export_control = Some(control.clone());

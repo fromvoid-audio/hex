@@ -2060,9 +2060,10 @@ pub(super) fn request(value: &Request) -> Description {
             start,
             frames,
             format,
-            overwrite,
+            publication,
             ..
         } => {
+            let overwrite = matches!(publication, hex_export::Publication::Replace(_));
             describe!("export_range"; ["path_redacted_bytes" => path.as_os_str().len(), "start" => start, "frames" => frames, "format" => format, "overwrite" => overwrite]; omitted="signal,control")
         }
     }

@@ -171,7 +171,7 @@ fn render_streamed(path: &Path, start: u64, output: Output) -> Vec<hex_engine::F
                 signal: ExportSignal::Main,
                 control: ExportControl::default(),
                 format: ExportFormat::Float32,
-                overwrite: false,
+                publication: hex_session::service::ExportPublication::CreateNew,
             });
             let exported = completed(&mut h);
             assert_eq!(exported.revision, reversed.state.revision);

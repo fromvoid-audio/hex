@@ -17,9 +17,9 @@ pub enum Publication {
 }
 
 impl Publication {
-    /// The caller has accepted this concrete path through a native save dialog.
-    /// Existing regular files may be replaced; absent paths still publish with
-    /// no-replace semantics, so a later collision never truncates another file.
+    /// Capture the policy as soon as the caller confirms this concrete destination,
+    /// before queuing or rendering. An existing regular file binds replacement to
+    /// its observed identity. An absent path retains no-replace semantics.
     pub fn confirmed_save(path: &Path) -> Result<Self, ExportError> {
         match OverwriteConsent::inspect(path) {
             Ok(consent) => Ok(Self::Replace(consent)),

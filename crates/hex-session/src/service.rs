@@ -15,7 +15,10 @@ use crate::verified_import::VerifiedImportDestination;
 use crate::{DocumentAudioMode, PreparedImport, Session, SessionError, SourcePlanReservation};
 use hex_engine::{PreparedRevision, playback::Playback};
 use hex_export::ExportReport;
-pub use hex_export::{ExportControl, ExportFormat, ExportProgress, ExportSignal, Stem};
+pub use hex_export::{
+    ExportControl, ExportFormat, ExportProgress, ExportSignal, Publication as ExportPublication,
+    Stem,
+};
 use hex_media::{Limits, ResampleLimits, decode_wav_file, waveform::Waveform};
 use hex_project::{Command, Created, Project};
 /// Save As filename admission for the recovery files storage keeps beside a project.

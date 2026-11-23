@@ -909,7 +909,7 @@ mod unit_tests {
                 signal: hex_session::service::ExportSignal::Main,
                 control: control.clone(),
                 format: hex_session::service::ExportFormat::Pcm16,
-                overwrite: false,
+                publication: hex_session::service::ExportPublication::CreateNew,
             },
             Request::Undo,
             Request::Open("confirmed.hex".into()),

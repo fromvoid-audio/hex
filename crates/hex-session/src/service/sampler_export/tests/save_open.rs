@@ -10,7 +10,7 @@ fn export_pcm(service: &Service, path: PathBuf) -> Vec<[i16; 2]> {
             signal: ExportSignal::Main,
             control: Default::default(),
             format: hex_export::ExportFormat::Pcm16,
-            overwrite: false,
+            publication: ExportPublication::CreateNew,
         })
         .unwrap();
     assert!(event(service).error.is_none());

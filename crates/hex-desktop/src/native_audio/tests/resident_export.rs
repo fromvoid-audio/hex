@@ -212,7 +212,7 @@ fn loaded_resident_export_case(frame_limit: u64) {
         signal: ExportSignal::Main,
         control: control.clone(),
         format: hex_export::ExportFormat::Pcm16,
-        overwrite: false,
+        publication: hex_session::service::ExportPublication::CreateNew,
     });
     assert!(completed(&mut h).result.is_ok());
     // Dither is timeline-anchored, so the range is exactly the full slice.
@@ -229,7 +229,7 @@ fn loaded_resident_export_case(frame_limit: u64) {
         ]),
         control: ExportControl::default(),
         format: hex_export::ExportFormat::Pcm16,
-        overwrite: false,
+        publication: hex_session::service::ExportPublication::CreateNew,
     });
     assert!(completed(&mut h).result.is_ok());
     assert_pcm_near(&pcm(&capture), &[quantize(0.328125); 512]);
@@ -250,7 +250,7 @@ fn loaded_resident_export_case(frame_limit: u64) {
         ]),
         control: ExportControl::default(),
         format: hex_export::ExportFormat::Pcm16,
-        overwrite: false,
+        publication: hex_session::service::ExportPublication::CreateNew,
     });
     assert!(completed(&mut h).result.is_ok());
     assert_pcm_near(
@@ -383,7 +383,8 @@ fn streamed_long_repitch_export_matches_resident_prefix() {
                 signal: ExportSignal::Main,
                 control,
                 format: hex_export::ExportFormat::Pcm16,
-                overwrite: true,
+                publication: hex_session::service::ExportPublication::confirmed_save(&existing)
+                    .unwrap(),
             });
             assert!(completed(&mut h).result.is_err());
             assert_eq!(fs::read(existing).unwrap(), b"existing file");
@@ -395,7 +396,7 @@ fn streamed_long_repitch_export_matches_resident_prefix() {
             signal: ExportSignal::Main,
             control: ExportControl::default(),
             format: hex_export::ExportFormat::Pcm16,
-            overwrite: false,
+            publication: hex_session::service::ExportPublication::CreateNew,
         });
         let result = completed(&mut h);
         assert!(result.result.is_ok(), "{:?}", result.result);
@@ -480,7 +481,8 @@ fn streamed_long_pitch_fade_export_matches_resident_prefix() {
                 signal: ExportSignal::Main,
                 control,
                 format: hex_export::ExportFormat::Pcm16,
-                overwrite: true,
+                publication: hex_session::service::ExportPublication::confirmed_save(&existing)
+                    .unwrap(),
             });
             assert!(completed(&mut h).result.is_err());
             assert_eq!(fs::read(existing).unwrap(), b"existing file");
@@ -492,7 +494,7 @@ fn streamed_long_pitch_fade_export_matches_resident_prefix() {
             signal: ExportSignal::Main,
             control: ExportControl::default(),
             format: hex_export::ExportFormat::Pcm16,
-            overwrite: false,
+            publication: hex_session::service::ExportPublication::CreateNew,
         });
         let result = completed(&mut h);
         assert!(result.result.is_ok(), "{:?}", result.result);

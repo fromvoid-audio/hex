@@ -5,7 +5,9 @@ use gpui::{
     AnyWindowHandle, AppContext, Context, Div, PromptButton, PromptLevel, Stateful, Window, div,
     prelude::*, px, relative, rgb,
 };
-use hex_session::service::{ExportControl, ExportFormat, ExportSignal, Request, Stem};
+use hex_session::service::{
+    ExportControl, ExportFormat, ExportPublication, ExportSignal, Request, Stem,
+};
 use std::{path::PathBuf, sync::mpsc::TryRecvError};
 
 impl EditorView {
@@ -225,11 +227,31 @@ impl EditorView {
             };
             let _ = this.update(cx, |view, cx| {
                 view.export_dialog_open = false;
-                // The native save dialog already owns concrete-path overwrite
-                // confirmation. Never ask for that same consent a second time.
                 if path.as_os_str().len() > 4096 {
                     view.error = Some("export path exceeds the 4096-byte limit".into());
-                } else if super::device_panel::finalize_controls(view, cx) {
+                    cx.notify();
+                    return;
+                }
+                // Bind the native save-panel decision before finalizing controls or queuing.
+                let publication = if batch {
+                    Ok(ExportPublication::CreateNew)
+                } else {
+                    ExportPublication::confirmed_save(&path)
+                };
+                let publication = match publication {
+                    Ok(publication) => publication,
+                    Err(error) => {
+                        view.error = Some(
+                            hex_session::service::text::lowercase_outside_verbatim(
+                                &error.to_string(),
+                            )
+                            .into(),
+                        );
+                        cx.notify();
+                        return;
+                    }
+                };
+                if super::device_panel::finalize_controls(view, cx) {
                     let control = ExportControl::default();
                     if view.enqueue_device_barrier(Request::ExportRange {
                         path,
@@ -238,7 +260,7 @@ impl EditorView {
                         signal,
                         control: control.clone(),
                         format,
-                        overwrite: !batch,
+                        publication,
                     }) {
                         view.export_pending = true;
                         view.export_control = Some(control);
