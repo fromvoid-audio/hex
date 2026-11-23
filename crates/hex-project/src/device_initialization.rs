@@ -41,13 +41,40 @@ impl DeviceInitialization {
     }
 
     /// Initialize one complete portable subtree with verified destination asset
-    /// identities. The candidate rechecks those identities before applying.
+    /// identities. Replacement targets must already share the unit root's
+    /// provider type (for same-provider preset loading).
     pub fn new_unit(
         mut command: Command,
         template: PortableDeviceUnit,
         assets: Vec<AssetId>,
     ) -> Result<Self, Invalid> {
-        let unit = unit::CompleteUnit::new(template, assets, state_mut(&mut command)?)?;
+        let unit = unit::CompleteUnit::new(
+            template,
+            assets,
+            state_mut(&mut command)?,
+            unit::ReplacementPolicy::SameProvider,
+        )?;
+        Ok(Self {
+            command,
+            authored: AuthoredInitialization::Unit(unit),
+        })
+    }
+
+    /// Initialize one complete portable subtree for fresh or cross-type catalog
+    /// default replacement. Slot class must match and the command's new state
+    /// must match the unit root, while the replaced device may have a different
+    /// provider type.
+    pub fn new_replacement_unit(
+        mut command: Command,
+        template: PortableDeviceUnit,
+        assets: Vec<AssetId>,
+    ) -> Result<Self, Invalid> {
+        let unit = unit::CompleteUnit::new(
+            template,
+            assets,
+            state_mut(&mut command)?,
+            unit::ReplacementPolicy::AllowTypeChange,
+        )?;
         Ok(Self {
             command,
             authored: AuthoredInitialization::Unit(unit),

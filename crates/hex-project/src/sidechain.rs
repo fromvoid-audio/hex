@@ -143,7 +143,8 @@ impl Project {
         self.validate_playable_routes()
     }
 
-    /// Deleted sources disconnect. Deleted destinations own no remaining route.
+    /// Deleted sources disconnect. Deleted or replaced destinations that no
+    /// longer support a sidechain own no remaining route.
     /// Apply only to an edited candidate. Imported dangling routes must refuse.
     pub(crate) fn prune_deleted_sidechains(&mut self) {
         if self.sidechains.is_empty() {
@@ -151,7 +152,7 @@ impl Project {
         }
         let mut routes = std::mem::take(&mut self.sidechains);
         routes.retain(|route| {
-            self.track(route.source).is_some() && self.device(route.device).is_some()
+            self.track(route.source).is_some() && self.sidechain_destination(route.device).is_ok()
         });
         self.sidechains = routes;
     }
@@ -191,6 +192,92 @@ mod tests {
                     source: Some(track),
                 })
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn replacing_sidechained_compressor_with_other_effect_prunes_sidechain_and_undoes() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(source) = editor
+            .execute(Command::AddTrack {
+                name: "kick".into(),
+            })
+            .unwrap()
+        else {
+            panic!("source track")
+        };
+        let Created::Track(dest) = editor
+            .execute(Command::AddTrack {
+                name: "bass".into(),
+            })
+            .unwrap()
+        else {
+            panic!("dest track")
+        };
+        let comp_state = hex_lattice_contract::NativeDeviceState::new(
+            DeviceTypeId::from_static("hex.compressor"),
+            1,
+            vec![1],
+        )
+        .unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertDevice {
+                track: dest,
+                before: None,
+                state: comp_state.clone(),
+            })
+            .unwrap()
+        else {
+            panic!("compressor")
+        };
+        editor
+            .execute(Command::SetSidechain {
+                device,
+                source: Some(source),
+            })
+            .unwrap();
+        assert_eq!(
+            editor.project().sidechains(),
+            &[SidechainRoute { device, source }]
+        );
+
+        let utility_state = hex_lattice_contract::NativeDeviceState::new(
+            DeviceTypeId::from_static("hex.utility"),
+            1,
+            vec![2],
+        )
+        .unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device,
+                state: utility_state.clone(),
+            })
+            .unwrap();
+        assert!(
+            editor.project().sidechains().is_empty(),
+            "obsolete sidechain route must be pruned when compressor is replaced by another effect"
+        );
+        assert_eq!(
+            editor.project().device(device).unwrap().state(),
+            &utility_state
+        );
+
+        assert!(editor.undo());
+        assert_eq!(
+            editor.project().device(device).unwrap().state(),
+            &comp_state
+        );
+        assert_eq!(
+            editor.project().sidechains(),
+            &[SidechainRoute { device, source }],
+            "undo must restore both the compressor and its sidechain route"
+        );
+
+        assert!(editor.redo());
+        assert!(editor.project().sidechains().is_empty());
+        assert_eq!(
+            editor.project().device(device).unwrap().state(),
+            &utility_state
         );
     }
 }

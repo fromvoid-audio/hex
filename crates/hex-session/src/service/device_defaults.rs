@@ -71,7 +71,7 @@ pub(super) fn initialize(
             *state = preset.state;
             preset.comparison
         }
-        Some(PresetContents::Unit(unit)) => return preset::initialize_complete(command, unit),
+        Some(PresetContents::Unit(unit)) => return preset::initialize_default_unit(command, unit),
         None => None,
     };
     DeviceInitialization::new(command, comparison)

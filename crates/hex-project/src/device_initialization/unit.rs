@@ -7,10 +7,22 @@ use hex_lattice_contract::NativeDeviceState;
 
 mod remap;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ReplacementPolicy {
+    /// Same-provider preset load: the existing target device must already match
+    /// the unit root's `type_id`.
+    SameProvider,
+    /// Catalog default replacement: the existing target device may have a
+    /// different `type_id` as long as its class matches and the replacement
+    /// command's new state matches the unit root (validated at construction).
+    AllowTypeChange,
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct CompleteUnit {
     template: PortableDeviceUnit,
     assets: Box<[AssetId]>,
+    policy: ReplacementPolicy,
 }
 
 impl CompleteUnit {
@@ -18,6 +30,7 @@ impl CompleteUnit {
         template: PortableDeviceUnit,
         assets: Vec<AssetId>,
         target: &NativeDeviceState,
+        policy: ReplacementPolicy,
     ) -> Result<Self, Invalid> {
         if template.assets().len() != assets.len() {
             return Err(Invalid("portable device asset resolution is incomplete"));
@@ -28,6 +41,7 @@ impl CompleteUnit {
         Ok(Self {
             template,
             assets: assets.into_boxed_slice(),
+            policy,
         })
     }
 
@@ -47,9 +61,9 @@ impl CompleteUnit {
             let location = project
                 .device_location(target)
                 .ok_or(Invalid("portable unit replacement target no longer exists"))?;
-            if location.class != self.template.class()
-                || location.device.state().type_id() != root.state.type_id()
-            {
+            let type_mismatch = self.policy == ReplacementPolicy::SameProvider
+                && location.device.state().type_id() != root.state.type_id();
+            if location.class != self.template.class() || type_mismatch {
                 return Err(Invalid(
                     "portable unit does not match the replacement target",
                 ));

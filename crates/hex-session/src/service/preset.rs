@@ -168,6 +168,15 @@ pub(super) fn initialize_complete(
         .map_err(|error| error.to_string())
 }
 
+pub(super) fn initialize_default_unit(
+    command: Command,
+    unit: PortableDeviceUnit,
+) -> Result<Command, String> {
+    DeviceInitialization::new_replacement_unit(command, unit, Vec::new())
+        .map(|initialization| Command::InitializeDevice(Box::new(initialization)))
+        .map_err(|error| error.to_string())
+}
+
 /// Read only on the worker. Both active and inactive native payloads must be
 /// understood by this application before a default can be consumed/replaced.
 pub(super) fn load_default(
