@@ -581,7 +581,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
                 }
                 let mut refused = refusal_event.take().unwrap();
                 refused.error = Some("native graph source is unavailable".into());
-                refused.range_copy_source_unavailable = Some(AudioSourceContext {
+                refused.resident_edit_source_unavailable = Some(AudioSourceContext {
                     project_generation: 0,
                     editor_revision: if outcome == EditRecovery::UnrelatedTerminal {
                         revision + 1
