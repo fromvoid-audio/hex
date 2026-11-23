@@ -101,6 +101,13 @@ impl Panel {
     pub(super) fn cancel(&self, cx: &mut Context<EditorView>) {
         self.entity.update(cx, |graph, cx| graph.cancel(cx));
     }
+
+    pub(super) fn release_pointer_capture(&mut self, cx: &mut Context<EditorView>) {
+        self.entity
+            .update(cx, |graph, cx| graph.release_pointer_capture(cx));
+        self.pair_drag = None;
+        self.group_drag = None;
+    }
 }
 
 struct Creation {

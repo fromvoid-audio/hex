@@ -578,3 +578,93 @@ fn delay_catalog_growth_keeps_scrolling_choices_searchable_on_all_owners(cx: &mu
         }
     }
 }
+
+#[gpui::test]
+fn delay_graph_mid_drag_undo_releases_pointer_capture_without_stale_pending_or_error(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, device, _, _, gate) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let graph = editor.read_with(cx, |v, _| delay_panel::graph_for_test(v, device));
+    let (plot, start_pos) = graph.read_with(cx, |g, _| {
+        (
+            g.plot_bounds().expect("painted filter plot"),
+            g.node_position(1).expect("provider filter node"),
+        )
+    });
+    let point_at = |p: [f32; 2]| {
+        point(
+            plot.left() + plot.size.width * p[0],
+            plot.bottom() - plot.size.height * p[1],
+        )
+    };
+
+    // Start dragging the Delay filter node.
+    visual.simulate_mouse_down(point_at(start_pos), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point_at([0.7, 0.5]),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    pump_until(&editor, cx, |v| v.device_gesture.snapshot().is_some());
+
+    let frozen_pending = editor.read_with(cx, |v, _| v.device_panel.pending_values.clone());
+    assert!(
+        !frozen_pending.is_empty(),
+        "mid-drag must populate pending_values"
+    );
+
+    // Arm the worker gate so Commit is delayed, then trigger Cmd+Z mid-drag.
+    gate.arm();
+    editor.update(cx, |view, cx| {
+        view.history_action(Request::Undo, cx);
+    });
+    visual.run_until_parked();
+    pump_until(&editor, cx, |v| {
+        v.device_gesture.has_pending_terminal() && gate.0.reached.load(Ordering::Acquire)
+    });
+
+    // While the mouse button is still held and Commit is in flight, stale MouseMove
+    // and MouseUp events must NOT write into pending_values or surface an error.
+    visual.simulate_mouse_move(
+        point_at([0.2, 0.2]),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    visual.simulate_mouse_up(
+        point_at([0.2, 0.2]),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+
+    editor.read_with(cx, |v, _| {
+        assert_eq!(
+            v.device_panel.pending_values, frozen_pending,
+            "stale mouse move/up after barrier finalize must not overwrite pending_values"
+        );
+        assert_ne!(
+            v.device_panel.message.as_deref(),
+            Some("device gesture is already finishing"),
+            "released graph capture must not emit stale events against finishing gesture"
+        );
+    });
+
+    gate.release();
+    pump_until(&editor, cx, |v| {
+        v.device_gesture.snapshot().is_none()
+            && v.device_gesture_barriers.is_empty()
+            && v.worker_requests_pending == 0
+    });
+    editor.read_with(cx, |v, _| {
+        assert!(v.error.is_none(), "{:?}", v.error);
+        assert_ne!(
+            v.device_panel.message.as_deref(),
+            Some("device gesture is already finishing")
+        );
+    });
+}

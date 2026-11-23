@@ -437,3 +437,221 @@ fn typed_value_case(
         );
     });
 }
+
+#[gpui::test]
+fn vst3_knob_text_draft_conversion_and_plugin_gesture_protect_fold_finalize_and_mount(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, _backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let client = output.take_client().unwrap();
+    let root = client.output_identity().unwrap();
+    let (project, track, device) = parameter_project();
+    let other_device = {
+        let mut scratch = hex_project::Editor::new(project.clone(), 8).unwrap();
+        let utility = hex_engine::default_native_device_state(
+            hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+        )
+        .unwrap();
+        let hex_project::Created::Device(other) = scratch
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: utility,
+            })
+            .unwrap()
+        else {
+            panic!("utility");
+        };
+        other
+    };
+    let (handle, editor) =
+        crate::editor::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    cx.update_window(handle, |_, window, cx| {
+        window.replace_root(cx, |_, cx| Card {
+            editor: editor.clone(),
+            device,
+            _observe: cx.observe(&editor, |_, _, cx| cx.notify()),
+        });
+    })
+    .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root,
+        instance: device.value(),
+        graph: 1,
+        epoch: 1,
+    };
+    let row = PluginParameterRow {
+        automation_class: Some([2; 16]),
+        ..layout_row(0.25, true, 1)
+    };
+    editor.update(&mut visual, |view, cx| {
+        view.audio = Some(crate::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "headless".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.selected_track = Some(track);
+        view.device_panel.owner = Some(DevicePanelOwner::Track(track));
+        view.device_panel.selected_device = Some(device);
+        view.device_panel_active = true;
+        view.clip_view_open = true;
+        ensure_panel(view, device, cx);
+        let panel = view
+            .device_panel
+            .vst3_parameters
+            .panels
+            .get_mut(&device)
+            .unwrap();
+        panel.cache_loading = false;
+        panel.source = Some(binding);
+        panel.result = Some(Arc::new(vec![row.clone()]));
+        panel.refilter(false);
+        // Simulate a long chain where `device` sits far past the viewport + overscan.
+        let mut geometry = vec![(other_device, 286.0); 20];
+        geometry.push((device, 286.0));
+        view.device_panel.chain_window.prepare(&geometry, None);
+        cx.notify();
+    });
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+
+    // Baseline: offscreen idle card does not report pending draft or forced mount.
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            assert!(!view.device_panel.has_pending_draft(cx));
+            assert!(super::super::super::finalize_controls(view, cx));
+            assert!(!super::super::super::chain_window::must_mount(
+                view,
+                device,
+                Some(window),
+                cx,
+            ));
+        });
+    });
+
+    // 1. Entering a text edit on a VST3 parameter knob blocks fold, blocks finalize_controls,
+    //    sets has_pending_draft, and pins chain_window::must_mount.
+    let selector = Box::leak(format!("vst3-knob-{}-7-value", device.value()).into_boxed_str());
+    let value_center = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_click(value_center, Modifiers::default());
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            let control = view.device_panel.vst3_parameters.panels[&device].knobs[&7]
+                .control
+                .clone();
+            assert!(control.read(cx).is_editing(), "vst3 knob must be editing");
+            assert!(view.device_panel.has_pending_draft(cx));
+            assert!(
+                !super::super::super::finalize_controls(view, cx),
+                "finalize_controls must guard active vst3 text draft"
+            );
+            super::super::super::fold::set_selected(view, device, true, cx);
+            assert!(
+                !view.device_panel.collapsed.contains(&device),
+                "folding must not discard an active vst3 text edit"
+            );
+            assert!(
+                super::super::super::chain_window::must_mount(view, device, Some(window), cx),
+                "active vst3 knob text edit must keep card mounted while scrolled offscreen"
+            );
+        });
+    });
+
+    // 2. An in-flight async SDK conversion (`vst3_parameters.conversion`) also
+    //    blocks fold, blocks finalize_controls, sets has_pending_draft, and pins
+    //    mount even when no knob is actively editing and focus has moved elsewhere.
+    editor.update(&mut visual, |view, cx| {
+        let knob = view
+            .device_panel
+            .vst3_parameters
+            .panels
+            .get_mut(&device)
+            .unwrap()
+            .knobs
+            .get_mut(&7)
+            .unwrap();
+        let control = knob.control.clone();
+        knob._text_observation = cx.observe(&control, |_, _, _| {});
+    });
+    visual.simulate_input("0.5");
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            let knob = &view.device_panel.vst3_parameters.panels[&device].knobs[&7];
+            let control = knob.control.clone();
+            let origin = knob.origin.get();
+            let request = control
+                .update(cx, |c, _| c.take_deferred_text_request())
+                .expect("deferred vst3 text request");
+            control.update(cx, |c, cx| c.cancel(cx));
+            assert!(!control.read(cx).is_editing());
+            view.focus.focus(window);
+            let source = AppliedAudioSource {
+                context: origin.context,
+                audio_revision: 1,
+                output_identity: root,
+            };
+            let query = PluginParameterConversionQuery {
+                context: origin.context,
+                device: origin.device,
+                output_identity: root,
+                request_id: 1,
+                source: binding,
+                parameter: origin.parameter,
+                operation: PluginParameterConversion::Parse(
+                    PluginParameterText::new("0.5").unwrap(),
+                ),
+            };
+            view.device_panel.vst3_parameters.conversion = Some(PendingConversion {
+                query,
+                source,
+                origin,
+                control: control.clone(),
+                draft: request.id,
+            });
+            assert!(view.device_panel.has_pending_draft(cx));
+            assert!(!super::super::super::finalize_controls(view, cx));
+            super::super::super::fold::set_selected(view, device, true, cx);
+            assert!(!view.device_panel.collapsed.contains(&device));
+            assert!(super::super::super::chain_window::must_mount(
+                view,
+                device,
+                Some(window),
+                cx,
+            ));
+            view.device_panel.vst3_parameters.conversion = None;
+            assert!(!view.device_panel.has_pending_draft(cx));
+            assert!(super::super::super::finalize_controls(view, cx));
+            assert!(!super::super::super::chain_window::must_mount(
+                view,
+                device,
+                Some(window),
+                cx,
+            ));
+        });
+    });
+
+    // 3. Active `GestureTarget::PluginParameter` pins `chain_window::must_mount` even when
+    //    focus is elsewhere and no knob entity is currently interacting.
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            let origin = view.device_panel.vst3_parameters.panels[&device].knobs[&7]
+                .origin
+                .get();
+            view.device_gesture.begin_plugin(origin).unwrap();
+            assert!(
+                super::super::super::chain_window::must_mount(view, device, Some(window), cx),
+                "active GestureTarget::PluginParameter must keep card mounted offscreen"
+            );
+            view.device_gesture.reset();
+        });
+    });
+}

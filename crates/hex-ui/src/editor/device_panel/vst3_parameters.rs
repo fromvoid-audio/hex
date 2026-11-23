@@ -49,6 +49,34 @@ pub(super) struct State {
     last_touched_device: Option<DeviceId>,
     reported_status: Option<ReportedStatus>,
 }
+
+impl State {
+    pub(super) fn has_pending_draft(&self, cx: &App) -> bool {
+        self.conversion.is_some()
+            || self
+                .panels
+                .values()
+                .any(|panel| panel.has_pending_draft(cx))
+    }
+
+    pub(super) fn has_pending_text_edit(&self, cx: &App) -> bool {
+        self.conversion.is_some()
+            || self
+                .panels
+                .values()
+                .any(|panel| panel.has_pending_text_edit(cx))
+    }
+
+    pub(super) fn has_active_control(&self, device: DeviceId, cx: &App) -> bool {
+        self.conversion
+            .as_ref()
+            .is_some_and(|pending| pending.origin.device == device)
+            || self
+                .panels
+                .get(&device)
+                .is_some_and(|panel| panel.has_pending_draft(cx))
+    }
+}
 struct PendingConversion {
     query: PluginParameterConversionQuery,
     source: AppliedAudioSource,
@@ -103,6 +131,29 @@ struct Panel {
     row_placeholders: HashMap<u32, RowPlaceholder>,
     next_query_at: Instant,
     retry_count: u8,
+}
+
+impl Panel {
+    fn has_pending_draft(&self, cx: &App) -> bool {
+        self.knobs
+            .values()
+            .chain(self.follow_knob.iter().map(|(_, knob)| knob))
+            .any(|knob| {
+                knob.control.read_with(cx, |control, _| {
+                    control.is_interacting() || control.is_editing()
+                })
+            })
+    }
+
+    fn has_pending_text_edit(&self, cx: &App) -> bool {
+        self.knobs
+            .values()
+            .chain(self.follow_knob.iter().map(|(_, knob)| knob))
+            .any(|knob| {
+                knob.control
+                    .read_with(cx, |control, _| control.is_editing())
+            })
+    }
 }
 struct Knob {
     source: hex_lattice_contract::ForeignProcessorBinding,

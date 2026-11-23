@@ -602,6 +602,17 @@ impl ResponseGraph {
         }
     }
 
+    /// Release active node pointer capture without emitting a `Cancel` event.
+    /// Used when the owning editor finalizes or supersedes the live gesture
+    /// via a barrier (such as Undo, Redo, or Save) while the pointer is held.
+    pub fn release_pointer_capture(&mut self, cx: &mut Context<Self>) {
+        self.clear_creation_hint(cx);
+        let changed = self.drag.take().is_some() | self.press.take().is_some();
+        if changed {
+            cx.notify();
+        }
+    }
+
     fn normalized_position(&self, position: Point<Pixels>) -> Option<[f32; 2]> {
         self.unclamped_position(position)
             .map(|position| position.map(|value| value.clamp(0.0, 1.0)))

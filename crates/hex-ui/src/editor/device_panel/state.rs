@@ -341,7 +341,7 @@ impl DevicePanelState {
             control.entity.read_with(cx, |control, _| {
                 control.is_interacting() || control.is_editing()
             })
-        })
+        }) || self.vst3_parameters.has_pending_draft(cx)
     }
 }
 
@@ -507,6 +507,11 @@ pub(super) fn finalize_controls_except(
             });
         }
     }
+    if view.device_panel.vst3_parameters.has_pending_text_edit(cx) {
+        first_error.get_or_insert_with(|| {
+            "finish or cancel the vst3 parameter value edit first".to_owned()
+        });
+    }
     if let Some(error) = first_error {
         view.error = Some(
             format!("finish the device value edit: {error}")
@@ -515,7 +520,21 @@ pub(super) fn finalize_controls_except(
         );
         false
     } else {
+        release_active_graph_captures(view, cx);
         true
+    }
+}
+
+fn release_active_graph_captures(view: &mut EditorView, cx: &mut Context<EditorView>) {
+    for panel in view.device_panel.eq_panels.values_mut() {
+        panel.release_pointer_capture(cx);
+    }
+    for graph in view.device_panel.eq8_graphs.values_mut() {
+        graph.release_pointer_capture(cx);
+    }
+    view.device_panel.eq8_graph_gestures.clear();
+    for panel in view.device_panel.delay_panels.values_mut() {
+        panel.release_pointer_capture(cx);
     }
 }
 
