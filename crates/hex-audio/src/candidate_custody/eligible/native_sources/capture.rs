@@ -13,6 +13,53 @@ crate::include_vst3_sdk_tests! {
     mod tests;
 }
 
+fn allows_retiring_controller_query(query: hex_plugin_host::protocol::ControllerRequest) -> bool {
+    matches!(
+        query,
+        hex_plugin_host::protocol::ControllerRequest::DetachEditorWhenIdle
+            | hex_plugin_host::protocol::ControllerRequest::CloseEditor
+    )
+}
+
+fn slot_flags_admit_live_capture(
+    phase: Phase,
+    retiring: bool,
+    starting: bool,
+    cancellation_requested: bool,
+    has_live_metadata: bool,
+    cell: &Execution,
+    allow_guarded_controller: bool,
+) -> bool {
+    phase == Phase::Accepted
+        && (!retiring || allow_guarded_controller)
+        && !starting
+        && !cancellation_requested
+        && has_live_metadata
+        && !cell.pending
+        && cell.first_panic.is_none()
+        && cell.cause().is_none()
+        && cell.cleanup_error.is_none()
+        && cell.disposal.is_none()
+        && (cell.retiring_edits.is_none()
+            || (allow_guarded_controller
+                && cell
+                    .retiring_edits
+                    .as_ref()
+                    .is_some_and(|drain| matches!(drain.stage, retiring_edits::Stage::Live(_)))))
+}
+
+fn slot_admits_live_capture(slot: &Slot, cell: &Execution, allow_guarded_controller: bool) -> bool {
+    slot_flags_admit_live_capture(
+        slot.phase,
+        slot.retiring,
+        slot.starting,
+        slot.cancellation_requested,
+        slot.cancellation.is_some() && slot.facts.is_some() && slot.presentation.is_some(),
+        cell,
+        allow_guarded_controller,
+    )
+}
+
 impl Custody {
     // Work excludes source replacement/return; bank is held only for admission
     // and terminal context checks, never copied-state allocation or worker I/O.
@@ -24,8 +71,8 @@ impl Custody {
         self.with_live_capture_guarded(binding, false, run)
     }
 
-    // Only the exact detach request and existing controller terminals may
-    // share the worker with the uniquely claimed retiring edit reader.
+    // Only detach/close requests and existing controller terminals may reach a
+    // retiring slot or share the worker with the uniquely claimed retiring edit reader.
     fn with_live_capture_guarded<R>(
         &self,
         binding: Binding,
@@ -44,24 +91,7 @@ impl Custody {
             let index = bank.sources.index(binding).ok_or("native source differs")?;
             let slot = &bank.sources.slots[index];
             let cell = &work.sources.cells[index];
-            if slot.phase != Phase::Accepted
-                || slot.retiring
-                || slot.starting
-                || slot.cancellation_requested
-                || slot.cancellation.is_none()
-                || slot.facts.is_none()
-                || slot.presentation.is_none()
-                || cell.pending
-                || cell.first_panic.is_some()
-                || cell.cause().is_some()
-                || cell.cleanup_error.is_some()
-                || cell.disposal.is_some()
-                || (cell.retiring_edits.is_some()
-                    && !(allow_guarded_controller
-                        && cell.retiring_edits.as_ref().is_some_and(|drain| {
-                            matches!(drain.stage, retiring_edits::Stage::Live(_))
-                        })))
-            {
+            if !slot_admits_live_capture(slot, cell, allow_guarded_controller) {
                 return Err("native capture source is not active");
             }
             let matches = match cell.owner.as_ref() {
@@ -443,7 +473,7 @@ impl Custody {
             },
             after_admission,
             "native controller query was not admitted",
-            query == hex_plugin_host::protocol::ControllerRequest::DetachEditorWhenIdle,
+            allows_retiring_controller_query(query),
         )
     }
     pub(in crate::candidate_custody) fn poll_native_controller_query(
@@ -1051,5 +1081,90 @@ impl CandidateRoot {
         let result = self.0.eligible.capture_native_source(binding, is_cancelled);
         crate::lifecycle::request_candidate_cleanup(self);
         result
+    }
+}
+
+#[cfg(test)]
+mod retiring_controller_unit_tests {
+    use super::*;
+    use hex_plugin_host::protocol::{ControllerRequest, ParameterPageQuery};
+
+    #[test]
+    fn retiring_controller_query_allows_close_and_detach_only() {
+        assert!(allows_retiring_controller_query(
+            ControllerRequest::DetachEditorWhenIdle
+        ));
+        assert!(allows_retiring_controller_query(
+            ControllerRequest::CloseEditor
+        ));
+        assert!(!allows_retiring_controller_query(
+            ControllerRequest::ReopenEditor(None)
+        ));
+        assert!(!allows_retiring_controller_query(
+            ControllerRequest::ToggleEditor
+        ));
+        assert!(!allows_retiring_controller_query(
+            ControllerRequest::EditorVisibility
+        ));
+        assert!(!allows_retiring_controller_query(ControllerRequest::from(
+            ParameterPageQuery::default()
+        )));
+    }
+
+    #[test]
+    fn retiring_accepted_slot_admits_only_guarded_controller_until_disposal_or_cancellation() {
+        let cell = Execution::default();
+
+        // Active accepted slot admits both ordinary and guarded operations.
+        assert!(slot_flags_admit_live_capture(
+            Phase::Accepted,
+            false,
+            false,
+            false,
+            true,
+            &cell,
+            false
+        ));
+        assert!(slot_flags_admit_live_capture(
+            Phase::Accepted,
+            false,
+            false,
+            false,
+            true,
+            &cell,
+            true
+        ));
+
+        // Retiring accepted draining slot admits guarded CloseEditor/DetachEditorWhenIdle
+        // while refusing ordinary captures and non-guarded controller queries.
+        assert!(!slot_flags_admit_live_capture(
+            Phase::Accepted,
+            true,
+            false,
+            false,
+            true,
+            &cell,
+            false
+        ));
+        assert!(slot_flags_admit_live_capture(
+            Phase::Accepted,
+            true,
+            false,
+            false,
+            true,
+            &cell,
+            true
+        ));
+
+        // Once cancellation is requested, guarded controller admission is also refused.
+        assert!(!slot_flags_admit_live_capture(
+            Phase::Accepted,
+            true,
+            false,
+            true,
+            true,
+            &cell,
+            true
+        ));
     }
 }

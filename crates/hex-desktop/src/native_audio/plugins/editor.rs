@@ -152,7 +152,6 @@ impl Plugins {
                     && !source.retiring
                     && source.binding.root == binding.root
                     && source.project_generation == old.project_generation
-                    && source.owner == old.owner
                     && source.device == old.device
             })
             .map(|source| source.binding)
@@ -474,11 +473,13 @@ impl Plugins {
         if self.editor.is_some() || self.editor_checked == Some(context) {
             return;
         }
+        let mut transfer_pending = false;
         let removed = self.sources.iter().find(|source| {
-            if !source.editor_open
-                || source.retiring
-                || source.project_generation != context.project_generation
-            {
+            if !source.editor_open || source.project_generation != context.project_generation {
+                return false;
+            }
+            if source.editor_transfer {
+                transfer_pending = true;
                 return false;
             }
             let mut present = false;
@@ -496,7 +497,7 @@ impl Plugins {
                 context.project_generation,
                 EditorAction::Close,
             );
-        } else {
+        } else if !transfer_pending {
             self.editor_checked = Some(context);
         }
     }
@@ -693,5 +694,160 @@ mod tests {
                 assert!(plugins.editor.is_none());
             }
         }
+    }
+
+    #[test]
+    fn cross_track_move_transfers_open_editor_window_and_supersedes_reopen_across_owners() {
+        let before = AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 2,
+        };
+        let after_move = AudioSourceContext {
+            editor_revision: 3,
+            ..before
+        };
+        let after_undo_or_second_move = AudioSourceContext {
+            editor_revision: 4,
+            ..before
+        };
+        let donor_binding = Binding {
+            root: 1,
+            instance: 7,
+            graph: 2,
+            epoch: 1,
+        };
+        let receiver_binding = Binding {
+            graph: 3,
+            epoch: 2,
+            ..donor_binding
+        };
+        let third_binding = Binding {
+            graph: 4,
+            epoch: 3,
+            ..donor_binding
+        };
+        let position = PluginEditorPosition::new(240.0, 180.0).unwrap();
+
+        let mut plugins = Plugins {
+            edit: Some(after_move),
+            ..Plugins::default()
+        };
+        let mut donor = source(donor_binding, before, true);
+        donor.owner = ProcessorChainOwner::Track(10);
+        donor.accepted = true;
+        let mut receiver = source(receiver_binding, after_move, false);
+        receiver.owner = ProcessorChainOwner::Track(20);
+        plugins.sources.extend([donor, receiver]);
+
+        // Cross-track move keeps DeviceId (7) while changing owner Track(10) -> Track(20).
+        plugins.finish_edit(after_move, true);
+        plugins.queue_next_editor_transfer(Some(after_move));
+        assert!(
+            plugins.editor_holds(donor_binding),
+            "cross-track move must queue Detach on donor binding even though owner changed"
+        );
+        plugins.finish_editor_action(
+            donor_binding,
+            1,
+            EditorAction::Detach,
+            Ok(PluginEditorState::Detached(position)),
+            Some(after_move),
+        );
+        assert!(!plugins.sources[0].editor_open);
+        assert!(
+            matches!(
+                plugins.editor,
+                Some(EditorOperation::Pending {
+                    binding,
+                    action: EditorAction::Reopen(Some(p)),
+                    ..
+                }) if binding == receiver_binding && p == position
+            ),
+            "detach must queue Reopen at prior position on destination track's successor"
+        );
+
+        // An intervening cross-track move (e.g. Undo back to Track(10) or move to Track(30))
+        // must also resolve the newer successor across owners.
+        let mut third = source(third_binding, after_undo_or_second_move, false);
+        third.owner = ProcessorChainOwner::Track(30);
+        third.accepted = true;
+        plugins.sources[1].retiring = true;
+        plugins.sources.push(third);
+        assert_eq!(
+            plugins.editor_successor(receiver_binding),
+            Some(third_binding)
+        );
+    }
+
+    #[test]
+    fn deleted_draining_retiring_plugin_closes_orphaned_editor_and_clears_open_editor_devices() {
+        let service = hex_session::service::Service::new(48_000, 8, 0).unwrap();
+        let initial = loop {
+            match service.try_event() {
+                Ok(event) => break event,
+                Err(std::sync::mpsc::TryRecvError::Empty) => std::thread::yield_now(),
+                Err(error) => panic!("service event unavailable: {error}"),
+            }
+        };
+        let desired = initial
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .expect("empty project canonical audio source snapshot");
+        let context = desired.context();
+        let binding = Binding {
+            root: 1,
+            instance: 99,
+            graph: context.editor_revision,
+            epoch: 1,
+        };
+
+        let mut plugins = Plugins::default();
+        let mut deleted = source(binding, context, true);
+        deleted.accepted = true;
+        // Simulates `retire_absent_catalog_sources` marking the deleted source retiring
+        // before `close_removed_editor` runs while outgoing tails drain.
+        deleted.retiring = true;
+        // First verify an active transfer is not prematurely closed or cached.
+        deleted.editor_transfer = true;
+        plugins.sources.push(deleted);
+        plugins.close_removed_editor(desired);
+        assert!(plugins.editor.is_none());
+        assert_eq!(plugins.editor_checked, None);
+
+        // Once no transfer is pending, `close_removed_editor` must close the retiring source.
+        plugins.sources[0].editor_transfer = false;
+        assert_eq!(
+            plugins
+                .open_editor_devices(context.project_generation)
+                .next(),
+            Some(binding.instance)
+        );
+        plugins.close_removed_editor(desired);
+        assert!(
+            matches!(
+                plugins.editor,
+                Some(EditorOperation::Pending {
+                    binding: queued,
+                    action: EditorAction::Close,
+                    ..
+                }) if queued == binding
+            ),
+            "close_removed_editor must queue Close for a retiring deleted source with an open editor"
+        );
+        plugins.finish_editor_action(
+            binding,
+            context.project_generation,
+            EditorAction::Close,
+            Ok(PluginEditorState::Closed),
+            Some(context),
+        );
+        assert!(!plugins.sources[0].editor_open);
+        assert_eq!(
+            plugins
+                .open_editor_devices(context.project_generation)
+                .next(),
+            None
+        );
     }
 }
