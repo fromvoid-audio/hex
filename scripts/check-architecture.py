@@ -74,9 +74,9 @@ BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'libloading': set(), 'corem
               'qos-threads': {'hex-audio'},
               # Source/scanner identities, automation draft integrity and bounded
               # control-side hashes of retained PCM and selected desktop update receipts; never callback DSP.
-              'sha2': {'hex-storage', 'hex-media', 'hex-engine', 'hex-plugin-scan', 'hex-clap-scan', 'hex-desktop'},
-              # Child disposition belongs only to the standalone scanners.
-              'signal-hook': {'hex-plugin-scan', 'hex-clap-scan', 'hex-scan-supervisor'},
+              'sha2': {'hex-storage', 'hex-media', 'hex-engine', 'hex-plugin-scan', 'hex-clap-scan', 'hex-scan-supervisor', 'hex-desktop'},
+              # Child disposition belongs only to the standalone scanner supervisor.
+              'signal-hook': {'hex-scan-supervisor'},
               # Signal only the owned local-update helper group on desktop control workers.
               'nix': {'hex-desktop'},
               # Safe publication/standalone child ownership; host event-only socket readiness.

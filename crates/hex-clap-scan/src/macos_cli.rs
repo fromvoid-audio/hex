@@ -3,15 +3,7 @@
 pub(super) mod supervisor;
 use std::time::Duration;
 pub(super) fn deadline(args: &[std::ffi::OsString], at: usize) -> Result<Duration, String> {
-    let n = match args.get(at) {
-        None => 10000,
-        Some(v) => v
-            .to_str()
-            .and_then(|s| s.parse::<u64>().ok())
-            .filter(|v| (1..=30000).contains(v))
-            .ok_or("deadline must be1..30000 milliseconds")?,
-    };
-    Ok(Duration::from_millis(n))
+    hex_scan_supervisor::cli::parse_deadline_duration(args.get(at).map(AsRef::as_ref))
 }
 pub(super) fn finish(
     mut output: supervisor::Output,

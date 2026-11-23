@@ -8,6 +8,7 @@ use hex_plugin_scan::{
         protocol::{self, Attempt},
     },
 };
+use hex_scan_supervisor::{io::drain_bounded, signal::SignalGuard};
 use rustix::process::{self, Pid, Signal, WaitId, WaitIdOptions};
 use std::{
     io::{Read, Write},
@@ -19,43 +20,12 @@ use std::{
         },
     },
     process::{Child, Command, Stdio},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::atomic::Ordering,
     time::{Duration, Instant},
 };
 
 const DIAGNOSTIC_LIMIT: usize = 64 * 1024;
 const CLEANUP_BUDGET: Duration = Duration::from_millis(500);
-
-struct SignalGuard(Vec<signal_hook::SigId>);
-impl Drop for SignalGuard {
-    fn drop(&mut self) {
-        for id in self.0.drain(..) {
-            signal_hook::low_level::unregister(id);
-        }
-    }
-}
-
-fn signals() -> Result<(SignalGuard, Arc<AtomicBool>), String> {
-    let mut guard = SignalGuard(Vec::with_capacity(3));
-    guard.0.push(
-        signal_hook::flag::register(
-            signal_hook::consts::SIGCHLD,
-            Arc::new(AtomicBool::new(false)),
-        )
-        .map_err(|e| format!("waitable child disposition unavailable: {e}"))?,
-    );
-    let cancelled = Arc::new(AtomicBool::new(false));
-    for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
-        guard.0.push(
-            signal_hook::flag::register(signal, Arc::clone(&cancelled))
-                .map_err(|e| format!("scoped cancellation signal unavailable: {e}"))?,
-        );
-    }
-    Ok((guard, cancelled))
-}
 
 pub struct Pending {
     process: NativeChild,
@@ -240,22 +210,14 @@ fn signal_group(pid: Pid, signal: Signal) -> GroupOutcome {
 }
 
 fn drain(reader: &mut UnixStream, output: &mut Vec<u8>, limit: usize) -> Result<bool, String> {
-    let mut buffer = [0_u8; 4096];
-    for _ in 0..4 {
-        match reader.read(&mut buffer) {
-            Ok(0) => return Ok(true),
-            Ok(count) => {
-                if output.len().checked_add(count).is_none_or(|n| n > limit) {
-                    return Err("scan protocol or diagnostic byte bound exceeded".into());
-                }
-                output.extend_from_slice(&buffer[..count]);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(false),
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(format!("scan channel read failed: {error}")),
-        }
-    }
-    Ok(false)
+    drain_bounded(
+        reader,
+        output,
+        limit,
+        "scan protocol or diagnostic byte bound exceeded",
+        |error| format!("scan channel read failed: {error}"),
+    )
+    .map(|outcome| outcome.eof)
 }
 
 pub fn stdin_cancelled(cancel_on_disconnect: bool) -> Result<bool, String> {
@@ -292,13 +254,13 @@ pub fn run(
     mut cancelled: impl FnMut() -> Result<bool, String>,
 ) -> Result<(Report, Option<Pending>), String> {
     if deadline.is_zero() || deadline > Duration::from_secs(30) {
-        return Err("scan deadline must be1..30000 milliseconds".into());
+        return Err("scan deadline must be 1..30000 milliseconds".into());
     }
     let mut deadline_started = Some(Instant::now());
     let mut outgoing = protocol::request(&bundle, attempt)?;
     build.unchanged()?;
     bundle.unchanged()?;
-    let (signal, signal_cancelled) = signals()?;
+    let (signal, signal_cancelled) = SignalGuard::register_sigchld_and_cancel()?;
     let mut cancelled = || Ok(signal_cancelled.load(Ordering::Relaxed) || cancelled()?);
     let (mut channel, peer) =
         UnixStream::pair().map_err(|e| format!("scan protocol unavailable: {e}"))?;
