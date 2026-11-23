@@ -77,6 +77,9 @@ impl NativeDeviceDragSource {
     pub(super) fn is_catalog_vst3_effect(&self) -> bool {
         matches!(self, Self::PluginEffect(selection) if selection.role == hex_plugin_catalog::PluginRole::Effect)
     }
+    pub(super) fn is_catalog_vst3_instrument(&self) -> bool {
+        matches!(self, Self::PluginEffect(selection) if selection.role == hex_plugin_catalog::PluginRole::Instrument)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

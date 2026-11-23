@@ -872,16 +872,31 @@ impl EditorView {
         self.insert_plugin_effect(&selection, destination, None, cx);
     }
 
-    pub(super) fn insert_plugin_effect(
-        &mut self,
-        selection: &hex_plugin_catalog::PluginSelection,
+    pub(super) fn resolve_plugin_destination(
+        project: &hex_project::Project,
+        role: hex_plugin_catalog::PluginRole,
         destination: PluginEffectDestination,
         before: Option<hex_project::DeviceId>,
-        cx: &App,
-    ) {
-        let (destination, before) = match (selection.role, destination) {
+    ) -> Result<(PluginEffectDestination, Option<hex_project::DeviceId>), &'static str> {
+        match (role, destination) {
             (hex_plugin_catalog::PluginRole::Instrument, PluginEffectDestination::Track(track)) => {
-                (PluginEffectDestination::Instrument(track), None)
+                let Some(target) = project.track(track) else {
+                    return Err("select a track for the vst3 instrument");
+                };
+                if target.is_group() {
+                    return Err("select an ordinary receiving track for the vst3 instrument");
+                }
+                if let Some(instrument) = target.instrument().map(hex_project::Device::id) {
+                    if !target.receives_source_audio() {
+                        return Err("select an ordinary receiving track for the vst3 instrument");
+                    }
+                    Ok((
+                        PluginEffectDestination::ReplaceInstrument { track, instrument },
+                        None,
+                    ))
+                } else {
+                    Ok((PluginEffectDestination::Instrument(track), None))
+                }
             }
             (
                 hex_plugin_catalog::PluginRole::Instrument,
@@ -890,20 +905,40 @@ impl EditorView {
                     slot: hex_project::TrackDeviceSlot::Instrument,
                     ..
                 },
-            ) => (destination, None),
+            ) => Ok((destination, None)),
             (hex_plugin_catalog::PluginRole::Instrument, _) => {
-                self.error = Some("select a track for the vst3 instrument".into());
+                Err("select a track for the vst3 instrument")
+            }
+            _ => Ok((destination, before)),
+        }
+    }
+
+    pub(super) fn insert_plugin_effect(
+        &mut self,
+        selection: &hex_plugin_catalog::PluginSelection,
+        destination: PluginEffectDestination,
+        before: Option<hex_project::DeviceId>,
+        cx: &App,
+    ) {
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let (destination, before) = match Self::resolve_plugin_destination(
+            &state.project,
+            selection.role,
+            destination,
+            before,
+        ) {
+            Ok(resolved) => resolved,
+            Err(message) => {
+                self.error = Some(message.into());
                 return;
             }
-            _ => (destination, before),
         };
         if self.pending_plugin_effect.is_some() {
             self.error = Some("wait for the pending device insertion".into());
             return;
         }
-        let Some(state) = self.state.as_ref() else {
-            return;
-        };
         let control = Arc::new(PluginEffectControl::opening_editor());
         let request = PluginEffectInsertion {
             context: hex_engine::AudioSourceContext {
@@ -996,4 +1031,197 @@ pub(crate) fn fixture_catalog(
         catalog.record(selected.module.clone(), Ok((report, "e".repeat(40))))
     })
     .map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hex_plugin_catalog::PluginRole;
+    use hex_project::{Command, Created, Editor, Project, TrackSelectionIds};
+
+    #[test]
+    fn resolve_plugin_destination_replaces_occupied_instruments_and_respects_track_ownership() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(empty_track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "empty".into(),
+            })
+            .unwrap()
+        else {
+            panic!("empty track");
+        };
+        let Created::Track(native_track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "native".into(),
+            })
+            .unwrap()
+        else {
+            panic!("native track");
+        };
+        let sine = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Instrument,
+            hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sine"),
+        )
+        .unwrap();
+        let Created::Device(native_instrument) = editor
+            .execute(Command::InsertInstrument {
+                track: native_track,
+                state: sine,
+            })
+            .unwrap()
+        else {
+            panic!("native instrument");
+        };
+        let source = editor
+            .project()
+            .track(native_track)
+            .unwrap()
+            .source_id()
+            .unwrap();
+        let Created::Track(contributor) = editor
+            .execute(Command::AddMidiTrack {
+                name: "contributor".into(),
+            })
+            .unwrap()
+        else {
+            panic!("contributor");
+        };
+        editor
+            .execute(Command::BindTrackSource {
+                track: contributor,
+                source: Some(source),
+            })
+            .unwrap();
+        let Created::Track(vst3_track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "vst3".into(),
+            })
+            .unwrap()
+        else {
+            panic!("vst3 track");
+        };
+        let vst3_state = hex_lattice_contract::NativeDeviceState::new(
+            hex_lattice_contract::VST3_DEVICE_TYPE_ID,
+            1,
+            vec![1],
+        )
+        .unwrap();
+        let Created::Device(vst3_instrument) = editor
+            .execute(Command::InsertInstrument {
+                track: vst3_track,
+                state: vst3_state,
+            })
+            .unwrap()
+        else {
+            panic!("vst3 instrument");
+        };
+        let Created::Track(group) = editor
+            .execute(Command::GroupTracks {
+                tracks: TrackSelectionIds::new(&[empty_track]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group");
+        };
+        let Created::ReturnTrack(bus) = editor
+            .execute(Command::AddReturnTrack { name: "bus".into() })
+            .unwrap()
+        else {
+            panic!("return");
+        };
+
+        let project = editor.project();
+        // Empty track -> Instrument(track).
+        assert_eq!(
+            EditorView::resolve_plugin_destination(
+                project,
+                PluginRole::Instrument,
+                PluginEffectDestination::Track(empty_track),
+                None,
+            ),
+            Ok((PluginEffectDestination::Instrument(empty_track), None))
+        );
+        // Occupied track (native or VST3) -> ReplaceInstrument { track, instrument }.
+        assert_eq!(
+            EditorView::resolve_plugin_destination(
+                project,
+                PluginRole::Instrument,
+                PluginEffectDestination::Track(native_track),
+                None,
+            ),
+            Ok((
+                PluginEffectDestination::ReplaceInstrument {
+                    track: native_track,
+                    instrument: native_instrument,
+                },
+                None,
+            ))
+        );
+        assert_eq!(
+            EditorView::resolve_plugin_destination(
+                project,
+                PluginRole::Instrument,
+                PluginEffectDestination::Track(vst3_track),
+                None,
+            ),
+            Ok((
+                PluginEffectDestination::ReplaceInstrument {
+                    track: vst3_track,
+                    instrument: vst3_instrument,
+                },
+                None,
+            ))
+        );
+        // Group track, non-receiving contributor track, Return, and Main refuse VST3 instrument.
+        assert!(
+            EditorView::resolve_plugin_destination(
+                project,
+                PluginRole::Instrument,
+                PluginEffectDestination::Track(group),
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            EditorView::resolve_plugin_destination(
+                project,
+                PluginRole::Instrument,
+                PluginEffectDestination::Track(contributor),
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            EditorView::resolve_plugin_destination(
+                project,
+                PluginRole::Instrument,
+                PluginEffectDestination::Return(bus),
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            EditorView::resolve_plugin_destination(
+                project,
+                PluginRole::Instrument,
+                PluginEffectDestination::Main,
+                None,
+            )
+            .is_err()
+        );
+        // VST3 effect keeps Track(track) and preserves before == Some(instrument).
+        assert_eq!(
+            EditorView::resolve_plugin_destination(
+                project,
+                PluginRole::Effect,
+                PluginEffectDestination::Track(native_track),
+                Some(native_instrument),
+            ),
+            Ok((
+                PluginEffectDestination::Track(native_track),
+                Some(native_instrument),
+            ))
+        );
+    }
 }

@@ -25,6 +25,30 @@ pub(super) struct ArrangementDevicePreview {
     pub(super) destination: ArrangementDeviceDestination,
     target: ArrangementDropTarget,
 }
+pub(super) fn arrangement_existing_track_plugin_destination(
+    track: &hex_project::Track,
+    role: PluginRole,
+) -> Option<PluginEffectDestination> {
+    match role {
+        PluginRole::Effect => Some(PluginEffectDestination::Track(track.id())),
+        PluginRole::Instrument => {
+            if track.is_group() {
+                return None;
+            }
+            match track.instrument().map(hex_project::Device::id) {
+                Some(instrument) if track.receives_source_audio() => {
+                    Some(PluginEffectDestination::ReplaceInstrument {
+                        track: track.id(),
+                        instrument,
+                    })
+                }
+                Some(_) => None,
+                None => Some(PluginEffectDestination::Instrument(track.id())),
+            }
+        }
+    }
+}
+
 impl EditorView {
     pub(super) fn painted_arrangement_drop_target(
         &self,
@@ -87,10 +111,18 @@ impl EditorView {
         let Some(target) = target else {
             return;
         };
-        if plugin_role == Some(PluginRole::Instrument)
-            && matches!(target, ArrangementDropTarget::ExistingTrack { .. })
+        if let (Some(role), ArrangementDropTarget::ExistingTrack { track, .. }) =
+            (plugin_role, target)
         {
-            return;
+            let compatible = self
+                .state
+                .as_ref()
+                .and_then(|state| state.project.track(track))
+                .and_then(|target| arrangement_existing_track_plugin_destination(target, role))
+                .is_some();
+            if !compatible {
+                return;
+            }
         }
         let destination = match target {
             ArrangementDropTarget::NewTrack { before_track, .. } => {
@@ -181,13 +213,17 @@ impl EditorView {
             (valid, captured, source)
         {
             match preview.destination {
-                ArrangementDeviceDestination::ExistingTrack { track, .. } => {
-                    self.insert_plugin_effect(
-                        selection,
-                        PluginEffectDestination::Track(track),
-                        None,
-                        cx,
-                    );
+                ArrangementDeviceDestination::ExistingTrack { track, instrument } => {
+                    let destination = match (selection.role, instrument) {
+                        (PluginRole::Instrument, Some(instrument)) => {
+                            PluginEffectDestination::ReplaceInstrument { track, instrument }
+                        }
+                        (PluginRole::Instrument, None) => {
+                            PluginEffectDestination::Instrument(track)
+                        }
+                        (PluginRole::Effect, _) => PluginEffectDestination::Track(track),
+                    };
+                    self.insert_plugin_effect(selection, destination, None, cx);
                 }
                 ArrangementDeviceDestination::NewTrack { before_track } => {
                     self.insert_plugin_track(selection, before_track, cx);
@@ -259,5 +295,124 @@ impl EditorView {
                 .border_1()
                 .border_color(rgb(theme::color(theme::PaletteRole::Secondary))),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hex_project::{Command, Created, Editor, Project, TrackSelectionIds};
+
+    #[test]
+    fn arrangement_existing_track_plugin_destination_handles_instruments_groups_and_shared_sources()
+    {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(empty_track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "empty".into(),
+            })
+            .unwrap()
+        else {
+            panic!("empty track");
+        };
+        let Created::Track(occupied_track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "occupied".into(),
+            })
+            .unwrap()
+        else {
+            panic!("occupied track");
+        };
+        let sine = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Instrument,
+            hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sine"),
+        )
+        .unwrap();
+        let Created::Device(instrument) = editor
+            .execute(Command::InsertInstrument {
+                track: occupied_track,
+                state: sine,
+            })
+            .unwrap()
+        else {
+            panic!("instrument");
+        };
+        let source = editor
+            .project()
+            .track(occupied_track)
+            .unwrap()
+            .source_id()
+            .unwrap();
+        let Created::Track(contributor) = editor
+            .execute(Command::AddMidiTrack {
+                name: "contributor".into(),
+            })
+            .unwrap()
+        else {
+            panic!("contributor");
+        };
+        editor
+            .execute(Command::BindTrackSource {
+                track: contributor,
+                source: Some(source),
+            })
+            .unwrap();
+        let Created::Track(member) = editor
+            .execute(Command::AddTrack {
+                name: "member".into(),
+            })
+            .unwrap()
+        else {
+            panic!("member");
+        };
+        let Created::Track(group) = editor
+            .execute(Command::GroupTracks {
+                tracks: TrackSelectionIds::new(&[member]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group");
+        };
+
+        let project = editor.project();
+        assert_eq!(
+            arrangement_existing_track_plugin_destination(
+                project.track(empty_track).unwrap(),
+                PluginRole::Instrument,
+            ),
+            Some(PluginEffectDestination::Instrument(empty_track))
+        );
+        assert_eq!(
+            arrangement_existing_track_plugin_destination(
+                project.track(occupied_track).unwrap(),
+                PluginRole::Instrument,
+            ),
+            Some(PluginEffectDestination::ReplaceInstrument {
+                track: occupied_track,
+                instrument,
+            })
+        );
+        assert_eq!(
+            arrangement_existing_track_plugin_destination(
+                project.track(contributor).unwrap(),
+                PluginRole::Instrument,
+            ),
+            None
+        );
+        assert_eq!(
+            arrangement_existing_track_plugin_destination(
+                project.track(group).unwrap(),
+                PluginRole::Instrument,
+            ),
+            None
+        );
+        assert_eq!(
+            arrangement_existing_track_plugin_destination(
+                project.track(group).unwrap(),
+                PluginRole::Effect,
+            ),
+            Some(PluginEffectDestination::Track(group))
+        );
     }
 }
