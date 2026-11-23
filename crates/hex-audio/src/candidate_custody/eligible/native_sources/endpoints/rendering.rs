@@ -17,8 +17,7 @@ impl NativeEndpointBank {
             .callback()
             .transport_fault_for_test()
     }
-    #[cfg(all(test, feature = "allocation-probe"))]
-    #[allow(dead_code)]
+    #[cfg(all(test, feature = "vst3-sdk-tests"))]
     pub(crate) fn test_pending_requests(&self, binding: Binding) -> Option<usize> {
         Some(
             self.entries
@@ -32,8 +31,7 @@ impl NativeEndpointBank {
                 .pending_requests_for_test(),
         )
     }
-    #[cfg(all(test, feature = "allocation-probe"))]
-    #[allow(dead_code)]
+    #[cfg(all(test, feature = "vst3-sdk-tests"))]
     pub(crate) fn test_committed_frames(&self, binding: Binding) -> Option<u64> {
         self.entries
             .iter()
