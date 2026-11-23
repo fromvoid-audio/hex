@@ -167,7 +167,14 @@ fn cut_clips_captures_and_removes_atomically_supports_paste_undo_and_refuses_inv
 
     let cut = run(&service, Request::CutClips(clips.clone()));
     assert_eq!(cut.status.as_deref(), Some("clips cut"));
-    assert!(cut.state.project.track(source).unwrap().midi_clips().is_empty());
+    assert!(
+        cut.state
+            .project
+            .track(source)
+            .unwrap()
+            .midi_clips()
+            .is_empty()
+    );
 
     // Malformed cuts refuse without replacing the previously captured clipboard.
     for invalid in [vec![], vec![clips[0]], vec![clips[0], clips[0]]] {
@@ -194,7 +201,13 @@ fn cut_clips_captures_and_removes_atomically_supports_paste_undo_and_refuses_inv
     run(&service, Request::Undo);
     let restored = run(&service, Request::Undo);
     assert_eq!(
-        restored.state.project.track(source).unwrap().midi_clips().len(),
+        restored
+            .state
+            .project
+            .track(source)
+            .unwrap()
+            .midi_clips()
+            .len(),
         2
     );
     assert!(

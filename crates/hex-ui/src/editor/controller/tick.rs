@@ -1172,7 +1172,7 @@ impl EditorView {
             self.deferred_metadata_seek = None;
             self.play_intent.clear();
             visible_change |= replace_status(&mut self.status, "audio device unavailable");
-            let diagnostic = "audio device failed · editing and saving remain available";
+            let diagnostic = "audio device failed · restart audio to restore playback";
             let message = fault_with_action_errors(&self.error, diagnostic, &action_errors);
             visible_change |= replace_error(&mut self.error, &message);
         } else if audio

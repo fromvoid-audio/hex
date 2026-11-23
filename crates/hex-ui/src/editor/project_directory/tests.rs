@@ -313,6 +313,7 @@ fn project_directory_cancel_platform_error_and_save_failure_keep_original_files(
         let state = view.state.as_ref().unwrap();
         assert_eq!(state.project, before.project);
         assert_eq!(state.document_path, before.document_path);
+        assert_eq!(view.status, "project was not saved");
         assert!(!view.save_dialog_open);
     });
     assert_eq!(std::fs::read(owned.preferences()).unwrap(), original);

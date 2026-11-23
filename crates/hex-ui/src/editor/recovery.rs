@@ -1114,7 +1114,7 @@ impl EditorView {
             self.error = Some(message.into());
             return;
         }
-        self.status = "audio unavailable · editing and saving remain available".into();
+        self.status = "audio unavailable · restart audio to restore playback".into();
         self.error = Some(error.to_string().into());
     }
 
