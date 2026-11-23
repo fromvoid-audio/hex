@@ -166,8 +166,7 @@ impl Hosting {
 }
 
 impl CanonicalBasesCapture {
-    #[cfg(all(test, feature = "allocation-probe"))]
-    #[allow(dead_code)]
+    #[cfg(all(test, feature = "vst3-sdk-tests"))]
     pub(crate) fn awaiting_processing_approval(&self) -> bool {
         matches!(self.phase, Phase::Verify)
     }
