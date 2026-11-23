@@ -190,18 +190,18 @@ impl OperatorFeedbackRuntime {
         let mut result = [None; MAX_VOICES];
         for (slot, out) in self.voices.iter().zip(&mut result) {
             if let Some(voice) = slot.voice {
-                let (note, age, gate, previous, feedback) = voice.filter_seed()?;
+                let seed = voice.filter_seed();
                 let expected = self
                     .filter_parameter_boundary()
                     .map_or(self.feedback_turns, |(p, _)| *p.feedback_turns());
-                if feedback != expected || age == u64::MAX {
+                if seed.feedback != expected || seed.age == u64::MAX {
                     return None;
                 }
                 *out = Some(super::FilterVoiceSeed {
-                    note,
-                    age,
-                    gate,
-                    previous,
+                    note: seed.note,
+                    age: seed.age,
+                    gate: seed.gate,
+                    previous: seed.previous,
                     id: slot.occurrence_id,
                 });
             }

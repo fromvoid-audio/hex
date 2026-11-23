@@ -311,8 +311,6 @@ fn render_stems_with_resources_and_hook(
         // Summed across every stem file in the batch.
         clipped_samples,
         recovery_path: None,
-        // Stem batches stage in their own directory, outside this sweep.
-        stale_temporaries: StaleTemporaries::default(),
     })
 }
 

@@ -73,6 +73,10 @@ pub enum DiagnosticStage {
         revision: u64,
         error: bool,
     },
+    ClipAuditionRestoreFailed {
+        generation: u64,
+        revision: u64,
+    },
     IdentityExhausted,
 }
 /// Borrow during a control callback. Details are capped at 1024 UTF-8 bytes;
@@ -265,6 +269,25 @@ impl Hooks {
             Err(SubmitError::Closed(_)) => "closed",
         };
         self.emit(request, DiagnosticStage::SubmitReturned { result }, None);
+    }
+    pub fn record_clip_audition_restore_failure(
+        &self,
+        context: hex_engine::AudioSourceContext,
+        error: &crate::SessionError,
+    ) {
+        if self.observer.get().is_none() {
+            return;
+        }
+        let mut description = Description::new("clip_audition_restore");
+        description.field("reason", format_args!("{error}"));
+        self.emit(
+            None,
+            DiagnosticStage::ClipAuditionRestoreFailed {
+                generation: context.project_generation,
+                revision: context.editor_revision,
+            },
+            Some(description),
+        );
     }
     pub fn emit(
         &self,

@@ -1,8 +1,7 @@
 //! Control-prepared ownership for shared immutable analytic instrument contexts.
 use crate::Invalid;
 use hex_lattice::{
-    MAX_SHARED_ANALYTIC_CONTEXT_BYTES, NativeInstrumentRegistry, PreparedNativeInstrument,
-    PreparedSharedAnalyticContext,
+    MAX_SHARED_ANALYTIC_CONTEXT_BYTES, NativeInstrumentRegistry, PreparedSharedAnalyticContext,
 };
 use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
 use hex_project::{DeviceId, Project, SourceId, TrackId};
@@ -599,9 +598,6 @@ impl SharedAnalyticContextTable {
         self.owners.len()
     }
 }
-
-#[allow(dead_code)]
-fn _prepared_config_is_send_sync<T: PreparedNativeInstrument>() {}
 
 #[cfg(test)]
 mod tests {

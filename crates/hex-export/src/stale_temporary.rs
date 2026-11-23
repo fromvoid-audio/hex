@@ -11,18 +11,6 @@ use std::{fs::File, io};
 const PREFIX: &str = ".hex-export-";
 const SUFFIX: &str = ".tmp";
 
-/// Historical pre-export cleanup counts, retained for the export report API.
-///
-/// Automatic stale-file cleanup is suspended, so both counts are zero. Files
-/// from interrupted exports or publication conflicts remain for inspection.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct StaleTemporaries {
-    /// Abandoned temporaries removed from the destination directory.
-    pub removed: u32,
-    /// Matching temporaries that could not be inspected, locked or removed.
-    pub failed: u32,
-}
-
 pub(crate) fn name(pid: u32, identifier: u64) -> String {
     format!("{PREFIX}{pid}-{identifier}{SUFFIX}")
 }

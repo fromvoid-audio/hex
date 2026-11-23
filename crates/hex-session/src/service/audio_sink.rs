@@ -1859,6 +1859,9 @@ pub(super) struct ControlPoll {
 }
 
 impl WorkerEvents {
+    pub(super) fn diagnostics(&self) -> Arc<super::diagnostics::Hooks> {
+        Arc::clone(&self.diagnostics)
+    }
     pub(super) fn legacy_reader_limit(&self) -> usize {
         self.diagnostics.legacy_reader_limit()
     }

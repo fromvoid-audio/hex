@@ -620,7 +620,6 @@ mod tests {
                 data_bytes: 0,
                 clipped_samples: 0,
                 recovery_path: None,
-                stale_temporaries: Default::default(),
             })
         }
         {
@@ -905,7 +904,6 @@ mod tests {
                             data_bytes: 4,
                             clipped_samples: 0,
                             recovery_path: has_recovery.then(|| recovery_for_worker.clone()),
-                            stale_temporaries: Default::default(),
                         })
                     }),
                     finished_tx,

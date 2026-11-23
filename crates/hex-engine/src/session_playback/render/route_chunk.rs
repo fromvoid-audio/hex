@@ -532,10 +532,8 @@ pub(super) fn render_release_captured(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn render_release_raw(
     release: &super::ReleaseEntry,
-    _table: &hex_devices::SineTable,
     contexts: &crate::shared_analytic::SharedAnalyticContextTable,
     retained: &[Option<Arc<crate::shared_analytic::SharedContextOwner>>],
     continuations: &[Option<hex_lattice::AnalyticContinuation>],

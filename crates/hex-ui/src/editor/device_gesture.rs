@@ -87,10 +87,6 @@ pub(super) fn retire_failed_finalize_barriers(
             | Request::SaveDeviceUnitPreset { .. }
             | Request::SaveDeviceUnitDefault { .. }
             | Request::LoadDevicePreset { .. } => {}
-            Request::Open(_)
-            | Request::OpenWith { .. }
-            | Request::NewWithAudioMode { .. }
-            | Request::OpenWithAudioMode { .. } => kept.push_back(request),
             request => kept.push_back(request),
         }
     }
@@ -145,7 +141,6 @@ impl EditorView {
     }
 
     /// Start the worker-owned native parameter edit used by device controls.
-    #[allow(dead_code)] // The native device panel binds this interaction contract in its own request.
     pub fn begin_device_gesture(
         &mut self,
         target: GestureTarget,
@@ -200,7 +195,6 @@ impl EditorView {
         Ok(())
     }
 
-    #[allow(dead_code)] // The native device panel binds this interaction contract in its own request.
     pub fn change_device_gesture(&mut self, value: ParameterValue) -> Result<(), &'static str> {
         self.device_gesture.change(value).map(|_| ())
     }
@@ -226,7 +220,6 @@ impl EditorView {
         self.device_gesture.finish_pair(value)
     }
 
-    #[allow(dead_code)] // The native device panel binds this interaction contract in its own request.
     pub fn cancel_device_gesture(&mut self) -> Result<(), &'static str> {
         self.device_gesture.cancel()
     }
