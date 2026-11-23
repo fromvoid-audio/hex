@@ -1195,8 +1195,9 @@ impl NativeWorker {
             let deadline = self.reaper.control.deadline_miss().map_or_else(
                 String::new,
                 |miss| format!(
-                    " reply_sequence={} worker_phase={:?} quantum={}",
-                    miss.reply_sequence, miss.worker_phase, self.quantum
+                    " reply_sequence={} worker_phase={:?} quantum={} last_received_sequence={:?} last_processed_sequence={:?}",
+                    miss.miss.reply_sequence, miss.miss.worker_phase, self.quantum,
+                    miss.last_received_sequence, miss.last_processed_sequence
                 ),
             );
             format!(
