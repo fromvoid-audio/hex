@@ -116,7 +116,7 @@ impl Request {
                 w.u32(v.to_bits());
             }
         }
-        packet(b"HCOFFQ01", w.bytes)
+        w.into_packet(b"HCOFFQ01", MAX_PACKET)
     }
 }
 fn plain(v: f64) -> bool {
@@ -150,9 +150,9 @@ pub struct ResultRecord {
     pub statuses: Vec<u32>,
 }
 pub fn decode(bytes: &[u8], request: &Request) -> Result<ResultRecord, String> {
-    let mut r = Reader::packet(bytes, b"HCOFFR01")?;
+    let mut r = Reader::packet(bytes, b"HCOFFR01", MAX_PACKET)?.reject_nul();
     let result = decode_record(&mut r, request, 1, PLUGIN_ID, 0)?;
-    if r.at != r.bytes.len() {
+    if !r.is_eof() {
         return Err("trailing offline bytes refused".into());
     }
     Ok(result)
@@ -280,109 +280,7 @@ fn decode_record(
         statuses,
     })
 }
-#[derive(Default)]
-struct Writer {
-    bytes: Vec<u8>,
-}
-impl Writer {
-    fn u8(&mut self, v: u8) {
-        self.bytes.push(v);
-    }
-    fn u16(&mut self, v: u16) {
-        self.bytes.extend(v.to_le_bytes());
-    }
-    fn u32(&mut self, v: u32) {
-        self.bytes.extend(v.to_le_bytes());
-    }
-    fn u64(&mut self, v: u64) {
-        self.bytes.extend(v.to_le_bytes());
-    }
-    fn f64(&mut self, v: f64) {
-        self.u64(v.to_bits());
-    }
-    fn blob(&mut self, v: &[u8]) {
-        self.u32(v.len() as u32);
-        self.bytes.extend(v);
-    }
-}
-fn packet(magic: &[u8; 8], bytes: Vec<u8>) -> Result<Vec<u8>, String> {
-    if bytes.len() > MAX_PACKET {
-        return Err("offline packet capacity refused".into());
-    }
-    let mut p = magic.to_vec();
-    p.extend((bytes.len() as u32).to_le_bytes());
-    p.extend(bytes);
-    Ok(p)
-}
-struct Reader<'a> {
-    bytes: &'a [u8],
-    at: usize,
-}
-impl<'a> Reader<'a> {
-    fn packet(bytes: &'a [u8], magic: &[u8; 8]) -> Result<Self, String> {
-        if bytes.len() < 12
-            || &bytes[..8] != magic
-            || bytes.len() > MAX_PACKET + 12
-            || u32::from_le_bytes(bytes[8..12].try_into().map_err(|_| "length")?) as usize
-                != bytes.len() - 12
-        {
-            return Err("offline packet header/length refused".into());
-        }
-        Ok(Self {
-            bytes: &bytes[12..],
-            at: 0,
-        })
-    }
-    fn take(&mut self, n: usize) -> Result<&'a [u8], String> {
-        let end = self.at.checked_add(n).ok_or("offset overflow")?;
-        let b = self
-            .bytes
-            .get(self.at..end)
-            .ok_or("truncated offline packet")?;
-        self.at = end;
-        Ok(b)
-    }
-    fn u16(&mut self) -> Result<u16, String> {
-        Ok(u16::from_le_bytes(
-            self.take(2)?.try_into().map_err(|_| "u16")?,
-        ))
-    }
-    fn u32(&mut self) -> Result<u32, String> {
-        Ok(u32::from_le_bytes(
-            self.take(4)?.try_into().map_err(|_| "u32")?,
-        ))
-    }
-    fn u64(&mut self) -> Result<u64, String> {
-        Ok(u64::from_le_bytes(
-            self.take(8)?.try_into().map_err(|_| "u64")?,
-        ))
-    }
-    fn f64(&mut self) -> Result<f64, String> {
-        Ok(f64::from_bits(self.u64()?))
-    }
-    fn blob(&mut self, max: usize) -> Result<Vec<u8>, String> {
-        let n = self.u32()? as usize;
-        if n > max {
-            return Err("offline field capacity refused".into());
-        }
-        Ok(self.take(n)?.to_vec())
-    }
-    fn text(&mut self, max: usize) -> Result<String, String> {
-        let value =
-            String::from_utf8(self.blob(max)?).map_err(|_| "offline UTF8 refused".to_owned())?;
-        if value.contains('\0') {
-            return Err("offline NUL refused".into());
-        }
-        Ok(value)
-    }
-    fn strings(&mut self, max: usize) -> Result<Vec<String>, String> {
-        let n = self.u32()? as usize;
-        if n > max {
-            return Err("offline record capacity refused".into());
-        }
-        (0..n).map(|_| self.text(512)).collect()
-    }
-}
+use hex_scan_supervisor::framing::{PacketReader as Reader, PacketWriter as Writer};
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BuildReceipt {
@@ -654,7 +552,7 @@ impl MidiRequest {
                         w.u8(1);
                         w.u32(*offset);
                         w.u16(*port);
-                        w.bytes.extend(data);
+                        w.raw(data);
                     }
                 }
             }
@@ -662,7 +560,7 @@ impl MidiRequest {
                 w.u32(v.to_bits());
             }
         }
-        packet(b"HCOFFQ02", w.bytes)
+        w.into_packet(b"HCOFFQ02", MAX_PACKET)
     }
 }
 #[derive(Debug, Serialize)]
@@ -708,7 +606,7 @@ pub fn decode_midi(
     if !crate::hex_digest(module) {
         return Err("MIDI module identity refused".into());
     }
-    let mut r = Reader::packet(bytes, b"HCOFFR02")?;
+    let mut r = Reader::packet(bytes, b"HCOFFR02", MAX_PACKET)?.reject_nul();
     let audio = decode_record(&mut r, &request.base()?, 2, MIDI_PLUGIN_ID, 1)?;
     if audio.tail != 0 {
         return Err("MIDI tail capability refused".into());
@@ -804,7 +702,7 @@ pub fn decode_midi(
         });
         prior = Some((block, offset));
     }
-    if r.at != r.bytes.len() {
+    if !r.is_eof() {
         return Err("MIDI trailing response refused".into());
     }
     Ok(MidiResult {

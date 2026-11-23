@@ -174,14 +174,14 @@ impl DelayRequest {
                 w.u32(v.to_bits());
             }
         }
-        packet(b"HCOFFQ03", w.bytes)
+        w.into_packet(b"HCOFFQ03", MAX_PACKET)
     }
 }
 fn validate_state(bytes: &[u8], o: &DelayOwner) -> Result<(), String> {
     if bytes.len() != 360 {
         return Err("finite FIFO state size refused".into());
     }
-    let mut r = Reader { bytes, at: 0 };
+    let mut r = Reader::new(bytes).reject_nul();
     if r.u32()? != 0x444c5903 || r.u32()? != o.sample_rate || r.u32()? != o.delay {
         return Err("finite FIFO state identity refused".into());
     }
@@ -230,7 +230,7 @@ pub fn decode_delay(
     module: &str,
 ) -> Result<DelayResult, String> {
     request.validate_bound(module)?;
-    let mut r = Reader::packet(bytes, b"HCOFFR03")?;
+    let mut r = Reader::packet(bytes, b"HCOFFR03", MAX_PACKET)?.reject_nul();
     let audio = decode_record(&mut r, &request.base(), 3, DELAY_PLUGIN_ID, 0)?;
     let profile = r.text(64)?;
     let version = r.u32()?;
@@ -252,7 +252,7 @@ pub fn decode_delay(
         || sample_bytes != 256
         || metadata_bytes != 32
         || input_reserved_bytes != request.blocks.len() as u64 * 128 * 56
-        || r.at != r.bytes.len()
+        || !r.is_eof()
     {
         return Err("finite-delay response owner/demand refused".into());
     }
@@ -326,8 +326,8 @@ mod tests {
         }
         w.u32(o.max_tail);
         w.u32(o.drained);
-        w.bytes.extend(o.module_sha256.as_bytes());
-        w.bytes
+        w.raw(o.module_sha256.as_bytes());
+        w.into_bytes()
     }
     struct ResponseFixture {
         bytes: Vec<u8>,
@@ -345,7 +345,7 @@ mod tests {
         let mut platform_at = 0;
         for s in [SDK, platform, DELAY_PLUGIN_ID] {
             if s == platform {
-                platform_at = 16 + w.bytes.len();
+                platform_at = 16 + w.len();
             }
             w.blob(s.as_bytes());
         }
@@ -362,7 +362,7 @@ mod tests {
         }
         w.blob(b"gain");
         w.u32(1);
-        let pcm = 12 + w.bytes.len();
+        let pcm = 12 + w.len();
         w.u32(0);
         w.u32(0);
         let mut actual_state = state(&owner());
@@ -374,19 +374,19 @@ mod tests {
         w.u32(0);
         w.u32(1);
         w.u32(1);
-        let profile = 16 + w.bytes.len();
+        let profile = 16 + w.len();
         w.blob(DELAY_PROFILE.as_bytes());
-        let owner_version = 12 + w.bytes.len();
+        let owner_version = 12 + w.len();
         w.u32(3);
-        let module = 16 + w.bytes.len();
+        let module = 16 + w.len();
         w.blob("a".repeat(64).as_bytes());
-        let demand = 12 + w.bytes.len();
+        let demand = 12 + w.len();
         for n in [0, 16, 256, 32] {
             w.u32(n);
         }
         w.u64(128 * 56);
         ResponseFixture {
-            bytes: packet(b"HCOFFR03", w.bytes).unwrap(),
+            bytes: w.into_packet(b"HCOFFR03", MAX_PACKET).unwrap(),
             platform: platform_at,
             pcm,
             profile,

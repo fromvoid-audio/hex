@@ -102,10 +102,10 @@ impl Request {
     }
     pub fn encode(&self) -> Result<Vec<u8>, String> {
         self.validate()?;
-        let mut w = Writer::default();
+        let mut w = hex_scan_supervisor::framing::PacketWriter::default();
         w.u16(1);
         w.u64(self.request);
-        w.bytes.extend(COMPONENT_ID);
+        w.raw(&COMPONENT_ID);
         w.u32(self.sample_rate);
         w.u64(self.start_frame);
         w.f64(self.controller_value);
@@ -123,7 +123,7 @@ impl Request {
                 w.u32(v.to_bits());
             }
         }
-        packet(b"HVOFFQ01", w.bytes)
+        w.into_packet(b"HVOFFQ01", MAX_PACKET)
     }
 }
 fn normalized(v: f64) -> bool {
@@ -157,7 +157,7 @@ pub struct ResultRecord {
 }
 pub fn decode(bytes: &[u8], request: &Request) -> Result<ResultRecord, String> {
     let frames = request.validate()?;
-    let mut r = Reader::packet(bytes, b"HVOFFR01")?;
+    let mut r = hex_scan_supervisor::framing::PacketReader::packet(bytes, b"HVOFFR01", MAX_PACKET)?;
     if r.u16()? != 1 || r.u64()? != request.request {
         return Err("offline response version/request refused".into());
     }
@@ -232,7 +232,7 @@ pub fn decode(bytes: &[u8], request: &Request) -> Result<ResultRecord, String> {
     let controller_state = r.blob(65536)?;
     let lifecycle = r.strings(128)?;
     let callbacks = r.strings(128)?;
-    if r.at != r.bytes.len() {
+    if !r.is_eof() {
         return Err("trailing offline bytes refused".into());
     }
     Ok(ResultRecord {
@@ -252,101 +252,6 @@ pub fn decode(bytes: &[u8], request: &Request) -> Result<ResultRecord, String> {
         lifecycle,
         callbacks,
     })
-}
-#[derive(Default)]
-struct Writer {
-    bytes: Vec<u8>,
-}
-impl Writer {
-    fn u16(&mut self, v: u16) {
-        self.bytes.extend(v.to_le_bytes());
-    }
-    fn u32(&mut self, v: u32) {
-        self.bytes.extend(v.to_le_bytes());
-    }
-    fn u64(&mut self, v: u64) {
-        self.bytes.extend(v.to_le_bytes());
-    }
-    fn f64(&mut self, v: f64) {
-        self.u64(v.to_bits());
-    }
-    fn blob(&mut self, v: &[u8]) {
-        self.u32(v.len() as u32);
-        self.bytes.extend(v);
-    }
-}
-fn packet(magic: &[u8; 8], bytes: Vec<u8>) -> Result<Vec<u8>, String> {
-    if bytes.len() > MAX_PACKET {
-        return Err("offline packet capacity refused".into());
-    }
-    let mut p = magic.to_vec();
-    p.extend((bytes.len() as u32).to_le_bytes());
-    p.extend(bytes);
-    Ok(p)
-}
-struct Reader<'a> {
-    bytes: &'a [u8],
-    at: usize,
-}
-impl<'a> Reader<'a> {
-    fn packet(bytes: &'a [u8], magic: &[u8; 8]) -> Result<Self, String> {
-        if bytes.len() < 12
-            || &bytes[..8] != magic
-            || bytes.len() > MAX_PACKET + 12
-            || u32::from_le_bytes(bytes[8..12].try_into().map_err(|_| "length")?) as usize
-                != bytes.len() - 12
-        {
-            return Err("offline packet header/length refused".into());
-        }
-        Ok(Self {
-            bytes: &bytes[12..],
-            at: 0,
-        })
-    }
-    fn take(&mut self, n: usize) -> Result<&'a [u8], String> {
-        let end = self.at.checked_add(n).ok_or("offset overflow")?;
-        let b = self
-            .bytes
-            .get(self.at..end)
-            .ok_or("truncated offline packet")?;
-        self.at = end;
-        Ok(b)
-    }
-    fn u16(&mut self) -> Result<u16, String> {
-        Ok(u16::from_le_bytes(
-            self.take(2)?.try_into().map_err(|_| "u16")?,
-        ))
-    }
-    fn u32(&mut self) -> Result<u32, String> {
-        Ok(u32::from_le_bytes(
-            self.take(4)?.try_into().map_err(|_| "u32")?,
-        ))
-    }
-    fn u64(&mut self) -> Result<u64, String> {
-        Ok(u64::from_le_bytes(
-            self.take(8)?.try_into().map_err(|_| "u64")?,
-        ))
-    }
-    fn f64(&mut self) -> Result<f64, String> {
-        Ok(f64::from_bits(self.u64()?))
-    }
-    fn blob(&mut self, max: usize) -> Result<Vec<u8>, String> {
-        let n = self.u32()? as usize;
-        if n > max {
-            return Err("offline field capacity refused".into());
-        }
-        Ok(self.take(n)?.to_vec())
-    }
-    fn text(&mut self, max: usize) -> Result<String, String> {
-        String::from_utf8(self.blob(max)?).map_err(|_| "offline UTF8 refused".into())
-    }
-    fn strings(&mut self, max: usize) -> Result<Vec<String>, String> {
-        let n = self.u32()? as usize;
-        if n > max {
-            return Err("offline record capacity refused".into());
-        }
-        (0..n).map(|_| self.text(512)).collect()
-    }
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

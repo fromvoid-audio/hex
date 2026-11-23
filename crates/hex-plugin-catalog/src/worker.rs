@@ -7,7 +7,7 @@ use hex_plugin_scan::macos::{
     report::{Cleanup, Report},
 };
 use std::{
-    io::{Read, Write},
+    io::Write,
     os::{fd::OwnedFd, unix::net::UnixStream},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -220,24 +220,10 @@ fn discovery_app_path(executable: &Path, launch_app: Option<&Path>) -> Result<Pa
 }
 
 fn drain(input: &mut UnixStream, output: &mut Vec<u8>, limit: usize) -> Result<bool, String> {
-    let mut buffer = [0_u8; 4096];
-    let mut any = false;
-    for _ in 0..4 {
-        match input.read(&mut buffer) {
-            Ok(0) => return Ok(any),
-            Ok(n) => {
-                any = true;
-                if output.len().checked_add(n).is_none_or(|v| v > limit) {
-                    return Err("scanner output bound exceeded".into());
-                }
-                output.extend_from_slice(&buffer[..n]);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(any),
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(format!("scanner output unavailable: {e}")),
-        }
-    }
-    Ok(any)
+    hex_plugin_scan::drain_bounded(input, output, limit, "scanner output bound exceeded", |e| {
+        format!("scanner output unavailable: {e}")
+    })
+    .map(|outcome| outcome.any_read)
 }
 
 // Observe direct-child retirement before deciding that currently empty channels

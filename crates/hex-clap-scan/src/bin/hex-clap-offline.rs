@@ -28,14 +28,7 @@ fn main() {
         if path.file_name().and_then(|s| s.to_str()) != Some("controlled-offline.json") {
             return Err("controlled offline receipt required".into());
         }
-        let deadline = match args.get(3) {
-            None => 10000,
-            Some(v) => v
-                .to_str()
-                .and_then(|s| s.parse::<u64>().ok())
-                .filter(|n| (1..=30000).contains(n))
-                .ok_or("deadline must be1..30000 milliseconds")?,
-        };
+        let deadline = hex_scan_supervisor::cli::parse_deadline_ms(args.get(3).map(AsRef::as_ref))?;
         let root = path.parent().ok_or("fixture root missing")?;
         let manifest = controlled_path(root, "controlled-offline.json")?;
         let scanner_manifest = controlled_path(root, "controlled-clap-fixtures.json")?;

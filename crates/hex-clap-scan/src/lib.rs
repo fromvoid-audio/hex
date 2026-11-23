@@ -8,19 +8,20 @@
 //! # Does not own
 //! Does not expose a Rust plugin loader, persistent plugin instance or engine audio-host API.
 //! Discovery evidence does not qualify foreign code for realtime processing.
+pub use hex_scan_supervisor::common::{
+    License, MAX_BINARY, Module, binary_identity, controlled_path, digest_hex, file_bytes, hash,
+    hex_digest,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
-    io::Read,
-    path::{Component, Path},
+    path::Path,
 };
 pub mod macho_identity;
 pub mod receipt_macos;
 pub const SDK: &str = "195b42a004144fab0b3cf95e9c067187d15365b7";
 pub const MAX_PACKET: usize = 1024 * 1024;
-pub const MAX_BINARY: u64 = 16 * 1024 * 1024;
 pub const NAMES: [&str; 13] = [
     "good",
     "init-fail",
@@ -38,19 +39,6 @@ pub const NAMES: [&str; 13] = [
 ];
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct License {
-    pub sha256: String,
-    pub text: String,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Module {
-    pub name: String,
-    pub binary: String,
-    pub sha256: String,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Receipt {
     pub version: u32,
     pub scope: String,
@@ -66,20 +54,6 @@ pub struct Receipt {
     pub runtime_notices: BTreeMap<String, License>,
     pub build_closure: BTreeMap<String, String>,
     pub licenses: BTreeMap<String, License>,
-}
-// SHA output arrays no longer implement LowerHex; keep durable 64-byte text.
-fn digest_hex(digest: [u8; 32]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(64);
-    for byte in digest {
-        output.push(char::from(DIGITS[usize::from(byte >> 4)]));
-        output.push(char::from(DIGITS[usize::from(byte & 15)]));
-    }
-    output
-}
-
-pub fn hash(bytes: &[u8]) -> String {
-    digest_hex(Sha256::digest(bytes).into())
 }
 pub fn source_hash() -> String {
     let mut h = Sha256::new();
@@ -107,38 +81,6 @@ pub fn source_hash() -> String {
         h.update([0]);
     }
     digest_hex(h.finalize().into())
-}
-pub fn file_bytes(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
-    if !fs::symlink_metadata(path)
-        .map_err(|_| "file metadata unavailable")?
-        .file_type()
-        .is_file()
-    {
-        return Err("non-regular or symlink file refused".into());
-    }
-    let mut file = fs::File::open(path).map_err(|_| "file unavailable".to_owned())?;
-    if !file
-        .metadata()
-        .map_err(|_| "file metadata unavailable")?
-        .is_file()
-    {
-        return Err("regular file required".into());
-    }
-    let mut bytes = Vec::new();
-    file.by_ref()
-        .take(limit.checked_add(1).ok_or("file bound overflow")?)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "file read failed")?;
-    if bytes.len() as u64 > limit {
-        return Err("file bound exceeded".into());
-    }
-    Ok(bytes)
-}
-fn hex_digest(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 pub fn platform() -> &'static str {
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
@@ -224,66 +166,6 @@ impl Receipt {
         }
         Ok(())
     }
-}
-pub fn controlled_path(root: &Path, relative: &str) -> Result<std::path::PathBuf, String> {
-    let relative = Path::new(relative);
-    if relative
-        .components()
-        .any(|c| !matches!(c, Component::Normal(_)))
-    {
-        return Err("path containment refused".into());
-    }
-    let mut path = root.to_path_buf();
-    if fs::symlink_metadata(root)
-        .map_err(|_| "fixture root unavailable")?
-        .file_type()
-        .is_symlink()
-    {
-        return Err("symlink fixture root refused".into());
-    }
-    for component in relative.components() {
-        path.push(component.as_os_str());
-        if fs::symlink_metadata(&path)
-            .map_err(|_| "controlled input missing")?
-            .file_type()
-            .is_symlink()
-        {
-            return Err("symlink controlled input refused".into());
-        }
-    }
-    if !path
-        .canonicalize()
-        .map_err(|_| "controlled input unavailable")?
-        .starts_with(
-            root.canonicalize()
-                .map_err(|_| "fixture root unavailable")?,
-        )
-    {
-        return Err("path containment refused".into());
-    }
-    Ok(path)
-}
-pub fn binary_identity(path: &Path, expected: &str) -> Result<String, String> {
-    let bytes = file_bytes(path, MAX_BINARY)?;
-    // Deliberately no native loader. Only the claimed Linux x86_64 ELF64 LE
-    // fixture architecture/ET_DYN helper or shared-module ABI is accepted.
-    if bytes.len() < 64
-        || &bytes[..4] != b"\x7fELF"
-        || bytes[4] != 2
-        || bytes[5] != 1
-        || bytes[6] != 1
-        || !matches!(bytes[7], 0 | 3)
-        || u32::from_le_bytes(bytes[20..24].try_into().map_err(|_| "ELF version width")?) != 1
-        || u16::from_le_bytes([bytes[18], bytes[19]]) != 62
-        || u16::from_le_bytes([bytes[16], bytes[17]]) != 3
-    {
-        return Err("unsupported binary architecture".into());
-    }
-    let digest = hash(&bytes);
-    if digest != expected {
-        return Err("controlled binary identity changed".into());
-    }
-    Ok(digest)
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -423,50 +305,7 @@ pub struct ValidRecord {
     pub compiler: String,
     pub discovery: Discovery,
 }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Catalog {
-    pub last_valid: Option<ValidRecord>,
-    pub last_error: Option<String>,
-}
-impl Catalog {
-    pub fn record(&mut self, result: Result<ValidRecord, String>) {
-        match result {
-            Ok(record) => {
-                self.last_valid = Some(record);
-                self.last_error = None;
-            }
-            Err(error) => self.last_error = Some(error),
-        }
-    }
-}
+pub type Catalog = hex_scan_supervisor::common::Catalog<ValidRecord>;
 
 /// Controlled original-fixture offline protocol; no engine integration.
 pub mod offline_protocol;
-
-#[cfg(test)]
-mod digest_tests {
-    use super::*;
-    #[test]
-    fn hash_text_retains_lowercase_padding_and_sha256_vectors() {
-        for (input, expected) in [
-            (
-                b"".as_slice(),
-                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            ),
-            (
-                b"abc".as_slice(),
-                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
-            ),
-            (
-                b"\x03".as_slice(),
-                "084fed08b978af4d7d196a7446a86b58009e636b611db16211b65a9aadff29c5",
-            ),
-        ] {
-            assert_eq!(hash(input), expected);
-        }
-        for byte in 0..=u8::MAX {
-            assert_eq!(digest_hex([byte; 32]), format!("{byte:02x}").repeat(32));
-        }
-    }
-}

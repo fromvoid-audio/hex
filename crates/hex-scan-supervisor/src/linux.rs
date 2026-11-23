@@ -1,4 +1,9 @@
 //! Linux-only standalone executable ownership; never imported by a scan library.
+use crate::{
+    framing::FRAME_HEADER,
+    io::{drain_bounded, final_drain_passes},
+    signal::SignalGuard,
+};
 use rustix::process::{self, Pid, Signal, WaitId, WaitIdOptions, WaitOptions};
 use serde::Serialize;
 use std::{
@@ -86,38 +91,14 @@ impl Pending {
         }
     }
 }
-struct SignalGuard(signal_hook::SigId);
-impl Drop for SignalGuard {
-    fn drop(&mut self) {
-        signal_hook::low_level::unregister(self.0);
-    }
-}
-/// Magic plus little-endian length preceding every scanner protocol payload.
-const FRAME_HEADER: usize = 12;
-const DRAIN_CHUNK_BYTES: usize = 4 * 4096;
-
-fn final_drain_passes(frame_limit: usize) -> usize {
-    frame_limit
-        .max(64 * 1024)
-        .div_ceil(DRAIN_CHUNK_BYTES)
-        .saturating_add(2)
-}
 fn drain(reader: &mut impl Read, bytes: &mut Vec<u8>, limit: usize) -> Result<(), String> {
-    let mut buffer = [0_u8; 4096];
-    for _ in 0..4 {
-        match reader.read(&mut buffer) {
-            Ok(0) => return Ok(()),
-            Ok(n) => {
-                if bytes.len().checked_add(n).is_none_or(|v| v > limit) {
-                    return Err("IPC or diagnostic bound exceeded".into());
-                }
-                bytes.extend_from_slice(&buffer[..n]);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(_) => return Err("pipe read failed".into()),
-        }
-    }
+    drain_bounded(
+        reader,
+        bytes,
+        limit,
+        "IPC or diagnostic bound exceeded",
+        |_| "pipe read failed".into(),
+    )?;
     Ok(())
 }
 fn cancellation() -> Result<bool, String> {
@@ -162,11 +143,8 @@ pub fn run(
     // Re-establish waitable children even if our launcher inherited SIG_IGN or
     // SA_NOCLDWAIT. Audited safe flag registration installs a SIGCHLD handler
     // without NOCLDWAIT; no workspace unsafe or signal callback allocation.
-    let child_notice = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let _sigchld = SignalGuard(
-        signal_hook::flag::register(signal_hook::consts::SIGCHLD, child_notice)
-            .map_err(|_| "waitable child disposition unavailable")?,
-    );
+    let _sigchld =
+        SignalGuard::register_sigchld().map_err(|_| "waitable child disposition unavailable")?;
     // This function exists only in this single-request dedicated executable.
     process::set_child_subreaper(Some(Pid::INIT)).map_err(|_| "subreaper unavailable")?;
     if process::child_subreaper().map_err(|_| "subreaper query failed")? != Some(Pid::INIT) {
@@ -349,24 +327,4 @@ pub fn run(
         cleanup,
     };
     Ok((output, (!complete).then_some(pending)))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn signal_guard_unregisters_sigchld_on_drop() {
-        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let id = signal_hook::flag::register(signal_hook::consts::SIGCHLD, flag).unwrap();
-        let guard = SignalGuard(id);
-        drop(guard);
-        assert!(!signal_hook::low_level::unregister(id));
-    }
-
-    #[test]
-    fn final_drain_passes_covers_arbitrary_frame_limit() {
-        let large_limit = 4 * 1024 * 1024 + FRAME_HEADER;
-        assert!(final_drain_passes(large_limit) * DRAIN_CHUNK_BYTES >= large_limit);
-    }
 }

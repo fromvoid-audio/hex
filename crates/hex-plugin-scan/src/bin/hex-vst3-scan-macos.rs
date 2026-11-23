@@ -24,16 +24,14 @@ fn run() -> i32 {
         );
         return 2;
     }
-    let deadline = match arguments.get(3) {
-        None => 10000,
-        Some(value) => match value.to_str().and_then(|v| v.parse::<u64>().ok()) {
-            Some(value) if (1..=30000).contains(&value) => value,
-            _ => {
-                let _ = writeln!(std::io::stderr(), "deadline must be1..30000 milliseconds");
+    let deadline =
+        match hex_scan_supervisor::cli::parse_deadline_ms(arguments.get(3).map(AsRef::as_ref)) {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = writeln!(std::io::stderr(), "{error}");
                 return 2;
             }
-        },
-    };
+        };
     let prepared_build = if arguments[0] == "--bundled" {
         std::env::current_exe()
             .map_err(|e| format!("packaged scanner path unavailable: {e}"))
