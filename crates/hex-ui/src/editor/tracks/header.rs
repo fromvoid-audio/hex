@@ -1131,17 +1131,18 @@ impl EditorView {
                 },
             ));
         if self.automation_view.enabled {
-            let width = self
-                .drag_lanes
-                .get(&track_id)
-                .map_or(0.0, |lane| lane.width);
             if self.gain_lane.track == Some(track_id)
                 && !self.automation_view.devices.has_main(
                     crate::editor::device_panel::DevicePanelOwner::Track(track_id),
                 )
             {
                 clip_area = clip_area.children(crate::editor::gain_lane::inline(
-                    self, state, track_id, viewport, width, cx,
+                    self,
+                    state,
+                    track_id,
+                    viewport,
+                    std::rc::Rc::clone(grid),
+                    cx,
                 ));
             }
             clip_area = clip_area.children(crate::editor::device_automation::overlay(

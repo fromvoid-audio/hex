@@ -304,8 +304,9 @@ impl EditorView {
         }
 
         self.refresh_locators(&locator_state, viewport);
-        let grid =
-            super::musical_time::grid_lines(&state.project, viewport, ruler_width, self.snap_grid);
+        let grid: std::rc::Rc<[super::musical_time::GridLine]> =
+            super::musical_time::grid_lines(&state.project, viewport, ruler_width, self.snap_grid)
+                .into();
         let bands = super::musical_time::adaptive_grid_bands_for_grid(
             &state.project,
             viewport,
@@ -313,7 +314,7 @@ impl EditorView {
             self.snap_grid,
         );
         let rows_viewport = viewport;
-        let rows_grid = grid.clone();
+        let rows_grid = std::rc::Rc::clone(&grid);
         let selected_rows = self.time_selection_track_indices();
         let track_scale_factor = window.scale_factor();
         let rows_entity = cx.entity();
@@ -407,6 +408,7 @@ impl EditorView {
                 &state,
                 viewport,
                 ruler_width,
+                std::rc::Rc::clone(&grid),
                 cx,
             ));
         let main = self.main_track_row(viewport, &bands, &grid, window.scale_factor(), window, cx);

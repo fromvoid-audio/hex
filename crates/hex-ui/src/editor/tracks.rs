@@ -55,7 +55,7 @@ pub(super) const DEFAULT_TRACK_HEADER_WIDTH: f32 = TRACK_HEADER_WIDTH;
 
 pub(super) struct ClipViewTimeline<'a> {
     pub(super) viewport: Viewport,
-    pub(super) grid: &'a [super::musical_time::GridLine],
+    pub(super) grid: &'a std::rc::Rc<[super::musical_time::GridLine]>,
     pub(super) scale_factor: f32,
     // Present only when the content owner has the lane resolved in this prepaint.
     pub(super) caption_rem_size: Option<f32>,
