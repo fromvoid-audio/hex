@@ -1,6 +1,6 @@
 use super::*;
 #[cfg(feature = "ui-test-support")]
-use gpui::size;
+use gpui::{MouseButton, point, px, size};
 
 #[cfg(feature = "ui-test-support")]
 #[gpui::test]

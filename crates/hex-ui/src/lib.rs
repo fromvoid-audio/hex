@@ -52,6 +52,7 @@ pub use startup::open_or_report;
 pub mod output_meter;
 mod theme;
 mod tooltips;
+mod vertical_scrollbar;
 use gpui::{App, AppContext, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};
 use hex_audio::AudioOutput;
 
