@@ -135,8 +135,9 @@ static bool saturated_editor_drag(int variant) { return variant==87 || variant==
 static int32 parameter_inventory_size() {
     const auto* shape=std::getenv("HEX_ORIGINAL_PARAMETER_INVENTORY");
     if(!shape) return 1;
-    if(!std::strcmp(shape,"2593") || !std::strcmp(shape,"duplicate")) return 2593;
-    if(!std::strcmp(shape,"2625")) return 2625;
+    if(!std::strcmp(shape,"4274") || !std::strcmp(shape,"duplicate") ||
+       !std::strcmp(shape,"duplicate-bypass")) return 4274;
+    if(!std::strcmp(shape,"8193")) return 8193;
     if(!std::strcmp(shape,"9")) return 9;
     return 1;
 }
@@ -440,9 +441,17 @@ public:
             if(index!=inventory_size-2 || !shape || std::strcmp(shape,"duplicate"))
                 info.id=static_cast<ParamID>(1001+index);
             info.flags=ParameterInfo::kIsReadOnly;
-            if(index==0 && shape && !std::strcmp(shape,"2593")) {
+            if(index==0 && shape && !std::strcmp(shape,"4274")) {
                 info.flags=0x400;
                 info.defaultNormalizedValue=-1;
+            } else if(index>=1 && index<=8 && shape && !std::strcmp(shape,"4274")) {
+                info.flags=ParameterInfo::kCanAutomate|ParameterInfo::kIsBypass;
+                info.stepCount=1;
+                info.unitId=90+index;
+            } else if((index==1 || index==2) && shape && !std::strcmp(shape,"duplicate-bypass")) {
+                info.flags=ParameterInfo::kCanAutomate|ParameterInfo::kIsBypass;
+                info.stepCount=1;
+                info.unitId=94;
             }
             const char16_t name[]=u"observed";
             std::memcpy(info.title,name,sizeof(name));std::memcpy(info.shortTitle,name,sizeof(name));

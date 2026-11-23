@@ -330,10 +330,12 @@ fn page(instance: &mut Prepared, query: ParameterPageQuery) -> Box<ParameterPage
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn large_controller_inventory_pages_pcm_and_saved_state_remain_bounded() {
-    const INVENTORY: u16 = 2_593;
+    const INVENTORY: u16 = 4_274;
     const PRIVATE_MIDI_HELPER: u32 = 0x400;
+    const CAN_AUTOMATE: u32 = 1;
     const IS_HIDDEN: u32 = 1 << 4;
     const IS_READ_ONLY: u32 = 1 << 1;
+    const IS_BYPASS: u32 = 1 << 16;
     let start = |case: &Case, inventory: &'static str, state| {
         let setup = case.setup_restore(37);
         Pending::prepare_with_restore(
@@ -350,13 +352,19 @@ fn large_controller_inventory_pages_pcm_and_saved_state_remain_bounded() {
         .and_then(|pending| pending.complete_on_control(Some(options().presentation)))
     };
     let case = Case::new();
-    let mut instance = start(&case, "2593", None).unwrap();
+    let mut instance = start(&case, "4274", None).unwrap();
     let first = page(&mut instance, ParameterPageQuery::default());
     let helper = first.as_slice()[0];
     assert_eq!((first.total, helper.id), (INVENTORY, 1001));
     assert_eq!((helper.default_normalized, helper.normalized), (0.0, 0.25));
     assert_eq!(helper.flags, PRIVATE_MIDI_HELPER | IS_HIDDEN | IS_READ_ONLY);
     assert!(!helper.is_editable() && !helper.supports_authored_automation());
+    for (offset, unit_id) in [(1usize, 91i32), (2, 92), (3, 93)] {
+        let bypass = first.as_slice()[offset];
+        assert_eq!(bypass.flags, CAN_AUTOMATE | IS_BYPASS);
+        assert_eq!(bypass.unit_id, unit_id);
+        assert!(bypass.supports_authored_automation());
+    }
     let last_page = |instance: &mut Prepared, revision| {
         page(
             instance,
@@ -373,7 +381,7 @@ fn large_controller_inventory_pages_pcm_and_saved_state_remain_bounded() {
             .iter()
             .map(|parameter| parameter.id)
             .collect::<Vec<_>>(),
-        [3590, 3591, 3592, 7]
+        [5271, 5272, 5273, 7]
     );
     let mut input = request(instance.configuration(), 0);
     input
@@ -396,7 +404,7 @@ fn large_controller_inventory_pages_pcm_and_saved_state_remain_bounded() {
     let (stopped, captured) = stopped.capture_state_retained_on_control().unwrap();
     assert!(stopped.retire_on_control().unwrap().status.success());
     let independent = Case::new();
-    let mut restored = start(&independent, "2593", Some(captured)).unwrap();
+    let mut restored = start(&independent, "4274", Some(captured)).unwrap();
     let values = page(&mut restored, ParameterPageQuery::default());
     let restored_gain = last_page(&mut restored, values.revision);
     assert_eq!(
@@ -411,8 +419,9 @@ fn large_controller_inventory_pages_pcm_and_saved_state_remain_bounded() {
             .success()
     );
     for (malformed, diagnostic) in [
-        ("2625", "inventory exceeds the host capacity"),
+        ("8193", "inventory exceeds the host capacity"),
         ("duplicate", "invalid controller parameter inventory"),
+        ("duplicate-bypass", "invalid controller parameter inventory"),
         ("invalid-default", "invalid controller parameter inventory"),
     ] {
         let case = Case::new();
