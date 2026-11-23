@@ -622,13 +622,9 @@ impl EditorView {
                                             })
                                             .child(theme::text(if folded { "▸" } else { "▾" }))
                                     }))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .truncate()
-                                            .child(theme::text(track.name().to_lowercase())),
-                                    )
+                                    .child(div().flex_1().min_w_0().truncate().child(theme::text(
+                                        hex_session::service::text::verbatim(track.name()),
+                                    )))
                                     .children(self.track_performance_indicator(
                                         hex_engine::OutputCaptureId::Track(track_id),
                                     ))
@@ -1561,7 +1557,9 @@ impl EditorView {
                     .min_w_0()
                     .flex_1()
                     .truncate()
-                    .child(theme::text(scene.name().to_lowercase()))
+                    .child(theme::text(hex_session::service::text::verbatim(
+                        scene.name(),
+                    )))
                     .on_click(cx.listener(move |view, _, window, cx| {
                         if view.session_callback_current(revision, generation)
                             && view.focus_empty_details(window, cx)

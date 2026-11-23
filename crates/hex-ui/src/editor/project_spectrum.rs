@@ -1056,7 +1056,7 @@ impl EditorView {
             if let Ok(index) = ids.binary_search(&track.id().value()) {
                 track_meta[index] = Some((
                     theme::element_colors(track.color()).accent,
-                    theme::text(track.name()),
+                    theme::text(hex_session::service::text::verbatim(track.name())),
                 ));
             }
         }

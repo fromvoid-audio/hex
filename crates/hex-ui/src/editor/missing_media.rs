@@ -343,7 +343,10 @@ impl EditorView {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some(theme::text(format!("locate {}", row.media.file_name()))),
+            prompt: Some(theme::text(format!(
+                "locate {}",
+                hex_session::service::text::verbatim(row.media.file_name())
+            ))),
         });
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = prompt.await else {

@@ -187,7 +187,10 @@ impl EditorView {
                         .w_auto()
                         .min_w(px(60.0))
                         .flex_1();
-                let tooltip = theme::text(format!("send to {} · db", return_track.name()));
+                let tooltip = theme::text(format!(
+                    "send to {} · db",
+                    hex_session::service::text::verbatim(return_track.name())
+                ));
                 controls = controls.child(
                     div()
                         .id(gpui::ElementId::Name(
@@ -215,7 +218,9 @@ impl EditorView {
                                 .truncate()
                                 .text_size(px(10.0))
                                 .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
-                                .child(theme::text(return_track.name())),
+                                .child(theme::text(hex_session::service::text::verbatim(
+                                    return_track.name(),
+                                ))),
                         )
                         .child(control),
                 );

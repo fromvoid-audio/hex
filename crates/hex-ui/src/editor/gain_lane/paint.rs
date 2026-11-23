@@ -206,7 +206,7 @@ pub(in crate::editor) fn view(
         });
     let title = format!(
         "gain · {} · {} · static fallback {:.0}%",
-        track.name(),
+        hex_session::service::text::verbatim(track.name()),
         if track.gain_envelope().is_empty() && track.gain_lane().spans().is_empty() {
             "static"
         } else {
