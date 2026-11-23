@@ -536,7 +536,8 @@ impl TrackLaneCanvas {
                 }
                 let left_frac =
                     (vis_start - self.viewport.start) as f64 / self.viewport.length as f64;
-                let width_frac = (vis_end - vis_start) as f64 / self.viewport.length as f64;
+                let right_frac =
+                    (vis_end - self.viewport.start) as f64 / self.viewport.length as f64;
                 let rep = track_index_data.clips.get(bin.representative as usize);
                 let (flavor, active) = rep
                     .map(|c| clip_flavor_active(view, track, *c))
@@ -546,7 +547,7 @@ impl TrackLaneCanvas {
                     theme::arrangement_clip_activity_body_fill(header_fill, false, active);
                 narrow_spans.push((
                     left_frac,
-                    left_frac + width_frac,
+                    right_frac,
                     NarrowInk {
                         color: fill_color,
                         selected: false,
@@ -571,6 +572,8 @@ impl TrackLaneCanvas {
                 }
                 let left_frac =
                     (vis_start - self.viewport.start) as f64 / self.viewport.length as f64;
+                let right_frac =
+                    (vis_end - self.viewport.start) as f64 / self.viewport.length as f64;
                 let width_frac = (vis_end - vis_start) as f64 / self.viewport.length as f64;
                 let pixel_width = trim::rendered_clip_width(lane_width, width_frac);
                 let selected = view.clip_is_selected(entry.id);
@@ -602,34 +605,24 @@ impl TrackLaneCanvas {
                 let narrow = narrow_clips::is_narrow(pixel_width, scale);
                 let lane_left_f64 = f64::from(bounds.left());
                 let raw_left = lane_left_f64 + left_frac * f64::from(lane_width);
-                let raw_right = lane_left_f64 + (left_frac + width_frac) * f64::from(lane_width);
+                let raw_right = lane_left_f64 + right_frac * f64::from(lane_width);
                 // Match Taffy's physical-pixel rounding so resting canvas clips
                 // and promoted overlay clips share identical endpoints at every scale.
                 let snapped_left = snap_px(raw_left, scale);
                 let snapped_right = snap_px(raw_right, scale);
-                let clip_bounds = if narrow {
-                    Bounds::new(
-                        point(px(snapped_left), bounds.top()),
-                        size(
-                            px((snapped_right - snapped_left).max(stroke)),
-                            bounds.size.height,
-                        ),
-                    )
-                } else {
-                    Bounds::new(
-                        point(px(snapped_left), bounds.top()),
-                        size(
-                            px((snapped_right - snapped_left).max(0.0)),
-                            bounds.size.height,
-                        ),
-                    )
-                };
+                let clip_bounds = Bounds::new(
+                    point(px(snapped_left), bounds.top()),
+                    size(
+                        px((snapped_right - snapped_left).max(0.0)),
+                        bounds.size.height,
+                    ),
+                );
                 let resolved_width = f32::from(clip_bounds.size.width);
 
                 if narrow {
                     narrow_spans.push((
                         left_frac,
-                        left_frac + width_frac,
+                        right_frac,
                         NarrowInk {
                             color: body_fill,
                             selected,

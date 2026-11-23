@@ -539,7 +539,12 @@ fn plot(
                     let entry = entry.clone();
                     let generation = target.generation;
                     window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-                        if !phase.capture() || !bounds.contains(&event.position) {
+                        if !phase.capture()
+                            || !super::super::arrangement::bounds_or_leading_buffer_contains(
+                                bounds,
+                                event.position,
+                            )
+                        {
                             return;
                         }
                         if event.button == MouseButton::Right {

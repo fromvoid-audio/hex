@@ -1,6 +1,20 @@
 mod geometry;
 mod lane_bounds;
 use geometry::lane_contains_pointer;
+
+fn lane_or_leading_buffer_contains_pointer(
+    pointer_x: f32,
+    pointer_y: f32,
+    lane: LaneBounds,
+) -> bool {
+    super::arrangement::timeline_x_in_bounds_or_buffer(pointer_x, lane.left, lane.width)
+        && pointer_y.is_finite()
+        && lane.top.is_finite()
+        && lane.height.is_finite()
+        && lane.height > 0.0
+        && pointer_y >= lane.top
+        && pointer_y < lane.top + lane.height
+}
 pub(super) use geometry::{LaneBounds, clip_snap_edge, drop_start, grab_offset_from_pointer};
 #[cfg(all(test, feature = "ui-test-support"))]
 pub(super) use lane_bounds::ClipSnapEdge;
@@ -404,7 +418,7 @@ impl super::EditorView {
     ) -> Option<(TrackId, LaneBounds)> {
         self.drag_lanes.keys().find_map(|track| {
             let lane = self.painted_track_drop_lane(*track)?;
-            lane_contains_pointer(x, y, lane).then_some((*track, lane))
+            lane_or_leading_buffer_contains_pointer(x, y, lane).then_some((*track, lane))
         })
     }
 
@@ -420,7 +434,8 @@ impl super::EditorView {
                     && self.drag_lane_epochs.get(track) == Some(&self.drag_layout_generation)
             })
             .find_map(|(track, lane)| {
-                lane_contains_pointer(pointer_x, pointer_y, *lane).then_some((*track, *lane))
+                lane_or_leading_buffer_contains_pointer(pointer_x, pointer_y, *lane)
+                    .then_some((*track, *lane))
             })
     }
 
@@ -937,7 +952,7 @@ impl super::EditorView {
 
     fn painted_arrangement_timeline_at(&self, x: f32, y: f32) -> Option<LaneBounds> {
         self.painted_arrangement_timeline()
-            .filter(|&lane| lane_contains_pointer(x, y, lane))
+            .filter(|&lane| lane_or_leading_buffer_contains_pointer(x, y, lane))
             .filter(|_| !self.painted_arrangement_proposal_at(y))
     }
 
@@ -995,7 +1010,7 @@ impl super::EditorView {
 
     pub(super) fn painted_arrangement_tail(&self, x: f32, y: f32) -> Option<LaneBounds> {
         self.painted_arrangement_tail_bounds()
-            .filter(|&lane| lane_contains_pointer(x, y, lane))
+            .filter(|&lane| lane_or_leading_buffer_contains_pointer(x, y, lane))
     }
 
     pub(super) fn painted_arrangement_tail_bounds(&self) -> Option<LaneBounds> {
