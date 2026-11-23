@@ -1085,8 +1085,6 @@ impl EditorView {
                     if self.enqueue(Request::CutClips(clips)) {
                         self.cancel_duplicate_chain();
                         self.cancel_midi_note_gesture();
-                        self.selected_clip = None;
-                        self.reconcile_clip_selection();
                     }
                 } else {
                     self.enqueue(Request::CopyClips(clips));

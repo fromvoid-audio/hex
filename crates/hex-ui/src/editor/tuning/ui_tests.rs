@@ -419,7 +419,10 @@ fn pitch_space_hover_highlights_node_and_click_activates_it(cx: &mut TestAppCont
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.tuning.palette_hover, Some(target_index));
     });
-    assert_eq!(visual.rendered_cursor_style(), Some(gpui::CursorStyle::PointingHand));
+    assert_eq!(
+        visual.rendered_cursor_style(),
+        Some(gpui::CursorStyle::PointingHand)
+    );
 
     // Clicking the hovered node activates that exact scale.
     visual.simulate_mouse_down(target_pos, MouseButton::Left, gpui::Modifiers::default());

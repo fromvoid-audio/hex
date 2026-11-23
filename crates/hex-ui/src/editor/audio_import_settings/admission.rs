@@ -38,6 +38,13 @@ impl State {
         }
     }
 
+    pub(in crate::editor) fn arrangement_policy(&self) -> Result<AudioImportWarp, String> {
+        if self.loading {
+            return Err("audio import settings are loading · retry the import".into());
+        }
+        Ok(self.policy())
+    }
+
     pub(super) fn capture(
         &self,
         request: Request,
@@ -56,10 +63,12 @@ impl State {
             }
             _ => false,
         };
-        if self.loading && arrangement_import {
-            return Err("audio import settings are loading · retry the import".into());
-        }
-        capture(request, self.policy(), context)
+        let warp = if arrangement_import {
+            self.arrangement_policy()?
+        } else {
+            self.policy()
+        };
+        capture(request, warp, context)
     }
 }
 
