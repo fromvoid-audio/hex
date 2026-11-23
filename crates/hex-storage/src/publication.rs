@@ -11,8 +11,9 @@
 //! 3. When the volume supports neither, an exclusively created, fully written
 //!    and synced copy. The copy is not atomic: a crash or power loss while it
 //!    is written can leave an incomplete *new* file at the destination, never
-//!    a replaced one. A failed write removes the incomplete copy it created
-//!    and returns the error.
+//!    a replaced one. A failed write preserves the current destination pathname
+//!    entry (because even an exclusively created pathname can have been
+//!    replaced before failure cleanup) and returns the error.
 //!
 //! Every step refuses an existing destination with `AlreadyExists`. Other link
 //! failures (for example `EACCES`, `ENOSPC`, `EXDEV`) propagate unchanged
@@ -109,13 +110,15 @@ fn copy_exclusive(staging: &Path, destination: &Path) -> io::Result<()> {
         options.mode(source.metadata()?.permissions().mode() & 0o777);
     }
     let mut target = options.open(destination)?;
-    if let Err(error) = io::copy(&mut source, &mut target).and_then(|_| target.sync_all()) {
-        drop(target);
-        // This exclusive create made the incomplete file; nothing else is removed.
-        let _ = fs::remove_file(destination);
+    // Even an exclusively created pathname can have been replaced since opening
+    // it. Preserve the current entry on copy/sync failure instead of unlinking
+    // by path.
+    #[cfg(test)]
+    if let Some(error) = simulate::on_copy_after_open(destination) {
         return Err(error);
     }
-    Ok(())
+    io::copy(&mut source, &mut target)?;
+    target.sync_all()
 }
 
 fn link_unsupported(error: &io::Error) -> bool {
@@ -139,7 +142,13 @@ fn rename_unsupported(error: &io::Error) -> bool {
 /// so every publishing owner can be exercised without a real exFAT mount.
 #[cfg(test)]
 pub(crate) mod simulate {
-    use std::{cell::Cell, io};
+    use std::{
+        cell::{Cell, RefCell},
+        io,
+        path::Path,
+    };
+
+    type CopyHook = Box<dyn FnOnce(&Path) -> io::Error>;
 
     #[derive(Clone, Copy)]
     pub(crate) enum Volume {
@@ -150,6 +159,7 @@ pub(crate) mod simulate {
     }
 
     thread_local!(static VOLUME: Cell<Option<Volume>> = const { Cell::new(None) });
+    thread_local!(static COPY_HOOK: RefCell<Option<CopyHook>> = const { RefCell::new(None) });
 
     /// Restores native behaviour on drop, including after a failed assertion.
     pub(crate) struct Guard;
@@ -157,12 +167,25 @@ pub(crate) mod simulate {
     impl Drop for Guard {
         fn drop(&mut self) {
             VOLUME.with(|volume| volume.set(None));
+            COPY_HOOK.with(|hook| *hook.borrow_mut() = None);
         }
     }
 
     pub(crate) fn volume(volume: Volume) -> Guard {
         VOLUME.with(|cell| cell.set(Some(volume)));
         Guard
+    }
+
+    pub(super) fn fail_copy_after_open(hook: impl FnOnce(&Path) -> io::Error + 'static) -> Guard {
+        VOLUME.with(|cell| cell.set(Some(Volume::NoAtomicCreate)));
+        COPY_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+        Guard
+    }
+
+    pub(super) fn on_copy_after_open(destination: &Path) -> Option<io::Error> {
+        COPY_HOOK
+            .with(|slot| slot.borrow_mut().take())
+            .map(|hook| hook(destination))
     }
 
     pub(super) fn link_error() -> Option<io::Error> {
@@ -280,5 +303,28 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o077, 0);
+    }
+
+    #[test]
+    fn failed_copy_exclusive_preserves_concurrently_replaced_destination() {
+        let dir = Dir::new();
+        let staging = dir.staged(b"staged-project-bytes");
+        let destination = dir.0.join("saved.hex");
+        let replacement = dir.staged(b"competing-user-file");
+        let _guard = simulate::fail_copy_after_open(move |dest| {
+            fs::rename(&replacement, dest).expect("concurrent replacement");
+            io::Error::other("simulated disk full during copy")
+        });
+
+        let error = publish_new(&staging, &destination).expect_err("copy must fail");
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(
+            fs::read(&destination).expect("replaced destination must survive"),
+            b"competing-user-file"
+        );
+        assert_eq!(
+            fs::read(&staging).expect("staging file preserved"),
+            b"staged-project-bytes"
+        );
     }
 }
