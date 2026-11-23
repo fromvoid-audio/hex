@@ -4,10 +4,78 @@
 use crate::ControlStyle;
 use crate::spectrum_painter::{self, Layer as SpectrumLayer, Pass as SpectrumPass};
 use gpui::{
-    App, Bounds, ContentMask, Corners, Edges, Hsla, Pixels, SharedString, TextRun, Window, canvas,
-    div, fill, point, prelude::*, px, quad, rgb, size,
+    App, Bounds, ContentMask, Corners, Edges, Font, Hsla, Pixels, ShapedLine, SharedString,
+    TextRun, Window, canvas, div, fill, point, prelude::*, px, quad, rgb, size,
 };
-use std::{ops::Deref, sync::Arc};
+use std::{cell::RefCell, ops::Deref, rc::Rc, sync::Arc};
+
+const MAX_AXIS_LABEL_CACHE_ENTRIES: usize = 8;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AxisLabelKey {
+    min_hz_bits: u32,
+    max_hz_bits: u32,
+    min_dbfs_bits: u32,
+    max_dbfs_bits: u32,
+    plot_w_bits: u32,
+    plot_h_bits: u32,
+    right_margin_bits: u32,
+    scale_bits: u32,
+    muted_rgb: u32,
+    font: Font,
+}
+
+struct CachedLabel {
+    rel_x: f32,
+    rel_y: f32,
+    shaped: ShapedLine,
+}
+
+struct CachedAxisLabels {
+    freq_labels: Vec<CachedLabel>,
+    db_labels: Vec<CachedLabel>,
+}
+
+/// Bounded main-thread LRU cache for static shaped axis tick labels across
+/// 30–60 fps animated spectrum repaints.
+struct AxisLabelCache<V> {
+    capacity: usize,
+    entries: Vec<(AxisLabelKey, Rc<V>)>,
+}
+
+impl<V> AxisLabelCache<V> {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            entries: Vec::with_capacity(capacity.max(1)),
+        }
+    }
+
+    fn get_or_insert_with(&mut self, key: AxisLabelKey, build: impl FnOnce() -> V) -> Rc<V> {
+        if let Some(pos) = self.entries.iter().position(|(k, _)| k == &key) {
+            let entry = self.entries.remove(pos);
+            let value = Rc::clone(&entry.1);
+            self.entries.push(entry);
+            return value;
+        }
+        let value = Rc::new(build());
+        if self.entries.len() >= self.capacity {
+            self.entries.remove(0);
+        }
+        self.entries.push((key, Rc::clone(&value)));
+        value
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+thread_local! {
+    static AXIS_LABEL_CACHE: RefCell<AxisLabelCache<CachedAxisLabels>> =
+        RefCell::new(AxisLabelCache::new(MAX_AXIS_LABEL_CACHE_ENTRIES));
+}
 
 pub const MAX_SPECTRUM_PLOT_LAYERS: usize = 257;
 const MAX_POINTS: usize = 256;
@@ -451,91 +519,144 @@ fn paint_grid_and_axes(
             return;
         }
 
-        // Paint crisp lowercase frequency & dB labels directly in the same layer.
+        // Paint crisp lowercase frequency & dB labels directly in the same layer,
+        // reusing cached shaped runs across animated frames when axis geometry,
+        // range, scale, font, and palette are unchanged.
         let font = window.text_style().font();
         let font_size = px(8.5);
         let line_height = px(10.0);
         let label_color = muted_hsla.opacity(0.85);
         let major_label_color = muted_hsla;
+        let right_margin = f32::from(bounds.right() - plot.right());
 
-        let max_priority = if plot_w >= 760.0 {
-            2
-        } else if plot_w >= 380.0 {
-            1
-        } else {
-            0
+        let key = AxisLabelKey {
+            min_hz_bits: min_hz.to_bits(),
+            max_hz_bits: max_hz.to_bits(),
+            min_dbfs_bits: min_dbfs.to_bits(),
+            max_dbfs_bits: max_dbfs.to_bits(),
+            plot_w_bits: plot_w.to_bits(),
+            plot_h_bits: plot_h.to_bits(),
+            right_margin_bits: right_margin.to_bits(),
+            scale_bits: scale.to_bits(),
+            muted_rgb: style.muted,
+            font: font.clone(),
         };
-        let mut last_right = f32::NEG_INFINITY;
-        let label_y = plot.bottom() + px(4.0);
-        for tick in FREQ_TICKS {
-            if tick.priority > max_priority || tick.hz < min_hz * 0.99 || tick.hz > max_hz * 1.01 {
-                continue;
-            }
-            let norm_x = ((tick.hz / min_hz).ln() / log_span).clamp(0.0, 1.0);
-            let center_x = f32::from(plot.left()) + plot_w * norm_x;
-            let text: SharedString = tick.label.into();
-            let run = TextRun {
-                len: text.len(),
-                font: font.clone(),
-                color: if tick.major {
-                    major_label_color
-                } else {
-                    label_color
-                },
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            };
-            let shaped = window
-                .text_system()
-                .shape_line(text, font_size, &[run], None);
-            let w = f32::from(shaped.width);
-            let left = (center_x - w * 0.5).clamp(
-                f32::from(plot.left()),
-                (f32::from(plot.right()) - w).max(f32::from(plot.left())),
-            );
-            if left < last_right + 6.0 {
-                continue;
-            }
-            last_right = left + w;
-            let _ = shaped.paint(point(px(left), label_y), line_height, window, cx);
-        }
 
-        // Right-margin dBFS labels, skipping labels too close to top/bottom edges.
-        let mut last_label_y = f32::NEG_INFINITY;
-        for &db in &db_lines {
-            let norm_y = ((db - min_dbfs) / db_span).clamp(0.0, 1.0);
-            let y = f32::from(plot.top()) + plot_h * (1.0 - norm_y);
-            if y < f32::from(plot.top()) + 4.0 || y > f32::from(plot.bottom()) - 4.0 {
-                continue;
-            }
-            if (y - last_label_y).abs() < 12.0 {
-                continue;
-            }
-            last_label_y = y;
-            let text: SharedString = if db.abs() < 0.05 {
-                "0".into()
-            } else {
-                format!("{db:.0}").into()
-            };
-            let run = TextRun {
-                len: text.len(),
-                font: font.clone(),
-                color: if db.abs() < 0.05 && max_dbfs > 0.01 {
-                    major_label_color
+        let cached = AXIS_LABEL_CACHE.with(|cache| {
+            cache.borrow_mut().get_or_insert_with(key, || {
+                let max_priority = if plot_w >= 760.0 {
+                    2
+                } else if plot_w >= 380.0 {
+                    1
                 } else {
-                    label_color
-                },
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            };
-            let shaped = window
-                .text_system()
-                .shape_line(text, font_size, &[run], None);
-            let right_edge = f32::from(bounds.right()) - 4.0;
-            let x = (right_edge - f32::from(shaped.width)).max(f32::from(plot.right()) + 3.0);
-            let _ = shaped.paint(point(px(x), px(y - 5.0)), line_height, window, cx);
+                    0
+                };
+                let mut freq_labels = Vec::with_capacity(FREQ_TICKS.len());
+                let mut last_right = f32::NEG_INFINITY;
+                for tick in FREQ_TICKS {
+                    if tick.priority > max_priority
+                        || tick.hz < min_hz * 0.99
+                        || tick.hz > max_hz * 1.01
+                    {
+                        continue;
+                    }
+                    let norm_x = ((tick.hz / min_hz).ln() / log_span).clamp(0.0, 1.0);
+                    let center_x = plot_w * norm_x;
+                    let text: SharedString = tick.label.into();
+                    let run = TextRun {
+                        len: text.len(),
+                        font: font.clone(),
+                        color: if tick.major {
+                            major_label_color
+                        } else {
+                            label_color
+                        },
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    };
+                    let shaped = window
+                        .text_system()
+                        .shape_line(text, font_size, &[run], None);
+                    let w = f32::from(shaped.width);
+                    let rel_left = (center_x - w * 0.5).clamp(0.0, (plot_w - w).max(0.0));
+                    if rel_left < last_right + 6.0 {
+                        continue;
+                    }
+                    last_right = rel_left + w;
+                    freq_labels.push(CachedLabel {
+                        rel_x: rel_left,
+                        rel_y: 4.0,
+                        shaped,
+                    });
+                }
+
+                // Right-margin dBFS labels, skipping labels too close to top/bottom edges.
+                let mut db_labels = Vec::with_capacity(db_lines.len());
+                let mut last_label_y = f32::NEG_INFINITY;
+                for &db in &db_lines {
+                    let norm_y = ((db - min_dbfs) / db_span).clamp(0.0, 1.0);
+                    let rel_y = plot_h * (1.0 - norm_y);
+                    if rel_y < 4.0 || rel_y > plot_h - 4.0 {
+                        continue;
+                    }
+                    if (rel_y - last_label_y).abs() < 12.0 {
+                        continue;
+                    }
+                    last_label_y = rel_y;
+                    let text: SharedString = if db.abs() < 0.05 {
+                        "0".into()
+                    } else {
+                        format!("{db:.0}").into()
+                    };
+                    let run = TextRun {
+                        len: text.len(),
+                        font: font.clone(),
+                        color: if db.abs() < 0.05 && max_dbfs > 0.01 {
+                            major_label_color
+                        } else {
+                            label_color
+                        },
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    };
+                    let shaped = window
+                        .text_system()
+                        .shape_line(text, font_size, &[run], None);
+                    let rel_x = (right_margin - 4.0 - f32::from(shaped.width)).max(3.0);
+                    db_labels.push(CachedLabel {
+                        rel_x,
+                        rel_y: rel_y - 5.0,
+                        shaped,
+                    });
+                }
+
+                CachedAxisLabels {
+                    freq_labels,
+                    db_labels,
+                }
+            })
+        });
+
+        for label in &cached.freq_labels {
+            let _ = label.shaped.paint(
+                point(
+                    plot.left() + px(label.rel_x),
+                    plot.bottom() + px(label.rel_y),
+                ),
+                line_height,
+                window,
+                cx,
+            );
+        }
+        for label in &cached.db_labels {
+            let _ = label.shaped.paint(
+                point(plot.right() + px(label.rel_x), plot.top() + px(label.rel_y)),
+                line_height,
+                window,
+                cx,
+            );
         }
     });
 }
@@ -1001,5 +1122,92 @@ mod tests {
             resolved_axis_ranges(&extreme_db),
             (40.0, 16_000.0, -96.0, 0.0)
         );
+    }
+
+    #[test]
+    fn axis_label_cache_reuses_identical_keys_invalidates_on_changes_and_stays_bounded() {
+        let base_key = AxisLabelKey {
+            min_hz_bits: 20.0_f32.to_bits(),
+            max_hz_bits: 20_000.0_f32.to_bits(),
+            min_dbfs_bits: (-96.0_f32).to_bits(),
+            max_dbfs_bits: 0.0_f32.to_bits(),
+            plot_w_bits: 640.0_f32.to_bits(),
+            plot_h_bits: 180.0_f32.to_bits(),
+            right_margin_bits: AXIS_RIGHT_INSET.to_bits(),
+            scale_bits: 2.0_f32.to_bits(),
+            muted_rgb: 0x888888,
+            font: gpui::font("Ioskeley Mono"),
+        };
+
+        let mut cache: AxisLabelCache<usize> = AxisLabelCache::new(3);
+        let mut builds = 0;
+
+        // Repeated identical frames hit cache without rebuilding.
+        let first = cache.get_or_insert_with(base_key.clone(), || {
+            builds += 1;
+            builds
+        });
+        let second = cache.get_or_insert_with(base_key.clone(), || {
+            builds += 1;
+            builds
+        });
+        assert_eq!(builds, 1);
+        assert!(Rc::ptr_eq(&first, &second));
+
+        // Changing range, plot dimensions, DPI scale, or theme color misses cache.
+        let zoomed = AxisLabelKey {
+            min_hz_bits: 40.0_f32.to_bits(),
+            ..base_key.clone()
+        };
+        let resized = AxisLabelKey {
+            plot_w_bits: 800.0_f32.to_bits(),
+            ..base_key.clone()
+        };
+        let recolored = AxisLabelKey {
+            muted_rgb: 0xaaaaaa,
+            ..base_key.clone()
+        };
+        let _ = cache.get_or_insert_with(zoomed.clone(), || {
+            builds += 1;
+            builds
+        });
+        let _ = cache.get_or_insert_with(resized.clone(), || {
+            builds += 1;
+            builds
+        });
+        assert_eq!(builds, 3);
+        assert_eq!(cache.len(), 3);
+
+        // Touching base_key promotes it in LRU order so inserting `recolored`
+        // evicts `zoomed` rather than `base_key`.
+        let hit = cache.get_or_insert_with(base_key.clone(), || {
+            builds += 1;
+            builds
+        });
+        assert_eq!(builds, 3);
+        assert!(Rc::ptr_eq(&first, &hit));
+
+        let _ = cache.get_or_insert_with(recolored, || {
+            builds += 1;
+            builds
+        });
+        assert_eq!(builds, 4);
+        assert_eq!(cache.len(), 3);
+
+        // `base_key` is still cached; `zoomed` was evicted and must rebuild.
+        let still_hit = cache.get_or_insert_with(base_key, || {
+            builds += 1;
+            builds
+        });
+        assert_eq!(builds, 4);
+        assert!(Rc::ptr_eq(&first, &still_hit));
+
+        let rebuilt = cache.get_or_insert_with(zoomed, || {
+            builds += 1;
+            builds
+        });
+        assert_eq!(builds, 5);
+        assert_eq!(*rebuilt, 5);
+        assert_eq!(cache.len(), 3);
     }
 }
