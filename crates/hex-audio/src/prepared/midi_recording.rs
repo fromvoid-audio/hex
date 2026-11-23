@@ -56,7 +56,9 @@ impl Callback {
                 .as_mut()
                 .and_then(ActivePublication::current_mut)
         {
-            active.playback.finish_midi_capture(target.capture.take_id);
+            // Err is expected when aborting or stopping a pending Arm that was
+            // never armed on the active playback (or whose take already finished).
+            let _ = active.playback.finish_midi_capture(target.capture.take_id);
         }
         if self.midi_recording.receipt_fault {
             self.status.midi_recording_fault.store(true, Release);

@@ -312,14 +312,13 @@ impl RuntimeMut<'_> {
             Self::Eligible(p) => p.arm_midi_capture(binding, clock),
         }
     }
-    pub(super) fn finish_midi_capture(&mut self, take_id: u64) {
+    pub(super) fn finish_midi_capture(
+        &mut self,
+        take_id: u64,
+    ) -> Result<hex_engine::midi_capture::MidiCaptureClock, Invalid> {
         match self {
-            Self::Legacy(p) => {
-                let _ = p.finish_midi_capture(take_id);
-            }
-            Self::Eligible(p) => {
-                let _ = p.finish_midi_capture(take_id);
-            }
+            Self::Legacy(p) => p.finish_midi_capture(take_id),
+            Self::Eligible(p) => p.finish_midi_capture(take_id),
         }
     }
     pub(super) fn sample_rate(&self) -> u32 {
@@ -379,20 +378,25 @@ impl RuntimeMut<'_> {
     pub(super) fn apply_priority_stop(
         &mut self,
         clock: &hex_engine::computer_keyboard::KeyboardActivationClock,
-    ) {
+    ) -> Result<(), hex_engine::PlaybackActionError> {
         match self {
-            Self::Legacy(p) => p.apply_priority_stop(clock),
-            Self::Eligible(p) => {
-                let _ = p.apply_priority_stop(clock);
+            Self::Legacy(p) => {
+                p.apply_priority_stop(clock);
+                Ok(())
             }
+            Self::Eligible(p) => p.apply_priority_stop(clock),
         }
     }
-    pub(super) fn apply(&mut self, command: PlaybackCommand) {
+    pub(super) fn apply(
+        &mut self,
+        command: PlaybackCommand,
+    ) -> Result<(), hex_engine::PlaybackActionError> {
         match self {
-            Self::Legacy(p) => p.apply(command),
-            Self::Eligible(p) => {
-                let _ = p.apply_action(PlaybackAction::Transport(command));
+            Self::Legacy(p) => {
+                p.apply(command);
+                Ok(())
             }
+            Self::Eligible(p) => p.apply_action(PlaybackAction::Transport(command)),
         }
     }
     pub(super) fn render_with_signal_observers(
@@ -436,12 +440,16 @@ impl RuntimeMut<'_> {
             ),
         }
     }
-    pub(super) fn clear_gain_recording_override(&mut self) {
+    /// Clears any active gain-recording override on the current runtime.
+    /// Returns `false` only if an `Eligible` runtime is no longer `Current`
+    /// (`ActivePublication::current_mut` validates `Current` on entry).
+    pub(super) fn clear_gain_recording_override(&mut self) -> bool {
         match self {
-            Self::Legacy(p) => p.clear_gain_recording_override(),
-            Self::Eligible(p) => {
-                let _ = p.clear_gain_recording_override();
+            Self::Legacy(p) => {
+                p.clear_gain_recording_override();
+                true
             }
+            Self::Eligible(p) => p.clear_gain_recording_override(),
         }
     }
     pub(super) fn set_gain_recording_override(
@@ -461,15 +469,16 @@ impl RuntimeMut<'_> {
     ) -> Result<(), Invalid> {
         match input {
             Some((track, gain)) => self.set_gain_recording_override(track, gain),
-            None => {
-                match self {
-                    Self::Legacy(p) => p.release_gain_recording_override(),
-                    Self::Eligible(p) => {
-                        let _ = p.release_gain_recording_override();
-                    }
+            None => match self {
+                Self::Legacy(p) => {
+                    p.release_gain_recording_override();
+                    Ok(())
                 }
-                Ok(())
-            }
+                Self::Eligible(p) => p
+                    .release_gain_recording_override()
+                    .then_some(())
+                    .ok_or(Invalid("candidate runtime is not current")),
+            },
         }
     }
     pub(super) fn select_processor_audition(
@@ -498,12 +507,104 @@ impl RuntimeMut<'_> {
             Self::Eligible(p) => p.processor_audition_is_active(identity, selection),
         }
     }
-    pub(super) fn cancel_all_processor_auditions(&mut self) {
+    /// Cancels all active processor auditions on the current runtime.
+    /// Returns `false` only if an `Eligible` runtime is no longer `Current`
+    /// (`ActivePublication::current_mut` validates `Current` on entry).
+    pub(super) fn cancel_all_processor_auditions(&mut self) -> bool {
         match self {
-            Self::Legacy(p) => p.cancel_all_processor_auditions(),
-            Self::Eligible(p) => {
-                let _ = p.cancel_all_processor_auditions();
+            Self::Legacy(p) => {
+                p.cancel_all_processor_auditions();
+                true
             }
+            Self::Eligible(p) => p.cancel_all_processor_auditions(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eligible_runtime_view_propagates_priority_stop_and_transport_errors_without_allocating() {
+        let Some(mut owner) = super::super::candidate_tests::candidate() else {
+            return;
+        };
+        owner
+            .seal_constructor_on_control(hex_engine::AudioStorageLedgerReservation {
+                data_rows: 4096,
+                handle_rows: 2048,
+                root_rows: 4,
+                max_retained_bytes: 64 * 1024 * 1024,
+                max_construction_peak_bytes: 64 * 1024 * 1024,
+            })
+            .unwrap();
+        let (mut runtime, mut anchor) = owner.split_constructor_on_control().ok().unwrap();
+        let clock = hex_engine::computer_keyboard::KeyboardActivationClock::default();
+
+        // On a Current Eligible runtime, priority Stop and Stop transport commands succeed
+        // with zero callback allocations.
+        let mut ok_probe = || {
+            let mut view = RuntimeMut::Eligible(&mut runtime);
+            assert!(view.apply_priority_stop(&clock).is_ok());
+            assert!(view.apply(PlaybackCommand::Stop).is_ok());
+            assert!(view.set_gain_recording_input(None).is_ok());
+            assert!(view.clear_gain_recording_override());
+            assert!(view.cancel_all_processor_auditions());
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let info = allocation_counter::measure(&mut ok_probe);
+            assert_eq!(
+                (
+                    info.count_total,
+                    info.bytes_total,
+                    info.count_current,
+                    info.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        ok_probe();
+
+        // Dispose the runtime so it is no longer Current; control methods must surface
+        // failures explicitly instead of silently discarding them, with zero allocations.
+        let proof = runtime.dispose_on_control().unwrap();
+        let mut err_probe = || {
+            let mut view = RuntimeMut::Eligible(&mut runtime);
+            assert_eq!(
+                view.apply_priority_stop(&clock),
+                Err(hex_engine::PlaybackActionError::SessionNotPrepared)
+            );
+            assert_eq!(
+                view.apply(PlaybackCommand::Stop),
+                Err(hex_engine::PlaybackActionError::SessionNotPrepared)
+            );
+            assert!(view.set_gain_recording_input(None).is_err());
+            assert!(view.finish_midi_capture(1).is_err());
+            assert!(!view.clear_gain_recording_override());
+            assert!(!view.cancel_all_processor_auditions());
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let info = allocation_counter::measure(&mut err_probe);
+            assert_eq!(
+                (
+                    info.count_total,
+                    info.bytes_total,
+                    info.count_current,
+                    info.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        err_probe();
+
+        let mut anchors = [Some(anchor)];
+        proof.record_anchor_cells_on_control(&mut anchors).unwrap();
+        anchor = anchors[0].take().unwrap();
+        anchor.finish_disposal_on_control().unwrap();
     }
 }
