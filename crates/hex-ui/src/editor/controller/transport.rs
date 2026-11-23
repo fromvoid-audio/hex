@@ -17,8 +17,8 @@ impl EditorView {
         self.enqueue_with_clip_scope(request, false)
     }
 
-    /// Recorded takes retain their own no-warp policy, not the browser-import preference.
-    pub(in crate::editor) fn enqueue_recorded_audio(&mut self, request: Request) -> bool {
+    /// Submit an import whose producer already owns its warp policy.
+    pub(in crate::editor) fn enqueue_captured_audio_import(&mut self, request: Request) -> bool {
         self.enqueue_with_clip_scope(request, false)
     }
 

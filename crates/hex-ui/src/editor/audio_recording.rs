@@ -1059,7 +1059,7 @@ impl EditorView {
                     return;
                 }
             };
-        if self.enqueue_recorded_audio(request) {
+        if self.enqueue_captured_audio_import(request) {
             self.audio_batch = Some(control);
             self.audio_batch_progress = None;
             self.audio_recorder.pending_commit_path = Some(path);
