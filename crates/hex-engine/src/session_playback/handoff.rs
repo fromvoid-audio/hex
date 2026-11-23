@@ -29,8 +29,8 @@ use compensation_plan::{
 use continuation_plan::{
     ArrangementInstrumentHandoff, ArrangementQueryCut, RemapCandidate, Restart,
     SessionMidiRouteHandoff, add_or_extend_suppression, arrangement_only_proofs,
-    candidate_arrangement_cut, cut_arrangement_voices_for_remap,
-    first_pass_arrangement_loop_continuity, handoff_arrangement_instrument_changes,
+    arrangement_voices_finish_before_loop_edit_wrap, candidate_arrangement_cut,
+    cut_arrangement_voices_for_remap, handoff_arrangement_instrument_changes,
     handoff_session_midi_route_changes, inline_tuning_owner_matches, is_suppressed,
     map_arrangement_cut, mutable_key_has_live_proof, mutable_prefix_restoration,
     mutable_prefix_shortening, mutable_proof_deadline, mutable_session_clip_matches,

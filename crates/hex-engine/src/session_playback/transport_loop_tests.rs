@@ -2478,6 +2478,53 @@ fn live_loop_edit_away_from_wrap_keeps_held_note_output_continuous() {
 }
 
 #[test]
+fn moving_enabled_scope_after_wrap_keeps_sounding_arrangement_note() {
+    let project = transport_loop_project(false);
+    let revision = prepare_mutable(&project);
+    let mut playing = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut uninterrupted = SessionPlayback::new(revision).unwrap();
+    // The first wrap chases the note at 48_000. Drag the scope while that
+    // occurrence is sounding, before either the old or new end is reached.
+    let mut prefix = vec![[0.0; 2]; 98_000];
+    for playback in [&mut playing, &mut uninterrupted] {
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut prefix).unwrap();
+        assert_eq!(
+            (playback.arrangement_frame(), playback.arrangement_loop_pass),
+            (50_000, 1)
+        );
+    }
+    let mut editor = hex_project::Editor::new(project, 8).unwrap();
+    editor
+        .execute(hex_project::Command::SetLoopRegion {
+            start: 60_000,
+            end: 108_000,
+            enabled: true,
+        })
+        .unwrap();
+    let mut moved = SessionPlayback::new(prepare_mutable(editor.project())).unwrap();
+    let report = moved.try_inherit_state_live_from(&mut playing).unwrap();
+    assert!(
+        !report.running_audio_restart(),
+        "scope move restarted sounding audio"
+    );
+    let mut actual = vec![[0.0; 2]; 22_017];
+    let mut expected = actual.clone();
+    moved.render(&mut actual).unwrap();
+    uninterrupted.render(&mut expected).unwrap();
+    assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
+    assert!(
+        actual == expected,
+        "scope move changed the held note or its release"
+    );
+    moved.render(&mut vec![[0.0; 2]; 108_001 - 72_017]).unwrap();
+    assert_eq!(
+        (moved.arrangement_frame(), moved.arrangement_loop_pass),
+        (60_001, 2)
+    );
+}
+
+#[test]
 fn canonical_loop_edit_rejects_gate_tail_boundary_and_anchor_without_consuming_donor() {
     for (end, anchored) in [
         (71_999, false),

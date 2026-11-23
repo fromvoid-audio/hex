@@ -1313,10 +1313,19 @@ impl SessionPlayback {
         let new_beat = new_base_view
             .frame_to_beat(previous.performance_frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
+        let linear_first_pass = previous.anchor.is_none()
+            && previous.arrangement_loop_pass == 0
+            && previous.performance_frame == previous.arrangement_frame
+            && old_beat == new_beat;
+        let live_scope_move = live
+            && previous.playing
+            && old_loop.is_some()
+            && new_loop.is_some()
+            && carried_cut.is_none();
         let arrangement_loop_continuity = same_base
             && old_loop != new_loop
-            && old_beat == new_beat
-            && first_pass_arrangement_loop_continuity(self, previous);
+            && (linear_first_pass || live_scope_move)
+            && arrangement_voices_finish_before_loop_edit_wrap(self, previous);
         // When a running VST3 instrument requires clock continuity across a
         // compatible loop edit, the live fallback cannot restart the graph.
         // Adopt the new scope without restarting the foreign clock. Native
