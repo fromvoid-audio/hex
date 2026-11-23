@@ -207,7 +207,10 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
         # Header mixer composition uses typed controls; each caption is checked
         # separately at its theme::text boundary. Keep variable names file-local.
         header_mixer_component = (
-            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/tracks.rs'
+            path.relative_to(ROOT).as_posix() in (
+                'crates/hex-ui/src/editor/tracks.rs',
+                'crates/hex-ui/src/editor/tracks/header.rs',
+            )
             and suffix.startswith(('utilities)', 'activator)', 'solo)', 'arm)',
                                    'self.track_pan(', 'header_content)', 'toggle_button_with_style('))
         ) or (
@@ -220,7 +223,12 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
         # Typed clip/backdrop and passive-title components route captions and
         # rename input through clip_name's own checked boundary.
         header_mixer_component = header_mixer_component or (
-            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/tracks.rs'
+            path.relative_to(ROOT).as_posix() in (
+                'crates/hex-ui/src/editor/tracks.rs',
+                'crates/hex-ui/src/editor/tracks/header.rs',
+                'crates/hex-ui/src/editor/tracks/clip_paint.rs',
+                'crates/hex-ui/src/editor/tracks/drag_ghost.rs',
+            )
             and suffix.startswith(('framed_clip)', 'super::clip_name::passive_name_header('))
         ) or (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/clip_boundary.rs'
