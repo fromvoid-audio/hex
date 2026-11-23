@@ -30,7 +30,10 @@ fn open_applied_source(
 fn reload_off(view: &mut EditorView, cx: &mut Context<EditorView>) {
     hex_preferences::save_playback_preferences(
         view.playback_settings.path.as_ref().unwrap(),
-        PlaybackPreferences { note_chase: false },
+        PlaybackPreferences {
+            note_chase: false,
+            ..PlaybackPreferences::default()
+        },
     )
     .unwrap();
     view.playback_settings.loading = true;

@@ -1014,6 +1014,7 @@ impl EditorView {
                     .child(controls),
             );
         let audio_rates = self.project_rate_settings_row(cx);
+        let live_mode = self.live_mode_settings_row(cx);
         let settings = self.audio_import_settings_row(cx);
         let track_defaults = self.track_defaults_row(cx);
         let mut card = div()
@@ -1033,7 +1034,7 @@ impl EditorView {
             .font_family(theme::FONT_FAMILY)
             .text_color(rgb(style.text))
             .shadow_lg()
-            .children([audio_rates, settings, track_defaults])
+            .children([audio_rates, live_mode, settings, track_defaults])
             .child(self.controller_input_settings(cx));
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
