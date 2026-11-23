@@ -344,3 +344,108 @@ fn arrangement_catalog_worker_completion_and_undo_preserve_prior_selection(
         assert_eq!(view.selected_track, Some(selected));
     });
 }
+
+#[gpui::test]
+fn arrangement_header_column_device_drops_insert_tracks_and_preview_like_the_grid(
+    cx: &mut TestAppContext,
+) {
+    for class in [NativeDeviceClass::Instrument, NativeDeviceClass::Effect] {
+        for destination in 0..4 {
+            let (project, first, target, _) = audio_project();
+            let project = if destination == 3 {
+                hex_project::Project::new(48_000).unwrap()
+            } else {
+                project
+            };
+            let original = project.clone();
+            let (handle, editor) = editor_window(cx, project, Arc::default());
+            editor.update(cx, |view, cx| {
+                view.browser.section = super::browser::BrowserSection::Instruments;
+                view.selected_track = if destination == 3 { None } else { Some(first) };
+                cx.notify();
+            });
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            visual.run_until_parked();
+            let source = visual
+                .debug_bounds(match class {
+                    NativeDeviceClass::Instrument => "browser-device-instrument-hex.instrument.fm4",
+                    NativeDeviceClass::Effect => "browser-device-effect-hex.utility",
+                })
+                .expect("catalog source");
+            let down = source.center();
+            visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(
+                point(down.x + px(12.0), down.y),
+                MouseButton::Left,
+                Modifiers::default(),
+            );
+            visual.run_until_parked();
+            let body = visual.debug_bounds("arrangement-content").expect("body");
+            let header_x = body.right() - px(40.0);
+            let landing = if destination == 3 {
+                point(header_x, body.origin.y + body.size.height * 0.5)
+            } else {
+                let header_track = if destination == 0 { first } else { target };
+                let header = visual
+                    .debug_bounds(Box::leak(
+                        format!("arrangement-track-header-{}", header_track.value())
+                            .into_boxed_str(),
+                    ))
+                    .expect("target header");
+                point(
+                    header.center().x,
+                    match destination {
+                        0 => header.origin.y + px(1.0),
+                        1 => header.origin.y,
+                        _ => header.bottom() + px(12.0),
+                    },
+                )
+            };
+            let hovered_header_selector = (destination < 2).then(|| {
+                let id = if destination == 0 { first } else { target };
+                Box::leak(format!("arrangement-track-header-{}", id.value()).into_boxed_str())
+                    as &'static str
+            });
+            let before_bg =
+                hovered_header_selector.and_then(|selector| visual.rendered_background(selector));
+            visual.simulate_mouse_move(landing, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            assert!(
+                visual
+                    .debug_bounds("arrangement-device-drop-preview")
+                    .is_some(),
+                "header-column destination {destination} must render insertion preview"
+            );
+            if let Some(selector) = hovered_header_selector {
+                assert_eq!(
+                    visual.rendered_background(selector),
+                    before_bg,
+                    "header insertion seam must not highlight adjacent track header"
+                );
+            }
+            visual.simulate_mouse_up(landing, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            editor.read_with(cx, |view, _| {
+                let expected = match destination {
+                    0 => ArrangementDeviceDestination::NewTrack {
+                        before_track: Some(first),
+                    },
+                    1 => ArrangementDeviceDestination::NewTrack {
+                        before_track: Some(target),
+                    },
+                    _ => ArrangementDeviceDestination::NewTrack { before_track: None },
+                };
+                assert_eq!(
+                    view.last_enqueued_arrangement_device_drop,
+                    Some(expected),
+                    "class={class:?} destination={destination} error={:?}",
+                    view.error
+                );
+                assert!(view.error.is_none(), "{:?}", view.error);
+                assert!(view.arrangement_device_preview.is_none());
+                assert!(view.pending_plugin_effect.is_some());
+                assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
+            });
+        }
+    }
+}
