@@ -2910,15 +2910,12 @@ fn transport_split_vector_dispatches_the_edit_cursor_command(cx: &mut TestAppCon
     );
     visual.run_until_parked();
     let frame = editor.read_with(cx, |view, _| view.edit_cursor.unwrap().frame);
-    let split = visual
-        .debug_bounds("split selection edges or edit cursor · e")
-        .unwrap();
     assert!(
-        !visual
-            .rendered_monochrome_colors("transport-split-icon")
-            .is_empty()
+        visual
+            .debug_bounds("split selection edges or edit cursor · e")
+            .is_none()
     );
-    visual.simulate_click(split.center(), Modifiers::default());
+    visual.update(|window, cx| window.dispatch_action(Box::new(super::SplitClip), cx));
     editor.read_with(cx, |view, _| {
         assert!(matches!(view.last_enqueued_edit, Some(Command::SplitClip { clip: id, frame: position }) if id == clip && position == frame));
     });

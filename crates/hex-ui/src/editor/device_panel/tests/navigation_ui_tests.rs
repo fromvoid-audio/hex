@@ -581,11 +581,10 @@ fn workspace_adb3_returns_removed_last_track_menu_does_not_own_tab(cx: &mut Test
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     assert!(visual.debug_bounds("device-add-menu").is_none());
-    let remove = visual
-        .debug_bounds("remove selected track")
-        .unwrap()
-        .center();
-    visual.simulate_click(remove, Modifiers::default());
+    assert!(visual.debug_bounds("remove selected track").is_none());
+    visual.update(|window, cx| {
+        window.dispatch_action(Box::new(crate::editor::RemoveTrack), cx);
+    });
     pump_until(&editor, cx, |v| {
         v.worker_requests_pending == 0 && v.pending_requests.is_empty()
     });

@@ -7,9 +7,9 @@ pub(super) const TOOLBAR_HEIGHT: f32 = 22.0;
 /// Overlays leave the first toolbar row clear for native window controls.
 pub(super) const WINDOW_CONTROL_HEIGHT: f32 = TOOLBAR_HEIGHT;
 // Keep every transport action, full view name and useful output status at the
-// minimum window width. Reserve the wide line for the longest input policy,
-// position readout and output/loading indicators as well as fixed controls.
-pub(super) const WIDE_TOOLBAR_MIN_WIDTH: f32 = 1_600.0;
+// minimum window width. Reserve the wide single-row bar for the three-zone
+// layout with the longest input policy, position readout and status indicators.
+pub(super) const WIDE_TOOLBAR_MIN_WIDTH: f32 = 1_240.0;
 pub(super) fn toolbar_height(width: f32) -> f32 {
     if width < WIDE_TOOLBAR_MIN_WIDTH {
         // Two full rows plus the existing bottom divider.
@@ -312,12 +312,46 @@ mod ui_tests {
                 }
                 previous_right = Some(control.right());
             }
-            let import = visual.debug_bounds("import audio · cmd+i").unwrap();
+            let metronome = visual.debug_bounds("toggle metronome").unwrap();
             assert_eq!(
-                import.size,
+                metronome.size,
                 gpui::size(px(super::CONTROL_SIZE), px(super::CONTROL_SIZE))
             );
-            assert!(tempo.right() <= import.left());
+            assert!(tempo.right() <= metronome.left());
+            // Verify pruned edit/file/track/navigation buttons are absent from the toolbar.
+            for removed in [
+                "import audio · cmd+i",
+                "export wav · cmd+shift+e",
+                "split selection edges or edit cursor · e",
+                "undo · cmd+z",
+                "redo · cmd+shift+z",
+                "add track",
+                "add four-beat midi clip · cmd+shift+m",
+                "remove selected track",
+                "pan left · alt+left",
+                "pan right · alt+right",
+                "zoom in · cmd++",
+                "zoom out · cmd+-",
+            ] {
+                assert!(
+                    visual.debug_bounds(removed).is_none(),
+                    "{width}: pruned control {removed:?} must not render in top toolbar"
+                );
+            }
+            // Verify three-zone layout ordering on wide single-row widths.
+            let left_zone = visual.debug_bounds("transport-left-zone").unwrap();
+            let center_zone = visual.debug_bounds("transport-center-zone").unwrap();
+            let right_zone = visual.debug_bounds("transport-right-zone").unwrap();
+            assert!(left_zone.left() >= toolbar.left() + px(crate::theme::TITLEBAR_LEADING_INSET));
+            assert!(left_zone.right() <= center_zone.left());
+            if width >= super::WIDE_TOOLBAR_MIN_WIDTH {
+                assert!(
+                    center_zone.right() <= right_zone.left(),
+                    "{width}: center={center_zone:?} right={right_zone:?}"
+                );
+            } else {
+                assert!(center_zone.bottom() <= right_zone.top());
+            }
             for selector in [
                 "restart default audio output · stays stopped",
                 "audio output status",
@@ -472,7 +506,9 @@ mod ui_tests {
                     }
                     for selector in [
                         "project tuning · cmd+alt+t",
-                        "import audio · cmd+i",
+                        "toggle metronome",
+                        "transport-loop-toggle",
+                        "automation-view-toggle",
                         "workspace-view-toggle",
                         "restart default audio output · stays stopped",
                     ] {
@@ -638,8 +674,10 @@ mod ui_tests {
                     );
                     let readout = visual.debug_bounds("project position").unwrap();
                     assert!(readout.size.width >= seven_chars);
-                    assert!(readout.right() <= restart.left());
-                    assert!(readout.right() <= restart.left());
+                    assert!(
+                        readout.bottom() <= restart.top() || readout.right() <= restart.left(),
+                        "{width}: readout={readout:?} restart={restart:?}"
+                    );
                     assert!(restart.right() <= status.left());
                     assert!(status.right() <= toolbar.right() - px(8.0));
                     assert!(status.size.height <= toolbar.size.height);
@@ -660,7 +698,8 @@ mod ui_tests {
                         assert!(visual.debug_bounds("project loading").is_none());
                     }
                     for selector in [
-                        "import audio · cmd+i",
+                        "toggle metronome",
+                        "transport-loop-toggle",
                         "workspace-view-toggle",
                         "restart default audio output · stays stopped",
                     ] {
