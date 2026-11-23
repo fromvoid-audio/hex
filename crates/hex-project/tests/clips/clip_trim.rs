@@ -93,9 +93,9 @@ fn loop_split_keeps_source_region_and_advances_phase_recursively() {
     assert_eq!(
         clips
             .iter()
-            .map(|clip| clip.fade().offset())
+            .map(|clip| (clip.fade().offset(), clip.fade().span()))
             .collect::<Vec<_>>(),
-        [0, 4, 8]
+        [(0, 4), (0, 4), (0, 3)]
     );
     let duplicate_source = clips[1].id();
     let duplicate = match editor
@@ -444,7 +444,7 @@ fn retained_edge_resize_reanchors_the_authored_fades_in_preview_and_history() {
             (preview.start(), preview.duration()),
             (expected_start, expected_length)
         );
-        let expected = fade.reanchor(expected_length).unwrap();
+        let expected = fade.reanchor_to_corners(expected_length).unwrap();
         assert_eq!(preview.retained_fade(), expected);
         assert_eq!(
             preview
@@ -529,10 +529,7 @@ fn lower_fade_resize_uses_source_trim_preserves_upper_samples_and_one_step_histo
             match edge {
                 TrimEdge::Left => {
                     assert_eq!(changed.retained_fade().in_start(), 0);
-                    assert_eq!(
-                        changed.retained_fade().out_end_offset(),
-                        3.min(changed.duration() - 1)
-                    );
+                    assert_eq!(changed.retained_fade().out_end_offset(), 0);
                     if looping {
                         assert_eq!((changed.source_offset(), changed.source_length()), (5, 20));
                         assert_eq!(
@@ -550,7 +547,7 @@ fn lower_fade_resize_uses_source_trim_preserves_upper_samples_and_one_step_histo
                 }
                 TrimEdge::Right => {
                     assert_eq!(changed.retained_fade().out_end_offset(), 0);
-                    assert_eq!(changed.retained_fade().in_start(), 2);
+                    assert_eq!(changed.retained_fade().in_start(), 0);
                 }
             }
             let result = editor.project().clone();

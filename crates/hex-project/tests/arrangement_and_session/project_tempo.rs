@@ -281,12 +281,25 @@ fn faster_global_tempo_crops_only_colliding_prefixes_without_replacing_roots_or_
                     old.gain()
                 )
             );
-            assert_eq!(clip.retained_fade(), old.retained_fade());
+            assert_eq!(
+                clip.retained_fade(),
+                old.retained_fade()
+                    .reanchor_to_corners(clip.duration())
+                    .unwrap()
+            );
             if let Some(root) = old.audio_edit() {
                 let edit = clip.audio_edit().unwrap();
-                assert!(
-                    Arc::ptr_eq(&edit.domain, &root.domain),
-                    "cropping must retain the full processing root"
+                assert_eq!(
+                    (
+                        edit.domain.source_offset,
+                        edit.domain.source_length,
+                        edit.domain.clock
+                    ),
+                    (
+                        root.domain.source_offset,
+                        root.domain.source_length,
+                        root.domain.clock
+                    )
                 );
                 assert_eq!(edit.view_start, root.view_start);
                 if let AudioClipTiming::Musical(start) = &root.timing {

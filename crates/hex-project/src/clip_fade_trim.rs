@@ -59,36 +59,34 @@ pub(crate) fn preview(
     if trimmed.start == clip.start && trimmed.duration == clip.duration && endpoint_aligned {
         return Ok(clip.clone());
     }
-    let fitted = fade.reanchor(trimmed.duration)?;
-    let (fade_in, fade_out, in_start, out_end_offset) = match edge {
-        TrimEdge::Left => (
-            if fade.fade_in() == 0 {
+    let fitted = fade.reanchor_to_corners(trimmed.duration)?;
+    let (fade_in, fade_out) = match edge {
+        TrimEdge::Left => {
+            let fade_in = if fade.fade_in() == 0 {
                 0
             } else {
                 in_top
                     .saturating_sub(trimmed.start)
                     .saturating_add(1)
                     .min(trimmed.duration)
-            },
-            fitted.fade_out(),
-            0,
-            fitted.out_end_offset(),
-        ),
-        TrimEdge::Right => (
-            fitted.fade_in(),
-            if fade.fade_out() == 0 {
+            };
+            let fade_out = fitted.fade_out().min(trimmed.duration - fade_in);
+            (fade_in, fade_out)
+        }
+        TrimEdge::Right => {
+            let fade_out = if fade.fade_out() == 0 {
                 0
             } else {
                 (trimmed.start + trimmed.duration)
                     .saturating_sub(out_top)
                     .min(trimmed.duration)
-            },
-            fitted.in_start(),
-            0,
-        ),
+            };
+            let fade_in = fitted.fade_in().min(trimmed.duration - fade_out);
+            (fade_in, fade_out)
+        }
     };
     let next = ClipFade::new(trimmed.duration, 0, fade_in, fade_out)?
-        .with_shape(in_start, out_end_offset, fade.in_curve(), fade.out_curve())?
+        .with_shape(0, 0, fade.in_curve(), fade.out_curve())?
         .with_curve_positions(fade.in_position(), fade.out_position())?
         .with_curve_laws(fade.curve_laws());
     if trimmed.audio_edit().is_some() {

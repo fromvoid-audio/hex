@@ -54,13 +54,19 @@ fn preview_moved_audio_fragment_keeps_source_phase_and_fade_domain() {
     assert_eq!(preview.duration(), 48_000);
     assert_eq!(preview.source_offset(), original.source_offset());
     assert_eq!(preview.source_phase(), 24_000);
-    assert_eq!(preview.fade().span(), original.fade().span());
-    assert_eq!(preview.fade().offset(), 24_000);
-    assert_eq!(preview.fade().gain_at(0), original.fade().gain_at(24_000));
+    assert_eq!(preview.fade().span(), preview.duration());
+    assert_eq!(preview.fade().offset(), 0);
     assert_eq!(
-        preview.fade().gain_at(47_999),
-        original.fade().gain_at(71_999)
+        (
+            preview.fade().in_start(),
+            preview.fade().out_end_offset(),
+            preview.fade().fade_in(),
+            preview.fade().fade_out()
+        ),
+        (0, 0, 0, 0)
     );
+    assert_eq!(preview.fade().gain_at(0), 1.0);
+    assert_eq!(preview.fade().gain_at(47_999), 1.0);
 }
 
 #[test]

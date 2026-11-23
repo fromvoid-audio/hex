@@ -45,7 +45,7 @@ impl Clip {
         {
             return Ok(self);
         }
-        let fade = fade.reanchor(self.duration())?;
+        let fade = fade.reanchor_to_corners(self.duration())?;
         self.with_authored_outer_fade(tempo, fade)
     }
 

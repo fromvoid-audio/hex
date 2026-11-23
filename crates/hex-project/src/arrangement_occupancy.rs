@@ -81,6 +81,9 @@ fn ramp(clip: &Clip, tempo: &TempoMap, incoming: bool) -> Result<Option<(i128, i
         (end - fade.fade_out(), end - 1)
     };
     let project = |at: u64| -> Result<Option<i128>, Invalid> {
+        if let Some(outer) = clip.projected_outer_fade(tempo)? {
+            return Ok(outer.frame_at_domain_position(at)?.map(i128::from));
+        }
         if let Some(edit) = clip.audio_edit() {
             if edit.placement.is_some() || edit.content_view.is_some() {
                 return Ok(None);

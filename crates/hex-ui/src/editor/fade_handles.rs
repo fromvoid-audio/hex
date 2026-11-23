@@ -521,10 +521,13 @@ impl EditorView {
             return None;
         }
         // Hover and held `f` share these local controls, so the hovered clip
-        // shows exactly the handle set and corner positions that `f` shows.
-        let controls = fade.reanchor(clip.duration()).ok()?;
-        let reanchors =
-            clip.audio_edit().is_some() || fade.offset() != 0 || fade.span() != clip.duration();
+        // shows exactly the corner-anchored handle set that `f` shows.
+        let controls = fade.reanchor_to_corners(clip.duration()).ok()?;
+        let reanchors = clip.audio_edit().is_some()
+            || fade.offset() != 0
+            || fade.span() != clip.duration()
+            || fade.in_start() != 0
+            || fade.out_end_offset() != 0;
         let project = &self.state.as_ref()?.project;
         let tempo = project.tempo_map();
         let outer = if let Some(fade) =
@@ -534,23 +537,29 @@ impl EditorView {
         } else {
             clip.projected_outer_fade(tempo).ok()?
         };
-        let shape = if outer.is_some() { fade } else { controls };
+        let clip_last = clip
+            .start()
+            .checked_add(clip.duration().saturating_sub(1))?;
+        let use_outer = outer.is_some() && fade == controls;
         let mut positions = Vec::with_capacity(6);
-        for (handle, (domain_frame, subframe), gain) in knots(shape) {
-            if matches!(handle, Handle::InCurve) && shape.fade_in() < 3
-                || matches!(handle, Handle::OutCurve) && shape.fade_out() < 3
+        for (handle, (domain_frame, subframe), gain) in knots(controls) {
+            if matches!(handle, Handle::InCurve) && controls.fade_in() < 3
+                || matches!(handle, Handle::OutCurve) && controls.fade_out() < 3
             {
                 continue;
             }
-            let project_frame = match &outer {
-                Some(projection) => {
-                    let Some(frame) = projection.frame_at_domain_position(domain_frame).ok()?
-                    else {
-                        continue;
-                    };
-                    frame
-                }
-                None => clip.start().checked_add(domain_frame)?,
+            let project_frame = match handle {
+                Handle::InBottom => clip.start(),
+                Handle::OutBottom => clip_last,
+                _ => match outer.as_ref().filter(|_| use_outer) {
+                    Some(projection) => projection
+                        .frame_at_domain_position(domain_frame)
+                        .ok()
+                        .flatten()
+                        .map(|frame| frame.clamp(clip.start(), clip_last))
+                        .unwrap_or(clip.start().saturating_add(domain_frame).min(clip_last)),
+                    None => clip.start().checked_add(domain_frame)?.min(clip_last),
+                },
             };
             // Subtract integer origins before casting to preserve nearby knots
             // near the high end of the timeline.

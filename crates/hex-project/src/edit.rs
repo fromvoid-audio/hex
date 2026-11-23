@@ -5,8 +5,7 @@ mod device;
 mod track;
 
 pub(crate) use clip::{
-    cuts_silent_tail, interval_valid, preview_edge_trim, retained_audio_fragment, split_clip_at,
-    split_clip_at_tempo,
+    interval_valid, preview_edge_trim, retained_audio_fragment, split_clip_at, split_clip_at_tempo,
 };
 pub use command::{
     Command, Created, InstrumentAssetOwner, InstrumentLoadDestination, InstrumentLoadPlacement,

@@ -299,6 +299,106 @@ impl ClipFade {
         .with_curve_positions(self.in_position, self.out_position)?
         .with_curve_laws(self.laws))
     }
+    /// Reanchor an Arrangement clip fade strictly to the clip's own corners:
+    /// `offset == 0`, `span == duration`, `in_start == 0`, `out_end_offset == 0`,
+    /// with both fade lengths clamped inside `duration`.
+    pub fn reanchor_to_corners(self, duration: u64) -> Result<Self, Invalid> {
+        let fade_in = self.fade_in.min(duration);
+        let fade_out = self.fade_out.min(duration);
+        let [in_law, out_law] = self.laws;
+        Ok(Self::new(duration, 0, fade_in, fade_out)?
+            .with_shape(
+                0,
+                0,
+                if fade_in > 0 { self.in_curve } else { 0 },
+                if fade_out > 0 { self.out_curve } else { 0 },
+            )?
+            .with_curve_positions(
+                if fade_in > 0 { self.in_position } else { 500 },
+                if fade_out > 0 { self.out_position } else { 500 },
+            )?
+            .with_curve_laws([
+                if fade_in > 0 {
+                    in_law
+                } else {
+                    FadeCurveLaw::Linear
+                },
+                if fade_out > 0 {
+                    out_law
+                } else {
+                    FadeCurveLaw::Linear
+                },
+            ]))
+    }
+    /// Split a clip fade at `cut` inside `original_duration`, producing left
+    /// (`cut`) and right (`original_duration - cut`) clip-local fades anchored
+    /// to each half's own corners: the uncut outer fade is preserved (clamped to
+    /// the half's duration if the cut falls inside the ramp) and each newly
+    /// created cut edge starts neutral at its corner.
+    pub fn split_at_corners(
+        self,
+        original_duration: u64,
+        cut: u64,
+    ) -> Result<(Self, Self), Invalid> {
+        if cut == 0 || cut >= original_duration {
+            return Err(Invalid("split cursor must be inside the clip"));
+        }
+        let left_duration = cut;
+        let right_duration = original_duration - cut;
+        let [in_law, out_law] = self.laws;
+        let left_in = if self.offset == 0 {
+            self.fade_in
+        } else {
+            self.in_start
+                .saturating_add(self.fade_in)
+                .saturating_sub(self.offset)
+        }
+        .min(left_duration);
+        let right_out =
+            if self.offset == 0 && self.span == original_duration && self.out_end_offset == 0 {
+                self.fade_out
+            } else {
+                let vis_end = self.offset.saturating_add(original_duration).min(self.span);
+                let out_end = self.span.saturating_sub(self.out_end_offset);
+                let out_start = out_end.saturating_sub(self.fade_out);
+                if vis_end <= out_end {
+                    vis_end.saturating_sub(out_start)
+                } else {
+                    self.fade_out
+                }
+            }
+            .min(right_duration);
+        let left = Self::new(left_duration, 0, left_in, 0)?
+            .with_shape(0, 0, if left_in > 0 { self.in_curve } else { 0 }, 0)?
+            .with_curve_positions(if left_in > 0 { self.in_position } else { 500 }, 500)?
+            .with_curve_laws([
+                if left_in > 0 {
+                    in_law
+                } else {
+                    FadeCurveLaw::Linear
+                },
+                FadeCurveLaw::Linear,
+            ]);
+        let right = Self::new(right_duration, 0, 0, right_out)?
+            .with_shape(0, 0, 0, if right_out > 0 { self.out_curve } else { 0 })?
+            .with_curve_positions(
+                500,
+                if right_out > 0 {
+                    self.out_position
+                } else {
+                    500
+                },
+            )?
+            .with_curve_laws([
+                FadeCurveLaw::Linear,
+                if right_out > 0 {
+                    out_law
+                } else {
+                    FadeCurveLaw::Linear
+                },
+            ]);
+        Ok((left, right))
+    }
     /// Domain knots, including both sides of silent endpoint steps.
     pub fn breakpoints(self) -> [Option<u64>; 8] {
         let out_end = self.span - self.out_end_offset;

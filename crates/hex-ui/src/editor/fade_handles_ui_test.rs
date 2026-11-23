@@ -334,7 +334,15 @@ fn f_exposes_editable_handles_for_a_split_whose_retained_fades_are_outside_the_c
         .unwrap();
     let source = canonical.project().clip(middle).unwrap();
     assert_eq!(source.fade().gain_at(0), 1.0);
-    assert_ne!(source.fade().offset(), 0);
+    assert_eq!(
+        (
+            source.fade().offset(),
+            source.fade().span(),
+            source.fade().in_start(),
+            source.fade().out_end_offset()
+        ),
+        (0, source.duration(), 0, 0)
+    );
     let (handle, editor) = super::super::clip_drag_ui_test::editor_window(
         cx,
         canonical.project().clone(),
@@ -342,11 +350,26 @@ fn f_exposes_editable_handles_for_a_split_whose_retained_fades_are_outside_the_c
     );
     let mut visual = VisualTestContext::from_window(handle, cx);
     key(&mut visual, true, "f");
+    for part in canonical.project().tracks()[0].clips() {
+        for prefix in [
+            "fade-in-top",
+            "fade-in-bottom",
+            "fade-out-top",
+            "fade-out-bottom",
+        ] {
+            let label = Box::leak(format!("{prefix}-{}", part.id().value()).into_boxed_str());
+            assert!(
+                visual.debug_bounds(label).is_some(),
+                "split clip {} must expose corner-anchored handle {prefix}",
+                part.id().value()
+            );
+        }
+    }
     let target = visual
         .debug_bounds(Box::leak(
             format!("fade-in-top-{}", middle.value()).into_boxed_str(),
         ))
-        .expect("f exposes a local edit handle even when the inherited knot is outside this crop")
+        .expect("f exposes a corner-anchored local edit handle on every split half")
         .center();
     visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
     key(&mut visual, false, "f");
@@ -366,8 +389,43 @@ fn f_exposes_editable_handles_for_a_split_whose_retained_fades_are_outside_the_c
     });
     canonical.execute(edit).unwrap();
     let source = canonical.project().clip(middle).unwrap();
-    assert_eq!((source.fade().span(), source.fade().offset()), (48_000, 0));
+    assert_eq!(
+        (
+            source.fade().span(),
+            source.fade().offset(),
+            source.fade().in_start(),
+            source.fade().out_end_offset()
+        ),
+        (48_000, 0, 0, 0)
+    );
     assert!(source.fade().fade_in() > 1000);
+
+    // Also verify a legacy saved project containing an out-of-bounds offset,
+    // oversized span, and non-zero bottom offsets still projects corner-anchored
+    // handles inside the clip bounds and commits corner-anchored edits.
+    let mut legacy_snapshot = canonical.project().snapshot();
+    let legacy_clip = &mut legacy_snapshot.tracks[0].audio_clips_mut().unwrap()[1];
+    legacy_clip.fade = ClipFade::new(96_000, 24_000, 12_000, 12_000)
+        .unwrap()
+        .with_shape(4_000, 4_000, 0, 0)
+        .unwrap();
+    let legacy_project = hex_project::Project::from_snapshot(legacy_snapshot).unwrap();
+    let (legacy_handle, _) =
+        super::super::clip_drag_ui_test::editor_window(cx, legacy_project, Arc::default());
+    let mut legacy_visual = VisualTestContext::from_window(legacy_handle, cx);
+    key(&mut legacy_visual, true, "f");
+    for prefix in [
+        "fade-in-top",
+        "fade-in-bottom",
+        "fade-out-top",
+        "fade-out-bottom",
+    ] {
+        let label = Box::leak(format!("{prefix}-{}", middle.value()).into_boxed_str());
+        assert!(
+            legacy_visual.debug_bounds(label).is_some(),
+            "legacy saved clip must still expose corner-anchored handle {prefix}"
+        );
+    }
 }
 
 #[gpui::test]
@@ -1906,4 +1964,101 @@ fn repeated_clip_fade_preview(cx: &mut TestAppContext, processed: bool) {
         painted_clip_waveform_outline(&editor, &mut visual, clip),
         held_waveform
     );
+}
+
+#[gpui::test]
+fn hover_after_splitting_faded_clip_keeps_corner_handles_visible_on_both_halves(
+    cx: &mut TestAppContext,
+) {
+    for pitched in [false, true] {
+        let (project, _, _, clip) = super::super::clip_drag_ui_test::audio_project();
+        let mut canonical = hex_project::Editor::new(project, 16).unwrap();
+        if pitched {
+            canonical
+                .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+                .unwrap();
+        }
+        let duration = canonical.project().clip(clip).unwrap().duration();
+        let fade = ClipFade::new(duration, 0, 12_000, 12_000).unwrap();
+        canonical
+            .execute(Command::SetClipFadeEnvelope { clip, fade })
+            .unwrap();
+        let hex_project::Created::Clip(right) = canonical
+            .execute(Command::SplitClip {
+                clip,
+                frame: duration / 2,
+            })
+            .unwrap()
+        else {
+            panic!("split")
+        };
+
+        let project = canonical.project().clone();
+        for part_id in [clip, right] {
+            let part = project.clip(part_id).unwrap();
+            let retained = part.retained_fade();
+            assert_eq!(
+                (
+                    retained.offset(),
+                    retained.span(),
+                    retained.in_start(),
+                    retained.out_end_offset()
+                ),
+                (0, part.duration(), 0, 0)
+            );
+        }
+
+        let (handle, _) =
+            super::super::clip_drag_ui_test::editor_window(cx, project.clone(), Arc::default());
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        for part_id in [clip, right] {
+            let clip_box = visual
+                .debug_bounds(Box::leak(
+                    format!("clip-visual-{}", part_id.value()).into_boxed_str(),
+                ))
+                .expect("split clip bounds");
+            hover_clip(&mut visual, part_id);
+            for prefix in [
+                "fade-in-top",
+                "fade-in-bottom",
+                "fade-out-top",
+                "fade-out-bottom",
+            ] {
+                let label = Box::leak(format!("{prefix}-{}", part_id.value()).into_boxed_str());
+                let bounds = visual.debug_bounds(label).unwrap_or_else(|| {
+                    panic!(
+                        "hovering split clip {} (pitched={pitched}) must show {prefix}",
+                        part_id.value()
+                    )
+                });
+                assert!(
+                    bounds.center().x >= clip_box.origin.x - px(1.0)
+                        && bounds.center().x <= clip_box.origin.x + clip_box.size.width + px(1.0),
+                    "{prefix} center {:?} must stay within clip {:?}",
+                    bounds.center(),
+                    clip_box
+                );
+            }
+            let in_bottom = visual
+                .debug_bounds(Box::leak(
+                    format!("fade-in-bottom-{}", part_id.value()).into_boxed_str(),
+                ))
+                .unwrap();
+            let out_bottom = visual
+                .debug_bounds(Box::leak(
+                    format!("fade-out-bottom-{}", part_id.value()).into_boxed_str(),
+                ))
+                .unwrap();
+            assert!(
+                (in_bottom.center().x - (clip_box.origin.x + px(4.0))).abs() <= px(2.0),
+                "fade-in-bottom must anchor to left corner"
+            );
+            assert!(
+                (out_bottom.center().x - (clip_box.origin.x + clip_box.size.width - px(4.0))).abs()
+                    <= px(2.0),
+                "fade-out-bottom must anchor to right corner"
+            );
+        }
+    }
 }

@@ -58,14 +58,40 @@ fn transformed_split_and_crop_retain_source_phase_and_unsliced_root() {
     };
     let left = editor.project().clip(clip).unwrap();
     let right_clip = editor.project().clip(right).unwrap();
-    assert!(std::sync::Arc::ptr_eq(
-        &root,
-        &left.audio_edit().unwrap().domain
-    ));
-    assert!(std::sync::Arc::ptr_eq(
-        &root,
-        &right_clip.audio_edit().unwrap().domain
-    ));
+    assert_eq!(
+        (
+            left.audio_edit().unwrap().domain.source_offset,
+            left.audio_edit().unwrap().domain.source_length,
+            left.audio_edit().unwrap().domain.clock
+        ),
+        (root.source_offset, root.source_length, root.clock)
+    );
+    assert_eq!(
+        (
+            right_clip.audio_edit().unwrap().domain.source_offset,
+            right_clip.audio_edit().unwrap().domain.source_length,
+            right_clip.audio_edit().unwrap().domain.clock
+        ),
+        (root.source_offset, root.source_length, root.clock)
+    );
+    assert_eq!(
+        (
+            left.retained_fade().offset(),
+            left.retained_fade().span(),
+            left.retained_fade().fade_in(),
+            left.retained_fade().fade_out()
+        ),
+        (0, left.duration(), 137, 0)
+    );
+    assert_eq!(
+        (
+            right_clip.retained_fade().offset(),
+            right_clip.retained_fade().span(),
+            right_clip.retained_fade().fade_in(),
+            right_clip.retained_fade().fade_out()
+        ),
+        (0, right_clip.duration(), 0, 211)
+    );
     assert_eq!(left.source_offset(), right_clip.source_offset());
     assert_eq!(right_clip.source_phase(), 7);
     assert_eq!(right_clip.audio_edit().unwrap().view_start, 17_123);
