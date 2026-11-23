@@ -1,17 +1,19 @@
 //! # Purpose
-//! Own the shared standalone scanner utilities and Linux child supervisor used
+//! Own the shared standalone scanner utilities and Unix child supervision used
 //! by the VST3 and CLAP controlled-scan executables: controlled-file validation,
 //! SHA-256 identity digests, bounded pipe draining, offline packet framing,
-//! CLI argument/report helpers, signal-disposition guards, and (on Linux)
-//! process-group helper supervision.
+//! CLI argument/report helpers, signal-disposition guards, stdin cancellation
+//! polling, and Unix helper supervision (Linux process-group subreaper and
+//! macOS direct-child profiles).
 //!
 //! # Dependencies
 //! Uses `serde`/`serde_json` for scanner records and reports, `sha2` for
 //! artifact identity digests, `signal-hook` on Unix for explicit standalone
-//! executable signal disposition, and `rustix` process/event APIs on Linux for
-//! child ownership. Only standalone scanner crates may depend on this crate,
-//! and only standalone executables may invoke process-wide signal or subreaper
-//! APIs (`signal` and `run`).
+//! executable signal disposition, and `rustix` process/event APIs on Linux and
+//! macOS for child ownership and cancellation polling. Only standalone scanner
+//! crates may depend on this crate, and only standalone executables may invoke
+//! process-wide signal or subreaper APIs (`signal`, `unix::run_direct_child`,
+//! and `run`).
 //!
 //! # Does not own
 //! Does not decode format-specific VST3 or CLAP scan packets; does not load
@@ -24,6 +26,8 @@ pub mod io;
 mod linux;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod signal;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod unix;
 
 #[cfg(target_os = "linux")]
 pub use linux::{Cleanup, Output, Pending, run};
