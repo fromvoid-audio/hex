@@ -255,8 +255,10 @@ fn live_track_audio_matches_arrangement_through_effects_fader_and_send() {
                 reference.render(expected).unwrap();
                 live.render_with_live_track_audio(
                     out,
-                    track,
-                    input,
+                    LiveTrackAudio {
+                        track,
+                        frames: input,
+                    },
                     None,
                     None,
                     None,
@@ -289,8 +291,10 @@ fn invalid_live_blocks_are_silent_and_do_not_advance() {
         playback
             .render_with_live_track_audio(
                 &mut out,
-                track,
-                &[[0.5; 2]; 2],
+                LiveTrackAudio {
+                    track,
+                    frames: &[[0.5; 2]; 2]
+                },
                 None,
                 None,
                 None,
@@ -304,8 +308,10 @@ fn invalid_live_blocks_are_silent_and_do_not_advance() {
         playback
             .render_with_live_track_audio(
                 &mut out,
-                missing,
-                &[[0.5; 2]; 2],
+                LiveTrackAudio {
+                    track: missing,
+                    frames: &[[0.5; 2]; 2]
+                },
                 None,
                 None,
                 None,
@@ -319,8 +325,10 @@ fn invalid_live_blocks_are_silent_and_do_not_advance() {
         playback
             .render_with_live_track_audio(
                 &mut oversized,
-                track,
-                &vec![[0.5; 2]; MAX_OUTPUT_CAPTURE_FRAMES + 1],
+                LiveTrackAudio {
+                    track,
+                    frames: &vec![[0.5; 2]; MAX_OUTPUT_CAPTURE_FRAMES + 1]
+                },
                 None,
                 None,
                 None,
@@ -335,8 +343,10 @@ fn invalid_live_blocks_are_silent_and_do_not_advance() {
             playback
                 .render_with_live_track_audio(
                     &mut out,
-                    track,
-                    input,
+                    LiveTrackAudio {
+                        track,
+                        frames: input
+                    },
                     None,
                     None,
                     None,
@@ -376,8 +386,10 @@ fn live_input_offsets_survive_an_arrangement_loop_inside_a_block() {
         reference.render(expected).unwrap();
         live.render_with_live_track_audio(
             out,
-            track,
-            source,
+            LiveTrackAudio {
+                track,
+                frames: source,
+            },
             None,
             None,
             None,
@@ -420,8 +432,10 @@ fn live_audio_follows_target_track_through_its_group() {
     reference.render(&mut expected).unwrap();
     live.render_with_live_track_audio(
         &mut actual,
-        track,
-        &f.samples[..256],
+        LiveTrackAudio {
+            track,
+            frames: &f.samples[..256],
+        },
         None,
         None,
         None,
@@ -464,8 +478,10 @@ fn project_capture_and_live_monitor_are_refused_together() {
         playback
             .render_with_live_track_audio(
                 &mut output,
-                track,
-                &[[0.5; 2]; 2],
+                LiveTrackAudio {
+                    track,
+                    frames: &[[0.5; 2]; 2]
+                },
                 None,
                 None,
                 Some(&mut tap),

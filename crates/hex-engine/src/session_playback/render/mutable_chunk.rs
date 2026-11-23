@@ -251,19 +251,8 @@ pub(super) fn render_mutable_instrument_inner<
         }
         RouteOwner::SessionAudio { .. } | RouteOwner::Silence => {}
     }
-    let scoped = sources
-        .filter(|s| s.has_track(track_id))
-        .map(|s| s.resources(track_id))
-        .transpose()
-        .map_err(|_| {
-            SessionPlaybackError::MutableInstrumentDiagnostic(
-                "sampler resource scope is unavailable",
-            )
-        })?;
-    let resources: &dyn hex_lattice::DeviceResources = scoped.as_ref().map_or(
-        &hex_lattice::EMPTY_DEVICE_RESOURCES as &dyn hex_lattice::DeviceResources,
-        |s| s,
-    );
+    let scoped = super::mutable_setup::resolve_track_sampler_resources(sources, track_id)?;
+    let resources = super::mutable_setup::as_device_resources(&scoped);
     let source_start = match midi_route.owner {
         RouteOwner::Arrangement => arrangement_frame,
         _ => performance_frame,
@@ -285,12 +274,11 @@ pub(super) fn render_mutable_instrument_inner<
     let parameter_context = instrument_automation::SourceAutomation::new(
         revision,
         index,
-        instrument_automation::Origin {
-            arrangement: Some(arrangement_frame),
-            performance: performance_frame,
-            pass: arrangement_loop_pass,
-            running: true,
-        },
+        super::mutable_setup::running_automation_origin(
+            arrangement_frame,
+            performance_frame,
+            arrangement_loop_pass,
+        ),
         output.len(),
     )?;
     let parameter_block = parameter_context.block_with_input(transient)?;
@@ -317,53 +305,20 @@ pub(super) fn render_mutable_instrument_inner<
             )
             .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error);
     }
-    let console_historical = console
+    let console_program = console
         .as_ref()
-        .and_then(|(_, origin, prepared)| prepared.volume_program().map(|p| (*origin, p)))
-        .map(|(origin, program)| {
-            program.historical_end_gain(
-                timing,
-                crate::midi_clip_volume::VolumePlacement::Session { origin },
-            )
-        })
-        .transpose()
-        .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?
-        .flatten()
-        .is_some();
-    let console_endpoint = if console_historical {
-        None
-    } else {
-        console
-            .as_ref()
-            .and_then(|(_, origin, prepared)| prepared.volume_program().map(|p| (*origin, p)))
-            .map(|(origin, program)| {
-                program.finite_endpoint(
-                    timing,
-                    crate::midi_clip_volume::VolumePlacement::Session { origin },
-                )
-            })
-            .transpose()
-            .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?
-            .flatten()
-    };
+        .and_then(|(_, origin, prepared)| prepared.volume_program().map(|p| (*origin, p)));
+    let (console_historical, console_endpoint) =
+        super::mutable_setup::console_volume_bounds(console_program, timing)
+            .map_err(|()| SessionPlaybackError::MutableInstrumentEvents)?;
     let mut lookup = |signature: crate::mutable_instrument::MutableOccurrenceSignature,
                       performance: u64,
                       frames: usize,
                       _retaining_muted: bool| {
-        use crate::midi_clip_volume::{VolumePlacement, VolumeRamp};
+        use crate::midi_clip_volume::VolumePlacement;
         use crate::mutable_instrument::{MutableInstrumentRuntimeError as Error, VolumeSlice};
         let key = signature.key();
-        let unity = |at| VolumeSlice {
-            at,
-            terminal: None,
-            ramp: VolumeRamp {
-                start_frame: 0,
-                end_frame: u64::MAX,
-                start_gain: 1.0,
-                end_gain: 1.0,
-                next_boundary: None,
-            },
-        };
+        let unity = super::mutable_setup::unity_volume_slice;
         match midi_route.owner {
             RouteOwner::Arrangement => {
                 if key.track != track_id || key.loop_pass != arrangement_loop_pass {

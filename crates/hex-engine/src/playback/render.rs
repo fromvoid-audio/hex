@@ -209,12 +209,16 @@ impl Playback {
                             if runtime.playing() {
                                 runtime.render_live_audio(
                                     output,
-                                    track,
-                                    &input[offset..offset + output.len()],
+                                    crate::session_playback::LiveAudioInputs {
+                                        live_audio: crate::session_playback::LiveTrackAudio {
+                                            track,
+                                            frames: &input[offset..offset + output.len()],
+                                        },
+                                        sources: source_ref,
+                                    },
                                     pages.as_deref_mut(),
                                     observer,
                                     project,
-                                    source_ref,
                                     &mut shifted,
                                 )
                             } else if let Some(sources) = sources {
