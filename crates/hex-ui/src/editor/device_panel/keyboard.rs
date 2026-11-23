@@ -426,6 +426,7 @@ impl EditorView {
         self.device_panel
             .chain_window
             .reveal_after_prepare(*primary);
+        self.device_panel.chain_window.focus_after_prepare(*primary);
     }
 }
 

@@ -368,3 +368,291 @@ fn arrows_step_devices_and_paste_lands_in_the_clicked_gap(cx: &mut TestAppContex
     let appended = chain(&editor, cx, track);
     assert_eq!(&appended[..4], &pasted[..]);
 }
+
+#[gpui::test]
+fn device_d_transfers_focus_to_new_copy_for_delete_bypass_fold_compare_and_preset_shortcuts(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, effect, _, _) = actor_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1800.0), px(800.0)));
+    visual.run_until_parked();
+
+    // Duplicate the effect card with `d`.
+    click_device(&mut visual, effect, Modifiers::default());
+    visual.simulate_keystrokes("d");
+    pump_until(&editor, cx, |view| {
+        settled(view)
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .devices()
+                .len()
+                == 2
+    });
+    visual.run_until_parked();
+
+    let copy = editor.read_with(cx, |view, _| {
+        let devices = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .devices();
+        assert_eq!(devices[0].id(), effect);
+        let copy = devices[1].id();
+        assert_eq!(view.device_panel.selected_device, Some(copy));
+        copy
+    });
+    let (copy_focused, rail_focused) = visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            (
+                view.device_panel
+                    .chain_window
+                    .device_is_focused(copy, window),
+                view.device_panel
+                    .chain_window
+                    .selection_focus(cx)
+                    .is_focused(window),
+            )
+        })
+    });
+    assert!(
+        copy_focused,
+        "duplicating with `d` must move keyboard focus onto the newly created copy card"
+    );
+    assert!(!rail_focused, "focus must not remain trapped on the rail");
+
+    // Bypass (`0` and `c`) act on the new copy immediately.
+    visual.simulate_keystrokes("0");
+    pump_until(&editor, cx, |view| {
+        settled(view)
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(copy)
+                .unwrap()
+                .bypassed()
+    });
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert!(project.device(copy).unwrap().bypassed());
+        assert!(!project.device(effect).unwrap().bypassed());
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("c");
+    pump_until(&editor, cx, |view| {
+        settled(view)
+            && !view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(copy)
+                .unwrap()
+                .bypassed()
+    });
+    visual.run_until_parked();
+
+    // Fold (`-`) and unfold (`+`) act on the new copy immediately.
+    visual.simulate_keystrokes("-");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(view.device_panel.collapsed.contains(&copy));
+        assert!(!view.device_panel.collapsed.contains(&effect));
+    });
+    visual.simulate_keystrokes("+");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(!view.device_panel.collapsed.contains(&copy));
+    });
+
+    // A/B compare (`p`) acts on the new copy immediately.
+    visual.simulate_keystrokes("p");
+    pump_until(&editor, cx, |view| {
+        settled(view)
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(copy)
+                .unwrap()
+                .active_variant()
+                == hex_project::DeviceVariant::B
+    });
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(
+            project.device(copy).unwrap().active_variant(),
+            hex_project::DeviceVariant::B
+        );
+        assert_eq!(
+            project.device(effect).unwrap().active_variant(),
+            hex_project::DeviceVariant::A
+        );
+    });
+    visual.run_until_parked();
+
+    // Preset menu (`shift-f10`) opens on the new copy immediately, then `escape` restores card focus.
+    visual.simulate_keystrokes("shift-f10");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.context_menu.is_some(),
+            "shift-f10 must open the preset menu on the duplicated copy"
+        );
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| assert!(view.context_menu.is_none()));
+
+    // Delete (`backspace`) removes the new copy immediately.
+    visual.simulate_keystrokes("backspace");
+    pump_until(&editor, cx, |view| {
+        settled(view)
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .devices()
+                .len()
+                == 1
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let devices = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .devices();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].id(), effect);
+    });
+
+    // Duplicate again and verify `x` also removes the new copy immediately.
+    click_device(&mut visual, effect, Modifiers::default());
+    visual.simulate_keystrokes("d");
+    pump_until(&editor, cx, |view| {
+        settled(view)
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .devices()
+                .len()
+                == 2
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("x");
+    pump_until(&editor, cx, |view| {
+        settled(view)
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .devices()
+                .len()
+                == 1
+    });
+    editor.read_with(cx, |view, _| {
+        let devices = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .devices();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].id(), effect);
+    });
+}
+
+#[gpui::test]
+fn device_d_preserves_explicit_focus_moved_elsewhere_during_prepare(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, effect, _, _) = actor_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1800.0), px(800.0)));
+    visual.run_until_parked();
+
+    click_device(&mut visual, effect, Modifiers::default());
+    visual.simulate_keystrokes("d");
+    assert!(editor.read_with(cx, |view, _| view.device_panel.pending_duplicate.is_some()));
+
+    // Explicitly move focus away from the rail (e.g. to browser search) before preparation finishes.
+    visual.update(|window, cx| {
+        editor.read_with(cx, |view, cx| {
+            view.browser.search.read(cx).focus(window);
+        });
+    });
+
+    pump_until(&editor, cx, |view| {
+        settled(view)
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .devices()
+                .len()
+                == 2
+    });
+    visual.run_until_parked();
+
+    let copy = editor.read_with(cx, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .devices()[1]
+            .id()
+    });
+    let (search_focused, copy_focused) = visual.update(|window, cx| {
+        editor.read_with(cx, |view, cx| {
+            (
+                view.browser
+                    .search
+                    .read(cx)
+                    .focus_handle()
+                    .is_focused(window),
+                view.device_panel
+                    .chain_window
+                    .device_is_focused(copy, window),
+            )
+        })
+    });
+    assert!(
+        search_focused,
+        "explicit user focus move during duplicate must not be stolen back"
+    );
+    assert!(!copy_focused);
+}

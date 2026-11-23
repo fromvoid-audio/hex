@@ -10,8 +10,10 @@ pub(super) struct ChainWindow {
     proposed_left: Option<f32>,
     reveal_proposal: bool,
     focus: HashMap<DeviceId, FocusHandle>,
+    removed_focus: Vec<FocusHandle>,
     selection_focus: Option<FocusHandle>,
     reveal_after_prepare: Option<DeviceId>,
+    focus_after_prepare: Option<DeviceId>,
     pub(super) refused_delete: Option<super::keyboard::RefusedDelete>,
     width: Rc<Cell<f32>>,
 }
@@ -49,8 +51,13 @@ impl ChainWindow {
                 self.scroll
                     .set_offset(point(px(offset + old - new), px(0.0)));
             }
-            self.focus
-                .retain(|id, _| devices.iter().any(|device| device.0 == *id));
+            self.focus.retain(|id, focus| {
+                let keep = devices.iter().any(|device| device.0 == *id);
+                if !keep {
+                    self.removed_focus.push(focus.clone());
+                }
+                keep
+            });
             self.cards = cards;
         }
         if let Some(device) = self.reveal_after_prepare.take() {
@@ -74,6 +81,30 @@ impl ChainWindow {
 
     pub(super) fn reveal_after_prepare(&mut self, device: DeviceId) {
         self.reveal_after_prepare = Some(device);
+    }
+
+    pub(super) fn focus_after_prepare(&mut self, device: DeviceId) {
+        self.focus_after_prepare = Some(device);
+    }
+
+    pub(super) fn apply_focus_after_prepare(&mut self, window: &mut Window, cx: &App) {
+        let retired_had_focus = self
+            .removed_focus
+            .drain(..)
+            .any(|focus| focus.contains_focused(window, cx));
+        if let Some(device) = self.focus_after_prepare.take() {
+            let rail_still_focused = self
+                .selection_focus
+                .as_ref()
+                .is_some_and(|focus| focus.is_focused(window));
+            if rail_still_focused && self.cards.iter().any(|card| card.0 == device) {
+                self.focus(device, cx).focus(window);
+                return;
+            }
+        }
+        if retired_had_focus {
+            self.selection_focus(cx).focus(window);
+        }
     }
 
     pub(super) fn focus(&mut self, device: DeviceId, cx: &App) -> FocusHandle {

@@ -258,7 +258,7 @@ impl EditorView {
 
     pub(super) fn clip_detail_view(
         &mut self,
-        window: &gpui::Window,
+        window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> Div {
         self.device_panel.compressor_sidechains.clear_visible();

@@ -3,7 +3,7 @@ use super::*;
 
 pub(in crate::editor) fn view(
     view: &mut EditorView,
-    window: Option<&Window>,
+    window: Option<&mut Window>,
     cx: &mut Context<EditorView>,
 ) -> Stateful<Div> {
     retire_removed_send_controls(view, cx);
@@ -14,7 +14,10 @@ pub(in crate::editor) fn view(
     }
     reconcile_eq_spectrum(view);
     sampler_overview::reconcile_cursor(view);
-    if window.is_some_and(|window| !view.focus.is_focused(window)) {
+    if window
+        .as_deref()
+        .is_some_and(|window| !view.focus.is_focused(window))
+    {
         cancel_sampler_boundary(view);
     }
     let Some(state) = view.state.as_ref().cloned() else {
@@ -113,7 +116,7 @@ pub(in crate::editor) fn view(
     match view.device_panel.owner {
         Some(owner) => render_owner(view, window, cx, &state, owner),
         None => {
-            let manager = source_manager::button(view, window, cx);
+            let manager = source_manager::button(view, window.as_deref(), cx);
             empty_panel("select a track or return to view devices")
                 .children(std::iter::once(manager))
                 .on_drop(crate::editor::sampler_load::track_drop_listener(
@@ -127,7 +130,7 @@ pub(in crate::editor) fn view(
 
 pub(in crate::editor) fn render_owner(
     view: &mut EditorView,
-    window: Option<&Window>,
+    window: Option<&mut Window>,
     cx: &mut Context<EditorView>,
     state: &ViewState,
     owner: DevicePanelOwner,
@@ -144,7 +147,9 @@ pub(in crate::editor) fn render_owner(
             )
         }
         DevicePanelOwner::Track(track) => render_track(view, window, cx, state, track),
-        DevicePanelOwner::Source(source) => render_source(view, window, cx, state, source),
+        DevicePanelOwner::Source(source) => {
+            render_source(view, window.as_deref(), cx, state, source)
+        }
         DevicePanelOwner::Return(return_track) => return_view::render(
             view,
             window,
@@ -322,7 +327,7 @@ pub(in crate::editor) fn render_source(
 
 pub(in crate::editor) fn render_track(
     view: &mut EditorView,
-    window: Option<&Window>,
+    mut window: Option<&mut Window>,
     cx: &mut Context<EditorView>,
     state: &ViewState,
     track_id: TrackId,
@@ -643,6 +648,12 @@ pub(in crate::editor) fn render_track(
         geometry.iter().map(|&(id, _)| id),
     );
     view.device_panel.chain_window.prepare(&geometry, proposed);
+    if let Some(window) = window.as_deref_mut() {
+        view.device_panel
+            .chain_window
+            .apply_focus_after_prepare(window, cx);
+    }
+    let window = window.as_deref();
     let spectrum_identities: Vec<_> = nodes
         .iter()
         .filter_map(|node| {
