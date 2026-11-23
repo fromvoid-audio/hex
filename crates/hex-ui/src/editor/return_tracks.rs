@@ -340,12 +340,11 @@ impl EditorView {
                     .px(px(4.0))
                     .text_xs()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text("no return tracks")),
+                    .child(return_send_empty_label()),
             );
         }
         for return_track in returns {
             let return_id = return_track.id();
-            let name = return_track.name().to_owned();
             let gain = track
                 .sends()
                 .iter()
@@ -366,7 +365,13 @@ impl EditorView {
                 .px(px(3.0))
                 .text_xs()
                 .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                .child(div().flex_1().min_w_0().truncate().child(theme::text(name)))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(return_send_row_label(return_track.name())),
+                )
                 .child(super::device_panel::return_send_numeric_control(
                     self, cx, track_id, return_id, gain,
                 ));
@@ -377,6 +382,14 @@ impl EditorView {
         }
         menu
     }
+}
+
+fn return_send_empty_label() -> gpui::SharedString {
+    theme::text("no return tracks")
+}
+
+fn return_send_row_label(name: &str) -> gpui::SharedString {
+    theme::text(hex_session::service::text::verbatim(name))
 }
 
 fn return_button(id: String, icon: &'static str, tooltip: &'static str) -> gpui::Stateful<Div> {
@@ -394,6 +407,21 @@ fn return_button(id: String, icon: &'static str, tooltip: &'static str) -> gpui:
             })
             .into()
         })
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    #[test]
+    fn return_send_row_label_preserves_saved_return_capitalization() {
+        assert_eq!(return_send_row_label("FX A").as_ref(), "FX A");
+        assert_eq!(
+            return_send_row_label("PlateReverb_FX 2").as_ref(),
+            "PlateReverb_FX 2"
+        );
+        assert_eq!(return_send_empty_label().as_ref(), "no return tracks");
+    }
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
