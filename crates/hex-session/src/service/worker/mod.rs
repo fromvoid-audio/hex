@@ -307,6 +307,63 @@ fn is_section_copy(command: &Command) -> bool {
     )
 }
 
+pub(in crate::service) fn defers_behind_resident_publication(request: &Request) -> bool {
+    match request {
+        Request::MoveExistingClips { .. }
+        | Request::LoadTrackCatalogDevice { .. }
+        | Request::AddNativeDevice { .. }
+        | Request::InsertEffectBusDevice { .. }
+        | Request::InsertBrowserInstrumentTrack { .. }
+        | Request::DropBrowserDeviceOnArrangement { .. }
+        | Request::DropNativeDevice { .. }
+        | Request::ReplaceNativeDevice { .. }
+        | Request::MoveTrackDevices { .. }
+        | Request::ReorderDevices { .. }
+        | Request::ReparentTracks { .. }
+        | Request::DeviceClipboard {
+            action:
+                DeviceClipboardAction::Cut { .. }
+                | DeviceClipboardAction::Paste { .. }
+                | DeviceClipboardAction::Duplicate { .. },
+            ..
+        }
+        | Request::TrackClipboard {
+            action:
+                TrackClipboardAction::Cut(_)
+                | TrackClipboardAction::Paste { .. }
+                | TrackClipboardAction::Duplicate { .. },
+            ..
+        }
+        | Request::Undo
+        | Request::Redo
+        | Request::DeviceGesture(
+            GestureRequest::Change { .. }
+            | GestureRequest::ChangePair { .. }
+            | GestureRequest::ChangeSnapshot { .. }
+            | GestureRequest::ChangeEqCreation { .. }
+            | GestureRequest::Commit { .. }
+            | GestureRequest::CommitPair { .. }
+            | GestureRequest::CommitSnapshot { .. }
+            | GestureRequest::CommitEqCreation { .. }
+            | GestureRequest::Cancel { .. },
+        )
+        | Request::SetDeviceParameter { .. } => true,
+        Request::Edit(command) => {
+            matches!(
+                command,
+                Command::SetLoopRegion { .. }
+                    | Command::ToggleLoopRegion
+                    | Command::ToggleDeviceBypass { .. }
+                    | Command::SetDeviceBypass { .. }
+                    | Command::ReplaceDeviceState { .. }
+            ) || resident_audio::device_insert::graph_edit_operation(command).is_some()
+                || resident_audio::device_insert::resident_graph_edit_operation(command, false)
+                    .is_some()
+        }
+        _ => false,
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // Existing worker composition plus private ownership of the existing seek worker.
 pub(super) fn run_worker(
     mut session: Session,
@@ -975,9 +1032,9 @@ pub(super) fn run_worker(
             .and_then(resident_preview::Preview::clip_target)
             .is_some_and(|target| target.matches_release(&queued.request));
         // A move can arrive before its cancelled audition reaches the
-        // callback. A scope edit can also arrive before an earlier graph is
-        // applied. Keep their FIFO place and bound the wait before native
-        // preparation tries to borrow the preceding graph's sources.
+        // callback. A scope or device-graph edit can also arrive before an
+        // earlier graph is applied. Keep their FIFO place and bound the wait
+        // before native preparation tries to borrow the preceding graph's sources.
         let queued = if events.resident_publication_enabled()
             && session.audio_mode() == DocumentAudioMode::Resident
             && (clip_audition_release
@@ -988,30 +1045,8 @@ pub(super) fn run_worker(
                             editor_revision: revision,
                         }) && !pending.insertion.control.is_cancelled()
                     }))
-                || matches!(
-                    &queued.request,
-                    Request::MoveExistingClips { .. }
-                        | Request::LoadTrackCatalogDevice { .. }
-                        | Request::Edit(
-                            Command::SetLoopRegion { .. }
-                                | Command::ToggleLoopRegion
-                                | Command::ToggleDeviceBypass { .. }
-                                | Command::SetDeviceBypass { .. }
-                                | Command::ReplaceDeviceState { .. }
-                        )
-                        | Request::DeviceGesture(
-                            GestureRequest::Change { .. }
-                                | GestureRequest::ChangePair { .. }
-                                | GestureRequest::ChangeSnapshot { .. }
-                                | GestureRequest::ChangeEqCreation { .. }
-                                | GestureRequest::Commit { .. }
-                                | GestureRequest::CommitPair { .. }
-                                | GestureRequest::CommitSnapshot { .. }
-                                | GestureRequest::CommitEqCreation { .. }
-                                | GestureRequest::Cancel { .. }
-                        )
-                        | Request::SetDeviceParameter { .. }
-                )) {
+                || defers_behind_resident_publication(&queued.request))
+        {
             match events.defer_publication(queued) {
                 Some(queued) => queued,
                 None => continue,

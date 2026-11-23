@@ -621,20 +621,18 @@ pub(in crate::service) fn should_stage_resident_graph_edit(
     sink: &mut dyn WorkerAudioSink,
 ) -> bool {
     sink.confirms_device_inserts()
+        && sink.resident_publication_readiness() != ResidentPublicationReadiness::NoOutput
         && (graph_edit_operation(command) == Some(GraphEditOperation::InsertDevice)
-            || (resident_graph_edit_operation(command, false).is_some()
-                && !matches!(
-                    sink.resident_publication_readiness(),
-                    ResidentPublicationReadiness::NoOutput
-                )))
+            || resident_graph_edit_operation(command, false).is_some())
 }
 
 pub(in crate::service) fn stages_main_power_off(
     project: &Project,
     command: &Command,
-    sink: &dyn WorkerAudioSink,
+    sink: &mut dyn WorkerAudioSink,
 ) -> bool {
     sink.confirms_device_inserts()
+        && sink.resident_publication_readiness() != ResidentPublicationReadiness::NoOutput
         && stopped_power::eligible(project, command)
         && project
             .main_devices()
@@ -768,7 +766,7 @@ pub(in crate::service) fn stopped_hosted_power(
         }))
 }
 
-fn resident_graph_edit_operation(
+pub(in crate::service) fn resident_graph_edit_operation(
     command: &Command,
     controlled: bool,
 ) -> Option<GraphEditOperation> {
@@ -842,17 +840,17 @@ pub(in crate::service) fn submit_browser_edit(
         project_generation,
         editor_revision: state.revision,
     };
-    if let Some(operation @ (GraphEditOperation::InsertDevice | GraphEditOperation::MoveDevice)) =
-        catalog_graph_edit_operation(&command, proposal_control.is_some())
-        && let Some(sink) = events.resident_audio()
+    if matches!(
+        catalog_graph_edit_operation(&command, proposal_control.is_some()),
+        Some(GraphEditOperation::InsertDevice | GraphEditOperation::MoveDevice)
+    ) && let Some(sink) = events.resident_audio()
     {
         match session.audio_mode() {
             DocumentAudioMode::Resident
                 if sink.resident_publication_enabled()
                     && sink.confirms_device_inserts()
-                    && (operation == GraphEditOperation::InsertDevice
-                        || sink.resident_publication_readiness()
-                            != ResidentPublicationReadiness::NoOutput) =>
+                    && sink.resident_publication_readiness()
+                        != ResidentPublicationReadiness::NoOutput =>
             {
                 return session
                     .stage_resident_device_insert(
