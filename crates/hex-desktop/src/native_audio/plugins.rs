@@ -1423,6 +1423,29 @@ impl Plugins {
         })
     }
 
+    #[allow(clippy::too_many_arguments)] // Exact compile-time source and bypass transition inputs.
+    fn refuse_unavailable_fallback(
+        &self,
+        has_control: bool,
+        context: AudioSourceContext,
+        owner: ProcessorChainOwner,
+        device: u64,
+        preparing_edit: bool,
+        next_bypassed: Option<bool>,
+        previously_powered_off: Option<NativeProcessorIdentity>,
+        previous_bypassed: Option<bool>,
+    ) -> bool {
+        (has_control && self.has_accepted_effect_source(context, owner, device))
+            || Self::re_enabling_without_worker(
+                preparing_edit,
+                owner,
+                device,
+                next_bypassed,
+                previously_powered_off,
+                previous_bypassed,
+            )
+    }
+
     fn re_enabling_without_worker(
         preparing_edit: bool,
         owner: ProcessorChainOwner,
@@ -1584,20 +1607,23 @@ impl Plugins {
                 bindings.push(binding);
                 return Ok(());
             }
-            let source = match output
+            let (has_control, source) = match output
                 .as_deref_mut()
                 .and_then(|output| output.publication.control())
             {
-                Some(control) => self.matching_edit_source(
-                    control,
-                    &input,
-                    destination,
-                    device,
-                    state,
-                    desired,
-                    cancellation,
-                )?,
-                None => None,
+                Some(control) => (
+                    true,
+                    self.matching_edit_source(
+                        control,
+                        &input,
+                        destination,
+                        device,
+                        state,
+                        desired,
+                        cancellation,
+                    )?,
+                ),
+                None => (false, None),
             };
             if let Some(binding) = source {
                 bindings.push(binding);
@@ -1606,10 +1632,12 @@ impl Plugins {
             let previous_bypassed = desired
                 .filter(|source| source.context().project_generation == context.project_generation)
                 .and_then(|source| source.effect_preparation().plugin_device_bypassed(device));
-            if Self::re_enabling_without_worker(
-                input.preparing_edit(),
+            if self.refuse_unavailable_fallback(
+                has_control,
+                context,
                 owner,
                 device,
+                input.preparing_edit(),
                 input.plugin_device_bypassed(device),
                 previously_powered_off,
                 previous_bypassed,
@@ -2697,5 +2725,64 @@ mod pool_reclamation_tests {
         plugins.finish_edit(context, true);
         assert!(plugins.saved_off_document.is_none());
         assert!(plugins.sources[0].accepted && !plugins.sources[0].retiring);
+    }
+
+    #[test]
+    fn accepted_live_worker_never_silently_downgrades_to_unavailable_effect() {
+        let context = AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 5,
+        };
+        let mut plugins = Plugins::default();
+        // Without any live worker, a previously-unavailable enabled plugin
+        // may still preserve its opaque state across unrelated edits.
+        assert!(!plugins.refuse_unavailable_fallback(
+            true,
+            context,
+            ProcessorChainOwner::Main,
+            42,
+            false,
+            Some(false),
+            None,
+            Some(false),
+        ));
+
+        // Once an accepted non-retiring worker exists in self.sources, compile
+        // must never silently downgrade the device to UnavailableEffect while
+        // stranding the live worker.
+        plugins
+            .sources
+            .push(source_record(ProcessorChainOwner::Main, 42, 1, 1, 1));
+        assert!(plugins.refuse_unavailable_fallback(
+            true,
+            context,
+            ProcessorChainOwner::Main,
+            42,
+            false,
+            Some(false),
+            None,
+            Some(false),
+        ));
+        assert!(plugins.refuse_unavailable_fallback(
+            true,
+            context,
+            ProcessorChainOwner::Main,
+            42,
+            true,
+            Some(false),
+            None,
+            Some(false),
+        ));
+        // Offline compilation without an active audio control keeps preserving.
+        assert!(!plugins.refuse_unavailable_fallback(
+            false,
+            context,
+            ProcessorChainOwner::Main,
+            42,
+            false,
+            Some(false),
+            None,
+            Some(false),
+        ));
     }
 }

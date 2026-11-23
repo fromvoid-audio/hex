@@ -579,10 +579,13 @@ impl Plugins {
                 // own source instead of introducing a current/tail alias.
                 continue;
             }
-            // A fenced stopped restore may reuse the exact source whose
-            // sequenced capture became canonical during a playing gesture.
-            // The original prepared state can predate that capture.
-            if ((retain_instrument || self.restored_canonical_source(input.context()).is_some())
+            // A fenced stopped restore, non-edit compile, or unchanged
+            // retained source may reuse the exact worker whose sequenced
+            // capture became canonical during a UI/editor gesture. The
+            // original prepared state can predate that capture.
+            if ((retain_instrument
+                || !input.preparing_edit()
+                || self.restored_canonical_source(input.context()).is_some())
                 && captured_state_approved(control, source.binding, state, cancellation)?)
                 || original_state(control, source.binding, cancellation)?.processing_eq(state)
             {

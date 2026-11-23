@@ -340,11 +340,13 @@ impl NativeEffect {
         }
         let (retained, authority) = match renewal {
             Some(old) => {
-                // A changed processing profile must be qualified again before
-                // old isolated states can reuse this worker.
-                let authority = (old.prepared.with_binding(configuration.binding).ok()
-                    == Some(configuration.prepared))
-                .then_some(old.state_authority);
+                // A changed processing profile (quantum, bridge latency, or
+                // instrument/effect profile) must be qualified again before old
+                // isolated states can reuse this worker. Latency-only and tail
+                // updates on the same SDK instance retain state approval.
+                let authority =
+                    renewal_preserves_state_authority(old.prepared, configuration.prepared)
+                        .then_some(old.state_authority);
                 (Some(old.authored), authority)
             }
             None => (None, None),
@@ -1071,6 +1073,15 @@ impl NativeEffectCallback {
         }
         Ok(())
     }
+}
+
+fn renewal_preserves_state_authority(
+    old: PreparedForeignProcessor,
+    next: PreparedForeignProcessor,
+) -> bool {
+    old.quantum_frames() == next.quantum_frames()
+        && old.bridge_latency_frames() == next.bridge_latency_frames()
+        && old.is_instrument_profile() == next.is_instrument_profile()
 }
 
 #[cfg(test)]
