@@ -15,6 +15,3 @@ mod geometry;
 mod audition_geometry;
 #[path = "../../src/editor/browser/random_rank.rs"]
 mod random_rank;
-#[allow(dead_code)] // Runtime uses generation/row identity fields absent from this unit harness.
-#[path = "../../src/editor/browser/scrollbar_geometry.rs"]
-mod scrollbar_geometry;

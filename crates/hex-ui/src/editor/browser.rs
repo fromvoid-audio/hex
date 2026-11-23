@@ -7,7 +7,6 @@
 //! stable-key selection/history, activation, folder navigation and audition.
 mod audition_geometry;
 mod random_rank;
-mod scrollbar_geometry;
 
 mod audition;
 mod folder_places;
