@@ -1392,7 +1392,7 @@ impl EditorView {
             };
             if !keyboard.recovery_attempted
                 && event.error.is_some()
-                && event.range_copy_source_unavailable == Some(context)
+                && event.resident_edit_source_unavailable == Some(context)
                 && event.state.revision == pending.source_revision
                 && self
                     .state

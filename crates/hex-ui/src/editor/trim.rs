@@ -302,6 +302,7 @@ impl EditorView {
 /// One resize owner: terminal core plus validated prospective display metadata.
 /// No separate completion key, FIFO counter or viewport owner.
 pub(super) struct PendingTrim {
+    replayed: bool,
     generation: u64,
     revision: u64,
     track: TrackId,
@@ -414,6 +415,7 @@ impl EditorView {
     pub(super) fn trim_request_complete(
         &mut self,
         event: &hex_session::service::Event,
+        retry: &mut Option<Request>,
     ) -> Option<RetiredTrimViewport> {
         let pending = self.pending_trim.as_mut()?;
         if event.project_replaced || pending.generation != self.project_generation {
@@ -426,6 +428,22 @@ impl EditorView {
         {
             *remaining = remaining.saturating_sub(1);
             if *remaining == 0 {
+                if !pending.replayed
+                    && let ResizeCommand::AudioLoop { clip, operation } = pending.command
+                    && event.resident_edit_source_unavailable
+                        == Some(hex_engine::AudioSourceContext {
+                            project_generation: pending.generation,
+                            editor_revision: pending.revision,
+                        })
+                    && event.state.revision == pending.revision
+                {
+                    pending.remaining = None;
+                    *retry = Some(Request::Edit(Command::ResizeAudioClipView {
+                        clip,
+                        operation,
+                    }));
+                    return None;
+                }
                 self.service.audition_arrangement_stretch(None);
                 return self.pending_trim.take().map(PendingTrim::into_viewport);
             }
@@ -440,6 +458,14 @@ impl EditorView {
             self.normalize_canceled_trim_viewport(terminal.generation, terminal.viewport);
         }
     }
+    pub(super) fn mark_replayed_trim(&mut self, request: &Request) {
+        if self.pending_trim_matches(request)
+            && let Some(pending) = &mut self.pending_trim
+        {
+            pending.replayed = true;
+        }
+    }
+
     pub(super) fn retire_pending_trim(&mut self) -> bool {
         let terminal = self.pending_trim.take().map(PendingTrim::into_viewport);
         let retired = terminal.is_some();
@@ -1800,6 +1826,7 @@ impl EditorView {
             return;
         };
         self.pending_trim = Some(PendingTrim {
+            replayed: false,
             generation: drag.project_generation,
             revision: drag.revision,
             track: drag.source_track,
@@ -2084,6 +2111,7 @@ impl EditorView {
             return;
         };
         self.pending_trim = Some(PendingTrim {
+            replayed: false,
             generation: drag.project_generation,
             revision: drag.revision,
             track: drag.source_track,
