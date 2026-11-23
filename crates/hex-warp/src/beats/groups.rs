@@ -122,6 +122,10 @@ pub(super) fn render(
         work,
         plan_bytes(request) + bank_bytes(work.resampler) + synthesis::SEARCH_BYTES,
     )?;
+    let Some((first_physical, rest_physical)) = physical.split_first() else {
+        return Err(Error::Invalid("physical anchors missing"));
+    };
+    let physical_end = rest_physical.last().unwrap_or(first_physical).source;
     let mut bounds = SourceBounds::new(physical);
     let guard = f64::from(request.input.sample_rate) / 125.0;
     let mut previous_cut_attack = None;
@@ -160,19 +164,16 @@ pub(super) fn render(
         let next_attack = physical.get(future).map(|x| x.source);
         let safe_start = if let Some(index) = last_attack {
             let onset = physical[index].source;
-            let next = next_attack.unwrap_or(physical.last().expect("physical[0] exists").source);
+            let next = next_attack.unwrap_or(physical_end);
             onset + guard.min((next - onset).max(0.0) / 3.0)
         } else {
-            physical[0].source
+            first_physical.source
         };
-        let safe_end = next_attack.map_or(
-            physical.last().expect("physical[0] exists").source,
-            |onset| {
-                onset
-                    - (f64::from(request.input.sample_rate) / 1000.0)
-                        .min((onset - safe_start).max(0.0) / 3.0)
-            },
-        );
+        let safe_end = next_attack.map_or(physical_end, |onset| {
+            onset
+                - (f64::from(request.input.sample_rate) / 1000.0)
+                    .min((onset - safe_start).max(0.0) / 3.0)
+        });
         let sustain = tail != Tail::Off
             && native_end < b.output
             && b.source - safe_start >= 4.0

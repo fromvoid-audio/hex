@@ -59,7 +59,9 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
     }) {
         view.retire_sample_bpm_control();
     }
-    if view.sample_bpm_control.is_none() {
+    let binding = if let Some(binding) = view.sample_bpm_control.as_ref() {
+        binding
+    } else {
         let spec = NumericSpec::new(1.0, 1000.0, value, NumericScale::Linear, 6, Some("bpm"))
             .and_then(|spec| spec.with_keyboard_steps(1.0, 0.1))
             .map(|spec| {
@@ -119,17 +121,13 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
                 );
                 cx.notify();
             });
-        view.sample_bpm_control = Some(Binding {
+        view.sample_bpm_control.insert(Binding {
             key,
             focus: gpui::Focusable::focus_handle(&entity, cx),
             entity,
             _subscription: subscription,
-        });
-    }
-    let binding = view
-        .sample_bpm_control
-        .as_ref()
-        .expect("sample bpm control is bound above when missing");
+        })
+    };
     binding
         .entity
         .update(cx, |numeric, cx| numeric.set_availability(availability, cx));

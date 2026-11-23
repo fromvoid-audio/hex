@@ -91,13 +91,11 @@ pub(super) fn prepare(
         slow += (energy - slow) * coefficient;
     }
     onsets::detect(request.input, &mut starts, work)?;
-    let first = request.map.segments()[0].source_start_q32;
-    let end = request
-        .map
-        .segments()
-        .last()
-        .expect("segments()[0] indexed above")
-        .source_end_q32;
+    let Some((first_segment, rest_segments)) = request.map.segments().split_first() else {
+        return Err(Error::Invalid("time map requires at least one segment"));
+    };
+    let first = first_segment.source_start_q32;
+    let end = rest_segments.last().unwrap_or(first_segment).source_end_q32;
     let region = i128::from(request.input.region_length);
     let first_cycle = first.div_euclid(Q32).div_euclid(region);
     let first_cycle = if request.input.looping {
@@ -160,7 +158,8 @@ pub(super) fn prepare(
         return Ok(anchors);
     }
     work.check(anchors.len() as u64 * 8)?;
-    for i in 0..anchors.len() - 1 {
+    let last_index = anchors.len().saturating_sub(1);
+    for i in 0..last_index {
         if i > 0 && !anchors[i].attack {
             continue;
         }
@@ -169,8 +168,8 @@ pub(super) fn prepare(
             .find(|j| *j == 0 || anchors[*j].attack)
             .unwrap_or(0);
         let next = (i + 1..anchors.len())
-            .find(|j| anchors[*j].attack || *j == anchors.len() - 1)
-            .expect("the final anchor always terminates the search");
+            .find(|j| anchors[*j].attack)
+            .unwrap_or(last_index);
         let before = if i == 0 {
             0
         } else {

@@ -151,16 +151,21 @@ pub(super) fn render(
         work,
         plan_bytes + bank_bytes(work.resampler) + synthesis::SEARCH_BYTES,
     )?;
+    let Some((first_anchor, rest_anchors)) = anchors.split_first() else {
+        return Err(Error::Invalid("beats anchors missing"));
+    };
+    let last_anchor = rest_anchors.last().unwrap_or(first_anchor);
+    let last_index = anchors.len() - 1;
     let mut output = 0;
-    let mut source = anchors[0].source;
+    let mut source = first_anchor.source;
     let mut previous = 0;
-    for (i, anchor) in anchors.iter().enumerate().take(anchors.len() - 1) {
+    for (i, anchor) in anchors.iter().enumerate().take(last_index) {
         if i > 0 && !anchor.attack {
             continue;
         }
         let next = (i + 1..anchors.len())
-            .find(|j| anchors[*j].attack || *j == anchors.len() - 1)
-            .expect("the final anchor always terminates the search");
+            .find(|j| anchors[*j].attack)
+            .unwrap_or(last_index);
         let start = anchor.output.saturating_sub(anchor.before);
         let end = (anchor.output + anchor.after).min(request.output_frames);
         synthesis::bed(
@@ -211,7 +216,7 @@ pub(super) fn render(
             start: output,
             end: request.output_frames,
             source_start: source,
-            source_end: anchors.last().expect("anchors indexed above").source,
+            source_end: last_anchor.source,
             locked_end: false,
         },
         pitch,
