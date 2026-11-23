@@ -668,16 +668,18 @@ impl EditorView {
         }
         if self.recovery.generation().is_some() {
             self.recovery.retarget(frame);
-            if let Some((PlaybackAction::Transport(command), _, _)) = self.deferred_play.as_mut() {
-                match command {
+            if let Some((
+                PlaybackAction::Transport(
                     PlaybackCommand::PlayFrom(position)
                     | PlaybackCommand::PlayFromWithNoteChase {
                         frame: position, ..
-                    } => {
-                        *position = frame;
-                    }
-                    _ => {}
-                }
+                    },
+                ),
+                _,
+                _,
+            )) = self.deferred_play.as_mut()
+            {
+                *position = frame;
             }
             self.offline_cursor = frame;
             self.status = "restarting audio · playback position updated".into();
