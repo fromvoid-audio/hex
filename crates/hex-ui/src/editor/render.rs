@@ -802,7 +802,11 @@ impl Render for EditorView {
                     }
                 });
             })
-            .capture_any_mouse_down(cx.listener(|view, event, window, cx| {
+            .capture_any_mouse_down(cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
+                // A fresh primary press cannot coexist with an unretired clip press.
+                if event.button == MouseButton::Left {
+                    view.pointer_down = None;
+                }
                 super::device_panel::capture_navigation_pointer_down(view, event, window, cx);
             }))
             .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, window, cx| {
@@ -905,6 +909,9 @@ impl Render for EditorView {
                         cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
                         cx.notify();
                     }
+                    if view.pointer_down.take().is_some() {
+                        cx.notify();
+                    }
                     view.cancel_trim_gesture(cx);
                     if let Some(drag) = view.active_midi_trim_drag.take() {
                         drag.preview.borrow_mut().take();
@@ -915,6 +922,9 @@ impl Render for EditorView {
             .on_mouse_up_out(
                 MouseButton::Left,
                 cx.listener(|view, _, window, cx| {
+                    if view.pointer_down.take().is_some() {
+                        cx.notify();
+                    }
                     if view.cancel_trim_gesture(cx) | view.cancel_active_native_device_drag() {
                         cx.stop_active_drag(window);
                         cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
@@ -1180,6 +1190,7 @@ impl Render for EditorView {
             }))
             .on_action(cx.trace(|view, stop: &Stop, window, cx| {
                 cx.stop_active_drag(window);
+                view.pointer_down = None;
                 view.retire_active_clip_drag();
                 view.cancel_active_browser_audio_drag();
                 view.cancel_active_native_device_drag();

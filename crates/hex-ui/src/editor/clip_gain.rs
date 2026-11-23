@@ -79,6 +79,7 @@ impl Drag {
             && !view.save_dialog_open
             && !view.export_dialog_open
             && !view.theme_settings.open
+            && !view.tuning.open
             && view.context_menu.is_none()
             && view.state.as_ref().is_some_and(|s| {
                 s.revision == self.revision

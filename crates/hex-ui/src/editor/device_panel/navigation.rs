@@ -311,7 +311,11 @@ pub(in crate::editor) fn capture_pointer_down(
     window: &mut Window,
     cx: &mut Context<EditorView>,
 ) {
-    if view.context_menu.is_some() || view.theme_settings.open || super::picker_is_open(view) {
+    if view.context_menu.is_some()
+        || view.theme_settings.open
+        || view.tuning.open
+        || super::picker_is_open(view)
+    {
         return;
     }
     let open = view.clip_view_open && view.device_panel_active;

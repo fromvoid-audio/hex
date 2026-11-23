@@ -48,6 +48,8 @@ impl EditorView {
         };
         if self.mode != super::EditorMode::Arrangement
             || self.context_menu.is_some()
+            || self.theme_settings.open
+            || self.tuning.open
             || super::device_panel::picker_is_open(self)
             || self.active_clip_drag.is_some()
             || self.active_browser_audio_drag.is_some()
@@ -477,12 +479,18 @@ impl EditorView {
                         if !delta_y.is_finite() || delta_y == 0.0 {
                             return;
                         }
-                        if super::device_panel::picker_is_open(zoom_entity.read(cx)) {
+                        let view = zoom_entity.read(cx);
+                        if view.theme_settings.open
+                            || view.tuning.open
+                            || super::device_panel::picker_is_open(view)
+                        {
                             return;
                         }
                         cx.stop_propagation();
                         zoom_entity.update(cx, |view, cx| {
                             if view.context_menu.is_some()
+                                || view.theme_settings.open
+                                || view.tuning.open
                                 || super::device_panel::picker_is_open(view)
                             {
                                 return;
@@ -577,6 +585,7 @@ impl EditorView {
                             // Foreground controls own the press while open.
                             if view.context_menu.is_some()
                                 || view.theme_settings.open
+                                || view.tuning.open
                                 || super::device_panel::picker_is_open(view)
                                 || view.pointer_hits_bottom_play_start_marker(
                                     event.position,
@@ -1547,12 +1556,18 @@ impl EditorView {
                         if !delta_y.is_finite() || delta_y == 0.0 {
                             return;
                         }
-                        if super::device_panel::picker_is_open(wheel_entity.read(cx)) {
+                        let view = wheel_entity.read(cx);
+                        if view.theme_settings.open
+                            || view.tuning.open
+                            || super::device_panel::picker_is_open(view)
+                        {
                             return;
                         }
                         cx.stop_propagation();
                         wheel_entity.update(cx, |view, cx| {
                             if view.context_menu.is_some()
+                                || view.theme_settings.open
+                                || view.tuning.open
                                 || super::device_panel::picker_is_open(view)
                             {
                                 return;

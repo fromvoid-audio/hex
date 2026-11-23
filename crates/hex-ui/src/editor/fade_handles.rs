@@ -189,6 +189,7 @@ impl EditorView {
             || self.mode != super::EditorMode::Arrangement
             || self.computer_keyboard.enabled
             || self.theme_settings.open
+            || self.tuning.open
             || self.context_menu.is_some()
             || self.gain_numeric_editing(cx)
             || self.opening_project
@@ -223,6 +224,7 @@ impl EditorView {
             && !self.save_dialog_open
             && !self.export_dialog_open
             && !self.theme_settings.open
+            && !self.tuning.open
             && self.context_menu.is_none()
             && self.state.as_ref().is_some_and(|state| {
                 self.project_generation == drag.generation

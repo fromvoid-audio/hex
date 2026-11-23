@@ -5317,3 +5317,56 @@ fn g_merge_case(cx: &mut TestAppContext, focused: bool, leftward: bool) {
         );
     });
 }
+
+#[gpui::test]
+fn off_target_clip_release_does_not_block_section_loop_scope(cx: &mut TestAppContext) {
+    let (handle, editor, _) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+
+    let clip = editor.read_with(cx, |v, _| {
+        v.state.as_ref().unwrap().project.tracks()[0].midi_clips()[0].id()
+    });
+    let trim_selector =
+        Box::leak(format!("midi-clip-trim-right-{}", clip.value()).into_boxed_str());
+    let trim_point = visual.debug_bounds(trim_selector).unwrap().center();
+
+    // 1. Clicking a trim handle on the lane canvas must retire pointer_down.
+    visual.simulate_mouse_down(trim_point, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |v, _| assert!(v.pointer_down.is_some()));
+    visual.simulate_mouse_up(trim_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |v, _| assert!(v.pointer_down.is_none()));
+
+    // 2. Pressing a clip header and releasing off the clip must retire pointer_down
+    //    so selecting a section and pressing L sets the loop scope cleanly.
+    let header_selector = Box::leak(format!("clip-drag-surface-{}", clip.value()).into_boxed_str());
+    let header_point = visual.debug_bounds(header_selector).unwrap().center();
+    visual.simulate_mouse_down(header_point, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |v, _| assert!(v.pointer_down.is_some()));
+    visual.simulate_mouse_up(point(px(2.0), px(2.0)), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |v, _| assert!(v.pointer_down.is_none()));
+
+    // 3. Even if a stale pointer_down survived a lost release, a fresh section
+    //    click clears it so L immediately sets the section loop scope.
+    editor.update(cx, |v, _| {
+        v.remember_pointer_down(v.project_generation, clip, None, 10.0);
+        assert!(v.pointer_down.is_some());
+    });
+    let chorus = editor.read_with(cx, |v, _| position(v, 10));
+    visual.simulate_mouse_down(chorus, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(chorus, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |v, _| assert!(v.pointer_down.is_none()));
+
+    crate::editor::section_launch::test_tap_loop_key(&mut visual);
+    editor.read_with(cx, |v, _| {
+        assert_eq!(v.error, None);
+        assert!(matches!(
+            v.last_enqueued_edit,
+            Some(Command::SetLoopRegion { .. })
+        ));
+    });
+}

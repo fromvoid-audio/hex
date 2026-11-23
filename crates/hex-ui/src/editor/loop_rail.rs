@@ -82,6 +82,7 @@ impl EditorView {
             || self.context_menu.is_some()
             || super::device_panel::picker_is_open(self)
             || self.theme_settings.open
+            || self.tuning.open
             || self.opening_project
             || self.close_prompt_open
             || self.save_dialog_open

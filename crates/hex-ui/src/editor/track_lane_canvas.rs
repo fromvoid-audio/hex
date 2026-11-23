@@ -2068,6 +2068,14 @@ impl EditorView {
                         LaneHitZone::TrimLeft
                         | LaneHitZone::TrimRight
                         | LaneHitZone::LoopHandle(_) => {
+                            let edge = match hit.zone {
+                                LaneHitZone::TrimLeft => TrimEdge::Left,
+                                LaneHitZone::TrimRight | LaneHitZone::LoopHandle(_) => {
+                                    TrimEdge::Right
+                                }
+                                _ => unreachable!(),
+                            };
+                            view.clear_pointer_down(generation, hit.clip_id, Some(edge));
                             cx.stop_propagation();
                         }
                         LaneHitZone::Body => {}

@@ -630,6 +630,7 @@ impl EditorView {
             && self.locators.name.is_none()
             && self.context_menu.is_none()
             && !self.theme_settings.open
+            && !self.tuning.open
     }
 
     pub(super) fn retire_abandoned_locator_adds(&mut self) -> bool {
