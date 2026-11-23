@@ -215,6 +215,7 @@ impl EditorView {
                             "project worker stopped · new project cancelled",
                         );
                     }
+                    self.submitted_clip_cuts.clear();
                     self.pending_created_note_selection = None;
                     self.midi_step.cancel_pending();
                     visible_change |= self.retire_pending_trim();
