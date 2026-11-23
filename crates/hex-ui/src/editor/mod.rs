@@ -844,6 +844,7 @@ pub(super) struct EditorView {
     leftover_recovery: leftover_recovery::State,
     truncated_import: truncated_import::State,
     device_insert_confirmation: Option<plugin_effect::DeviceConfirmation>,
+    device_confirmation_restore_focus: Option<plugin_effect::DeviceConfirmationFocusRestore>,
     // Streamed documents replace their sampler output stopped; this frame
     // resumes playback once that edit settles (Pulse #3784).
     sampler_edit_resume: Option<u64>,
@@ -1762,6 +1763,7 @@ impl EditorView {
             leftover_recovery: Default::default(),
             truncated_import: Default::default(),
             device_insert_confirmation: None,
+            device_confirmation_restore_focus: None,
             sampler_edit_resume: None,
             deferred_play: None,
             deferred_toggle_play: None,

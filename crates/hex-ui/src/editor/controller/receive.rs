@@ -45,7 +45,7 @@ impl EditorView {
         self.observe_automation_close(&event);
         let sampler_edit_complete = event.sampler_edit_complete;
         if let Some(offer) = event.device_insert_confirmation.take() {
-            self.device_insert_confirmation = Some(DeviceConfirmation::new(offer));
+            self.install_device_confirmation(offer);
         }
         self.plugin_effect_complete(&event);
         self.native_automation_take_completion(&event);
@@ -124,7 +124,7 @@ impl EditorView {
         if event.project_replaced {
             self.time_selection_key_held = false;
             self.section_loop_key = Default::default();
-            self.device_insert_confirmation = None;
+            self.clear_device_confirmation_on_project_replace();
             self.pending_plugin_effect.take();
             self.failed_plugin_proposal.take();
             self.retire_sampler_parameter();
