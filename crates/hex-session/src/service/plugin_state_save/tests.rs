@@ -178,9 +178,19 @@ fn export_capture_projects_live_state_without_editing_the_project() {
 
 #[test]
 fn save_projection_preserves_complete_model_comparison_and_host_trims() {
-    let original = fixture();
-    let saved = project_with_captures(original.clone(), captures(&original)).unwrap();
-    let mut restored = saved.snapshot();
+    let mut editor = Editor::new(fixture(), 8).unwrap();
+    let track = editor.project().tracks()[1].id();
+    editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: hex_project::BeatTime::ZERO,
+            length: hex_project::BeatTime::ONE,
+        })
+        .unwrap();
+    let original = editor.project();
+    let saved = project_with_captures(original.clone(), captures(original)).unwrap();
+    let reopened = hex_storage::decode(&hex_storage::encode(&saved).unwrap()).unwrap();
+    let mut restored = reopened.snapshot();
     let mut count = 0;
     for device in restored
         .tracks
@@ -224,7 +234,7 @@ fn save_projection_preserves_complete_model_comparison_and_host_trims() {
     assert_eq!(decoded.component, Some(&b"current"[..]));
     assert_eq!(decoded.controller, Some(&b"current gui"[..]));
     retained.state = state(b"original", b"original gui");
-    assert_eq!(Project::from_snapshot(restored).unwrap(), original);
+    assert_eq!(&Project::from_snapshot(restored).unwrap(), original);
 }
 
 #[test]
@@ -299,7 +309,7 @@ fn save_capture_refusal_preserves_existing_file_dirty_state_and_new_destination(
             _: PluginStateCaptureInput<'_>,
         ) -> Result<Vec<PluginStateCapture>, String> {
             if self.0.load(Ordering::Acquire) {
-                Err("controlled native capture refusal".into())
+                Err("native capture output is closing".into())
             } else {
                 Ok(Vec::new())
             }
@@ -336,7 +346,11 @@ fn save_capture_refusal_preserves_existing_file_dirty_state_and_new_destination(
     fail.store(true, Ordering::Release);
     service.submit(Request::SaveCurrent).unwrap();
     let refused = event(&service);
-    assert!(refused.save_complete && refused.error.is_some() && refused.state.unsaved);
+    assert!(refused.save_complete && refused.state.unsaved);
+    assert_eq!(
+        refused.error.as_deref(),
+        Some("vst3 state could not be captured · restart audio and retry save")
+    );
     assert_eq!(refused.state.project, authored.state.project);
     assert_eq!(
         (refused.state.can_undo, refused.state.can_redo),
