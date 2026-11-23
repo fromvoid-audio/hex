@@ -661,13 +661,12 @@ impl EditorView {
                 let previous_primary = self.selected_clip;
                 (self.selected_track, self.selected_clip) =
                     selection::reconcile(&state.project, self.selected_track, previous_primary);
-                if clip_cut_completed
-                    && previous_primary.is_some()
-                    && self.selected_clip != previous_primary
-                {
+                if clip_cut_completed {
                     let survivor = self.surviving_cut_selection(&state.project, state.revision);
-                    (self.selected_track, self.selected_clip) =
-                        selection::reconcile(&state.project, self.selected_track, survivor);
+                    if previous_primary.is_some() && self.selected_clip != previous_primary {
+                        (self.selected_track, self.selected_clip) =
+                            selection::reconcile(&state.project, self.selected_track, survivor);
+                    }
                 }
                 if initialize_clip_selection
                     && self.selected_clip.is_none()
