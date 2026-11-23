@@ -671,10 +671,12 @@ fn pasted_audio_inherits_the_selected_fade_domain() {
         .iter()
         .find(|c| c.start() == 120_000)
         .expect("pasted");
-    assert_eq!(pasted.fade().offset(), 24_000);
-    assert_eq!(pasted.fade().span(), 96_000);
-    assert_eq!(pasted.fade().fade_in(), 48_000);
-    assert_eq!(pasted.fade().fade_out(), 24_000);
+    assert_eq!(pasted.fade().offset(), 0);
+    assert_eq!(pasted.fade().span(), pasted.duration());
+    assert_eq!(pasted.fade().in_start(), 0);
+    assert_eq!(pasted.fade().out_end_offset(), 0);
+    assert_eq!(pasted.fade().fade_in(), 0);
+    assert_eq!(pasted.fade().fade_out(), 0);
 }
 
 #[test]

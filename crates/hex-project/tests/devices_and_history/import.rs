@@ -544,7 +544,7 @@ fn overwrite_audio_move_splits_victim_with_canonical_phase_fades_and_one_step_hi
         .expect("left victim");
     assert_eq!((left.start(), left.duration()), (10, 30));
     assert_eq!(left.source_phase(), 0);
-    assert_eq!(left.fade().span(), 100);
+    assert_eq!(left.fade().span(), left.duration());
     assert_eq!(left.fade().offset(), 0);
     let right = target_clips
         .iter()
@@ -553,8 +553,8 @@ fn overwrite_audio_move_splits_victim_with_canonical_phase_fades_and_one_step_hi
     assert_eq!((right.start(), right.duration()), (60, 50));
     assert_eq!(right.asset(), asset);
     assert_eq!(right.source_phase(), 10);
-    assert_eq!(right.fade().span(), 100);
-    assert_eq!(right.fade().offset(), 50);
+    assert_eq!(right.fade().span(), right.duration());
+    assert_eq!(right.fade().offset(), 0);
     assert!(target_clips.iter().any(|clip| clip.id() == incoming));
     assert!(result.track(source).expect("source").clips().is_empty());
     let committed = result.clone();

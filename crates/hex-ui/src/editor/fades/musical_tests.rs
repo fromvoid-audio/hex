@@ -43,7 +43,14 @@ fn transformed_cropped_musical_fades_keep_readouts_reset_adjust_and_projected_cu
     let project = canonical.project().clone();
     let tail_clip = project.clip(tail).unwrap();
     assert_eq!(tail_clip.fade().fade_in(), 0);
-    assert_eq!(tail_clip.retained_fade().fade_in(), 4_800);
+    assert_eq!(
+        (
+            tail_clip.retained_fade().offset(),
+            tail_clip.retained_fade().fade_in(),
+            tail_clip.retained_fade().fade_out()
+        ),
+        (0, 0, 9_600)
+    );
     let samples = crate::editor::waveform::projected_fade_envelope_samples(
         tail_clip,
         project.tempo_map(),
@@ -55,17 +62,16 @@ fn transformed_cropped_musical_fades_keep_readouts_reset_adjust_and_projected_cu
     assert!(!samples.is_empty());
     assert_eq!(samples.first().unwrap().1, 1.0);
     assert_eq!(samples.last().unwrap().1, 0.0);
-    // Frozen frame91200 maps from beat3.8 to158400 at the changed tempo.
-    let edit = tail_clip.audio_edit().unwrap();
-    assert!(
-        (edit
-            .projected_fade(project.tempo_map())
-            .unwrap()
-            .gain_at(158_400)
-            .unwrap()
-            - edit.domain.fade.gain_at(91_200))
-        .abs()
-            < 1e-6
+    let outer = tail_clip
+        .projected_outer_fade(project.tempo_map())
+        .unwrap()
+        .unwrap();
+    assert_eq!(outer.gain_at(tail_clip.start()).unwrap(), 1.0);
+    assert_eq!(
+        outer
+            .gain_at(tail_clip.start() + tail_clip.duration() - 1)
+            .unwrap(),
+        0.0
     );
     for reset in [false, true] {
         let (handle, editor) =
@@ -77,7 +83,6 @@ fn transformed_cropped_musical_fades_keep_readouts_reset_adjust_and_projected_cu
         });
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
-        assert!(visual.debug_bounds("retained-fade-disclosure").is_some());
         let target = visual
             .debug_bounds(if reset { "fade-reset" } else { "fade-in-up" })
             .expect("real fade control")
@@ -87,7 +92,7 @@ fn transformed_cropped_musical_fades_keep_readouts_reset_adjust_and_projected_cu
         let command = editor.read_with(cx, |view, _| {
             view.last_enqueued_edit.clone().expect("fade edit")
         });
-        let expected = if reset { (0, 0) } else { (5_040, 9_600) };
+        let expected = if reset { (0, 0) } else { (240, 9_600) };
         let mut history = Editor::new(project.clone(), 4).unwrap();
         history.execute(command).unwrap();
         assert_eq!(

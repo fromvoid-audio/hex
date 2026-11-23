@@ -174,7 +174,7 @@ pub(crate) fn preview_edge_trim(
         || source_length != clip.source_length
         || source_phase != clip.source_phase;
     let fade = if changed {
-        clip.fade.reanchor(duration)?
+        clip.fade.reanchor_to_corners(duration)?
     } else {
         clip.fade
     };
@@ -233,16 +233,12 @@ pub(crate) fn split_clip_at(
         )
     };
     let right_duration = end - frame;
-    let right_fade = original.fade.with_offset(
-        original
-            .fade
-            .offset()
-            .checked_add(left_length)
-            .ok_or(Invalid("fade offset overflow"))?,
-        right_duration,
-    )?;
+    let (left_fade, right_fade) = original
+        .fade
+        .split_at_corners(original.duration, left_length)?;
     let mut left = original.clone();
     left.duration = left_length;
+    left.fade = left_fade;
     if !left.looping {
         left.source_length = left_length;
         left.source_phase = 0;
@@ -259,6 +255,103 @@ pub(crate) fn split_clip_at(
         ..original.clone()
     };
     Ok((left, right))
+}
+
+fn apply_split_audio_edit_fades(
+    original: &Clip,
+    left: Clip,
+    right: Clip,
+    tempo: &crate::TempoMap,
+) -> Result<(Clip, Clip), Invalid> {
+    let original_fade = original.retained_fade();
+    let preserve_outer = original.audio_edit().is_some_and(|edit| {
+        edit.domain.fade_clock == crate::AudioClipFadeClock::Outer || !original_fade.is_neutral()
+    });
+    if !preserve_outer {
+        return Ok((left, right));
+    }
+    let (left_fade, right_fade) =
+        original_fade.split_at_corners(original.duration, left.duration)?;
+    let left = left.with_authored_outer_fade(tempo, left_fade)?;
+    let right = right.with_authored_outer_fade(tempo, right_fade)?;
+    Ok((left, right))
+}
+
+fn preserve_crossfade_overlaps_on_split(
+    original: &Clip,
+    left: &mut Clip,
+    right: &mut Clip,
+    track_clips: &[Clip],
+    original_index: usize,
+    tempo: &crate::TempoMap,
+) -> Result<(), Invalid> {
+    let original_fade = original.retained_fade();
+    let left_end = left
+        .start
+        .checked_add(left.duration)
+        .ok_or(Invalid("timeline end overflow"))?;
+    let right_end = right
+        .start
+        .checked_add(right.duration)
+        .ok_or(Invalid("timeline end overflow"))?;
+
+    if original_fade.fade_out() > 0 {
+        let mut needed_out = 0u64;
+        for (index, other) in track_clips.iter().enumerate() {
+            if index == original_index {
+                continue;
+            }
+            let other_end = other.start.saturating_add(other.duration);
+            if other.start < left_end && left.start < other_end {
+                let overlap_start = other.start.max(left.start);
+                needed_out = needed_out.max(left_end - overlap_start);
+            }
+        }
+        let current = left.retained_fade();
+        if needed_out > current.fade_out() {
+            let fade_out = needed_out.min(left.duration);
+            let fade_in = current.fade_in().min(left.duration - fade_out);
+            let next = ClipFade::new(left.duration, 0, fade_in, fade_out)?
+                .with_shape(0, 0, current.in_curve(), original_fade.out_curve())?
+                .with_curve_positions(current.in_position(), original_fade.out_position())?
+                .with_curve_laws([current.curve_laws()[0], original_fade.curve_laws()[1]]);
+            if left.audio_edit().is_some() {
+                *left = left.with_authored_outer_fade(tempo, next)?;
+            } else {
+                left.fade = next;
+            }
+        }
+    }
+
+    if original_fade.fade_in() > 0 {
+        let mut needed_in = 0u64;
+        for (index, other) in track_clips.iter().enumerate() {
+            if index == original_index {
+                continue;
+            }
+            let other_end = other.start.saturating_add(other.duration);
+            if other.start < right_end && right.start < other_end {
+                let overlap_end = other_end.min(right_end);
+                needed_in = needed_in.max(overlap_end - right.start);
+            }
+        }
+        let current = right.retained_fade();
+        if needed_in > current.fade_in() {
+            let fade_in = needed_in.min(right.duration);
+            let fade_out = current.fade_out().min(right.duration - fade_in);
+            let next = ClipFade::new(right.duration, 0, fade_in, fade_out)?
+                .with_shape(0, 0, original_fade.in_curve(), current.out_curve())?
+                .with_curve_positions(original_fade.in_position(), current.out_position())?
+                .with_curve_laws([original_fade.curve_laws()[0], current.curve_laws()[1]]);
+            if right.audio_edit().is_some() {
+                *right = right.with_authored_outer_fade(tempo, next)?;
+            } else {
+                right.fade = next;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 pub(crate) fn split_clip_at_tempo(
@@ -289,7 +382,7 @@ pub(crate) fn split_clip_at_tempo(
         let mut right =
             crate::audio_edit::trim_view(original, crate::TrimEdge::Left, frame, tempo)?;
         right.id = right_id;
-        return Ok((left, right));
+        return apply_split_audio_edit_fades(original, left, right, tempo);
     }
     let cut = edit.crop_at_frame(original, frame, tempo)?;
     if cut <= edit.view_start || cut >= edit.view_end {
@@ -322,9 +415,7 @@ pub(crate) fn split_clip_at_tempo(
     }
     crate::audio_edit::project_clip(&mut left, tempo)?;
     crate::audio_edit::project_clip(&mut right, tempo)?;
-    crate::audio_edit::retain_outer_fade_crop_context(original, &mut left, tempo)?;
-    crate::audio_edit::retain_outer_fade_crop_context(original, &mut right, tempo)?;
-    Ok((left, right))
+    apply_split_audio_edit_fades(original, left, right, tempo)
 }
 
 /// Whether `frame` falls inside a raw one-shot's silent tail, past its source.
@@ -755,8 +846,16 @@ impl Project {
                     .try_reserve(1)
                     .map_err(|_| Invalid("could not reserve clip storage"))?;
                 let right_id = ClipId(self.allocate_id()?);
-                let (left, right) =
+                let (mut left, mut right) =
                     crate::clip_fade_split::split(&original, frame, right_id, self.tempo_map())?;
+                preserve_crossfade_overlaps_on_split(
+                    &original,
+                    &mut left,
+                    &mut right,
+                    self.tracks[track_index].clips(),
+                    clip_index,
+                    self.tempo_map(),
+                )?;
                 self.audio_clips_mut(self.tracks[track_index].id)?[clip_index] = left;
                 self.audio_clips_mut(self.tracks[track_index].id)?
                     .insert(clip_index + 1, right);
@@ -1187,7 +1286,7 @@ impl Project {
                 let old_fade = original.fade;
                 let old_source_offset = original.source_offset;
                 let old_source_length = original.source_length;
-                let fade = old_fade.reanchor(duration)?;
+                let fade = old_fade.reanchor_to_corners(duration)?;
                 let mut target = original.clone();
                 target.start = start;
                 target.duration = duration;

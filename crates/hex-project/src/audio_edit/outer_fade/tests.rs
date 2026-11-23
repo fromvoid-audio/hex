@@ -362,7 +362,7 @@ fn zero_author_age_keeps_subframe_positive_and_negative_origin_identity() {
 }
 
 #[test]
-fn cropped_musical_context_retains_immutable_author_origin_across_tempo_seam() {
+fn cropped_musical_context_reanchors_outer_fade_to_corners_across_tempo_seam() {
     let author = TempoMap::new(
         48_000,
         vec![
@@ -385,38 +385,30 @@ fn cropped_musical_context_retains_immutable_author_origin_across_tempo_seam() {
         let cut = author
             .beat_to_frame(BeatTime::from_quarters(2).unwrap())
             .unwrap();
-        let consumed = AudioViewProjection::new(&original, &author)
-            .unwrap()
-            .elapsed_at_frame(cut)
-            .unwrap();
         let cropped =
             crate::audio_edit::trim_view(&original, crate::TrimEdge::Left, cut, &author).unwrap();
-        let old_domain = &original.audio_edit().unwrap().domain;
         let domain = &cropped.audio_edit().unwrap().domain;
-        // The guarded trim boundary now retains this context; no canonical
-        // Outer admission, command history or native behavior is activated.
-        assert_eq!(domain.fade, old_domain.fade);
         assert_eq!(
-            domain.fade_projection.as_ref().unwrap().origin_beat_raw,
-            old_domain.fade_projection.as_ref().unwrap().origin_beat_raw
+            (
+                domain.fade.offset(),
+                domain.fade.span(),
+                domain.fade.in_start(),
+                domain.fade.out_end_offset()
+            ),
+            (0, cropped.duration(), 0, 0)
         );
-        assert_eq!(
-            domain.outer_fade_displacement().unwrap(),
-            i128::from(consumed)
-        );
-        let expected = original.projected_outer_fade(&author).unwrap().unwrap();
+        assert_eq!(domain.outer_fade_displacement().unwrap(), 0);
         let retained = cropped.projected_outer_fade(&author).unwrap().unwrap();
-        for frame in (cut..original.start() + original.duration()).step_by(17) {
-            assert_eq!(
-                retained.gain_at(frame).unwrap(),
-                expected.gain_at(frame).unwrap(),
-                "frame {frame}"
-            );
-            assert_eq!(
-                retained.domain_position_at_frame(frame).unwrap(),
-                expected.domain_position_at_frame(frame).unwrap()
-            );
-        }
+        assert_eq!(
+            retained.frame_at_domain_position(0).unwrap(),
+            Some(cropped.start())
+        );
+        assert_eq!(
+            retained
+                .frame_at_domain_position(cropped.duration())
+                .unwrap(),
+            Some(cropped.start() + cropped.duration())
+        );
         let first_cut = author.beat_to_frame(BeatTime::ONE).unwrap();
         let first =
             crate::audio_edit::trim_view(&original, crate::TrimEdge::Left, first_cut, &author)
@@ -426,20 +418,6 @@ fn cropped_musical_context_retains_immutable_author_origin_across_tempo_seam() {
         assert_eq!(
             successive.audio_edit().unwrap().domain,
             cropped.audio_edit().unwrap().domain
-        );
-        let mut wrong_context = cropped.clone();
-        Arc::make_mut(&mut wrong_context.audio_edit_mut().unwrap().domain)
-            .shift_outer_fade_displacement(-i128::from(consumed))
-            .unwrap();
-        assert_ne!(
-            wrong_context
-                .projected_outer_fade(&author)
-                .unwrap()
-                .unwrap()
-                .gain_at(75_000)
-                .unwrap(),
-            expected.gain_at(75_000).unwrap(),
-            "fixture must detect dropping full consumed ticks"
         );
     }
 }
@@ -534,13 +512,15 @@ fn subframe_origins_survive_crop_and_common_rewind_with_observable_hard_gate() {
             let mut rewound =
                 crate::audio_edit::trim_view(&cropped, crate::TrimEdge::Left, 0, &author).unwrap();
             let domain = &rewound.audio_edit().unwrap().domain;
-            // Actual guarded trim previews retain context. Admission, command
-            // history and native behavior remain unactivated.
-            assert_eq!(domain.outer_fade_displacement().unwrap(), -placement_origin);
-            assert_eq!(domain.fade.offset(), 0);
+            assert_eq!(domain.outer_fade_displacement().unwrap(), 0);
             assert_eq!(
-                domain.fade_projection.as_ref().unwrap().origin_beat_raw,
-                author_origin
+                (
+                    domain.fade.offset(),
+                    domain.fade.span(),
+                    domain.fade.in_start(),
+                    domain.fade.out_end_offset()
+                ),
+                (0, rewound.duration(), 0, 0)
             );
             crate::audio_edit::project_clip(&mut rewound, &destination).unwrap();
             gains.push(
@@ -556,11 +536,7 @@ fn subframe_origins_survive_crop_and_common_rewind_with_observable_hard_gate() {
             old_representations[0], old_representations[1],
             "mutable origin plus integer frame offset loses the distinction"
         );
-        assert_eq!(
-            gains,
-            [1.0, 0.0],
-            "subframe prefix is an audible gate, not technical metadata"
-        );
+        assert_eq!(gains, [1.0, 1.0]);
     }
 }
 

@@ -54,7 +54,7 @@ fn split(fade: ClipFade, cut: u64) -> (Editor, crate::ClipId, crate::ClipId, Cli
 }
 
 #[test]
-fn a_cut_ramp_moves_onto_the_inner_event_with_unchanged_gain_and_one_step_history() {
+fn split_anchors_every_part_fade_to_its_corners_with_one_step_history() {
     let linear = ClipFade::new(100, 0, 40, 30).unwrap();
     let shaped = linear
         .with_shape(5, 7, 600, -400)
@@ -65,19 +65,19 @@ fn a_cut_ramp_moves_onto_the_inner_event_with_unchanged_gain_and_one_step_histor
         .unwrap()
         .with_shape(0, 0, -300, 200)
         .unwrap();
-    // (fade, cut, crossed): inside the fade in, inside the fade out, exactly at
-    // either ramp boundary, between ramps, and through overlapping ramps.
-    for (fade, cut, crossed) in [
-        (linear, 20, true),
-        (linear, 85, true),
-        (linear, 40, false),
-        (linear, 70, false),
-        (linear, 55, false),
-        (shaped, 3, true),
-        (shaped, 30, true),
-        (shaped, 45, false),
-        (shaped, 95, true),
-        (overlapping, 50, true),
+    // Inside fade-in, inside fade-out, at ramp boundaries, between ramps, and
+    // through overlapping ramps: every cut keeps both halves corner-anchored.
+    for (fade, cut) in [
+        (linear, 20),
+        (linear, 85),
+        (linear, 40),
+        (linear, 70),
+        (linear, 55),
+        (shaped, 3),
+        (shaped, 30),
+        (shaped, 45),
+        (shaped, 95),
+        (overlapping, 50),
     ] {
         let (mut editor, left, right, original) = split(fade, cut);
         let project = editor.project();
@@ -85,45 +85,37 @@ fn a_cut_ramp_moves_onto_the_inner_event_with_unchanged_gain_and_one_step_histor
         for part in parts {
             let local = part.retained_fade();
             assert_eq!(
-                (local.offset(), local.span()),
-                (0, part.duration()),
-                "no clip fade extends past a part ({fade:?} cut {cut})"
+                (
+                    local.offset(),
+                    local.span(),
+                    local.in_start(),
+                    local.out_end_offset()
+                ),
+                (0, part.duration(), 0, 0),
+                "split must anchor fade to part corners ({fade:?} cut {cut})"
             );
-            assert_eq!(part.audio_edit().is_some(), crossed);
+            assert!(local.fade_in() + local.fade_out() <= part.duration());
+            assert!(part.audio_edit().is_none());
             for frame in 0..part.duration() {
-                let expected = fade.gain_at(part.start() + frame);
-                let actual = gain(part, frame);
-                if fade == overlapping {
-                    assert!((actual - expected).abs() <= 1e-6, "{actual} {expected}");
-                } else {
-                    assert_eq!(actual, expected, "cut {cut} frame {}", part.start() + frame);
-                }
+                assert_eq!(gain(part, frame), local.gain_at(frame));
             }
         }
-        // Uncrossed ramps stay ordinary clip fades on the part that holds them.
         let (left_fade, right_fade) = (parts[0].retained_fade(), parts[1].retained_fade());
-        if fade == linear && cut == 85 {
-            assert_eq!((left_fade.fade_in(), left_fade.fade_out()), (40, 0));
-            assert!(right_fade.is_neutral());
-        }
-        if fade == shaped && cut == 30 {
-            assert!(left_fade.is_neutral());
-            assert_eq!(
-                (
-                    right_fade.fade_out(),
-                    right_fade.out_end_offset(),
-                    right_fade.out_curve(),
-                    right_fade.out_position()
-                ),
-                (30, 7, -400, 800)
-            );
-        }
-        if !crossed {
-            assert_eq!(
-                (left_fade.fade_in(), right_fade.fade_out()),
-                (fade.fade_in(), fade.fade_out())
-            );
-        }
+        assert_eq!(left_fade.fade_in(), fade.fade_in().min(parts[0].duration()));
+        assert_eq!(left_fade.fade_out(), 0);
+        assert_eq!(
+            (left_fade.in_curve(), left_fade.in_position()),
+            (fade.in_curve(), fade.in_position())
+        );
+        assert_eq!(right_fade.fade_in(), 0);
+        assert_eq!(
+            right_fade.fade_out(),
+            fade.fade_out().min(parts[1].duration())
+        );
+        assert_eq!(
+            (right_fade.out_curve(), right_fade.out_position()),
+            (fade.out_curve(), fade.out_position())
+        );
         assert!(editor.undo());
         assert_eq!(
             editor.project().tracks()[0].clips(),
@@ -135,35 +127,49 @@ fn a_cut_ramp_moves_onto_the_inner_event_with_unchanged_gain_and_one_step_histor
 }
 
 #[test]
-fn the_moved_fade_is_an_ordinary_editable_event_fade() {
-    let (mut editor, _, right, _) = split(ClipFade::new(100, 0, 40, 30).unwrap(), 20);
-    let part = editor.project().clip(right).unwrap();
-    let view = part.audio_edit().unwrap().view_start;
-    let events = part.editable_audio_events().unwrap();
-    let visible = events
-        .events
-        .iter()
-        .find(|event| event.start == view)
-        .unwrap();
-    assert_eq!(visible.fade.unwrap().shape().fade_in(), 40);
-    editor
-        .execute(Command::EditAudioEvents {
+fn repeated_cuts_on_faded_clips_stay_corner_anchored_without_inventing_inner_event_fades() {
+    let (mut editor, left, right, _) = split(ClipFade::new(100, 0, 40, 30).unwrap(), 20);
+    let Created::Clip(right_tail) = editor
+        .execute(Command::SplitClip {
             clip: right,
-            operation: AudioEventEdit::SetFade {
-                event: visible.id,
-                fade: None,
-            },
+            frame: 85,
         })
-        .unwrap();
-    let part = editor.project().clip(right).unwrap();
-    assert!(
-        (0..part.duration()).all(|frame| gain(part, frame) == part.retained_fade().gain_at(frame))
-    );
+        .unwrap()
+    else {
+        panic!("second split")
+    };
+    let project = editor.project();
+    let left_clip = project.clip(left).unwrap();
+    let middle_clip = project.clip(right).unwrap();
+    let tail_clip = project.clip(right_tail).unwrap();
+    for (part, expected_in, expected_out) in
+        [(left_clip, 20, 0), (middle_clip, 0, 0), (tail_clip, 0, 15)]
+    {
+        let fade = part.retained_fade();
+        assert_eq!(
+            (
+                fade.offset(),
+                fade.span(),
+                fade.in_start(),
+                fade.out_end_offset(),
+                fade.fade_in(),
+                fade.fade_out()
+            ),
+            (0, part.duration(), 0, 0, expected_in, expected_out)
+        );
+        assert!(
+            part.audio_events()
+                .events
+                .iter()
+                .all(|event| event.fade.is_none())
+        );
+    }
+    assert!(editor.undo());
     assert!(editor.undo());
 }
 
 #[test]
-fn looped_and_processed_clips_keep_the_retained_split_law() {
+fn looped_and_event_edited_clips_reanchor_fades_at_corners_on_split() {
     let (mut editor, clip) = imported(100, ClipFade::new(100, 0, 40, 30).unwrap());
     editor
         .execute(Command::SetClipLooping {
@@ -177,9 +183,28 @@ fn looped_and_processed_clips_keep_the_retained_split_law() {
     else {
         panic!("split")
     };
-    let part = editor.project().clip(right).unwrap();
-    assert!(part.audio_edit().is_none());
-    assert_eq!((part.fade().offset(), part.fade().span()), (20, 100));
+    let left_part = editor.project().clip(clip).unwrap();
+    let right_part = editor.project().clip(right).unwrap();
+    assert!(left_part.audio_edit().is_none());
+    assert!(right_part.audio_edit().is_none());
+    assert_eq!(
+        (
+            left_part.fade().offset(),
+            left_part.fade().span(),
+            left_part.fade().fade_in(),
+            left_part.fade().fade_out()
+        ),
+        (0, 20, 20, 0)
+    );
+    assert_eq!(
+        (
+            right_part.fade().offset(),
+            right_part.fade().span(),
+            right_part.fade().fade_in(),
+            right_part.fade().fade_out()
+        ),
+        (0, 80, 0, 30)
+    );
 
     let (mut editor, clip) = imported(100, ClipFade::new(100, 0, 40, 30).unwrap());
     editor
@@ -189,8 +214,35 @@ fn looped_and_processed_clips_keep_the_retained_split_law() {
         })
         .unwrap();
     let before = editor.project().clip(clip).unwrap().audio_events();
-    editor
+    let Created::Clip(right) = editor
         .execute(Command::SplitClip { clip, frame: 20 })
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("split")
+    };
     assert_eq!(editor.project().clip(clip).unwrap().audio_events(), before);
+    let left_fade = editor.project().clip(clip).unwrap().retained_fade();
+    let right_fade = editor.project().clip(right).unwrap().retained_fade();
+    assert_eq!(
+        (
+            left_fade.offset(),
+            left_fade.span(),
+            left_fade.in_start(),
+            left_fade.out_end_offset(),
+            left_fade.fade_in(),
+            left_fade.fade_out()
+        ),
+        (0, 20, 0, 0, 20, 0)
+    );
+    assert_eq!(
+        (
+            right_fade.offset(),
+            right_fade.span(),
+            right_fade.in_start(),
+            right_fade.out_end_offset(),
+            right_fade.fade_in(),
+            right_fade.fade_out()
+        ),
+        (0, 80, 0, 0, 0, 30)
+    );
 }

@@ -29,8 +29,7 @@ pub(crate) fn preview_prefix_crop_with_tempo(
     if !prefix.looping {
         prefix.source_length = prefix.source_length.min(prefix.duration);
     }
-    // Retain the fade's original domain/offset, as for the left side of a split:
-    // cropping must not rescale the audible prefix or move its fade-out earlier.
+    prefix.fade = original.fade.reanchor_to_corners(prefix.duration)?;
     Ok(prefix)
 }
 

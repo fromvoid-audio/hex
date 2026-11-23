@@ -28,44 +28,66 @@ fn signed_destination_inverse_retains_frame_endpoints_and_unsigned_refusal() {
 }
 
 #[test]
-fn frame_trim_rewinds_whole_cycles_then_uses_one_prefix_and_pads_silence_exactly() {
+fn frame_trim_reanchors_outer_fade_to_corners_across_crops_and_extensions() {
     let (mut original, tempo) = repeated();
     original.start = 50_000;
     crate::audio_edit::project_clip(&mut original, &tempo).unwrap();
     let cropped = trim_view(&original, TrimEdge::Left, 107_522, &tempo).unwrap();
-    assert_eq!(cropped.retained_fade().offset(), 57_522);
+    let fade = cropped.retained_fade();
+    assert_eq!(
+        (
+            fade.offset(),
+            fade.span(),
+            fade.in_start(),
+            fade.out_end_offset()
+        ),
+        (0, cropped.duration(), 0, 0)
+    );
+    assert_eq!(cropped.audio_edit().unwrap().domain.fade_start, 0);
     let first = trim_view(&original, TrimEdge::Left, 69_174, &tempo).unwrap();
     let successive = trim_view(&first, TrimEdge::Left, 107_522, &tempo).unwrap();
     assert_eq!(successive.retained_fade(), cropped.retained_fade());
-    assert_eq!(cropped.audio_edit().unwrap().domain.fade_start, 0);
-    let before = original.projected_outer_fade(&tempo).unwrap().unwrap();
     let after = cropped.projected_outer_fade(&tempo).unwrap().unwrap();
     for frame in (107_522..126_696).step_by(257) {
         assert_eq!(
             after.gain_at(frame).unwrap(),
-            before.gain_at(frame).unwrap()
+            fade.gain_at(frame - cropped.start())
         );
     }
     let rewound = trim_view(&cropped, TrimEdge::Left, 50_000, &tempo).unwrap();
-    assert_eq!(rewound.retained_fade(), original.retained_fade());
+    assert_eq!(
+        (
+            rewound.retained_fade().offset(),
+            rewound.retained_fade().span(),
+            rewound.retained_fade().in_start(),
+            rewound.retained_fade().out_end_offset()
+        ),
+        (0, rewound.duration(), 0, 0)
+    );
     let prefixed = trim_view(&rewound, TrimEdge::Left, 49_000, &tempo).unwrap();
     assert_eq!(prefixed.retained_fade().offset(), 0);
-    assert_eq!(prefixed.audio_edit().unwrap().domain.fade_start, 1_000);
-    let prefix = prefixed.projected_outer_fade(&tempo).unwrap().unwrap();
-    assert_eq!(prefix.gain_at(49_999).unwrap(), 0.0);
-    assert_eq!(
-        prefix.gain_at(50_001).unwrap(),
-        before.gain_at(50_001).unwrap()
-    );
+    assert_eq!(prefixed.retained_fade().span(), prefixed.duration());
+    assert_eq!(prefixed.audio_edit().unwrap().domain.fade_start, 0);
     let extended = trim_view(&original, TrimEdge::Right, 166_696, &tempo).unwrap();
-    assert_eq!(extended.retained_fade().span(), 116_696);
-    assert_eq!(extended.retained_fade().out_end_offset(), 40_000);
+    assert_eq!(
+        (
+            extended.retained_fade().offset(),
+            extended.retained_fade().span(),
+            extended.retained_fade().in_start(),
+            extended.retained_fade().out_end_offset()
+        ),
+        (0, extended.duration(), 0, 0)
+    );
     let tail = trim_view(&extended, TrimEdge::Left, 150_000, &tempo).unwrap();
-    assert_eq!(tail.retained_fade().offset(), 100_000);
-    let tail_query = tail.projected_outer_fade(&tempo).unwrap().unwrap();
-    for frame in [150_000, 160_000, 166_695] {
-        assert_eq!(tail_query.gain_at(frame).unwrap(), 0.0);
-    }
+    assert_eq!(
+        (
+            tail.retained_fade().offset(),
+            tail.retained_fade().span(),
+            tail.retained_fade().in_start(),
+            tail.retained_fade().out_end_offset()
+        ),
+        (0, tail.duration(), 0, 0)
+    );
 }
 
 #[test]
@@ -134,28 +156,45 @@ fn signed_frozen_directed_clock_and_crop_keep_forward_gain_once() {
     let cropped = trim_view(&clip, TrimEdge::Left, cut, &tempo).unwrap();
     let (left, right) =
         crate::clip_fade_split::split(&clip, cut, crate::ClipId(200), &tempo).unwrap();
-    assert_eq!(right.retained_fade(), cropped.retained_fade());
-    assert_eq!(right.audio_edit(), cropped.audio_edit());
-    let left = left.projected_outer_fade(&tempo).unwrap().unwrap();
-    let before = clip.projected_outer_fade(&tempo).unwrap().unwrap();
+    for part in [&cropped, &left, &right] {
+        let fade = part.retained_fade();
+        assert_eq!(
+            (
+                fade.offset(),
+                fade.span(),
+                fade.in_start(),
+                fade.out_end_offset()
+            ),
+            (0, part.duration(), 0, 0)
+        );
+        assert_eq!(
+            part.audio_edit()
+                .unwrap()
+                .domain
+                .outer_fade_displacement()
+                .unwrap(),
+            0
+        );
+    }
     assert_eq!(
-        left.gain_at(cut - 1).unwrap(),
-        before.gain_at(cut - 1).unwrap()
+        (
+            left.retained_fade().fade_in(),
+            left.retained_fade().fade_out()
+        ),
+        (clip.retained_fade().fade_in().min(left.duration()), 0)
     );
     assert_eq!(
-        cropped
-            .audio_edit()
-            .unwrap()
-            .domain
-            .outer_fade_displacement()
-            .unwrap(),
-        i128::from(BeatTime::ONE.raw())
+        (
+            right.retained_fade().fade_in(),
+            right.retained_fade().fade_out()
+        ),
+        (0, clip.retained_fade().fade_out().min(right.duration()))
     );
     let after = cropped.projected_outer_fade(&tempo).unwrap().unwrap();
     for frame in (cut..clip.start() + clip.duration()).step_by(997) {
         assert_eq!(
             after.gain_at(frame).unwrap(),
-            before.gain_at(frame).unwrap()
+            cropped.retained_fade().gain_at(frame - cropped.start())
         );
     }
 }

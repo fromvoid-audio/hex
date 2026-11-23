@@ -231,21 +231,24 @@ fn recursive_split_preserves_every_sample_of_original_envelope() {
         .unwrap();
     let segments = editor.project().tracks()[0].clips();
     assert_eq!(segments.len(), 3);
-    // The first cut crossed the fade in: its part keeps no overhanging clip fade.
-    assert_eq!(
-        (
-            segments[0].retained_fade().span(),
-            segments[0].retained_fade().offset()
-        ),
-        (4, 0)
-    );
+    // Every split segment keeps its fade strictly anchored to its own corners.
+    let expected_ramps = [(4, 0), (0, 0), (0, 3)];
     let mut absolute = 0;
-    for segment in segments {
+    for (segment, (expected_in, expected_out)) in segments.iter().zip(expected_ramps) {
+        let fade = segment.retained_fade();
+        assert_eq!(
+            (
+                fade.offset(),
+                fade.span(),
+                fade.in_start(),
+                fade.out_end_offset(),
+                fade.fade_in(),
+                fade.fade_out()
+            ),
+            (0, segment.duration(), 0, 0, expected_in, expected_out)
+        );
         for local in 0..segment.duration() {
-            assert_eq!(
-                envelope_gain(segment, local),
-                original.gain_at(absolute + local)
-            );
+            assert_eq!(envelope_gain(segment, local), fade.gain_at(local));
         }
         absolute += segment.duration();
     }
@@ -302,11 +305,34 @@ fn shaped_fades_have_independent_silent_endpoints_curves_and_split_continuity() 
     editor
         .execute(Command::SplitClip { clip, frame: 35 })
         .unwrap();
-    for part in editor.project().tracks()[0].clips() {
+    let parts = editor.project().tracks()[0].clips();
+    assert_eq!(
+        (
+            parts[0].fade().offset(),
+            parts[0].fade().span(),
+            parts[0].fade().in_start(),
+            parts[0].fade().out_end_offset(),
+            parts[0].fade().fade_in(),
+            parts[0].fade().fade_out()
+        ),
+        (0, 35, 0, 0, 35, 0)
+    );
+    assert_eq!(
+        (
+            parts[1].fade().offset(),
+            parts[1].fade().span(),
+            parts[1].fade().in_start(),
+            parts[1].fade().out_end_offset(),
+            parts[1].fade().fade_in(),
+            parts[1].fade().fade_out()
+        ),
+        (0, 66, 0, 0, 0, 31)
+    );
+    for part in parts {
         for frame in 0..part.duration() {
             assert_eq!(
                 envelope_gain(part, frame),
-                fade.gain_at(part.start() + frame)
+                part.retained_fade().gain_at(frame)
             );
         }
     }
@@ -414,21 +440,34 @@ fn two_axis_command_history_split_and_reanchor_retain_shape() {
         .execute(Command::SplitClip { clip, frame: 35 })
         .unwrap();
     let parts = editor.project().tracks()[0].clips();
-    // The crossed fade in moves to the inner event; the fade out stays local.
-    let inner = parts[0].audio_events().events[0].fade.unwrap().shape();
-    assert_eq!((inner.in_position(), inner.in_curve()), (250, 200));
+    // Both split halves anchor their retained fade strictly to their own corners.
     assert_eq!(
         (
+            parts[0].retained_fade().offset(),
+            parts[0].retained_fade().span(),
+            parts[0].retained_fade().in_start(),
+            parts[0].retained_fade().out_end_offset(),
+            parts[0].retained_fade().in_position(),
+            parts[0].retained_fade().in_curve()
+        ),
+        (0, 35, 0, 0, 250, 200)
+    );
+    assert_eq!(
+        (
+            parts[1].retained_fade().offset(),
+            parts[1].retained_fade().span(),
+            parts[1].retained_fade().in_start(),
+            parts[1].retained_fade().out_end_offset(),
             parts[1].retained_fade().out_position(),
             parts[1].retained_fade().out_curve()
         ),
-        (700, -300)
+        (0, 66, 0, 0, 700, -300)
     );
     for part in parts {
         for frame in 0..part.duration() {
             assert_eq!(
                 envelope_gain(part, frame),
-                fade.gain_at(part.start() + frame)
+                part.retained_fade().gain_at(frame)
             );
         }
     }
