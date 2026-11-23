@@ -174,6 +174,7 @@ impl EditorView {
         }
         let revision = state.revision;
         let audition_timing = self.refresh_queued_audition_timing(insertion.audition_timing);
+        let routed_audition = audition_timing.is_some();
         let (request, flight) = match insertion.source {
             PendingBrowserInsertionSource::AudioFile(path) => {
                 let context = AudioBatchContext {
@@ -234,7 +235,7 @@ impl EditorView {
         match &self.browser_insertion_flight {
             Some(BrowserInsertionFlight::AudioFile(control)) => {
                 self.audio_batch = Some(Arc::clone(control));
-                if audition_timing.is_some() && self.browser.playback_output.is_some() {
+                if routed_audition && self.browser.playback_output.is_some() {
                     self.cancel_browser_sample_playback();
                 }
                 self.audio_batch_progress = None;
