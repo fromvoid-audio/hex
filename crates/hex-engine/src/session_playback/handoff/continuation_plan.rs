@@ -1001,24 +1001,16 @@ pub(super) fn mutable_proof_deadline(
     deadline
 }
 
-/// With equal canonical maps and equal beats at the cut, a first-pass loop
-/// edit can retain Arrangement voices until the earlier wrap. The periodic
-/// view returns the canonical inverse before its start, uses that same inverse
-/// at its admitted round-tripping start, and lifts canonical local beats by
-/// zero cycles until its end. Round-tripping beats for interior frames lie
-/// strictly between the endpoint beats by monotonicity of the forward map.
-/// The candidate anchor therefore has zero shift over the retained interval.
-/// No retained gate or tail may reach either wrap. Signature, source-law and
-/// occupancy checks still run before runtime transfer.
-pub(super) fn first_pass_arrangement_loop_continuity(
+/// Between wraps the Arrangement cursor advances one frame per performance
+/// frame. Existing gates and tails can retain their sample deadlines when
+/// the canonical map and sources match and every deadline precedes both
+/// possible wraps. Session routes and live sources use a different clock.
+pub(super) fn arrangement_voices_finish_before_loop_edit_wrap(
     candidate: &SessionPlayback,
     previous: &SessionPlayback,
 ) -> bool {
-    if previous.anchor.is_some()
-        || previous.computer_keyboard.is_some()
+    if previous.computer_keyboard.is_some()
         || candidate.computer_keyboard.is_some()
-        || previous.arrangement_loop_pass != 0
-        || previous.performance_frame != previous.arrangement_frame
         || candidate.revision.arrangement().main_latency_frames() != 0
         || previous.revision.arrangement().main_latency_frames() != 0
         || previous
@@ -1035,9 +1027,13 @@ pub(super) fn first_pass_arrangement_loop_continuity(
         .map(hex_project::LoopRegion::end)
         .min()
         .unwrap_or(u64::MAX);
-    if previous.performance_frame >= boundary {
+    let Some(wrap_deadline) = boundary
+        .checked_sub(previous.arrangement_frame)
+        .filter(|remaining| *remaining > 0)
+        .and_then(|remaining| previous.performance_frame.checked_add(remaining))
+    else {
         return false;
-    }
+    };
     for playback in [previous, candidate] {
         for (index, route) in playback.routes.iter().enumerate() {
             if route.owner != RouteOwner::Arrangement
@@ -1064,9 +1060,9 @@ pub(super) fn first_pass_arrangement_loop_continuity(
                 .mutable_arrangement_track_matches(&candidate.revision, route.id)
                 && !runtime.has_committed_live_occurrences()
                 && runtime.proofs().all(|proof| {
-                    proof.signature.key().loop_pass == 0
-                        && proof.gate_end_frame < boundary
-                        && proof.quiet_deadline_frame < boundary
+                    proof.signature.key().loop_pass == previous.arrangement_loop_pass
+                        && proof.gate_end_frame < wrap_deadline
+                        && proof.quiet_deadline_frame < wrap_deadline
                 })
         })
 }
