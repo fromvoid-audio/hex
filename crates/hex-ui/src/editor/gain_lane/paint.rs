@@ -1,17 +1,20 @@
+use super::super::musical_time::GridLine;
 use super::super::waveform::button;
 use super::*;
 use crate::theme;
 use gpui::{
     Bounds, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, canvas,
-    div, point as gpui_point, prelude::*, px, rgb,
+    div, fill, point as gpui_point, prelude::*, px, rgb, size,
 };
 use hex_project::GainInterpolation;
+use std::rc::Rc;
 
 pub(in crate::editor) fn view(
     view: &mut EditorView,
     state: &ViewState,
     viewport: Viewport,
     width: f32,
+    grid: Rc<[GridLine]>,
     cx: &mut Context<EditorView>,
 ) -> Option<gpui::Stateful<Div>> {
     if view.automation_view.enabled {
@@ -214,7 +217,7 @@ pub(in crate::editor) fn view(
         },
         track.gain() * 100.0
     );
-    let plot = plot(view, state, track_id, viewport, width, false, cx)?;
+    let plot = plot(view, state, track_id, viewport, grid, false, cx)?;
     let details_tooltip = details.clone();
     let details = div()
         .id("gain-point-readout")
@@ -283,7 +286,7 @@ fn plot(
     state: &ViewState,
     track_id: TrackId,
     viewport: Viewport,
-    width: f32,
+    grid: Rc<[GridLine]>,
     inline: bool,
     cx: &mut Context<EditorView>,
 ) -> Option<gpui::Stateful<Div>> {
@@ -294,8 +297,6 @@ fn plot(
     let generation = view.project_generation;
     let revision = state.revision;
     let preview = state.gain_preview.clone();
-    let grid =
-        super::super::musical_time::grid_lines(&state.project, viewport, width, view.snap_grid);
     let static_gain = track.gain();
     let points = track.gain_envelope();
     let first = points.partition_point(|p| {
@@ -341,20 +342,16 @@ fn plot(
                     if rect[2] <= 0.0 || rect[3] <= 0.0 {
                         return;
                     }
-                    for line in &grid {
+                    let border = rgb(theme::color(theme::PaletteRole::Border));
+                    for line in grid.iter() {
                         if let Some(x) = viewport.fraction(line.frame) {
-                            let mut path = PathBuilder::stroke(px(1.0));
-                            path.move_to(gpui_point(px(rect[0] + rect[2] * x), px(rect[1])));
-                            path.line_to(gpui_point(
-                                px(rect[0] + rect[2] * x),
-                                px(rect[1] + rect[3]),
+                            window.paint_quad(fill(
+                                Bounds::new(
+                                    gpui_point(px(rect[0] + rect[2] * x), px(rect[1])),
+                                    size(px(1.0), px(rect[3])),
+                                ),
+                                border,
                             ));
-                            if let Ok(path) = path.build() {
-                                window.paint_path(
-                                    path,
-                                    rgb(theme::color(theme::PaletteRole::Border)),
-                                );
-                            }
                         }
                     }
                     if let Ok(preview) = &preview {
@@ -545,7 +542,7 @@ pub(in crate::editor) fn inline(
     state: &ViewState,
     track: TrackId,
     viewport: Viewport,
-    width: f32,
+    grid: Rc<[GridLine]>,
     cx: &mut Context<EditorView>,
 ) -> Option<gpui::Stateful<Div>> {
     let source = state.project.track(track)?;
@@ -570,7 +567,7 @@ pub(in crate::editor) fn inline(
         "gain".into()
     };
     Some(
-        plot(view, state, track, viewport, width, true, cx)?
+        plot(view, state, track, viewport, grid, true, cx)?
             .absolute()
             .inset_0()
             .block_mouse_except_scroll()

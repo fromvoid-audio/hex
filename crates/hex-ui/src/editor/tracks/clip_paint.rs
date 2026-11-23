@@ -330,7 +330,7 @@ impl EditorView {
                     track_id,
                     track_index,
                     viewport,
-                    std::rc::Rc::from(grid),
+                    std::rc::Rc::clone(grid),
                     std::rc::Rc::from([]),
                     is_committed_edit_view,
                 );
@@ -677,7 +677,7 @@ impl EditorView {
                 track_id,
                 track_index,
                 viewport,
-                std::rc::Rc::from(grid),
+                std::rc::Rc::clone(grid),
                 std::rc::Rc::from(excluded),
                 is_committed_edit_view,
             );
