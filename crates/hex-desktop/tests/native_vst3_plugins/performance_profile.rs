@@ -19,6 +19,7 @@ enum PlaybackProfile {
     Serial,
     Paced,
     Resume,
+    Contended,
 }
 
 #[test]
@@ -43,6 +44,18 @@ fn dense_twelve_vst3_deadline_profile() {
 #[ignore = "opt-in optimized timing after a paused VST3 transport resumes"]
 fn dense_twelve_vst3_resume_deadline_profile() {
     profile(12, 44_100, PlaybackProfile::Resume);
+}
+
+#[test]
+#[ignore = "opt-in optimized timing reproduction with sixteen original SDK instances"]
+fn dense_sixteen_vst3_deadline_profile() {
+    profile(16, 44_100, PlaybackProfile::Paced);
+}
+
+#[test]
+#[ignore = "opt-in optimized timing reproduction with sixteen original SDK instances under CPU contention"]
+fn dense_sixteen_vst3_contended_deadline_profile() {
+    profile(16, 44_100, PlaybackProfile::Contended);
 }
 
 fn fixture(files: &Files, rate: u32) -> PathBuf {
@@ -255,6 +268,30 @@ fn profile(plugins: usize, rate: u32, profile: PlaybackProfile) {
     let output_carrier = Arc::clone(&harness.callback);
     let mut slot = output_carrier.lock().unwrap();
     let callback = slot.as_mut().unwrap();
+    let stop_load = Arc::new(AtomicBool::new(false));
+    let load_threads: Vec<_> = if profile == PlaybackProfile::Contended {
+        let workers = std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(8);
+        (0..workers)
+            .map(|seed| {
+                let stop = Arc::clone(&stop_load);
+                std::thread::spawn(move || {
+                    let mut state = (seed as u64).wrapping_add(0x9e37_79b9_7f4a_7c15);
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        for _ in 0..4096 {
+                            state = state
+                                .wrapping_mul(6_364_136_223_846_793_005)
+                                .wrapping_add(1);
+                        }
+                        std::hint::black_box(state);
+                    }
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut target = Instant::now();
     for index in 0..WARMUP + SAMPLES {
         if let Some(until) = target.checked_duration_since(Instant::now()) {
@@ -298,6 +335,10 @@ fn profile(plugins: usize, rate: u32, profile: PlaybackProfile) {
             // early by feeding several nominal blocks back to back.
             target = target.max(begin + budget);
         }
+    }
+    stop_load.store(true, std::sync::atomic::Ordering::Release);
+    for thread in load_threads {
+        thread.join().unwrap();
     }
     let status = callback.status().unwrap();
     assert!(status.playing.load(Acquire));

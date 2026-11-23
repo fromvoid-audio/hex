@@ -17,20 +17,28 @@ pub(super) struct Deadline {
 }
 
 impl Deadline {
+    fn policy_window(period: Duration) -> (Duration, Duration, Duration) {
+        let constraint = period.mul_f64(0.75).min(Duration::from_millis(4));
+        let computation = Duration::from_millis(1).min(constraint / 2);
+        // Retain deadline priority across transient multi-quantum gaps (up to
+        // the six-quantum concealment bound and QUIET_TRANSPORT window) so a
+        // brief hiccup does not demote the transport worker mid-stream.
+        let interval = (period * 8).max(super::QUIET_TRANSPORT);
+        (computation, constraint, interval)
+    }
+
     pub(super) fn for_native_pcm(state: &State) -> Option<Self> {
         let Some(Processor::Native(instance)) = state.processor.as_ref() else {
             return None;
         };
         let period = instance.deadline_period_on_worker()?;
-        let policy = CoreAudioWorkerTimeConstraint::for_current_thread(
-            period,
-            Duration::from_micros(300),
-            Duration::from_millis(4),
-        )
-        .ok()?;
+        let (computation, constraint, interval) = Self::policy_window(period);
+        let policy =
+            CoreAudioWorkerTimeConstraint::for_current_thread(period, computation, constraint)
+                .ok()?;
         Some(Self {
             policy,
-            interval: period * 2,
+            interval,
             live_until: None,
             active: false,
             refused: false,
@@ -126,5 +134,44 @@ mod tests {
             "an expired empty poll must restore priority"
         );
         assert!(deadline.live_until.is_none());
+    }
+
+    #[test]
+    fn policy_window_covers_concealment_gaps_and_respects_mach_bounds() {
+        for period in [
+            Duration::from_millis(4),
+            Duration::from_micros(5_333),
+            Duration::from_micros(5_805),
+            Duration::from_millis(8),
+        ] {
+            let (computation, constraint, interval) = Deadline::policy_window(period);
+            assert!(computation >= Duration::from_micros(500));
+            assert!(computation <= constraint / 2);
+            assert!(constraint <= period);
+            assert!(interval >= super::super::QUIET_TRANSPORT);
+            assert!(interval >= period * 8);
+            let mut deadline = Deadline {
+                policy: CoreAudioWorkerTimeConstraint::for_current_thread(
+                    period,
+                    computation,
+                    constraint,
+                )
+                .unwrap(),
+                interval,
+                live_until: None,
+                active: false,
+                refused: false,
+            };
+            deadline.enter();
+            assert!(deadline.active);
+            deadline.replied();
+            let expires = deadline.live_until.unwrap();
+            // A three-quantum transient gap (~17.4 ms at 44.1 kHz / 256) must
+            // keep deadline priority instead of demoting mid-stream.
+            deadline.after_empty_poll(expires - period * 5).unwrap();
+            assert!(deadline.active);
+            deadline.after_empty_poll(expires).unwrap();
+            assert!(!deadline.active);
+        }
     }
 }
