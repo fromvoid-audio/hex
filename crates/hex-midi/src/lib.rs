@@ -853,7 +853,7 @@ mod tests {
             [&[
                 0x90, 62, 110, // Note On 62
                 0xe0, 0x00, 0x60, // Bend +4096
-                0xd0, 64, // Pressure 64
+                0xd0, 64,   // Pressure 64
                 0xff, // System Reset
                 0xb0, 1, 0xf8, 42, // Mod wheel 42 with interleaved clock
             ][..]],
