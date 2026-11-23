@@ -22,6 +22,45 @@ use hex_project::{
     AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, DeviceAutomationTouchSpan,
 };
 
+/// Clamped dashed-baseline segments `(x0, width)` within `[lane_left, lane_left + lane_width]`.
+///
+/// Uses an integer dash index over the visible lane width so out-of-viewport sections or
+/// overflowing `viewport.end() == None` (`u64::MAX`) projections cannot loop unboundedly or
+/// stall at `f32` precision saturation.
+pub(super) fn dashed_baseline_segments(
+    section_start_x: f32,
+    section_end_x: f32,
+    lane_left: f32,
+    lane_width: f32,
+) -> impl Iterator<Item = (f32, f32)> {
+    const DASH_PERIOD: f32 = 9.0;
+    const DASH_LENGTH: f32 = 5.0;
+    let valid = section_start_x.is_finite()
+        && section_end_x.is_finite()
+        && lane_left.is_finite()
+        && lane_width.is_finite()
+        && lane_width > 0.0;
+    let (rel_start, rel_end, index_range) = if valid {
+        let rel_start = (section_start_x - lane_left).clamp(0.0, lane_width);
+        let rel_end = (section_end_x - lane_left).clamp(0.0, lane_width);
+        if rel_end > rel_start {
+            let start_idx = (rel_start / DASH_PERIOD).floor().max(0.0) as u32;
+            let end_idx = (rel_end / DASH_PERIOD).ceil().max(0.0) as u32;
+            (rel_start, rel_end, start_idx..end_idx)
+        } else {
+            (0.0, 0.0, 0..0)
+        }
+    } else {
+        (0.0, 0.0, 0..0)
+    };
+    index_range.filter_map(move |idx| {
+        let dash = idx as f32 * DASH_PERIOD;
+        let start = dash.max(rel_start);
+        let end = (dash + DASH_LENGTH).min(rel_end);
+        (end > start).then_some((lane_left + start, end - start))
+    })
+}
+
 /// Visit the visible half-open regions of a canonical device envelope in order.
 /// Each recorded span replaces the base only over its own frame interval.
 pub(super) fn visible_sections<'a>(
@@ -856,5 +895,45 @@ mod tests {
         assert_eq!(bipolar_paths.line.len(), 3);
         assert!((bipolar_paths.line[1].0 - 360.0).abs() < 1e-3);
         assert!((bipolar_paths.line[1].1 - 32.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn dashed_baseline_segments_clamps_overflowing_and_out_of_viewport_spans() {
+        // Simulates viewport.end() == None falling back to u64::MAX (projected x > 1e12).
+        let huge: Vec<_> = super::dashed_baseline_segments(-500.0, 1.0e12, 100.0, 90.0).collect();
+        assert_eq!(huge.len(), 10);
+        assert_eq!(huge[0], (100.0, 5.0));
+        assert_eq!(huge[9], (181.0, 5.0));
+        for &(x0, w) in &huge {
+            assert!(x0 >= 100.0 && x0 + w <= 190.0 && w > 0.0);
+        }
+
+        // Completely left or right of the lane emits nothing.
+        assert_eq!(
+            super::dashed_baseline_segments(-100.0, 50.0, 100.0, 90.0).count(),
+            0
+        );
+        assert_eq!(
+            super::dashed_baseline_segments(250.0, 400.0, 100.0, 90.0).count(),
+            0
+        );
+
+        // Non-finite or empty lane width emits nothing.
+        assert_eq!(
+            super::dashed_baseline_segments(0.0, f32::INFINITY, 100.0, 90.0).count(),
+            0
+        );
+        assert_eq!(
+            super::dashed_baseline_segments(f32::NAN, 150.0, 100.0, 90.0).count(),
+            0
+        );
+        assert_eq!(
+            super::dashed_baseline_segments(100.0, 150.0, 100.0, 0.0).count(),
+            0
+        );
+
+        // Partial interior section aligns to the 9 px grid and clips at section edges.
+        let partial: Vec<_> = super::dashed_baseline_segments(102.0, 115.0, 100.0, 90.0).collect();
+        assert_eq!(partial, vec![(102.0, 3.0), (109.0, 5.0)]);
     }
 }
