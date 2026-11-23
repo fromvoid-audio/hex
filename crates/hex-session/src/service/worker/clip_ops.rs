@@ -1200,13 +1200,31 @@ pub(super) fn handle<'a>(
         Request::TrackClipboard {
             action: TrackClipboardAction::Copy(tracks),
             ..
-        } => match session.project().capture_tracks(&tracks, false) {
-            Ok(captured) => {
-                track_clipboard = Some(Arc::new(captured));
-                status = Some("tracks copied".into());
+        } => {
+            let cancellation = RequestCancellation::new(
+                Arc::clone(&session.shutdown),
+                Arc::clone(&document_intent),
+                request_document_intent,
+            );
+            match plugin_state_save::capture_tracks_for_clipboard(
+                session.project(),
+                &tracks,
+                false,
+                hex_engine::AudioSourceContext {
+                    project_generation,
+                    editor_revision: revision,
+                },
+                &cancellation,
+                events.sampler_edit_audio(),
+                "track copy cancelled",
+            ) {
+                Ok(captured) => {
+                    track_clipboard = Some(Arc::new(captured));
+                    status = Some("tracks copied".into());
+                }
+                Err(reason) => error = Some(reason),
             }
-            Err(reason) => error = Some(reason.to_string()),
-        },
+        }
 
         Request::TrackClipboard { .. } => {
             error = Some("track clipboard request was not resolved".into())

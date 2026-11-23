@@ -600,3 +600,656 @@ fn bounce_capture_uses_the_live_receiver_and_projects_only_the_isolated_instrume
         "bounce cancelled"
     );
 }
+
+#[test]
+fn device_clipboard_capture_projects_live_vst3_state_across_all_owners_and_refuses_cleanly() {
+    use hex_project::{DeviceChainOwner, DeviceSelectionIds};
+
+    struct FilteredSink {
+        expected_owner: ProcessorChainOwner,
+        expected_device: u64,
+        fail: bool,
+        calls: usize,
+    }
+    impl WorkerAudioSink for FilteredSink {
+        fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
+            Ok(48_000)
+        }
+        fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
+        fn poll(&mut self) {}
+        fn close(&mut self) {}
+        fn capture_plugin_states(
+            &mut self,
+            input: PluginStateCaptureInput<'_>,
+        ) -> Result<Vec<PluginStateCapture>, String> {
+            self.calls += 1;
+            if self.fail {
+                return Err("controlled device capture refusal".into());
+            }
+            let mut result = Vec::new();
+            input.visit_plugin_devices(|owner, id, expected| {
+                assert_eq!((owner, id), (self.expected_owner, self.expected_device));
+                result.push(PluginStateCapture {
+                    owner,
+                    device_id: id,
+                    expected: expected.clone(),
+                    captured: state(b"live patch", b"live gui")
+                        .with_input_gain_millidb(0)
+                        .unwrap()
+                        .with_output_gain_millidb(0)
+                        .unwrap(),
+                });
+                Ok(())
+            })?;
+            assert_eq!(result.len(), 1);
+            Ok(result)
+        }
+    }
+
+    let project = fixture();
+    let original = project.clone();
+    let track = project.tracks()[0].id();
+    let track_effect = project.tracks()[0].devices()[0].id();
+    let midi = project.tracks()[1].id();
+    let midi_instrument = project.tracks()[1].instrument().unwrap().id();
+    let bus = project.return_tracks()[0].id();
+    let return_effect = project.return_tracks()[0].devices()[0].id();
+    let main_effect = project.main_devices()[0].id();
+
+    let cancellation = RequestCancellation::new(
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        0,
+    );
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 1,
+        editor_revision: 2,
+    };
+
+    for (owner, chain_owner, device_id) in [
+        (
+            DeviceChainOwner::Track(track),
+            ProcessorChainOwner::Track(track.value()),
+            track_effect,
+        ),
+        (
+            DeviceChainOwner::Track(midi),
+            ProcessorChainOwner::Track(midi.value()),
+            midi_instrument,
+        ),
+        (
+            DeviceChainOwner::Return(bus),
+            ProcessorChainOwner::Return(bus.value()),
+            return_effect,
+        ),
+        (
+            DeviceChainOwner::Main,
+            ProcessorChainOwner::Main,
+            main_effect,
+        ),
+    ] {
+        let selected = DeviceSelectionIds::new(&[device_id]).unwrap();
+        let mut sink = FilteredSink {
+            expected_owner: chain_owner,
+            expected_device: device_id.value(),
+            fail: false,
+            calls: 0,
+        };
+        let clipboard = capture_devices_for_clipboard(
+            &project,
+            owner,
+            &selected,
+            context,
+            &cancellation,
+            Some(&mut sink),
+            "device copy cancelled",
+        )
+        .unwrap();
+        assert_eq!(sink.calls, 1);
+        assert_eq!(project, original);
+
+        // Paste the clipboard into a clean target editor and verify live bytes + trims.
+        let mut target = Editor::new(project.clone(), 8).unwrap();
+        let paste_owner = if device_id == midi_instrument {
+            let Created::Track(dest_midi) = target
+                .execute(Command::AddMidiTrack {
+                    name: "dest".into(),
+                })
+                .unwrap()
+            else {
+                panic!("dest midi track");
+            };
+            DeviceChainOwner::Track(dest_midi)
+        } else {
+            owner
+        };
+        target
+            .execute(Command::PasteDevices {
+                clipboard: Arc::new(clipboard),
+                owner: paste_owner,
+                before: None,
+            })
+            .unwrap();
+        let pasted_device = match paste_owner {
+            DeviceChainOwner::Track(id) if device_id == midi_instrument => {
+                target.project().track(id).unwrap().instrument().unwrap()
+            }
+            DeviceChainOwner::Track(id) => target
+                .project()
+                .track(id)
+                .unwrap()
+                .devices()
+                .last()
+                .unwrap(),
+            DeviceChainOwner::Return(id) => target
+                .project()
+                .return_tracks()
+                .iter()
+                .find(|r| r.id() == id)
+                .unwrap()
+                .devices()
+                .last()
+                .unwrap(),
+            DeviceChainOwner::Main => target.project().main_devices().last().unwrap(),
+        };
+        let decoded = hex_plugin_state::decode(pasted_device.state()).unwrap();
+        assert_eq!(decoded.component, Some(&b"live patch"[..]));
+        assert_eq!(decoded.controller, Some(&b"live gui"[..]));
+        assert_eq!(pasted_device.state().input_gain_millidb(), -3000);
+        assert_eq!(pasted_device.state().output_gain_millidb(), 2000);
+
+        // Refusal propagates cleanly and preserves project.
+        sink.fail = true;
+        assert_eq!(
+            capture_devices_for_clipboard(
+                &project,
+                owner,
+                &selected,
+                context,
+                &cancellation,
+                Some(&mut sink),
+                "device cut cancelled",
+            )
+            .unwrap_err(),
+            "controlled device capture refusal"
+        );
+        assert_eq!(project, original);
+    }
+
+    // Cancellation returns the caller's message before invoking the sink.
+    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancelled =
+        RequestCancellation::new(shutdown, Arc::new(std::sync::atomic::AtomicU64::new(0)), 0);
+    let mut sink = FilteredSink {
+        expected_owner: ProcessorChainOwner::Main,
+        expected_device: main_effect.value(),
+        fail: false,
+        calls: 0,
+    };
+    assert_eq!(
+        capture_devices_for_clipboard(
+            &project,
+            DeviceChainOwner::Main,
+            &DeviceSelectionIds::new(&[main_effect]).unwrap(),
+            context,
+            &cancelled,
+            Some(&mut sink),
+            "device copy cancelled",
+        )
+        .unwrap_err(),
+        "device copy cancelled"
+    );
+    assert_eq!(sink.calls, 0);
+}
+
+#[test]
+fn clipboard_copy_cut_duplicate_preserve_live_vst3_state_and_keep_originals_on_capture_failure() {
+    use hex_project::{DeviceChainOwner, DeviceSelectionIds, TrackSelectionIds};
+
+    struct LiveStateSink {
+        fail: Arc<AtomicBool>,
+        next_audio_revision: u64,
+        latest_submission: Option<ResidentRuntimeLoop>,
+    }
+    impl WorkerAudioSink for LiveStateSink {
+        fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
+            Ok(48_000)
+        }
+        fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
+        fn poll(&mut self) {}
+        fn close(&mut self) {}
+        fn resident_publication_enabled(&self) -> bool {
+            true
+        }
+        fn resident_publication_readiness(&mut self) -> ResidentPublicationReadiness {
+            match self.latest_submission {
+                Some(submission) => ResidentPublicationReadiness::Applied {
+                    submission,
+                    publication_in_flight: false,
+                },
+                None => ResidentPublicationReadiness::Idle {
+                    output_identity: 1,
+                    applied_revision: 0,
+                    publication_in_flight: false,
+                },
+            }
+        }
+        fn publish_resident(
+            &mut self,
+            _playback: Playback,
+            _resources: Option<&hex_engine::native_device_resources::PreparedDeviceResources>,
+            _observation: Arc<hex_engine::PreparedPlaybackObservation>,
+            metadata: ResidentPublicationMetadata,
+            _policy: ResidentPublicationPolicy,
+            _metadata_limit: usize,
+            _admit: &mut dyn FnMut(
+                &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+            ) -> Result<(), String>,
+        ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+            self.next_audio_revision += 1;
+            let audio_revision = self.next_audio_revision;
+            self.latest_submission = Some(ResidentRuntimeLoop {
+                source_origin: ResidentSourceOrigin::Unknown,
+                output_identity: 1,
+                audio_revision,
+                source_context: Some(metadata.context),
+                section_loop: None,
+            });
+            Ok(ResidentPublicationAcceptance::Submitted {
+                output_identity: 1,
+                audio_revision,
+            })
+        }
+        fn prepare_resident_effects(
+            &mut self,
+            _input: ResidentEffectPreparation<'_>,
+            prepare: &mut dyn FnMut(
+                &hex_engine::AudioCandidateEffects<'_, '_>,
+            ) -> Result<PreparedRevision, hex_engine::Invalid>,
+        ) -> Result<Option<PreparedRevision>, String> {
+            hex_engine::AudioCandidateEffects::with_test_foreign_effect_program(
+                ProcessorChainOwner::Main,
+                u64::MAX,
+                hex_lattice_contract::ForeignProcessorBinding {
+                    root: 1,
+                    instance: 1,
+                    graph: 1,
+                    epoch: 1,
+                },
+                std::num::NonZeroU64::new(1).unwrap(),
+                0,
+                prepare,
+            )
+            .map(Some)
+            .map_err(|error| error.to_string())
+        }
+        fn capture_plugin_states(
+            &mut self,
+            input: PluginStateCaptureInput<'_>,
+        ) -> Result<Vec<PluginStateCapture>, String> {
+            if self.fail.load(Ordering::Acquire) {
+                return Err("controlled live vst3 capture refusal".into());
+            }
+            let mut result = Vec::new();
+            input.visit_plugin_devices(|owner, device_id, expected| {
+                result.push(PluginStateCapture {
+                    owner,
+                    device_id,
+                    expected: expected.clone(),
+                    captured: state(b"live edited patch", b"live edited gui")
+                        .with_input_gain_millidb(0)
+                        .unwrap()
+                        .with_output_gain_millidb(0)
+                        .unwrap(),
+                });
+                Ok(())
+            })?;
+            Ok(result)
+        }
+    }
+
+    fn next(service: &Service) -> Event {
+        match service.events.recv_timeout(crate::test_wait::HANG_BOUND) {
+            Ok(event) => event,
+            Err(error) => panic!("worker event absent: {error}"),
+        }
+    }
+    fn run(service: &Service, request: Request) -> Event {
+        service.submit(request).unwrap();
+        let event = next(service);
+        assert!(event.error.is_none(), "unexpected error: {:?}", event.error);
+        event
+    }
+    fn device_req(event: &Event, action: DeviceClipboardAction) -> Request {
+        Request::DeviceClipboard {
+            project_generation: 0,
+            revision: event.state.revision,
+            action,
+        }
+    }
+    fn track_req(event: &Event, action: TrackClipboardAction) -> Request {
+        Request::TrackClipboard {
+            project_generation: 0,
+            revision: event.state.revision,
+            action,
+        }
+    }
+    fn assert_live(device: &hex_project::Device) {
+        let decoded = hex_plugin_state::decode(device.state()).unwrap();
+        assert_eq!(decoded.component, Some(&b"live edited patch"[..]));
+        assert_eq!(decoded.controller, Some(&b"live edited gui"[..]));
+    }
+
+    let fail = Arc::new(AtomicBool::new(false));
+    let retained = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES * 2;
+    let service = Service::with_audio_sink_and_native_reservation(
+        32,
+        1_000_000,
+        None,
+        Box::new(LiveStateSink {
+            fail: Arc::clone(&fail),
+            next_audio_revision: 0,
+            latest_submission: None,
+        }),
+        crate::ResidentNativeReservation {
+            storage: hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 64,
+                root_rows: 64,
+                max_retained_bytes: retained,
+                max_construction_peak_bytes: retained
+                    + hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+            },
+            max_scan_frames: 1024,
+        },
+    )
+    .unwrap();
+    next(&service);
+
+    let initial = state(b"stale original", b"stale gui");
+    let e = run(
+        &service,
+        Request::Edit(Command::AddTrack {
+            name: "audio".into(),
+        }),
+    );
+    let audio_track = e.state.project.tracks()[0].id();
+    let e = run(
+        &service,
+        Request::Edit(Command::AddMidiTrack {
+            name: "midi".into(),
+        }),
+    );
+    let midi_track = e.state.project.tracks()[1].id();
+    let e = run(
+        &service,
+        Request::Edit(Command::AddMidiTrack {
+            name: "midi dest".into(),
+        }),
+    );
+    let midi_dest = e.state.project.tracks()[2].id();
+    let e = run(
+        &service,
+        Request::Edit(Command::AddReturnTrack {
+            name: "return".into(),
+        }),
+    );
+    let return_track = e.state.project.return_tracks()[0].id();
+
+    let e = run(
+        &service,
+        Request::Edit(Command::InsertDevice {
+            track: audio_track,
+            before: None,
+            state: initial.clone(),
+        }),
+    );
+    let track_effect = e.state.project.track(audio_track).unwrap().devices()[0].id();
+    let e = run(
+        &service,
+        Request::Edit(Command::InsertInstrument {
+            track: midi_track,
+            state: initial.clone(),
+        }),
+    );
+    let midi_instrument = e
+        .state
+        .project
+        .track(midi_track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let e = run(
+        &service,
+        Request::Edit(Command::InsertReturnDevice {
+            return_track,
+            before: None,
+            state: initial.clone(),
+        }),
+    );
+    let return_effect = e.state.project.return_tracks()[0].devices()[0].id();
+    let e = run(
+        &service,
+        Request::Edit(Command::InsertMainDevice {
+            before: None,
+            state: initial.clone(),
+        }),
+    );
+    let main_effect = e.state.project.main_devices()[0].id();
+
+    // 1. DeviceClipboardAction::Copy -> Paste across Track, Return, Main, and Instrument.
+    let e = run(
+        &service,
+        device_req(
+            &e,
+            DeviceClipboardAction::Copy {
+                owner: DeviceChainOwner::Track(audio_track),
+                selected: DeviceSelectionIds::new(&[track_effect]).unwrap(),
+            },
+        ),
+    );
+    let e = run(
+        &service,
+        device_req(
+            &e,
+            DeviceClipboardAction::Paste {
+                owner: DeviceChainOwner::Track(audio_track),
+                before: None,
+            },
+        ),
+    );
+    assert_live(&e.state.project.track(audio_track).unwrap().devices()[1]);
+
+    let e = run(
+        &service,
+        device_req(
+            &e,
+            DeviceClipboardAction::Copy {
+                owner: DeviceChainOwner::Return(return_track),
+                selected: DeviceSelectionIds::new(&[return_effect]).unwrap(),
+            },
+        ),
+    );
+    let e = run(
+        &service,
+        device_req(
+            &e,
+            DeviceClipboardAction::Paste {
+                owner: DeviceChainOwner::Return(return_track),
+                before: None,
+            },
+        ),
+    );
+    assert_live(&e.state.project.return_tracks()[0].devices()[1]);
+
+    let e = run(
+        &service,
+        device_req(
+            &e,
+            DeviceClipboardAction::Copy {
+                owner: DeviceChainOwner::Main,
+                selected: DeviceSelectionIds::new(&[main_effect]).unwrap(),
+            },
+        ),
+    );
+    let e = run(
+        &service,
+        device_req(
+            &e,
+            DeviceClipboardAction::Paste {
+                owner: DeviceChainOwner::Main,
+                before: None,
+            },
+        ),
+    );
+    assert_live(&e.state.project.main_devices()[1]);
+
+    let e = run(
+        &service,
+        device_req(
+            &e,
+            DeviceClipboardAction::Copy {
+                owner: DeviceChainOwner::Track(midi_track),
+                selected: DeviceSelectionIds::new(&[midi_instrument]).unwrap(),
+            },
+        ),
+    );
+    let e = run(
+        &service,
+        device_req(
+            &e,
+            DeviceClipboardAction::Paste {
+                owner: DeviceChainOwner::Track(midi_dest),
+                before: None,
+            },
+        ),
+    );
+    assert_live(
+        e.state
+            .project
+            .track(midi_dest)
+            .unwrap()
+            .instrument()
+            .unwrap(),
+    );
+
+    // 2. DeviceClipboardAction::Duplicate captures live state.
+    let e = run(
+        &service,
+        device_req(
+            &e,
+            DeviceClipboardAction::Duplicate {
+                source: DeviceChainOwner::Main,
+                selected: DeviceSelectionIds::new(&[main_effect]).unwrap(),
+                destination: DeviceChainOwner::Main,
+                before: None,
+            },
+        ),
+    );
+    assert_live(&e.state.project.main_devices()[2]);
+
+    // 3. DeviceClipboardAction::Cut failure preserves original device untouched.
+    fail.store(true, Ordering::Release);
+    service
+        .submit(device_req(
+            &e,
+            DeviceClipboardAction::Cut {
+                owner: DeviceChainOwner::Track(audio_track),
+                selected: DeviceSelectionIds::new(&[track_effect]).unwrap(),
+            },
+        ))
+        .unwrap();
+    let refused_cut = next(&service);
+    assert_eq!(
+        refused_cut.error.as_deref(),
+        Some("controlled live vst3 capture refusal")
+    );
+    assert_eq!(refused_cut.state.project, e.state.project);
+    fail.store(false, Ordering::Release);
+
+    // 4. DeviceClipboardAction::Cut -> Paste preserves live edited VST3 state.
+    let e = run(
+        &service,
+        device_req(
+            &refused_cut,
+            DeviceClipboardAction::Cut {
+                owner: DeviceChainOwner::Track(midi_track),
+                selected: DeviceSelectionIds::new(&[midi_instrument]).unwrap(),
+            },
+        ),
+    );
+    assert!(
+        e.state
+            .project
+            .track(midi_track)
+            .unwrap()
+            .instrument()
+            .is_none()
+    );
+    let e = run(
+        &service,
+        device_req(
+            &e,
+            DeviceClipboardAction::Paste {
+                owner: DeviceChainOwner::Track(midi_track),
+                before: None,
+            },
+        ),
+    );
+    assert_live(
+        e.state
+            .project
+            .track(midi_track)
+            .unwrap()
+            .instrument()
+            .unwrap(),
+    );
+
+    // 5. TrackClipboardAction::Copy -> Paste captures live VST3 state (effect + instrument).
+    let copy_tracks = TrackSelectionIds::new(&[audio_track, midi_track]).unwrap();
+    let e = run(
+        &service,
+        track_req(&e, TrackClipboardAction::Copy(copy_tracks)),
+    );
+    let track_count_before_paste = e.state.project.tracks().len();
+    let e = run(
+        &service,
+        track_req(&e, TrackClipboardAction::Paste { before: None }),
+    );
+    assert_eq!(e.state.project.tracks().len(), track_count_before_paste + 2);
+    assert_live(&e.state.project.tracks()[track_count_before_paste].devices()[0]);
+    assert_live(
+        e.state.project.tracks()[track_count_before_paste + 1]
+            .instrument()
+            .unwrap(),
+    );
+
+    // 6. TrackClipboardAction::Cut failure preserves original track untouched.
+    let cut_track = TrackSelectionIds::new(&[audio_track]).unwrap();
+    fail.store(true, Ordering::Release);
+    service
+        .submit(track_req(&e, TrackClipboardAction::Cut(cut_track.clone())))
+        .unwrap();
+    let refused_track_cut = next(&service);
+    assert_eq!(
+        refused_track_cut.error.as_deref(),
+        Some("controlled live vst3 capture refusal")
+    );
+    assert_eq!(refused_track_cut.state.project, e.state.project);
+    fail.store(false, Ordering::Release);
+
+    // 7. TrackClipboardAction::Cut -> Paste preserves live VST3 state.
+    let count_before_cut = refused_track_cut.state.project.tracks().len();
+    let e = run(
+        &service,
+        track_req(&refused_track_cut, TrackClipboardAction::Cut(cut_track)),
+    );
+    assert_eq!(e.state.project.tracks().len(), count_before_cut - 1);
+    let e = run(
+        &service,
+        track_req(&e, TrackClipboardAction::Paste { before: None }),
+    );
+    assert_eq!(e.state.project.tracks().len(), count_before_cut);
+    assert_live(&e.state.project.tracks().last().unwrap().devices()[0]);
+}
