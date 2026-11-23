@@ -1714,4 +1714,150 @@ fn undo_of_powered_off_main_and_return_vst3_routes_through_power_on_preparation(
     }
 }
 
+#[test]
+fn save_requests_defer_during_pending_device_insert_while_a_gesture_is_active() {
+    use crate::device_gesture::{GestureKey, GestureRequest, GestureTarget};
+    use crate::service::audio_sink::WorkerEvents;
+
+    // Unit-level contract: all four Save* variants defer when a gesture is active,
+    // and still serve immediately when no gesture is active.
+    let save_requests = [
+        Request::SaveCurrent,
+        Request::SaveNew(std::path::PathBuf::from("new.hex")),
+        Request::SaveProjectAs {
+            path: std::path::PathBuf::from("as.hex"),
+            extension_added: false,
+        },
+        Request::SaveCurrentWithFormatUpgrade {
+            project_generation: 0,
+            path: std::path::PathBuf::from("cur.hex"),
+        },
+    ];
+    for request in &save_requests {
+        assert!(
+            WorkerEvents::served_during_device_insert(request, false),
+            "save without active gesture must remain servable"
+        );
+        assert!(
+            !WorkerEvents::served_during_device_insert(request, true),
+            "save with active gesture must defer behind pending_device_insert"
+        );
+    }
+
+    // End-to-end regression: SaveCurrent arriving while pending_device_insert is
+    // pending AND a device_gesture is active must defer behind the staged edit,
+    // never committing the gesture underneath it (no ProjectCommitFailed desync).
+    let (service, fixture, _initial) = service();
+    let utility = hex_engine::default_native_device_state(
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(Command::InsertMainDevice {
+            before: None,
+            state: utility.clone(),
+        }))
+        .unwrap();
+    let first_pending = receive(&service);
+    assert!(!first_pending.request_complete);
+    let inserted = install_candidate(&service, &fixture);
+    let Some(Created::Device(first_device)) = inserted.created else {
+        panic!("expected first utility device");
+    };
+
+    // Save once so SaveCurrent has a backing file path.
+    let temp_dir =
+        std::env::temp_dir().join(format!("hex-save-during-insert-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let save_path = temp_dir.join("project.hex");
+    let _ = std::fs::remove_file(&save_path);
+    service.submit(Request::SaveNew(save_path.clone())).unwrap();
+    let saved_initial = receive(&service);
+    assert!(saved_initial.save_complete);
+
+    // Start an active parameter gesture on first_device (uncommitted!).
+    let gain_param = hex_lattice_contract::ParameterId::from_static(1);
+    let key = GestureKey {
+        generation: 0,
+        token: 1,
+    };
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target: GestureTarget::DeviceParameter {
+                device: first_device,
+                parameter: gain_param,
+            },
+        }))
+        .unwrap();
+    let began = receive(&service);
+    assert!(began.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
+
+    let edited_gain = hex_lattice_contract::ParameterValue::Float(6.0);
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Change {
+            key,
+            sequence: 1,
+            value: edited_gain,
+        }))
+        .unwrap();
+    let changed = receive(&service);
+    assert!(changed.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
+
+    // Real Resident audio reports Unknown source_origin for in-place parameter
+    // gestures (e.g. VST3 or non-graph-replacing previews), allowing a staged
+    // Request::Edit to begin while device_gesture remains active.
+    if let Some(active) = fixture.lock().unwrap().active.as_mut() {
+        active.source_origin = ResidentSourceOrigin::Unknown;
+    }
+
+    // Stage a second device insert while the device_gesture is STILL active.
+    service
+        .submit(Request::Edit(Command::InsertMainDevice {
+            before: None,
+            state: utility,
+        }))
+        .unwrap();
+    let pending_insert = receive(&service);
+    assert!(!pending_insert.request_complete);
+    assert_eq!(pending_insert.state.project.main_devices().len(), 1);
+
+    // Trigger SaveCurrent while pending_device_insert is STILL awaiting audio!
+    service.submit(Request::SaveCurrent).unwrap();
+    std::thread::sleep(Duration::from_millis(30));
+    assert!(
+        service.events.try_recv().is_err(),
+        "SaveCurrent must stay deferred while pending_device_insert and device_gesture are active"
+    );
+
+    // Now the audio callback installs the staged device insert: must commit
+    // with DeviceInsertOutcome::Installed (never ProjectCommitFailed!).
+    let committed = install_candidate(&service, &fixture);
+    assert_eq!(
+        committed
+            .device_insert_complete
+            .as_ref()
+            .map(|completion| completion.outcome),
+        Some(DeviceInsertOutcome::Installed)
+    );
+    assert_eq!(committed.state.project.main_devices().len(), 2);
+
+    // Immediately after commit, the deferred SaveCurrent finalizes the active
+    // gesture and saves the consistent project containing BOTH edits.
+    let saved = receive(&service);
+    assert!(saved.save_complete);
+    assert_eq!(saved.state.project.main_devices().len(), 2);
+    let loaded = hex_storage::load(&save_path).unwrap();
+    assert_eq!(loaded.main_devices().len(), 2);
+    let saved_gain = hex_engine::native_device_parameter(
+        loaded.device(first_device).unwrap().state(),
+        gain_param,
+    )
+    .unwrap();
+    assert_eq!(saved_gain, edited_gain);
+
+    let _ = std::fs::remove_file(&save_path);
+    let _ = std::fs::remove_dir(&temp_dir);
+}
+
 mod track_routes;

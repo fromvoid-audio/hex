@@ -2301,8 +2301,14 @@ impl WorkerEvents {
     /// Requests that observe or save the committed predecessor without mutating
     /// project, history, transport or graph state, and without cancelling a
     /// pending device-insert confirmation. Window-close preflights stay out of
-    /// this set so closing cancels an unanswered confirmation.
-    fn served_during_device_insert(request: &Request) -> bool {
+    /// this set so closing cancels an unanswered confirmation. When a parameter
+    /// or tuning gesture is active, gesture-finalizing requests (`Save*`) must
+    /// defer behind `pending_device_insert` so they never mutate canonical
+    /// history underneath the staged graph edit.
+    pub(super) fn served_during_device_insert(request: &Request, gesture_active: bool) -> bool {
+        if gesture_active && request.finalizes_parameter_gesture() {
+            return false;
+        }
         matches!(
             request,
             Request::SaveNew(_)
@@ -2327,12 +2333,14 @@ impl WorkerEvents {
         bounded: bool,
         plugin_effect: Option<&plugin_effect::Pending>,
         device_gesture_active: bool,
+        tuning_gesture_active: bool,
         device_insert: Option<&super::resident_audio::device_insert::Pending>,
         stopped_restore: Option<hex_engine::AudioSourceContext>,
         context: hex_engine::AudioSourceContext,
         mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>, bool) -> ControlPoll,
     ) -> Option<QueuedRequest> {
         if let Some(pending) = device_insert {
+            let gesture_active = device_gesture_active || tuning_gesture_active;
             loop {
                 let cancel = self.shutdown.load(Ordering::Acquire)
                     || pending.document_intent != document_intent.load(Ordering::Acquire);
@@ -2371,7 +2379,9 @@ impl WorkerEvents {
                     ));
                 }
                 match requests.recv_timeout(BUSY_POLL_INTERVAL) {
-                    Ok(queued) if Self::served_during_device_insert(&queued.request) => {
+                    Ok(queued)
+                        if Self::served_during_device_insert(&queued.request, gesture_active) =>
+                    {
                         return Some(queued);
                     }
                     Ok(queued) => {
