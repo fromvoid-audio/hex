@@ -989,7 +989,6 @@ fn dropping_service_detaches_an_active_export_worker() {
                 data_bytes: u32::try_from(frames * 4).unwrap_or(u32::MAX),
                 clipped_samples: 0,
                 recovery_path: None,
-                stale_temporaries: Default::default(),
             })
         })
     };

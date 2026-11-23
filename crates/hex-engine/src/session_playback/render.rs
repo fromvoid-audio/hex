@@ -2108,7 +2108,6 @@ impl SessionPlayback {
                         if release.location.tail_group().is_none() {
                             render_release_raw(
                                 release,
-                                table,
                                 self.revision.arrangement().shared_contexts(),
                                 &self.retained_contexts,
                                 &self.analytic_continuations,
@@ -2312,7 +2311,6 @@ impl SessionPlayback {
                             }
                             render_release_raw(
                                 release,
-                                table,
                                 self.revision.arrangement().shared_contexts(),
                                 &self.retained_contexts,
                                 &self.analytic_continuations,
@@ -2841,7 +2839,6 @@ impl SessionPlayback {
             for release in &self.release_scratch[group_start..tail_cursor] {
                 render_release_raw(
                     release,
-                    table,
                     self.revision.arrangement().shared_contexts(),
                     &self.retained_contexts,
                     &self.analytic_continuations,

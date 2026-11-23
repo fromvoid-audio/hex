@@ -423,40 +423,8 @@ fn run_checked(command: &mut Command, timeout: Duration) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-fn current_uid() -> io::Result<u32> {
-    let mut child = Command::new("/usr/bin/id")
-        .arg("-u")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        if let Some(status) = child.try_wait()? {
-            if !status.success() {
-                return Err(invalid("cannot identify update custody owner"));
-            }
-            let mut text = String::new();
-            child
-                .stdout
-                .take()
-                .ok_or_else(|| invalid("cannot identify update custody owner"))?
-                .take(64)
-                .read_to_string(&mut text)?;
-            return text
-                .trim()
-                .parse()
-                .map_err(|_| invalid("cannot identify update custody owner"));
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "update custody owner check timed out",
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+fn current_uid() -> u32 {
+    nix::unistd::geteuid().as_raw()
 }
 
 fn receipt_paths(target: &Path) -> io::Result<(PathBuf, PathBuf)> {
@@ -574,7 +542,7 @@ pub(super) fn prepare(target: &Path, action: Action, selected: &str) -> io::Resu
     // The signed copy is independently verified before any of its code runs.
     let source = target.join("Contents/Helpers/hex-update.app");
     plain_path(&source)?;
-    let uid = current_uid()?;
+    let uid = current_uid();
     let root = parent.join(".hex-update-runtime");
     private_directory(&root, uid)?;
     let mut random = [0_u8; 16];

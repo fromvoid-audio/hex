@@ -1326,7 +1326,6 @@ impl SessionPlayback {
                             {
                                 render_release_raw(
                                     release,
-                                    self.revision.session().sine_table(),
                                     self.revision.arrangement().shared_contexts(),
                                     &self.retained_contexts,
                                     &self.analytic_continuations,

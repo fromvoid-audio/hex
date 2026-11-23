@@ -1735,173 +1735,7 @@ impl DocumentV8 {
     }
 }
 
-impl DocumentV10 {
-    #[allow(dead_code)] // retained for schema-10/12 fixture construction
-    fn from_snapshot(snapshot: Snapshot) -> Result<Self, StorageError> {
-        let assets = snapshot
-            .assets
-            .into_iter()
-            .map(|asset| {
-                Ok(AssetV2 {
-                    id: asset.id,
-                    path: path_to_string(asset.path)?,
-                    source_sample_rate: asset.source_sample_rate,
-                    source_frames: asset.source_frames,
-                    playback_frames: asset.playback_frames,
-                    conversion_version: asset.conversion_version,
-                })
-            })
-            .collect::<Result<Vec<_>, StorageError>>()?;
-        let tracks = snapshot
-            .tracks
-            .into_iter()
-            .map(|track| {
-                let content = match track.content {
-                    TrackContentSnapshot::Audio(clips) => ContentV10::Audio {
-                        clips: clips.into_iter().map(clip_v7_from_snapshot).collect(),
-                    },
-                    TrackContentSnapshot::Instrument(clips) => ContentV10::Instrument {
-                        clips: clips.into_iter().map(midi_v10_from_snapshot).collect(),
-                    },
-                    TrackContentSnapshot::Hybrid {
-                        audio_clips,
-                        midi_clips,
-                    } => match (audio_clips.is_empty(), midi_clips.is_empty()) {
-                        (false, true) | (true, true) => ContentV10::Audio {
-                            clips: audio_clips.into_iter().map(clip_v7_from_snapshot).collect(),
-                        },
-                        (true, false) => ContentV10::Instrument {
-                            clips: midi_clips.into_iter().map(midi_v10_from_snapshot).collect(),
-                        },
-                        (false, false) => {
-                            return Err(StorageError::Invalid(
-                                "schema 10 cannot encode mixed audio and midi track content",
-                            ));
-                        }
-                    },
-                };
-                Ok(TrackV10 {
-                    id: track.id,
-                    name: track.name,
-                    gain: track.gain,
-                    balance: track.balance,
-                    muted: track.muted,
-                    soloed: track.soloed,
-                    content,
-                })
-            })
-            .collect::<Result<Vec<_>, StorageError>>()?;
-        Ok(Self {
-            format: "hex-project".into(),
-            version: 10,
-            sample_rate: snapshot.sample_rate,
-            next_id: snapshot.next_id,
-            assets,
-            tracks,
-            loop_region: snapshot.loop_region.map(|r| LoopRegionDto {
-                start: r.start(),
-                end: r.end(),
-                enabled: r.enabled(),
-            }),
-            master_gain: snapshot.master_gain,
-            tempo_points: snapshot
-                .tempo_points
-                .into_iter()
-                .map(|p| TempoPointDto {
-                    beat_raw: p.beat().raw(),
-                    micro_bpm: p.tempo().micro_bpm(),
-                })
-                .collect(),
-            meter_points: snapshot
-                .meter_points
-                .into_iter()
-                .map(|p| MeterPointDto {
-                    beat_raw: p.beat().raw(),
-                    numerator: p.meter().numerator(),
-                    denominator: p.meter().denominator(),
-                })
-                .collect(),
-        })
-    }
-}
-
 impl DocumentV12 {
-    #[allow(dead_code)] // retained for legacy schema-12 fixture construction
-    pub(crate) fn from_project(project: &Project) -> Result<Self, StorageError> {
-        let mut snapshot = project.snapshot();
-        let session_snapshot = std::mem::take(&mut snapshot.session);
-        let base = DocumentV10::from_snapshot(snapshot)?;
-        let cells = session_snapshot
-            .cells
-            .into_iter()
-            .map(|cell| SessionCellDtoV12 {
-                track: cell.track,
-                scene: cell.scene,
-                content: match cell.content {
-                    SessionCellContentSnapshot::Stop => SessionContentDtoV12::Stop,
-                    SessionCellContentSnapshot::Midi(clip) => SessionContentDtoV12::Midi {
-                        clip: SessionMidiClipDtoV11 {
-                            id: clip.id,
-                            name: clip.name,
-                            source: MidiSourceDtoV11 {
-                                source_length_raw: clip.source.source_length_raw,
-                                source_start_raw: clip.source.source_start_raw,
-                                loop_start_raw: clip.source.loop_start_raw,
-                                loop_end_raw: clip.source.loop_end_raw,
-                                looping: clip.source.looping,
-                                notes: clip
-                                    .source
-                                    .notes
-                                    .into_iter()
-                                    .map(|note| MidiNoteDto {
-                                        id: note.id,
-                                        start_raw: note.start_raw,
-                                        duration_raw: note.duration_raw,
-                                        pitch: note.pitch,
-                                        channel: note.channel,
-                                        velocity: note.velocity,
-                                    })
-                                    .collect(),
-                            },
-                        },
-                    },
-                    SessionCellContentSnapshot::Audio(clip) => SessionContentDtoV12::Audio {
-                        clip: SessionAudioClipDtoV12 {
-                            id: clip.id,
-                            name: clip.name,
-                            asset: clip.asset,
-                            source_start: clip.source_start,
-                            source_end: clip.source_end,
-                        },
-                    },
-                },
-            })
-            .collect();
-        Ok(Self {
-            format: base.format,
-            version: 12,
-            sample_rate: base.sample_rate,
-            next_id: base.next_id,
-            assets: base.assets,
-            tracks: base.tracks,
-            loop_region: base.loop_region,
-            master_gain: base.master_gain,
-            tempo_points: base.tempo_points,
-            meter_points: base.meter_points,
-            session: SessionDtoV12 {
-                scenes: session_snapshot
-                    .scenes
-                    .into_iter()
-                    .map(|scene| SceneDtoV11 {
-                        id: scene.id,
-                        name: scene.name,
-                    })
-                    .collect(),
-                cells,
-            },
-        })
-    }
-
     pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         let doc: Self = serde_json::from_slice(bytes)?;
         if doc.format != "hex-project" || doc.version != 12 {
@@ -1921,8 +1755,7 @@ impl DocumentV12 {
             tempo_points: doc.tempo_points,
             meter_points: doc.meter_points,
         };
-        let legacy_bytes = serde_json::to_vec(&v10)?;
-        let mut snapshot = DocumentV10::decode(&legacy_bytes)?.snapshot();
+        let mut snapshot = v10.into_project()?.snapshot();
         snapshot.session = SessionSnapshot {
             scenes: doc
                 .session
@@ -2345,8 +2178,7 @@ impl DocumentV11 {
             tempo_points,
             meter_points,
         };
-        let legacy_bytes = serde_json::to_vec(&v10)?;
-        let mut snapshot = DocumentV10::decode(&legacy_bytes)?.snapshot();
+        let mut snapshot = v10.into_project()?.snapshot();
         snapshot.session = SessionSnapshot {
             scenes: session
                 .scenes
@@ -2413,146 +2245,152 @@ impl DocumentV10 {
             ));
         }
         match header.version {
-            10 => {
-                let doc: Self = serde_json::from_slice(bytes)?;
-                let loop_region = doc
-                    .loop_region
-                    .map(|r| {
-                        hex_project::LoopRegion::new(r.start, r.end, r.enabled)
-                            .map_err(|e| StorageError::Invalid(e.0))
-                    })
-                    .transpose()?;
-                let tempo_points = doc
-                    .tempo_points
-                    .into_iter()
-                    .map(|p| {
-                        Ok(TempoPoint::new(
-                            BeatTime::from_raw(p.beat_raw),
-                            Tempo::new(p.micro_bpm).map_err(|e| StorageError::Invalid(e.0))?,
-                        ))
-                    })
-                    .collect::<Result<Vec<_>, StorageError>>()?;
-                let meter_points = doc
-                    .meter_points
-                    .into_iter()
-                    .map(|p| {
-                        Ok(MeterPoint::new(
-                            BeatTime::from_raw(p.beat_raw),
-                            Meter::new(p.numerator, p.denominator)
-                                .map_err(|e| StorageError::Invalid(e.0))?,
-                        ))
-                    })
-                    .collect::<Result<Vec<_>, StorageError>>()?;
-                let tracks = doc
-                    .tracks
-                    .into_iter()
-                    .map(|t| {
-                        let content = match t.content {
-                            ContentV10::Audio { clips } => {
-                                TrackContentSnapshot::Audio(clips_v7_into_snapshot(clips)?)
-                            }
-                            ContentV10::Instrument { clips } => TrackContentSnapshot::Instrument(
-                                clips
-                                    .into_iter()
-                                    .map(|c| MidiClipSnapshot {
-                                        content_view: None,
-                                        active: true,
-                                        playback_offset_raw: 0,
-                                        one_shot_boundary:
-                                            hex_project::MidiOneShotBoundary::SourceEnd,
-                                        volume: hex_project::MidiClipVolume::default(),
-                                        name: "clip".into(),
-                                        flavor: hex_project::ClipFlavor::default(),
-                                        id: c.id,
-                                        start_raw: c.start_raw,
-                                        length_raw: c.length_raw,
-                                        source_length_raw: c.source_length_raw,
-                                        source_start_raw: c.source_start_raw,
-                                        loop_start_raw: c.loop_start_raw,
-                                        loop_end_raw: c.loop_end_raw,
-                                        looping: c.looping,
-                                        notes: c
-                                            .notes
-                                            .into_iter()
-                                            .map(|n| MidiNoteSnapshot {
-                                                active: true,
-                                                id: n.id,
-                                                start_raw: n.start_raw,
-                                                duration_raw: n.duration_raw,
-                                                pitch: n.pitch,
-                                                channel: n.channel,
-                                                velocity: n.velocity,
-                                            })
-                                            .collect(),
-                                    })
-                                    .collect(),
-                            ),
-                        };
-                        Ok(TrackSnapshot {
-                            group_output_mutes: Vec::new(),
-                            tags: Vec::new(),
-                            kind: hex_project::TrackKind::Ordinary,
-                            parent_group: None,
-                            color: hex_project::ElementColor::default(),
-                            gain_envelope: Vec::new(),
-                            gain_touch_spans: Vec::new(),
-                            gain_touch_epoch: 0,
-                            id: t.id,
-                            name: t.name,
-                            gain: t.gain,
-                            balance: t.balance,
-                            muted: t.muted,
-                            soloed: t.soloed,
-                            devices: Vec::new(),
-                            instrument: None,
-                            instrument_position: None,
-                            content,
-                            sends: Vec::new(),
-                        })
-                    })
-                    .collect::<Result<Vec<_>, StorageError>>()?;
-                let snapshot = Snapshot {
-                    automatic_track_names: Vec::new(),
-                    retained_source_paths: Vec::new(),
-                    aliases: Default::default(),
-                    native_sources: Vec::new(),
-                    arrangement_sections: Vec::new(),
-                    arrangement_locators: Vec::new(),
-                    main_devices: Vec::new(),
-                    tuning: Default::default(),
-                    return_feeds: Vec::new(),
-                    audio_feeds: Vec::new(),
-                    midi_routes: Vec::new(),
-                    sidechains: Vec::new(),
-                    import_provenance: None,
-                    sample_rate: doc.sample_rate,
-                    sample_rate_mode: Default::default(),
-                    next_id: doc.next_id,
-                    assets: doc
-                        .assets
-                        .into_iter()
-                        .map(|a| AssetSnapshot {
-                            original_source: None,
-                            id: a.id,
-                            path: a.path.into(),
-                            source_sample_rate: a.source_sample_rate,
-                            source_frames: a.source_frames,
-                            playback_frames: a.playback_frames,
-                            conversion_version: a.conversion_version,
-                        })
-                        .collect(),
-                    tracks,
-                    session: SessionSnapshot::default(),
-                    loop_region,
-                    master_gain: doc.master_gain,
-                    tempo_points,
-                    meter_points,
-                    return_tracks: Vec::new(),
-                };
-                Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
-            }
+            10 => serde_json::from_slice::<Self>(bytes)?.into_project(),
             _ => DocumentV9::decode(bytes),
         }
+    }
+
+    pub(crate) fn into_project(self) -> Result<Project, StorageError> {
+        let doc = self;
+        if doc.format != "hex-project" || doc.version != 10 {
+            return Err(StorageError::Invalid(
+                "unsupported project format or version",
+            ));
+        }
+        let loop_region = doc
+            .loop_region
+            .map(|r| {
+                hex_project::LoopRegion::new(r.start, r.end, r.enabled)
+                    .map_err(|e| StorageError::Invalid(e.0))
+            })
+            .transpose()?;
+        let tempo_points = doc
+            .tempo_points
+            .into_iter()
+            .map(|p| {
+                Ok(TempoPoint::new(
+                    BeatTime::from_raw(p.beat_raw),
+                    Tempo::new(p.micro_bpm).map_err(|e| StorageError::Invalid(e.0))?,
+                ))
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+        let meter_points = doc
+            .meter_points
+            .into_iter()
+            .map(|p| {
+                Ok(MeterPoint::new(
+                    BeatTime::from_raw(p.beat_raw),
+                    Meter::new(p.numerator, p.denominator)
+                        .map_err(|e| StorageError::Invalid(e.0))?,
+                ))
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+        let tracks = doc
+            .tracks
+            .into_iter()
+            .map(|t| {
+                let content = match t.content {
+                    ContentV10::Audio { clips } => {
+                        TrackContentSnapshot::Audio(clips_v7_into_snapshot(clips)?)
+                    }
+                    ContentV10::Instrument { clips } => TrackContentSnapshot::Instrument(
+                        clips
+                            .into_iter()
+                            .map(|c| MidiClipSnapshot {
+                                content_view: None,
+                                active: true,
+                                playback_offset_raw: 0,
+                                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+                                volume: hex_project::MidiClipVolume::default(),
+                                name: "clip".into(),
+                                flavor: hex_project::ClipFlavor::default(),
+                                id: c.id,
+                                start_raw: c.start_raw,
+                                length_raw: c.length_raw,
+                                source_length_raw: c.source_length_raw,
+                                source_start_raw: c.source_start_raw,
+                                loop_start_raw: c.loop_start_raw,
+                                loop_end_raw: c.loop_end_raw,
+                                looping: c.looping,
+                                notes: c
+                                    .notes
+                                    .into_iter()
+                                    .map(|n| MidiNoteSnapshot {
+                                        active: true,
+                                        id: n.id,
+                                        start_raw: n.start_raw,
+                                        duration_raw: n.duration_raw,
+                                        pitch: n.pitch,
+                                        channel: n.channel,
+                                        velocity: n.velocity,
+                                    })
+                                    .collect(),
+                            })
+                            .collect(),
+                    ),
+                };
+                Ok(TrackSnapshot {
+                    group_output_mutes: Vec::new(),
+                    tags: Vec::new(),
+                    kind: hex_project::TrackKind::Ordinary,
+                    parent_group: None,
+                    color: hex_project::ElementColor::default(),
+                    gain_envelope: Vec::new(),
+                    gain_touch_spans: Vec::new(),
+                    gain_touch_epoch: 0,
+                    id: t.id,
+                    name: t.name,
+                    gain: t.gain,
+                    balance: t.balance,
+                    muted: t.muted,
+                    soloed: t.soloed,
+                    devices: Vec::new(),
+                    instrument: None,
+                    instrument_position: None,
+                    content,
+                    sends: Vec::new(),
+                })
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+        let snapshot = Snapshot {
+            automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
+            aliases: Default::default(),
+            native_sources: Vec::new(),
+            arrangement_sections: Vec::new(),
+            arrangement_locators: Vec::new(),
+            main_devices: Vec::new(),
+            tuning: Default::default(),
+            return_feeds: Vec::new(),
+            audio_feeds: Vec::new(),
+            midi_routes: Vec::new(),
+            sidechains: Vec::new(),
+            import_provenance: None,
+            sample_rate: doc.sample_rate,
+            sample_rate_mode: Default::default(),
+            next_id: doc.next_id,
+            assets: doc
+                .assets
+                .into_iter()
+                .map(|a| AssetSnapshot {
+                    original_source: None,
+                    id: a.id,
+                    path: a.path.into(),
+                    source_sample_rate: a.source_sample_rate,
+                    source_frames: a.source_frames,
+                    playback_frames: a.playback_frames,
+                    conversion_version: a.conversion_version,
+                })
+                .collect(),
+            tracks,
+            session: SessionSnapshot::default(),
+            loop_region,
+            master_gain: doc.master_gain,
+            tempo_points,
+            meter_points,
+            return_tracks: Vec::new(),
+        };
+        Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
     }
 }
 

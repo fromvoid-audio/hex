@@ -37,7 +37,7 @@ hex-preferences = { path = "../hex-preferences" }
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "macos-blade"] }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "=0.31.3", features = ["signal", "process"] }
+nix = { version = "=0.31.3", features = ["signal", "process", "user"] }
 
 [dev-dependencies]
 hex-engine = { path = "../hex-engine", features = ["instrument-test-support"] }

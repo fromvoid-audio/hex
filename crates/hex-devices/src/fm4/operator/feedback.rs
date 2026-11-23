@@ -43,6 +43,16 @@ impl PreparedOperatorConfiguration {
     }
 }
 
+/// Immutable voice state snapshot needed to seed a filter-equipped operator voice.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct FilterSeed {
+    pub(crate) note: PreparedOperatorNote,
+    pub(crate) age: u64,
+    pub(crate) gate: Option<u64>,
+    pub(crate) previous: [f64; OPERATORS],
+    pub(crate) feedback: [f64; OPERATORS],
+}
+
 impl PreparedOperatorFeedbackVoice {
     pub(crate) fn harmonic_snapshot(&self) -> (PreparedOperatorNote, u64, Option<u64>, [f64; 4]) {
         (
@@ -53,18 +63,15 @@ impl PreparedOperatorFeedbackVoice {
         )
     }
 
-    /// Current note-relative frame; advances once after each successful sample.
-    #[allow(clippy::type_complexity)]
-    pub(crate) fn filter_seed(
-        &self,
-    ) -> Option<(PreparedOperatorNote, u64, Option<u64>, [f64; 4], [f64; 4])> {
-        Some((
-            self.note,
-            self.age_frames,
-            self.gate_frame,
-            self.previous_outputs,
-            self.feedback_turns,
-        ))
+    /// Snapshot note, age, gate, recurrence outputs, and feedback turns for filter handoff.
+    pub(crate) const fn filter_seed(&self) -> FilterSeed {
+        FilterSeed {
+            note: self.note,
+            age: self.age_frames,
+            gate: self.gate_frame,
+            previous: self.previous_outputs,
+            feedback: self.feedback_turns,
+        }
     }
     /// Current note-relative frame; advances once after each successful sample.
     pub const fn age_frames(&self) -> u64 {

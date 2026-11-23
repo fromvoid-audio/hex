@@ -75,7 +75,6 @@ pub use controlled::{
     render_prepared_with_policy,
 };
 pub use publication::{OverwriteConsent, Publication};
-pub use stale_temporary::StaleTemporaries;
 pub use stems::{Stem, render_stems_new, render_stems_new_with_device_resources};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -90,8 +89,6 @@ pub struct ExportReport {
     pub clipped_samples: u64,
     /// The displaced file retained after confirmed replacement, if any.
     pub recovery_path: Option<PathBuf>,
-    /// Historical cleanup counts; automatic stale-file cleanup is suspended.
-    pub stale_temporaries: StaleTemporaries,
 }
 
 #[derive(Debug)]
@@ -493,7 +490,6 @@ fn publish_encoded<R: BlockRenderer>(
     }
     // A matching name and an available advisory lock do not establish file
     // ownership. Retain unclaimed files, including possible recovery copies.
-    let stale_temporaries = StaleTemporaries::default();
     let (file, temporary_path) = create_temporary(path)?;
     // When available, keep this lock until return for older cooperating sweeps.
     let _ownership = stale_temporary::hold(&file);
@@ -590,7 +586,6 @@ fn publish_encoded<R: BlockRenderer>(
         data_bytes,
         clipped_samples,
         recovery_path,
-        stale_temporaries,
     })
 }
 
@@ -989,14 +984,7 @@ mod tests {
         ));
         fs::write(&recovery, b"displaced recovery data").unwrap();
         let path = dir.0.join("swept.wav");
-        let report = render_new(&path, &project(vec![[0.5, -0.5]; 2], 1.0), 0, 2).unwrap();
-        assert_eq!(
-            report.stale_temporaries,
-            StaleTemporaries {
-                removed: 0,
-                failed: 0
-            }
-        );
+        let _report = render_new(&path, &project(vec![[0.5, -0.5]; 2], 1.0), 0, 2).unwrap();
         assert_eq!(fs::read(&abandoned).unwrap(), b"interrupted render");
         assert_eq!(fs::read(&recovery).unwrap(), b"displaced recovery data");
         assert!(path.exists());

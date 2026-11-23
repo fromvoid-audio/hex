@@ -769,6 +769,7 @@ pub(super) fn run_worker(
             }
         };
     }
+    let worker_diagnostics = events.diagnostics();
     'requests: while let Some(queued) = events.next_request_with_control_poll(
         &requests,
         &document_intent,
@@ -843,6 +844,7 @@ pub(super) fn run_worker(
                             resident_seek.as_ref(),
                             None,
                         ),
+                        Some(worker_diagnostics.as_ref()),
                         available,
                     );
                     let pause_snapshot = resident_snapshot.as_ref().filter(|snapshot| {

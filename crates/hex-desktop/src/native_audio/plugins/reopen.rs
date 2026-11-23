@@ -279,7 +279,15 @@ impl Plugins {
                     {
                         observed.restore_refused = true;
                     }
-                    let _ = error;
+                    if let Some(log) = &self.diagnostics {
+                        let _ = log.record_typed(
+                            hex_diagnostics::Level::Warn,
+                            hex_diagnostics::Category::Audio,
+                            &format!(
+                                "vst3_reopen v=1 stage=restore_refused binding={binding:?} reason={error}"
+                            ),
+                        );
+                    }
                     source.retiring = true;
                     restore.current = None;
                     restore.next += 1;

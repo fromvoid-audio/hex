@@ -969,6 +969,7 @@ impl Lane {
         preview: &mut Option<resident_preview::Preview>,
         sink: &mut dyn WorkerAudioSink,
         admission: sampler_export::Admission<'_>,
+        diagnostics: Option<&super::diagnostics::Hooks>,
         available: bool,
     ) -> bool {
         let desired = mailbox.lock().intent.clone();
@@ -1018,7 +1019,12 @@ impl Lane {
         }
         if restore {
             self.next_attempt = Some(Instant::now() + RETRY_INTERVAL);
-            let _ = resident_preview::restore(session, context, current, preview, sink, admission);
+            if let Err(error) =
+                resident_preview::restore(session, context, current, preview, sink, admission)
+                && let Some(diagnostics) = diagnostics
+            {
+                diagnostics.record_clip_audition_restore_failure(context, &error);
+            }
         } else if let Some(target) = prepare
             && let Some(cancel) = mailbox.claim(target.clone())
         {
