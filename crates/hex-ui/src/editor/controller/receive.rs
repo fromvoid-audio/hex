@@ -1089,6 +1089,8 @@ impl EditorView {
         if let Some(status) = event.status {
             self.status = status;
             self.error = None;
+        } else if event.save_complete && event.error.is_some() && !save_confirmation_required {
+            self.status = "project was not saved".into();
         }
         if recovering_refused_resize {
             self.status = "restarting audio · clip edit will apply when ready".into();
