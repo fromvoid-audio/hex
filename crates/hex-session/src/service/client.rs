@@ -60,16 +60,17 @@ pub(super) type Exporter = Arc<
 pub(super) fn canonical_exporter() -> Exporter {
     Arc::new(
         |path, prepared, start, frames, signal, format, control, publication| {
-            hex_export::render_prepared_with_policy(
+            hex_export::render_prepared_with_policy(hex_export::ExportJobSpec {
                 path,
-                Arc::clone(prepared),
+                revision: Arc::clone(prepared),
+                resources: None,
                 start,
                 frames,
                 signal,
                 format,
                 control,
                 publication,
-            )
+            })
             .map_err(ExportFailure::from)
         },
     )

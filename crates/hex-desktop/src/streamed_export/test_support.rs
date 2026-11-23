@@ -80,15 +80,17 @@ fn render_action(
         hide_pages,
     };
     hex_export::render_prepared_with_pages_and_policy(
-        request.path(),
-        Arc::clone(request.prepared()),
-        request.resources(),
-        request.start(),
-        request.frames(),
-        request.signal().clone(),
-        request.format(),
-        request.control(),
-        request.publication(),
+        hex_export::ExportJobSpec {
+            path: request.path(),
+            revision: Arc::clone(request.prepared()),
+            resources: request.resources(),
+            start: request.start(),
+            frames: request.frames(),
+            signal: request.signal().clone(),
+            format: request.format(),
+            control: request.control(),
+            publication: request.publication(),
+        },
         &mut pages,
     )
     .map_err(Into::into)

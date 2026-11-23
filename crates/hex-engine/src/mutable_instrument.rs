@@ -1084,6 +1084,23 @@ impl MutableInstrumentTrackRuntime {
         self.primary.iter().copied()
     }
 
+    /// Apply already validated deadlines to both inherited ledger twins.
+    /// The caller proves these exact held IDs belong to the candidate stream;
+    /// no arithmetic or fallible work remains once runtime inheritance starts.
+    pub(crate) fn retime_held_gates(
+        &mut self,
+        retime: impl Fn(&MutableOccurrence) -> Option<(u64, u64)>,
+    ) {
+        for proof in self.primary.iter_mut().chain(self.scratch.iter_mut()) {
+            if !proof.note_off_sent
+                && let Some((gate, quiet)) = retime(proof)
+            {
+                proof.gate_end_frame = gate;
+                proof.quiet_deadline_frame = quiet;
+            }
+        }
+    }
+
     /// Retarget held authored occurrences without creating a second source.
     /// The source-owned age advances even while stopped monitoring renders.
     pub(crate) fn retarget_authored_contributor(

@@ -53,9 +53,10 @@ mod format;
 #[path = "../../hex-engine/examples/support/latency_fixture.rs"]
 mod latency_fixture;
 pub use bounce::{
-    ForeignBounceRenderer, MAX_ARRANGEMENT_BOUNCE_TAIL_SECONDS, render_arrangement_bounce_new,
-    render_arrangement_bounce_with_foreign, render_arrangement_bounce_with_pages,
-    render_bounce_new, render_bounce_new_with_device_resources,
+    BounceSpec, ForeignBounceRenderer, MAX_ARRANGEMENT_BOUNCE_TAIL_SECONDS,
+    render_arrangement_bounce_new, render_arrangement_bounce_with_foreign,
+    render_arrangement_bounce_with_pages, render_bounce_new,
+    render_bounce_new_with_device_resources,
 };
 pub use format::ExportFormat;
 mod pages;
@@ -66,8 +67,9 @@ mod publication;
 mod stale_temporary;
 mod stems;
 pub use controlled::{
-    ExportControl, ExportProgress, ExportSignal, render_linear_main_with_foreign,
-    render_prepared_controlled, render_prepared_controlled_with_device_resources,
+    ExportControl, ExportJobSpec, ExportProgress, ExportSignal, ForeignLinearExportSpec,
+    render_linear_main_with_foreign, render_prepared_controlled,
+    render_prepared_controlled_with_device_resources,
     render_prepared_with_device_resources_and_policy, render_prepared_with_pages_and_policy,
 };
 pub use controlled::{
@@ -496,13 +498,15 @@ fn publish_encoded<R: BlockRenderer>(
     let write_result = prepare_renderer().and_then(|mut renderer| {
         let clipped = write_wav(
             file,
-            sample_rate,
-            start,
-            frames,
-            data_bytes,
-            byte_rate,
+            WavWriteSpec {
+                sample_rate,
+                start,
+                frames,
+                data_bytes,
+                byte_rate,
+                encoding,
+            },
             &mut renderer,
-            encoding,
         )?;
         renderer.before_publication()?;
         Ok(clipped)
@@ -680,20 +684,31 @@ fn create_temporary(destination: &Path) -> Result<(File, PathBuf), ExportError> 
     })
 }
 
-/// Write the header and every rendered frame; returns the clipped-sample count.
-/// `start` is the timeline frame of the first written frame; PCM16 dither is
-/// anchored to it so a range export matches the same slice of a longer one.
-#[allow(clippy::too_many_arguments)] // Private writer: header fields plus range and encoding.
-fn write_wav(
-    file: File,
+struct WavWriteSpec {
     sample_rate: u32,
     start: u64,
     frames: u64,
     data_bytes: u32,
     byte_rate: u32,
-    renderer: &mut impl BlockRenderer,
     encoding: ExportFormat,
+}
+
+/// Write the header and every rendered frame; returns the clipped-sample count.
+/// `start` is the timeline frame of the first written frame; PCM16 dither is
+/// anchored to it so a range export matches the same slice of a longer one.
+fn write_wav(
+    file: File,
+    spec: WavWriteSpec,
+    renderer: &mut impl BlockRenderer,
 ) -> Result<u64, ExportError> {
+    let WavWriteSpec {
+        sample_rate,
+        start,
+        frames,
+        data_bytes,
+        byte_rate,
+        encoding,
+    } = spec;
     #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
     let file = write_fault::Writer::new(file);
     let mut writer = BufWriter::with_capacity(IO_BUFFER_BYTES, file);

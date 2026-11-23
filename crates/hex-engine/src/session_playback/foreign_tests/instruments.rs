@@ -3355,7 +3355,14 @@ fn live_loop_edit_succeeds_with_both_vst3_and_native_mutable_instrument() {
         })
         .unwrap();
 
-    let mut playing = SessionPlayback::new(prepare(&editor, identity, true).unwrap()).unwrap();
+    let initial = prepare(&editor, identity, true).unwrap();
+    let mut playing = SessionPlayback::new(Arc::clone(&initial)).unwrap();
+    let mut reference = SessionPlayback::new(initial).unwrap();
+    let mut reference_endpoint = NoteEndpoint::default();
+    reference.apply(SessionPlaybackCommand::Play).unwrap();
+    reference_endpoint
+        .render(&mut reference, &mut [[0.0; 2]; 1_000])
+        .unwrap();
     let mut endpoint = NoteEndpoint::default();
     playing.apply(SessionPlaybackCommand::Play).unwrap();
     endpoint
@@ -3374,6 +3381,13 @@ fn live_loop_edit_succeeds_with_both_vst3_and_native_mutable_instrument() {
             .any(|proof| !proof.note_off_sent),
         "native mutable instrument must have a held note at the pass-0 edit"
     );
+
+    let native_before = playing.mutable_instruments[1]
+        .as_ref()
+        .unwrap()
+        .proofs()
+        .find(|proof| !proof.note_off_sent)
+        .unwrap();
 
     // Move loop forward to 3_000..5_500 on pass 0.
     editor
@@ -3402,11 +3416,18 @@ fn live_loop_edit_succeeds_with_both_vst3_and_native_mutable_instrument() {
         Some(hex_project::LoopRegion::new(3_000, 5_500, true).unwrap())
     );
 
-    // VST3 note keeps its original note ID and releases at its authored deadline (1_500);
-    // the cut FM4 gate is released cleanly on the first candidate block.
-    endpoint
-        .render(&mut moved, &mut vec![[0.0; 2]; 600])
+    // Both instruments retain their sounding occurrences. The native PCM
+    // matches an untouched runtime until the first possible old wrap.
+    let mut actual = [[0.0; 2]; 600];
+    let mut expected = actual;
+    endpoint.render(&mut moved, &mut actual).unwrap();
+    reference_endpoint
+        .render(&mut reference, &mut expected)
         .unwrap();
+    assert_eq!(
+        actual, expected,
+        "scope release changed sounding native PCM"
+    );
     assert_eq!(
         endpoint.notes,
         [(
@@ -3418,14 +3439,14 @@ fn live_loop_edit_succeeds_with_both_vst3_and_native_mutable_instrument() {
             }
         )]
     );
-    assert!(
-        moved.mutable_instruments[1]
-            .as_ref()
-            .unwrap()
-            .proofs()
-            .all(|proof| proof.note_off_sent),
-        "cut native mutable gate must release cleanly"
-    );
+    let native_after = moved.mutable_instruments[1]
+        .as_ref()
+        .unwrap()
+        .proofs()
+        .find(|proof| proof.id == native_before.id)
+        .unwrap();
+    assert!(!native_after.note_off_sent);
+    assert_eq!(native_after.gate_end_frame, native_before.gate_end_frame);
 
     // Advance past 5_500 (wrapping to 3_000 on pass 1) to frame 4_500.
     endpoint
@@ -3441,6 +3462,18 @@ fn live_loop_edit_succeeds_with_both_vst3_and_native_mutable_instrument() {
             .any(|proof| !proof.note_off_sent),
         "native mutable instrument must have a held note at the pass-1 edit"
     );
+
+    let native_second = moved.mutable_instruments[1]
+        .as_ref()
+        .unwrap()
+        .proofs()
+        .find(|proof| !proof.note_off_sent)
+        .unwrap();
+    assert_eq!(
+        native_second.gate_end_frame,
+        moved.performance_frame() + 1_000
+    );
+    let natural_deadline = moved.performance_frame() + 2_250;
 
     // Move loop forward again to 6_000..9_000 while on pass 1 before 6_000.
     editor
@@ -3466,10 +3499,54 @@ fn live_loop_edit_succeeds_with_both_vst3_and_native_mutable_instrument() {
     // Render linearly past the old loop end (5_500), across the new loop start
     // (6_000, spanned by the note at 3_750..6_750), to past the new loop end
     // (9_000), verifying it respects the new scope bar and wraps to 6_000.
+    let retained = moved2.mutable_instruments[1]
+        .as_ref()
+        .unwrap()
+        .proofs()
+        .find(|proof| proof.id == native_second.id)
+        .unwrap();
+    assert!(!retained.note_off_sent);
+    assert_eq!(retained.gate_end_frame, natural_deadline);
     let mut rendered = vec![[0.0; 2]; 4_700];
-    for chunk in rendered.chunks_mut(256) {
+    for chunk in rendered[..2_250].chunks_mut(127) {
         endpoint.render(&mut moved2, chunk).unwrap();
     }
+    assert!(
+        rendered[1_000..2_250]
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 0.0001),
+        "native gate must sound beyond the old loop end"
+    );
+    assert!(
+        moved2.mutable_instruments[1]
+            .as_ref()
+            .unwrap()
+            .proofs()
+            .any(|proof| proof.id == native_second.id && !proof.note_off_sent)
+    );
+    endpoint
+        .render(&mut moved2, &mut rendered[2_250..2_251])
+        .unwrap();
+    assert!(
+        moved2.mutable_instruments[1]
+            .as_ref()
+            .unwrap()
+            .proofs()
+            .any(|proof| proof.id == native_second.id && proof.note_off_sent)
+    );
+    for chunk in rendered[2_251..].chunks_mut(257) {
+        endpoint.render(&mut moved2, chunk).unwrap();
+    }
+    assert!(
+        moved2.mutable_instruments[1]
+            .as_ref()
+            .unwrap()
+            .proofs()
+            .any(|proof| proof.signature.key().loop_pass == 2
+                && proof.id != native_second.id
+                && !proof.note_off_sent)
+    );
     assert_eq!(moved2.arrangement_loop_state().pass, 2);
     assert_eq!(moved2.arrangement_frame(), 6_200);
 
