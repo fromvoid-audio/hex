@@ -320,6 +320,31 @@ fn choose_db_step(span_db: f32, plot_height: f32) -> f32 {
     24.0
 }
 
+fn resolved_axis_ranges(config: &SpectrumPlotConfig) -> (f32, f32, f32, f32) {
+    let (min_hz, max_hz) = if config.min_hz.is_finite()
+        && config.max_hz.is_finite()
+        && config.min_hz > 0.0
+        && config.max_hz > config.min_hz
+        && {
+            let span = (config.max_hz / config.min_hz).ln();
+            span.is_finite() && span > 0.0
+        } {
+        (config.min_hz, config.max_hz)
+    } else {
+        (20.0, 20_000.0)
+    };
+    let (min_dbfs, max_dbfs) = if config.min_dbfs.is_finite()
+        && config.max_dbfs.is_finite()
+        && config.max_dbfs > config.min_dbfs
+        && (config.max_dbfs - config.min_dbfs).is_finite()
+    {
+        (config.min_dbfs, config.max_dbfs)
+    } else {
+        (-96.0, 0.0)
+    };
+    (min_hz, max_hz, min_dbfs, max_dbfs)
+}
+
 fn db_grid_values(min_dbfs: f32, max_dbfs: f32, plot_height: f32) -> Vec<f32> {
     let span = max_dbfs - min_dbfs;
     if !span.is_finite() || span <= 0.0 || !plot_height.is_finite() || plot_height <= 0.0 {
@@ -329,10 +354,13 @@ fn db_grid_values(min_dbfs: f32, max_dbfs: f32, plot_height: f32) -> Vec<f32> {
     let top_multiple = (max_dbfs / step).floor() as i32;
     let bot_multiple = (min_dbfs / step).ceil() as i32;
     let mut values = Vec::new();
-    let count = (top_multiple - bot_multiple + 1).clamp(0, 32);
+    let count = top_multiple
+        .saturating_sub(bot_multiple)
+        .saturating_add(1)
+        .clamp(0, 32);
     for idx in 0..count {
-        let db = (top_multiple - idx) as f32 * step;
-        if db >= min_dbfs + 0.01 && db <= max_dbfs - 0.01 {
+        let db = top_multiple.saturating_sub(idx) as f32 * step;
+        if db.is_finite() && db >= min_dbfs + 0.01 && db <= max_dbfs - 0.01 {
             values.push(db);
         }
     }
@@ -357,27 +385,8 @@ fn paint_grid_and_axes(
     let line_px = hairline_px(scale);
     let plot_w = f32::from(plot.size.width);
     let plot_h = f32::from(plot.size.height);
-    let min_hz = if config.min_hz.is_finite() && config.min_hz > 0.0 {
-        config.min_hz
-    } else {
-        20.0
-    };
-    let max_hz = if config.max_hz.is_finite() && config.max_hz > min_hz {
-        config.max_hz
-    } else {
-        20_000.0
-    };
+    let (min_hz, max_hz, min_dbfs, max_dbfs) = resolved_axis_ranges(config);
     let log_span = (max_hz / min_hz).ln();
-    let min_dbfs = if config.min_dbfs.is_finite() {
-        config.min_dbfs
-    } else {
-        -96.0
-    };
-    let max_dbfs = if config.max_dbfs.is_finite() && config.max_dbfs > min_dbfs {
-        config.max_dbfs
-    } else {
-        0.0
-    };
     let db_span = max_dbfs - min_dbfs;
 
     let rail_hsla: Hsla = rgb(style.rail).into();
@@ -948,5 +957,49 @@ mod tests {
         assert!(!tight.is_empty() && tight.len() <= 8);
         assert!(db_grid_values(0.0, -12.0, 100.0).is_empty());
         assert!(db_grid_values(f32::NAN, 0.0, 100.0).is_empty());
+        // Wide finite ranges saturate i32 casts without overflowing subtraction.
+        let huge = db_grid_values(-1.0e11, 1.0e11, 120.0);
+        assert!(huge.len() <= 33);
+        assert!(huge.iter().all(|db| db.is_finite()));
+    }
+
+    #[test]
+    fn resolved_axis_ranges_always_produces_positive_finite_spans() {
+        let inverted_high_hz = SpectrumPlotConfig {
+            min_hz: 24_000.0,
+            max_hz: 12_000.0,
+            min_dbfs: 6.0,
+            max_dbfs: f32::NAN,
+            ..SpectrumPlotConfig::default()
+        };
+        let (min_hz, max_hz, min_dbfs, max_dbfs) = resolved_axis_ranges(&inverted_high_hz);
+        assert_eq!((min_hz, max_hz), (20.0, 20_000.0));
+        assert_eq!((min_dbfs, max_dbfs), (-96.0, 0.0));
+        assert!((max_hz / min_hz).ln() > 0.0);
+        assert!(max_dbfs - min_dbfs > 0.0);
+
+        let equal_edge = SpectrumPlotConfig {
+            min_hz: 20_000.0,
+            max_hz: 20_000.0,
+            min_dbfs: 0.0,
+            max_dbfs: 0.0,
+            ..SpectrumPlotConfig::default()
+        };
+        assert_eq!(
+            resolved_axis_ranges(&equal_edge),
+            (20.0, 20_000.0, -96.0, 0.0)
+        );
+
+        let extreme_db = SpectrumPlotConfig {
+            min_hz: 40.0,
+            max_hz: 16_000.0,
+            min_dbfs: -f32::MAX,
+            max_dbfs: f32::MAX,
+            ..SpectrumPlotConfig::default()
+        };
+        assert_eq!(
+            resolved_axis_ranges(&extreme_db),
+            (40.0, 16_000.0, -96.0, 0.0)
+        );
     }
 }
