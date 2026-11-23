@@ -1,9 +1,10 @@
 //! Native application menus dispatch the editor's existing guarded actions.
 use super::{
-    CancelUpdate, InstallUpdateOnQuit, NewProject, OpenAutomationRecovery, OpenProject,
-    OpenRecentProject, OpenRelinkedProject, OpenSettings, Quit, RecoverKeptSession,
-    RecoverPreviousSave, RecoverSavedProject, RecoverUntitledProject, SaveAndRestartForUpdate,
-    SaveAsProject, SaveProject,
+    AddMidiClip, AddMidiTrack, AddTrack, CancelUpdate, ExportProject, ImportAudio,
+    InstallUpdateOnQuit, NewProject, OpenAutomationRecovery, OpenProject, OpenRecentProject,
+    OpenRelinkedProject, OpenSettings, PanTimelineLeft, PanTimelineRight, Quit, RecoverKeptSession,
+    RecoverPreviousSave, RecoverSavedProject, RecoverUntitledProject, Redo, RemoveTrack,
+    SaveAndRestartForUpdate, SaveAsProject, SaveProject, SplitClip, Undo, ZoomIn, ZoomOut,
 };
 use crate::theme;
 use gpui::{App, Menu, MenuItem};
@@ -67,6 +68,28 @@ fn application_menus(recent_projects: &[PathBuf]) -> Vec<Menu> {
                 MenuItem::separator(),
                 MenuItem::action(theme::text("save"), SaveProject),
                 MenuItem::action(theme::text("save as…"), SaveAsProject),
+                MenuItem::separator(),
+                MenuItem::action(theme::text("import audio…"), ImportAudio),
+                MenuItem::action(theme::text("export wav…"), ExportProject),
+            ],
+        },
+        Menu {
+            name: theme::text("edit"),
+            items: vec![
+                MenuItem::action(theme::text("undo"), Undo),
+                MenuItem::action(theme::text("redo"), Redo),
+                MenuItem::separator(),
+                MenuItem::action(theme::text("split clip"), SplitClip),
+            ],
+        },
+        Menu {
+            name: theme::text("track"),
+            items: vec![
+                MenuItem::action(theme::text("add track"), AddTrack),
+                MenuItem::action(theme::text("add midi track"), AddMidiTrack),
+                MenuItem::action(theme::text("add midi clip"), AddMidiClip),
+                MenuItem::separator(),
+                MenuItem::action(theme::text("remove selected track"), RemoveTrack),
             ],
         },
         Menu {
@@ -80,6 +103,11 @@ fn application_menus(recent_projects: &[PathBuf]) -> Vec<Menu> {
                     theme::text("track latency indicators"),
                     super::ToggleTrackLatency,
                 ),
+                MenuItem::separator(),
+                MenuItem::action(theme::text("pan left"), PanTimelineLeft),
+                MenuItem::action(theme::text("pan right"), PanTimelineRight),
+                MenuItem::action(theme::text("zoom in"), ZoomIn),
+                MenuItem::action(theme::text("zoom out"), ZoomOut),
             ],
         },
     ]
@@ -156,5 +184,39 @@ mod tests {
                 assert!(!action.as_any().is::<super::super::OpenStreamingProject>());
             }
         }
+    }
+
+    #[test]
+    fn menus_cover_every_pruned_toolbar_action_with_lowercase_labels() {
+        let menus = application_menus(&[]);
+        let has_action = |menu_name: &str, check: &dyn Fn(&dyn gpui::Action) -> bool| -> bool {
+            let Some(menu) = menus.iter().find(|menu| menu.name == menu_name) else {
+                return false;
+            };
+            menu.items.iter().any(|item| match item {
+                MenuItem::Action { name, action, .. } => {
+                    assert_eq!(
+                        name.as_ref(),
+                        theme::text(name.as_ref()).as_ref(),
+                        "menu item label must be lowercase: {name}"
+                    );
+                    check(action.as_ref())
+                }
+                _ => false,
+            })
+        };
+        assert!(has_action("file", &|a| a.as_any().is::<ImportAudio>()));
+        assert!(has_action("file", &|a| a.as_any().is::<ExportProject>()));
+        assert!(has_action("edit", &|a| a.as_any().is::<Undo>()));
+        assert!(has_action("edit", &|a| a.as_any().is::<Redo>()));
+        assert!(has_action("edit", &|a| a.as_any().is::<SplitClip>()));
+        assert!(has_action("track", &|a| a.as_any().is::<AddTrack>()));
+        assert!(has_action("track", &|a| a.as_any().is::<AddMidiTrack>()));
+        assert!(has_action("track", &|a| a.as_any().is::<AddMidiClip>()));
+        assert!(has_action("track", &|a| a.as_any().is::<RemoveTrack>()));
+        assert!(has_action("view", &|a| a.as_any().is::<PanTimelineLeft>()));
+        assert!(has_action("view", &|a| a.as_any().is::<PanTimelineRight>()));
+        assert!(has_action("view", &|a| a.as_any().is::<ZoomIn>()));
+        assert!(has_action("view", &|a| a.as_any().is::<ZoomOut>()));
     }
 }

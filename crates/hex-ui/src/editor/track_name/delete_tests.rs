@@ -312,21 +312,17 @@ fn toolbar_remove_keeps_single_track_semantics_after_header_selection_toggle(
                     assert_eq!(view.selected_track, Some(focused));
                 })
             });
-            let button = visual
-                .debug_bounds("remove selected track")
-                .expect("actual toolbar remove control");
-            visual.simulate_mouse_down(button.center(), MouseButton::Left, Modifiers::default());
-            // Ordinary GPUI clicks transfer focus to the root. Also exercise the
-            // same real button with header focus retained at dispatch; no native
-            // focus behavior is inferred from this controlled test condition.
-            if retained_focus {
+            assert!(visual.debug_bounds("remove selected track").is_none());
+            // Native menu dispatch keeps focus on the root or retains header focus;
+            // exercise both conditions through the real RemoveTrack action.
+            if !retained_focus {
                 visual.update(|window, cx| {
-                    editor.read_with(cx, |view, _| {
-                        view.track_name.focuses[&super::Target::Track(focused)].focus(window)
-                    })
+                    editor.read_with(cx, |view, _| view.focus.focus(window));
                 });
             }
-            visual.simulate_mouse_up(button.center(), MouseButton::Left, Modifiers::default());
+            visual.update(|window, cx| {
+                window.dispatch_action(Box::new(crate::editor::RemoveTrack), cx);
+            });
             visual.update(|window, cx| {
                 editor.read_with(cx, |view, _| {
                     eprintln!(

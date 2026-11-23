@@ -527,7 +527,7 @@ fn save_and_install_with_pending_eq(
                 .is_some_and(|(_, playing)| !playing)
         },
     );
-    click(&mut fixture.visual, "undo · cmd+z");
+    fixture.visual.simulate_keystrokes("cmd-z");
     until("one Undo removes only the installed hosted effect", || {
         fixture.step(cx);
         let view = fixture.view(cx);
@@ -1366,7 +1366,7 @@ fn rendered_native_effect_terminals_preserve_canonical_history_and_original_sour
                     .iter()
                     .all(|track| track.devices().is_empty())
             );
-            click(&mut fixture.visual, "undo · cmd+z");
+            fixture.visual.simulate_keystrokes("cmd-z");
             until("one Undo removes only the intervening track edit", || {
                 fixture.step(cx);
                 fixture
@@ -1854,15 +1854,10 @@ fn rendered_native_effect_browser_enters_actual_track_return_main_after_ack(
         // One UI Undo removes exactly the insertion; Redo restores the same
         // authored state and original source, not a newly loaded substitute.
         for (action, revision, project, native) in [
-            ("undo · cmd+z", state.revision + 2, &state.project, false),
-            (
-                "redo · cmd+shift+z",
-                state.revision + 3,
-                &accepted.project,
-                true,
-            ),
+            ("cmd-z", state.revision + 2, &state.project, false),
+            ("cmd-shift-z", state.revision + 3, &accepted.project, true),
         ] {
-            click(&mut visual, action);
+            visual.simulate_keystrokes(action);
             until(action, || {
                 callback
                     .lock()
@@ -2550,7 +2545,7 @@ fn vst3_controller_text_edit_commits_and_undoes(cx: &mut gpui::TestAppContext) {
                     != initial.device(device).unwrap().state()
         })
     });
-    click(&mut fixture.visual, "undo · cmd+z");
+    fixture.visual.simulate_keystrokes("cmd-z");
     until("undo restores the original plugin state", || {
         fixture.step(cx);
         fixture
@@ -2573,7 +2568,7 @@ fn vst3_controller_text_edit_commits_and_undoes(cx: &mut gpui::TestAppContext) {
     fixture.visual.simulate_input("double");
     fixture.visual.simulate_keystrokes("enter");
     assert!(fixture.view(cx).parameter_query_pending);
-    click(&mut fixture.visual, "undo · cmd+z");
+    fixture.visual.simulate_keystrokes("cmd-z");
     until(
         "undo removes the source while conversion is pending",
         || {
@@ -2930,9 +2925,9 @@ fn rendered_staged_effect_saves_the_confirmed_chain_before_and_after_install(
     let installed = fixture.view(cx).state.unwrap();
     assert_eq!(installed.project.main_devices().len(), 1);
 
-    for (label, active_after) in [("undo · cmd+z", false), ("redo · cmd+shift+z", true)] {
+    for (label, active_after) in [("cmd-z", false), ("cmd-shift-z", true)] {
         let revision = fixture.view(cx).state.unwrap().revision + 1;
-        click(&mut fixture.visual, label);
+        fixture.visual.simulate_keystrokes(label);
         until(label, || {
             fixture.step(cx);
             let view = fixture.view(cx);

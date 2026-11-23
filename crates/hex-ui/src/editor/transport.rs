@@ -1,7 +1,4 @@
-use super::{
-    AddMidiClip, AddTrack, EditorMode, EditorView, ImportAudio, Redo, RemoveTrack, SplitClip, Stop,
-    ToggleBrowser, TogglePlay, Undo, header,
-};
+use super::{EditorMode, EditorView, Stop, ToggleBrowser, TogglePlay, header};
 use crate::theme;
 use gpui::{Context, Div, Stateful, Window, div, prelude::*, px, rgb};
 
@@ -10,12 +7,6 @@ enum TransportIcon {
     Play,
     Pause,
     Stop,
-    Split,
-    Undo,
-    Redo,
-    AddTrack,
-    AddMidiClip,
-    RemoveTrack,
 }
 
 impl TransportIcon {
@@ -24,18 +15,6 @@ impl TransportIcon {
             Self::Play => ("icons/transport/play.svg", "transport-play-icon"),
             Self::Pause => ("icons/transport/pause.svg", "transport-pause-icon"),
             Self::Stop => ("icons/transport/stop.svg", "transport-stop-icon"),
-            Self::Split => ("icons/transport/split.svg", "transport-split-icon"),
-            Self::Undo => ("icons/transport/undo.svg", "transport-undo-icon"),
-            Self::Redo => ("icons/transport/redo.svg", "transport-redo-icon"),
-            Self::AddTrack => ("icons/transport/add-track.svg", "transport-add-track-icon"),
-            Self::AddMidiClip => (
-                "icons/transport/add-midi-clip.svg",
-                "transport-add-midi-icon",
-            ),
-            Self::RemoveTrack => (
-                "icons/transport/remove-track.svg",
-                "transport-remove-track-icon",
-            ),
         }
     }
 }
@@ -45,8 +24,6 @@ impl EditorView {
         let playing = self
             .audio_status()
             .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Relaxed));
-        let can_undo = self.state().is_some_and(|state| state.can_undo);
-        let can_redo = self.state().is_some_and(|state| state.can_redo);
         let loop_hint = "toggle looping · cmd+l · l/w set scope or toggle matching scope";
         let loop_enabled = self
             .pending_loop_region()
@@ -77,61 +54,41 @@ impl EditorView {
             self.computer_keyboard.base_pitch, self.computer_keyboard.velocity
         );
         let field = self.project_tempo_input(cx);
-        // Reserve room for transient recording and automation controls on the
-        // first row at the minimum window width.
-        let compact = f32::from(window.viewport_size().width) < 1_000.0;
-        let controls = div()
-            .id("transport-primary-controls")
+        let narrow = f32::from(window.viewport_size().width) < header::WIDE_TOOLBAR_MIN_WIDTH;
+
+        // Left zone: tempo, metronome, quantization, tuning, and input/recording setup.
+        let left_zone = div()
+            .id("transport-left-zone")
+            .debug_selector(|| "transport-left-zone".into())
             .on_click(|_, _, cx| cx.stop_propagation())
             .flex()
             .items_center()
+            .gap(px(2.0))
             .flex_shrink_0()
             .child(field)
-            .child(super::gain_recording::retained_controls(self, cx))
+            .child(
+                self.control_icon(
+                    "m",
+                    "toggle metronome",
+                    |view, _, _| view.toggle_metronome(),
+                    cx,
+                )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+                .opacity(if self.metronome_pending() { 0.45 } else { 1.0 })
+                .text_color(rgb(theme::color(if self.metronome_enabled() {
+                    theme::PaletteRole::Primary
+                } else {
+                    theme::PaletteRole::Muted
+                }))),
+            )
+            .children([self.launch_quantization_control(cx)])
+            .children([self.input_quantization_control(cx)])
             .child(self.control_icon(
                 "♯",
                 "project tuning · cmd+alt+t",
                 |view, window, cx| view.open_tuning(window, cx),
                 cx,
             ))
-            .child(self.icon("↓", "import audio · cmd+i", ImportAudio, cx))
-            .child(self.control_icon(
-                "↑",
-                "export wav · cmd+shift+e",
-                |view, window, cx| view.export_dialog(window, cx),
-                cx,
-            ))
-            .child(
-                self.vector_icon(
-                    if playing {
-                        TransportIcon::Pause
-                    } else {
-                        TransportIcon::Play
-                    },
-                    "play or pause · space · right-click for playback options",
-                    |_| TogglePlay,
-                    cx,
-                )
-                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
-                .on_mouse_down(
-                    gpui::MouseButton::Right,
-                    cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
-                        view.open_playback_options_menu(event.position, window, cx);
-                        cx.stop_propagation();
-                    }),
-                ),
-            )
-            .child(
-                self.vector_icon(
-                    TransportIcon::Stop,
-                    "stop · escape",
-                    |event| Stop {
-                        return_to_beginning: event.click_count() >= 2,
-                    },
-                    cx,
-                )
-                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
-            )
             .child(
                 self.control_icon_description(
                     "in",
@@ -171,6 +128,48 @@ impl EditorView {
                         theme::PaletteRole::Muted
                     },
                 ))),
+            )
+            .child(super::gain_recording::retained_controls(self, cx));
+
+        // Center zone: play/pause, stop, record, position readout, loop toggle, section autoplay.
+        let center_zone = div()
+            .id("transport-center-zone")
+            .debug_selector(|| "transport-center-zone".into())
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .flex()
+            .items_center()
+            .gap(px(2.0))
+            .flex_shrink_0()
+            .child(
+                self.vector_icon(
+                    if playing {
+                        TransportIcon::Pause
+                    } else {
+                        TransportIcon::Play
+                    },
+                    "play or pause · space · right-click for playback options",
+                    |_| TogglePlay,
+                    cx,
+                )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+                .on_mouse_down(
+                    gpui::MouseButton::Right,
+                    cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
+                        view.open_playback_options_menu(event.position, window, cx);
+                        cx.stop_propagation();
+                    }),
+                ),
+            )
+            .child(
+                self.vector_icon(
+                    TransportIcon::Stop,
+                    "stop · escape",
+                    |event| Stop {
+                        return_to_beginning: event.click_count() >= 2,
+                    },
+                    cx,
+                )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
             )
             .child(
                 self.control_icon(
@@ -223,6 +222,32 @@ impl EditorView {
                 )
             }))
             .child(
+                div()
+                    .debug_selector(|| "project position".into())
+                    .px(px(4.0))
+                    // Size the short readout to its text; retain the existing
+                    // upper bound for unusually long project positions.
+                    .max_w(px(82.0))
+                    .flex_shrink_0()
+                    .line_clamp(1)
+                    .text_ellipsis()
+                    .text_xs()
+                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+                    .child(theme::text(self.position_label())),
+            )
+            .child(
+                self.control_icon_description(
+                    "↻",
+                    loop_hint,
+                    loop_hint.into(),
+                    loop_style,
+                    |view, _, _| view.toggle_loop(),
+                    cx,
+                )
+                .debug_selector(|| "transport-loop-toggle".into())
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
+            )
+            .child(
                 self.control_icon(
                     "▶↻",
                     "section autoplay and loop · click a section to launch",
@@ -236,9 +261,16 @@ impl EditorView {
                 } else {
                     theme::PaletteRole::Muted
                 }))),
-            )
-            .children([self.launch_quantization_control(cx)])
-            .children([self.input_quantization_control(cx)])
+            );
+
+        // Right zone: keyboard, automation, snap/filter, audio status/diagnostics, view toggle.
+        let right_tools = div()
+            .id("transport-right-tools")
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .flex()
+            .items_center()
+            .gap(px(2.0))
+            .flex_shrink_0()
             .child(
                 self.control_icon_description(
                     "⌨",
@@ -255,91 +287,6 @@ impl EditorView {
                     theme::PaletteRole::Muted
                 }))),
             )
-            .child(
-                self.control_icon(
-                    "m",
-                    "toggle metronome",
-                    |view, _, _| view.toggle_metronome(),
-                    cx,
-                )
-                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
-                .opacity(if self.metronome_pending() { 0.45 } else { 1.0 })
-                .text_color(rgb(theme::color(if self.metronome_enabled() {
-                    theme::PaletteRole::Primary
-                } else {
-                    theme::PaletteRole::Muted
-                }))),
-            )
-            .child(
-                self.control_icon_description(
-                    "↻",
-                    loop_hint,
-                    loop_hint.into(),
-                    loop_style,
-                    |view, _, _| view.toggle_loop(),
-                    cx,
-                )
-                .debug_selector(|| "transport-loop-toggle".into())
-                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
-            )
-            .child(self.vector_icon(
-                TransportIcon::Split,
-                "split selection edges or edit cursor · e",
-                |_| SplitClip,
-                cx,
-            ))
-            .child(
-                self.vector_icon(TransportIcon::Undo, "undo · cmd+z", |_| Undo, cx)
-                    .opacity(if can_undo { 1.0 } else { 0.45 }),
-            )
-            .child(
-                self.vector_icon(TransportIcon::Redo, "redo · cmd+shift+z", |_| Redo, cx)
-                    .opacity(if can_redo { 1.0 } else { 0.45 }),
-            )
-            .child(self.vector_icon(TransportIcon::AddTrack, "add track", |_| AddTrack, cx))
-            .child(self.vector_icon(
-                TransportIcon::AddMidiClip,
-                "add four-beat midi clip · cmd+shift+m",
-                |_| AddMidiClip,
-                cx,
-            ))
-            .child(self.vector_icon(
-                TransportIcon::RemoveTrack,
-                "remove selected track",
-                |_| RemoveTrack,
-                cx,
-            ))
-            .child(
-                div()
-                    .w(px(1.0))
-                    .h(px(20.0))
-                    .mx(px(1.0))
-                    .bg(rgb(theme::color(theme::PaletteRole::Border))),
-            )
-            .child(self.control_icon(
-                "←",
-                "pan left · alt+left",
-                |view, _, _| view.pan_timeline(false),
-                cx,
-            ))
-            .child(self.control_icon(
-                "→",
-                "pan right · alt+right",
-                |view, _, _| view.pan_timeline(true),
-                cx,
-            ))
-            .child(self.control_icon(
-                "z+",
-                "zoom in · cmd++",
-                |view, _, _| view.zoom_timeline(true),
-                cx,
-            ))
-            .child(self.control_icon(
-                "z−",
-                "zoom out · cmd+-",
-                |view, _, _| view.zoom_timeline(false),
-                cx,
-            ))
             .child(
                 self.control_icon_description(
                     "a",
@@ -366,45 +313,18 @@ impl EditorView {
                 .debug_selector(|| "reenable-device-automation".into())
             }))
             .children([self.snap_control(cx)])
-            .children((!compact).then(|| self.section_focus_toggle(cx)))
-            .children((!compact).then(|| self.track_tag_filter_control(cx)))
-            .children(
-                (!compact)
-                    .then(|| self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx)),
-            )
-            .children(
-                (!compact)
-                    .then(|| self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx)),
-            );
-        let mut status = div()
-            .id("transport-status-controls")
+            .children([self.section_focus_toggle(cx)])
+            .children([self.track_tag_filter_control(cx)])
+            .children([self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx)])
+            .children([self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx)]);
+
+        let mut audio_status = div()
+            .id("transport-audio-status")
             .on_click(|_, _, cx| cx.stop_propagation())
             .flex()
             .items_center()
+            .gap(px(2.0))
             .min_w_0()
-            .flex_1()
-            .children(compact.then(|| self.section_focus_toggle(cx)))
-            .children(compact.then(|| self.track_tag_filter_control(cx)))
-            .children(
-                compact.then(|| self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx)),
-            )
-            .children(
-                compact.then(|| self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx)),
-            )
-            .child(
-                div()
-                    .debug_selector(|| "project position".into())
-                    // Size the short readout to its text; retain the existing
-                    // upper bound for unusually long project positions.
-                    .max_w(px(82.0))
-                    .flex_shrink_0()
-                    .line_clamp(1)
-                    .text_ellipsis()
-                    .text_xs()
-                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                    .child(theme::text(self.position_label())),
-            )
-            .child(div().flex_1())
             .child(self.control_icon(
                 "⟳",
                 "restart default audio output · stays stopped",
@@ -415,11 +335,10 @@ impl EditorView {
                 div()
                     .id("audio output status")
                     .debug_selector(|| "audio output status".into())
-                    // Status takes available width before the empty spacer;
-                    // a zero flex basis could collapse it at minimum width.
-                    .w(px(230.0))
-                    .max_w(px(230.0))
-                    .min_w_0()
+                    // Keep enough width for 'offline' while bounding long device names.
+                    .w(px(150.0))
+                    .max_w(px(150.0))
+                    .min_w(px(56.0))
                     // Keep a definite wrap width during GPUI's second layout
                     // pass so ellipsis is shaped for the allocated flex width.
                     .line_clamp(1)
@@ -439,19 +358,20 @@ impl EditorView {
                     .child(theme::text(&output_label)),
             );
         if self.state().is_none() && self.service.startup_failure().is_none() {
-            status = status.child(
+            audio_status = audio_status.child(
                 div()
                     .debug_selector(|| "project loading".into())
                     .px_2()
+                    .flex_shrink_0()
                     .text_xs()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text("loading")),
             );
         }
-        status = status
+        audio_status = audio_status
             .child(self.header_diagnostics(cx))
             .child(self.workspace_view_toggle(cx));
-        let narrow = f32::from(window.viewport_size().width) < header::WIDE_TOOLBAR_MIN_WIDTH;
+
         let row = header::toolbar_row()
             .relative()
             .child(self.window_controls(cx))
@@ -459,15 +379,41 @@ impl EditorView {
                 window.viewport_size().width,
             ))));
         if narrow {
-            row.flex_col()
-                .items_start()
-                .children([controls.h(px(header::TOOLBAR_HEIGHT))])
-                .children([status
-                    .w_full()
-                    .h(px(header::TOOLBAR_HEIGHT))
-                    .flex_shrink_0()])
+            let top_row = div()
+                .id("transport-top-row")
+                .w_full()
+                .h(px(header::TOOLBAR_HEIGHT))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(6.0))
+                .children([left_zone, center_zone]);
+            let bottom_row = div()
+                .id("transport-right-zone")
+                .debug_selector(|| "transport-right-zone".into())
+                .w_full()
+                .h(px(header::TOOLBAR_HEIGHT))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(6.0))
+                .children([right_tools, audio_status]);
+            row.flex_col().items_start().children([top_row, bottom_row])
         } else {
-            row.children([controls, status])
+            let right_zone = div()
+                .id("transport-right-zone")
+                .debug_selector(|| "transport-right-zone".into())
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap(px(4.0))
+                .min_w_0()
+                .children([right_tools, audio_status]);
+            row.justify_between()
+                .gap(px(6.0))
+                .children([left_zone, center_zone, right_zone])
         }
     }
 
