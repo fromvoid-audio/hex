@@ -13,7 +13,7 @@ RUNNER = Path("scripts/run-desktop.sh")
 
 
 class NativeLaunchSourceTests(unittest.TestCase):
-    def test_untracked_files_stay_out_of_native_build_and_tracked_edits_refuse(self):
+    def test_native_build_isolates_unrelated_edits_and_refuses_changed_helper_sources(self):
         spec = importlib.util.spec_from_file_location(
             "prepare_launch_discovery", REPO / "scripts/prepare-launch-discovery.py")
         launcher = importlib.util.module_from_spec(spec)
@@ -27,9 +27,12 @@ class NativeLaunchSourceTests(unittest.TestCase):
                 return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
 
             git("init", "--quiet")
-            tracked = checkout / "native.cpp"
+            tracked = checkout / "crates/hex-plugin-scan/native/helper.cpp"
+            tracked.parent.mkdir(parents=True)
+            unrelated = checkout / ".gitignore"
+            unrelated.write_text("/artifacts/\n")
             tracked.write_text("original\n")
-            git("add", tracked.name)
+            git("add", ".")
             git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                 "commit", "--quiet", "-m", "Original")
             self.assertEqual(launcher.native_source_checkout(checkout, staging), checkout)
@@ -40,8 +43,13 @@ class NativeLaunchSourceTests(unittest.TestCase):
             self.assertEqual(git("status", "--porcelain", root=source), "")
             self.assertFalse((source / untracked.name).exists())
             self.assertEqual(untracked.read_text(), "unpublished\n")
+            unrelated.write_text("/artifacts/\n/dist/\n")
+            shutil.rmtree(source)
+            source = launcher.native_source_checkout(checkout, staging)
+            self.assertEqual((source / unrelated.name).read_text(), "/artifacts/\n")
+            self.assertIn("/dist/", unrelated.read_text())
             tracked.write_text("changed\n")
-            with self.assertRaisesRegex(launcher.delivery.DeliveryError, "unmodified tracked files"):
+            with self.assertRaisesRegex(launcher.delivery.DeliveryError, "unmodified native helper sources"):
                 launcher.native_source_checkout(checkout, staging)
 
 
