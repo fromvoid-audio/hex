@@ -188,6 +188,17 @@ impl EditorView {
         })
     }
 
+    fn header_device_insertion_gap_active(&self, drag: &NativeDeviceDrag) -> bool {
+        self.mode == super::EditorMode::Arrangement
+            && !matches!(drag.source, NativeDeviceDragSource::Existing { .. })
+            && self.arrangement_device_preview.is_some_and(|preview| {
+                matches!(
+                    preview.target,
+                    super::arrangement_device_drop::ArrangementDropTarget::NewTrack { .. }
+                )
+            })
+    }
+
     pub(super) fn device_drop_header(
         &self,
         track: TrackId,
@@ -233,8 +244,11 @@ impl EditorView {
                 }),
             )
             .drag_over::<NativeDeviceDrag>(move |style, drag, window, cx| {
-                let valid = owner
-                    .read(cx)
+                let view = owner.read(cx);
+                if view.header_device_insertion_gap_active(drag) {
+                    return style;
+                }
+                let valid = view
                     .header_device_request(
                         drag,
                         generation,
@@ -257,6 +271,19 @@ impl EditorView {
             .on_drop(
                 cx.listener(move |view, drag: &NativeDeviceDrag, window, cx| {
                     cx.stop_propagation();
+                    let pointer = window.mouse_position();
+                    if view.mode == super::EditorMode::Arrangement
+                        && !matches!(drag.source, NativeDeviceDragSource::Existing { .. })
+                        && view
+                            .painted_header_track_insertion_target(
+                                f32::from(pointer.x),
+                                f32::from(pointer.y),
+                            )
+                            .is_some()
+                    {
+                        view.drop_arrangement_device(drag, window, cx);
+                        return;
+                    }
                     let copy = window.modifiers().alt;
                     let request =
                         view.header_device_request(drag, generation, revision, track, copy, cx);
@@ -295,6 +322,9 @@ impl EditorView {
                                         track,
                                         instrument,
                                     },
+                                    (hex_plugin_catalog::PluginRole::Instrument, None) => {
+                                        PluginEffectDestination::Instrument(track)
+                                    }
                                     _ => PluginEffectDestination::Track(track),
                                 };
                                 view.insert_plugin_effect(selection, destination, None, cx);

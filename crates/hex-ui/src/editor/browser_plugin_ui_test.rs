@@ -1838,3 +1838,102 @@ fn vst_browser_drag_captures_the_header_lane_or_new_track(cx: &mut TestAppContex
         });
     }
 }
+
+#[gpui::test]
+fn vst3_browser_drop_on_arrangement_header_column_gaps_and_tail_inserts_tracks(
+    cx: &mut TestAppContext,
+) {
+    use hex_project::TrackDeviceSlot;
+    use hex_session::service::PluginEffectDestination;
+
+    for (slot, subcategories) in [
+        (TrackDeviceSlot::Effect, "Fx"),
+        (TrackDeviceSlot::Instrument, "Instrument|Synth"),
+    ] {
+        for drop_below_last in [false, true] {
+            let (handle, editor, tracks, directory, _) =
+                browser_drag_fixture_with_tracks(cx, &["selected", "target"]);
+            let module = directory.0.canonicalize().unwrap().join("Original.vst3");
+            let mut catalog = original_plugin_catalog(module);
+            let class = &mut catalog.entries[0]
+                .last_good
+                .as_mut()
+                .unwrap()
+                .discovery
+                .as_mut()
+                .unwrap()
+                .classes[0];
+            class.class_flags = Some(0);
+            class.subcategories = Some(subcategories.into());
+            class.class_vendor = Some("Original Vendor".into());
+            class.class_version = Some("1".into());
+            class.class_sdk_version = Some("3.8".into());
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            visual.run_until_parked();
+            editor.update(&mut visual, |view, cx| {
+                view.selected_track = Some(tracks[0]);
+                view.mode = crate::editor::EditorMode::Arrangement;
+                view.select_browser_source(BrowserSection::Plugins, cx);
+            });
+            let deadline = crate::test_wait::hang_deadline();
+            loop {
+                visual.run_until_parked();
+                if editor.read_with(&visual, |view, _| !view.browser.plugins.loading) {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            editor.update(&mut visual, |view, cx| {
+                view.apply_plugin_catalog(catalog, cx);
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let source = visual.debug_bounds("browser-vst3-row-0").unwrap().center();
+            let header = visual
+                .debug_bounds(Box::leak(
+                    format!("arrangement-track-header-{}", tracks[1].value()).into_boxed_str(),
+                ))
+                .expect("second track header");
+            let target = if drop_below_last {
+                point(header.center().x, header.bottom() + px(16.0))
+            } else {
+                point(header.center().x, header.origin.y)
+            };
+            visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(
+                point(source.x + px(12.0), source.y),
+                MouseButton::Left,
+                Modifiers::default(),
+            );
+            visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            assert!(
+                visual
+                    .debug_bounds("arrangement-device-drop-preview")
+                    .is_some(),
+                "vst3 header-column drop must show insertion preview"
+            );
+            visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+            editor.read_with(&visual, |view, _| {
+                let pending = view.pending_plugin_effect.as_ref().unwrap_or_else(|| {
+                    panic!(
+                        "vst3 header-column drop must enqueue new track insertion: {:?}",
+                        view.error
+                    )
+                });
+                assert_eq!(
+                    pending.proposal.destination,
+                    PluginEffectDestination::NewTrack {
+                        before_track: (!drop_below_last).then_some(tracks[1]),
+                        slot,
+                        gain: 0.251_188_64,
+                        track_identity: view.state.as_ref().unwrap().project.next_identity(),
+                    }
+                );
+                assert!(view.error.is_none(), "{:?}", view.error);
+                assert_eq!(view.selected_track, Some(tracks[0]));
+            });
+        }
+    }
+}

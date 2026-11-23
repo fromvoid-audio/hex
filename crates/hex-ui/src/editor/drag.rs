@@ -962,31 +962,78 @@ impl super::EditorView {
             .any(|bounds| y >= f32::from(bounds.top()) && y < f32::from(bounds.bottom()))
     }
 
+    pub(super) fn painted_arrangement_header_column(&self) -> Option<LaneBounds> {
+        let body = self
+            .arrangement_bounds
+            .filter(|_| self.arrangement_bounds_epoch == self.drag_layout_generation)?;
+        let width = self.track_header_width().min(body.width);
+        (width > 0.0 && body.height > 0.0).then_some(LaneBounds {
+            left: body.left + body.width - width,
+            width,
+            ..body
+        })
+    }
+
+    /// The same vertical insertion gaps as the timeline, restricted to the
+    /// scrollable header column. Main and Returns are outside this body.
+    pub(super) fn painted_header_track_insertion_target(
+        &self,
+        pointer_x: f32,
+        pointer_y: f32,
+    ) -> Option<(Option<TrackId>, LaneBounds, f32)> {
+        if self.mode != super::EditorMode::Arrangement {
+            return None;
+        }
+        let headers = self.painted_arrangement_header_column()?;
+        if !lane_contains_pointer(pointer_x, pointer_y, headers)
+            || self.painted_arrangement_proposal_at(pointer_y)
+        {
+            return None;
+        }
+        self.painted_track_insertion_at_y(pointer_y, headers.top)
+            .map(|(before, y)| (before, headers, y))
+    }
+
     /// The same vertical insertion gaps as the timeline, restricted to the
     /// scrollable header column. Main and Returns are outside this body.
     pub(super) fn painted_sampler_track_gap(
         &self,
         pointer: gpui::Point<gpui::Pixels>,
     ) -> Option<(Option<TrackId>, f32)> {
+        self.painted_header_track_insertion_target(f32::from(pointer.x), f32::from(pointer.y))
+            .map(|(before, _, y)| (before, y))
+    }
+
+    /// Resolve a pointer inside an expanded automation sub-row's header strip
+    /// (below the track's main header, inside its full painted row bounds).
+    pub(super) fn hovered_track_automation_header_drop_target(
+        &self,
+        pointer_x: f32,
+        pointer_y: f32,
+    ) -> Option<(TrackId, LaneBounds)> {
         if self.mode != super::EditorMode::Arrangement {
             return None;
         }
-        let body = self
-            .arrangement_bounds
-            .filter(|_| self.arrangement_bounds_epoch == self.drag_layout_generation)?;
-        let width = self.track_header_width().min(body.width);
-        let headers = LaneBounds {
-            left: body.left + body.width - width,
-            width,
-            ..body
-        };
-        let y = f32::from(pointer.y);
-        if !lane_contains_pointer(f32::from(pointer.x), y, headers)
-            || self.painted_arrangement_proposal_at(y)
+        let headers = self.painted_arrangement_header_column()?;
+        if !lane_contains_pointer(pointer_x, pointer_y, headers)
+            || self.painted_arrangement_proposal_at(pointer_y)
         {
             return None;
         }
-        self.painted_track_insertion_at_y(y, body.top)
+        self.drag_lanes.iter().find_map(|(&track, body_lane)| {
+            let full_lane = self.painted_track_drop_lane(track)?;
+            let body_bottom = body_lane.top + body_lane.height;
+            let full_bottom = full_lane.top + full_lane.height;
+            (pointer_y >= body_bottom && pointer_y < full_bottom).then_some((
+                track,
+                LaneBounds {
+                    left: headers.left,
+                    width: headers.width,
+                    top: full_lane.top,
+                    height: full_lane.height,
+                },
+            ))
+        })
     }
 
     // Use the last painted full row, including attached automation lanes.

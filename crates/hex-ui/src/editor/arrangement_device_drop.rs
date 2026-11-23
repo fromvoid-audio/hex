@@ -23,7 +23,7 @@ pub(super) enum ArrangementDropTarget {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ArrangementDevicePreview {
     pub(super) destination: ArrangementDeviceDestination,
-    target: ArrangementDropTarget,
+    pub(super) target: ArrangementDropTarget,
 }
 pub(super) fn arrangement_existing_track_plugin_destination(
     track: &hex_project::Track,
@@ -66,6 +66,32 @@ impl EditorView {
         self.state.as_ref()?.project.track(track)?;
         Some(ArrangementDropTarget::ExistingTrack { track, lane })
     }
+    fn painted_arrangement_device_drop_target(
+        &self,
+        x: f32,
+        y: f32,
+        allow_new_track: bool,
+    ) -> Option<ArrangementDropTarget> {
+        if !allow_new_track {
+            return self
+                .hovered_track_drop_target(x, y)
+                .or_else(|| self.hovered_track_automation_header_drop_target(x, y))
+                .map(|(track, lane)| ArrangementDropTarget::ExistingTrack { track, lane });
+        }
+        if let Some(target) = self.painted_arrangement_drop_target(x, y) {
+            return Some(target);
+        }
+        if let Some((before_track, lane, line)) = self.painted_header_track_insertion_target(x, y) {
+            return Some(ArrangementDropTarget::NewTrack {
+                before_track,
+                lane,
+                line,
+            });
+        }
+        let (track, lane) = self.hovered_track_automation_header_drop_target(x, y)?;
+        self.state.as_ref()?.project.track(track)?;
+        Some(ArrangementDropTarget::ExistingTrack { track, lane })
+    }
     pub(super) fn update_arrangement_device_drop(
         &mut self,
         drag: &NativeDeviceDrag,
@@ -102,13 +128,9 @@ impl EditorView {
         if !self.native_device_drag_is_current(drag) || self.mode != EditorMode::Arrangement {
             return;
         }
-        let target = if matches!(drag.source, NativeDeviceDragSource::Existing { .. }) {
-            self.hovered_track_drop_target(x, y)
-                .map(|(track, lane)| ArrangementDropTarget::ExistingTrack { track, lane })
-        } else {
-            self.painted_arrangement_drop_target(x, y)
-        };
-        let Some(target) = target else {
+        let allow_new_track = !matches!(drag.source, NativeDeviceDragSource::Existing { .. });
+        let Some(target) = self.painted_arrangement_device_drop_target(x, y, allow_new_track)
+        else {
             return;
         };
         if let (Some(role), ArrangementDropTarget::ExistingTrack { track, .. }) =
