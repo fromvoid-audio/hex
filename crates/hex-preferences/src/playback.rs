@@ -4,16 +4,22 @@ use super::{DOCUMENT_VERSION, PreferencesError, atomic_save, read_document};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Application playback choices, including whether held MIDI notes are chased.
+/// Application playback choices, including held-MIDI note chase and Live Mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PlaybackPreferences {
     pub note_chase: bool,
+    /// When enabled, playback-interrupting edits prompt for confirmation;
+    /// when disabled (non-live mode), interrupting edits proceed immediately.
+    pub live_mode: bool,
 }
 
 impl Default for PlaybackPreferences {
     fn default() -> Self {
-        Self { note_chase: true }
+        Self {
+            note_chase: true,
+            live_mode: true,
+        }
     }
 }
 
@@ -87,7 +93,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_file_and_omitted_note_chase_default_on_without_writing() {
+    fn missing_file_and_omitted_fields_default_on_without_writing() {
         let dir = Directory::new();
         let path = playback_preferences_path(&dir.0);
         assert_eq!(
@@ -95,14 +101,44 @@ mod tests {
             dir.0.join("Library/Application Support/hex/playback.json")
         );
         assert!(PlaybackPreferences::default().note_chase);
-        assert!(load_playback_preferences(&path).unwrap().note_chase);
+        assert!(PlaybackPreferences::default().live_mode);
+        assert_eq!(
+            load_playback_preferences(&path).unwrap(),
+            PlaybackPreferences {
+                note_chase: true,
+                live_mode: true,
+            }
+        );
         assert!(!dir.0.join("Library").exists());
 
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let bytes = br#"{"version":1,"preferences":{}}"#;
-        fs::write(&path, bytes).unwrap();
-        assert!(load_playback_preferences(&path).unwrap().note_chase);
-        assert_eq!(fs::read(&path).unwrap(), bytes);
+        for (bytes, expected) in [
+            (
+                br#"{"version":1,"preferences":{}}"#.as_slice(),
+                PlaybackPreferences {
+                    note_chase: true,
+                    live_mode: true,
+                },
+            ),
+            (
+                br#"{"version":1,"preferences":{"note_chase":false}}"#.as_slice(),
+                PlaybackPreferences {
+                    note_chase: false,
+                    live_mode: true,
+                },
+            ),
+            (
+                br#"{"version":1,"preferences":{"live_mode":false}}"#.as_slice(),
+                PlaybackPreferences {
+                    note_chase: true,
+                    live_mode: false,
+                },
+            ),
+        ] {
+            fs::write(&path, bytes).unwrap();
+            assert_eq!(load_playback_preferences(&path).unwrap(), expected);
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
     }
 
     #[test]
@@ -113,10 +149,15 @@ mod tests {
         fs::create_dir_all(unrelated.parent().unwrap()).unwrap();
         fs::write(&unrelated, b"preserved").unwrap();
         for note_chase in [false, true] {
-            let preferences = PlaybackPreferences { note_chase };
-            save_playback_preferences(&path, preferences).unwrap();
-            assert_eq!(load_playback_preferences(&path).unwrap(), preferences);
-            assert_eq!(fs::read(&unrelated).unwrap(), b"preserved");
+            for live_mode in [false, true] {
+                let preferences = PlaybackPreferences {
+                    note_chase,
+                    live_mode,
+                };
+                save_playback_preferences(&path, preferences).unwrap();
+                assert_eq!(load_playback_preferences(&path).unwrap(), preferences);
+                assert_eq!(fs::read(&unrelated).unwrap(), b"preserved");
+            }
         }
     }
 
@@ -131,6 +172,8 @@ mod tests {
             br#"{"version":1,"preferences":{"note_chase":true,"unknown":true}}"#,
             br#"{"version":1,"preferences":{"note_chase":"off"}}"#,
             br#"{"version":1,"preferences":{"note_chase":null}}"#,
+            br#"{"version":1,"preferences":{"live_mode":"off"}}"#,
+            br#"{"version":1,"preferences":{"live_mode":null}}"#,
         ] {
             fs::write(&path, bytes).unwrap();
             assert!(matches!(

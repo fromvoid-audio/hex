@@ -555,3 +555,149 @@ fn confirmation_modal_keyboard_precedence_expiry_and_project_replace(cx: &mut Te
         "expired offer retirement must restore previous editor focus"
     );
 }
+
+#[gpui::test]
+fn live_mode_settings_toggle_persists_and_controls_confirmation_modal(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    let temp_dir = std::env::temp_dir().join(format!(
+        "hex-ui-live-mode-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let prefs_path = hex_preferences::playback_preferences_path(&temp_dir);
+
+    let (handle, editor) = crate::editor::clip_drag_ui_test::editor_window(
+        cx,
+        Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+
+    // Point playback_settings at an isolated temporary path and load defaults cleanly.
+    editor.update(&mut visual, |view, cx| {
+        view.playback_settings.path = Some(prefs_path.clone());
+        view.playback_settings.loading = false;
+        view.playback_settings.saving = false;
+        view.playback_settings.writable = true;
+        view.playback_settings.error = None;
+        view.playback_settings.preferences = hex_preferences::PlaybackPreferences {
+            note_chase: false,
+            live_mode: true,
+        };
+        cx.notify();
+    });
+    visual.run_until_parked();
+
+    // Open Hex Settings (`Cmd+,`) and toggle Live Mode OFF via the UI row.
+    visual.simulate_keystrokes("cmd-,");
+    visual.run_until_parked();
+    let toggle_bounds = visual
+        .debug_bounds("live mode settings")
+        .expect("live mode toggle must render in Hex Settings");
+    visual.simulate_click(toggle_bounds.center(), Modifiers::default());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while editor.read_with(&visual, |view, _| view.playback_settings.saving) {
+        assert!(Instant::now() < deadline, "live mode save did not settle");
+        visual.run_until_parked();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    visual.run_until_parked();
+
+    let saved = hex_preferences::load_playback_preferences(&prefs_path).unwrap();
+    assert!(
+        !saved.live_mode,
+        "toggling Live Mode off must persist live_mode = false"
+    );
+    assert!(
+        !saved.note_chase,
+        "toggling Live Mode must preserve note_chase"
+    );
+    assert!(editor.read_with(&visual, |view, _| !view.live_mode_enabled()));
+
+    // Close Settings. With Live Mode OFF (non-live mode), an interrupting offer auto-proceeds
+    // without displaying the confirmation modal.
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("theme settings panel").is_none());
+
+    let (_service_non_live, offer_non_live) = make_confirmation_offer(Duration::from_secs(30));
+    editor.update(&mut visual, |view, cx| {
+        view.install_device_confirmation(offer_non_live.clone());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        !offer_non_live.is_pending(),
+        "non-live mode must immediately resolve the confirmation offer"
+    );
+    assert!(
+        !offer_non_live.cancel(),
+        "non-live mode must call proceed() rather than cancel()"
+    );
+    assert!(
+        visual.debug_bounds("device-insert-confirmation").is_none(),
+        "non-live mode must not show confirmation modal"
+    );
+    assert!(editor.read_with(&visual, |view, _| view.device_insert_confirmation.is_none()));
+
+    // Reopen Settings and toggle Live Mode back ON; verify persistence and modal prompting.
+    visual.simulate_keystrokes("cmd-,");
+    visual.run_until_parked();
+    let toggle_bounds = visual.debug_bounds("live mode settings").unwrap();
+    visual.simulate_click(toggle_bounds.center(), Modifiers::default());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while editor.read_with(&visual, |view, _| view.playback_settings.saving) {
+        assert!(
+            Instant::now() < deadline,
+            "live mode re-enable save did not settle"
+        );
+        visual.run_until_parked();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    visual.run_until_parked();
+    let reloaded = hex_preferences::load_playback_preferences(&prefs_path).unwrap();
+    assert!(reloaded.live_mode);
+    assert!(!reloaded.note_chase);
+
+    // Non-writable/error state disables clicks and renders status row.
+    editor.update(&mut visual, |view, cx| {
+        view.playback_settings.writable = false;
+        view.playback_settings.error = Some("could not save playback settings · read-only".into());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("playback settings status").is_some());
+    let toggle_bounds = visual.debug_bounds("live mode settings").unwrap();
+    visual.simulate_click(toggle_bounds.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        editor.read_with(&visual, |view, _| view.live_mode_enabled()
+            && !view.playback_settings.saving),
+        "disabled live mode row must ignore clicks"
+    );
+
+    // Close Settings and verify Live Mode ON shows the centered confirmation modal.
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    let (_service_live, offer_live) = make_confirmation_offer(Duration::from_secs(30));
+    editor.update(&mut visual, |view, cx| {
+        view.install_device_confirmation(offer_live.clone());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(offer_live.is_pending());
+    assert!(
+        visual.debug_bounds("device-insert-confirmation").is_some(),
+        "Live Mode ON must show confirmation modal"
+    );
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(!offer_live.is_pending());
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

@@ -495,6 +495,12 @@ impl EditorView {
     }
 
     pub(super) fn install_device_confirmation(&mut self, offer: DeviceInsertConfirmation) {
+        if !self.live_mode_enabled() {
+            if offer.is_pending() {
+                let _ = offer.proceed();
+            }
+            return;
+        }
         let previous_focus = self
             .device_insert_confirmation
             .as_ref()

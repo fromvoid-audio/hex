@@ -2,7 +2,8 @@
 //! Raw Cue/Seek, history and structural resume retain their independent laws.
 //! The UI captures targets before waiting; late loading cannot retarget a start.
 use super::{EditorView, arrangement_seek::SeekIntent};
-use gpui::Context;
+use crate::theme;
+use gpui::{Context, Div, div, prelude::*, px, rgb};
 use hex_audio::prepared::AppliedAudioSource;
 use hex_engine::NoteChase;
 use hex_preferences::PlaybackPreferences;
@@ -378,15 +379,36 @@ impl EditorView {
         .detach();
     }
 
+    pub(super) fn live_mode_enabled(&self) -> bool {
+        self.playback_settings.preferences.live_mode
+    }
+
     /// Serialize an explicit preference edit; the active policy changes only on success.
     pub(super) fn save_note_chase(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        let preferences = PlaybackPreferences {
+            note_chase: enabled,
+            ..self.playback_settings.preferences
+        };
+        self.save_playback_preferences_change(preferences, cx);
+    }
+
+    pub(super) fn toggle_live_mode(&mut self, cx: &mut Context<Self>) {
+        let preferences = PlaybackPreferences {
+            live_mode: !self.playback_settings.preferences.live_mode,
+            ..self.playback_settings.preferences
+        };
+        self.save_playback_preferences_change(preferences, cx);
+    }
+
+    fn save_playback_preferences_change(
+        &mut self,
+        preferences: PlaybackPreferences,
+        cx: &mut Context<Self>,
+    ) {
         let state = &mut self.playback_settings;
         if state.loading || state.saving || !state.writable {
             return;
         }
-        let preferences = PlaybackPreferences {
-            note_chase: enabled,
-        };
         let Some(path) = state.path.clone() else {
             state.writable = false;
             state.error = Some("playback settings unavailable · home directory is unset".into());
@@ -426,6 +448,60 @@ impl EditorView {
         })
         .detach();
         cx.notify();
+    }
+
+    pub(super) fn live_mode_settings_row(&self, cx: &mut Context<Self>) -> Div {
+        let state = &self.playback_settings;
+        let style = super::device_panel::control_style();
+        let enabled = !state.loading && !state.saving && state.writable;
+        let label = if state.loading {
+            "live mode · loading…"
+        } else if state.saving {
+            "live mode · saving…"
+        } else if state.preferences.live_mode {
+            "live mode · on"
+        } else {
+            "live mode · off (non-live mode)"
+        };
+        let mut row = div()
+            .flex()
+            .flex_col()
+            .gap(px(3.0))
+            .child(
+                div()
+                    .id("live mode settings")
+                    .debug_selector(|| "live mode settings".into())
+                    .text_xs()
+                    .px(px(4.0))
+                    .py(px(3.0))
+                    .border_1()
+                    .border_color(rgb(style.border))
+                    .opacity(if enabled { 1.0 } else { 0.45 })
+                    .when(enabled, |row| {
+                        row.cursor_pointer()
+                            .on_click(cx.listener(|view, _, _, cx| view.toggle_live_mode(cx)))
+                    })
+                    .child(theme::text(label)),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(style.muted))
+                    .child(theme::text(
+                        "live mode asks for confirmation before edits that may audibly interrupt \
+                         playback; non-live mode proceeds immediately and accepts audible glitches.",
+                    )),
+            );
+        if let Some(error) = &state.error {
+            row = row.child(
+                div()
+                    .id("playback settings status")
+                    .debug_selector(|| "playback settings status".into())
+                    .text_xs()
+                    .child(theme::text(error)),
+            );
+        }
+        row
     }
 }
 
