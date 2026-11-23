@@ -68,23 +68,25 @@ class DeviceLayoutGuardTests(unittest.TestCase):
             self.assertTrue(any("color literal" in error for error in errors), errors)
             panel.write_text(original)
 
-            host = root / guard.UI / "editor/device_panel.rs"
+            host = root / guard.PANEL / "chain_render.rs"
             host_original = host.read_text()
             host.write_text(host_original.replace("device_frame(", "local_header_and_frame("))
             errors = guard.analyze(root, gallery=False)
             self.assertTrue(any("render_instrument" in error and "missing shared call device_frame" in error for error in errors), errors)
             host.write_text(host_original)
 
-            helper = "pub(super) fn control_style() -> ControlStyle {"
+            state = root / guard.PANEL / "state.rs"
+            state_original = state.read_text()
+            helper = "pub(in crate::editor) fn control_style() -> ControlStyle {"
             for injection in [
                 "let fork = hex_widgets::ActionStyle { background: 0x123456, text: 0xffffff, hover_background: 0xabcdef, hover_text: Some(0) };",
                 "let fork = ControlStyle { surface: 0x123456, ..theme::device_style(theme::DeviceStyleRole::Control) };",
                 "let mut fork = theme::device_style(theme::DeviceStyleRole::Control); fork.surface = theme::color(theme::PaletteRole::Primary);",
             ]:
-                host.write_text(host_original.replace(helper, helper + injection))
+                state.write_text(state_original.replace(helper, helper + injection))
                 errors = guard.analyze(root, gallery=False)
                 self.assertTrue(any("style" in error and "theme/device.rs" in error for error in errors), errors)
-            host.write_text(host_original)
+            state.write_text(state_original)
 
             owner = root / guard.PANEL / "return_view.rs"
             original = owner.read_text()

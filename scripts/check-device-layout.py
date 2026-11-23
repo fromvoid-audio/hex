@@ -123,10 +123,14 @@ def require_calls(stream: list[Token], calls: tuple[str, ...], label: str) -> li
 
 
 ENTRY_POINTS = {
-    UI / "editor/device_panel.rs": {
+    PANEL / "chain_render.rs": {
         "render_effect": ("device_frame", "theme::device_frame_style", "parameter_rows::body", "device_composition::unsupported_body"),
         "render_instrument": ("device_frame", "theme::device_frame_style", "parameter_rows::body", "device_composition::unsupported_body"),
+    },
+    PANEL / "actions.rs": {
         "action_button": ("hex_widgets::device_action", "theme::device_header_action_style"),
+    },
+    PANEL / "state.rs": {
         "control_style": ("theme::control_style",),
         "device_layout_style": ("theme::device_style",),
     },
@@ -189,12 +193,12 @@ def analyze(root: Path, *, gallery: bool = True) -> list[str]:
         # Every effect consumer must be reachable through both owner dispatches.
         module = path.stem
         if module == "operator_panel":
-            owner = UI / "editor/device_panel.rs"
+            owner = PANEL / "chain_render.rs"
             body = functions(read(owner)).get("render_instrument", [])
             errors.extend(require_calls(body, ("operator_panel::render_body",), f"{owner}::render_instrument"))
         else:
-            for owner in [UI / "editor/device_panel.rs", PANEL / "return_view.rs"]:
-                fn = "render_effect" if owner.name == "device_panel.rs" else "render_return_effect"
+            for owner in [PANEL / "chain_render.rs", PANEL / "return_view.rs"]:
+                fn = "render_effect" if owner.name == "chain_render.rs" else "render_return_effect"
                 body = functions(read(owner)).get(fn, [])
                 errors.extend(require_calls(body, (f"{module}::render_body",), f"{owner}::{fn}"))
 
