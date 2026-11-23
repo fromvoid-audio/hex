@@ -427,7 +427,7 @@ fn save_and_export_barriers_finalize_latest_parameter_value() {
         token: 1,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::DeviceParameter {
                 device,
@@ -437,7 +437,7 @@ fn save_and_export_barriers_finalize_latest_parameter_value() {
         .expect("begin parameter edit");
     next_event(&service);
     service
-        .submit(Request::DeviceGesture(GestureRequest::Change {
+        .submit(Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(2.75),
@@ -486,7 +486,7 @@ fn save_and_export_barriers_finalize_latest_parameter_value() {
         token: 1,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key: next_key,
             target: GestureTarget::DeviceParameter {
                 device,
@@ -496,7 +496,7 @@ fn save_and_export_barriers_finalize_latest_parameter_value() {
         .expect("begin export parameter edit");
     next_event(&service);
     service
-        .submit(Request::DeviceGesture(GestureRequest::Change {
+        .submit(Request::device_gesture(GestureRequest::Change {
             key: next_key,
             sequence: 1,
             value: ParameterValue::Float(4.0),
@@ -526,7 +526,7 @@ fn save_and_export_barriers_finalize_latest_parameter_value() {
         token: 2,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key: replace_key,
             target: GestureTarget::DeviceParameter {
                 device,
@@ -536,7 +536,7 @@ fn save_and_export_barriers_finalize_latest_parameter_value() {
         .expect("begin before replacement");
     next_event(&service);
     service
-        .submit(Request::DeviceGesture(GestureRequest::Change {
+        .submit(Request::device_gesture(GestureRequest::Change {
             key: replace_key,
             sequence: 1,
             value: ParameterValue::Float(5.0),
@@ -556,7 +556,7 @@ fn save_and_export_barriers_finalize_latest_parameter_value() {
         ParameterValue::Float(2.75)
     );
     service
-        .submit(Request::DeviceGesture(GestureRequest::Cancel {
+        .submit(Request::device_gesture(GestureRequest::Cancel {
             key: replace_key,
         }))
         .expect("stale project gesture");

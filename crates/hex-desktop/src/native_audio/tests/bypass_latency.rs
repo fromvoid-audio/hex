@@ -1203,7 +1203,7 @@ fn gesture_publication_case(commit: bool) {
         generation: 0,
         token: 1,
     };
-    let begun = h.run(Request::DeviceGesture(GestureRequest::Begin {
+    let begun = h.run(Request::device_gesture(GestureRequest::Begin {
         key,
         target: GestureTarget::DeviceParameter {
             device,
@@ -1211,7 +1211,7 @@ fn gesture_publication_case(commit: bool) {
         },
     }));
     assert!(begun.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
-    let first = h.run(Request::DeviceGesture(GestureRequest::Change {
+    let first = h.run(Request::device_gesture(GestureRequest::Change {
         key,
         sequence: 1,
         value: ParameterValue::Float(1.5),
@@ -1225,7 +1225,7 @@ fn gesture_publication_case(commit: bool) {
     }
     let first_revision = h.submitted.unwrap().0;
     h.service
-        .submit(Request::DeviceGesture(GestureRequest::Change {
+        .submit(Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 2,
             value: ParameterValue::Float(2.0),
@@ -1252,7 +1252,7 @@ fn gesture_publication_case(commit: bool) {
     );
     let (second_revision, metadata) = h.applied(first_revision);
     assert_eq!(metadata.device_preview.unwrap().sequence, 2);
-    let third = h.run(Request::DeviceGesture(GestureRequest::Change {
+    let third = h.run(Request::device_gesture(GestureRequest::Change {
         key,
         sequence: 3,
         value: ParameterValue::Float(2.5),
@@ -1278,7 +1278,7 @@ fn gesture_publication_case(commit: bool) {
     } else {
         GestureRequest::Cancel { key }
     };
-    h.service.submit(Request::DeviceGesture(terminal)).unwrap();
+    h.service.submit(Request::device_gesture(terminal)).unwrap();
     let refused = h.next();
     assert!(
         refused.gesture_ack.as_ref().is_some_and(|ack| {
@@ -1296,7 +1296,7 @@ fn gesture_publication_case(commit: bool) {
             .is_some_and(|snapshot| snapshot.key == key && snapshot.sequence == 3)
     );
     h.render();
-    let committed = h.run(Request::DeviceGesture(terminal));
+    let committed = h.run(Request::device_gesture(terminal));
     assert!(
         committed
             .gesture_ack

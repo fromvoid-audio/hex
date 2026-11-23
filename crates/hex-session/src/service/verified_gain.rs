@@ -213,7 +213,7 @@ mod tests {
         };
         let began = send(
             &service,
-            Request::DeviceGesture(crate::device_gesture::GestureRequest::Begin {
+            Request::device_gesture(crate::device_gesture::GestureRequest::Begin {
                 key,
                 target: GestureTarget::TrackGain { track },
             }),
@@ -221,7 +221,7 @@ mod tests {
         assert!(began.gesture_ack.as_ref().unwrap().accepted);
         let changed = send(
             &service,
-            Request::DeviceGesture(crate::device_gesture::GestureRequest::Change {
+            Request::device_gesture(crate::device_gesture::GestureRequest::Change {
                 key,
                 sequence: 1,
                 value: ParameterValue::Float(0.25),
@@ -229,7 +229,7 @@ mod tests {
         );
         let cancelled = send(
             &service,
-            Request::DeviceGesture(crate::device_gesture::GestureRequest::Cancel { key }),
+            Request::device_gesture(crate::device_gesture::GestureRequest::Cancel { key }),
         );
         (service, initial, changed, cancelled, key)
     }
@@ -258,7 +258,7 @@ mod tests {
         assert_eq!(terminal.terminal_sequence(), Some(1));
         let future = send(
             &service,
-            Request::DeviceGesture(crate::device_gesture::GestureRequest::Cancel {
+            Request::device_gesture(crate::device_gesture::GestureRequest::Cancel {
                 key: GestureKey { token: 99, ..key },
             }),
         );

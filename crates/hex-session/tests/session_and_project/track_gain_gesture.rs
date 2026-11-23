@@ -89,7 +89,7 @@ fn begin(service: &Service, track: TrackId, token: u64) -> GestureKey {
     };
     let event = request(
         service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::TrackGain { track },
         }),
@@ -100,7 +100,7 @@ fn begin(service: &Service, track: TrackId, token: u64) -> GestureKey {
 fn change(service: &Service, key: GestureKey, sequence: u64, gain: f32) -> Event {
     request(
         service,
-        Request::DeviceGesture(GestureRequest::Change {
+        Request::device_gesture(GestureRequest::Change {
             key,
             sequence,
             value: ParameterValue::Float(gain),
@@ -169,7 +169,7 @@ fn held_gain_changes_pcm_before_commit_and_commits_one_undo_step() {
     }
     let committed = request(
         &service,
-        Request::DeviceGesture(GestureRequest::Commit {
+        Request::device_gesture(GestureRequest::Commit {
             manual_edit: false,
             key,
             sequence: 6,
@@ -215,7 +215,7 @@ fn cancel_restores_latest_canonical_without_discarding_intervening_edit() {
     oracle.render(&mut expected_pcm).unwrap();
     let canceled = request(
         &service,
-        Request::DeviceGesture(GestureRequest::Cancel { key }),
+        Request::device_gesture(GestureRequest::Cancel { key }),
     );
     assert!(canceled.gesture_ack.as_ref().unwrap().accepted);
     assert!(canceled.active_device_gesture.is_none());
@@ -243,7 +243,7 @@ fn invalid_final_gain_and_deleted_target_refuse_without_mutating_canonical_state
     }
     let rejected = request(
         &service,
-        Request::DeviceGesture(GestureRequest::Commit {
+        Request::device_gesture(GestureRequest::Commit {
             manual_edit: false,
             key,
             sequence: 7,
@@ -256,7 +256,7 @@ fn invalid_final_gain_and_deleted_target_refuse_without_mutating_canonical_state
     edit(&service, Command::RemoveTrack(track));
     let stale = request(
         &service,
-        Request::DeviceGesture(GestureRequest::Commit {
+        Request::device_gesture(GestureRequest::Commit {
             manual_edit: false,
             key,
             sequence: 1,
@@ -275,7 +275,7 @@ fn no_op_commit_has_no_history_and_new_automation_retires_the_gesture() {
     let revision = changed.state.revision;
     let committed = request(
         &service,
-        Request::DeviceGesture(GestureRequest::Commit {
+        Request::device_gesture(GestureRequest::Commit {
             manual_edit: false,
             key,
             sequence: 2,
@@ -302,7 +302,7 @@ fn no_op_commit_has_no_history_and_new_automation_retires_the_gesture() {
     let canonical = automated.state.project.clone();
     let stale = request(
         &service,
-        Request::DeviceGesture(GestureRequest::Commit {
+        Request::device_gesture(GestureRequest::Commit {
             manual_edit: false,
             key,
             sequence: 2,
@@ -313,7 +313,7 @@ fn no_op_commit_has_no_history_and_new_automation_retires_the_gesture() {
     assert_eq!(stale.state.project, canonical);
     let refused = request(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key: GestureKey {
                 generation: 0,
                 token: 3,
@@ -443,7 +443,7 @@ fn track_gain_coalesces_backlog_and_reserves_final_absolute_value() {
         Some(begin),
         "a full submit queue must retain the exact request"
     );
-    let begun = request(&service, Request::DeviceGesture(begin));
+    let begun = request(&service, Request::device_gesture(begin));
     client.mark_submitted();
     for i in 0..1_000 {
         client
@@ -458,7 +458,7 @@ fn track_gain_coalesces_backlog_and_reserves_final_absolute_value() {
     let begin_ack = begun.gesture_ack.unwrap();
     assert!(client.acknowledge(&begin_ack));
     let change = client.next_request().unwrap();
-    let preview = request(&service, Request::DeviceGesture(change));
+    let preview = request(&service, Request::device_gesture(change));
     client.mark_submitted();
     assert!(
         !client.acknowledge(&begin_ack),
@@ -479,7 +479,7 @@ fn track_gain_coalesces_backlog_and_reserves_final_absolute_value() {
         }
     ));
     assert_eq!(client.next_request(), Some(terminal));
-    let committed = request(&service, Request::DeviceGesture(terminal));
+    let committed = request(&service, Request::device_gesture(terminal));
     client.mark_submitted();
     assert!(client.acknowledge(&committed.gesture_ack.unwrap()));
     assert!(client.snapshot().is_none());
@@ -556,7 +556,7 @@ fn track_gain_worker_profile_covers_populated_projects_and_retains_one_history_s
         }
         let committed = request(
             &service,
-            Request::DeviceGesture(GestureRequest::Commit {
+            Request::device_gesture(GestureRequest::Commit {
                 manual_edit: false,
                 key,
                 sequence: 65,
@@ -622,7 +622,7 @@ fn verified_track_gain_preview_preserves_canonical_state_and_other_mixer_limits(
     };
     let began = request(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::TrackGain { track },
         }),
@@ -630,7 +630,7 @@ fn verified_track_gain_preview_preserves_canonical_state_and_other_mixer_limits(
     assert!(began.gesture_ack.as_ref().unwrap().accepted);
     let preview = request(
         &service,
-        Request::DeviceGesture(GestureRequest::Change {
+        Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(0.5),
@@ -651,7 +651,7 @@ fn verified_track_gain_preview_preserves_canonical_state_and_other_mixer_limits(
     );
     let cancelled = request(
         &service,
-        Request::DeviceGesture(GestureRequest::Cancel { key }),
+        Request::device_gesture(GestureRequest::Cancel { key }),
     );
     assert!(cancelled.gesture_ack.as_ref().unwrap().accepted);
     assert!(cancelled.active_device_gesture.is_none());
@@ -693,7 +693,7 @@ fn verified_track_gain_preview_preserves_canonical_state_and_other_mixer_limits(
     {
         let refused = request(
             &service,
-            Request::DeviceGesture(GestureRequest::Begin {
+            Request::device_gesture(GestureRequest::Begin {
                 key: GestureKey {
                     generation: key.generation,
                     token: token as u64 + 2,
@@ -749,7 +749,7 @@ fn header_pan_previews_real_pcm_and_commits_or_cancels_one_canonical_edit() {
     };
     let begun = request(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::TrackBalance { track },
         }),
@@ -788,7 +788,7 @@ fn header_pan_previews_real_pcm_and_commits_or_cancels_one_canonical_edit() {
     }
     let committed = request(
         &service,
-        Request::DeviceGesture(GestureRequest::Commit {
+        Request::device_gesture(GestureRequest::Commit {
             manual_edit: false,
             key,
             sequence: 6,
@@ -808,7 +808,7 @@ fn header_pan_previews_real_pcm_and_commits_or_cancels_one_canonical_edit() {
     assert!(
         request(
             &service,
-            Request::DeviceGesture(GestureRequest::Begin {
+            Request::device_gesture(GestureRequest::Begin {
                 key,
                 target: GestureTarget::TrackBalance { track }
             })
@@ -820,7 +820,7 @@ fn header_pan_previews_real_pcm_and_commits_or_cancels_one_canonical_edit() {
     assert!(change(&service, key, 1, -0.5).gesture_ack.unwrap().accepted);
     let canceled = request(
         &service,
-        Request::DeviceGesture(GestureRequest::Cancel { key }),
+        Request::device_gesture(GestureRequest::Cancel { key }),
     );
     assert!(canceled.gesture_ack.unwrap().accepted);
     assert_eq!(canceled.state.project, accepted);
@@ -876,7 +876,7 @@ fn header_return_gain_previews_real_bus_pcm_and_preserves_current_save_open_and_
     assert!(
         request(
             &service,
-            Request::DeviceGesture(GestureRequest::Begin {
+            Request::device_gesture(GestureRequest::Begin {
                 key,
                 target: GestureTarget::ReturnGain { return_track: bus }
             })
@@ -913,7 +913,7 @@ fn header_return_gain_previews_real_bus_pcm_and_preserves_current_save_open_and_
     }
     let committed = request(
         &service,
-        Request::DeviceGesture(GestureRequest::Commit {
+        Request::device_gesture(GestureRequest::Commit {
             manual_edit: false,
             key,
             sequence: 5,
@@ -965,7 +965,7 @@ fn header_mix_targets_refuse_nonfinite_out_of_range_and_removed_owners() {
         };
         let begun = request(
             &service,
-            Request::DeviceGesture(GestureRequest::Begin { key, target }),
+            Request::device_gesture(GestureRequest::Begin { key, target }),
         );
         assert!(begun.gesture_ack.unwrap().accepted);
         let canonical = begun.state.project.clone();
@@ -983,7 +983,7 @@ fn header_mix_targets_refuse_nonfinite_out_of_range_and_removed_owners() {
         let removed = edit(&service, command);
         let stale = request(
             &service,
-            Request::DeviceGesture(GestureRequest::Commit {
+            Request::device_gesture(GestureRequest::Commit {
                 manual_edit: false,
                 key,
                 sequence: 5,
@@ -1009,7 +1009,7 @@ fn main_gain_preview_scales_real_pcm_and_commits_one_history_step() {
     };
     let began = request(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::MainGain,
         }),
@@ -1049,7 +1049,7 @@ fn main_gain_preview_scales_real_pcm_and_commits_one_history_step() {
     }
     let committed = request(
         &service,
-        Request::DeviceGesture(GestureRequest::Commit {
+        Request::device_gesture(GestureRequest::Commit {
             manual_edit: false,
             key,
             sequence: 5,
@@ -1070,7 +1070,7 @@ fn main_gain_preview_scales_real_pcm_and_commits_one_history_step() {
     assert!(
         request(
             &service,
-            Request::DeviceGesture(GestureRequest::Begin {
+            Request::device_gesture(GestureRequest::Begin {
                 key,
                 target: GestureTarget::MainGain
             })
@@ -1121,7 +1121,7 @@ fn main_gain_cancel_uses_latest_canonical_and_rejects_invalid_and_stale_values()
     };
     let stale = request(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key: GestureKey {
                 generation: 1,
                 token: 1,
@@ -1133,7 +1133,7 @@ fn main_gain_cancel_uses_latest_canonical_and_rejects_invalid_and_stale_values()
     assert!(
         request(
             &service,
-            Request::DeviceGesture(GestureRequest::Begin {
+            Request::device_gesture(GestureRequest::Begin {
                 key,
                 target: GestureTarget::MainGain
             })
@@ -1154,7 +1154,7 @@ fn main_gain_cancel_uses_latest_canonical_and_rejects_invalid_and_stale_values()
     {
         let rejected = request(
             &service,
-            Request::DeviceGesture(GestureRequest::Change {
+            Request::device_gesture(GestureRequest::Change {
                 key,
                 sequence: sequence as u64 + 1,
                 value,
@@ -1166,7 +1166,7 @@ fn main_gain_cancel_uses_latest_canonical_and_rejects_invalid_and_stale_values()
     }
     let noop = request(
         &service,
-        Request::DeviceGesture(GestureRequest::Commit {
+        Request::device_gesture(GestureRequest::Commit {
             manual_edit: false,
             key,
             sequence: 6,
@@ -1183,7 +1183,7 @@ fn main_gain_cancel_uses_latest_canonical_and_rejects_invalid_and_stale_values()
     assert!(
         request(
             &service,
-            Request::DeviceGesture(GestureRequest::Begin {
+            Request::device_gesture(GestureRequest::Begin {
                 key,
                 target: GestureTarget::MainGain
             })
@@ -1204,7 +1204,7 @@ fn main_gain_cancel_uses_latest_canonical_and_rejects_invalid_and_stale_values()
     let expected = renamed.state.project.clone();
     let cancelled = request(
         &service,
-        Request::DeviceGesture(GestureRequest::Cancel { key }),
+        Request::device_gesture(GestureRequest::Cancel { key }),
     );
     assert!(cancelled.gesture_ack.as_ref().unwrap().accepted);
     assert_eq!(cancelled.state.project, expected);

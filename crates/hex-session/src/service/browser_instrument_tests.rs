@@ -137,7 +137,7 @@ fn browser_enter_worker_refusal_preserves_active_gesture_and_history() {
         token: 37,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::TrackGain {
                 track: initial.project.tracks()[0].id(),
@@ -146,7 +146,7 @@ fn browser_enter_worker_refusal_preserves_active_gesture_and_history() {
         .unwrap();
     assert!(event(&service).gesture_ack.unwrap().accepted);
     service
-        .submit(Request::DeviceGesture(GestureRequest::Change {
+        .submit(Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(0.25),
@@ -173,7 +173,7 @@ fn browser_enter_worker_refusal_preserves_active_gesture_and_history() {
         assert!(refused.playback.is_none());
     }
     service
-        .submit(Request::DeviceGesture(GestureRequest::Cancel { key }))
+        .submit(Request::device_gesture(GestureRequest::Cancel { key }))
         .unwrap();
     let cancelled = event(&service);
     assert!(cancelled.gesture_ack.unwrap().accepted);

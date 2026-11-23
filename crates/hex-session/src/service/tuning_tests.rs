@@ -553,7 +553,7 @@ fn reference_audition_continues_during_device_parameter_preview() {
         token: 1,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::ReturnSend {
                 track,
@@ -563,7 +563,7 @@ fn reference_audition_continues_during_device_parameter_preview() {
         .unwrap();
     assert!(next(&service).gesture_ack.unwrap().accepted);
     service
-        .submit(Request::DeviceGesture(GestureRequest::Change {
+        .submit(Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(0.3),

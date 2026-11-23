@@ -3724,7 +3724,7 @@ fn source_manager_retires_preview_with_replaced_instrument_event(cx: &mut TestAp
     };
     let parameter = hex_lattice_contract::ParameterId::from_static(1);
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::DeviceParameter { device, parameter },
         }))
@@ -3736,7 +3736,7 @@ fn source_manager_retires_preview_with_replaced_instrument_event(cx: &mut TestAp
             .accepted
     );
     service
-        .submit(Request::DeviceGesture(GestureRequest::Change {
+        .submit(Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(2.0),

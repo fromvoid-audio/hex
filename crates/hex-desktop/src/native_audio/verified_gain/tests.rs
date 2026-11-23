@@ -591,7 +591,7 @@ fn verified_gain_case(session: bool) {
         generation: applied.context.project_generation,
         token: 1,
     };
-    let began = h.run(Request::DeviceGesture(GestureRequest::Begin {
+    let began = h.run(Request::device_gesture(GestureRequest::Begin {
         key,
         target: GestureTarget::TrackGain { track },
     }));
@@ -601,7 +601,7 @@ fn verified_gain_case(session: bool) {
         began.gesture_ack
     );
     let began_at = Instant::now();
-    let preview = h.run(Request::DeviceGesture(GestureRequest::Change {
+    let preview = h.run(Request::device_gesture(GestureRequest::Change {
         key,
         sequence: 1,
         value: ParameterValue::Float(1.0),
@@ -632,7 +632,7 @@ fn verified_gain_case(session: bool) {
         Some(preview.device_preview.as_ref().unwrap().identity)
     );
     for (sequence, gain) in [(2, 0.0), (3, 2.0)] {
-        let changed = h.run(Request::DeviceGesture(GestureRequest::Change {
+        let changed = h.run(Request::device_gesture(GestureRequest::Change {
             key,
             sequence,
             value: ParameterValue::Float(gain),
@@ -646,7 +646,7 @@ fn verified_gain_case(session: bool) {
     // Logical changes stay bounded/coalesced; the final absolute value must win.
     let backlog_at = Instant::now();
     for sequence in 4..=35 {
-        let changed = h.run(Request::DeviceGesture(GestureRequest::Change {
+        let changed = h.run(Request::device_gesture(GestureRequest::Change {
             key,
             sequence,
             value: ParameterValue::Float(sequence as f32 / 64.0),
@@ -683,7 +683,7 @@ fn verified_gain_case(session: bool) {
         .clone()
         .unwrap();
     let cancel_at = Instant::now();
-    let cancelled = h.run(Request::DeviceGesture(GestureRequest::Cancel { key }));
+    let cancelled = h.run(Request::device_gesture(GestureRequest::Cancel { key }));
     assert!(cancelled.gesture_ack.as_ref().unwrap().accepted);
     assert_eq!(cancelled.state.project, canonical.state.project);
     assert_eq!(cancelled.state.can_undo, canonical.state.can_undo);
@@ -699,16 +699,16 @@ fn verified_gain_case(session: bool) {
     h.observation.lock().unwrap().replay_verified_gain = Some(Arc::clone(&old_preview));
     stable_gain(&h, applied, 0.0);
 
-    let refused_future = h.run(Request::DeviceGesture(GestureRequest::Cancel {
+    let refused_future = h.run(Request::device_gesture(GestureRequest::Cancel {
         key: GestureKey { token: 99, ..key },
     }));
     assert!(!refused_future.gesture_ack.as_ref().unwrap().accepted);
     let second = GestureKey { token: 2, ..key };
-    h.run(Request::DeviceGesture(GestureRequest::Begin {
+    h.run(Request::device_gesture(GestureRequest::Begin {
         key: second,
         target: GestureTarget::TrackGain { track },
     }));
-    let changed = h.run(Request::DeviceGesture(GestureRequest::Change {
+    let changed = h.run(Request::device_gesture(GestureRequest::Change {
         key: second,
         sequence: 1,
         value: ParameterValue::Float(2.0),
@@ -718,7 +718,7 @@ fn verified_gain_case(session: bool) {
     h.observation.lock().unwrap().replay_verified_gain = Some(old_terminal);
     stable_gain(&h, applied, 2.0);
     let commit_at = Instant::now();
-    let committed = h.run(Request::DeviceGesture(GestureRequest::Commit {
+    let committed = h.run(Request::device_gesture(GestureRequest::Commit {
         manual_edit: true,
         key: second,
         sequence: 1,
@@ -737,17 +737,17 @@ fn verified_gain_case(session: bool) {
     assert_eq!(applied.context, h.context.unwrap());
 
     let third = GestureKey { token: 3, ..key };
-    h.run(Request::DeviceGesture(GestureRequest::Begin {
+    h.run(Request::device_gesture(GestureRequest::Begin {
         key: third,
         target: GestureTarget::TrackGain { track },
     }));
-    h.run(Request::DeviceGesture(GestureRequest::Change {
+    h.run(Request::device_gesture(GestureRequest::Change {
         key: third,
         sequence: 1,
         value: ParameterValue::Float(0.5),
     }));
     applied = wait(&h, applied.audio_revision, 0.5);
-    let invalid = h.run(Request::DeviceGesture(GestureRequest::Commit {
+    let invalid = h.run(Request::device_gesture(GestureRequest::Commit {
         manual_edit: true,
         key: third,
         sequence: 2,
@@ -762,11 +762,11 @@ fn verified_gain_case(session: bool) {
     assert_eq!(invalid.state.revision, redone.state.revision);
     applied = wait(&h, applied.audio_revision, 2.0);
     let fourth = GestureKey { token: 4, ..key };
-    h.run(Request::DeviceGesture(GestureRequest::Begin {
+    h.run(Request::device_gesture(GestureRequest::Begin {
         key: fourth,
         target: GestureTarget::TrackGain { track },
     }));
-    h.run(Request::DeviceGesture(GestureRequest::Change {
+    h.run(Request::device_gesture(GestureRequest::Change {
         key: fourth,
         sequence: 1,
         value: ParameterValue::Float(0.75),

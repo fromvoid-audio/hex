@@ -3816,7 +3816,7 @@ fn assert_instrument_takeover_begin(
         .unwrap();
     let begin = client.next_request().unwrap();
     client.mark_submitted();
-    let refused = harness.run(Request::DeviceGesture(begin));
+    let refused = harness.run(Request::device_gesture(begin));
     let ack = refused.gesture_ack.unwrap();
     assert!(ack.accepted && !ack.source_lost, "{ack:?}");
     assert!(client.acknowledge(&ack));
@@ -3825,7 +3825,7 @@ fn assert_instrument_takeover_begin(
     client.cancel().unwrap();
     let cancel = client.next_request().unwrap();
     client.mark_submitted();
-    let cancelled = harness.run(Request::DeviceGesture(cancel));
+    let cancelled = harness.run(Request::device_gesture(cancel));
     let ack = cancelled.gesture_ack.unwrap();
     assert!(ack.accepted, "{ack:?}");
     assert!(client.acknowledge(&ack));
@@ -4100,7 +4100,7 @@ fn verify_instrument_takeover(
     let send = |h: &mut ResidentHarness, client: &mut GestureClient, accepted: bool| {
         let request = client.next_request().unwrap();
         client.mark_submitted();
-        h.service.submit(Request::DeviceGesture(request)).unwrap();
+        h.service.submit(Request::device_gesture(request)).unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut fragment = 0usize;
         loop {

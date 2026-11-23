@@ -347,7 +347,7 @@ fn stopped_group_track_volume_drag_prunes_foreign_program_history_across_preview
         token: 1,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key: key1,
             target: GestureTarget::TrackGain { track: group },
         }))
@@ -358,7 +358,7 @@ fn stopped_group_track_volume_drag_prunes_foreign_program_history_across_preview
     for step in 1..=15_u64 {
         let value = 0.9 - (step as f32) * 0.02;
         service
-            .submit(Request::DeviceGesture(GestureRequest::Change {
+            .submit(Request::device_gesture(GestureRequest::Change {
                 key: key1,
                 sequence: step,
                 value: GestureValue::Float(value),
@@ -392,7 +392,7 @@ fn stopped_group_track_volume_drag_prunes_foreign_program_history_across_preview
     // 2) Commit (`Command::Gain`) at saturated history.
     let final_gain = 0.45_f32;
     service
-        .submit(Request::DeviceGesture(GestureRequest::Commit {
+        .submit(Request::device_gesture(GestureRequest::Commit {
             key: key1,
             sequence: 16,
             value: GestureValue::Float(final_gain),
@@ -416,7 +416,7 @@ fn stopped_group_track_volume_drag_prunes_foreign_program_history_across_preview
         token: 2,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key: key2,
             target: GestureTarget::TrackGain { track: group },
         }))
@@ -424,7 +424,7 @@ fn stopped_group_track_volume_drag_prunes_foreign_program_history_across_preview
     assert!(next_event(&service).gesture_ack.as_ref().unwrap().accepted);
     for step in 1..=8_u64 {
         service
-            .submit(Request::DeviceGesture(GestureRequest::Change {
+            .submit(Request::device_gesture(GestureRequest::Change {
                 key: key2,
                 sequence: step,
                 value: GestureValue::Float(0.4 + step as f32 * 0.01),
@@ -438,7 +438,9 @@ fn stopped_group_track_volume_drag_prunes_foreign_program_history_across_preview
         );
     }
     service
-        .submit(Request::DeviceGesture(GestureRequest::Cancel { key: key2 }))
+        .submit(Request::device_gesture(GestureRequest::Cancel {
+            key: key2,
+        }))
         .unwrap();
     let cancelled = next_event(&service);
     assert!(
@@ -456,7 +458,7 @@ fn stopped_group_track_volume_drag_prunes_foreign_program_history_across_preview
         token: 3,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key: key3,
             target: GestureTarget::TrackGain { track: group },
         }))
@@ -466,7 +468,7 @@ fn stopped_group_track_volume_drag_prunes_foreign_program_history_across_preview
     let mut saw_refusal = false;
     for step in 1..=10_u64 {
         service
-            .submit(Request::DeviceGesture(GestureRequest::Change {
+            .submit(Request::device_gesture(GestureRequest::Change {
                 key: key3,
                 sequence: step,
                 value: GestureValue::Float(0.2 + step as f32 * 0.01),
@@ -488,7 +490,9 @@ fn stopped_group_track_volume_drag_prunes_foreign_program_history_across_preview
     );
     // Cancel succeeds immediately after the refusal (no leaked fence).
     service
-        .submit(Request::DeviceGesture(GestureRequest::Cancel { key: key3 }))
+        .submit(Request::device_gesture(GestureRequest::Cancel {
+            key: key3,
+        }))
         .unwrap();
     let recovered = next_event(&service);
     assert!(

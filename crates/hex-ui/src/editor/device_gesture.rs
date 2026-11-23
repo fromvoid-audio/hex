@@ -252,7 +252,7 @@ impl EditorView {
         let Some(gesture) = self.device_gesture.next_request() else {
             return false;
         };
-        match self.service.submit(Request::DeviceGesture(gesture)) {
+        match self.service.submit(Request::device_gesture(gesture)) {
             Ok(()) => {
                 self.device_gesture.mark_submitted();
                 self.worker_submitted();

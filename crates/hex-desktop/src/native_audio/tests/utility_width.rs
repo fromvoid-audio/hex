@@ -114,7 +114,7 @@ fn width_gesture(automated: bool, dc_remove: bool) {
         generation: 0,
         token: 1,
     };
-    let begin = h.run(Request::DeviceGesture(GestureRequest::Begin {
+    let begin = h.run(Request::device_gesture(GestureRequest::Begin {
         key,
         target: GestureTarget::DeviceParameter {
             device,
@@ -128,7 +128,7 @@ fn width_gesture(automated: bool, dc_remove: bool) {
         (3, 4.0, [0.8125, -0.6875]),
         (4, 0.0, [0.0625, 0.0625]),
     ] {
-        let changed = h.run(Request::DeviceGesture(GestureRequest::Change {
+        let changed = h.run(Request::device_gesture(GestureRequest::Change {
             key,
             sequence,
             value: ParameterValue::Float(width),

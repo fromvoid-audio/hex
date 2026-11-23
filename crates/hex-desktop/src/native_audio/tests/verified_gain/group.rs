@@ -164,7 +164,7 @@ fn wait_audio(
     }
 }
 fn gesture(h: &mut GroupHarness, request: GestureRequest) -> Event {
-    let event = h.run(Request::DeviceGesture(request));
+    let event = h.run(Request::device_gesture(request));
     assert!(
         event.gesture_ack.as_ref().unwrap().accepted,
         "{:?}",

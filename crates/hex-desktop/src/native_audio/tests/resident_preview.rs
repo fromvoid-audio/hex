@@ -1656,14 +1656,14 @@ fn track_gain_gesture_reaches_callback_without_a_pcm_step() {
         generation: 0,
         token: 1,
     };
-    let began = h.run(Request::DeviceGesture(GestureRequest::Begin {
+    let began = h.run(Request::device_gesture(GestureRequest::Begin {
         key,
         target: GestureTarget::TrackGain { track },
     }));
     assert!(began.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
     for (sequence, gain) in [(1, 0.0_f32), (2, 1.5_f32)] {
         h.service
-            .submit(Request::DeviceGesture(GestureRequest::Change {
+            .submit(Request::device_gesture(GestureRequest::Change {
                 key,
                 sequence,
                 value: ParameterValue::Float(gain),
@@ -1738,7 +1738,7 @@ fn track_gain_gesture_reaches_callback_without_a_pcm_step() {
             "gain {gain}: PCM step {max_step}, {largest:?}"
         );
     }
-    let committed = h.run(Request::DeviceGesture(GestureRequest::Commit {
+    let committed = h.run(Request::device_gesture(GestureRequest::Commit {
         manual_edit: true,
         key,
         sequence: 3,
@@ -3882,20 +3882,20 @@ fn refused_unpublished_gain_releases_the_fader_and_restart_retires_a_real_previe
         token,
     };
     let begin = |token| {
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key: key(token),
             target: GestureTarget::TrackGain { track },
         })
     };
     let change = |token| {
-        Request::DeviceGesture(GestureRequest::Change {
+        Request::device_gesture(GestureRequest::Change {
             key: key(token),
             sequence: 1,
             value: ParameterValue::Float(0.5),
         })
     };
     let commit = |token, value| {
-        Request::DeviceGesture(GestureRequest::Commit {
+        Request::device_gesture(GestureRequest::Commit {
             manual_edit: true,
             key: key(token),
             sequence: 2,
@@ -4017,11 +4017,11 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
         generation: 0,
         token: 1,
     };
-    h.run(Request::DeviceGesture(GestureRequest::Begin {
+    h.run(Request::device_gesture(GestureRequest::Begin {
         key,
         target: GestureTarget::TrackGain { track },
     }));
-    let preview = h.run(Request::DeviceGesture(GestureRequest::Change {
+    let preview = h.run(Request::device_gesture(GestureRequest::Change {
         key,
         sequence: 1,
         value: ParameterValue::Float(0.5),
@@ -4064,7 +4064,7 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
     assert!(preview_pcm.iter().flatten().any(|sample| *sample != 0.0));
     h.refuse.store(true, std::sync::atomic::Ordering::Release);
     h.service
-        .submit(Request::DeviceGesture(GestureRequest::Commit {
+        .submit(Request::device_gesture(GestureRequest::Commit {
             manual_edit: true,
             key,
             sequence: 2,
@@ -4098,7 +4098,7 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
         "refused commit must preserve actual audible preview"
     );
     h.service
-        .submit(Request::DeviceGesture(GestureRequest::Cancel { key }))
+        .submit(Request::device_gesture(GestureRequest::Cancel { key }))
         .unwrap();
     let refused_cancel = h.next();
     assert!(refused_cancel.gesture_ack.unwrap().preview_retained);
@@ -4107,7 +4107,7 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
         preview.active_device_gesture
     );
     h.refuse.store(false, std::sync::atomic::Ordering::Release);
-    let cancelled = h.run(Request::DeviceGesture(GestureRequest::Cancel { key }));
+    let cancelled = h.run(Request::device_gesture(GestureRequest::Cancel { key }));
     let (_, metadata) = h.applied(preview_audio);
     assert!(metadata.device_preview.is_none());
     assert!(cancelled.active_device_gesture.is_none());
@@ -4129,20 +4129,20 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
             generation: 0,
             token,
         };
-        h.run(Request::DeviceGesture(GestureRequest::Begin {
+        h.run(Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::TrackGain { track },
         }));
         let mut last = after;
         if changed {
-            h.run(Request::DeviceGesture(GestureRequest::Change {
+            h.run(Request::device_gesture(GestureRequest::Change {
                 key,
                 sequence: 1,
                 value: ParameterValue::Float(0.25),
             }));
             (last, _) = h.applied(after);
         }
-        let committed = h.run(Request::DeviceGesture(GestureRequest::Commit {
+        let committed = h.run(Request::device_gesture(GestureRequest::Commit {
             manual_edit: true,
             key,
             sequence: 2,
@@ -4293,11 +4293,11 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
         generation: 0,
         token: 1,
     };
-    h.run(Request::DeviceGesture(GestureRequest::Begin {
+    h.run(Request::device_gesture(GestureRequest::Begin {
         key,
         target: GestureTarget::TrackGain { track },
     }));
-    let preview = h.run(Request::DeviceGesture(GestureRequest::Change {
+    let preview = h.run(Request::device_gesture(GestureRequest::Change {
         key,
         sequence: 1,
         value: ParameterValue::Float(0.5),
@@ -4479,7 +4479,7 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
         assert_eq!(h.render(), [[0.125; 2]; 64]);
         last_seek_audio = actual;
     }
-    h.run(Request::DeviceGesture(GestureRequest::Cancel { key }));
+    h.run(Request::device_gesture(GestureRequest::Cancel { key }));
     (applied, _) = h.applied(last_seek_audio);
     h.audio
         .as_mut()

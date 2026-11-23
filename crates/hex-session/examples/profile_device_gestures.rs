@@ -146,7 +146,7 @@ fn gesture_roundtrip(
     if !matches!(begin_request, GestureRequest::Begin { .. }) {
         return Err("gesture client produced a non-begin request".into());
     }
-    submit(service, Request::DeviceGesture(begin_request))?;
+    submit(service, Request::device_gesture(begin_request))?;
     client.mark_submitted();
 
     // Queue two edits while Begin is in flight. Only the latest transient is
@@ -174,7 +174,7 @@ fn gesture_roundtrip(
     if value != ParameterValue::Float(3.25) {
         return Err("gesture coalescer did not retain the latest value".into());
     }
-    submit(service, Request::DeviceGesture(change_request))?;
+    submit(service, Request::device_gesture(change_request))?;
     client.mark_submitted();
     let changed = next_event(service)?;
     let change_ack = changed
@@ -215,7 +215,7 @@ fn gesture_roundtrip(
     if value != final_gain || client.snapshot().is_none_or(|snapshot| snapshot.key != key) {
         return Err("gesture commit snapshot mismatch".into());
     }
-    submit(service, Request::DeviceGesture(commit_request))?;
+    submit(service, Request::device_gesture(commit_request))?;
     client.mark_submitted();
     let committed = next_event(service)?;
     let commit_ack = committed

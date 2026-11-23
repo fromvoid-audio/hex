@@ -8,6 +8,11 @@ use std::time::{Duration, Instant};
 pub(super) const DEADLINE: Duration = Duration::from_millis(500);
 pub(super) const POLL: Duration = Duration::from_millis(2);
 
+pub(super) enum Step {
+    Ready(QueuedRequest),
+    Waiting(Wait),
+}
+
 pub(super) struct Wait {
     request: QueuedRequest,
     output: u64,
@@ -15,13 +20,12 @@ pub(super) struct Wait {
     started: Instant,
 }
 impl Wait {
-    #[allow(clippy::result_large_err)] // Return exact request custody without an extra allocation.
     pub(super) fn begin(
         mut request: QueuedRequest,
         readiness: ResidentPublicationReadiness,
-    ) -> Result<Self, QueuedRequest> {
+    ) -> Step {
         let (output, submission, busy) = match readiness {
-            ResidentPublicationReadiness::NoOutput => return Err(request),
+            ResidentPublicationReadiness::NoOutput => return Step::Ready(request),
             ResidentPublicationReadiness::Idle {
                 output_identity,
                 publication_in_flight,
@@ -41,22 +45,21 @@ impl Wait {
             } => (submission.output_identity, None, publication_in_flight),
         };
         if !busy {
-            return Err(request);
+            return Step::Ready(request);
         }
         request.publication_waited = true;
-        Ok(Self {
+        Step::Waiting(Self {
             request,
             output,
             submission,
             started: Instant::now(),
         })
     }
-    #[allow(clippy::result_large_err)] // The parked request remains owned on control.
     pub(super) fn poll(
         mut self,
         readiness: ResidentPublicationReadiness,
         document_intent: u64,
-    ) -> Result<QueuedRequest, Self> {
+    ) -> Step {
         let failure = if self.request.document_intent != document_intent {
             Some("edit cancelled · project changed")
         } else if self.started.elapsed() >= DEADLINE {
@@ -72,15 +75,15 @@ impl Wait {
                     ..
                 } if output_identity == self.output && self.submission.is_none() => {
                     if publication_in_flight {
-                        return Err(self);
+                        return Step::Waiting(self);
                     }
                     None
                 }
                 ResidentPublicationReadiness::Pending { submission, .. }
                     if submission.output_identity == self.output
-                        && self.submission == Some(submission) =>
+                        && self.submission.is_none_or(|tag| tag == submission) =>
                 {
-                    return Err(self);
+                    return Step::Waiting(self);
                 }
                 ResidentPublicationReadiness::Applied {
                     submission,
@@ -89,7 +92,7 @@ impl Wait {
                     && self.submission.is_none_or(|tag| tag == submission) =>
                 {
                     if publication_in_flight {
-                        return Err(self);
+                        return Step::Waiting(self);
                     }
                     None
                 }
@@ -99,7 +102,7 @@ impl Wait {
                     ..
                 } if submission.output_identity == self.output && self.submission.is_none() => {
                     if publication_in_flight {
-                        return Err(self);
+                        return Step::Waiting(self);
                     }
                     None
                 }
@@ -112,7 +115,7 @@ impl Wait {
             }
         };
         self.request.publication_wait_failure = failure;
-        Ok(self.request)
+        Step::Ready(self.request)
     }
 }
 
@@ -141,15 +144,15 @@ mod tests {
     fn wait() -> Wait {
         let request = QueuedRequest::continuation(Request::Undo, &AtomicU64::new(9));
         match Wait::begin(request, pending()) {
-            Ok(wait) => wait,
-            Err(_) => panic!("pending publication must park"),
+            Step::Waiting(wait) => wait,
+            Step::Ready(_) => panic!("pending publication must park"),
         }
     }
     #[test]
     fn waits_for_the_exact_application_and_reservation_release() {
         let wait = match wait().poll(pending(), 9) {
-            Err(wait) => wait,
-            Ok(_) => panic!("still pending"),
+            Step::Waiting(wait) => wait,
+            Step::Ready(_) => panic!("still pending"),
         };
         let wait = match wait.poll(
             ResidentPublicationReadiness::Applied {
@@ -158,8 +161,8 @@ mod tests {
             },
             9,
         ) {
-            Err(wait) => wait,
-            Ok(_) => panic!("reservation still held"),
+            Step::Waiting(wait) => wait,
+            Step::Ready(_) => panic!("reservation still held"),
         };
         let request = match wait.poll(
             ResidentPublicationReadiness::Applied {
@@ -168,8 +171,8 @@ mod tests {
             },
             9,
         ) {
-            Ok(request) => request,
-            Err(_) => panic!("ready"),
+            Step::Ready(request) => request,
+            Step::Waiting(_) => panic!("ready"),
         };
         assert!(request.publication_wait_failure.is_none());
     }
@@ -187,16 +190,16 @@ mod tests {
         ];
         for (wait, readiness, intent) in cases {
             let request = match wait.poll(readiness, intent) {
-                Ok(request) => request,
-                Err(_) => panic!("must refuse"),
+                Step::Ready(request) => request,
+                Step::Waiting(_) => panic!("must refuse"),
             };
             assert!(request.publication_wait_failure.is_some());
         }
         let mut expired = wait();
         expired.started = Instant::now() - DEADLINE;
         let request = match expired.poll(pending(), 9) {
-            Ok(request) => request,
-            Err(_) => panic!("deadline"),
+            Step::Ready(request) => request,
+            Step::Waiting(_) => panic!("deadline"),
         };
         assert!(
             request

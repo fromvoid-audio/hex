@@ -41,7 +41,7 @@ fn resident_manual_host_output_gain_gesture_is_continuous_and_reaches_its_target
         generation: 0,
         token: 1,
     };
-    let begin = h.run(Request::DeviceGesture(GestureRequest::Begin {
+    let begin = h.run(Request::device_gesture(GestureRequest::Begin {
         key,
         target: GestureTarget::DeviceParameter {
             device,
@@ -50,7 +50,7 @@ fn resident_manual_host_output_gain_gesture_is_continuous_and_reaches_its_target
     }));
     assert!(begin.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
     for (sequence, db) in [(1, -6.0), (2, 0.0), (3, -12.0)] {
-        let changed = h.run(Request::DeviceGesture(GestureRequest::Change {
+        let changed = h.run(Request::device_gesture(GestureRequest::Change {
             key,
             sequence,
             value: ParameterValue::Float(db),
@@ -58,7 +58,7 @@ fn resident_manual_host_output_gain_gesture_is_continuous_and_reaches_its_target
         assert!(changed.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
         applied = wait_gain(&mut h, applied, &mut last, db);
     }
-    let committed = h.run(Request::DeviceGesture(GestureRequest::Commit {
+    let committed = h.run(Request::device_gesture(GestureRequest::Commit {
         key,
         sequence: 4,
         manual_edit: true,
@@ -96,20 +96,20 @@ fn resident_manual_host_output_gain_gesture_is_continuous_and_reaches_its_target
         generation: 0,
         token: 2,
     };
-    h.run(Request::DeviceGesture(GestureRequest::Begin {
+    h.run(Request::device_gesture(GestureRequest::Begin {
         key: cancel_key,
         target: GestureTarget::DeviceParameter {
             device,
             parameter: hex_engine::DEVICE_OUTPUT_GAIN.id,
         },
     }));
-    h.run(Request::DeviceGesture(GestureRequest::Change {
+    h.run(Request::device_gesture(GestureRequest::Change {
         key: cancel_key,
         sequence: 1,
         value: ParameterValue::Float(-6.0),
     }));
     applied = wait_gain(&mut h, applied, &mut last, -6.0);
-    let cancelled = h.run(Request::DeviceGesture(GestureRequest::Cancel {
+    let cancelled = h.run(Request::device_gesture(GestureRequest::Cancel {
         key: cancel_key,
     }));
     assert!(cancelled.gesture_ack.as_ref().is_some_and(|a| a.accepted));

@@ -347,7 +347,7 @@ fn vst3_drag_roundtrip(playing: bool, stopped: bool, changed_steps: bool) {
     let begin = client.next_request().unwrap();
     client.mark_submitted();
     let event = if stopped {
-        h.service.submit(Request::DeviceGesture(begin)).unwrap();
+        h.service.submit(Request::device_gesture(begin)).unwrap();
         let deadline = Instant::now() + Duration::from_secs(4);
         loop {
             h.pump();
@@ -359,7 +359,7 @@ fn vst3_drag_roundtrip(playing: bool, stopped: bool, changed_steps: bool) {
             std::thread::sleep(Duration::from_millis(5));
         }
     } else {
-        h.run(Request::DeviceGesture(begin))
+        h.run(Request::device_gesture(begin))
     };
     let mut ack = event.gesture_ack.unwrap();
     if stopped {
@@ -403,7 +403,7 @@ fn vst3_drag_roundtrip(playing: bool, stopped: bool, changed_steps: bool) {
             .unwrap();
         let begin = client.next_request().unwrap();
         client.mark_submitted();
-        ack = h.run(Request::DeviceGesture(begin)).gesture_ack.unwrap();
+        ack = h.run(Request::device_gesture(begin)).gesture_ack.unwrap();
     }
     assert!(ack.accepted, "{ack:?}");
     assert!(client.acknowledge(&ack));
@@ -413,7 +413,7 @@ fn vst3_drag_roundtrip(playing: bool, stopped: bool, changed_steps: bool) {
     let drive = |h: &mut ResidentHarness,
                  request: GestureRequest,
                  render_live: &mut dyn FnMut(&ResidentHarness)| {
-        h.service.submit(Request::DeviceGesture(request)).unwrap();
+        h.service.submit(Request::device_gesture(request)).unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             h.pump();
@@ -800,7 +800,7 @@ fn authored_drag(reading: bool, editor_changed: bool, transport: GestureTranspor
     let send = |h: &mut ResidentHarness, client: &mut GestureClient| {
         let request = client.next_request().unwrap();
         client.mark_submitted();
-        h.service.submit(Request::DeviceGesture(request)).unwrap();
+        h.service.submit(Request::device_gesture(request)).unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             h.pump();
@@ -859,7 +859,7 @@ fn authored_drag(reading: bool, editor_changed: bool, transport: GestureTranspor
             .unwrap();
         let change = client.next_request().unwrap();
         client.mark_submitted();
-        let refused = h.run(Request::DeviceGesture(change));
+        let refused = h.run(Request::device_gesture(change));
         let ack = refused.gesture_ack.unwrap();
         assert!(
             !ack.accepted && ack.source_lost && !ack.preview_retained,

@@ -351,18 +351,19 @@ pub(in crate::service) fn defers_behind_resident_publication(request: &Request) 
         }
         | Request::Undo
         | Request::Redo
-        | Request::DeviceGesture(
-            GestureRequest::Change { .. }
-            | GestureRequest::ChangePair { .. }
-            | GestureRequest::ChangeSnapshot { .. }
-            | GestureRequest::ChangeEqCreation { .. }
-            | GestureRequest::Commit { .. }
-            | GestureRequest::CommitPair { .. }
-            | GestureRequest::CommitSnapshot { .. }
-            | GestureRequest::CommitEqCreation { .. }
-            | GestureRequest::Cancel { .. },
-        )
         | Request::SetDeviceParameter { .. } => true,
+        Request::DeviceGesture(gesture) => matches!(
+            **gesture,
+            GestureRequest::Change { .. }
+                | GestureRequest::ChangePair { .. }
+                | GestureRequest::ChangeSnapshot { .. }
+                | GestureRequest::ChangeEqCreation { .. }
+                | GestureRequest::Commit { .. }
+                | GestureRequest::CommitPair { .. }
+                | GestureRequest::CommitSnapshot { .. }
+                | GestureRequest::CommitEqCreation { .. }
+                | GestureRequest::Cancel { .. }
+        ),
         Request::Edit(command) => {
             matches!(
                 command,

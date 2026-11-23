@@ -499,7 +499,7 @@ fn eq_creation_commits_and_cancels_after_vst3_worker_receives_the_preview() {
         let draft =
             EqNodeCreationSnapshot::new(node, project.device(eq).unwrap().active_variant(), next)
                 .unwrap();
-        let event = h.run(Request::DeviceGesture(GestureRequest::BeginEqCreation {
+        let event = h.run(Request::device_gesture(GestureRequest::BeginEqCreation {
             key,
             device: eq,
             snapshot: draft,
@@ -510,7 +510,7 @@ fn eq_creation_commits_and_cancels_after_vst3_worker_receives_the_preview() {
     let render_preview = |h: &mut ResidentHarness, applied, key, sequence, draft| {
         let event = edit_with_running_callback(
             h,
-            Request::DeviceGesture(GestureRequest::ChangeEqCreation {
+            Request::device_gesture(GestureRequest::ChangeEqCreation {
                 key,
                 sequence,
                 snapshot: draft,
@@ -530,7 +530,7 @@ fn eq_creation_commits_and_cancels_after_vst3_worker_receives_the_preview() {
     applied = render_preview(&mut h, applied, key, 2, draft);
     let committed = edit_with_running_callback(
         &mut h,
-        Request::DeviceGesture(GestureRequest::CommitEqCreation {
+        Request::device_gesture(GestureRequest::CommitEqCreation {
             key,
             sequence: 3,
             snapshot: draft,
@@ -560,7 +560,7 @@ fn eq_creation_commits_and_cancels_after_vst3_worker_receives_the_preview() {
     applied = render_preview(&mut h, applied, key, 1, draft);
     let cancelled = edit_with_running_callback(
         &mut h,
-        Request::DeviceGesture(GestureRequest::Cancel { key }),
+        Request::device_gesture(GestureRequest::Cancel { key }),
     );
     assert!(cancelled.gesture_ack.unwrap().accepted);
     assert_eq!(cancelled.state.project, redone.state.project);

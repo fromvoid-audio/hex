@@ -293,11 +293,11 @@ fn loaded_resident_library_import_comparison_and_direct_source_requests_are_atom
         generation: 0,
         token: 9,
     };
-    h.run(Request::DeviceGesture(GestureRequest::Begin {
+    h.run(Request::device_gesture(GestureRequest::Begin {
         key,
         target: GestureTarget::TrackGain { track },
     }));
-    let preview = h.run(Request::DeviceGesture(GestureRequest::Change {
+    let preview = h.run(Request::device_gesture(GestureRequest::Change {
         key,
         sequence: 1,
         value: ParameterValue::Float(0.5),
@@ -332,7 +332,7 @@ fn loaded_resident_library_import_comparison_and_direct_source_requests_are_atom
     );
     assert_eq!(h.render(), before_pcm);
     h.refuse.store(false, std::sync::atomic::Ordering::Release);
-    h.run(Request::DeviceGesture(GestureRequest::Cancel { key }));
+    h.run(Request::device_gesture(GestureRequest::Cancel { key }));
     (applied, _) = h.applied(applied);
     let extra = h.run(Request::ImportDeviceAsset {
         path,

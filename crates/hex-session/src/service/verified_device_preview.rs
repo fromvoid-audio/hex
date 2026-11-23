@@ -329,7 +329,7 @@ mod tests {
         };
         send(
             &service,
-            Request::DeviceGesture(GestureRequest::Begin {
+            Request::device_gesture(GestureRequest::Begin {
                 key,
                 target: GestureTarget::DeviceParameter {
                     device,
@@ -339,7 +339,7 @@ mod tests {
         );
         let mut changed = send(
             &service,
-            Request::DeviceGesture(GestureRequest::Change {
+            Request::device_gesture(GestureRequest::Change {
                 key,
                 sequence: 1,
                 value: ParameterValue::Float(2.0),
@@ -434,7 +434,7 @@ mod tests {
         );
         let cancelled = send(
             &service,
-            Request::DeviceGesture(GestureRequest::Cancel { key }),
+            Request::device_gesture(GestureRequest::Cancel { key }),
         );
         assert!(
             VerifiedDeviceParameterSource::capture(&cancelled, None)
@@ -447,7 +447,7 @@ mod tests {
         assert_eq!(terminal.terminal_key(), Some(key));
         assert_eq!(terminal.project(), inserted.state.project.as_ref());
         service
-            .submit(Request::DeviceGesture(GestureRequest::Cancel {
+            .submit(Request::device_gesture(GestureRequest::Cancel {
                 key: GestureKey { token: 99, ..key },
             }))
             .unwrap();

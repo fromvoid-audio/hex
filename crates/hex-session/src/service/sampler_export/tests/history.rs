@@ -146,14 +146,14 @@ fn sampler_history_refusal_never_finalizes_an_unrelated_active_gesture() {
         token: 1,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::TrackGain { track },
         }))
         .unwrap();
     assert!(event(&service).gesture_ack.unwrap().accepted);
     service
-        .submit(Request::DeviceGesture(GestureRequest::Change {
+        .submit(Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(0.5),
@@ -180,7 +180,7 @@ fn sampler_history_refusal_never_finalizes_an_unrelated_active_gesture() {
     assert!(refused.active_device_gesture.is_some());
     assert!(!refused.state.can_redo);
     service
-        .submit(Request::DeviceGesture(GestureRequest::Cancel { key }))
+        .submit(Request::device_gesture(GestureRequest::Cancel { key }))
         .unwrap();
     assert_eq!(event(&service).state.project, before.state.project);
 }

@@ -1057,14 +1057,14 @@ fn same_request_gesture_barrier_commit_succeeds_for_compare_preset_default_and_p
         };
         *token += 1;
         service
-            .submit(Request::DeviceGesture(GestureRequest::Begin {
+            .submit(Request::device_gesture(GestureRequest::Begin {
                 key,
                 target: GestureTarget::DeviceParameter { device, parameter },
             }))
             .unwrap();
         assert!(event(service).gesture_ack.unwrap().accepted);
         service
-            .submit(Request::DeviceGesture(GestureRequest::Change {
+            .submit(Request::device_gesture(GestureRequest::Change {
                 key,
                 sequence: 1,
                 value: ParameterValue::Float(next_value),
@@ -1254,14 +1254,14 @@ fn stale_preset_and_default_requests_preflight_fail_without_committing_active_ge
         token: 1,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::DeviceParameter { device, parameter },
         }))
         .unwrap();
     assert!(event(&service).gesture_ack.unwrap().accepted);
     service
-        .submit(Request::DeviceGesture(GestureRequest::Change {
+        .submit(Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(4.0),
@@ -1315,7 +1315,7 @@ fn stale_preset_and_default_requests_preflight_fail_without_committing_active_ge
 
     // The active gesture must still be alive and committable afterward.
     service
-        .submit(Request::DeviceGesture(GestureRequest::Commit {
+        .submit(Request::device_gesture(GestureRequest::Commit {
             key,
             sequence: 2,
             value: ParameterValue::Float(4.0),
