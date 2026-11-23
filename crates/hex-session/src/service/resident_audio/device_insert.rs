@@ -1519,6 +1519,73 @@ impl Session {
         } else {
             (None, None)
         };
+        if replacement.is_none()
+            && let Some(command) = self
+                .editor
+                .inspect_history(redo, stopped_power::power_history_command)
+                .flatten()
+        {
+            let running_power_on = running_main_power_on(self.project(), &command, context, sink)
+                .or_else(|| running_return_power_on(self.project(), &command, context, sink));
+            let stopped_power = if running_power_on.is_none() {
+                stopped_hosted_power(self.project(), &command, context, sink)?
+            } else {
+                None
+            };
+            let stopped_fence = stopped_power.as_ref().map(|power| power.fence);
+            let power_on =
+                running_power_on.or_else(|| stopped_power.and_then(|power| power.power_on));
+            let running_power_target = if stopped_fence.is_none()
+                && stages_main_power_off(self.project(), &command, sink)
+            {
+                let device = self
+                    .project()
+                    .main_devices()
+                    .first()
+                    .ok_or(SessionError::Invalid("main power target changed"))?
+                    .id()
+                    .value();
+                Some((ProcessorChainOwner::Main, device))
+            } else {
+                running_return_power_target(self.project(), &command, sink)
+            };
+            let running_power_off = running_power_target
+                .map(|(owner, device)| {
+                    sink.running_resident_power_off(context, owner, device)
+                        .map_err(SessionError::NativeAudio)?
+                        .ok_or(SessionError::Invalid(
+                            "running power off is unavailable for this source",
+                        ))
+                })
+                .transpose()?;
+            if stopped_fence.is_some() || power_on.is_some() || running_power_off.is_some() {
+                return self.stage_resident_graph_change(
+                    context,
+                    sink,
+                    admission,
+                    current,
+                    stopped_fence.map(ResidentEditFence::Stopped),
+                    power_on,
+                    running_power_off,
+                    None,
+                    None,
+                    document_intent,
+                    |session| {
+                        Ok(session
+                            .editor
+                            .stage_history(redo)?
+                            .map(|edge| StagedResidentChange {
+                                edit: StagedChange::History(edge),
+                                operation: Operation::HostedHistory(
+                                    GraphEditOperation::PowerDevice,
+                                ),
+                                hosted_instrument_move: None,
+                                reorder_track: None,
+                            }))
+                    },
+                );
+            }
+        }
         let running_resident =
             self.audio_mode() == DocumentAudioMode::Resident && sink.resident_playing();
         self.stage_resident_graph_change(
