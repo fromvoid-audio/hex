@@ -18,25 +18,59 @@ pub enum StoppedEditProgress {
 pub(super) struct Work {
     result: Option<RecoveryEdits>,
 }
+impl Work {
+    pub(super) fn has_result(&self) -> bool {
+        self.result.is_some()
+    }
+}
+
+pub(super) struct EditRead {
+    recovery: bool,
+    pub(super) flush_idle: bool,
+}
+
 impl State {
+    pub(super) fn pending_edit_read(&self, signal: &Signal) -> Result<Option<EditRead>, Error> {
+        let slot = match signal.capture.try_lock() {
+            Ok(slot) => slot,
+            Err(TryLockError::WouldBlock) => return Ok(None),
+            Err(TryLockError::Poisoned(_)) => {
+                return Err(Error::Protocol("native edit mailbox failed"));
+            }
+        };
+        if !slot.edits_pending {
+            return Err(Error::Protocol("native edit request changed"));
+        }
+        Ok(Some(EditRead {
+            recovery: slot.recovery_edits,
+            flush_idle: slot.flush_idle_edits,
+        }))
+    }
+
     pub(super) fn advance_parameter_edits(&mut self, signal: &Signal) -> Result<(), Error> {
+        self.advance_parameter_edits_selected(signal, None)
+    }
+
+    pub(super) fn advance_parameter_edits_selected(
+        &mut self,
+        signal: &Signal,
+        read: Option<EditRead>,
+    ) -> Result<(), Error> {
         if !signal.edits_requested.load(Acquire) {
             return Ok(());
         }
         if self.edits.result.is_none() {
-            let slot = match signal.capture.try_lock() {
-                Ok(slot) => slot,
-                Err(TryLockError::WouldBlock) => return Ok(()),
-                Err(TryLockError::Poisoned(_)) => {
-                    return Err(Error::Protocol("native edit mailbox failed"));
-                }
+            let read = match read {
+                Some(read) => Some(read),
+                None => self.pending_edit_read(signal)?,
             };
-            if !slot.edits_pending {
-                return Err(Error::Protocol("native edit request changed"));
-            }
-            let recovery = slot.recovery_edits;
-            let flush_idle = slot.flush_idle_edits;
-            drop(slot);
+            let Some(EditRead {
+                recovery,
+                flush_idle,
+            }) = read
+            else {
+                return Ok(());
+            };
             let Some(Processor::Native(instance)) = self.processor.as_mut() else {
                 return Err(Error::Protocol("native edit source missing"));
             };

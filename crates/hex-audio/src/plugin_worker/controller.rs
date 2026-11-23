@@ -48,6 +48,12 @@ pub(super) struct Work {
     result: Option<Reply>,
     poll_after: Instant,
     extension: bool,
+    routine_read: bool,
+}
+
+struct ControllerStart {
+    ordinal: u64,
+    query: Operation,
 }
 impl Default for Work {
     fn default() -> Self {
@@ -56,6 +62,7 @@ impl Default for Work {
             result: None,
             poll_after: Instant::now(),
             extension: false,
+            routine_read: false,
         }
     }
 }
@@ -397,15 +404,45 @@ impl Slot {
             && self.query.kind() == request.kind
     }
 }
+fn routine_controller_read(query: Operation) -> bool {
+    matches!(
+        query,
+        Operation::Observe(
+            ControllerRequest::Parameters(_)
+                | ControllerRequest::SelectedParameters { .. }
+                | ControllerRequest::EditorVisibility
+        )
+    )
+}
+
+// Four PCM completions bound catch-up before the next ordinary control turn.
+// The existing four-lane rotation still bounds service between eligible lanes.
+const PCM_BEFORE_ROUTINE_CONTROL: u8 = 4;
+
 impl State {
-    // Three existing control observations share one reader. Rotation bounds
-    // service to at most four eligible iterations even when PCM exchanges
-    // take longer than the one-millisecond polling interval.
+    pub(super) fn record_pcm_completion(&mut self) {
+        self.pcm_since_routine_control = self
+            .pcm_since_routine_control
+            .saturating_add(1)
+            .min(PCM_BEFORE_ROUTINE_CONTROL);
+    }
+
+    pub(super) fn record_empty_pcm_poll(&mut self) {
+        self.pcm_since_routine_control = 0;
+    }
+
+    // Recheck queued PCM after a sleep and between replies before starting
+    // avoidable synchronous I/O. A finite catch-up quota preserves receipt and
+    // metadata progress under continuous PCM. Capture, editor admission and
+    // writes retain their original ordering, including the offline path.
     pub(super) fn advance_native_control(
         &mut self,
         signal: &Signal,
         before_control: impl FnOnce() -> Result<(), Error>,
     ) -> Result<(), Error> {
+        let allow_routine = signal.offline.is_some()
+            || !self.worker.has_queued_request()
+            || self.pcm_since_routine_control >= PCM_BEFORE_ROUTINE_CONTROL;
         for offset in 0..4 {
             match (self.control_turn + offset) % 4 {
                 0 if (signal.capture_requested.load(Acquire) || self.capture.is_in_flight())
@@ -419,14 +456,51 @@ impl State {
                     || self.controller.is_in_flight())
                     && !self.controller.between_polls() =>
                 {
+                    if self.controller.result.is_some() {
+                        self.control_turn = 2;
+                        return self.advance_controller(signal);
+                    }
+                    let start = if self.controller.ordinal.is_none() {
+                        let Some(start) = self.pending_controller_start(signal)? else {
+                            continue;
+                        };
+                        Some(start)
+                    } else {
+                        None
+                    };
+                    let routine = start
+                        .as_ref()
+                        .map_or(self.controller.routine_read, |start| {
+                            routine_controller_read(start.query)
+                        });
+                    if routine && !allow_routine {
+                        continue;
+                    }
                     before_control()?;
                     self.control_turn = 2;
-                    return self.advance_controller(signal);
+                    if routine {
+                        self.pcm_since_routine_control = 0;
+                    }
+                    return self.advance_controller_started(signal, start);
                 }
                 2 if signal.edits_requested.load(Acquire) => {
+                    if self.edits.has_result() {
+                        self.control_turn = 3;
+                        return self.advance_parameter_edits(signal);
+                    }
+                    let Some(read) = self.pending_edit_read(signal)? else {
+                        continue;
+                    };
+                    let routine = !read.flush_idle;
+                    if routine && !allow_routine {
+                        continue;
+                    }
                     before_control()?;
                     self.control_turn = 3;
-                    return self.advance_parameter_edits(signal);
+                    if routine {
+                        self.pcm_since_routine_control = 0;
+                    }
+                    return self.advance_parameter_edits_selected(signal, Some(read));
                 }
                 3 if signal.parameter_change_requested.load(Acquire) => {
                     before_control()?;
@@ -438,7 +512,45 @@ impl State {
         }
         Ok(())
     }
+    fn pending_controller_start(&self, signal: &Signal) -> Result<Option<ControllerStart>, Error> {
+        let slot = match signal.capture.try_lock() {
+            Ok(slot) => slot,
+            Err(TryLockError::WouldBlock) => return Ok(None),
+            Err(TryLockError::Poisoned(_)) => {
+                return Err(Error::Protocol("native controller mailbox failed"));
+            }
+        };
+        if !slot.controller.requested || slot.controller.complete {
+            return Err(Error::Protocol("native controller request changed"));
+        }
+        Ok(Some(ControllerStart {
+            ordinal: slot.controller.ordinal,
+            query: slot.controller.query,
+        }))
+    }
+
     pub(super) fn advance_controller(&mut self, signal: &Signal) -> Result<(), Error> {
+        self.advance_controller_started(signal, None)
+    }
+
+    fn advance_controller_started(
+        &mut self,
+        signal: &Signal,
+        start: Option<ControllerStart>,
+    ) -> Result<(), Error> {
+        // Read the initial mailbox once. Selection can carry that same exact
+        // request through to execution without a second contended lookup.
+        let start = if self.controller.ordinal.is_none() {
+            if !signal.controller_requested.load(Acquire) {
+                return Ok(());
+            }
+            match start {
+                Some(start) => Some(start),
+                None => self.pending_controller_start(signal)?,
+            }
+        } else {
+            None
+        };
         let Some(Processor::Native(instance)) = self.processor.as_mut() else {
             return Ok(());
         };
@@ -446,18 +558,10 @@ impl State {
             if !signal.controller_requested.load(Acquire) {
                 return Ok(());
             }
-            let slot = match signal.capture.try_lock() {
-                Ok(slot) => slot,
-                Err(TryLockError::WouldBlock) => return Ok(()),
-                Err(TryLockError::Poisoned(_)) => {
-                    return Err(Error::Protocol("native controller mailbox failed"));
-                }
+            let Some(ControllerStart { ordinal, query }) = start else {
+                return Ok(());
             };
-            if !slot.controller.requested || slot.controller.complete {
-                return Err(Error::Protocol("native controller request changed"));
-            }
-            let (ordinal, query) = (slot.controller.ordinal, slot.controller.query);
-            drop(slot);
+            self.controller.routine_read = routine_controller_read(query);
             self.controller.result =
                 if query.kind() == Kind::GuardedWrite && self.worker.is_revoked() {
                     // Normal reads can drain after revocation. Never start a new
@@ -538,5 +642,287 @@ impl State {
             self.controller.ordinal = None;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod scheduling_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    // Use the production State selector and actual PCM request/reply queues.
+    // The before-control hook observes selection without launching an SDK.
+    fn with_state(offline: bool, run: impl FnOnce(&mut State, &Arc<Signal>, &mut Callback)) {
+        let (control, mut callback, worker) = channel(
+            Binding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 4,
+            },
+            4,
+        )
+        .unwrap();
+        let result = spawn_processor_with(
+            control,
+            worker,
+            Processor::Function(Box::new(Ok)),
+            offline,
+            |mut guard, signal| {
+                run(guard.owner_mut().unwrap(), &signal, &mut callback);
+                Err(std::io::Error::other("synchronous scheduling fixture"))
+            },
+        );
+        assert!(result.is_err());
+    }
+
+    fn stage(callback: &mut Callback, sequence: u64) {
+        let sample = |sequence| [0.25 + sequence as f32 * 0.01; 2];
+        let mut output = [[0.0; 2]; 4];
+        callback
+            .stage(&[sample(sequence); 4], &[], &mut output)
+            .unwrap();
+        callback.finish(true).unwrap();
+        assert_eq!(
+            output,
+            [sequence.checked_sub(2).map_or([0.0; 2], sample); 4]
+        );
+    }
+
+    fn request_controller(signal: &Signal, query: ControllerRequest) {
+        let mut slot = signal.capture.lock().unwrap();
+        slot.controller.query = Operation::Observe(query);
+        slot.controller.requested = true;
+        signal.controller_requested.store(true, Release);
+    }
+
+    #[test]
+    fn queued_pcm_precedes_a_routine_controller_poll() {
+        with_state(false, |state, signal, callback| {
+            stage(callback, 0);
+            request_controller(signal, ControllerRequest::default());
+            let called = Cell::new(false);
+            state
+                .advance_native_control(signal, || {
+                    called.set(true);
+                    Ok(())
+                })
+                .unwrap();
+            assert!(!called.get(), "queued PCM must precede routine native I/O");
+            assert!(signal.controller_requested.load(Acquire));
+            assert_eq!(state.worker.receive().unwrap().unwrap().sequence, 0);
+        });
+    }
+
+    #[test]
+    fn wakeup_rechecks_pcm_before_control_even_after_an_earlier_burst() {
+        with_state(false, |state, signal, callback| {
+            for _ in 0..PCM_BEFORE_ROUTINE_CONTROL {
+                state.record_pcm_completion();
+            }
+            state.record_empty_pcm_poll();
+            // A callback publishes PCM while the worker's empty-poll sleep ends.
+            stage(callback, 0);
+            request_controller(signal, ControllerRequest::EditorVisibility);
+            state
+                .advance_native_control(signal, || panic!("control overtook wakeup PCM"))
+                .unwrap();
+            assert_eq!(state.worker.receive().unwrap().unwrap().sequence, 0);
+        });
+    }
+
+    #[test]
+    fn continuous_pcm_keeps_reply_order_and_bounds_routine_control_turns() {
+        for capture_pending in [false, true] {
+            with_state(false, |state, signal, callback| {
+                stage(callback, 0);
+                stage(callback, 1);
+                request_controller(signal, ControllerRequest::default());
+                signal.capture_requested.store(capture_pending, Release);
+                let mut routine_turns = Vec::new();
+                for sequence in 0..12 {
+                    let block = state.worker.receive().unwrap().unwrap();
+                    assert_eq!(block.sequence, sequence);
+                    state.worker.complete(block).unwrap();
+                    state.record_pcm_completion();
+                    stage(callback, sequence + 2);
+                    assert!(state.worker.has_queued_request());
+                    let called = Cell::new(false);
+                    state
+                        .advance_native_control(signal, || {
+                            called.set(true);
+                            Ok(())
+                        })
+                        .unwrap();
+                    if called.get() && state.control_turn == 2 {
+                        routine_turns.push(sequence);
+                    }
+                }
+                assert_eq!(routine_turns, [3, 7, 11]);
+                assert!(signal.controller_requested.load(Acquire));
+            });
+        }
+    }
+
+    #[test]
+    fn capture_and_ordering_sensitive_controller_turns_keep_priority() {
+        for query in [
+            ControllerRequest::SealEditorEdits,
+            ControllerRequest::HoldEditorAdmission(NonZeroU64::new(1).unwrap()),
+            ControllerRequest::ReleaseEditorAdmission(NonZeroU64::new(1).unwrap()),
+            ControllerRequest::CloseEditor,
+            ControllerRequest::DetachEditor,
+            ControllerRequest::DetachEditorWhenIdle,
+            ControllerRequest::ReopenEditor(None),
+            ControllerRequest::ReadEditorFrontier,
+        ] {
+            with_state(false, |state, signal, callback| {
+                stage(callback, 0);
+                request_controller(signal, query);
+                let called = Cell::new(false);
+                state
+                    .advance_native_control(signal, || {
+                        called.set(true);
+                        Ok(())
+                    })
+                    .unwrap();
+                assert!(
+                    called.get(),
+                    "ordering-sensitive request was deferred: {query:?}"
+                );
+            });
+        }
+        with_state(false, |state, signal, callback| {
+            stage(callback, 0);
+            signal.capture_requested.store(true, Release);
+            let called = Cell::new(false);
+            state
+                .advance_native_control(signal, || {
+                    called.set(true);
+                    Ok(())
+                })
+                .unwrap();
+            assert!(called.get());
+        });
+    }
+
+    #[test]
+    fn ordinary_receipts_defer_but_idle_flush_keeps_its_order() {
+        with_state(false, |state, signal, callback| {
+            stage(callback, 0);
+            signal.capture.lock().unwrap().edits_pending = true;
+            signal.edits_requested.store(true, Release);
+            let called = Cell::new(false);
+            state
+                .advance_native_control(signal, || {
+                    called.set(true);
+                    Ok(())
+                })
+                .unwrap();
+            assert!(!called.get());
+            signal.capture.lock().unwrap().flush_idle_edits = true;
+            // The function processor cannot perform a native flush. Selection
+            // must still occur before that explicit missing-source refusal.
+            assert!(
+                state
+                    .advance_native_control(signal, || {
+                        called.set(true);
+                        Ok(())
+                    })
+                    .is_err()
+            );
+            assert!(called.get());
+        });
+    }
+
+    #[test]
+    fn busy_unclassified_mailboxes_do_not_demote_or_overtake_queued_pcm() {
+        with_state(false, |state, signal, callback| {
+            stage(callback, 0);
+            request_controller(signal, ControllerRequest::SealEditorEdits);
+            signal.edits_requested.store(true, Release);
+            let mut mailbox = signal.capture.lock().unwrap();
+            mailbox.edits_pending = true;
+            state
+                .advance_native_control(signal, || panic!("busy mailbox overtook PCM"))
+                .unwrap();
+            assert_eq!(state.pcm_since_routine_control, 0);
+            drop(mailbox);
+            // Once its original request is readable, the seal regains its
+            // ordering-sensitive priority without waiting for the PCM quota.
+            let called = Cell::new(false);
+            state
+                .advance_native_control(signal, || {
+                    called.set(true);
+                    Ok(())
+                })
+                .unwrap();
+            assert!(called.get());
+            assert_eq!(state.control_turn, 2);
+        });
+    }
+
+    #[test]
+    fn in_flight_controller_retains_its_classification_when_mailbox_is_busy() {
+        for routine in [false, true] {
+            with_state(false, |state, signal, callback| {
+                stage(callback, 0);
+                request_controller(signal, ControllerRequest::default());
+                state.controller.ordinal = Some(1);
+                state.controller.routine_read = routine;
+                let _mailbox = signal.capture.lock().unwrap();
+                let called = Cell::new(false);
+                state
+                    .advance_native_control(signal, || {
+                        called.set(true);
+                        Ok(())
+                    })
+                    .unwrap();
+                assert_eq!(called.get(), !routine);
+            });
+        }
+    }
+
+    #[test]
+    fn poisoned_controller_mailbox_remains_a_failure() {
+        with_state(false, |state, signal, callback| {
+            stage(callback, 0);
+            request_controller(signal, ControllerRequest::default());
+            let poison = Arc::clone(signal);
+            assert!(
+                std::thread::spawn(move || {
+                    let _mailbox = poison.capture.lock().unwrap();
+                    panic!("controlled mailbox poison");
+                })
+                .join()
+                .is_err()
+            );
+            let called = Cell::new(false);
+            let error = state.advance_native_control(signal, || {
+                called.set(true);
+                Ok(())
+            });
+            assert!(matches!(
+                error,
+                Err(Error::Protocol("native controller mailbox failed"))
+            ));
+            assert!(!called.get());
+        });
+    }
+
+    #[test]
+    fn offline_control_order_does_not_wait_for_the_live_pcm_quota() {
+        with_state(true, |state, signal, callback| {
+            stage(callback, 0);
+            request_controller(signal, ControllerRequest::default());
+            let called = Cell::new(false);
+            state
+                .advance_native_control(signal, || {
+                    called.set(true);
+                    Ok(())
+                })
+                .unwrap();
+            assert!(called.get());
+        });
     }
 }
