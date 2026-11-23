@@ -2,7 +2,7 @@
 use hex_engine::AudioSourceContext;
 use hex_session::service::Request;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DeferredEditKind {
     NativeEffect,
     PluginEffect,
@@ -13,6 +13,7 @@ pub(super) enum DeferredEditKind {
     LoopRegion,
     ClipPlayStart,
     MixerControl,
+    GraphEdit,
 }
 
 pub(super) struct DeferredGraphEdit {

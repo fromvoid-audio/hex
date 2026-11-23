@@ -158,9 +158,7 @@ impl EditorView {
             .as_ref()
             .is_some_and(|p| p.receipt.is_queued())
             && !self
-                .pending_requests
-                .iter()
-                .chain(self.device_gesture_barriers.iter())
+                .queued_requests()
                 .any(|r| self.pending_track_clipboard_matches(r))
         {
             return self.pending_track_clipboard.take().is_some();

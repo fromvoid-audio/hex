@@ -640,6 +640,12 @@ impl EditorView {
                     .pending_requests
                     .iter()
                     .chain(self.device_gesture_barriers.iter())
+                    .chain(
+                        self.recovery
+                            .deferred_edit
+                            .as_ref()
+                            .map(|edit| edit.request.as_ref()),
+                    )
                     .any(|request| add.matches(request))
         });
         self.locators.adds.len() != before

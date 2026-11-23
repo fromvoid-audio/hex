@@ -201,17 +201,7 @@ impl EditorView {
         self.prepared_seek = None;
         self.latched_seek_intent = None;
         self.pending_recovery_generation = None;
-        crate::editor::recovery::clear_recovery(
-            &mut self.recovery,
-            &mut self.pending_sample_drop,
-            &mut self.pending_time_range_move,
-            &mut self.pending_loop,
-            &mut self.clip_loop,
-            &mut self.pending_plugin_effect,
-            &mut self.failed_plugin_proposal,
-            &mut self.device_panel,
-            &mut self.track_gain_controls,
-        );
+        self.clear_recovery();
         self.pending_playback = None;
         self.pending_resident_publication = None;
         self.pending_audio_commands.clear();

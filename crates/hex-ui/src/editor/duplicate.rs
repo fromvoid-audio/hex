@@ -290,9 +290,7 @@ impl EditorView {
             .is_some_and(|p| p.receipt.is_queued());
         if queued
             && !self
-                .pending_requests
-                .iter()
-                .chain(self.device_gesture_barriers.iter())
+                .queued_requests()
                 .any(|request| self.pending_duplicate_matches(request))
         {
             return self.duplicate_intent.reject();

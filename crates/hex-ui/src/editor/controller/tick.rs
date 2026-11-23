@@ -897,17 +897,6 @@ impl EditorView {
             self.pending_metronome_ticket = None;
             self.pending_session_ticket = None;
             self.play_intent.clear();
-            crate::editor::recovery::clear_recovery(
-                &mut self.recovery,
-                &mut self.pending_sample_drop,
-                &mut self.pending_time_range_move,
-                &mut self.pending_loop,
-                &mut self.clip_loop,
-                &mut self.pending_plugin_effect,
-                &mut self.failed_plugin_proposal,
-                &mut self.device_panel,
-                &mut self.track_gain_controls,
-            );
             self.pending_recovery_generation = None;
             visible_change |= replace_error(
                 &mut self.error,
@@ -1217,6 +1206,9 @@ impl EditorView {
             frame.source = audio.control.output_identity().unwrap_or_default();
             frame
         });
+        if outcome_failure.is_some() {
+            self.clear_recovery();
+        }
         let pending_after = self
             .worker_requests_pending
             .saturating_add(self.pending_requests.len());

@@ -246,16 +246,19 @@ impl EditorView {
 
     pub(super) fn retire_abandoned_group_copy(&mut self) -> bool {
         let abandoned = self.pending_group_copy.as_ref().is_some_and(|p| {
+            let deferred_for_self = self
+                .recovery
+                .deferred_edit
+                .as_ref()
+                .is_some_and(|edit| p.matches(&edit.request));
             p.generation != self.project_generation
                 || p.epoch != self.clip_selection.epoch
                 || p.primary != self.selected_clip
                 || self.opening_project
                 || self.close_prompt_open
                 || self.mode != EditorMode::Arrangement
-                || self.recovery.generation().is_some()
-                || (p.remaining.is_none()
-                    && !self.pending_requests.iter().any(|r| p.matches(r))
-                    && !self.device_gesture_barriers.iter().any(|r| p.matches(r)))
+                || (self.recovery.generation().is_some() && !deferred_for_self)
+                || (p.remaining.is_none() && !self.queued_requests().any(|r| p.matches(r)))
         });
         if abandoned {
             self.pending_group_copy = None;

@@ -691,7 +691,10 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
         v.receive(restart);
         assert!(v.service.try_event().is_err());
         if outcome == EditRecovery::ProjectChanged {
-            assert!(v.enqueue(add_track("intervening edit")));
+            // Simulate an intervening worker-side project revision change during
+            // recovery; UI-side graph edits are intentionally rejected while a
+            // deferred recovery edit is already pending.
+            v.service.submit(add_track("intervening edit")).unwrap();
             let changed = next(&v.service);
             assert_eq!(changed.state.revision, revision + 1);
             v.receive(changed);
@@ -735,7 +738,9 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
             "cursor seek must reach the callback"
         );
         if outcome == EditRecovery::ProjectEditPending {
-            assert!(v.enqueue(add_track("intervening edit")));
+            v.service.submit(add_track("intervening edit")).unwrap();
+            v.worker_requests_pending += 1;
+            assert!(v.edit_pending());
         }
     });
     fresh_backend.render(&mut [[0.0; 2]; 64]).unwrap();
@@ -1061,25 +1066,27 @@ fn degraded_worker_recovers(
         }
         if let Some(command) = explicit_command {
             view.queue_audio_command(command);
+            assert_eq!(
+                view.deferred_play,
+                Some((
+                    hex_engine::playback::PlaybackAction::Transport(
+                        explicit_command
+                            .filter(|command| matches!(
+                                command,
+                                PlaybackCommand::PlayFromWithNoteChase { .. }
+                            ))
+                            .unwrap_or(PlaybackCommand::Play)
+                    ),
+                    None,
+                    view.project_generation
+                ))
+            );
+            assert!(!view.tick_deferred_play());
         } else {
+            view.playback_settings.loading = false;
             view.toggle_play();
+            assert!(view.playback_settings.pending.is_some());
         }
-        assert_eq!(
-            view.deferred_play,
-            Some((
-                hex_engine::playback::PlaybackAction::Transport(
-                    explicit_command
-                        .filter(|command| matches!(
-                            command,
-                            PlaybackCommand::PlayFromWithNoteChase { .. }
-                        ))
-                        .unwrap_or(PlaybackCommand::Play)
-                ),
-                None,
-                view.project_generation
-            ))
-        );
-        assert!(!view.tick_deferred_play());
         assert!(view.audio.is_none());
         assert!(view.pending_restart_request.is_some());
         assert!(view.stopped_playback_restore.is_none());
@@ -1093,6 +1100,7 @@ fn degraded_worker_recovers(
         assert_eq!(view.recovery.position(), Some(frame));
         view.stop();
         assert!(view.deferred_play.is_none());
+        assert!(view.playback_settings.pending.is_none());
     });
     drop(backend);
     output.publication.close();
@@ -1120,23 +1128,48 @@ fn play_on_degraded_output(cx: &mut gpui::TestAppContext, explicit_frame: Option
     let clip = hex_engine::Clip::new(source, 0, 20_000, false).unwrap();
     let track = hex_engine::Track::new(vec![clip], 1.0, false).unwrap();
     let playback = Playback::new(hex_engine::Project::new(48_000, vec![track]).unwrap());
-    let revision = output
-        .publication
-        .control()
-        .unwrap()
-        .publish(playback)
-        .unwrap();
-    let mut client = output.take_client().unwrap();
-    let identity = client.output_identity().unwrap();
-    client.command(PlaybackCommand::Play).unwrap();
-    let mut frames = [[0.0; 2]; 64];
-    backend.render(&mut frames).unwrap();
-
     let (_, editor) = super::super::clip_drag_ui_test::editor_window(
         cx,
         hex_project::Project::new(48_000).unwrap(),
         Arc::default(),
     );
+    let (canonical_state, project_generation, editor_revision) = editor.update(cx, |view, _| {
+        let initial = next_service_event(&view.service).state;
+        let rev = initial.revision;
+        let generation = view.project_generation;
+        view.state = Some(Arc::clone(&initial));
+        (initial, generation, rev)
+    });
+    let control = output.publication.control().unwrap();
+    control
+        .configure_device_resource_publication_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 256,
+                root_rows: 128,
+                max_retained_bytes: 32_000_000,
+                max_construction_peak_bytes: 32_000_000,
+            },
+        )
+        .unwrap();
+    let revision = control
+        .publish_with_admission_and_source_on_control(
+            playback,
+            hex_audio::prepared::PublicationPolicy::InheritRuntime,
+            hex_engine::AudioSourceContext {
+                project_generation,
+                editor_revision,
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    let mut client = output.take_client().unwrap();
+    client.bind_resident_transport(project_generation);
+    let identity = client.output_identity().unwrap();
+    client.command(PlaybackCommand::Play).unwrap();
+    let mut frames = [[0.0; 2]; 64];
+    backend.render(&mut frames).unwrap();
+
     editor.update(cx, |view, _| {
         view.audio = Some(EditorAudio {
             control: client,
@@ -1145,7 +1178,7 @@ fn play_on_degraded_output(cx: &mut gpui::TestAppContext, explicit_frame: Option
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
-        let state = Arc::clone(view.state.as_ref().unwrap());
+        let state = Arc::clone(&canonical_state);
         view.applied_project_revision = Some(state.revision);
         view.audible_playback = Some(super::super::PlaybackCandidate {
             clip_preview_identity: None,
@@ -1160,6 +1193,7 @@ fn play_on_degraded_output(cx: &mut gpui::TestAppContext, explicit_frame: Option
             tuning_preview_identity: None,
         });
         view.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![2]);
+        view.playback_settings.loading = false;
         view.toggle_play();
         backend.render(&mut frames).unwrap();
         backend.render(&mut frames).unwrap();
@@ -2979,6 +3013,231 @@ fn degraded_insert_plugin_effect_recovers_audio_and_settles_proposal_on_failure(
                 v.failed_plugin_proposal.is_some(),
                 "failed recovery must record failed_plugin_proposal"
             );
+            v.audio = None;
+        });
+        drop(old_guard);
+    }
+}
+
+#[gpui::test]
+fn degraded_toggle_solo_and_mute_recover_audio_while_playing_and_paused(
+    cx: &mut gpui::TestAppContext,
+) {
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    // Playing path: Cmd-clicking Solo recovers degraded VST3 output, preserves
+    // playback intent, and applies ToggleSolo without surfacing a raw source error.
+    {
+        let mut app = cx.new_app();
+        let (editor, track, _device, old_guard, restarted) =
+            setup_degraded_device_recovery(&mut app);
+        editor.update(&mut app, |v, _| {
+            v.audio_status()
+                .unwrap()
+                .playing
+                .store(true, std::sync::atomic::Ordering::Release);
+            assert!(v.enqueue(Request::Edit(Command::ToggleSolo {
+                track,
+                exclusive: false,
+            })));
+            assert!(v.recovery.generation().is_some());
+            assert!(v.recovery.deferred_edit.is_some());
+            assert!(
+                v.deferred_play.is_some(),
+                "playing state must preserve deferred play through recovery"
+            );
+            assert_eq!(
+                v.status.as_str(),
+                "restarting audio · solo will update when ready"
+            );
+            assert!(
+                !v.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .soloed()
+            );
+        });
+        let fresh_guard = finish_fresh_recovery_output(&mut app, &editor, &restarted, old_guard);
+        editor.update(&mut app, |v, _| {
+            assert_eq!(v.status.as_str(), "updating solo");
+            let applied = next_service_event(&v.service);
+            v.receive(applied);
+            assert!(
+                v.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .soloed()
+            );
+            assert!(v.error.is_none(), "{:?}", v.error);
+            v.audio = None;
+        });
+        drop(fresh_guard);
+    }
+    // Paused path: ToggleMute recovers degraded VST3 output, stays paused, and applies mute.
+    {
+        let mut app = cx.new_app();
+        let (editor, track, _device, old_guard, restarted) =
+            setup_degraded_device_recovery(&mut app);
+        editor.update(&mut app, |v, _| {
+            assert!(
+                !v.audio_status()
+                    .unwrap()
+                    .playing
+                    .load(std::sync::atomic::Ordering::Acquire)
+            );
+            assert!(v.enqueue(Request::Edit(Command::ToggleMute(track))));
+            assert!(v.recovery.generation().is_some());
+            assert!(v.recovery.deferred_edit.is_some());
+            assert!(
+                v.deferred_play.is_none(),
+                "paused recovery must stay paused"
+            );
+            assert_eq!(
+                v.status.as_str(),
+                "restarting audio · mute will update when ready"
+            );
+            assert!(
+                !v.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .muted()
+            );
+        });
+        let fresh_guard = finish_fresh_recovery_output(&mut app, &editor, &restarted, old_guard);
+        editor.update(&mut app, |v, _| {
+            assert_eq!(v.status.as_str(), "updating mute");
+            let applied = next_service_event(&v.service);
+            v.receive(applied);
+            assert!(
+                v.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .muted()
+            );
+            assert!(v.deferred_play.is_none());
+            assert!(v.error.is_none(), "{:?}", v.error);
+            v.audio = None;
+        });
+        drop(fresh_guard);
+    }
+}
+
+#[gpui::test]
+fn degraded_general_graph_edits_and_pending_receipts_recover_or_retire_cleanly(
+    cx: &mut gpui::TestAppContext,
+) {
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    // Ready path: Undo recovers degraded VST3 output and reverts the prior edit;
+    // non-graph/guarded requests stay unintercepted.
+    {
+        let mut app = cx.new_app();
+        let (editor, track, device, old_guard, restarted) =
+            setup_degraded_device_recovery(&mut app);
+        editor.update(&mut app, |v, _| {
+            let tracks = hex_project::TrackSelectionIds::new(&[track]).unwrap();
+            assert_eq!(
+                v.recoverable_graph_edit(&Request::Edit(Command::ToggleSoloTracks {
+                    tracks: tracks.clone(),
+                    exclusive: false,
+                })),
+                Some(crate::editor::recovery_state::DeferredEditKind::GraphEdit)
+            );
+            assert_eq!(
+                v.recoverable_graph_edit(&Request::Edit(Command::ToggleTracksMute(tracks.clone()))),
+                Some(crate::editor::recovery_state::DeferredEditKind::GraphEdit)
+            );
+            assert_eq!(
+                v.recoverable_graph_edit(&Request::Edit(Command::Mute { track, muted: true })),
+                Some(crate::editor::recovery_state::DeferredEditKind::GraphEdit)
+            );
+            assert!(v.recoverable_graph_edit(&Request::SaveCurrent).is_none());
+            assert!(
+                v.recoverable_graph_edit(&Request::RestoreStoppedPlayback)
+                    .is_none()
+            );
+            assert!(
+                v.recoverable_graph_edit(&Request::CopyClips(Vec::new()))
+                    .is_none()
+            );
+            assert!(
+                v.recoverable_graph_edit(&Request::TrackClipboard {
+                    project_generation: v.project_generation,
+                    revision: v.state.as_ref().unwrap().revision,
+                    action: hex_session::service::TrackClipboardAction::Copy(tracks),
+                })
+                .is_none()
+            );
+            assert!(v.enqueue(Request::Undo));
+            assert!(v.recovery.generation().is_some());
+            assert!(v.recovery.deferred_edit.is_some());
+            assert_eq!(
+                v.status.as_str(),
+                "restarting audio · undo will apply when ready"
+            );
+        });
+        let fresh_guard = finish_fresh_recovery_output(&mut app, &editor, &restarted, old_guard);
+        editor.update(&mut app, |v, _| {
+            assert_eq!(v.status.as_str(), "undoing");
+            let undone = next_service_event(&v.service);
+            v.receive(undone);
+            assert!(v.state.as_ref().unwrap().project.device(device).is_none());
+            assert!(v.error.is_none(), "{:?}", v.error);
+            v.audio = None;
+        });
+        drop(fresh_guard);
+    }
+    // Pending UI receipt custody survives recovery ticks and retires cleanly on failure.
+    {
+        let (editor, track, _device, old_guard, _restarted) = setup_degraded_device_recovery(cx);
+        editor.update(cx, |v, _| {
+            let tracks = hex_project::TrackSelectionIds::new(&[track]).unwrap();
+            let generation = v.project_generation;
+            let revision = v.state.as_ref().unwrap().revision;
+            v.selected_track = Some(track);
+            v.start_track_clipboard(
+                generation,
+                revision,
+                hex_session::service::TrackClipboardAction::Duplicate {
+                    tracks,
+                    without_clips: false,
+                },
+            );
+            assert!(v.recovery.generation().is_some());
+            assert!(v.recovery.deferred_edit.is_some());
+            assert!(v.pending_track_clipboard.is_some());
+            assert!(
+                !v.retire_abandoned_track_clipboard(),
+                "deferred track-clipboard receipt must survive recovery ticks"
+            );
+            assert!(v.pending_track_clipboard.is_some());
+            // Submitting a second graph edit while recovery is pending refuses cleanly.
+            assert!(!v.enqueue(Request::Edit(Command::ToggleSolo {
+                track,
+                exclusive: false,
+            })));
+            assert_eq!(
+                v.error.as_deref(),
+                Some("audio recovery pending · wait before editing")
+            );
+            // Failing recovery retires the deferred track-clipboard receipt without leaking state.
+            v.fail_audio_recovery("fixture recovery failure");
+            assert!(v.recovery.deferred_edit.is_none());
+            assert!(
+                v.pending_track_clipboard.is_none(),
+                "failed recovery must retire deferred pending_track_clipboard"
+            );
+            assert_eq!(v.state.as_ref().unwrap().revision, revision);
             v.audio = None;
         });
         drop(old_guard);
