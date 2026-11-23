@@ -84,7 +84,7 @@ impl EditorView {
             self.retire_sample_bpm_control();
         }
         let audio_placement_selection = self.audio_events_request_complete(&event);
-        self.clip_loop_request_complete(&event);
+        let mut retry_clip_resize = self.clip_loop_request_complete(&event);
         self.bypass_request_complete(&event);
         self.mixer_edit_request_complete(&event);
         self.modulation_depth_complete(&event);
@@ -114,7 +114,7 @@ impl EditorView {
         self.gain_take_request_complete(&event);
         self.device_automation_complete(&event);
         self.eq_creation_request_complete(&event);
-        let retired_trim = self.trim_request_complete(&event);
+        let retired_trim = self.trim_request_complete(&event, &mut retry_clip_resize);
         let loop_complete = self.loop_request_complete(&event);
         let group_copy_intent = self.group_copy_request_complete(&event);
         let midi_step_complete = self.take_completed_midi_step(&event);
@@ -406,7 +406,22 @@ impl EditorView {
         } else {
             self.complete_time_duplicate_pair(&event)
         };
-        let recovering_refused_time_copy = event.range_copy_source_unavailable.is_some()
+        let recovering_refused_resize = retry_clip_resize.is_some_and(|request| {
+            if self.audio.is_none()
+                || self
+                    .state
+                    .as_ref()
+                    .is_none_or(|state| state.revision != revision)
+            {
+                self.retire_unsubmitted_request(&request, Some("clip edit source changed"));
+                return false;
+            }
+            self.recover_before_graph_edit(
+                crate::editor::recovery_state::DeferredEditKind::GraphEdit,
+                request,
+            )
+        });
+        let recovering_refused_time_copy = event.resident_edit_source_unavailable.is_some()
             && recovery_before_time_completion.is_none()
             && self.recovery.deferred_edit.as_ref().is_some_and(|edit| {
                 edit.kind == crate::editor::recovery_state::DeferredEditKind::TimeDuplicate
@@ -1075,10 +1090,15 @@ impl EditorView {
             self.status = status;
             self.error = None;
         }
-        if recovering_refused_time_copy {
+        if recovering_refused_resize {
+            self.status = "restarting audio · clip edit will apply when ready".into();
+        } else if recovering_refused_time_copy {
             self.status = "restarting audio · time will be duplicated when ready".into();
         }
-        if let Some(error) = event.error.filter(|_| !recovering_refused_time_copy) {
+        if let Some(error) = event
+            .error
+            .filter(|_| !recovering_refused_time_copy && !recovering_refused_resize)
+        {
             let mut displayed: crate::editor::display_error::DisplayError = event
                 .audio_batch_failure
                 .map_or_else(|| error.into(), Into::into);

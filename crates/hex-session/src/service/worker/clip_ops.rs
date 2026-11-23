@@ -364,7 +364,7 @@ pub(super) fn handle<'a>(
         mut restore_prepared,
         mut status,
         mut error,
-        mut range_copy_source_unavailable,
+        mut resident_edit_source_unavailable,
         mut export_completion,
         mut export_job,
         mut gesture_ack,
@@ -735,6 +735,8 @@ pub(super) fn handle<'a>(
             if events.resident_publication_enabled()
                 && session.audio_mode() == DocumentAudioMode::Resident =>
         {
+            let recoverable_edit =
+                time_range_copy || matches!(command, Command::ResizeAudioClipView { .. });
             let context = hex_engine::AudioSourceContext {
                 project_generation,
                 editor_revision: revision.saturating_add(1),
@@ -868,9 +870,10 @@ pub(super) fn handle<'a>(
                     resident_snapshot = Some(snapshot);
                 }
                 Err(reason) => {
-                    if time_range_copy && matches!(reason, SessionError::NativeSourceUnavailable(_))
+                    if recoverable_edit
+                        && matches!(reason, SessionError::NativeSourceUnavailable(_))
                     {
-                        range_copy_source_unavailable = Some(hex_engine::AudioSourceContext {
+                        resident_edit_source_unavailable = Some(hex_engine::AudioSourceContext {
                             project_generation,
                             editor_revision: revision,
                         });
@@ -1991,7 +1994,7 @@ pub(super) fn handle<'a>(
         restore_prepared,
         status,
         error,
-        range_copy_source_unavailable,
+        resident_edit_source_unavailable,
         export_completion,
         export_job,
         gesture_ack,

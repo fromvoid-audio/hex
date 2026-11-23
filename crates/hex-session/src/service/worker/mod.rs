@@ -131,7 +131,7 @@ pub(super) struct WorkerDispatch<'a> {
     pub(super) restore_prepared: Option<Arc<PreparedRevision>>,
     pub(super) status: Option<String>,
     pub(super) error: Option<String>,
-    pub(super) range_copy_source_unavailable: Option<hex_engine::AudioSourceContext>,
+    pub(super) resident_edit_source_unavailable: Option<hex_engine::AudioSourceContext>,
     pub(super) export_completion: Option<ExportEvent>,
     pub(super) export_job: Option<ExportJob>,
     pub(super) gesture_ack: Option<GestureAck>,
@@ -530,7 +530,7 @@ pub(super) fn run_worker(
                     .then(|| native_playback(prepared)),
                 status: Some("project ready".into()),
                 error: None,
-                range_copy_source_unavailable: None,
+                resident_edit_source_unavailable: None,
                 recovery_failure: None,
                 audio_batch_failure: None,
                 import_truncation: None,
@@ -578,7 +578,7 @@ pub(super) fn run_worker(
             playback: None,
             status: None,
             error: Some(error),
-            range_copy_source_unavailable: None,
+            resident_edit_source_unavailable: None,
             recovery_failure: None,
             audio_batch_failure: None,
             import_truncation: None,
@@ -1324,7 +1324,7 @@ pub(super) fn run_worker(
         let mut restore_prepared = None;
         let mut status = None;
         let mut error = None;
-        let mut range_copy_source_unavailable = None;
+        let mut resident_edit_source_unavailable = None;
         let mut export_completion = None;
         let mut export_job = None;
         let mut gesture_ack = None;
@@ -3426,7 +3426,7 @@ pub(super) fn run_worker(
                 restore_prepared,
                 status,
                 error,
-                range_copy_source_unavailable,
+                resident_edit_source_unavailable,
                 export_completion,
                 export_job,
                 gesture_ack,
@@ -3634,7 +3634,7 @@ pub(super) fn run_worker(
             restore_prepared = ctx.restore_prepared;
             status = ctx.status;
             error = ctx.error;
-            range_copy_source_unavailable = ctx.range_copy_source_unavailable;
+            resident_edit_source_unavailable = ctx.resident_edit_source_unavailable;
             export_completion = ctx.export_completion;
             export_job = ctx.export_job;
             gesture_ack = ctx.gesture_ack;
@@ -4450,7 +4450,7 @@ pub(super) fn run_worker(
             playback,
             status,
             error,
-            range_copy_source_unavailable,
+            resident_edit_source_unavailable,
             recovery_failure: recovery_tracker.failure(),
             request_complete,
             sampler_load_complete,

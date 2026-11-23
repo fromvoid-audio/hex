@@ -95,12 +95,22 @@ fn audio_start_drag_submits_held_marker_and_escape_cancels(cx: &mut TestAppConte
 
 #[gpui::test]
 fn degraded_audio_start_drag_recovers_held_or_released_marker(cx: &mut TestAppContext) {
-    for (released, failed) in [(false, false), (true, false), (true, true)] {
-        audio_start_recovery(&mut cx.new_app(), released, failed);
+    for (released, failed, replay_refused) in [
+        (false, false, false),
+        (true, false, false),
+        (true, true, false),
+        (true, false, true),
+    ] {
+        audio_start_recovery(&mut cx.new_app(), released, failed, replay_refused);
     }
 }
 
-fn audio_start_recovery(cx: &mut TestAppContext, released: bool, failed: bool) {
+fn audio_start_recovery(
+    cx: &mut TestAppContext,
+    released: bool,
+    failed: bool,
+    replay_refused: bool,
+) {
     use crate::editor::clip_drag_ui_test::upper_rail_fixture_with_service;
     use crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::{
         headless_status_output, status_fixture_guard,
@@ -280,9 +290,27 @@ fn audio_start_recovery(cx: &mut TestAppContext, released: bool, failed: bool) {
     }
     visual.run_until_parked();
     assert!((marker_fraction(&mut visual) - shown).abs() < 0.003);
-    let edit = terminal(&mut visual, &editor);
+    let mut edit = terminal(&mut visual, &editor);
     assert!(edit.error.is_none(), "{:?}", edit.error);
     editor.update(&mut visual, |v, cx| {
+        if replay_refused {
+            let before = Arc::clone(v.state.as_ref().unwrap());
+            edit.state = Arc::clone(&before);
+            edit.status = None;
+            edit.playback = None;
+            edit.error = Some("replacement graph source is unavailable".into());
+            edit.resident_edit_source_unavailable = Some(hex_engine::AudioSourceContext {
+                project_generation: v.project_generation,
+                editor_revision: revision,
+            });
+            v.receive(edit);
+            assert!(v.recovery.generation().is_none());
+            assert!(v.pending_clip_loop_audio(clip).is_none());
+            assert_eq!(v.state.as_ref().unwrap().project, before.project);
+            assert_eq!(v.worker_requests_pending, 0);
+            cx.notify();
+            return;
+        }
         v.receive(edit);
         assert!(v.pending_clip_loop_audio(clip).is_none());
         assert_eq!(v.state.as_ref().unwrap().revision, revision + 1);
@@ -291,7 +319,8 @@ fn audio_start_recovery(cx: &mut TestAppContext, released: bool, failed: bool) {
         cx.notify();
     });
     visual.run_until_parked();
-    assert!((marker_fraction(&mut visual) - shown).abs() < 0.003);
+    let expected = if replay_refused { 0.0 } else { shown };
+    assert!((marker_fraction(&mut visual) - expected).abs() < 0.003);
     editor.update(&mut visual, |v, _| {
         v.audio.take().unwrap().control.close();
     });
@@ -541,6 +570,71 @@ fn audio_saved_start_release_modifier_and_outside_clamp_use_final_pointer(cx: &m
                 "fine={fine} outside={outside} position={position}"
             );
         });
+    }
+}
+
+#[gpui::test]
+fn source_refusal_keeps_released_clip_resize_until_recovery_or_second_refusal(
+    cx: &mut TestAppContext,
+) {
+    use crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::{
+        headless_status_output, status_fixture_guard,
+    };
+    let _serial = status_fixture_guard();
+    for operation in [
+        AudioViewResizeOperation::PlayStart { position: 6_000 },
+        AudioViewResizeOperation::OuterEnd {
+            project_frame: 12_000,
+        },
+    ] {
+        let (_files, mut visual, editor, clip) = open(&mut cx.new_app());
+        let (mut output, backend) = headless_status_output();
+        let client = output.take_client().unwrap();
+        let before = editor.update(&mut visual, |view, _| {
+            view.audio = Some(crate::EditorAudio {
+                control: client,
+                sample_rate: 48_000,
+                label: "fixture output".into(),
+                spectrum_error: None,
+                mode: hex_session::DocumentAudioMode::Resident,
+            });
+            let before = Arc::clone(view.state.as_ref().unwrap());
+            view.commit_audio_clip_loop(clip, operation);
+            assert!(view.pending_clip_loop_audio(clip).is_some());
+            before
+        });
+        // Exercise the UI's exact FIFO terminal and frozen geometry. The service
+        // test injects the native publication failure before canonical commit.
+        let mut refused = terminal(&mut visual, &editor);
+        refused.state = Arc::clone(&before);
+        refused.status = None;
+        refused.playback = None;
+        refused.error = Some("native graph source is unavailable".into());
+        editor.update(&mut visual, |view, cx| {
+            refused.resident_edit_source_unavailable = Some(hex_engine::AudioSourceContext {
+                project_generation: view.project_generation,
+                editor_revision: before.revision,
+            });
+            view.receive(refused);
+            assert!(view.recovery.generation().is_some(), "{:?}", view.error);
+            let deferred = view.recovery.deferred_edit.as_ref().unwrap();
+            assert!(
+                matches!(deferred.request.as_ref(), Request::Edit(Command::ResizeAudioClipView {
+                clip: id, operation: op,
+            }) if *id == clip && *op == operation)
+            );
+            cx.notify();
+        });
+        repaint(&mut visual, &editor);
+        editor.update(&mut visual, |view, _| {
+            assert!(view.pending_clip_loop_audio(clip).is_some());
+            view.fail_audio_recovery("replacement output failed");
+            assert!(view.pending_clip_loop_audio(clip).is_none());
+            assert_eq!(view.state.as_ref().unwrap().project, before.project);
+            assert_eq!(view.state.as_ref().unwrap().can_undo, before.can_undo);
+        });
+        drop(backend);
+        output.publication.close();
     }
 }
 
