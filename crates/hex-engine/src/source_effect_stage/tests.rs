@@ -4064,3 +4064,135 @@ fn live_source_utility_channel_selection_preserves_filter_history_and_local_audi
         }
     }
 }
+
+#[test]
+fn live_tuning_enable_and_edit_succeeds_while_playing_with_source_effects() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_devices::fm4::device::FM4_DEFINITION;
+    use hex_devices::operator_state::OPERATOR_METADATA;
+    use hex_devices::utility::UTILITY_DEFINITION;
+    use hex_lattice_contract::NativeDeviceMetadata;
+
+    for (label, instrument_state) in [
+        ("sine", hex_project::default_instrument_state().unwrap()),
+        ("operator", OPERATOR_METADATA.default_state().unwrap()),
+        ("fm4", FM4_DEFINITION.default_state().unwrap()),
+    ] {
+        let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::InsertTrackWithDevice {
+                name: label.into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: instrument_state,
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_quarters(2).unwrap(),
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        let instrument = editor.project().tracks()[0].instrument().unwrap().id();
+        editor
+            .execute(Command::InsertNestedDevice {
+                parent: instrument,
+                state: UTILITY_DEFINITION.default_state().unwrap(),
+            })
+            .unwrap();
+        let media = BTreeMap::new();
+        let table = Arc::new(crate::SineTable::new());
+
+        let baseline_project = editor.project().clone();
+        let baseline = Arc::new(
+            PreparedRevision::prepare(&baseline_project, &media, Arc::clone(&table), None).unwrap(),
+        );
+        let mut playing = SessionPlayback::new(Arc::clone(&baseline)).unwrap();
+        playing.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut prefix = [[0.0; 2]; 64];
+        playing.render(&mut prefix).unwrap();
+
+        // Enabling a non-12-TET tuning while playing with active source effects
+        // must continue smoothly when prepared in the same tuning family.
+        let mut scale_a = hex_tuning::ProjectTuning::default().scale();
+        scale_a.set_reference(60, 330.0, 0).unwrap();
+        let tuning_a =
+            hex_tuning::ProjectTuning::new(true, scale_a, hex_tuning::Audition::default()).unwrap();
+        editor.execute(Command::SetTuning(tuning_a)).unwrap();
+        let tuned_project_a = editor.project().clone();
+
+        // Without tuning continuation proof (unrelated tuning family), live handoff still refuses.
+        let unproven = Arc::new(
+            PreparedRevision::prepare(&tuned_project_a, &media, Arc::clone(&table), None).unwrap(),
+        );
+        let mut unproven_playback = SessionPlayback::new(unproven).unwrap();
+        assert!(
+            unproven_playback
+                .try_inherit_state_live_from(&mut playing)
+                .is_err(),
+            "{label}: unproven tuning family must remain refused across live source-effect handoff"
+        );
+
+        let tuned_a = Arc::new(
+            PreparedRevision::prepare(&tuned_project_a, &media, Arc::clone(&table), None)
+                .unwrap()
+                .with_tuning_continuation_from(&tuned_project_a, &baseline_project, &baseline)
+                .unwrap(),
+        );
+        let mut playing_a = SessionPlayback::new(Arc::clone(&tuned_a)).unwrap();
+        playing_a
+            .try_inherit_state_live_from(&mut playing)
+            .unwrap_or_else(|e| {
+                panic!("{label}: enabling tuning while playing with source effects failed: {e:?}")
+            });
+        let mut after_enable = [[0.0; 2]; 64];
+        playing_a.render(&mut after_enable).unwrap();
+        assert!(
+            after_enable.iter().flatten().any(|s| s.abs() > 1e-5),
+            "{label}: audio went silent after enabling tuning"
+        );
+
+        // Subsequent tuning edits while still playing also continue smoothly.
+        let mut scale_b = scale_a;
+        scale_b.set_reference(60, 495.0, 0).unwrap();
+        let tuning_b =
+            hex_tuning::ProjectTuning::new(true, scale_b, hex_tuning::Audition::default()).unwrap();
+        editor.execute(Command::SetTuning(tuning_b)).unwrap();
+        let tuned_project_b = editor.project().clone();
+        let tuned_b = Arc::new(
+            PreparedRevision::prepare(&tuned_project_b, &media, Arc::clone(&table), None)
+                .unwrap()
+                .with_tuning_continuation_from(&tuned_project_b, &tuned_project_a, &tuned_a)
+                .unwrap(),
+        );
+        let mut playing_b = SessionPlayback::new(tuned_b).unwrap();
+        playing_b
+            .try_inherit_state_live_from(&mut playing_a)
+            .unwrap_or_else(|e| {
+                panic!("{label}: editing tuning while playing with source effects failed: {e:?}")
+            });
+        let mut after_edit = [[0.0; 2]; 64];
+        playing_b.render(&mut after_edit).unwrap();
+        assert!(
+            after_edit.iter().flatten().any(|s| s.abs() > 1e-5),
+            "{label}: audio went silent after editing tuning"
+        );
+    }
+}

@@ -1,6 +1,6 @@
 //! Cached-control-scale plots; no DSP, I/O or authoritative editing.
 use super::*;
-use gpui::{App, Bounds, PathBuilder, Pixels, Window, fill, point};
+use gpui::{App, Bounds, PathBuilder, Pixels, Point, Window, fill, point, rgba};
 use hex_tuning::analysis::pair_fit;
 fn quick_scores(scale: Scale) -> (f32, f32) {
     let mut total = 0.0;
@@ -108,6 +108,15 @@ fn dot(window: &mut Window, x: f32, y: f32, r: f32, role: theme::PaletteRole) {
         .corner_radii(px(r)),
     );
 }
+fn dot_rgba(window: &mut Window, x: f32, y: f32, r: f32, value: u32) {
+    window.paint_quad(
+        fill(
+            Bounds::from_corners(point(px(x - r), px(y - r)), point(px(x + r), px(y + r))),
+            rgba(value),
+        )
+        .corner_radii(px(r)),
+    );
+}
 fn label(
     window: &mut Window,
     cx: &mut App,
@@ -198,18 +207,79 @@ pub(super) fn pitch(
         );
     }
 }
+const PALETTE_HIT_RADIUS_PX: f32 = 12.0;
+
+pub(super) fn palette_node_center(bounds: Bounds<Pixels>, norm: (f32, f32)) -> (f32, f32) {
+    let left = f32::from(bounds.left());
+    let top = f32::from(bounds.top());
+    let width = f32::from(bounds.size.width);
+    let height = f32::from(bounds.size.height);
+    (left + norm.0 * width, top + norm.1 * height)
+}
+
+pub(super) fn palette_hit(
+    bounds: Bounds<Pixels>,
+    positions: &[(f32, f32)],
+    cursor: Point<Pixels>,
+) -> Option<usize> {
+    if f32::from(bounds.size.width) <= 0.0
+        || f32::from(bounds.size.height) <= 0.0
+        || !bounds.contains(&cursor)
+    {
+        return None;
+    }
+    let mx = f32::from(cursor.x);
+    let my = f32::from(cursor.y);
+    let max_dist_sq = PALETTE_HIT_RADIUS_PX * PALETTE_HIT_RADIUS_PX;
+    let mut best: Option<(usize, f32)> = None;
+    for (i, pos) in positions.iter().copied().enumerate() {
+        let (cx, cy) = palette_node_center(bounds, pos);
+        let dx = cx - mx;
+        let dy = cy - my;
+        let dist_sq = dx * dx + dy * dy;
+        if dist_sq <= max_dist_sq
+            && best.is_none_or(|(best_i, best_d)| {
+                dist_sq < best_d || (dist_sq == best_d && i == 0 && best_i != 0)
+            })
+        {
+            best = Some((i, dist_sq));
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
 pub(super) fn palette(view: &EditorView, cx: &mut Context<EditorView>) -> Stateful<Div> {
-    let choices = view.tuning.choices.clone();
-    let positions = view.tuning.positions.clone();
-    let draw_positions = positions.clone();
+    let draw_positions = view.tuning.positions.clone();
+    let hovered = view
+        .tuning
+        .palette_hover
+        .filter(|&i| i < draw_positions.len());
     div()
         .id("tuning-pitch-space")
         .h(px(180.0))
         .w_full()
+        .when(hovered.is_some(), |d| d.cursor_pointer())
+        .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _, cx| {
+            let next = if view.tuning.analysis_pending || view.tuning.drag.is_some() {
+                None
+            } else {
+                view.tuning
+                    .palette_bounds
+                    .and_then(|bounds| palette_hit(bounds, &view.tuning.positions, event.position))
+            };
+            if view.tuning.palette_hover != next {
+                view.tuning.palette_hover = next;
+                cx.notify();
+            }
+        }))
+        .on_hover(cx.listener(|view, is_hovered: &bool, _, cx| {
+            if !*is_hovered && view.tuning.palette_hover.take().is_some() {
+                cx.notify();
+            }
+        }))
         .on_mouse_down(
             MouseButton::Left,
-            cx.listener(move |view, event: &MouseDownEvent, window, cx| {
-                let _ = window;
+            cx.listener(|view, event: &MouseDownEvent, window, cx| {
                 if view.tuning.analysis_pending || view.tuning.drag.is_some() {
                     return;
                 }
@@ -217,24 +287,26 @@ pub(super) fn palette(view: &EditorView, cx: &mut Context<EditorView>) -> Statef
                 let Some(bounds) = view.tuning.palette_bounds else {
                     return;
                 };
-                let x = ((f32::from(event.position.x) - f32::from(bounds.left()))
-                    / f32::from(bounds.size.width).max(1.0))
-                .clamp(0.0, 1.0);
-                let y = ((f32::from(event.position.y) - f32::from(bounds.top()))
-                    / f32::from(bounds.size.height).max(1.0))
-                .clamp(0.0, 1.0);
-                if let Some((i, _)) = positions.iter().enumerate().min_by(|(_, a), (_, b)| {
-                    ((a.0 - x).powi(2) + (a.1 - y).powi(2))
-                        .total_cmp(&((b.0 - x).powi(2) + (b.1 - y).powi(2)))
-                }) && let Some(scale) = choices.get(i)
+                let Some(i) = palette_hit(bounds, &view.tuning.positions, event.position) else {
+                    return;
+                };
+                let Some(&scale) = view.tuning.choices.get(i) else {
+                    return;
+                };
+                view.tuning.focus.focus(window);
+                cx.stop_propagation();
+                if scale != view.tuning.value.scale()
                     && let Ok(next) = ProjectTuning::new(
                         view.tuning.value.enabled(),
-                        *scale,
+                        scale,
                         view.tuning.value.audition(),
                     )
                 {
                     view.tuning_change(next, NumericEventPhase::Commit);
-                    view.refresh_tuning_variations(cx);
+                    if view.tuning.value == next {
+                        view.tuning.palette_hover = None;
+                        view.refresh_tuning_variations(cx);
+                    }
                     cx.notify();
                 }
             }),
@@ -250,8 +322,6 @@ pub(super) fn palette(view: &EditorView, cx: &mut Context<EditorView>) -> Statef
                 move |bounds, _, window, cx| {
                     let left = f32::from(bounds.left());
                     let top = f32::from(bounds.top());
-                    let w = f32::from(bounds.size.width);
-                    let h = f32::from(bounds.size.height);
                     label(
                         window,
                         cx,
@@ -260,17 +330,35 @@ pub(super) fn palette(view: &EditorView, cx: &mut Context<EditorView>) -> Statef
                         top + 4.0,
                         theme::PaletteRole::Muted,
                     );
-                    for (i, (x, y)) in draw_positions.iter().copied().enumerate() {
+                    for (i, pos) in draw_positions.iter().copied().enumerate().skip(1) {
+                        if Some(i) == hovered {
+                            continue;
+                        }
+                        let (x, y) = palette_node_center(bounds, pos);
+                        dot(window, x, y, 3.0, theme::PaletteRole::Secondary);
+                    }
+                    if let Some(&pos) = draw_positions.first()
+                        && hovered != Some(0)
+                    {
+                        let (x, y) = palette_node_center(bounds, pos);
+                        dot(window, x, y, 5.0, theme::PaletteRole::Primary);
+                    }
+                    if let Some(i) = hovered
+                        && let Some(&pos) = draw_positions.get(i)
+                    {
+                        let (x, y) = palette_node_center(bounds, pos);
+                        let halo_role = if i == 0 {
+                            theme::PaletteRole::Primary
+                        } else {
+                            theme::PaletteRole::Waveform
+                        };
+                        dot_rgba(window, x, y, 9.0, (color(halo_role) << 8) | 0x4c);
                         dot(
                             window,
-                            left + x * w,
-                            top + y * h,
-                            if i == 0 { 5.0 } else { 3.0 },
-                            if i == 0 {
-                                theme::PaletteRole::Primary
-                            } else {
-                                theme::PaletteRole::Secondary
-                            },
+                            x,
+                            y,
+                            if i == 0 { 6.0 } else { 5.0 },
+                            theme::PaletteRole::Text,
                         );
                     }
                 },
@@ -371,5 +459,24 @@ mod tests {
             && y.is_finite()
             && (0.0..=1.0).contains(x)
             && (0.0..=1.0).contains(y)));
+    }
+
+    #[test]
+    fn palette_hit_uses_pixel_space_geometry_and_radius() {
+        let bounds = Bounds::new(point(px(100.0), px(50.0)), gpui::size(px(1000.0), px(180.0)));
+        // On a wide 1000x180 canvas, a 7 px vertical offset (0.0389 normalized)
+        // must still hit node 0 rather than a neighbor 25 px away horizontally (0.025 normalized).
+        let nodes = [(0.50_f32, 0.50_f32), (0.525_f32, 0.50_f32)];
+        let (ax, ay) = palette_node_center(bounds, nodes[0]);
+        assert_eq!(palette_hit(bounds, &nodes, point(px(ax), px(ay + 7.0))), Some(0));
+
+        let (bx, by) = palette_node_center(bounds, nodes[1]);
+        assert_eq!(palette_hit(bounds, &nodes, point(px(bx), px(by))), Some(1));
+
+        // Empty background outside hit radius returns None.
+        assert_eq!(palette_hit(bounds, &nodes, point(px(120.0), px(60.0))), None);
+        // Outside bounds returns None even if within radius of a boundary node.
+        let edge_nodes = [(0.005_f32, 0.50_f32)];
+        assert_eq!(palette_hit(bounds, &edge_nodes, point(px(99.0), px(140.0))), None);
     }
 }

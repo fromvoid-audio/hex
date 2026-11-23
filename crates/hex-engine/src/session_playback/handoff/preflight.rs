@@ -36,8 +36,9 @@ pub(super) fn prepared_source_generator_matches(
             .iter()
             .find(|track| track.source_id() == Some(source) && track.receives_source_audio())
     }
-    previous.arrangement().shared_contexts().tuning_identity()
+    (previous.arrangement().shared_contexts().tuning_identity()
         == candidate.arrangement().shared_contexts().tuning_identity()
+        || previous.tuning_family() == candidate.tuning_family())
         && receiver(previous, source)
             .zip(receiver(candidate, source))
             .is_some_and(|(old, new)| {

@@ -346,3 +346,154 @@ fn retained_tuning_preview_declines_new_numeric_drag_without_adopting_its_events
         assert!(view.tuning.client.snapshot().is_some());
     });
 }
+
+#[gpui::test]
+fn pitch_space_hover_highlights_node_and_click_activates_it(cx: &mut TestAppContext) {
+    let project = hex_project::Project::new(48_000).unwrap();
+    let (handle, editor) =
+        crate::editor::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |view, cx| {
+            view.tuning.open = true;
+            view.tuning.focus.focus(window);
+            view.refresh_tuning_variations(cx);
+            view.sync_tuning(cx);
+            cx.notify();
+        });
+    })
+    .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(gpui::size(px(1280.), px(800.)));
+    visual.run_until_parked();
+
+    let (bounds, target_index, target_scale, target_pos) = editor.read_with(&visual, |view, _| {
+        let bounds = view.tuning.palette_bounds.expect("palette bounds");
+        assert!(view.tuning.choices.len() > 1);
+        // Pick the node farthest from all others so its center hits unambiguously.
+        let target_index = (1..view.tuning.positions.len())
+            .max_by(|&a, &b| {
+                let min_dist = |i: usize| {
+                    let (ix, iy) = plots::palette_node_center(bounds, view.tuning.positions[i]);
+                    view.tuning
+                        .positions
+                        .iter()
+                        .enumerate()
+                        .filter(|&(j, _)| j != i)
+                        .map(|(_, &p)| {
+                            let (jx, jy) = plots::palette_node_center(bounds, p);
+                            (ix - jx).hypot(iy - jy)
+                        })
+                        .fold(f32::INFINITY, f32::min)
+                };
+                min_dist(a).total_cmp(&min_dist(b))
+            })
+            .unwrap();
+        let (x, y) = plots::palette_node_center(bounds, view.tuning.positions[target_index]);
+        (
+            bounds,
+            target_index,
+            view.tuning.choices[target_index],
+            gpui::point(px(x), px(y)),
+        )
+    });
+
+    // Hovering empty corner space keeps hover clear.
+    let empty = gpui::point(bounds.left() + px(2.0), bounds.top() + px(2.0));
+    visual.simulate_event(MouseMoveEvent {
+        position: empty,
+        pressed_button: None,
+        modifiers: gpui::Modifiers::default(),
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.tuning.palette_hover, None);
+    });
+
+    // Hovering a variation node lights it up and exposes the pointer cursor.
+    visual.simulate_event(MouseMoveEvent {
+        position: target_pos,
+        pressed_button: None,
+        modifiers: gpui::Modifiers::default(),
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.tuning.palette_hover, Some(target_index));
+    });
+    assert_eq!(visual.rendered_cursor_style(), Some(gpui::CursorStyle::PointingHand));
+
+    // Clicking the hovered node activates that exact scale.
+    visual.simulate_mouse_down(target_pos, MouseButton::Left, gpui::Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.tuning.value.scale(), target_scale);
+        assert_eq!(view.tuning.palette_hover, None);
+    });
+}
+
+#[gpui::test]
+fn tuning_overlay_occludes_arrangement_clicks_and_double_clicks(cx: &mut TestAppContext) {
+    let (project, _source_track, _target_track, clip) =
+        crate::editor::clip_drag_ui_test::audio_project();
+    let (handle, editor) =
+        crate::editor::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(gpui::size(px(1280.), px(800.)));
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+
+    let clip_selector = Box::leak(format!("clip-drag-surface-{}", clip.value()).into_boxed_str());
+    let clip_point = visual.debug_bounds(clip_selector).unwrap().center();
+    let before = editor.read_with(&visual, |view, _| {
+        (
+            view.selected_track,
+            view.selected_clip,
+            view.state.as_ref().unwrap().revision,
+        )
+    });
+
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| view.open_tuning(window, cx));
+    });
+    visual.run_until_parked();
+    let pending_after_open = editor.read_with(&visual, |view, _| view.worker_requests_pending);
+
+    // Single click, off-target release, and double-click at the hidden clip's
+    // coordinates must never hit the arrangement or leave pointer_down behind.
+    visual.simulate_mouse_down(clip_point, MouseButton::Left, gpui::Modifiers::default());
+    visual.simulate_mouse_up(
+        gpui::point(clip_point.x + px(40.0), clip_point.y + px(20.0)),
+        MouseButton::Left,
+        gpui::Modifiers::default(),
+    );
+    visual.simulate_event(MouseDownEvent {
+        button: MouseButton::Left,
+        position: clip_point,
+        modifiers: gpui::Modifiers::default(),
+        click_count: 2,
+        first_mouse: false,
+    });
+    visual.simulate_mouse_up(clip_point, MouseButton::Left, gpui::Modifiers::default());
+    visual.run_until_parked();
+
+    editor.read_with(&visual, |view, _| {
+        assert!(view.pointer_down.is_none());
+        assert!(view.clip_paint_gesture.is_none());
+        assert_eq!(view.selected_track, before.0);
+        assert_eq!(view.selected_clip, before.1);
+        assert_eq!(view.state.as_ref().unwrap().revision, before.2);
+        assert_eq!(view.worker_requests_pending, pending_after_open);
+        assert!(view.last_enqueued_edit.is_none());
+    });
+
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            // Drain the read-only tuning library list before checking arrangement availability.
+            view.worker_requests_pending = 0;
+            view.close_tuning(window, cx);
+        });
+    });
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.arrangement_view_change_available(cx));
+    });
+}

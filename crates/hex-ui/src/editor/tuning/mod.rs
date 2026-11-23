@@ -82,6 +82,7 @@ pub(super) struct TuningState {
     drag: Option<Drag>,
     pitch_bounds: Option<gpui::Bounds<gpui::Pixels>>,
     palette_bounds: Option<gpui::Bounds<gpui::Pixels>>,
+    palette_hover: Option<usize>,
     context: Option<usize>,
     reach: f32,
     variation_seed: u64,
@@ -141,6 +142,7 @@ impl TuningState {
             drag: None,
             pitch_bounds: None,
             palette_bounds: None,
+            palette_hover: None,
             context: None,
             reach: 80.0,
             variation_seed: 0,
@@ -297,6 +299,7 @@ impl Field {
 }
 impl EditorView {
     pub(super) fn open_tuning(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pointer_down = None;
         self.tuning.open = true;
         self.tuning.midi_last_query = None;
         self.tuning
@@ -315,6 +318,7 @@ impl EditorView {
         self.cancel_tuning_audition();
         let _ = self.tuning.client.cancel();
         self.tuning.drag = None;
+        self.tuning.palette_hover = None;
         self.tuning.context = None;
         self.tuning.open = false;
         self.reset_tuning_controls(cx);
@@ -347,6 +351,7 @@ impl EditorView {
             self.reset_tuning_controls(cx);
             self.tuning.client.reset();
             self.tuning.drag = None;
+            self.tuning.palette_hover = None;
             self.tuning.name = None;
             self.tuning.library_pending = None;
             self.tuning.library_terminal = None;
@@ -763,6 +768,7 @@ impl EditorView {
         self.refresh_tuning_variations(cx);
     }
     fn refresh_tuning_variations(&mut self, cx: &mut Context<Self>) {
+        self.tuning.palette_hover = None;
         self.tuning.analysis_serial = self.tuning.analysis_serial.saturating_add(1);
         self.tuning.analysis_queued = Some((
             self.tuning.analysis_serial,
@@ -799,6 +805,7 @@ impl EditorView {
                 {
                     view.tuning.choices = choices.into();
                     view.tuning.positions = positions.into();
+                    view.tuning.palette_hover = None;
                     view.tuning.analysis = analysis;
                     view.tuning.root_shapes = root_shapes;
                 }
@@ -1286,6 +1293,7 @@ impl EditorView {
         Some(
             div()
                 .id("tuning-overlay")
+                .occlude()
                 .absolute()
                 .inset_0()
                 .pt(px(super::header::WINDOW_CONTROL_HEIGHT))
