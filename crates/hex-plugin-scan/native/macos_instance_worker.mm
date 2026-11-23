@@ -469,7 +469,14 @@ int main(int argc,char** argv) {
             if(!final_latency || !final_tail || *final_latency!=*latency || *final_tail!=*tail) throw Refusal{}; // caller's plan became stale
             instance.finish_startup_latency_observation_on_control();
             const auto hello=ready_body(*config,state,*latency,*tail,*presentation,supplied,restoration.restored());
-            auto processing_parameters=instance.processing_parameters_on_control();
+            struct FeedbackOrigin { uint64 sequence=0; bool editor_input=false; };
+            std::unique_ptr<hex_instance::ProcessingParameterSnapshot> processing_parameters_storage(
+                new(std::nothrow) hex_instance::ProcessingParameterSnapshot{});
+            std::unique_ptr<FeedbackOrigin[]> feedback_sequences(
+                new(std::nothrow) FeedbackOrigin[hex_instance::HOST_PARAMETER_COUNT]{});
+            if(!processing_parameters_storage || !feedback_sequences) throw Refusal{};
+            auto& processing_parameters=*processing_parameters_storage;
+            instance.processing_parameters_on_control(processing_parameters);
             hex_instance::ParameterChanges parameter_input,parameter_output;
             hex_instance::ParameterFeedback parameter_feedback;
             std::atomic<uint64_t> diagnostic_pcm_blocks{0},diagnostic_nonzero_input_blocks{0};
@@ -613,8 +620,6 @@ int main(int argc,char** argv) {
                     // Authored host input resumes ordinary processor feedback.
                     // Inventory refreshes
                     // preserve the sorted ID set, including across epochs.
-                    struct FeedbackOrigin { uint64 sequence=0; bool editor_input=false; };
-                    std::array<FeedbackOrigin,hex_instance::HOST_PARAMETER_COUNT> feedback_sequences{};
                     const auto feedback_sequence=[&](ParamID id,std::optional<uint64> input,bool editor_input=false) -> std::optional<FeedbackOrigin> {
                         const auto* info=processing_parameters.find(id);
                         if(!info) return std::nullopt;

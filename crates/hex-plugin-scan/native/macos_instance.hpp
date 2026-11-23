@@ -528,8 +528,8 @@ public:
         return opened && host && !quarantined.load() &&
             controller_page(controller,host->snapshot(),query,result);
     }
-    ProcessingParameterSnapshot processing_parameters_on_control() const {
-        return host?host->processing_snapshot_on_control():ProcessingParameterSnapshot{};
+    bool processing_parameters_on_control(ProcessingParameterSnapshot& target) const {
+        return host && host->processing_snapshot_on_control(target);
     }
     void refresh_processing_parameters(ProcessingParameterSnapshot& current) {
         if(host) host->refresh_processing_snapshot(current);

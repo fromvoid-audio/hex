@@ -11,9 +11,9 @@
 #include <utility>
 
 namespace hex_instance {
-// Rich metadata lives in the helper. This bound admits controllers exposing
-// full per-channel MIDI mappings alongside their ordinary parameter inventory.
-inline constexpr size_t HOST_PARAMETER_COUNT=2624;
+// Rich metadata lives in the helper. This bound admits large modular
+// instruments and controllers exposing full per-channel MIDI mappings.
+inline constexpr size_t HOST_PARAMETER_COUNT=8192;
 inline constexpr size_t HOST_FEEDBACK_COUNT=128;
 inline constexpr size_t HOST_RESTART_COUNT=8;
 // A single native editor event can synchronously report a group of gestures.
@@ -71,6 +71,12 @@ struct ProcessingParameterSnapshot {
     std::array<Parameter,HOST_PARAMETER_COUNT> parameters{};
     uint32 count=0;
     uint64 revision=0;
+    void copy_from(const ProcessingParameterSnapshot& source) {
+        const auto bounded=std::min<uint32>(source.count,static_cast<uint32>(parameters.size()));
+        if(bounded) std::copy_n(source.parameters.data(),bounded,parameters.data());
+        count=bounded;
+        revision=source.revision;
+    }
     const Parameter* find(ParamID id) const {
         const auto end=parameters.begin()+count;
         const auto found=std::lower_bound(parameters.begin(),end,id,
@@ -194,22 +200,21 @@ class Host final : public IHostApplication, public IComponentHandler, public ICo
         std::atomic<uint8_t> phase{Free};
         ParameterFeedback snapshot{};
     } feedback;
-    static ProcessingParameterSnapshot compact(const ParameterSnapshot& source) {
-        ProcessingParameterSnapshot result{};result.count=source.count;result.revision=source.revision;
+    static void compact_into(const ParameterSnapshot& source,ProcessingParameterSnapshot& result) {
+        result.count=source.count;result.revision=source.revision;
         for(uint32 n=0;n<source.count;++n) {
             const auto& parameter=source.parameters[n];
             result.parameters[n]={parameter.info.id,parameter.info.flags,parameter.info.stepCount};
         }
         std::sort(result.parameters.begin(),result.parameters.begin()+result.count,
             [](const auto& left,const auto& right) { return left.id<right.id; });
-        return result;
     }
     bool publish_processing_snapshot(const ProcessingParameterSnapshot& next) {
         for(auto& slot:processing_snapshots) {
             auto phase=slot.phase.load(std::memory_order_acquire);
             if((phase!=Free && phase!=Ready) ||
                 !slot.phase.compare_exchange_strong(phase,Writing,std::memory_order_acq_rel)) continue;
-            slot.snapshot=next;
+            slot.snapshot.copy_from(next);
             slot.phase.store(Ready,std::memory_order_release);return true;
         }
         return false;
@@ -691,7 +696,13 @@ private:
     HostDispatch refresh_values_on_control(IEditController& controller,HostDispatch result) {
         // A value invalidation uses the admitted IDs and leaves the processing
         // descriptors intact. Validate the entire observation before publishing.
-        std::array<ParamValue,HOST_PARAMETER_COUNT> values;
+        std::unique_ptr<ParamValue[]> values;
+        if(metadata.count) {
+            values.reset(new(std::nothrow) ParamValue[metadata.count]);
+            if(!values) {
+                refuse(MetadataCapacity);result.disposition=HostDisposition::Capacity;return result;
+            }
+        }
         for(uint32 n=0;n<metadata.count;++n) {
             const auto value=controller.getParamNormalized(metadata.parameters[n].info.id);
             if(recursive) {result.disposition=HostDisposition::Recursive;return result;}
@@ -723,7 +734,7 @@ private:
         if (total>static_cast<int32>(HOST_PARAMETER_COUNT)) {
             refuse(MetadataCapacity); result.disposition=HostDisposition::Capacity; return result;
         }
-        bool valid=total>=0;uint32 bypasses=0;
+        bool valid=total>=0;
         if (valid) staged.count=static_cast<uint32>(total);
         if (staged.count) {
             staged.parameters.reset(new(std::nothrow) ParameterSnapshot::Parameter[staged.count]);
@@ -749,7 +760,15 @@ private:
                   info.defaultNormalizedValue>=0 && info.defaultNormalizedValue<=1;
             valid=valid && !((info.flags&ParameterInfo::kIsReadOnly) && (info.flags&ParameterInfo::kCanAutomate)) &&
                 (!(info.flags&ParameterInfo::kIsHidden) || (info.flags&ParameterInfo::kIsReadOnly));
-            if(info.flags&ParameterInfo::kIsBypass) valid=valid && ++bypasses==1;
+            // Multi-unit VST3 instruments (for example u-he Zebra3) expose one
+            // kIsBypass parameter per distinct unitId. Keep bypass unique per
+            // unit instead of rejecting distinct sub-unit bypasses.
+            if(info.flags&ParameterInfo::kIsBypass) {
+                for(uint32 prior=0;valid && prior<i;++prior)
+                    if((staged.parameters[prior].info.flags&ParameterInfo::kIsBypass) &&
+                       staged.parameters[prior].info.unitId==info.unitId)
+                        valid=false;
+            }
             if (valid) {
                 parameter.value=controller->getParamNormalized(info.id);
                 valid=std::isfinite(parameter.value) && parameter.value>=0 && parameter.value<=1;
@@ -765,18 +784,22 @@ private:
         if (recursive) { result.disposition=HostDisposition::Recursive; return result; }
         if (!valid) { refuse(InvalidMetadata); result.disposition=HostDisposition::InvalidMetadata; return result; }
         staged.revision=metadata.revision+1;
-        const auto next=compact(staged);
+        std::unique_ptr<ProcessingParameterSnapshot> next(new(std::nothrow) ProcessingParameterSnapshot{});
+        if(!next) { refuse(MetadataCapacity); result.disposition=HostDisposition::Capacity; return result; }
+        compact_into(staged,*next);
         const auto same_id=[](const auto& left,const auto& right) { return left.id==right.id; };
-        const auto end=next.parameters.begin()+next.count;
-        bool valid_ids=std::adjacent_find(next.parameters.begin(),end,same_id)==end;
+        const auto end=next->parameters.begin()+next->count;
+        bool valid_ids=std::adjacent_find(next->parameters.begin(),end,same_id)==end;
         if (valid_ids && metadata.revision) {
-            const auto prior=compact(metadata);
-            valid_ids=std::equal(next.parameters.begin(),end,prior.parameters.begin(),same_id);
+            std::unique_ptr<ProcessingParameterSnapshot> prior(new(std::nothrow) ProcessingParameterSnapshot{});
+            if(!prior) { refuse(MetadataCapacity); result.disposition=HostDisposition::Capacity; return result; }
+            compact_into(metadata,*prior);
+            valid_ids=std::equal(next->parameters.begin(),end,prior->parameters.begin(),same_id);
         }
         if (!valid_ids) {
             refuse(InvalidMetadata); result.disposition=HostDisposition::InvalidMetadata; return result;
         }
-        if(!publish_processing_snapshot(next)) {
+        if(!publish_processing_snapshot(*next)) {
             result.disposition=HostDisposition::Pending;return result;
         }
         staged.descriptor_signature=parameter_descriptor_signature(staged);
@@ -788,8 +811,10 @@ public:
     // Native-control borrowed view only, valid until next dispatch or retirement.
     // A transport consumer must copy/validate its bounded data before crossing IPC.
     const ParameterSnapshot* snapshot() const { return [NSThread isMainThread]?&metadata:nullptr; }
-    ProcessingParameterSnapshot processing_snapshot_on_control() const {
-        return [NSThread isMainThread]?compact(metadata):ProcessingParameterSnapshot{};
+    bool processing_snapshot_on_control(ProcessingParameterSnapshot& target) const {
+        if(![NSThread isMainThread]) { target.count=0;target.revision=0;return false; }
+        compact_into(metadata,target);
+        return true;
     }
     void refresh_processing_snapshot(ProcessingParameterSnapshot& current) {
         // The caller is the same single worker that invokes process/flush.
@@ -797,7 +822,7 @@ public:
         for(auto& slot:processing_snapshots) {
             uint8_t phase=Ready;
             if(!slot.phase.compare_exchange_strong(phase,Reading,std::memory_order_acq_rel)) continue;
-            if(slot.snapshot.revision>current.revision) current=slot.snapshot;
+            if(slot.snapshot.revision>current.revision) current.copy_from(slot.snapshot);
             slot.phase.store(Free,std::memory_order_release);
         }
     }
@@ -906,6 +931,6 @@ public:
 // Include retained large attributes plus one replacement allocation in each
 // concurrently leased message. The small message pool is inline in Host.
 static_assert(sizeof(Host)+2*HOST_MESSAGE_COUNT*HOST_BINARY_BYTES+
-    2*HOST_PARAMETER_COUNT*sizeof(ParameterSnapshot::Parameter)<6*1024*1024,
-    "native host, binary attributes and both inventories stay below six MiB");
+    2*HOST_PARAMETER_COUNT*sizeof(ParameterSnapshot::Parameter)<16*1024*1024,
+    "native host, binary attributes and both inventories stay below sixteen MiB");
 } // namespace hex_instance
