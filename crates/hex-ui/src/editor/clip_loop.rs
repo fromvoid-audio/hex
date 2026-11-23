@@ -34,6 +34,8 @@ impl State {
     }
 }
 struct Pending {
+    replayed: bool,
+    revision: u64,
     generation: u64,
     clip: ClipId,
     preview: Preview,
@@ -363,6 +365,8 @@ impl EditorView {
             return;
         }
         self.clip_loop.pending = Some(Pending {
+            replayed: false,
+            revision: self.state.as_ref().map_or(0, |state| state.revision),
             generation: self.project_generation,
             clip,
             preview: Preview::Midi {
@@ -424,6 +428,8 @@ impl EditorView {
             _ => None,
         };
         self.clip_loop.pending = Some(Pending {
+            replayed: false,
+            revision: self.state.as_ref().map_or(0, |state| state.revision),
             generation: self.project_generation,
             clip,
             start_camera,
@@ -537,7 +543,7 @@ impl EditorView {
         }
         retired
     }
-    pub(super) fn clip_loop_request_complete(&mut self, event: &Event) {
+    pub(super) fn clip_loop_request_complete(&mut self, event: &Event) -> Option<Request> {
         if event.project_replaced {
             self.cancel_audio_loop_gesture();
         }
@@ -552,6 +558,26 @@ impl EditorView {
                     event.request_complete,
                 )
             });
+        if disposition == Disposition::Terminal
+            && let Some(pending) = self.clip_loop.pending.as_mut()
+            && !pending.replayed
+            && let Preview::Audio {
+                edit: AudioEdit::Resize(operation),
+                ..
+            } = pending.preview
+            && event.resident_edit_source_unavailable
+                == Some(hex_engine::AudioSourceContext {
+                    project_generation: pending.generation,
+                    editor_revision: pending.revision,
+                })
+            && event.state.revision == pending.revision
+        {
+            pending.receipt = Receipt::new(pending.generation);
+            return Some(Request::Edit(Command::ResizeAudioClipView {
+                clip: pending.clip,
+                operation,
+            }));
+        }
         if disposition != Disposition::Waiting
             && let Some(pending) = self.clip_loop.pending.take()
         {
@@ -566,6 +592,15 @@ impl EditorView {
                     &event.state.project,
                 );
             }
+        }
+        None
+    }
+
+    pub(super) fn mark_replayed_clip_loop(&mut self, request: &Request) {
+        if self.pending_clip_loop_matches(request)
+            && let Some(pending) = &mut self.clip_loop.pending
+        {
+            pending.replayed = true;
         }
     }
 }

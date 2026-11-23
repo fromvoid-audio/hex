@@ -105,6 +105,7 @@ fn install(v: &mut EditorView, clip: ClipId) -> Request {
     let track = state.project.tracks()[0].id();
     v.viewport = Some(OWNED);
     v.pending_trim = Some(PendingTrim {
+        replayed: false,
         generation: v.project_generation,
         revision,
         track,
@@ -132,6 +133,56 @@ fn normalized(v: &EditorView) -> Viewport {
     assert_eq!(viewport.start, 0);
     assert_eq!(viewport.length, OWNED.length);
     viewport
+}
+
+#[gpui::test]
+fn arrangement_resize_source_refusal_keeps_the_preview_for_exactly_one_retry(
+    cx: &mut TestAppContext,
+) {
+    let f = fixture(cx);
+    let mut visual = VisualTestContext::from_window(f.window, cx);
+    f.editor.update(&mut visual, |view, _| {
+        let _ = install(view, f.clip);
+        let operation = hex_project::AudioViewResizeOperation::OuterEnd {
+            project_frame: 104_000,
+        };
+        let request = Request::Edit(Command::ResizeAudioClipView {
+            clip: f.clip,
+            operation,
+        });
+        view.pending_trim.as_mut().unwrap().command =
+            ResizeCommand::from_request(&request).unwrap();
+        assert!(view.enqueue(request));
+        let mut refused = ok(&view.service);
+        refused.state = view.state.as_ref().unwrap().clone();
+        refused.error = Some("native graph source is unavailable".into());
+        refused.resident_edit_source_unavailable = Some(hex_engine::AudioSourceContext {
+            project_generation: view.project_generation,
+            editor_revision: refused.state.revision,
+        });
+        let mut retry = None;
+        assert!(view.trim_request_complete(&refused, &mut retry).is_none());
+        let retry = retry.expect("the first source refusal retains the exact edit");
+        assert!(
+            matches!(&retry, Request::Edit(Command::ResizeAudioClipView { clip, operation: op })
+            if *clip == f.clip && *op == operation)
+        );
+        assert_eq!(
+            view.audio_trim_display(f.track, Some(f.clip))
+                .unwrap()
+                .1
+                .duration(),
+            104_000
+        );
+        view.mark_replayed_trim(&retry);
+        view.trim_request_submitted();
+        let mut second_retry = None;
+        let retired = view.trim_request_complete(&refused, &mut second_retry);
+        view.normalize_completed_trim_viewport(retired);
+        assert!(second_retry.is_none());
+        assert!(view.audio_trim_display(f.track, Some(f.clip)).is_none());
+        normalized(view);
+    });
 }
 
 #[gpui::test]

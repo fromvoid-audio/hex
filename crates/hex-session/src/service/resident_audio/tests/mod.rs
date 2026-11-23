@@ -700,7 +700,7 @@ fn range_copy_reports_source_refusal_only_before_commit() {
     service.submit(copy()).unwrap();
     let unrelated = receive();
     assert!(unrelated.error.is_some());
-    assert_eq!(unrelated.range_copy_source_unavailable, None);
+    assert_eq!(unrelated.resident_edit_source_unavailable, None);
     assert_eq!(unrelated.state.revision, before.state.revision);
     observed.refuse_native_source.store(true, Ordering::Release);
     service
@@ -710,13 +710,13 @@ fn range_copy_reports_source_refusal_only_before_commit() {
         .unwrap();
     let other_edit = receive();
     assert!(other_edit.error.is_some());
-    assert_eq!(other_edit.range_copy_source_unavailable, None);
+    assert_eq!(other_edit.resident_edit_source_unavailable, None);
     assert_eq!(other_edit.state.revision, before.state.revision);
     service.submit(copy()).unwrap();
     let refused = receive();
     assert!(refused.error.is_some());
     assert_eq!(
-        refused.range_copy_source_unavailable,
+        refused.resident_edit_source_unavailable,
         Some(hex_engine::AudioSourceContext {
             project_generation: 0,
             editor_revision: before.state.revision,
@@ -732,12 +732,12 @@ fn range_copy_reports_source_refusal_only_before_commit() {
     service.submit(copy()).unwrap();
     let committed = receive();
     assert!(committed.error.is_none(), "{:?}", committed.error);
-    assert_eq!(committed.range_copy_source_unavailable, None);
+    assert_eq!(committed.resident_edit_source_unavailable, None);
     assert_eq!(committed.state.revision, before.state.revision + 1);
     service.submit(Request::Undo).unwrap();
     let undone = receive();
     assert!(undone.error.is_none(), "{:?}", undone.error);
-    assert_eq!(undone.range_copy_source_unavailable, None);
+    assert_eq!(undone.resident_edit_source_unavailable, None);
     assert_eq!(
         undone
             .state
@@ -748,6 +748,53 @@ fn range_copy_reports_source_refusal_only_before_commit() {
             .len(),
         1
     );
+    let files = sampler_export::tests::Files::new(false);
+    service
+        .submit(Request::Import(files.source().to_owned()))
+        .unwrap();
+    let imported = receive();
+    assert!(imported.error.is_none(), "{:?}", imported.error);
+    let clip = imported
+        .state
+        .project
+        .tracks()
+        .iter()
+        .flat_map(|track| track.clips())
+        .next()
+        .unwrap()
+        .id();
+    for operation in [
+        hex_project::AudioViewResizeOperation::PlayStart { position: 2 },
+        hex_project::AudioViewResizeOperation::OuterEnd { project_frame: 12 },
+    ] {
+        let edit = || Request::Edit(Command::ResizeAudioClipView { clip, operation });
+        observed.refuse.store(true, Ordering::Release);
+        observed.refuse_native_source.store(true, Ordering::Release);
+        service.submit(edit()).unwrap();
+        let refused = receive();
+        assert!(refused.error.is_some());
+        assert_eq!(refused.state.project, imported.state.project);
+        assert_eq!(
+            refused.resident_edit_source_unavailable,
+            Some(hex_engine::AudioSourceContext {
+                project_generation: 0,
+                editor_revision: refused.state.revision,
+            })
+        );
+        observed.refuse.store(false, Ordering::Release);
+        observed
+            .refuse_native_source
+            .store(false, Ordering::Release);
+        service.submit(edit()).unwrap();
+        let committed = receive();
+        assert!(committed.error.is_none(), "{:?}", committed.error);
+        assert_ne!(committed.state.project, imported.state.project);
+        assert_eq!(committed.state.revision, refused.state.revision + 1);
+        service.submit(Request::Undo).unwrap();
+        let undone = receive();
+        assert!(undone.error.is_none(), "{:?}", undone.error);
+        assert_eq!(undone.state.project, imported.state.project);
+    }
 }
 
 #[test]

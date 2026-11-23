@@ -303,10 +303,10 @@ pub struct Event {
     pub playback: Option<Playback>,
     pub status: Option<String>,
     pub error: Option<String>,
-    /// This exact range-copy request was refused before canonical commit because
+    /// This range copy or audio clip view resize was refused before canonical commit because
     /// native source custody was unavailable. Ordered request completion and
     /// source context correlate the receipt; it does not establish the cause.
-    pub range_copy_source_unavailable: Option<hex_engine::AudioSourceContext>,
+    pub resident_edit_source_unavailable: Option<hex_engine::AudioSourceContext>,
     /// Persistent automatic-recovery failure; successful edits need not clear it.
     pub recovery_failure: Option<Arc<RecoveryFailure>>,
     /// Original failing batch member, kept separate from app-owned explanation.

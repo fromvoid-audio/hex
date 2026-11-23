@@ -806,6 +806,13 @@ impl EditorView {
             self.retire_unsubmitted_request(&pending.request, Some(message));
             return;
         }
+        if matches!(
+            pending.request.as_ref(),
+            Request::Edit(Command::ResizeAudioClipView { .. })
+        ) {
+            self.mark_replayed_trim(&pending.request);
+            self.mark_replayed_clip_loop(&pending.request);
+        }
         if self.enqueue_request(*pending.request, false) {
             self.status = if sample_drop {
                 "importing sample to arrangement".into()
