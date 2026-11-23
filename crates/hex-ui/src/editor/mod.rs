@@ -850,6 +850,13 @@ pub(super) struct EditorView {
     // Play requested while the stopped restore renews effects (for example
     // vst3); it starts once that restore settles (Pulse #3784).
     deferred_play: Option<(PlaybackAction, Option<u64>, u64)>,
+    // Play requested during a brief sub-frame window where an in-flight edit
+    // or audio publication is completing; dispatches once the applied source
+    // is ready (Pulse #8948).
+    deferred_toggle_play: Option<(u64, u64)>,
+    // Seek requested while an already-applied Resident audio revision is
+    // waiting for its worker_submitted preroll metadata (Pulse #8948).
+    deferred_metadata_seek: Option<(u64, u64)>,
     offline_cursor: u64,
     pub(in crate::editor) state: Option<Arc<ViewState>>,
     selected_track: Option<TrackId>,
@@ -1757,6 +1764,8 @@ impl EditorView {
             device_insert_confirmation: None,
             sampler_edit_resume: None,
             deferred_play: None,
+            deferred_toggle_play: None,
+            deferred_metadata_seek: None,
             offline_cursor: 0,
             selected_track: None,
             track_selection: selection::TrackSelection::default(),
@@ -2149,7 +2158,9 @@ impl EditorView {
         let device_playing = self
             .audio_status()
             .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire));
-        if self.playback_settings.pending.take().is_some() {
+        if self.playback_settings.pending.take().is_some()
+            || self.deferred_toggle_play.take().is_some()
+        {
             self.status = "playback start cancelled".into();
             if self.desired_playing(device_playing) {
                 self.pause_from_play_toggle();
@@ -2195,8 +2206,16 @@ impl EditorView {
                 self.queue_normal_play(frame);
             }
             arrangement_seek::ToggleAction::Unavailable => {
-                if self.has_degraded_vst3_output() {
+                if self.has_degraded_vst3_output()
+                    || (self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+                        && self.normal_start_source().is_some())
+                {
                     self.queue_normal_play(start_frame);
+                } else if self.can_defer_toggle_play_for_inflight_publication() {
+                    self.deferred_toggle_play = Some((start_frame, self.project_generation));
+                    self.status = "applying audio update · playback starts when ready".into();
+                    controller::clear_stale_playback_unavailable_error(&mut self.error);
+                    self.wake_poll();
                 } else {
                     self.error = Some("playback source is unavailable · cannot seek safely".into());
                 }
@@ -2205,6 +2224,8 @@ impl EditorView {
     }
 
     fn pause_from_play_toggle(&mut self) {
+        self.deferred_toggle_play = None;
+        self.deferred_metadata_seek = None;
         #[cfg(test)]
         {
             self.last_transport_command = Some(PlaybackCommand::Pause);

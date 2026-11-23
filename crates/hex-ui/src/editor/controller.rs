@@ -27,6 +27,8 @@ use std::{
 #[cfg(all(test, feature = "ui-test-support"))]
 mod export_refusal_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
+mod play_metadata_race_tests;
+#[cfg(all(test, feature = "ui-test-support"))]
 mod project_replacement_tests;
 mod submission;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -50,6 +52,7 @@ mod transport;
 pub(super) use audio_poll::publication_observation_for_view;
 #[cfg(all(test, not(feature = "ui-test-support")))]
 use audio_poll::relinquish_client_matches;
+pub(super) use transport::clear_stale_playback_unavailable_error;
 use transport::{is_paused_republish_rejection, record_paused_republish_rejection};
 
 mod publication;

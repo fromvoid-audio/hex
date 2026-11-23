@@ -210,6 +210,8 @@ impl EditorView {
         self.pending_session_ticket = None;
         self.playback_candidates.clear();
         self.audible_playback = None;
+        self.deferred_toggle_play = None;
+        self.deferred_metadata_seek = None;
         self.audio_admission.reset_audio();
     }
 
@@ -516,14 +518,8 @@ impl EditorView {
                     Some(metadata) => self.resident_publication_view(metadata),
                     None => self.state.as_ref().cloned(),
                 };
-                if let Some(state) = source_state
-                    && !self.playback_candidates.iter().any(|candidate| {
-                        candidate.audio_revision == audio_revision
-                            && candidate.project_generation == context.project_generation
-                    })
-                    && self.playback_candidates.len() < crate::editor::PLAYBACK_CANDIDATE_CAPACITY
-                {
-                    self.playback_candidates.push_back(PlaybackCandidate {
+                if let Some(state) = source_state {
+                    let candidate = PlaybackCandidate {
                         clip_preview_identity: metadata.and_then(|metadata| metadata.clip_preview),
                         worker_requires_preroll: metadata.map(|metadata| metadata.requires_preroll),
                         observation,
@@ -536,7 +532,40 @@ impl EditorView {
                             .and_then(|metadata| metadata.device_preview),
                         tuning_preview_identity: metadata
                             .and_then(|metadata| metadata.tuning_preview),
-                    });
+                    };
+                    // If the audio callback already applied this revision before
+                    // `worker_submitted` arrived, backfill the fallback entry
+                    // immediately so preroll/observation queries never stay stranded.
+                    if candidate.clip_preview_identity.is_none()
+                        && let Some(audible) = self.audible_playback.as_mut().filter(|audible| {
+                            audible.audio_revision == audio_revision
+                                && audible.project_generation == context.project_generation
+                        })
+                    {
+                        if audible.worker_requires_preroll.is_none() {
+                            audible.worker_requires_preroll = candidate.worker_requires_preroll;
+                        }
+                        if audible.observation.is_none() {
+                            audible.observation = candidate.observation.clone();
+                        }
+                        if audible.device_preview_identity.is_none() {
+                            audible.device_preview_identity = candidate.device_preview_identity;
+                        }
+                        if audible.tuning_preview_identity.is_none() {
+                            audible.tuning_preview_identity = candidate.tuning_preview_identity;
+                        }
+                        if audible.seek_request_id.is_none() {
+                            audible.seek_request_id = candidate.seek_request_id;
+                        }
+                    }
+                    if !self.playback_candidates.iter().any(|existing| {
+                        existing.audio_revision == audio_revision
+                            && existing.project_generation == context.project_generation
+                    }) && self.playback_candidates.len()
+                        < crate::editor::PLAYBACK_CANDIDATE_CAPACITY
+                    {
+                        self.playback_candidates.push_back(candidate);
+                    }
                 }
                 // A section seek repairing a refused loop leaves the current
                 // admission in place until the callback applies the seek.

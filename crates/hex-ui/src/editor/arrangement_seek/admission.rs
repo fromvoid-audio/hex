@@ -363,7 +363,7 @@ pub(crate) fn verified_audio_candidate_is_current(context: VerifiedSeekCandidate
         && context.applied_project_revision == Some(context.current_project_revision)
 }
 
-pub(crate) fn resolve_prepared_seek_terminal<E: From<String>>(
+pub(crate) fn resolve_prepared_seek_terminal<E: From<String> + std::ops::Deref<Target = str>>(
     pending_seek: &mut Option<PendingSeek>,
     status: &mut String,
     error: &mut Option<E>,
@@ -403,6 +403,7 @@ pub(crate) fn resolve_prepared_seek_terminal<E: From<String>>(
             _ => "cursor ready",
         }
         .into();
+        crate::editor::controller::clear_stale_playback_unavailable_error(error);
     }
     true
 }

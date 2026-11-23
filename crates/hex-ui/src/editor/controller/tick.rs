@@ -1,6 +1,59 @@
 //! Per-frame editor tick loop, spectrum target visibility and processor audition lifecycle.
 use super::*;
 
+fn install_current_applied_fallback(
+    recovery: &mut crate::editor::recovery_state::RecoveryState,
+    pending_recovery_generation: Option<u64>,
+    current_state: Option<&Arc<ViewState>>,
+    applied_project_revision: &mut Option<u64>,
+    audible_playback: &mut Option<PlaybackCandidate>,
+    source: hex_audio::prepared::AppliedAudioSource,
+) {
+    restore_verified_recovery_from_applied(recovery, pending_recovery_generation);
+    // Actual ACK can arrive after Submitted metadata was coalesced.
+    // Reconstruct only nonowning canonical view metadata, never an
+    // audio owner or a state for an older, unavailable Project snapshot.
+    if let Some(state) = current_state
+        .filter(|state| state.audio_authoring_revision(source.context) == Some(state.revision))
+    {
+        *applied_project_revision = Some(state.revision);
+        if audible_playback.as_ref().is_none_or(|candidate| {
+            candidate.audio_revision != source.audio_revision
+                || candidate.project_generation != source.context.project_generation
+        }) {
+            // Preserve known preroll metadata across same-revision updates
+            // (such as EQ device-gesture previews) when the callback applies
+            // the new audio revision before the UI drains `worker_submitted`.
+            let retained_requires_preroll = audible_playback
+                .as_ref()
+                .filter(|previous| {
+                    previous.project_generation == source.context.project_generation
+                        && previous.state.revision == state.revision
+                })
+                .and_then(|previous| {
+                    previous.worker_requires_preroll.or_else(|| {
+                        previous
+                            .prepared_revision
+                            .as_ref()
+                            .map(|prepared| prepared.arrangement_seek_requires_preroll())
+                    })
+                });
+            *audible_playback = Some(PlaybackCandidate {
+                clip_preview_identity: None,
+                worker_requires_preroll: retained_requires_preroll,
+                observation: None,
+                audio_revision: source.audio_revision,
+                project_generation: source.context.project_generation,
+                state: Arc::clone(state),
+                prepared_revision: None,
+                seek_request_id: None,
+                device_preview_identity: None,
+                tuning_preview_identity: None,
+            });
+        }
+    }
+}
+
 impl EditorView {
     pub(in crate::editor) fn tick(&mut self, cx: &mut Context<Self>) -> bool {
         if crate::diagnostics::actions_enabled(cx) {
@@ -837,35 +890,14 @@ impl EditorView {
             }
         }
         if let Some(source) = current_applied {
-            restore_verified_recovery_from_applied(
+            install_current_applied_fallback(
                 &mut self.recovery,
                 self.pending_recovery_generation,
+                self.state.as_ref(),
+                &mut self.applied_project_revision,
+                &mut self.audible_playback,
+                source,
             );
-            // Actual ACK can arrive after Submitted metadata was coalesced.
-            // Reconstruct only nonowning canonical view metadata, never an
-            // audio owner or a state for an older, unavailable Project snapshot.
-            if let Some(state) = self.state.as_ref().filter(|state| {
-                state.audio_authoring_revision(source.context) == Some(state.revision)
-            }) {
-                self.applied_project_revision = Some(state.revision);
-                if self.audible_playback.as_ref().is_none_or(|candidate| {
-                    candidate.audio_revision != source.audio_revision
-                        || candidate.project_generation != source.context.project_generation
-                }) {
-                    self.audible_playback = Some(PlaybackCandidate {
-                        clip_preview_identity: None,
-                        worker_requires_preroll: None,
-                        observation: None,
-                        audio_revision: source.audio_revision,
-                        project_generation: source.context.project_generation,
-                        state: Arc::clone(state),
-                        prepared_revision: None,
-                        seek_request_id: None,
-                        device_preview_identity: None,
-                        tuning_preview_identity: None,
-                    });
-                }
-            }
         }
         if let Some((revision, _)) = rejected_revision {
             self.observed_rejected_revision = revision;
@@ -1000,6 +1032,7 @@ impl EditorView {
                     match receipt.outcome {
                         hex_audio::prepared::ActionOutcome::Applied => {
                             replace_status(&mut self.status, "cursor ready");
+                            clear_stale_playback_unavailable_error(&mut self.error);
                         }
                         _ => {
                             replace_status(&mut self.status, "seek was not applied");
@@ -1116,6 +1149,7 @@ impl EditorView {
                 self.pending_seek_ticket = None;
                 visible_change = true;
                 replace_status(&mut self.status, "cursor ready");
+                clear_stale_playback_unavailable_error(&mut self.error);
             }
         }
         if audio
@@ -1128,6 +1162,8 @@ impl EditorView {
             self.pending_metronome_ticket = None;
             self.pending_session_ticket = None;
             self.pending_seek_ticket = None;
+            self.deferred_toggle_play = None;
+            self.deferred_metadata_seek = None;
             self.play_intent.clear();
             visible_change |= replace_status(&mut self.status, "audio device unavailable");
             let diagnostic = "audio device failed · editing and saving remain available";
@@ -1143,6 +1179,8 @@ impl EditorView {
             self.pending_metronome_ticket = None;
             self.pending_seek_ticket = None;
             self.pending_session_ticket = None;
+            self.deferred_toggle_play = None;
+            self.deferred_metadata_seek = None;
             self.play_intent.clear();
             visible_change |= replace_status(&mut self.status, "audio render fault · stopped");
             let diagnostic = audio.control.status().and_then(|status| status.render_fault_snapshot()).map_or_else(
@@ -1222,7 +1260,23 @@ impl EditorView {
         visible_change |= self.tick_paused_republish();
         visible_change |= self.tick_sampler_edit_resume();
         visible_change |= self.tick_deferred_play();
+        visible_change |= self.tick_deferred_toggle_play_and_metadata_seek();
         self.observe_audio_frame(frame, visible_change, Instant::now())
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn install_current_applied_fallback(
+        &mut self,
+        source: hex_audio::prepared::AppliedAudioSource,
+    ) {
+        install_current_applied_fallback(
+            &mut self.recovery,
+            self.pending_recovery_generation,
+            self.state.as_ref(),
+            &mut self.applied_project_revision,
+            &mut self.audible_playback,
+            source,
+        );
     }
 
     pub(in crate::editor) fn spectrum_target_is_visible_and_current(

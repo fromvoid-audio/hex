@@ -83,6 +83,8 @@ impl EditorView {
 
     pub(super) fn queue_normal_start(&mut self, start: Start) {
         self.playback_settings.pending = None;
+        self.deferred_toggle_play = None;
+        self.deferred_metadata_seek = None;
         let source = match &start {
             Start::Source { source, .. } => self
                 .start_source_is_current(&start, *source)
@@ -167,7 +169,7 @@ impl EditorView {
         }
     }
 
-    fn normal_start_source(&self) -> Option<AppliedAudioSource> {
+    pub(super) fn normal_start_source(&self) -> Option<AppliedAudioSource> {
         if self.recovery.generation().is_some()
             || self.stopped_playback_restore.is_some()
             || !self.pending_audio_commands.is_empty()
