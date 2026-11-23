@@ -32,7 +32,10 @@ impl EditorView {
                 .iter()
                 .find(|bus| bus.id() == destination)
             {
-                panel = panel.child(theme::text(format!("{} · return inputs", bus.name())));
+                panel = panel.child(theme::text(format!(
+                    "{} · return inputs",
+                    hex_session::service::text::verbatim(bus.name())
+                )));
                 for source in state
                     .project
                     .return_tracks()
@@ -100,7 +103,7 @@ impl EditorView {
 
         panel = panel.child(theme::text(format!(
             "{} · additive stereo inputs before effects",
-            destination.name()
+            hex_session::service::text::verbatim(destination.name())
         )));
         for source in state
             .project
@@ -204,7 +207,12 @@ fn gain_row(
         .flex()
         .items_center()
         .gap_1()
-        .child(div().w(px(160.0)).truncate().child(theme::text(name)))
+        .child(
+            div()
+                .w(px(160.0))
+                .truncate()
+                .child(theme::text(hex_session::service::text::verbatim(name))),
+        )
         .child(
             button("−", "decrease feed gain", format!("{key}-down")).on_click(cx.listener(
                 move |view, _, _, cx| {

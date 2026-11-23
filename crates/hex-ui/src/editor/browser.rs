@@ -2564,11 +2564,13 @@ impl EditorView {
                         .gap_1()
                         .child(div().flex_1().min_w_0().overflow_hidden().text_xs().child(
                             theme::text(if section == BrowserSection::All {
-                                "all folders"
+                                std::borrow::Cow::Borrowed("all folders")
+                            } else if let Some(name) =
+                                path.file_name().and_then(|name| name.to_str())
+                            {
+                                std::borrow::Cow::Owned(hex_session::service::text::verbatim(name))
                             } else {
-                                path.file_name()
-                                    .and_then(|name| name.to_str())
-                                    .unwrap_or("folder")
+                                std::borrow::Cow::Borrowed("folder")
                             }),
                         ))
                         .child(folder_dialog),

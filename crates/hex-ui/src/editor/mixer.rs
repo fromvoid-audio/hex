@@ -29,12 +29,9 @@ impl EditorView {
         {
             let id = track.id();
             strip = strip
-                .child(
-                    div()
-                        .max_w(px(140.0))
-                        .truncate()
-                        .child(theme::text(track.name())),
-                )
+                .child(div().max_w(px(140.0)).truncate().child(theme::text(
+                    hex_session::service::text::verbatim(track.name()),
+                )))
                 .child(
                     button("◀", "balance left", ("balance-left", id.value())).on_click(
                         cx.listener(move |view, _, _, cx| {
@@ -100,7 +97,10 @@ impl EditorView {
                             .max_w(px(140.0))
                             .truncate()
                             .debug_selector(|| "console-track-gain-owner".into())
-                            .child(theme::text(format!("editing {}", track.name()))),
+                            .child(theme::text(format!(
+                                "editing {}",
+                                hex_session::service::text::verbatim(track.name())
+                            ))),
                     );
                 }
                 let gain = self.track_volume(track, cx);

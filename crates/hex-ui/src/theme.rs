@@ -1177,6 +1177,28 @@ mod tests {
             "weakest regular/accent separation: {weakest:.4}:1"
         );
     }
+
+    #[test]
+    fn verbatim_preserves_mixed_case_user_and_file_names_inside_lowercase_chrome() {
+        let track = verbatim_text::verbatim("LeadVox_Bus A");
+        let scene = verbatim_text::verbatim("Chorus Intro II");
+        let ret = verbatim_text::verbatim("PlateReverb_FX");
+        let file = verbatim_text::verbatim("Kick_909_Final.WAV");
+        assert_eq!(text(&track).as_ref(), "LeadVox_Bus A");
+        assert_eq!(text(&scene).as_ref(), "Chorus Intro II");
+        assert_eq!(
+            text(format!("Send To {ret} · dB")).as_ref(),
+            "send to PlateReverb_FX · db"
+        );
+        assert_eq!(
+            text(format!("Locate {file}")).as_ref(),
+            "locate Kick_909_Final.WAV"
+        );
+        assert_eq!(
+            text(format!("Gain · {track} · Static Fallback 100%")).as_ref(),
+            "gain · LeadVox_Bus A · static fallback 100%"
+        );
+    }
 }
 
 #[cfg(all(test, feature = "ui-unit-tier"))]
