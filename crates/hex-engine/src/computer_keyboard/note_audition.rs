@@ -23,6 +23,7 @@ pub(super) struct LiveAudition {
     id: AtomicU64,
     frames: AtomicU64,
     words: [AtomicU64; COMPUTER_KEY_COUNT],
+    refused: AtomicU64,
 }
 
 #[derive(Clone, Copy)]
@@ -35,6 +36,7 @@ pub(crate) struct AuditionRequest {
 pub(crate) struct AuditionGate {
     request: Option<AuditionRequest>,
     rendered: u64,
+    refused: bool,
 }
 
 impl AuditionGate {
@@ -44,6 +46,7 @@ impl AuditionGate {
         input: Option<&ComputerKeyboardInput>,
     ) {
         if self.request.map(|gate| gate.id) != request.map(|gate| gate.id) {
+            self.refused = false;
             self.rendered = request.map_or(0, |gate| {
                 if input.is_some_and(|input| input.audition_started.load(Acquire) >= gate.id) {
                     // A rebuilt runtime without inherited progress cannot replay a trigger.
@@ -71,6 +74,15 @@ impl AuditionGate {
         }
     }
 
+    pub(super) fn starting(self) -> bool {
+        self.request.is_some() && self.rendered == 0
+    }
+
+    pub(super) fn refuse(&mut self) {
+        self.refused = true;
+        self.finish();
+    }
+
     pub(super) fn finish(&mut self) {
         if let Some(gate) = self.request {
             self.rendered = gate.frames;
@@ -79,6 +91,11 @@ impl AuditionGate {
 
     pub(crate) fn commit(self, input: &ComputerKeyboardInput) {
         if let Some(gate) = self.request.filter(|_| self.rendered != 0) {
+            if self.refused
+                && let Some(bank) = &input.live_audition
+            {
+                bank.refused.fetch_max(gate.id, Release);
+            }
             if input.audition_started.load(Acquire) < gate.id {
                 input.audition_started.fetch_max(gate.id, Release);
             }
@@ -141,12 +158,12 @@ impl ComputerKeyboardInput {
 
     /// Audition on the already admitted live root. This replaces only the
     /// preceding preview and never writes to the hardware or recording queues.
-    /// Physical keys take priority over the preview.
+    /// Physical keys take priority over the preview. Returns the trigger identity for its audio outcome.
     pub fn trigger_live_note_audition_on_control(
         &self,
         notes: &[(u8, u8)],
         gate_frames: u64,
-    ) -> Result<(), Invalid> {
+    ) -> Result<u64, Invalid> {
         let bank = self.live_audition.as_ref().ok_or(Invalid(
             "live note audition requires a prepared controller input",
         ))?;
@@ -176,7 +193,16 @@ impl ComputerKeyboardInput {
         bank.frames.store(gate_frames, SeqCst);
         bank.id.store(after, SeqCst);
         self.sequence.store(after, SeqCst);
-        Ok(())
+        Ok(after)
+    }
+
+    /// True only for the identified preview after the audio transaction commits its refusal.
+    pub fn live_note_audition_refused(&self, trigger: u64) -> bool {
+        trigger != 0
+            && self
+                .live_audition
+                .as_ref()
+                .is_some_and(|bank| bank.refused.load(Acquire) == trigger)
     }
 
     pub fn cancel_live_note_audition_on_control(&self) {
@@ -292,6 +318,56 @@ impl ComputerKeyboardInput {
         ))
     }
 }
+impl ComputerKeyboardRuntime {
+    /// A fresh generation gives every note a new occurrence, even for an identical retrigger.
+    /// Old releases still occupy slots during their tails and consume events at this boundary.
+    pub(super) fn admits_live_chord(
+        &self,
+        queued_events: usize,
+        event_capacity: usize,
+        snapshot_physical: bool,
+    ) -> bool {
+        let mut onsets = 0;
+        for (key, word) in self
+            .desired
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, word)| *word != 0)
+        {
+            let pitch = ((word & 255) as u8).saturating_sub(1);
+            let velocity = ((word >> 8) & 255) as u8;
+            let Ok(sampler) = self.input.sampler_index(key, pitch, velocity) else {
+                return false;
+            };
+            if !self.supported.get(sampler).copied().unwrap_or(false) {
+                return false;
+            }
+            onsets += 1;
+        }
+        let occupied = self.scratch.iter().flatten().count();
+        let releases = self
+            .scratch
+            .iter()
+            .flatten()
+            .filter(|voice| {
+                voice.gate.is_none()
+                    && (voice.source == VoiceSource::Audition
+                        || (snapshot_physical && voice.source == VoiceSource::Physical))
+            })
+            .count();
+        onsets > 0
+            && snapshot_physical
+            && onsets
+                <= self
+                    .voice_capacity()
+                    .min(self.scratch.len())
+                    .saturating_sub(occupied)
+            && queued_events + releases + onsets <= event_capacity
+            && self.scratch_next_id.checked_add(onsets as u64).is_some()
+    }
+}
+
 impl KeyboardInput {
     pub(super) fn sampler_index(
         &self,
@@ -622,7 +698,11 @@ mod mutable_pcm_tests {
                 .with_note_audition(&[(60, 100)], 64)
                 .is_err()
         );
-        assert!(input.trigger_live_note_audition_on_control(&[], 64).is_err());
+        assert!(
+            input
+                .trigger_live_note_audition_on_control(&[], 64)
+                .is_err()
+        );
         assert!(
             input
                 .trigger_live_note_audition_on_control(&[(60, 0)], 64)

@@ -433,3 +433,83 @@ fn recording_prefix_preempts_live_audition_and_preview_can_resume_after_seal() {
     tested.render(&mut frames).unwrap();
     assert!(frames.iter().flatten().any(|sample| *sample != 0.0));
 }
+
+#[test]
+fn reusable_chord_refuses_all_onsets_and_preserves_hardware_when_one_pitch_or_slot_is_unavailable()
+{
+    let (project, track) = fixture();
+    for capacity_shortage in [false, true] {
+        let input = input();
+        let mut runtime =
+            ComputerKeyboardRuntime::prepare(&project, track, Arc::clone(&input)).unwrap();
+        let live = input.live_notes().unwrap();
+        let activation = live.current_activation_on_control().unwrap();
+        let held = if capacity_shortage { VOICES - 1 } else { 1 };
+        for pitch in 0..held {
+            live.publish(activation, on(pitch as u8, 80)).unwrap();
+        }
+        runtime.begin_block();
+        runtime.render(&mut [[0.0; 2]; 128], None).unwrap();
+        runtime.commit();
+        let voices_before: Vec<_> = runtime
+            .primary
+            .iter()
+            .flatten()
+            .map(|voice| voice.id)
+            .collect();
+        assert_eq!(voices_before.len(), held);
+        let trigger = input
+            .trigger_live_note_audition_on_control(&[(67, 37), (68, 95)], 256)
+            .unwrap();
+        runtime.begin_block();
+        if !capacity_shortage {
+            assert!(runtime.admits_live_chord(0, 2, true));
+            assert!(!runtime.admits_live_chord(0, 1, true));
+            let unavailable = runtime.input.sampler_index(1, 68, 95).unwrap();
+            runtime.supported[unavailable] = false;
+        }
+        runtime.render(&mut [[0.0; 2]; 16], None).unwrap();
+        assert!(
+            !input.live_note_audition_refused(trigger),
+            "speculative refusal must not publish"
+        );
+        runtime.rollback();
+        runtime.begin_block();
+        runtime.render(&mut [[0.0; 2]; 16], None).unwrap();
+        runtime.commit();
+        assert!(input.live_note_audition_refused(trigger));
+        assert_eq!(
+            runtime
+                .primary
+                .iter()
+                .flatten()
+                .map(|voice| voice.id)
+                .collect::<Vec<_>>(),
+            voices_before
+        );
+        assert!(
+            runtime
+                .primary
+                .iter()
+                .flatten()
+                .all(|voice| voice.gate.is_none())
+        );
+        assert!(live.same_current_activation(activation));
+        assert!(!input.is_cancelled() && !input.rejected());
+        let next = input
+            .trigger_live_note_audition_on_control(&[(67, 37)], 4)
+            .unwrap();
+        assert!(!input.live_note_audition_refused(next));
+        runtime.begin_block();
+        runtime.render(&mut [[0.0; 2]; 8], None).unwrap();
+        runtime.commit();
+        assert!(!input.live_note_audition_refused(next));
+        assert!(
+            runtime
+                .primary
+                .iter()
+                .flatten()
+                .any(|voice| voice.source == VoiceSource::Audition)
+        );
+    }
+}
