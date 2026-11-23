@@ -124,13 +124,12 @@ impl Bank {
 
 #[cfg(all(
     test,
-    feature = "allocation-probe",
+    feature = "vst3-sdk-tests",
     target_os = "macos",
     target_arch = "aarch64"
 ))]
 impl CandidateRoot {
     /// Delegate to the actual reference fence without retaining a graph.
-    #[allow(dead_code)]
     pub(crate) fn check_native_borrow_nodes_for_test(
         &self,
         nodes: &[hex_lattice::PreparedRuntimeInstance],
