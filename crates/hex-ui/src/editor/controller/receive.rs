@@ -163,6 +163,8 @@ impl EditorView {
             self.pending_session_ticket = None;
             self.playback_candidates.clear();
             self.audible_playback = None;
+            self.deferred_toggle_play = None;
+            self.deferred_metadata_seek = None;
             self.audio_admission.reset_audio();
         }
         if event.stopped_playback_restore_complete

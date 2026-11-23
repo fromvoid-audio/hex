@@ -652,6 +652,8 @@ impl EditorView {
 
     pub(in crate::editor) fn request_seek(&mut self, frame: u64) {
         self.playback_settings.pending = None;
+        self.deferred_toggle_play = None;
+        self.deferred_metadata_seek = None;
         self.wake_poll();
         self.latency_rebuild = None;
         if self.section_install_pending() {
@@ -689,6 +691,13 @@ impl EditorView {
             }
             Some(false) => {}
             None if self.audio.is_none() => {}
+            None if self.awaiting_applied_playback_metadata() => {
+                self.deferred_metadata_seek = Some((frame, self.project_generation));
+                self.status = "waiting for playback metadata · seek queued".into();
+                clear_stale_playback_unavailable_error(&mut self.error);
+                self.wake_poll();
+                return;
+            }
             None => {
                 self.error = Some("playback source is unavailable · cannot seek safely".into());
                 return;
@@ -710,7 +719,10 @@ impl EditorView {
             } else {
                 audio.control.action_with_ticket(command)
             } {
-                Ok(ticket) => self.pending_seek_ticket = Some(ticket),
+                Ok(ticket) => {
+                    self.pending_seek_ticket = Some(ticket);
+                    clear_stale_playback_unavailable_error(&mut self.error);
+                }
                 Err(rejected) if self.pending_audio_commands.len() < UI_REQUEST_CAPACITY => {
                     self.pending_audio_commands
                         .push_back(PendingPlaybackAction {
@@ -1103,6 +1115,8 @@ impl EditorView {
         self.latency_rebuild = None;
         self.sampler_edit_resume = None;
         self.deferred_play = None;
+        self.deferred_toggle_play = None;
+        self.deferred_metadata_seek = None;
         self.cancel_section_launch_wait();
         self.invalidate_prepared_seek();
         let Some(ticket) = self.audio.as_mut().and_then(|audio| {
@@ -1126,6 +1140,7 @@ impl EditorView {
             Some(ticket),
         );
         self.pending_seek_ticket = Some(ticket);
+        clear_stale_playback_unavailable_error(&mut self.error);
         #[cfg(test)]
         {
             self.last_transport_command = Some(command);
@@ -1151,6 +1166,8 @@ impl EditorView {
         self.latency_rebuild = None;
         self.sampler_edit_resume = None;
         self.deferred_play = None;
+        self.deferred_toggle_play = None;
+        self.deferred_metadata_seek = None;
         self.cancel_section_launch_wait();
         self.invalidate_prepared_seek();
         let Some(ticket) = self.audio.as_mut().and_then(|audio| {
@@ -1163,6 +1180,7 @@ impl EditorView {
             return;
         };
         self.pending_seek_ticket = Some(ticket);
+        clear_stale_playback_unavailable_error(&mut self.error);
         #[cfg(test)]
         {
             self.last_transport_command = Some(PlaybackCommand::Seek(frame));
@@ -1440,6 +1458,90 @@ impl EditorView {
             self.queue_playback_action(action, revision);
         }
         true
+    }
+
+    pub(in crate::editor) fn awaiting_applied_playback_metadata(&self) -> bool {
+        self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && self.audible_playback.as_ref().is_some_and(|candidate| {
+                candidate.project_generation == self.project_generation
+                    && candidate.worker_requires_preroll.is_none()
+                    && candidate.prepared_revision.is_none()
+            })
+            && self.normal_start_source().is_some()
+    }
+
+    pub(in crate::editor) fn can_defer_toggle_play_for_inflight_publication(&self) -> bool {
+        if self.opening_project || self.close_prompt_open || self.state.is_none() {
+            return false;
+        }
+        let Some(audio) = self.audio.as_ref() else {
+            return false;
+        };
+        let Some(status) = audio.control.status() else {
+            return false;
+        };
+        if status.stopped_edit_pending()
+            || status.device_fault.load(Acquire)
+            || status.render_fault.load(Acquire)
+            || status.shutdown_complete.load(Acquire)
+        {
+            return false;
+        }
+        self.edit_pending()
+            || self.pending_playback.is_some()
+            || self.pending_resident_publication.is_some()
+            || !self.playback_candidates.is_empty()
+            || self.awaiting_applied_playback_metadata()
+            || self.audio_admission.current().is_some_and(|admission| {
+                admission.project.generation == self.project_generation
+                    && admission.state == crate::editor::audio_admission::AdmissionState::Pending
+            })
+    }
+
+    pub(in crate::editor) fn tick_deferred_toggle_play_and_metadata_seek(&mut self) -> bool {
+        let mut changed = false;
+        if let Some((frame, generation)) = self.deferred_metadata_seek {
+            if generation != self.project_generation
+                || self.opening_project
+                || self.close_prompt_open
+            {
+                self.deferred_metadata_seek = None;
+                changed = true;
+            } else if self.current_seek_requires_preroll().is_some() {
+                self.deferred_metadata_seek = None;
+                self.request_seek(frame);
+                changed = true;
+            } else if !self.awaiting_applied_playback_metadata() {
+                self.deferred_metadata_seek = None;
+                if self.error.is_none() {
+                    self.error = Some("playback source is unavailable · cannot seek safely".into());
+                }
+                changed = true;
+            }
+        }
+        if let Some((frame, generation)) = self.deferred_toggle_play {
+            if generation != self.project_generation
+                || self.opening_project
+                || self.close_prompt_open
+            {
+                self.deferred_toggle_play = None;
+                changed = true;
+            } else if self.normal_start_source().is_some()
+                && (self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+                    || self.current_seek_requires_preroll().is_some())
+            {
+                self.deferred_toggle_play = None;
+                self.queue_normal_play(frame);
+                changed = true;
+            } else if !self.can_defer_toggle_play_for_inflight_publication() {
+                self.deferred_toggle_play = None;
+                if self.error.is_none() {
+                    self.error = Some("playback source is unavailable · cannot seek safely".into());
+                }
+                changed = true;
+            }
+        }
+        changed
     }
 
     pub(in crate::editor) fn paused_republish_waiting_for_current(&self) -> bool {
@@ -2174,6 +2276,8 @@ impl EditorView {
         self.pending_session_ticket = None;
         self.play_intent.priority_stop();
         self.deferred_play = None;
+        self.deferred_toggle_play = None;
+        self.deferred_metadata_seek = None;
         self.status = if self.play_start_at_beginning {
             "stopped · play start at beginning"
         } else {
@@ -2281,6 +2385,24 @@ pub(super) fn record_paused_republish_rejection(
     changed
 }
 
+pub(in crate::editor) fn clear_stale_playback_unavailable_error<
+    E: std::ops::Deref<Target = str>,
+>(
+    error: &mut Option<E>,
+) -> bool {
+    let stale = error.as_deref().is_some_and(|message| {
+        matches!(
+            message,
+            "playback source is unavailable · cannot seek safely"
+                | "playback source is unavailable · retry playback when audio is ready"
+        )
+    });
+    if stale {
+        *error = None;
+    }
+    stale
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2293,5 +2415,22 @@ mod tests {
         assert!(is_paused_republish_rejection(
             hex_engine::PlaybackHandoffRejection::ForeignTailSourcePaused
         ));
+    }
+
+    #[test]
+    fn clear_stale_playback_unavailable_error_clears_only_playback_unavailable_messages() {
+        let mut stale: Option<String> =
+            Some("playback source is unavailable · cannot seek safely".into());
+        assert!(clear_stale_playback_unavailable_error(&mut stale));
+        assert!(stale.is_none());
+
+        let mut retry: Option<String> =
+            Some("playback source is unavailable · retry playback when audio is ready".into());
+        assert!(clear_stale_playback_unavailable_error(&mut retry));
+        assert!(retry.is_none());
+
+        let mut unrelated: Option<String> = Some("save failed · disk full".into());
+        assert!(!clear_stale_playback_unavailable_error(&mut unrelated));
+        assert_eq!(unrelated.as_deref(), Some("save failed · disk full"));
     }
 }

@@ -254,6 +254,8 @@ impl EditorView {
             || self.pending_metronome_ticket.is_some()
             || self.pending_session_ticket.is_some()
             || self.deferred_play.is_some()
+            || self.deferred_toggle_play.is_some()
+            || self.deferred_metadata_seek.is_some()
             || self.seek_pending()
     }
 }
