@@ -246,6 +246,9 @@ impl EditorView {
                     visible_change |= self.retire_all_eq_creations();
                     visible_change |= self.pending_loop.take().is_some();
                     visible_change |= self.section_launch_after_loop.take().is_some();
+                    self.browser_sample_insert_in_flight = false;
+                    visible_change |= !self.pending_browser_insertions.is_empty();
+                    self.pending_browser_insertions.clear();
                     break;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -259,6 +262,7 @@ impl EditorView {
             self.midi_step.cancel_pending();
         }
         visible_change |= self.submit_queued_section();
+        visible_change |= self.drain_pending_browser_insertion(cx);
         visible_change |= self.poll_editor_audio_events(cx);
         visible_change |= self.poll_export(cx);
         visible_change |= self.poll_bounce_progress();

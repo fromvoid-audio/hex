@@ -175,6 +175,8 @@ impl EditorView {
         }
         if event.project_replaced {
             self.stopped_playback_restore = None;
+            self.browser_sample_insert_in_flight = false;
+            self.pending_browser_insertions.clear();
         }
         if event.request_complete
             && event.computer_keyboard_complete.is_none()
@@ -227,6 +229,15 @@ impl EditorView {
         }
         if event.request_complete && !event.plugin_parameter_observation {
             self.worker_requests_pending = self.worker_requests_pending.saturating_sub(1);
+            if self.browser_sample_insert_in_flight
+                && self.audio_batch.is_none()
+                && self.worker_requests_pending == 0
+            {
+                self.browser_sample_insert_in_flight = false;
+                if event.error.is_some() {
+                    self.pending_browser_insertions.clear();
+                }
+            }
         }
         if let Some(input) = &event.live_expression_complete {
             if self

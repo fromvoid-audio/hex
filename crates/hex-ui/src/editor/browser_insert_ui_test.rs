@@ -17,6 +17,7 @@ fn receive_worker(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext, in
                 view.worker_requests_pending == 0
                     && view.pending_requests.is_empty()
                     && view.audio_batch.is_none()
+                    && view.pending_browser_insertions.is_empty()
             }
         });
         if done {
@@ -881,5 +882,102 @@ fn input_quantization_menu_controls_fixed_browser_insertion_and_freezes_pending_
                 .start(),
             12_000
         );
+    });
+}
+
+#[gpui::test]
+fn rapid_browser_enter_queues_follow_up_insertions_without_busy_refusal(cx: &mut TestAppContext) {
+    let (handle, editor, _directory, _path) = fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    let track = select_sample(&editor, visual);
+    editor.update(visual, |view, _| {
+        view.input_quantization = hex_project::InputQuantization::Off;
+        view.snap_grid = crate::editor::musical_time::SnapGrid::Off;
+        view.offline_cursor = 1_000;
+    });
+    visual.simulate_keystrokes("enter");
+    editor.update(visual, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert!(view.audio_batch.is_some());
+        assert!(view.browser_sample_insert_in_flight);
+        assert!(view.pending_browser_insertions.is_empty());
+        view.offline_cursor = 2_000;
+    });
+    visual.simulate_keystrokes("enter");
+    editor.update(visual, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert_eq!(view.pending_browser_insertions.len(), 1);
+        view.offline_cursor = 3_000;
+    });
+    visual.simulate_keystrokes("enter");
+    editor.read_with(visual, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert_eq!(view.pending_browser_insertions.len(), 2);
+    });
+    receive_worker(&editor, visual, false);
+    editor.read_with(visual, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert!(!view.browser_sample_insert_in_flight);
+        assert!(view.pending_browser_insertions.is_empty());
+        let starts: Vec<_> = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .clips()
+            .iter()
+            .map(|clip| clip.start())
+            .collect();
+        assert_eq!(starts, vec![1_000, 2_000, 3_000]);
+    });
+}
+
+#[gpui::test]
+fn escape_clears_queued_browser_insertions_and_hard_busy_still_refuses(cx: &mut TestAppContext) {
+    let (handle, editor, _directory, _path) = fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    let track = select_sample(&editor, visual);
+    editor.update(visual, |view, _| {
+        view.input_quantization = hex_project::InputQuantization::Off;
+        view.snap_grid = crate::editor::musical_time::SnapGrid::Off;
+        view.offline_cursor = 1_000;
+    });
+    visual.simulate_keystrokes("enter");
+    editor.update(visual, |view, _| {
+        view.offline_cursor = 2_000;
+    });
+    visual.simulate_keystrokes("enter");
+    editor.update(visual, |view, cx| {
+        assert_eq!(view.pending_browser_insertions.len(), 1);
+        assert!(view.cancel_audio_batch(cx));
+        assert!(view.pending_browser_insertions.is_empty());
+    });
+    receive_worker(&editor, visual, false);
+    editor.update(visual, |view, _| {
+        let clips = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .clips();
+        assert!(
+            clips.iter().all(|clip| clip.start() != 2_000),
+            "cancelled queued insertion must not commit"
+        );
+        view.error = None;
+        view.save_dialog_open = true;
+        view.offline_cursor = 4_000;
+    });
+    visual.simulate_keystrokes("enter");
+    editor.read_with(visual, |view, _| {
+        assert_eq!(
+            view.error.as_deref(),
+            Some("sample insertion refused · arrangement is busy")
+        );
+        assert!(view.pending_browser_insertions.is_empty());
     });
 }

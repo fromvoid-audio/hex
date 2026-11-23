@@ -330,11 +330,16 @@ impl EditorView {
             visible |= self.abandon_bounce();
         }
         clear_rejected_scene_duplicate(&mut self.pending_scene_duplicate, request);
-        if matches!(request, Request::ImportAudioBatch { .. }) {
+        if matches!(
+            request,
+            Request::ImportAudioBatch { .. } | Request::InsertProjectSample { .. }
+        ) {
             if let Some(control) = self.audio_batch.take() {
                 control.request_cancel();
             }
             self.audio_batch_progress = None;
+            self.browser_sample_insert_in_flight = false;
+            self.pending_browser_insertions.clear();
         }
         if matches!(
             request,

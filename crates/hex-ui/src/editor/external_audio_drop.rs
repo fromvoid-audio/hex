@@ -140,8 +140,15 @@ impl EditorView {
         true
     }
     pub(super) fn cancel_audio_batch(&mut self, cx: &mut Context<Self>) -> bool {
+        let had_queued = !self.pending_browser_insertions.is_empty();
+        self.pending_browser_insertions.clear();
         let Some(control) = &self.audio_batch else {
-            return false;
+            if !had_queued {
+                return false;
+            }
+            self.status = "queued audio imports cancelled".into();
+            cx.notify();
+            return true;
         };
         self.status = match control.request_cancel() {
             AudioBatchCancel::Requested | AudioBatchCancel::AlreadyRequested => {

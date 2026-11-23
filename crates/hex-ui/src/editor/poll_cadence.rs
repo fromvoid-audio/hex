@@ -233,6 +233,7 @@ impl EditorView {
             || self.play_intent.desired_playing(actual_playing)
             || self.audio_recorder.needs_poll()
             || self.edit_pending()
+            || !self.pending_browser_insertions.is_empty()
             || self.automation_close_preflight.waiting()
             || self.automation_take_recovery.polling()
             || matches!(
