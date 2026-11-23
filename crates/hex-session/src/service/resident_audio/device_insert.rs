@@ -578,7 +578,7 @@ fn hosted_membership_operation(before: &Project, after: &Project) -> Option<Grap
         after
             .tracks()
             .iter()
-            .flat_map(|track| track.devices())
+            .flat_map(|track| track.devices().iter().chain(track.instrument()))
             .chain(
                 after
                     .return_tracks()
@@ -586,7 +586,12 @@ fn hosted_membership_operation(before: &Project, after: &Project) -> Option<Grap
                     .flat_map(|track| track.devices()),
             )
             .chain(after.main_devices())
-            .any(|effect| effect.state().type_id() == vst3 && before.device(effect.id()).is_none())
+            .any(|effect| {
+                effect.state().type_id() == vst3
+                    && before
+                        .device(effect.id())
+                        .is_none_or(|old| old.state().type_id() != vst3)
+            })
     }
     if adds_hosted_effect(before, after) {
         Some(GraphEditOperation::InsertDevice)
@@ -1265,7 +1270,7 @@ impl Session {
         })
     }
 
-    pub(super) fn prepare_verified_edit_revision(
+    pub(in crate::service) fn prepare_verified_edit_revision(
         &self,
         project: &Project,
         previous: Option<&PreparedRevision>,
@@ -1328,6 +1333,153 @@ impl Session {
             project,
             previous,
         )?)
+    }
+
+    pub(in crate::service) fn command_verified_prepared_revision_with<T>(
+        &mut self,
+        command: Command,
+        previous: Option<&PreparedRevision>,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        finish: impl FnOnce(&Project, &Project, &Arc<PreparedRevision>) -> Result<T, SessionError>,
+    ) -> Result<(Created, (Arc<PreparedRevision>, T)), SessionError> {
+        self.validate_prepared_command(&command)?;
+        let edit = self.editor.stage_edit(command)?;
+        let prepared = Arc::new(self.prepare_verified_edit_revision(
+            edit.project(),
+            previous,
+            context,
+            None,
+            sink,
+        )?);
+        let completed = finish(self.project(), edit.project(), &prepared)?;
+        let created = self.editor.commit_staged_edit(edit)?;
+        Ok((created, (prepared, completed)))
+    }
+
+    pub(in crate::service) fn comparison_command_verified(
+        &mut self,
+        command: Command,
+        previous: Option<&Arc<PreparedRevision>>,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+    ) -> Result<
+        (
+            Created,
+            crate::comparison_transition::ComparisonTransition<()>,
+        ),
+        SessionError,
+    > {
+        if !matches!(command, Command::CompareDevice { .. }) {
+            return Err(SessionError::Invalid("comparison command required"));
+        }
+        let edit = self.editor.stage_edit(command)?;
+        let transition = crate::comparison_transition::prepare_comparison(
+            self.project(),
+            edit.project(),
+            previous,
+            || {
+                let prepared = self.prepare_verified_edit_revision(
+                    edit.project(),
+                    previous.map(Arc::as_ref),
+                    context,
+                    None,
+                    sink,
+                )?;
+                Ok((Arc::new(prepared), ()))
+            },
+        )?;
+        let created = self.editor.commit_staged_edit(edit)?;
+        Ok((created, transition))
+    }
+
+    pub(in crate::service) fn comparison_history_verified<T>(
+        &mut self,
+        redo: bool,
+        previous: Option<&Arc<PreparedRevision>>,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        finish: impl FnOnce(&Project, &Project, &Arc<PreparedRevision>) -> Result<T, SessionError>,
+    ) -> Result<Option<crate::comparison_transition::ComparisonTransition<T>>, SessionError> {
+        let Some(edge) = self.editor.stage_history(redo)? else {
+            return Ok(None);
+        };
+        if let Some(previous) = previous
+            && crate::device_comparison::metadata_pair(self.project(), edge.project())?
+        {
+            self.editor.commit_staged_history(edge)?;
+            return Ok(Some(crate::comparison_transition::ComparisonTransition {
+                prepared: Arc::clone(previous),
+                completed: None,
+                metadata_only: true,
+            }));
+        }
+        let prepared = Arc::new(self.prepare_verified_edit_revision(
+            edge.project(),
+            previous.map(Arc::as_ref),
+            context,
+            None,
+            sink,
+        )?);
+        let completed = finish(self.project(), edge.project(), &prepared)?;
+        self.editor.commit_staged_history(edge)?;
+        Ok(Some(crate::comparison_transition::ComparisonTransition {
+            prepared,
+            completed: Some(completed),
+            metadata_only: false,
+        }))
+    }
+
+    pub(in crate::service) fn verified_device_gesture_operation(
+        &mut self,
+        operation: crate::device_gesture::GesturePreparation,
+        previous: Option<&Arc<PreparedRevision>>,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+    ) -> crate::device_gesture::PreparedGesture {
+        match operation {
+            crate::device_gesture::GesturePreparation::Plugin(_) => Err(SessionError::Invalid(
+                "plugin gestures require native host preparation",
+            )),
+            crate::device_gesture::GesturePreparation::Preview(draft) => {
+                let command = crate::device_gesture::command_for_snapshot(self, draft)?;
+                self.validate_prepared_command(&command)?;
+                let mut preview = hex_project::Editor::new(self.project().clone(), 1)?;
+                preview.execute(command)?;
+                let prepared = self.prepare_verified_edit_revision(
+                    preview.project(),
+                    previous.map(Arc::as_ref),
+                    context,
+                    None,
+                    sink,
+                )?;
+                Ok(Some((
+                    Arc::new(preview.project().clone()),
+                    Arc::new(prepared),
+                )))
+            }
+            crate::device_gesture::GesturePreparation::Commit(draft) => {
+                let command = crate::device_gesture::command_for_snapshot(self, draft)?;
+                self.validate_prepared_command(&command)?;
+                let edit = self.editor.stage_edit(command)?;
+                let prepared = self.prepare_verified_edit_revision(
+                    edit.project(),
+                    previous.map(Arc::as_ref),
+                    hex_engine::AudioSourceContext {
+                        editor_revision: context.editor_revision.saturating_add(1),
+                        ..context
+                    },
+                    None,
+                    sink,
+                )?;
+                self.editor.commit_staged_edit(edit)?;
+                Ok(Some((Arc::new(self.project().clone()), Arc::new(prepared))))
+            }
+            crate::device_gesture::GesturePreparation::Restore => {
+                Ok(previous
+                    .map(|prepared| (Arc::new(self.project().clone()), Arc::clone(prepared))))
+            }
+        }
     }
 
     /// Stage the exact replacement graph. An unchanged move leaves the

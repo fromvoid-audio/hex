@@ -1101,59 +1101,77 @@ pub(super) fn handle<'a>(
                     status = Some("history pending · waiting for audio".into());
                 }
                 Err(reason) => error = Some(reason.to_string()),
-                Ok(None) => match session.comparison_history(
-                    redo,
-                    compiled
+                Ok(None) => {
+                    let previous = compiled
                         .as_ref()
                         .filter(|_| comparison_binding.is_some())
-                        .map(|(_, artifact)| artifact),
-                    |source, target, prepared| {
-                        prepare_tuning_input_publication(
-                            source,
-                            target,
-                            prepared,
-                            project_generation,
-                            revision,
-                            keyboard_activation.as_ref(),
-                            keyboard_tuning_hint.as_ref(),
-                            audition_activation.as_ref(),
-                            false,
+                        .map(|(_, artifact)| artifact);
+                    let finish =
+                        |source: &Project, target: &Project, prepared: &Arc<PreparedRevision>| {
+                            prepare_tuning_input_publication(
+                                source,
+                                target,
+                                prepared,
+                                project_generation,
+                                revision,
+                                keyboard_activation.as_ref(),
+                                keyboard_tuning_hint.as_ref(),
+                                audition_activation.as_ref(),
+                                false,
+                            )
+                        };
+                    let history_result = if session.audio_mode()
+                        == DocumentAudioMode::VerifiedStreaming
+                        && let Some(sink) = events.resident_audio()
+                    {
+                        session.comparison_history_verified(
+                            redo,
+                            previous,
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision.saturating_add(1),
+                            },
+                            sink,
+                            finish,
                         )
-                    },
-                ) {
-                    Ok(Some(outcome)) => {
-                        unsaved = true;
-                        if outcome.metadata_only {
-                            comparison_changed = true;
-                        } else {
-                            replacement_revision = Some(outcome.prepared);
+                    } else {
+                        session.comparison_history(redo, previous, finish)
+                    };
+                    match history_result {
+                        Ok(Some(outcome)) => {
+                            unsaved = true;
+                            if outcome.metadata_only {
+                                comparison_changed = true;
+                            } else {
+                                replacement_revision = Some(outcome.prepared);
+                            }
+                            tuning_input_publication = outcome.completed.flatten();
+                            status = Some(
+                                if redo {
+                                    "redo committed"
+                                } else {
+                                    "undo committed"
+                                }
+                                .into(),
+                            );
                         }
-                        tuning_input_publication = outcome.completed.flatten();
-                        status = Some(
-                            if redo {
-                                "redo committed"
-                            } else {
-                                "undo committed"
-                            }
-                            .into(),
-                        );
+                        Ok(None) => {
+                            status = Some(
+                                if redo {
+                                    "nothing to redo"
+                                } else {
+                                    "nothing to undo"
+                                }
+                                .into(),
+                            )
+                        }
+                        Err(reason) => {
+                            error = Some(hex_storage::text::lowercase_outside_verbatim(
+                                &reason.to_string(),
+                            ))
+                        }
                     }
-                    Ok(None) => {
-                        status = Some(
-                            if redo {
-                                "nothing to redo"
-                            } else {
-                                "nothing to undo"
-                            }
-                            .into(),
-                        )
-                    }
-                    Err(reason) => {
-                        error = Some(hex_storage::text::lowercase_outside_verbatim(
-                            &reason.to_string(),
-                        ))
-                    }
-                },
+                }
             }
         }
 

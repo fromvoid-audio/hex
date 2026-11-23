@@ -309,6 +309,31 @@ pub(super) fn handle<'a>(
                     device_gesture.retire_unpublished_native_terminal(&mut outcome.ack);
                 }
                 outcome
+            } else if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                && audio_sink::requires_plugin_profile(session.project())
+                && events.resident_audio().is_some()
+            {
+                let previous = compiled.as_ref().map(|(_, artifact)| artifact);
+                device_gesture.handle_verified(
+                    &mut session,
+                    gesture,
+                    previous,
+                    project_generation,
+                    |session, operation| {
+                        let sink = events
+                            .resident_audio()
+                            .ok_or(SessionError::Invalid("native preview output unavailable"))?;
+                        session.verified_device_gesture_operation(
+                            operation,
+                            previous,
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision,
+                            },
+                            sink,
+                        )
+                    },
+                )
             } else {
                 device_gesture.handle(
                     &mut session,
@@ -1757,6 +1782,22 @@ pub(super) fn handle<'a>(
                                     prepared: outcome.prepared, completed, metadata_only: outcome.metadata_only,
                                 })
                             })
+                    } else if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                        && audio_sink::requires_plugin_profile(session.project())
+                        && let Some(sink) = events.resident_audio()
+                    {
+                        session.comparison_command_verified(
+                            command,
+                            compiled
+                                .as_ref()
+                                .filter(|_| comparison_binding.is_some())
+                                .map(|(_, artifact)| artifact),
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision.saturating_add(1),
+                            },
+                            sink,
+                        )
                     } else {
                         session.comparison_command(
                             command,
