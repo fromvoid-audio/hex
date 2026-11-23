@@ -2870,6 +2870,30 @@ pub(super) fn run_worker(
                         )
                     },
                 )
+            } else if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                && audio_sink::requires_plugin_profile(session.project())
+                && events.resident_audio().is_some()
+            {
+                let previous = compiled.as_ref().map(|(_, artifact)| artifact);
+                device_gesture.finish_verified(
+                    &mut session,
+                    previous,
+                    project_generation,
+                    |session, operation| {
+                        let sink = events
+                            .resident_audio()
+                            .ok_or(SessionError::Invalid("native preview output unavailable"))?;
+                        session.verified_device_gesture_operation(
+                            operation,
+                            previous,
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision,
+                            },
+                            sink,
+                        )
+                    },
+                )
             } else {
                 device_gesture.finish(
                     &mut session,
@@ -3702,6 +3726,25 @@ pub(super) fn run_worker(
                 } else {
                     None
                 }
+            } else if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                && audio_sink::requires_plugin_profile(session.project())
+                && events.resident_audio().is_some()
+            {
+                let previous = compiled.as_ref().map(|(_, artifact)| artifact);
+                device_gesture.rebase_prepared(&mut session, previous, &mut |session, operation| {
+                    let sink = events
+                        .resident_audio()
+                        .ok_or(SessionError::Invalid("native preview output unavailable"))?;
+                    session.verified_device_gesture_operation(
+                        operation,
+                        previous,
+                        hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision,
+                        },
+                        sink,
+                    )
+                })
             } else {
                 device_gesture.rebase(
                     &mut session,

@@ -1284,7 +1284,6 @@ pub(super) fn execute_command_timed(
         *resident = Some(snapshot);
         Ok((created, prepared))
     } else if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
-        && audio_sink::requires_plugin_profile(session.project())
         && let Some(sink) = events.resident_audio()
     {
         session.validate_prepared_command(&command)?;

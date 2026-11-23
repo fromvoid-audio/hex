@@ -1860,4 +1860,482 @@ fn save_requests_defer_during_pending_device_insert_while_a_gesture_is_active() 
     let _ = std::fs::remove_dir(&temp_dir);
 }
 
+#[test]
+fn hosted_membership_operation_detects_same_id_vst3_native_replacement() {
+    let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let hex_project::Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "track".into(),
+        })
+        .unwrap()
+    else {
+        panic!("expected track");
+    };
+    let vst3 = hex_plugin_state::encode(hex_plugin_state::State {
+        identity: hex_plugin_state::Identity {
+            class: hex_plugin_state::ClassId::new([0x33; 16]).unwrap(),
+            binary: hex_plugin_state::BinaryIdentity {
+                executable_sha256: [0x44; 32],
+                info_sha256: [0x55; 32],
+            },
+        },
+        component: Some(b"vst3"),
+        controller: None,
+    })
+    .unwrap();
+    let hex_project::Created::Device(device) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: vst3,
+        })
+        .unwrap()
+    else {
+        panic!("expected vst3 device");
+    };
+    let with_vst3 = editor.project().clone();
+    let native_utility = hex_engine::default_native_device_state(
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: native_utility,
+        })
+        .unwrap();
+    let with_native = editor.project().clone();
+    assert_eq!(
+        hosted_membership_operation(&with_vst3, &with_native),
+        Some(GraphEditOperation::RemoveDevice)
+    );
+    assert_eq!(
+        hosted_membership_operation(&with_native, &with_vst3),
+        Some(GraphEditOperation::InsertDevice)
+    );
+}
+
+#[test]
+fn verified_streaming_with_vst3_supports_edit_compare_gesture_and_replacement_undo_redo() {
+    #[derive(Debug)]
+    struct InstalledReceipt(ResidentGraphSubmission);
+    impl DeviceInsertAudioReceipt for InstalledReceipt {
+        fn submission(&self) -> ResidentGraphSubmission {
+            self.0
+        }
+        fn state(&self) -> DeviceInsertAudioState {
+            DeviceInsertAudioState::Installed
+        }
+        fn cancel(&self) -> bool {
+            false
+        }
+    }
+
+    struct VerifiedVst3Sink {
+        next_revision: u64,
+        prepare_verified_calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl WorkerAudioSink for VerifiedVst3Sink {
+        fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
+            Ok(48_000)
+        }
+        fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
+        fn poll(&mut self) {}
+        fn close(&mut self) {}
+        fn resident_publication_enabled(&self) -> bool {
+            true
+        }
+        fn publish_resident(
+            &mut self,
+            _playback: crate::service::Playback,
+            _resources: Option<&hex_engine::native_device_resources::PreparedDeviceResources>,
+            _observation: Arc<hex_engine::PreparedPlaybackObservation>,
+            _metadata: ResidentPublicationMetadata,
+            _policy: ResidentPublicationPolicy,
+            _metadata_limit: usize,
+            _admit: &mut dyn FnMut(
+                &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+            ) -> Result<(), String>,
+        ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+            self.next_revision += 1;
+            Ok(ResidentPublicationAcceptance::Submitted {
+                output_identity: 1,
+                audio_revision: self.next_revision,
+            })
+        }
+        fn confirms_verified_device_inserts(&self) -> bool {
+            true
+        }
+        fn begin_verified_graph_edit(
+            &mut self,
+            attempt: VerifiedGraphEditAttempt,
+        ) -> Result<(), String> {
+            self.next_revision += 1;
+            let submission = ResidentGraphSubmission {
+                output_identity: 1,
+                audio_revision: self.next_revision,
+                context: attempt.source().context(),
+            };
+            attempt.submitted(Box::new(InstalledReceipt(submission)));
+            Ok(())
+        }
+        fn prepare_verified_effects(
+            &mut self,
+            _input: ResidentEffectPreparation<'_>,
+            _attempt: Option<&VerifiedGraphEditAttempt>,
+            prepare: &mut dyn FnMut(
+                &hex_engine::AudioCandidateEffects<'_, '_>,
+            ) -> Result<PreparedRevision, hex_engine::Invalid>,
+        ) -> Result<PreparedRevision, String> {
+            self.prepare_verified_calls.fetch_add(1, Ordering::AcqRel);
+            hex_engine::AudioCandidateEffects::with_test_foreign_effect_program(
+                hex_engine::ProcessorChainOwner::Main,
+                u64::MAX,
+                hex_lattice_contract::ForeignProcessorBinding {
+                    root: 1,
+                    instance: 1,
+                    graph: 1,
+                    epoch: 1,
+                },
+                std::num::NonZeroU64::new(1).unwrap(),
+                0,
+                prepare,
+            )
+            .map_err(|error| error.to_string())
+        }
+    }
+
+    let prepare_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let retained = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES * 2;
+    let service = Service::with_audio_sink_and_native_reservation(
+        32,
+        1_000_000,
+        None,
+        Box::new(VerifiedVst3Sink {
+            next_revision: 0,
+            prepare_verified_calls: Arc::clone(&prepare_calls),
+        }),
+        crate::ResidentNativeReservation {
+            storage: hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 64,
+                root_rows: 64,
+                max_retained_bytes: retained,
+                max_construction_peak_bytes: retained
+                    + hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+            },
+            max_scan_frames: 1024,
+        },
+    )
+    .unwrap();
+    let _ = receive(&service);
+
+    // Switch to VerifiedStreaming mode.
+    service
+        .submit(Request::NewWithAudioMode {
+            reservation: Some(crate::SourcePlanReservation {
+                reader: hex_media::VerifiedWavReaderLimits {
+                    reader: hex_media::WavReaderLimits {
+                        max_file_bytes: 64 * 1024 * 1024,
+                        max_source_frames: 8_000_000,
+                        max_header_count: 32,
+                        max_window_frames: 4096,
+                    },
+                    max_manifest_bytes: 1024 * 1024,
+                },
+                max_retained_sources: 64,
+                max_path_bytes: 1024 * 1024,
+                max_manifest_bytes: 4 * 1024 * 1024,
+            }),
+            mode: DocumentAudioMode::VerifiedStreaming,
+        })
+        .unwrap();
+    let mode_event = receive(&service);
+    assert_eq!(
+        mode_event
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .audio_mode(),
+        DocumentAudioMode::VerifiedStreaming
+    );
+    let project_generation = mode_event
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context()
+        .project_generation;
+
+    let run = |request: Request| -> Event {
+        service.submit(request).unwrap();
+        let mut last = receive(&service);
+        while !last.request_complete {
+            last = receive(&service);
+        }
+        assert!(last.error.is_none(), "unexpected error: {:?}", last.error);
+        last
+    };
+
+    let added = run(Request::Edit(Command::AddTrack {
+        name: "vst3 track".into(),
+    }));
+    let track = added.state.project.tracks()[0].id();
+    let vst3_state = hex_plugin_state::encode(hex_plugin_state::State {
+        identity: hex_plugin_state::Identity {
+            class: hex_plugin_state::ClassId::new([0x33; 16]).unwrap(),
+            binary: hex_plugin_state::BinaryIdentity {
+                executable_sha256: [0x44; 32],
+                info_sha256: [0x55; 32],
+            },
+        },
+        component: Some(b"vst3"),
+        controller: None,
+    })
+    .unwrap();
+    let inserted_vst3 = run(Request::Edit(Command::InsertDevice {
+        track,
+        before: None,
+        state: vst3_state,
+    }));
+    let vst3_device = inserted_vst3.state.project.track(track).unwrap().devices()[0].id();
+    let inserted_native = run(Request::Edit(Command::InsertDevice {
+        track,
+        before: None,
+        state: hex_engine::default_native_device_state(
+            hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+        )
+        .unwrap(),
+    }));
+    let native_device = inserted_native
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .devices()[1]
+        .id();
+    assert!(prepare_calls.load(Ordering::Acquire) > 0);
+
+    // 1. Request::Edit paths (bypass, track gain, mute, add track) succeed in VerifiedStreaming + VST3.
+    let bypassed = run(Request::Edit(Command::ToggleDeviceBypass {
+        device: vst3_device,
+    }));
+    assert!(
+        bypassed
+            .state
+            .project
+            .device(vst3_device)
+            .unwrap()
+            .bypassed()
+    );
+    let unbypassed = run(Request::Edit(Command::SetDeviceBypass {
+        device: vst3_device,
+        bypassed: false,
+    }));
+    assert!(
+        !unbypassed
+            .state
+            .project
+            .device(vst3_device)
+            .unwrap()
+            .bypassed()
+    );
+    let gained = run(Request::Edit(Command::Gain { track, gain: 0.75 }));
+    assert!((gained.state.project.track(track).unwrap().gain() - 0.75).abs() < 1e-6);
+    let muted = run(Request::Edit(Command::ToggleMute(track)));
+    assert!(muted.state.project.track(track).unwrap().muted());
+    let extra = run(Request::Edit(Command::AddTrack {
+        name: "second".into(),
+    }));
+    assert_eq!(extra.state.project.tracks().len(), 2);
+
+    // 2. Request::DeviceGesture (native device parameter + track gain + barrier finalize) succeeds.
+    let gain_param = hex_lattice_contract::ParameterId::from_static(1);
+    let edited_gain = hex_lattice_contract::ParameterValue::Float(6.0);
+    let key = crate::device_gesture::GestureKey {
+        generation: project_generation,
+        token: 1,
+    };
+    let begin = run(Request::DeviceGesture(
+        crate::device_gesture::GestureRequest::Begin {
+            key,
+            target: crate::device_gesture::GestureTarget::DeviceParameter {
+                device: native_device,
+                parameter: gain_param,
+            },
+        },
+    ));
+    assert!(begin.gesture_ack.as_ref().unwrap().accepted);
+    let change = run(Request::DeviceGesture(
+        crate::device_gesture::GestureRequest::Change {
+            key,
+            sequence: 1,
+            value: edited_gain,
+        },
+    ));
+    assert!(
+        change.gesture_ack.as_ref().unwrap().accepted,
+        "{:?}",
+        change.gesture_ack
+    );
+    let commit = run(Request::DeviceGesture(
+        crate::device_gesture::GestureRequest::Commit {
+            key,
+            sequence: 2,
+            value: edited_gain,
+            manual_edit: false,
+        },
+    ));
+    assert!(commit.gesture_ack.as_ref().unwrap().accepted);
+    assert_eq!(
+        hex_engine::native_device_parameter(
+            commit.state.project.device(native_device).unwrap().state(),
+            gain_param,
+        )
+        .unwrap(),
+        edited_gain
+    );
+
+    // Also exercise gesture rebase (ToggleMute) + finalization barrier (Undo -> finish_verified).
+    let key2 = crate::device_gesture::GestureKey {
+        generation: project_generation,
+        token: 2,
+    };
+    let _ = run(Request::DeviceGesture(
+        crate::device_gesture::GestureRequest::Begin {
+            key: key2,
+            target: crate::device_gesture::GestureTarget::TrackGain { track },
+        },
+    ));
+    let _ = run(Request::DeviceGesture(
+        crate::device_gesture::GestureRequest::Change {
+            key: key2,
+            sequence: 1,
+            value: hex_lattice_contract::ParameterValue::Float(0.5),
+        },
+    ));
+    let rebased = run(Request::Edit(Command::ToggleMute(track)));
+    assert!(rebased.active_device_gesture.is_some());
+    let undone_gesture = run(Request::Undo);
+    assert!(undone_gesture.active_device_gesture.is_none());
+    let finalized = run(Request::Redo);
+    assert!((finalized.state.project.track(track).unwrap().gain() - 0.5).abs() < 1e-6);
+
+    // 3. Request::CompareDevice (Switch to B, edit B, audible Switch back to A) succeeds.
+    let copied_ab = run(Request::CompareDevice {
+        owner: crate::service::preset::Owner {
+            project_generation,
+            revision: finalized.state.revision,
+            device: native_device,
+            class: hex_engine::NativeDeviceClass::Effect,
+            type_id: hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+        },
+        expected: hex_project::DeviceVariant::A,
+        action: hex_project::DeviceComparisonAction::Switch,
+    });
+    assert_eq!(copied_ab.error, None);
+    let patched_for_ab = run(Request::SetDeviceParameter {
+        device: native_device,
+        parameter: gain_param,
+        value: hex_lattice_contract::ParameterValue::Float(12.0),
+    });
+    let switched_ab = run(Request::CompareDevice {
+        owner: crate::service::preset::Owner {
+            project_generation,
+            revision: patched_for_ab.state.revision,
+            device: native_device,
+            class: hex_engine::NativeDeviceClass::Effect,
+            type_id: hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+        },
+        expected: hex_project::DeviceVariant::B,
+        action: hex_project::DeviceComparisonAction::Switch,
+    });
+    assert_eq!(
+        hex_engine::native_device_parameter(
+            switched_ab
+                .state
+                .project
+                .device(native_device)
+                .unwrap()
+                .state(),
+            gain_param,
+        )
+        .unwrap(),
+        edited_gain
+    );
+
+    // 4. Ordinary Undo/Redo in VerifiedStreaming + VST3 succeeds.
+    let undone_ab = run(Request::Undo);
+    assert_eq!(
+        hex_engine::native_device_parameter(
+            undone_ab
+                .state
+                .project
+                .device(native_device)
+                .unwrap()
+                .state(),
+            gain_param,
+        )
+        .unwrap(),
+        hex_lattice_contract::ParameterValue::Float(12.0)
+    );
+    let redone_ab = run(Request::Redo);
+    assert_eq!(
+        hex_engine::native_device_parameter(
+            redone_ab
+                .state
+                .project
+                .device(native_device)
+                .unwrap()
+                .state(),
+            gain_param,
+        )
+        .unwrap(),
+        edited_gain
+    );
+
+    // 5. Replacing the VST3 effect with a native effect via ReplaceNativeDevice (same DeviceId)
+    //    and pressing Undo/Redo succeeds in VerifiedStreaming mode!
+    let replaced = run(Request::ReplaceNativeDevice {
+        device: vst3_device,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(
+            "hex.utility",
+        )),
+    });
+    assert_eq!(
+        replaced
+            .state
+            .project
+            .device(vst3_device)
+            .unwrap()
+            .state()
+            .type_id(),
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility")
+    );
+    let undone_replace = run(Request::Undo);
+    assert_eq!(
+        undone_replace
+            .state
+            .project
+            .device(vst3_device)
+            .unwrap()
+            .state()
+            .type_id(),
+        hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
+    );
+    let redone_replace = run(Request::Redo);
+    assert_eq!(
+        redone_replace
+            .state
+            .project
+            .device(vst3_device)
+            .unwrap()
+            .state()
+            .type_id(),
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility")
+    );
+}
+
 mod track_routes;

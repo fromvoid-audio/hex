@@ -1431,6 +1431,16 @@ impl GestureMachine {
     ) -> GestureOutcome {
         self.handle_using(session, request, previous, generation, true, prepare)
     }
+    pub(crate) fn handle_verified(
+        &mut self,
+        session: &mut Session,
+        request: GestureRequest,
+        previous: Option<&Arc<PreparedRevision>>,
+        generation: u64,
+        prepare: impl FnMut(&mut Session, GesturePreparation) -> PreparedGesture,
+    ) -> GestureOutcome {
+        self.handle_using(session, request, previous, generation, false, prepare)
+    }
     fn handle_using(
         &mut self,
         session: &mut Session,
@@ -2342,6 +2352,18 @@ impl GestureMachine {
         let active = self.snapshot()?;
         let request = terminal_request(active);
         Some(self.handle_prepared(session, request, previous, generation, prepare))
+    }
+
+    pub(crate) fn finish_verified(
+        &mut self,
+        session: &mut Session,
+        previous: Option<&Arc<PreparedRevision>>,
+        generation: u64,
+        prepare: impl FnMut(&mut Session, GesturePreparation) -> PreparedGesture,
+    ) -> Option<GestureOutcome> {
+        let active = self.snapshot()?;
+        let request = terminal_request(active);
+        Some(self.handle_verified(session, request, previous, generation, prepare))
     }
 
     pub fn finish(

@@ -1813,24 +1813,41 @@ pub(super) fn handle<'a>(
 
         Request::Edit(command) => {
             duplicate_complete = matches!(&command, Command::DuplicateClip(_));
-            match session.command_prepared_revision_with(
-                command,
-                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                |source, target, prepared| {
-                    let keyboard = prepare_tuning_input_publication(
-                        source,
-                        target,
-                        prepared,
+            let finish = |source: &Project, target: &Project, prepared: &Arc<PreparedRevision>| {
+                let keyboard = prepare_tuning_input_publication(
+                    source,
+                    target,
+                    prepared,
+                    project_generation,
+                    revision,
+                    keyboard_activation.as_ref(),
+                    keyboard_tuning_hint.as_ref(),
+                    audition_activation.as_ref(),
+                    false,
+                )?;
+                Ok((source != target, keyboard))
+            };
+            let result = if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                && let Some(sink) = events.resident_audio()
+            {
+                session.command_verified_prepared_revision_with(
+                    command,
+                    compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                    hex_engine::AudioSourceContext {
                         project_generation,
-                        revision,
-                        keyboard_activation.as_ref(),
-                        keyboard_tuning_hint.as_ref(),
-                        audition_activation.as_ref(),
-                        false,
-                    )?;
-                    Ok((source != target, keyboard))
-                },
-            ) {
+                        editor_revision: revision.saturating_add(1),
+                    },
+                    sink,
+                    finish,
+                )
+            } else {
+                session.command_prepared_revision_with(
+                    command,
+                    compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                    finish,
+                )
+            };
+            match result {
                 Ok((result, (prepared, (true, keyboard)))) => {
                     unsaved = true;
                     replacement_revision = Some(prepared);
