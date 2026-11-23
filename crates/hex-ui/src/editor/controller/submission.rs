@@ -39,6 +39,7 @@ pub(super) struct PendingKinds {
     track_reorder: bool,
     duplicate: bool,
     track_clipboard: bool,
+    clip_cut: bool,
     empty_track: Option<u64>,
     device_duplicate: bool,
     midi_drag: bool,
@@ -113,6 +114,7 @@ impl EditorView {
                 track_reorder: self.pending_track_reorder_matches(request),
                 duplicate: self.pending_duplicate_matches(request),
                 track_clipboard: self.pending_track_clipboard_matches(request),
+                clip_cut: matches!(request, Request::CutClips(_)),
                 empty_track: self.pending_empty_track_for_request(request),
                 device_duplicate: self.device_panel.pending_duplicate_matches(request),
                 midi_drag: self.pending_midi_drag_matches(request),
@@ -219,6 +221,9 @@ impl EditorView {
         }
         if kinds.track_reorder {
             self.track_reorder_submitted();
+        }
+        if kinds.clip_cut {
+            self.clip_cut_submitted();
         }
         if kinds.track_clipboard {
             self.track_clipboard_submitted();

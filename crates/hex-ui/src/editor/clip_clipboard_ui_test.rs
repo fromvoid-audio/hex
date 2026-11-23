@@ -430,9 +430,7 @@ fn pasted_clip_group_is_selected_and_unrequested_batch_births_are_not(cx: &mut T
 }
 
 #[gpui::test]
-fn cmd_x_cuts_single_and_multi_selected_clips_and_pastes_with_atomic_undo(
-    cx: &mut TestAppContext,
-) {
+fn cmd_x_cuts_single_and_multi_selected_clips_and_pastes_with_atomic_undo(cx: &mut TestAppContext) {
     for multiple in [false, true] {
         cx.update(super::bind_editor_keys);
         let files = super::external_audio_drop_ui_test::BatchFiles::new();
@@ -501,6 +499,77 @@ fn cmd_x_cuts_single_and_multi_selected_clips_and_pastes_with_atomic_undo(
                 },
             );
         }
+        if multiple {
+            let header = |id: hex_project::ClipId| -> &'static str {
+                Box::leak(format!("clip-name-{}", id.value()).into_boxed_str())
+            };
+            let first_header = header(first);
+            let second_header = header(second);
+            // Hold the shortcut in the UI FIFO behind the previous clipboard copy.
+            editor.update(&mut visual, |view, _| {
+                view.pending_requests
+                    .push_back(Request::CopyClips(vec![first]));
+            });
+            visual.simulate_keystrokes("cmd-x");
+            visual.run_until_parked();
+            editor.update(&mut visual, |view, _| {
+                assert_eq!(view.selected_clip_ids(), vec![first, second]);
+                let Some(Request::CutClips(ids)) = view.pending_requests.back_mut() else {
+                    panic!("expected queued cut");
+                };
+                // Force a real worker refusal without modifying the canonical clips.
+                ids.push(first);
+            });
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |view, _| {
+                assert!(view.error.is_some(), "expected worker refusal");
+                assert_eq!(view.selected_clip_ids(), vec![first, second]);
+            });
+            editor.update(&mut visual, |view, _| {
+                assert!(view.enqueue(Request::PasteTimeRange {
+                    track: target,
+                    frame: 0
+                }));
+            });
+            pump(&editor, &mut visual);
+            let pasted = editor.read_with(&visual, |view, _| {
+                let clips = view
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(target)
+                    .unwrap()
+                    .clips();
+                assert_eq!(
+                    clips.len(),
+                    1,
+                    "refused cut preserves the previous clipboard"
+                );
+                clips[0].id()
+            });
+            let pasted_header = header(pasted);
+            click(&mut visual, first_header, Modifiers::default());
+            visual.simulate_keystrokes("cmd-x");
+            click(&mut visual, pasted_header, Modifiers::default());
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(view.selected_clip_ids(), vec![pasted]);
+            });
+            for _ in 0..2 {
+                visual.simulate_keystrokes("cmd-z");
+                pump(&editor, &mut visual);
+            }
+            click(&mut visual, first_header, Modifiers::default());
+            click(
+                &mut visual,
+                second_header,
+                Modifiers {
+                    shift: true,
+                    ..Modifiers::default()
+                },
+            );
+        }
         let expected_cut = if multiple { 2 } else { 1 };
         let expected_remaining = 2 - expected_cut;
         visual.simulate_keystrokes("cmd-x");
@@ -508,7 +577,10 @@ fn cmd_x_cuts_single_and_multi_selected_clips_and_pastes_with_atomic_undo(
         editor.read_with(&visual, |view, _| {
             assert!(view.error.is_none(), "{:?}", view.error);
             let project = &view.state.as_ref().unwrap().project;
-            assert_eq!(project.track(source).unwrap().clips().len(), expected_remaining);
+            assert_eq!(
+                project.track(source).unwrap().clips().len(),
+                expected_remaining
+            );
             assert!(view.selected_clip.is_none());
             assert!(view.selected_clip_ids().is_empty());
         });
@@ -541,5 +613,24 @@ fn cmd_x_cuts_single_and_multi_selected_clips_and_pastes_with_atomic_undo(
             assert!(project.track(target).unwrap().clips().is_empty());
             assert_eq!(project.tracks()[0].clips(), before_clips.as_slice());
         });
+        if multiple {
+            click(
+                &mut visual,
+                Box::leak(format!("clip-name-{}", first.value()).into_boxed_str()),
+                Modifiers::default(),
+            );
+            let generation = editor.update(&mut visual, |view, _| {
+                assert!(view.enqueue(Request::NewWithAudioMode {
+                    mode: hex_session::DocumentAudioMode::Resident,
+                    reservation: None,
+                }));
+                view.project_generation
+            });
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |view, _| {
+                assert!(view.project_generation > generation);
+                assert!(view.selected_clip_ids().is_empty());
+            });
+        }
     }
 }
