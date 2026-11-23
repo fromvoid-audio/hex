@@ -965,7 +965,7 @@ impl EditorView {
             destination,
             state.project.sample_rate(),
         );
-        if self.enqueue(Request::InsertPluginEffect(request)) {
+        if self.enqueue_device_barrier(Request::InsertPluginEffect(request)) {
             if let Some(trace) = &trace {
                 trace.submitted();
             }

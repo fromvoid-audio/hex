@@ -569,8 +569,7 @@ impl EditorView {
                 }
             }
             self.device_gesture.reset();
-            self.device_gesture_barriers.clear();
-            self.refuse_catalog_barriers("device load canceled · project replaced");
+            self.refuse_device_gesture_barriers("device load canceled · project replaced");
             self.edit_cursor = None;
             self.clip_drop_cursor_epoch = None;
             self.locked_play_start = None;
@@ -937,7 +936,11 @@ impl EditorView {
             if let Some(snapshot) = self.device_gesture.snapshot() {
                 self.bind_tuning_library_device_terminal(snapshot.key, false);
             }
-            self.refuse_catalog_barriers("device load canceled · device edit was retired");
+            if event.project_replaced {
+                self.refuse_device_gesture_barriers("device load canceled · project replaced");
+            } else {
+                self.refuse_catalog_barriers("device load canceled · device edit was retired");
+            }
             self.device_gesture.reset();
             crate::editor::device_gesture::retire_deferred(
                 &mut self.pending_requests,

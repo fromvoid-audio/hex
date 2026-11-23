@@ -188,7 +188,7 @@ fn clipboard(
         revision: state.revision,
         action,
     };
-    if view.enqueue(request) && matches!(intent, ClipboardIntent::Cut) {
+    if view.enqueue_device_barrier(request) && matches!(intent, ClipboardIntent::Cut) {
         view.device_panel
             .chain_window
             .selection_focus(cx)
@@ -236,6 +236,21 @@ impl DevicePanelState {
                         && *revision == pending.stamp.revision
                         && *action == pending.action)
         })
+    }
+
+    pub(in crate::editor) fn rebase_pending_duplicate(
+        &mut self,
+        generation: u64,
+        from_revision: u64,
+        to_revision: u64,
+    ) {
+        if let Some(pending) = &mut self.pending_duplicate
+            && pending.receipt.is_queued()
+            && pending.stamp.generation == generation
+            && pending.stamp.revision == from_revision
+        {
+            pending.stamp.revision = to_revision;
+        }
     }
 
     pub(in crate::editor) fn duplicate_submitted(&mut self, pending_count: usize) {
@@ -324,7 +339,7 @@ fn duplicate(
         receipt: Receipt::new(stamp.generation),
         select_copies: true,
     });
-    if view.enqueue(Request::DeviceClipboard {
+    if view.enqueue_device_barrier(Request::DeviceClipboard {
         project_generation: stamp.generation,
         revision: stamp.revision,
         action,
