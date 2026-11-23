@@ -1685,7 +1685,11 @@ pub(super) fn handle<'a>(
             to_audio,
         } => {
             let result = if expected_generation != project_generation
-                || expected_revision != revision
+                || super::reconcile_barrier_revision(
+                    expected_revision,
+                    revision_before_request,
+                    revision,
+                ) != revision
             {
                 Err("clip conversion canceled · project changed".to_owned())
             } else if to_audio {

@@ -1037,3 +1037,301 @@ fn worker_restores_a_complete_unit_and_uses_it_for_new_defaults() {
     assert!(legacy_root.comparison().is_none());
     assert!(project.device(default_child).unwrap().bypassed());
 }
+
+#[test]
+fn same_request_gesture_barrier_commit_succeeds_for_compare_preset_default_and_project_requests() {
+    use crate::device_gesture::{GestureKey, GestureRequest, GestureTarget};
+    use hex_lattice_contract::{ParameterId, ParameterValue};
+    use hex_project::{BeatTime, DeviceComparisonAction, DeviceVariant};
+
+    let dir = Directory::new();
+    let (service, added, device) = fixture(NativeDeviceClass::Effect, "hex.utility");
+    let parameter = ParameterId::from_static(1);
+    let mut token = 1_u64;
+    let mut current = added;
+
+    let start_modified_gesture = |service: &Service, token: &mut u64, next_value: f32| {
+        let key = GestureKey {
+            generation: 0,
+            token: *token,
+        };
+        *token += 1;
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Begin {
+                key,
+                target: GestureTarget::DeviceParameter { device, parameter },
+            }))
+            .unwrap();
+        assert!(event(service).gesture_ack.unwrap().accepted);
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Change {
+                key,
+                sequence: 1,
+                value: ParameterValue::Float(next_value),
+            }))
+            .unwrap();
+        assert!(event(service).gesture_ack.unwrap().accepted);
+    };
+
+    // 1. CompareDevice Switch commits active gesture AND switches A -> B.
+    start_modified_gesture(&service, &mut token, 1.5);
+    service
+        .submit(Request::CompareDevice {
+            owner: owner(&current, device, NativeDeviceClass::Effect),
+            expected: DeviceVariant::A,
+            action: DeviceComparisonAction::Switch,
+        })
+        .unwrap();
+    current = event(&service);
+    assert!(current.error.is_none(), "{:?}", current.error);
+    assert_eq!(
+        current
+            .state
+            .project
+            .device(device)
+            .unwrap()
+            .active_variant(),
+        DeviceVariant::B
+    );
+
+    // 2. SaveDevicePreset commits active gesture AND saves modified state.
+    let preset_path = dir.0.join("barrier-save.hex-device-preset.json");
+    start_modified_gesture(&service, &mut token, 2.5);
+    service
+        .submit(Request::SaveDevicePreset {
+            owner: owner(&current, device, NativeDeviceClass::Effect),
+            path: preset_path.clone(),
+        })
+        .unwrap();
+    current = event(&service);
+    assert!(current.error.is_none(), "{:?}", current.error);
+    assert!(preset_path.exists());
+    let saved_preset = hex_storage::preset::load(&preset_path).unwrap();
+    assert_eq!(
+        hex_engine::native_device_parameter_for_class(
+            NativeDeviceClass::Effect,
+            &saved_preset.state,
+            parameter,
+        )
+        .unwrap(),
+        ParameterValue::Float(2.5)
+    );
+
+    // 3. SaveDeviceDefault commits active gesture AND saves modified default.
+    let default_dir = dir.0.join("defaults");
+    start_modified_gesture(&service, &mut token, 3.5);
+    service
+        .submit(Request::SaveDeviceDefault {
+            owner: owner(&current, device, NativeDeviceClass::Effect),
+            root: default_dir,
+        })
+        .unwrap();
+    current = event(&service);
+    assert!(current.error.is_none(), "{:?}", current.error);
+
+    // 4. SaveDeviceUnitPreset commits active gesture AND saves unit preset.
+    let unit_preset_path = dir.0.join("barrier-unit.hex-device-preset.json");
+    start_modified_gesture(&service, &mut token, 4.5);
+    service
+        .submit(Request::SaveDeviceUnitPreset {
+            owner: owner(&current, device, NativeDeviceClass::Effect),
+            path: unit_preset_path.clone(),
+        })
+        .unwrap();
+    current = event(&service);
+    assert!(current.error.is_none(), "{:?}", current.error);
+    assert!(unit_preset_path.exists());
+
+    // 5. SaveDeviceUnitDefault commits active gesture AND saves unit default.
+    let unit_default_dir = dir.0.join("unit-defaults");
+    start_modified_gesture(&service, &mut token, 5.5);
+    service
+        .submit(Request::SaveDeviceUnitDefault {
+            owner: owner(&current, device, NativeDeviceClass::Effect),
+            root: unit_default_dir,
+        })
+        .unwrap();
+    current = event(&service);
+    assert!(current.error.is_none(), "{:?}", current.error);
+
+    // 6. LoadDevicePreset commits active gesture AND loads the saved preset cleanly.
+    start_modified_gesture(&service, &mut token, 6.5);
+    service
+        .submit(Request::LoadDevicePreset {
+            owner: owner(&current, device, NativeDeviceClass::Effect),
+            path: preset_path,
+        })
+        .unwrap();
+    current = event(&service);
+    assert!(current.error.is_none(), "{:?}", current.error);
+    assert_eq!(
+        hex_engine::native_device_parameter_for_class(
+            NativeDeviceClass::Effect,
+            current.state.project.device(device).unwrap().state(),
+            parameter,
+        )
+        .unwrap(),
+        ParameterValue::Float(2.5)
+    );
+
+    // 7. ConvertClip commits active gesture and passes revision validation (reaches unsupported audio->midi check rather than stale project error).
+    let clip_track = current.state.project.tracks()[0].id();
+    service
+        .submit(Request::Edit(Command::PlaceMidiClip {
+            track: clip_track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(4).unwrap(),
+        }))
+        .unwrap();
+    current = event(&service);
+    let clip = current
+        .state
+        .project
+        .track(clip_track)
+        .unwrap()
+        .midi_clips()[0]
+        .id();
+    start_modified_gesture(&service, &mut token, 7.5);
+    service
+        .submit(Request::ConvertClip {
+            project_generation: 0,
+            revision: current.state.revision,
+            clip,
+            to_audio: false,
+        })
+        .unwrap();
+    current = event(&service);
+    assert_eq!(
+        current.error.as_deref(),
+        Some(hex_project::AUDIO_TO_MIDI_UNSUPPORTED),
+        "ConvertClip must pass revision reconciliation across its own barrier commit"
+    );
+
+    // 8. LoadFirstSampler commits active gesture and passes revision validation (reaches resident admission check rather than stale target error).
+    start_modified_gesture(&service, &mut token, 8.5);
+    service
+        .submit(Request::LoadFirstSampler {
+            request_id: 1,
+            project_generation: 0,
+            revision: current.state.revision,
+            target: crate::service::SamplerLoadTarget::NewTrack { before_track: None },
+            path: dir.0.join("missing.wav"),
+            cancel: std::sync::Arc::default(),
+        })
+        .unwrap();
+    current = event(&service);
+    assert_ne!(
+        current.error.as_deref(),
+        Some("sampler load target changed"),
+        "LoadFirstSampler must pass revision reconciliation across its own barrier commit"
+    );
+
+    // 9. ChangeProjectSampleRate commits active gesture AND updates sample rate.
+    start_modified_gesture(&service, &mut token, 9.5);
+    service
+        .submit(Request::ChangeProjectSampleRate {
+            project_generation: 0,
+            revision: current.state.revision,
+            choice: crate::service::ProjectSampleRate::Fixed(44_100),
+        })
+        .unwrap();
+    current = event(&service);
+    assert!(current.error.is_none(), "{:?}", current.error);
+    assert_eq!(current.state.project.sample_rate(), 44_100);
+}
+
+#[test]
+fn stale_preset_and_default_requests_preflight_fail_without_committing_active_gesture() {
+    use crate::device_gesture::{GestureKey, GestureRequest, GestureTarget};
+    use hex_lattice_contract::{ParameterId, ParameterValue};
+    use hex_project::{DeviceComparisonAction, DeviceVariant};
+
+    let dir = Directory::new();
+    let (service, added, device) = fixture(NativeDeviceClass::Effect, "hex.utility");
+    let parameter = ParameterId::from_static(1);
+    let key = GestureKey {
+        generation: 0,
+        token: 1,
+    };
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target: GestureTarget::DeviceParameter { device, parameter },
+        }))
+        .unwrap();
+    assert!(event(&service).gesture_ack.unwrap().accepted);
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Change {
+            key,
+            sequence: 1,
+            value: ParameterValue::Float(4.0),
+        }))
+        .unwrap();
+    assert!(event(&service).gesture_ack.unwrap().accepted);
+
+    let mut stale_owner = owner(&added, device, NativeDeviceClass::Effect);
+    stale_owner.revision = added.state.revision.saturating_sub(1);
+    assert_ne!(stale_owner.revision, added.state.revision);
+
+    let stale_requests = [
+        Request::CompareDevice {
+            owner: stale_owner,
+            expected: DeviceVariant::A,
+            action: DeviceComparisonAction::Switch,
+        },
+        Request::SaveDevicePreset {
+            owner: stale_owner,
+            path: dir.0.join("stale.hex-device-preset.json"),
+        },
+        Request::LoadDevicePreset {
+            owner: stale_owner,
+            path: dir.0.join("stale.hex-device-preset.json"),
+        },
+        Request::SaveDeviceDefault {
+            owner: stale_owner,
+            root: dir.0.join("stale-defaults"),
+        },
+        Request::SaveDeviceUnitPreset {
+            owner: stale_owner,
+            path: dir.0.join("stale-unit.hex-device-preset.json"),
+        },
+        Request::SaveDeviceUnitDefault {
+            owner: stale_owner,
+            root: dir.0.join("stale-unit-defaults"),
+        },
+    ];
+
+    for request in stale_requests {
+        service.submit(request).unwrap();
+        let refused = event(&service);
+        assert!(refused.error.is_some());
+        assert!(
+            refused.gesture_ack.is_none(),
+            "stale request must preflight fail before committing an unrelated active gesture"
+        );
+        assert_eq!(refused.state.revision, added.state.revision);
+        assert_eq!(refused.state.project, added.state.project);
+    }
+
+    // The active gesture must still be alive and committable afterward.
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Commit {
+            key,
+            sequence: 2,
+            value: ParameterValue::Float(4.0),
+            manual_edit: false,
+        }))
+        .unwrap();
+    let committed = event(&service);
+    assert!(committed.error.is_none(), "{:?}", committed.error);
+    assert!(committed.gesture_ack.unwrap().accepted);
+    assert_eq!(
+        hex_engine::native_device_parameter_for_class(
+            NativeDeviceClass::Effect,
+            committed.state.project.device(device).unwrap().state(),
+            parameter,
+        )
+        .unwrap(),
+        ParameterValue::Float(4.0)
+    );
+}

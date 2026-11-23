@@ -1222,7 +1222,13 @@ pub(super) fn handle<'a>(
         } => {
             let mut loaded_resident = None;
             let result = (|| -> Result<_, SessionError> {
-                if target_generation != project_generation || target_revision != revision {
+                if target_generation != project_generation
+                    || super::reconcile_barrier_revision(
+                        target_revision,
+                        revision_before_request,
+                        revision,
+                    ) != revision
+                {
                     return Err(SessionError::Invalid("sampler load target changed"));
                 }
                 validate_sampler_load_target(session.project(), &target)?;
@@ -1746,10 +1752,15 @@ pub(super) fn handle<'a>(
         }
 
         Request::CompareDevice {
-            owner,
+            mut owner,
             expected,
             action,
         } => {
+            owner.revision = super::reconcile_barrier_revision(
+                owner.revision,
+                revision_before_request,
+                revision,
+            );
             let command = device_comparison::command(
                 &session,
                 project_generation,
@@ -2165,21 +2176,36 @@ pub(super) fn handle<'a>(
             }
         }
 
-        Request::SaveDevicePreset { owner, path } => {
+        Request::SaveDevicePreset { mut owner, path } => {
+            owner.revision = super::reconcile_barrier_revision(
+                owner.revision,
+                revision_before_request,
+                revision,
+            );
             match preset::save(&session, project_generation, revision, owner, &path) {
                 Ok(()) => status = Some("device preset saved".into()),
                 Err(reason) => error = Some(reason),
             }
         }
 
-        Request::SaveDeviceDefault { owner, root } => {
+        Request::SaveDeviceDefault { mut owner, root } => {
+            owner.revision = super::reconcile_barrier_revision(
+                owner.revision,
+                revision_before_request,
+                revision,
+            );
             match preset::save_default(&session, project_generation, revision, owner, &root) {
                 Ok(()) => status = Some("device default saved".into()),
                 Err(reason) => error = Some(reason),
             }
         }
 
-        Request::SaveDeviceUnitPreset { owner, path } => {
+        Request::SaveDeviceUnitPreset { mut owner, path } => {
+            owner.revision = super::reconcile_barrier_revision(
+                owner.revision,
+                revision_before_request,
+                revision,
+            );
             match preset::save_complete(
                 &session,
                 project_generation,
@@ -2192,7 +2218,12 @@ pub(super) fn handle<'a>(
             }
         }
 
-        Request::SaveDeviceUnitDefault { owner, root } => {
+        Request::SaveDeviceUnitDefault { mut owner, root } => {
+            owner.revision = super::reconcile_barrier_revision(
+                owner.revision,
+                revision_before_request,
+                revision,
+            );
             match preset::save_complete(
                 &session,
                 project_generation,
@@ -2205,7 +2236,12 @@ pub(super) fn handle<'a>(
             }
         }
 
-        Request::LoadDevicePreset { owner, path } => {
+        Request::LoadDevicePreset { mut owner, path } => {
+            owner.revision = super::reconcile_barrier_revision(
+                owner.revision,
+                revision_before_request,
+                revision,
+            );
             let candidate =
                 preset::load_command(&session, project_generation, revision, owner, &path);
             match candidate {
