@@ -450,6 +450,18 @@ impl EditorView {
                 return;
             }
         };
+        let mut audition_bank =
+            [(0_u8, 0_u8); hex_engine::computer_keyboard::MAX_NOTE_AUDITION_NOTES];
+        let audition_len = if self.midi_audition.enabled
+            && updates.len() <= hex_engine::computer_keyboard::MAX_NOTE_AUDITION_NOTES
+        {
+            for (slot, note) in audition_bank.iter_mut().zip(&updates) {
+                *slot = (note.pitch, note.velocity);
+            }
+            updates.len()
+        } else {
+            0
+        };
         let command = if prefix > 0 {
             Command::UpdateMidiNotesWithSourcePrefix {
                 clip: clip_id,
@@ -473,10 +485,13 @@ impl EditorView {
             }
         };
         if prefix > 0 || self.midi_audition.enabled {
-            self.submit_midi_drag_preview(
+            let already_auditioned = audition_len > 0
+                && self.audition_midi_preview_bank(clip_id, &audition_bank[..audition_len]);
+            self.submit_midi_drag_preview_with_audition(
                 clip_id,
                 super::midi_pending_drag::Frozen::Nudge,
                 command,
+                already_auditioned,
             );
         } else {
             self.enqueue(Request::Edit(command));
@@ -719,10 +734,13 @@ impl EditorView {
             }
         };
         if self.midi_audition.enabled && (start != old_start || pitch != old_pitch) {
-            self.submit_midi_drag_preview(
+            let already_auditioned =
+                self.audition_midi_preview_bank(clip_id, &[(pitch, velocity)]);
+            self.submit_midi_drag_preview_with_audition(
                 clip_id,
                 super::midi_pending_drag::Frozen::Nudge,
                 command,
+                already_auditioned,
             );
         } else {
             self.enqueue(Request::Edit(command));

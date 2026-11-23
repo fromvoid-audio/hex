@@ -318,16 +318,14 @@ impl EditorView {
                 if event.error.is_some() {
                     self.midi_recording_preparation_failed();
                 }
-                let audition_ok = note_audition && event.error.is_none();
+                let audition_ok = event.error.is_none();
                 if let Some(error) = event.error {
                     self.error = Some(error.into());
                     self.cancel_computer_keyboard();
                     self.computer_keyboard.suspended = true;
                 }
-                if audition_ok && let Err(error) = self.trigger_prepared_midi_audition() {
-                    self.error = Some(error.to_string().into());
-                    self.cancel_computer_keyboard();
-                    return None;
+                if audition_ok {
+                    let _ = self.try_trigger_midi_audition_now();
                 }
                 if let Some(playback) = event.playback {
                     let previous_reset = self

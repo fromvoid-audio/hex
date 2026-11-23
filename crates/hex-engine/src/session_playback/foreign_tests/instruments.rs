@@ -1207,6 +1207,68 @@ fn live_audition_releases_only_its_own_vst_occurrence() {
 }
 
 #[test]
+fn vst_live_audition_input_retriggers_across_dragged_pitches_without_repreparing() {
+    use crate::{
+        computer_keyboard::{ComputerKeyboardInput, KeyboardActivationClock},
+        playback::Playback,
+    };
+    let (editor, identity) = fixture();
+    let project = editor.project();
+    let track = project.tracks()[0].id();
+    let revision = prepare(&editor, identity, true).unwrap();
+    let clock = Arc::new(KeyboardActivationClock::default());
+    let input = Arc::new(
+        ComputerKeyboardInput::with_output_activation(Arc::clone(&clock))
+            .unwrap()
+            .with_live_audition()
+            .unwrap(),
+    );
+    let mut playback = Playback::from_prepared(revision);
+    playback
+        .prepare_computer_keyboard(project, track, Arc::clone(&input))
+        .unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    let mut render = || {
+        endpoint.next_offset = 0;
+        endpoint.notes.clear();
+        playback
+            .render_with_foreign_processors(&mut [[0.; 2]; 8], None, None, None, &mut endpoint)
+            .unwrap();
+        endpoint.notes.clone()
+    };
+
+    // Prepared root stays completely silent until triggered.
+    assert!(render().is_empty());
+
+    // Initial click triggers immediately.
+    input
+        .trigger_live_note_audition_on_control(&[(60, 80)], 32)
+        .unwrap();
+    let [(_, first)] = render()[..] else {
+        panic!("expected initial click onset");
+    };
+    assert!(first.on && first.pitch == 60 && first.velocity == 80);
+
+    // Dragging to a new pitch releases the prior note and sounds the new pitch on the same root.
+    input
+        .trigger_live_note_audition_on_control(&[(64, 80)], 32)
+        .unwrap();
+    let [(_, released_first), (_, second)] = render()[..] else {
+        panic!("expected release of prior pitch and onset of new pitch");
+    };
+    assert!(!released_first.on && released_first.note_id == first.note_id);
+    assert!(second.on && second.pitch == 64 && second.velocity == 80);
+
+    // Explicit cancellation releases the active pitch cleanly.
+    input.cancel_live_note_audition_on_control();
+    let [(_, released_second)] = render()[..] else {
+        panic!("expected cancel release");
+    };
+    assert!(!released_second.on && released_second.note_id == second.note_id);
+    assert!(render().is_empty());
+}
+
+#[test]
 fn hardware_midi_keeps_ordered_taps_exact_release_and_activation_scope() {
     use crate::{
         computer_keyboard::{ComputerKeyboardInput, KeyboardActivationClock, LiveNoteEvent},

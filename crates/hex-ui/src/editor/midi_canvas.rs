@@ -2095,6 +2095,10 @@ impl EditorView {
             .on_click(cx.listener(|v, _, window, cx| {
                 v.midi_audition.enabled = !v.midi_audition.enabled;
                 v.cancel_midi_audition();
+                if v.midi_audition.enabled {
+                    v.computer_keyboard.suspended = false;
+                    v.wake_poll();
+                }
                 v.midi_focus.focus(window);
                 cx.notify();
             }))

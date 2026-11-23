@@ -3,6 +3,9 @@ use super::*;
 
 impl EditorView {
     pub(in crate::editor) fn enqueue(&mut self, request: Request) -> bool {
+        if matches!(request, Request::Undo | Request::Redo) {
+            self.cancel_midi_audition();
+        }
         // Freeze import policy once, before this request can enter either queue.
         let request = match self.capture_audio_import_policy(request) {
             Ok(request) => request,

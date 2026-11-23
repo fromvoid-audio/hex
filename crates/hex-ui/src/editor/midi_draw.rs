@@ -79,7 +79,7 @@ impl EditorView {
             down,
             hit,
         ) {
-            Ok(stroke) => {
+            Ok(mut stroke) => {
                 if !self.capture_midi_draw_pointer(&stroke, window, cx) {
                     return false;
                 }
@@ -87,6 +87,11 @@ impl EditorView {
                 self.midi_group_gesture = None;
                 self.cancel_all_midi_marquees();
                 self.midi_focus.focus(window);
+                if let Some(note) = stroke.take_last_inserted()
+                    && self.audition_midi_preview_bank(context.clip, &[note])
+                {
+                    stroke.mark_auditioned_live();
+                }
                 self.midi_stroke = Some(stroke);
                 true
             }
@@ -110,16 +115,34 @@ impl EditorView {
             return self.cancel_midi_stroke();
         };
         let pending = self.edit_pending();
-        let Some(stroke) = self.midi_stroke.as_mut() else {
-            return false;
+        let (result, inserted) = {
+            let Some(stroke) = self.midi_stroke.as_mut() else {
+                return false;
+            };
+            let result = stroke.update(context, pending, point);
+            let inserted = if result.is_ok() {
+                stroke.take_last_inserted()
+            } else {
+                None
+            };
+            (result, inserted)
         };
-        match stroke.update(context, pending, point) {
-            Ok(changed) => changed,
+        match result {
+            Ok(changed) => {
+                if let Some(note) = inserted
+                    && self.audition_midi_preview_bank(context.clip, &[note])
+                    && let Some(stroke) = self.midi_stroke.as_mut()
+                {
+                    stroke.mark_auditioned_live();
+                }
+                changed
+            }
             Err(error) => {
                 if error != midi_stroke::StrokeError::InvalidContext {
                     self.error = Some(stroke_error(error).into());
                 }
                 self.midi_stroke = None;
+                self.cancel_midi_audition();
                 true
             }
         }
@@ -137,14 +160,17 @@ impl EditorView {
         };
         if !inside {
             stroke.cancel();
+            self.cancel_midi_audition();
             return true;
         }
         let Some(context) = self.current_stroke_context(canvas_bounds(bounds), modifiers) else {
             stroke.cancel();
+            self.cancel_midi_audition();
             return true;
         };
         let Some(point) = stroke_point(context, point[0], point[1], false) else {
             stroke.cancel();
+            self.cancel_midi_audition();
             return true;
         };
         let pending = self.edit_pending();
@@ -153,17 +179,25 @@ impl EditorView {
                 self.error = Some(stroke_error(error).into());
             }
             stroke.cancel();
+            self.cancel_midi_audition();
             return true;
         }
+        if let Some(note) = stroke.take_last_inserted()
+            && self.audition_midi_preview_bank(context.clip, &[note])
+        {
+            stroke.mark_auditioned_live();
+        }
+        let already_auditioned = stroke.was_auditioned_live();
         // finish retires the working stroke and clears its own preview. Keep
         // the final shared geometry before that, then transfer only on admission.
         let preview = stroke.shared_preview();
         match stroke.finish(context, pending) {
             Ok(Some(command)) => {
-                self.submit_midi_drag_preview(
+                self.submit_midi_drag_preview_with_audition(
                     context.clip,
                     super::midi_pending_drag::Frozen::Stroke(preview),
                     command,
+                    already_auditioned,
                 );
             }
             Ok(None) => {}
@@ -175,6 +209,7 @@ impl EditorView {
     pub(super) fn cancel_midi_stroke(&mut self) -> bool {
         if let Some(mut stroke) = self.midi_stroke.take() {
             stroke.cancel();
+            self.cancel_midi_audition();
             true
         } else {
             false

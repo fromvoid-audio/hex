@@ -119,14 +119,14 @@ fn paint_drag_and_keyboard_move_audition_the_result_once(cx: &mut TestAppContext
     pump(&editor, &mut visual);
     pump(&editor, &mut visual);
     let active = assert_audition_bank(&editor, &visual, &[(66, 37)]);
-    let request = editor.read_with(&visual, |v, _| v.computer_keyboard.request_id);
+    let active_id = active.live_audition_id();
+    assert_ne!(active_id, 0);
     for (shortcut, pitch) in [("cmd-z", 65), ("cmd-shift-z", 66)] {
         visual.simulate_keystrokes(shortcut);
         pump(&editor, &mut visual);
         pump(&editor, &mut visual);
+        assert_audition_silent(&editor, &visual);
         editor.read_with(&visual, |v, _| {
-            assert_eq!(v.computer_keyboard.request_id, request);
-            assert!(v.computer_keyboard.input.is_none());
             assert!(
                 v.midi_clip()
                     .unwrap()
@@ -136,7 +136,7 @@ fn paint_drag_and_keyboard_move_audition_the_result_once(cx: &mut TestAppContext
             );
         });
     }
-    assert!(active.is_cancelled());
+    assert_eq!(active.live_audition_id(), 0);
     let before = editor.read_with(&visual, |v, _| {
         v.state
             .as_ref()
@@ -153,9 +153,9 @@ fn paint_drag_and_keyboard_move_audition_the_result_once(cx: &mut TestAppContext
     visual.simulate_keystrokes("escape");
     visual.simulate_mouse_up(old, MouseButton::Left, Modifiers::default());
     pump(&editor, &mut visual);
+    assert_audition_silent(&editor, &visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.midi_clip().unwrap().notes(), before);
-        assert!(v.computer_keyboard.input.is_none());
     });
 }
 
@@ -207,8 +207,8 @@ fn an_inflight_note_edit_does_not_audition_after_the_speaker_is_reenabled(cx: &m
                 .iter()
                 .any(|note| note.pitch() == 62)
         );
-        assert!(v.computer_keyboard.input.is_none());
     });
+    assert_audition_silent(&editor, &visual);
 }
 
 #[gpui::test]
@@ -231,22 +231,21 @@ fn click_chord_and_marquee_prepare_once_with_exact_velocities_but_disabled_paint
     assert!(visual.debug_bounds("midi-audition-speaker").is_some());
     editor.read_with(&visual, |v, _| assert!(v.midi_audition.enabled));
     pump(&editor, &mut visual);
-    editor.read_with(&visual, |v, _| {
-        assert!(
-            v.computer_keyboard.input.is_none(),
-            "enable waits for explicit selection"
-        )
-    });
+    assert_audition_silent(&editor, &visual);
     // A note click from Arrangement focus must retain the new piano intent.
     visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
     visual.run_until_parked();
     visual.simulate_click(b, Modifiers::default());
     pump(&editor, &mut visual);
-    let (single, request) = editor.read_with(&visual, |v, _| {
+    let (single, request, single_id) = editor.read_with(&visual, |v, _| {
         let input = v.computer_keyboard.input.as_ref().unwrap();
-        assert!(input.is_note_audition());
-        assert_eq!((input.key_word(0).unwrap() >> 8) & 255, 93);
-        (Arc::clone(input), v.computer_keyboard.request_id)
+        assert!(input.has_live_audition());
+        assert_eq!((input.live_audition_word(0).unwrap() >> 8) & 255, 93);
+        (
+            Arc::clone(input),
+            v.computer_keyboard.request_id,
+            input.live_audition_id(),
+        )
     });
     for _ in 0..3 {
         editor.update(&mut visual, |_, cx| cx.notify());
@@ -259,6 +258,7 @@ fn click_chord_and_marquee_prepare_once_with_exact_velocities_but_disabled_paint
             &single,
             v.computer_keyboard.input.as_ref().unwrap()
         ));
+        assert_eq!(single.live_audition_id(), single_id);
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
     let shift = Modifiers {
@@ -269,39 +269,69 @@ fn click_chord_and_marquee_prepare_once_with_exact_velocities_but_disabled_paint
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         let input = v.computer_keyboard.input.as_ref().unwrap();
-        assert_eq!((input.key_word(0).unwrap() >> 8) & 255, 37);
-        assert_eq!((input.key_word(1).unwrap() >> 8) & 255, 93);
+        assert!(Arc::ptr_eq(&single, input));
+        assert_eq!(v.computer_keyboard.request_id, request);
+        assert_eq!((input.live_audition_word(0).unwrap() >> 8) & 255, 37);
+        assert_eq!((input.live_audition_word(1).unwrap() >> 8) & 255, 93);
     });
     visual.simulate_keystrokes("escape");
     visual.simulate_click(b, Modifiers::default());
     pump(&editor, &mut visual);
-    let request = editor.read_with(&visual, |v, _| {
+    let (request, before_marquee_id) = editor.read_with(&visual, |v, _| {
         assert_eq!(v.midi_selection.len(), 1);
-        v.computer_keyboard.request_id
+        (
+            v.computer_keyboard.request_id,
+            v.computer_keyboard
+                .input
+                .as_ref()
+                .unwrap()
+                .live_audition_id(),
+        )
     });
     let start = position(&mut visual, &editor, 0.5, 65);
     let end = position(&mut visual, &editor, 3.5, 59);
     visual.simulate_mouse_down(start, MouseButton::Left, shift);
     visual.simulate_mouse_move(end, Some(MouseButton::Left), shift);
     visual.run_until_parked();
-    editor.read_with(&visual, |v, _| {
-        assert_eq!(v.computer_keyboard.request_id, request)
+    let marquee_id = editor.read_with(&visual, |v, _| {
+        assert_eq!(v.computer_keyboard.request_id, request);
+        let id = v
+            .computer_keyboard
+            .input
+            .as_ref()
+            .unwrap()
+            .live_audition_id();
+        assert!(id > before_marquee_id, "live marquee auditions immediately");
+        id
     });
     visual.simulate_mouse_up(end, MouseButton::Left, shift);
     pump(&editor, &mut visual);
     let chord = editor.read_with(&visual, |v, _| {
-        assert_eq!(v.computer_keyboard.request_id, request + 1);
+        assert_eq!(v.computer_keyboard.request_id, request);
         assert_eq!(v.midi_selection.len(), 2);
-        Arc::clone(v.computer_keyboard.input.as_ref().unwrap())
+        let input = v.computer_keyboard.input.as_ref().unwrap();
+        assert_eq!(
+            input.live_audition_id(),
+            marquee_id,
+            "release does not retrigger"
+        );
+        Arc::clone(input)
     });
     // Explicitly committing the same marquee is one new intent, never a paint trigger.
-    let request = editor.read_with(&visual, |v, _| v.computer_keyboard.request_id);
     visual.simulate_mouse_down(start, MouseButton::Left, shift);
     visual.simulate_mouse_move(end, Some(MouseButton::Left), shift);
     visual.simulate_mouse_up(end, MouseButton::Left, shift);
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.computer_keyboard.request_id, request + 1)
+        assert_eq!(v.computer_keyboard.request_id, request);
+        assert!(
+            v.computer_keyboard
+                .input
+                .as_ref()
+                .unwrap()
+                .live_audition_id()
+                > marquee_id
+        );
     });
     toggle(&mut visual);
     pump(&editor, &mut visual);
@@ -366,7 +396,7 @@ fn physical_keys_defer_the_latest_selection_and_stale_preparation_or_focus_canno
                 .input
                 .as_ref()
                 .unwrap()
-                .is_note_audition()
+                .has_live_audition()
         )
     });
     assert_audition_bank(&editor, &visual, &[(64, 93)]);
@@ -380,40 +410,16 @@ fn physical_keys_defer_the_latest_selection_and_stale_preparation_or_focus_canno
     let a = position(&mut visual, &editor, 1.125, 60);
     visual.simulate_click(a, Modifiers::default());
     pump(&editor, &mut visual);
-    let (old, prepared) = editor.update(&mut visual, |v, _| {
+    let old = editor.update(&mut visual, |v, _| {
         assert!(v.computer_keyboard_up("a"));
-        assert_eq!(v.tick_midi_audition(), Some(true));
-        let input = Arc::clone(v.computer_keyboard.input.as_ref().unwrap());
-        let request = v.computer_keyboard.request_id;
-        let until = crate::test_wait::hang_deadline();
-        let event = loop {
-            if let Ok(event) = v.service.try_event() {
-                assert_eq!(event.computer_keyboard_complete, Some(request));
-                assert!(event.error.is_none(), "{:?}", event.error);
-                assert!(event.playback.is_some(), "real preparation must succeed");
-                break event;
-            }
-            assert!(std::time::Instant::now() < until, "physical_keys_defer_the_latest_selection_and_stale_preparation_or_focus_cannot_trigger: hang guard expired");
-            std::thread::yield_now();
-        };
-        for key in 0..17 {
-            assert_eq!(input.key_word(key), Some(0));
-        }
-        (input, event)
+        Arc::clone(v.computer_keyboard.input.as_ref().unwrap())
     });
     visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
     visual.run_until_parked();
     assert!(old.is_cancelled());
-    for key in 0..17 {
-        assert_eq!(old.key_word(key), Some(0));
-    }
-    // Deliver the actual worker completion only after cancellation, then settle
-    // subsequent frames: a stale completion must never resurrect or trigger it.
-    editor.update(&mut visual, |v, _| v.receive(prepared));
+    assert_eq!(old.live_audition_id(), 0);
     pump(&editor, &mut visual);
-    for key in 0..17 {
-        assert_eq!(old.key_word(key), Some(0));
-    }
+    assert_eq!(old.live_audition_id(), 0);
     editor.read_with(&visual, |v, _| assert!(v.computer_keyboard.input.is_none()));
 }
 #[gpui::test]
@@ -447,9 +453,9 @@ fn over_capacity_selection_refuses_the_whole_chord_without_project_changes(
     editor.read_with(&visual, |v, _| {
         assert!(v.midi_selection.len() > 17);
         assert!(v.error.as_deref().unwrap().contains("17"));
-        assert!(v.computer_keyboard.input.is_none());
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
+    assert_audition_silent(&editor, &visual);
 }
 
 #[gpui::test]
@@ -489,32 +495,27 @@ fn clip_owner_wins_over_track_selection_and_stop_or_source_loss_cannot_retrigger
     let input = editor.read_with(&visual, |v, _| {
         assert_eq!(v.computer_keyboard.target.unwrap().2, owner);
         let input = v.computer_keyboard.input.as_ref().unwrap();
-        assert_ne!(input.key_word(0), Some(0));
+        assert_ne!(input.live_audition_word(0), Some(0));
         Arc::clone(input)
     });
     editor.update(&mut visual, |v, _| v.stop_computer_keyboard());
-    pump(&editor, &mut visual);
     assert!(input.is_cancelled());
     editor.read_with(&visual, |v, _| assert!(v.computer_keyboard.input.is_none()));
     visual.simulate_click(a, Modifiers::default());
     let pending = editor.update(&mut visual, |v, cx| {
         v.tick(cx);
         let input = Arc::clone(v.computer_keyboard.input.as_ref().unwrap());
-        // Exercise the fast-ACK case deterministically: a completed preparation
-        // may have populated notes before source loss cancels this input.
-        if input.key_word(0) == Some(0) {
-            input.trigger_note_audition().unwrap();
-        }
-        assert_ne!(input.key_word(0), Some(0));
         v.project_generation += 1;
         input
     });
     pump(&editor, &mut visual);
     assert!(pending.is_cancelled());
-    // Cancellation is terminal even when a fast ACK already populated notes;
-    // the raw key slots need not be zero for the renderer to remain silent.
-    assert!(pending.trigger_note_audition().is_err());
-    editor.read_with(&visual, |v, _| assert!(v.computer_keyboard.input.is_none()));
+    assert!(
+        pending
+            .trigger_live_note_audition_on_control(&[(60, 100)], 64)
+            .is_err()
+    );
+    assert_audition_silent(&editor, &visual);
 }
 
 fn marquee_points(
@@ -680,6 +681,19 @@ fn configured_controller_keeps_its_root_during_note_and_marquee_audition(cx: &mu
     assert!(!input.is_cancelled());
 }
 
+fn assert_audition_silent(editor: &Entity<super::EditorView>, visual: &VisualTestContext) {
+    editor.read_with(visual, |v, _| {
+        if let Some(input) = v.computer_keyboard.input.as_ref() {
+            assert_eq!(
+                input.live_audition_id(),
+                0,
+                "expected silent audition, error={:?}",
+                v.error
+            );
+        }
+    });
+}
+
 fn assert_audition_bank(
     editor: &Entity<super::EditorView>,
     visual: &VisualTestContext,
@@ -690,10 +704,16 @@ fn assert_audition_bank(
             v.computer_keyboard.input.as_ref().unwrap_or_else(|| {
                 panic!("no worker audition for {expected:?}, error={:?}", v.error)
             });
-        assert!(input.is_note_audition());
+        assert!(input.has_live_audition());
+        assert_ne!(
+            input.live_audition_id(),
+            0,
+            "live audition was not triggered for {expected:?}, error={:?}",
+            v.error
+        );
         let bank = (0..hex_engine::computer_keyboard::MAX_NOTE_AUDITION_NOTES)
             .filter_map(|slot| {
-                let word = input.key_word(slot).unwrap();
+                let word = input.live_audition_word(slot).unwrap();
                 if word == 0 {
                     None
                 } else {
@@ -741,6 +761,7 @@ fn held_marquees_select_and_audition_only_new_contacts_without_release_or_repain
         });
         pump(&editor, &mut visual); // Real preparation completes while capture stays held.
         let first_input = assert_audition_bank(&editor, &visual, &[(60, 37)]);
+        let first_id = first_input.live_audition_id();
         let request = editor.read_with(&visual, |v, _| v.computer_keyboard.request_id);
         for _ in 0..3 {
             visual.simulate_mouse_move(
@@ -759,34 +780,41 @@ fn held_marquees_select_and_audition_only_new_contacts_without_release_or_repain
                 &first_input,
                 v.computer_keyboard.input.as_ref().unwrap()
             ));
+            assert_eq!(first_input.live_audition_id(), first_id);
         });
         visual.simulate_mouse_move(both, Some(MouseButton::Left), shift);
         pump(&editor, &mut visual);
         let second_input = assert_audition_bank(&editor, &visual, &[(64, 93)]);
-        assert!(first_input.is_cancelled());
+        assert!(Arc::ptr_eq(&first_input, &second_input));
+        let second_id = second_input.live_audition_id();
+        assert!(second_id > first_id);
         editor.read_with(&visual, |v, _| {
-            assert_eq!(v.computer_keyboard.request_id, request + 1)
+            assert_eq!(v.computer_keyboard.request_id, request)
         });
         visual.simulate_mouse_move(one, Some(MouseButton::Left), shift);
         pump(&editor, &mut visual);
-        assert!(
-            second_input.is_cancelled(),
+        assert_eq!(
+            second_input.live_audition_id(),
+            0,
             "leaving revokes the finite chord even when that pitch belongs to the additive baseline"
         );
         editor.read_with(&visual, |v, _| {
-            assert_eq!(v.computer_keyboard.request_id, request + 1)
+            assert_eq!(v.computer_keyboard.request_id, request)
         });
         visual.simulate_mouse_move(both, Some(MouseButton::Left), shift);
         pump(&editor, &mut visual);
         let reentered = assert_audition_bank(&editor, &visual, &[(64, 93)]);
+        let reentered_id = reentered.live_audition_id();
+        assert!(reentered_id > second_id);
         visual.simulate_mouse_up(both, MouseButton::Left, shift);
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
-            assert_eq!(v.computer_keyboard.request_id, request + 2);
+            assert_eq!(v.computer_keyboard.request_id, request);
             assert!(Arc::ptr_eq(
                 &reentered,
                 v.computer_keyboard.input.as_ref().unwrap()
             ));
+            assert_eq!(reentered.live_audition_id(), reentered_id);
             assert_eq!(v.midi_selection.ids(), [first, baseline]);
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });
@@ -804,6 +832,7 @@ fn canceling_held_marquee_revokes_unreceived_real_preparation_and_restores_basel
         ..Modifiers::default()
     };
     for velocity in [false, true] {
+        editor.update(&mut visual, |v, _| v.retire_computer_keyboard_audio());
         let [start, one, both] = marquee_points(&mut visual, &editor, velocity);
         visual.simulate_mouse_down(start, MouseButton::Left, shift);
         visual.simulate_mouse_move(one, Some(MouseButton::Left), shift);
@@ -825,13 +854,13 @@ fn canceling_held_marquee_revokes_unreceived_real_preparation_and_restores_basel
         // Deliberately leave the actual Service terminal unreceived until after cancel.
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
-        assert!(input.is_cancelled());
+        assert_eq!(input.live_audition_id(), 0);
         pump(&editor, &mut visual);
         visual.simulate_mouse_up(one, MouseButton::Left, shift);
         visual.run_until_parked();
+        assert_audition_silent(&editor, &visual);
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.midi_selection.ids(), baseline.as_ref());
-            assert!(v.computer_keyboard.input.is_none());
             assert!(!v.velocity_marquee_active());
             assert!(v.midi_marquee.is_none());
         });
@@ -888,10 +917,9 @@ fn marquee_audition_off_is_silent_and_new_contact_overflow_refuses_whole_batch(
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.midi_selection.len(), 18);
-        assert!(v.computer_keyboard.input.is_none());
-        assert_eq!(v.computer_keyboard.request_id, 0);
         assert!(v.error.as_deref().unwrap().contains("at most 17"));
     });
+    assert_audition_silent(&editor, &visual);
     visual.simulate_keystrokes("escape");
     visual.simulate_mouse_up(end, MouseButton::Left, shift);
     visual.run_until_parked();
@@ -1019,4 +1047,151 @@ fn real_project_replacement_cancels_live_marquee_without_reviving_old_selection_
             assert!(v.computer_keyboard.input.is_none());
         });
     }
+}
+
+#[gpui::test]
+fn mouse_down_click_and_vertical_drag_audition_immediately_without_waiting_for_release(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, _environment, _) = authored(cx);
+    toggle(&mut visual);
+    pump(&editor, &mut visual);
+    assert_audition_silent(&editor, &visual);
+    let prepared_request = editor.read_with(&visual, |v, _| {
+        assert!(v.computer_keyboard.prepared);
+        assert!(
+            v.computer_keyboard
+                .input
+                .as_ref()
+                .is_some_and(|input| input.has_live_audition())
+        );
+        v.computer_keyboard.request_id
+    });
+
+    // Clicking a note auditions immediately on mouse-down (before mouse-up) with zero worker roundtrips.
+    let first = position(&mut visual, &editor, 1.125, 60);
+    visual.simulate_mouse_down(first, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let click_input = assert_audition_bank(&editor, &visual, &[(60, 37)]);
+    let down_id = click_input.live_audition_id();
+    editor.read_with(&visual, |v, _| {
+        assert!(v.midi_note_gesture.is_some(), "drag gesture stays active");
+        assert_eq!(
+            v.computer_keyboard.request_id, prepared_request,
+            "no extra PrepareComputerKeyboard on mouse-down"
+        );
+        assert!(!v.edit_pending());
+    });
+
+    // Dragging vertically auditions each new pitch immediately during mouse-move (still before mouse-up).
+    let moved_up = position(&mut visual, &editor, 1.125, 65);
+    visual.simulate_mouse_move(moved_up, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    let drag_input = assert_audition_bank(&editor, &visual, &[(65, 37)]);
+    assert!(Arc::ptr_eq(&click_input, &drag_input));
+    let moved_id = drag_input.live_audition_id();
+    assert!(moved_id > down_id);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.computer_keyboard.request_id, prepared_request);
+    });
+
+    // Horizontal move at the same pitch does not spam-retrigger.
+    let moved_right = position(&mut visual, &editor, 2.125, 65);
+    visual.simulate_mouse_move(moved_right, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(drag_input.live_audition_id(), moved_id);
+
+    // Releasing commits the edit without double-playing the already-heard pitch.
+    visual.simulate_mouse_up(moved_right, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    assert_eq!(drag_input.live_audition_id(), moved_id);
+
+    // Prepare root at the new revision (headless mode) and test chord vertical drag on mouse-move.
+    let second = position(&mut visual, &editor, 3.125, 64);
+    let shift = Modifiers {
+        shift: true,
+        ..Default::default()
+    };
+    visual.simulate_click(second, shift);
+    pump(&editor, &mut visual);
+    let chord_input = assert_audition_bank(&editor, &visual, &[(65, 37), (64, 93)]);
+    let chord_request = editor.read_with(&visual, |v, _| v.computer_keyboard.request_id);
+    let chord_select_id = chord_input.live_audition_id();
+
+    visual.simulate_mouse_down(second, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let chord_down_id = chord_input.live_audition_id();
+    assert!(chord_down_id > chord_select_id);
+    let chord_up = position(&mut visual, &editor, 3.125, 66);
+    visual.simulate_mouse_move(chord_up, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    assert_audition_bank(&editor, &visual, &[(67, 37), (66, 93)]);
+    assert!(chord_input.live_audition_id() > chord_down_id);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.computer_keyboard.request_id, chord_request);
+    });
+    visual.simulate_mouse_up(chord_up, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+}
+
+#[gpui::test]
+fn double_click_creation_and_draw_mode_audition_immediately_on_mouse_down_and_drag(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, _environment, _) = authored(cx);
+    toggle(&mut visual);
+    pump(&editor, &mut visual);
+    let request = editor.read_with(&visual, |v, _| v.computer_keyboard.request_id);
+
+    // Double-click creation auditions immediately on the second mouse-down before release.
+    let create_at = position(&mut visual, &editor, 0.55, 62);
+    super::creation_tests::double_down(&mut visual, create_at, Modifiers::default());
+    visual.run_until_parked();
+    let created_input = assert_audition_bank(&editor, &visual, &[(62, 100)]);
+    let create_id = created_input.live_audition_id();
+    editor.read_with(&visual, |v, _| {
+        assert!(v.midi_creation.is_some());
+        assert_eq!(v.computer_keyboard.request_id, request);
+    });
+    // Canceling creation with Escape silences audition immediately.
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(create_at, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_audition_silent(&editor, &visual);
+
+    // Draw mode: mouse-down on an empty cell auditions immediately, dragging to another cell
+    // auditions the newly drawn note before release (including melodic pitch change with Alt),
+    // and erasing an existing note stays silent.
+    visual.simulate_keystrokes("b");
+    let draw_start = position(&mut visual, &editor, 0.55, 63);
+    let melodic = Modifiers {
+        alt: true,
+        ..Default::default()
+    };
+    visual.simulate_mouse_down(draw_start, MouseButton::Left, melodic);
+    visual.run_until_parked();
+    assert_audition_bank(&editor, &visual, &[(63, 100)]);
+    let draw_down_id = created_input.live_audition_id();
+    assert!(draw_down_id > create_id);
+    let draw_next = position(&mut visual, &editor, 1.78, 67);
+    visual.simulate_mouse_move(draw_next, Some(MouseButton::Left), melodic);
+    visual.run_until_parked();
+    assert_audition_bank(&editor, &visual, &[(67, 100)]);
+    assert!(created_input.live_audition_id() > draw_down_id);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.computer_keyboard.request_id, request);
+    });
+    visual.simulate_mouse_up(draw_next, MouseButton::Left, melodic);
+    pump(&editor, &mut visual);
+
+    // Clicking an existing note in draw mode erases it without playing audition.
+    editor.update(&mut visual, |v, _| v.cancel_midi_audition());
+    pump(&editor, &mut visual);
+    let existing = position(&mut visual, &editor, 1.125, 60);
+    visual.simulate_mouse_down(existing, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_audition_silent(&editor, &visual);
+    visual.simulate_mouse_up(existing, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    assert_audition_silent(&editor, &visual);
 }

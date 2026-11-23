@@ -191,6 +191,18 @@ impl EditorView {
         preview: Frozen,
         command: Command,
     ) {
+        self.submit_midi_drag_preview_with_audition(clip, preview, command, false);
+    }
+
+    /// Submit a drag/create/nudge edit, skipping post-receipt audition when the
+    /// final preview note(s) already sounded live during the gesture.
+    pub(super) fn submit_midi_drag_preview_with_audition(
+        &mut self,
+        clip: ClipId,
+        preview: Frozen,
+        command: Command,
+        already_auditioned: bool,
+    ) {
         let Some(source) = self
             .state
             .as_ref()
@@ -198,7 +210,7 @@ impl EditorView {
         else {
             return;
         };
-        let audition = if self.midi_audition.enabled {
+        let audition = if self.midi_audition.enabled && !already_auditioned {
             preview.audition(clip, &command).map(|intent| {
                 self.cancel_midi_audition();
                 (self.midi_selection.epoch(), intent)

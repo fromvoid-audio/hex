@@ -397,6 +397,31 @@ impl GroupGesture {
         self.source_prefix == 0 && self.delta == 0 && self.pitch_delta == 0
     }
 
+    pub(super) fn pitch_delta(&self) -> i16 {
+        self.pitch_delta
+    }
+
+    pub(super) fn preview_audition_bank(
+        &self,
+    ) -> Option<(
+        [(u8, u8); hex_engine::computer_keyboard::MAX_NOTE_AUDITION_NOTES],
+        usize,
+    )> {
+        let len = self.originals.len();
+        if len == 0 || len > hex_engine::computer_keyboard::MAX_NOTE_AUDITION_NOTES {
+            return None;
+        }
+        let mut notes = [(0, 0); hex_engine::computer_keyboard::MAX_NOTE_AUDITION_NOTES];
+        for (slot, note) in notes.iter_mut().zip(self.originals.iter()) {
+            let pitch = u8::try_from(i16::from(note.pitch) + self.pitch_delta).ok()?;
+            if pitch > 127 {
+                return None;
+            }
+            *slot = (pitch, note.velocity);
+        }
+        Some((notes, len))
+    }
+
     /// Copy toggles only a move gesture; a captured resize keeps its edge.
     pub(super) fn set_copy(&mut self, copy: bool) -> bool {
         if self.kind != HitKind::Move || self.copy == copy {

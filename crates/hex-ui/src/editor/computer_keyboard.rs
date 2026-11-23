@@ -80,7 +80,7 @@ impl super::EditorView {
     }
 
     // Worker transactions reprepare this physical input against each accepted instrument.
-    // A model revision is not an input identity; selected track, generation and cancellation are.
+    // A model revision is not an input identity; target track, generation and cancellation are.
     fn reusable_worker_keyboard_input(&self, worker_owned: bool) -> bool {
         worker_owned
             && self.computer_keyboard.input.as_ref().is_some_and(|input| {
@@ -95,9 +95,18 @@ impl super::EditorView {
                 self.computer_keyboard
                     .target
                     .is_some_and(|(generation, revision, track)| {
+                        let track_matches = self.selected_track == Some(track)
+                            || (self.midi_audition.enabled
+                                && self.clip_view_open
+                                && self.detail_midi_clip_owner_track() == Some(track)
+                                && self
+                                    .computer_keyboard
+                                    .input
+                                    .as_ref()
+                                    .is_some_and(|input| input.has_live_audition()));
                         generation == self.project_generation
                             && revision <= state.revision
-                            && self.selected_track == Some(track)
+                            && track_matches
                             && state.project.track(track).is_some_and(|track| {
                                 track.instrument().is_some_and(|device| !device.bypassed())
                             })
@@ -262,6 +271,14 @@ impl super::EditorView {
                     return true;
                 }
             }
+        } else if self.midi_audition.enabled && self.clip_view_open {
+            match input.with_live_audition() {
+                Ok(input) => input,
+                Err(error) => {
+                    self.error = Some(error.to_string().into());
+                    return true;
+                }
+            }
         } else {
             input
         };
@@ -384,6 +401,17 @@ impl super::EditorView {
             self.publish_computer_keyboard();
         }
         released
+    }
+
+    pub(super) fn clear_physical_keys_preserving_audition(&mut self) {
+        if let Some(input) = self.computer_keyboard.input.as_ref() {
+            for (key, held) in self.computer_keyboard.held.iter().enumerate() {
+                if held.is_some() {
+                    let _ = input.set_key(key, None);
+                }
+            }
+        }
+        self.computer_keyboard.release_all();
     }
 
     pub(super) fn publish_computer_keyboard(&mut self) {

@@ -199,7 +199,15 @@ impl EditorView {
                 self.midi_group_gesture = None;
                 return true;
             }
-            changed |= g.update(point, modifiers.platform);
+            let prev_pitch_delta = g.pitch_delta();
+            let updated = g.update(point, modifiers.platform);
+            changed |= updated;
+            if updated && g.kind() == HitKind::Move && g.pitch_delta() != prev_pitch_delta {
+                let bank = g.preview_audition_bank();
+                if let Some((notes, len)) = bank {
+                    let _ = self.audition_midi_preview_bank(key.frame.clip, &notes[..len]);
+                }
+            }
             return changed;
         }
         let current = self
@@ -209,8 +217,20 @@ impl EditorView {
         if !current {
             return self.midi_note_gesture.take().is_some() | changed;
         }
+        let mut audition_note = None;
         if let Some(g) = &mut self.midi_note_gesture {
-            changed |= midi_drag::update_with_modifier(g, point[0], point[1], modifiers.platform);
+            let prev_pitch = g.preview.pitch;
+            let updated = midi_drag::update_with_modifier(g, point[0], point[1], modifiers.platform);
+            changed |= updated;
+            if updated
+                && matches!(g.kind, GestureKind::Move { .. })
+                && g.preview.pitch != prev_pitch
+            {
+                audition_note = Some((g.preview.pitch, g.velocity));
+            }
+        }
+        if let Some(note) = audition_note {
+            let _ = self.audition_midi_preview_bank(key.frame.clip, &[note]);
         }
         changed
     }
@@ -224,14 +244,24 @@ impl EditorView {
         };
         let clip = key.frame.clip;
         if let Some(mut g) = self.midi_group_gesture.take() {
-            let _ = g.update(point, modifiers.platform);
+            let prev_pitch_delta = g.pitch_delta();
+            let updated = g.update(point, modifiers.platform);
+            if updated && g.kind() == HitKind::Move && g.pitch_delta() != prev_pitch_delta {
+                if let Some((notes, len)) = g.preview_audition_bank() {
+                    let _ = self.audition_midi_preview_bank(clip, &notes[..len]);
+                }
+            }
             if g.is_current(context)
                 && !g.is_noop()
                 && midi_drag::point_is_inside(g.bounds(), point[0], point[1])
             {
+                let already_auditioned = g.kind() == HitKind::Move
+                    && g.preview_audition_bank().is_some_and(|(notes, len)| {
+                        self.midi_audition.active_matches_bank(clip, &notes[..len])
+                    });
                 if g.is_copy() {
                     match g.copied_notes() {
-                        Ok(insert) => self.submit_midi_drag_preview(
+                        Ok(insert) => self.submit_midi_drag_preview_with_audition(
                             clip,
                             crate::editor::midi_pending_drag::Frozen::Group(g),
                             Command::EditMidiNotesWithSourceExtent {
@@ -239,6 +269,7 @@ impl EditorView {
                                 remove: Vec::new(),
                                 insert,
                             },
+                            already_auditioned,
                         ),
                         Err(error) => self.error = Some(error.into()),
                     }
@@ -261,10 +292,11 @@ impl EditorView {
                             } else {
                                 Command::UpdateMidiNotes { clip, notes }
                             };
-                            self.submit_midi_drag_preview(
+                            self.submit_midi_drag_preview_with_audition(
                                 clip,
                                 crate::editor::midi_pending_drag::Frozen::Group(g),
                                 command,
+                                already_auditioned,
                             );
                         }
                         Err(error) => self.error = Some(error.into()),
@@ -281,8 +313,16 @@ impl EditorView {
         {
             return;
         }
+        let prev_pitch = g.preview.pitch;
         midi_drag::update_with_modifier(&mut g, point[0], point[1], modifiers.platform);
+        if matches!(g.kind, GestureKind::Move { .. }) && g.preview.pitch != prev_pitch {
+            let _ = self.audition_midi_preview_bank(clip, &[(g.preview.pitch, g.velocity)]);
+        }
         if !midi_drag::is_noop(&g) {
+            let already_auditioned = matches!(g.kind, GestureKind::Move { .. })
+                && self
+                    .midi_audition
+                    .active_matches_bank(clip, &[(g.preview.pitch, g.velocity)]);
             let command = if g.source_prefix > 0 {
                 Command::UpdateMidiNotesWithSourcePrefix {
                     clip,
@@ -323,10 +363,11 @@ impl EditorView {
                     velocity: g.velocity,
                 }
             };
-            self.submit_midi_drag_preview(
+            self.submit_midi_drag_preview_with_audition(
                 clip,
                 crate::editor::midi_pending_drag::Frozen::Single(g),
                 command,
+                already_auditioned,
             );
         }
     }

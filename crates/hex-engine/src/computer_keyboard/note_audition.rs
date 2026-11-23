@@ -116,6 +116,7 @@ impl ComputerKeyboardInput {
             || self.is_cancelled()
             || self.audition.is_some()
             || self.live_notes.is_some()
+            || self.live_audition.is_some()
         {
             return Err(Invalid(
                 "note audition requires 1–17 valid notes and a fresh ordinary input",
@@ -186,6 +187,33 @@ impl ComputerKeyboardInput {
         }
     }
 
+    /// Monotonic trigger identity of the currently active live audition, or 0
+    /// when cancelled, expired, or never triggered.
+    pub fn live_audition_id(&self) -> u64 {
+        let Some(bank) = &self.live_audition else {
+            return 0;
+        };
+        if self.is_cancelled() {
+            return 0;
+        }
+        let id = bank.id.load(Acquire);
+        if id == 0 || self.audition_finished.load(Acquire) >= id {
+            0
+        } else {
+            id
+        }
+    }
+
+    pub fn live_audition_word(&self, index: usize) -> Option<u64> {
+        let bank = self.live_audition.as_ref()?;
+        let slot = bank.words.get(index)?;
+        if self.live_audition_id() == 0 {
+            Some(0)
+        } else {
+            Some(slot.load(Acquire))
+        }
+    }
+
     pub(super) fn audition_snapshot(
         &self,
         words: &mut [u64; COMPUTER_KEY_COUNT],
@@ -243,7 +271,7 @@ impl ComputerKeyboardInput {
     }
     pub(super) fn template_count(&self) -> usize {
         self.audition.as_ref().map_or(
-            if self.live_notes.is_some() {
+            if self.has_full_note_table() {
                 NOTES
             } else {
                 COMPUTER_NOTES
@@ -255,7 +283,7 @@ impl ComputerKeyboardInput {
         if let Some(bank) = &self.audition {
             return bank.notes.get(index).copied().filter(|_| index < bank.len);
         }
-        if self.live_notes.is_some() {
+        if self.has_full_note_table() {
             return (index < NOTES).then_some(((index % 128) as u8, (index / 128 + 1) as u8));
         }
         Some((
@@ -279,7 +307,10 @@ impl KeyboardInput {
                 .map(|_| key)
                 .ok_or(Invalid("note audition word differs from its prepared bank"));
         }
-        if self.lease().is_some_and(|input| input.live_notes.is_some()) {
+        if self
+            .lease()
+            .is_some_and(|input| input.has_full_note_table())
+        {
             return Ok((usize::from(velocity) - 1) * 128 + usize::from(pitch));
         }
         let velocity_index = COMPUTER_KEY_VELOCITIES
@@ -559,5 +590,103 @@ mod mutable_pcm_tests {
         }
         assert!(peak > 0.001);
         assert!(input.note_audition_finished());
+    }
+
+    #[test]
+    fn live_audition_input_retriggers_cancels_and_survives_priority_stop_without_hardware_queue() {
+        let clock = Arc::new(KeyboardActivationClock::default());
+        let input = Arc::new(
+            ComputerKeyboardInput::with_output_activation(Arc::clone(&clock))
+                .unwrap()
+                .with_live_audition()
+                .unwrap(),
+        );
+        assert!(input.has_live_audition());
+        assert!(input.live_notes().is_none());
+        assert!(!input.is_note_audition());
+        assert_eq!(input.live_audition_id(), 0);
+        assert_eq!(input.live_audition_word(0), Some(0));
+
+        // Malformed banks and double-opt-in are refused.
+        assert!(
+            ComputerKeyboardInput::default()
+                .with_live_audition()
+                .unwrap()
+                .with_live_audition()
+                .is_err()
+        );
+        assert!(
+            ComputerKeyboardInput::default()
+                .with_live_audition()
+                .unwrap()
+                .with_note_audition(&[(60, 100)], 64)
+                .is_err()
+        );
+        assert!(input.trigger_live_note_audition_on_control(&[], 64).is_err());
+        assert!(
+            input
+                .trigger_live_note_audition_on_control(&[(60, 0)], 64)
+                .is_err()
+        );
+
+        let (project, track) = fixture();
+        let mut runtime = playback(&project, track, &input);
+        let mut silent = [[0.0; 2]; 64];
+        runtime.render(&mut silent).unwrap();
+        assert_eq!(silent, [[0.0; 2]; 64]);
+
+        input
+            .trigger_live_note_audition_on_control(&[(60, 37), (64, 93)], 128)
+            .unwrap();
+        let first_id = input.live_audition_id();
+        assert_ne!(first_id, 0);
+        assert_eq!((input.live_audition_word(0).unwrap() as u8) - 1, 60);
+        assert_eq!((input.live_audition_word(1).unwrap() >> 8) as u8, 93);
+        let mut first_block = [[0.0; 2]; 64];
+        runtime.render(&mut first_block).unwrap();
+        assert!(first_block.iter().flatten().any(|s| *s != 0.0));
+
+        // Immediate retrigger on the same root switches pitches without re-preparing.
+        input
+            .trigger_live_note_audition_on_control(&[(67, 111)], 64)
+            .unwrap();
+        let second_id = input.live_audition_id();
+        assert!(second_id > first_id);
+        assert_eq!((input.live_audition_word(0).unwrap() as u8) - 1, 67);
+        assert_eq!(input.live_audition_word(1), Some(0));
+        let mut second_block = [[0.0; 2]; 64];
+        runtime.render(&mut second_block).unwrap();
+        assert!(second_block.iter().flatten().any(|s| *s != 0.0));
+        assert_eq!(input.live_audition_id(), 0);
+
+        // Priority Stop silences without cancelling the root; next trigger reactivates cleanly.
+        input
+            .trigger_live_note_audition_on_control(&[(72, 88)], 512)
+            .unwrap();
+        let mut pre_stop = [[0.0; 2]; 64];
+        runtime.render(&mut pre_stop).unwrap();
+        assert!(pre_stop.iter().flatten().any(|s| *s != 0.0));
+        clock.revoke_reserved_prefix();
+        runtime.apply_priority_stop(&clock);
+        assert!(!input.is_cancelled());
+        let mut post_stop = [[0.0; 2]; 64];
+        runtime.render(&mut post_stop).unwrap();
+        assert_eq!(post_stop, [[0.0; 2]; 64]);
+
+        input
+            .trigger_live_note_audition_on_control(&[(62, 100)], 64)
+            .unwrap();
+        let mut resumed = [[0.0; 2]; 64];
+        runtime.render(&mut resumed).unwrap();
+        assert!(resumed.iter().flatten().any(|s| *s != 0.0));
+
+        // Explicit cancellation silences live audition immediately while keeping the root alive.
+        input
+            .trigger_live_note_audition_on_control(&[(65, 100)], 512)
+            .unwrap();
+        input.cancel_live_note_audition_on_control();
+        assert_eq!(input.live_audition_id(), 0);
+        assert_eq!(input.live_audition_word(0), Some(0));
+        assert!(!input.is_cancelled());
     }
 }

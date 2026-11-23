@@ -103,6 +103,7 @@ impl ComputerKeyboardInput {
         if self.native_activation.is_some()
             || self.audition.is_some()
             || self.live_notes.is_some()
+            || self.live_audition.is_some()
             || self.sequence.load(Acquire) != 0
             || self.is_cancelled()
         {
@@ -117,6 +118,28 @@ impl ComputerKeyboardInput {
         self.live_notes = Some(LiveNoteInput::default());
         self.live_audition = Some(note_audition::LiveAudition::default());
         Ok(self)
+    }
+    /// Opt a fresh ordinary input into reusable clip-editor note audition without
+    /// opening a hardware MIDI queue. Control may trigger bounded exact-velocity
+    /// chords on the already admitted root without re-preparing playback.
+    pub fn with_live_audition(mut self) -> Result<Self, Invalid> {
+        if self.native_activation.is_some()
+            || self.audition.is_some()
+            || self.live_notes.is_some()
+            || self.live_audition.is_some()
+            || self.sequence.load(Acquire) != 0
+            || self.is_cancelled()
+        {
+            return Err(Invalid("live audition requires a fresh ordinary input"));
+        }
+        self.live_audition = Some(note_audition::LiveAudition::default());
+        Ok(self)
+    }
+    pub fn has_live_audition(&self) -> bool {
+        self.live_audition.is_some()
+    }
+    pub(super) fn has_full_note_table(&self) -> bool {
+        self.live_notes.is_some() || self.live_audition.is_some()
     }
     /// Reconnect one hardware activation on control, retaining physical voices.
     /// After Stop, reserve a fresh output epoch before opening native input.
@@ -146,7 +169,7 @@ impl ComputerKeyboardInput {
         self.live_notes.as_ref()
     }
     pub fn runtime_storage_limit_on_control(&self) -> usize {
-        if self.live_notes.is_some() {
+        if self.has_full_note_table() {
             MAX_LIVE_KEYBOARD_STORAGE_BYTES
         } else {
             MAX_COMPUTER_KEYBOARD_STORAGE_BYTES
@@ -597,7 +620,7 @@ impl ComputerKeyboardRuntime {
                 .try_reserve_exact(input.template_count())
                 .map_err(|_| Invalid("computer keyboard storage is unavailable"))?;
         }
-        let mut supported = if input.live_notes.is_some() {
+        let mut supported = if input.has_full_note_table() {
             SupportedNotes::Live(Box::new([false; NOTES]))
         } else {
             SupportedNotes::Computer([false; COMPUTER_NOTES])
@@ -1515,7 +1538,7 @@ impl ComputerKeyboardRuntime {
                     && self
                         .input
                         .lease()
-                        .is_some_and(|input| input.live_notes.is_some());
+                        .is_some_and(|input| input.has_live_audition());
                 if !self.supported[sampler] {
                     if !shared_audition {
                         self.input.reject();

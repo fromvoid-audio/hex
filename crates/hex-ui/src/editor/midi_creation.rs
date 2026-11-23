@@ -134,6 +134,7 @@ impl EditorView {
             return false;
         }
         self.midi_creation = Some(creation);
+        let _ = self.audition_midi_preview_bank(context.clip, &[(note.pitch, note.velocity)]);
         true
     }
 
@@ -175,6 +176,7 @@ impl EditorView {
                         || !f32::from(position.y).is_finite()
                     {
                         view.midi_creation = None;
+                        view.cancel_midi_audition();
                         cx.notify();
                         return;
                     }
@@ -210,6 +212,7 @@ impl EditorView {
                 let _ = cancelled.update(cx, |view, cx| {
                     if view.owns_midi_creation_capture(key) {
                         view.midi_creation = None;
+                        view.cancel_midi_audition();
                         cx.notify();
                     }
                 });
@@ -327,11 +330,15 @@ impl EditorView {
     ) {
         if !inside {
             self.midi_creation = None;
+            self.cancel_midi_audition();
             return;
         }
         self.update_midi_creation(bounds, x, modifiers);
         if let Some(creation) = self.midi_creation.take() {
             let note = creation.preview;
+            let already_auditioned = self
+                .midi_audition
+                .active_matches_bank(creation.context.clip, &[(note.pitch, note.velocity)]);
             let grows =
                 note.start.raw().saturating_add(note.duration.raw()) > creation.context.clip_length;
             let command = if grows {
@@ -350,10 +357,11 @@ impl EditorView {
                     velocity: note.velocity,
                 }
             };
-            self.submit_midi_drag_preview(
+            self.submit_midi_drag_preview_with_audition(
                 creation.context.clip,
                 super::midi_pending_drag::Frozen::Creation(note),
                 command,
+                already_auditioned,
             );
         }
     }

@@ -152,6 +152,8 @@ pub(super) struct MidiStroke {
     preview_version: u64,
     traversed: usize,
     baseline_probes: usize,
+    last_inserted: Option<(u8, u8)>,
+    auditioned_live: bool,
     cancelled: bool,
 }
 
@@ -223,6 +225,8 @@ impl MidiStroke {
             preview_version: 0,
             traversed: 1,
             baseline_probes: 0,
+            last_inserted: None,
+            auditioned_live: false,
             cancelled: false,
         };
         if let Some(id) = down_hit
@@ -301,6 +305,18 @@ impl MidiStroke {
 
     pub(super) fn modifiers_match(&self, snap: bool, pitch: bool) -> bool {
         self.context.snap_modifier == snap && self.context.pitch_modifier == pitch
+    }
+
+    pub(super) fn take_last_inserted(&mut self) -> Option<(u8, u8)> {
+        self.last_inserted.take()
+    }
+
+    pub(super) fn mark_auditioned_live(&mut self) {
+        self.auditioned_live = true;
+    }
+
+    pub(super) fn was_auditioned_live(&self) -> bool {
+        self.auditioned_live
     }
 
     pub(super) fn cancel(&mut self) {
@@ -509,6 +525,7 @@ impl MidiStroke {
                 .try_reserve(1)
                 .map_err(|_| StrokeError::Allocation)?;
             self.active.insert(cell, Action::Insert(note));
+            self.last_inserted = Some((note.pitch, note.velocity));
             self.mark_preview_changed()?;
             return Ok(());
         };
