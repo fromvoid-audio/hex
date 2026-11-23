@@ -899,7 +899,7 @@ fn rapid_browser_enter_queues_follow_up_insertions_without_busy_refusal(cx: &mut
     editor.update(visual, |view, _| {
         assert!(view.error.is_none(), "{:?}", view.error);
         assert!(view.audio_batch.is_some());
-        assert!(view.browser_sample_insert_in_flight);
+        assert!(view.browser_insertion_flight.is_some());
         assert!(view.pending_browser_insertions.is_empty());
         view.offline_cursor = 2_000;
     });
@@ -917,7 +917,7 @@ fn rapid_browser_enter_queues_follow_up_insertions_without_busy_refusal(cx: &mut
     receive_worker(&editor, visual, false);
     editor.read_with(visual, |view, _| {
         assert!(view.error.is_none(), "{:?}", view.error);
-        assert!(!view.browser_sample_insert_in_flight);
+        assert!(view.browser_insertion_flight.is_none());
         assert!(view.pending_browser_insertions.is_empty());
         let starts: Vec<_> = view
             .state
@@ -978,6 +978,124 @@ fn escape_clears_queued_browser_insertions_and_hard_busy_still_refuses(cx: &mut 
             view.error.as_deref(),
             Some("sample insertion refused · arrangement is busy")
         );
+        assert!(view.pending_browser_insertions.is_empty());
+    });
+}
+
+#[gpui::test]
+fn accepted_browser_paths_survive_a_modal_place_change_and_unrelated_refusal(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, directory, path) = fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    let track = select_sample(&editor, visual);
+    editor.update(visual, |view, cx| {
+        view.input_quantization = hex_project::InputQuantization::Off;
+        view.snap_grid = crate::editor::musical_time::SnapGrid::Off;
+        view.offline_cursor = 1_000;
+        view.insert_browser_audio(path.clone(), cx);
+        view.offline_cursor = 2_000;
+        view.insert_browser_audio(path, cx);
+        view.offline_cursor = 3_000;
+        view.insert_browser_audio(directory.root().join("missing.wav"), cx);
+        assert_eq!(view.pending_browser_insertions.len(), 2);
+        view.save_dialog_open = true;
+    });
+    let deadline = crate::test_wait::hang_deadline();
+    loop {
+        let settled = editor.update(visual, |view, cx| {
+            view.tick(cx);
+            view.audio_batch.is_none()
+        });
+        if settled {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    editor.update(visual, |view, _| {
+        assert_eq!(view.pending_browser_insertions.len(), 2);
+        assert!(view.enqueue(Request::CopyClips(Vec::new())));
+    });
+    loop {
+        let settled = editor.update(visual, |view, cx| {
+            view.tick(cx);
+            view.worker_requests_pending == 0
+        });
+        if settled {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    editor.update(visual, |view, _| {
+        assert!(
+            view.error.is_some(),
+            "unrelated worker refused the empty copy"
+        );
+        assert_eq!(view.pending_browser_insertions.len(), 2);
+        view.save_dialog_open = false;
+        view.browser.section = BrowserSection::Place(directory.root().join("other"));
+        view.browser.error = Some("unavailable place".into());
+    });
+    receive_worker(&editor, visual, false);
+    editor.read_with(visual, |view, _| {
+        let starts: Vec<_> = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .clips()
+            .iter()
+            .map(|clip| clip.start())
+            .collect();
+        assert_eq!(starts, vec![1_000, 2_000]);
+        assert!(
+            view.error
+                .as_deref()
+                .is_some_and(|message| message.contains("missing.wav")),
+            "{:?}",
+            view.error
+        );
+    });
+}
+
+#[gpui::test]
+fn replacing_project_retires_accepted_browser_paths(cx: &mut TestAppContext) {
+    let (handle, editor, _directory, path) = fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    select_sample(&editor, visual);
+    let generation = editor.update(visual, |view, cx| {
+        view.insert_browser_audio(path.clone(), cx);
+        view.insert_browser_audio(path, cx);
+        assert_eq!(view.pending_browser_insertions.len(), 1);
+        view.save_dialog_open = true;
+        view.project_generation
+    });
+    let deadline = crate::test_wait::hang_deadline();
+    loop {
+        if editor.update(visual, |view, cx| {
+            view.tick(cx);
+            view.audio_batch.is_none()
+        }) {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    editor.update(visual, |view, _| {
+        assert!(view.enqueue(Request::NewWithAudioMode {
+            mode: hex_session::DocumentAudioMode::Resident,
+            reservation: None,
+        }));
+        view.save_dialog_open = false;
+    });
+    receive_worker(&editor, visual, false);
+    editor.read_with(visual, |view, _| {
+        assert!(view.project_generation > generation);
+        assert!(view.state.as_ref().unwrap().project.tracks().is_empty());
         assert!(view.pending_browser_insertions.is_empty());
     });
 }
