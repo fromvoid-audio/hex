@@ -146,6 +146,7 @@ impl Plugins {
         };
         if accepted {
             self.reopen = None;
+            self.installed_removals_checked = None;
         } else {
             restore.ready = false;
             restore.cleanup = true;
@@ -287,10 +288,20 @@ impl Plugins {
             self.reopen = Some(restore);
             return;
         }
-        if !self.configured || self.sources.len() == self.sources.capacity() {
+        if !self.configured {
             restore.next += 1;
             self.reopen = Some(restore);
             return;
+        }
+        if self.sources.len() >= self.sources.capacity() {
+            self.reclaim_retired_sources(control, Some(snapshot), true);
+            if self.sources.len() >= self.sources.capacity() {
+                if !self.has_reclaimable_retiring_source() {
+                    restore.next += 1;
+                }
+                self.reopen = Some(restore);
+                return;
+            }
         }
         // Catalog results are copied choices only. Drop the bounded catalog
         // before Host inspects files and starts its original restore protocol.
@@ -346,6 +357,12 @@ impl Plugins {
             // Work contention allocated no slot or native owner. Retry this
             // same saved device; it is not a missing-source terminal.
             Err(reason) if reason == "native preparation is busy" => {}
+            Err(reason) if reason == "native preparation cells are full" => {
+                let reclaimed = self.reclaim_retired_sources(control, Some(snapshot), true);
+                if reclaimed == 0 && !self.has_reclaimable_retiring_source() {
+                    restore.next += 1;
+                }
+            }
             Err(_) => restore.next += 1,
         }
         self.reopen = Some(restore);
