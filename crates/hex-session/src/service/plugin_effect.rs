@@ -349,10 +349,16 @@ impl PluginEffectInsertion {
         {
             return Err("vst3 effect replacement requires a single effect".into());
         }
-        if self
-            .before
-            .is_some_and(|id| !devices.iter().any(|device| device.id() == id))
-        {
+        let instrument_anchor = match self.destination {
+            PluginEffectDestination::Track(track) => project
+                .track(track)
+                .and_then(hex_project::Track::instrument)
+                .map(hex_project::Device::id),
+            _ => None,
+        };
+        if self.before.is_some_and(|id| {
+            !devices.iter().any(|device| device.id() == id) && instrument_anchor != Some(id)
+        }) {
             return Err("effect insertion anchor no longer belongs to its destination".into());
         }
         Ok(())
@@ -811,5 +817,95 @@ mod tests {
         );
         editor.execute(command).unwrap();
         assert!(request.validate(context, editor.project()).is_err());
+    }
+
+    #[test]
+    fn track_effect_insertion_accepts_track_instrument_as_before_anchor() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let hex_project::Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "midi".into(),
+            })
+            .unwrap()
+        else {
+            panic!("midi track");
+        };
+        let hex_project::Created::Track(other_track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "other".into(),
+            })
+            .unwrap()
+        else {
+            panic!("other track");
+        };
+        let sine = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Instrument,
+            hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sine"),
+        )
+        .unwrap();
+        let utility = hex_engine::default_native_device_state(
+            hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+        )
+        .unwrap();
+        let hex_project::Created::Device(instrument) = editor
+            .execute(Command::InsertInstrument {
+                track,
+                state: sine.clone(),
+            })
+            .unwrap()
+        else {
+            panic!("instrument");
+        };
+        let hex_project::Created::Device(other_instrument) = editor
+            .execute(Command::InsertInstrument {
+                track: other_track,
+                state: sine,
+            })
+            .unwrap()
+        else {
+            panic!("other instrument");
+        };
+        let hex_project::Created::Device(pre_effect) = editor
+            .execute(Command::InsertDevice {
+                track,
+                before: Some(instrument),
+                state: utility,
+            })
+            .unwrap()
+        else {
+            panic!("pre effect");
+        };
+        let context = hex_engine::AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 1,
+        };
+        let mut request = replacement_request(context, PluginEffectDestination::Track(track));
+        request.before = Some(instrument);
+        request.validate(context, editor.project()).unwrap();
+
+        // Executing the produced command inserts the VST3 effect between pre_effect and instrument.
+        let vst3 = NativeDeviceState::new(VST3_DEVICE_TYPE_ID, 1, vec![1]).unwrap();
+        let command = request.command(vst3).unwrap();
+        let hex_project::Created::Device(inserted_vst3) = editor.execute(command).unwrap() else {
+            panic!("inserted vst3");
+        };
+        let chain: Vec<_> = editor
+            .project()
+            .track(track)
+            .unwrap()
+            .ordered_device_chain()
+            .map(|node| match node {
+                hex_project::TrackDeviceRef::Effect(d)
+                | hex_project::TrackDeviceRef::Instrument(d) => d.id(),
+            })
+            .collect();
+        assert_eq!(chain, vec![pre_effect, inserted_vst3, instrument]);
+
+        // An instrument belonging to a different track is still rejected.
+        request.before = Some(other_instrument);
+        assert_eq!(
+            request.validate(context, editor.project()).unwrap_err(),
+            "effect insertion anchor no longer belongs to its destination"
+        );
     }
 }

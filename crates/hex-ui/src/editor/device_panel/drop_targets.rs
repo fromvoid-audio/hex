@@ -140,6 +140,48 @@ pub(in crate::editor) fn is_track_vst3_replacement_leaf(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(in crate::editor) fn resolve_device_card_drop_target(
+    source: &drag::NativeDeviceDragSource,
+    class: NativeDeviceClass,
+    inside: bool,
+    in_vst3_replace_pad: bool,
+    in_left_half: bool,
+    left_target: drag::NativeDeviceDropTarget,
+    right_target: drag::NativeDeviceDropTarget,
+    front_target: drag::NativeDeviceDropTarget,
+    replacement_target: drag::NativeDeviceDropTarget,
+) -> Option<drag::NativeDeviceDropTarget> {
+    if !inside {
+        return None;
+    }
+    if in_vst3_replace_pad && source.is_catalog_vst3_effect() {
+        return Some(replacement_target);
+    }
+    if matches!(
+        source,
+        drag::NativeDeviceDragSource::Browser {
+            class: NativeDeviceClass::Instrument,
+            ..
+        }
+    ) || source.is_catalog_vst3_instrument()
+    {
+        return Some(if class == NativeDeviceClass::Instrument {
+            replacement_target
+        } else {
+            front_target
+        });
+    }
+    if source.is_catalog_vst3_effect() && class == NativeDeviceClass::Instrument {
+        return Some(right_target);
+    }
+    Some(if in_left_half {
+        left_target
+    } else {
+        right_target
+    })
+}
+
 pub(in crate::editor) fn render_device_card_target(
     view: &EditorView,
     cx: &mut Context<EditorView>,
@@ -225,31 +267,17 @@ pub(in crate::editor) fn render_device_card_target(
                     &target_bounds,
                     target_visible_bounds.borrow().as_ref(),
                 );
-            let target = match payload.source {
-                _ if inside
-                    && replace_vst3
-                    && payload.source.is_catalog_vst3_effect()
-                    && replace_pad_bounds(target_bounds).contains(&event.event.position) =>
-                {
-                    Some(replacement_target)
-                }
-                drag::NativeDeviceDragSource::Browser {
-                    class: NativeDeviceClass::Instrument,
-                    ..
-                } if class == NativeDeviceClass::Instrument => Some(replacement_target),
-                drag::NativeDeviceDragSource::Browser {
-                    class: NativeDeviceClass::Instrument,
-                    ..
-                } => Some(front_target),
-                drag::NativeDeviceDragSource::PluginEffect(_)
-                    if inside && class == NativeDeviceClass::Instrument =>
-                {
-                    Some(right_target)
-                }
-                _ if inside && pointer < left + (right - left) / 2.0 => Some(left_target),
-                _ if inside => Some(right_target),
-                _ => None,
-            };
+            let target = resolve_device_card_drop_target(
+                &payload.source,
+                class,
+                inside,
+                replace_vst3 && replace_pad_bounds(target_bounds).contains(&event.event.position),
+                pointer < left + (right - left) / 2.0,
+                left_target,
+                right_target,
+                front_target,
+                replacement_target,
+            );
             let previous = payload.destination.get();
             if let Some(target) = target.filter(|_| inside)
                 && previous != Some(target)
@@ -261,10 +289,12 @@ pub(in crate::editor) fn render_device_card_target(
         .on_drop(
             cx.listener(move |view, payload: &drag::NativeDeviceDrag, window, cx| {
                 let fallback = if class == NativeDeviceClass::Instrument
-                    && matches!(
-                        payload.source,
-                        drag::NativeDeviceDragSource::PluginEffect(_)
-                    ) {
+                    && payload.source.is_catalog_vst3_instrument()
+                {
+                    replacement_target
+                } else if class == NativeDeviceClass::Instrument
+                    && payload.source.is_catalog_vst3_effect()
+                {
                     right_target
                 } else {
                     left_target
@@ -1032,28 +1062,39 @@ impl EditorView {
             return;
         }
 
-        let before =
-            match drag.source {
-                drag::NativeDeviceDragSource::Browser {
-                    class: NativeDeviceClass::Instrument,
-                    ..
-                } if drop_target.replace.is_none() => target_track
-                    .ordered_device_chain()
-                    .next()
-                    .map(|node| match node {
-                        hex_project::TrackDeviceRef::Instrument(device)
-                        | hex_project::TrackDeviceRef::Effect(device) => device.id(),
-                    }),
-                _ => drop_target.before,
-            };
-        if let drag::NativeDeviceDragSource::Browser {
-            class: NativeDeviceClass::Instrument,
-            ..
-        } = drag.source
+        let is_instrument_drag = matches!(
+            drag.source,
+            drag::NativeDeviceDragSource::Browser {
+                class: NativeDeviceClass::Instrument,
+                ..
+            }
+        ) || drag.source.is_catalog_vst3_instrument();
+        let before = if is_instrument_drag && drop_target.replace.is_none() {
+            target_track
+                .ordered_device_chain()
+                .next()
+                .map(|node| match node {
+                    hex_project::TrackDeviceRef::Instrument(device)
+                    | hex_project::TrackDeviceRef::Effect(device) => device.id(),
+                })
+        } else {
+            drop_target.before
+        };
+        if is_instrument_drag
             && target_track.instrument().is_some()
             && drop_target.replace.is_none()
         {
             self.error = Some("instrument slot is already occupied".into());
+            self.device_panel.message = self.error.as_ref().map(ToString::to_string);
+            self.clear_native_device_drag(drag);
+            cx.notify();
+            return;
+        }
+        if drag.source.is_catalog_vst3_instrument()
+            && (target_track.is_group()
+                || (target_track.instrument().is_some() && !target_track.receives_source_audio()))
+        {
+            self.error = Some("select an ordinary receiving track for the vst3 instrument".into());
             self.device_panel.message = self.error.as_ref().map(ToString::to_string);
             self.clear_native_device_drag(drag);
             cx.notify();
@@ -1068,15 +1109,10 @@ impl EditorView {
                 )
             } else {
                 (
-                    matches!(
-                        drag.source,
-                        drag::NativeDeviceDragSource::Browser {
-                            class: NativeDeviceClass::Instrument,
-                            ..
-                        }
-                    ) && target_track
-                        .instrument()
-                        .is_some_and(|instrument| instrument.id() == replacement),
+                    is_instrument_drag
+                        && target_track
+                            .instrument()
+                            .is_some_and(|instrument| instrument.id() == replacement),
                     "instrument replacement target changed; drag again",
                 )
             };
@@ -1128,16 +1164,32 @@ impl EditorView {
                 NativeDeviceDropSource::Browser { class, type_id }
             }
             drag::NativeDeviceDragSource::PluginEffect(ref selection) => {
+                use hex_plugin_catalog::PluginRole;
                 use hex_session::service::PluginEffectDestination;
-                let destination = match drop_target.replace {
-                    Some(replacing) => PluginEffectDestination::ReplaceTrackEffect {
-                        track: drop_target.track,
-                        replacing,
-                    },
-                    None => PluginEffectDestination::Track(drop_target.track),
+                let (destination, insert_before) = match (selection.role, drop_target.replace) {
+                    (PluginRole::Instrument, Some(instrument)) => (
+                        PluginEffectDestination::ReplaceInstrument {
+                            track: drop_target.track,
+                            instrument,
+                        },
+                        None,
+                    ),
+                    (PluginRole::Instrument, None) => {
+                        (PluginEffectDestination::Instrument(drop_target.track), None)
+                    }
+                    (PluginRole::Effect, Some(replacing)) => (
+                        PluginEffectDestination::ReplaceTrackEffect {
+                            track: drop_target.track,
+                            replacing,
+                        },
+                        None,
+                    ),
+                    (PluginRole::Effect, None) => {
+                        (PluginEffectDestination::Track(drop_target.track), before)
+                    }
                 };
                 self.clear_native_device_drag(drag);
-                self.insert_plugin_effect(selection, destination, before, cx);
+                self.insert_plugin_effect(selection, destination, insert_before, cx);
                 cx.notify();
                 return;
             }
@@ -1231,5 +1283,159 @@ mod tests {
         assert!(pad.origin.x >= card.origin.x);
         assert!(pad.origin.y >= card.origin.y);
         assert!(pad.right() <= card.right());
+    }
+
+    #[test]
+    fn device_card_drop_target_distinguishes_vst3_instrument_replacement_and_effect_insertion() {
+        use hex_project::{Command, Created, Editor, Project};
+
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "midi".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let sine = hex_engine::default_native_device_state_for_class(
+            NativeDeviceClass::Instrument,
+            hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sine"),
+        )
+        .unwrap();
+        let utility = hex_engine::default_native_device_state(
+            hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+        )
+        .unwrap();
+        let Created::Device(instrument) = editor
+            .execute(Command::InsertInstrument { track, state: sine })
+            .unwrap()
+        else {
+            panic!("instrument");
+        };
+        let Created::Device(pre_effect) = editor
+            .execute(Command::InsertDevice {
+                track,
+                before: Some(instrument),
+                state: utility,
+            })
+            .unwrap()
+        else {
+            panic!("pre effect");
+        };
+
+        let selection = |role: hex_plugin_catalog::PluginRole| {
+            drag::NativeDeviceDragSource::PluginEffect(std::sync::Arc::new(
+                hex_plugin_catalog::PluginSelection {
+                    module: std::path::PathBuf::from("/tmp/test.vst3"),
+                    executable_relative_path: "Contents/MacOS/test".into(),
+                    cid: [0x11; 16],
+                    class_name: "test plugin".into(),
+                    role,
+                    executable_sha256: "a".repeat(64),
+                    info_sha256: "b".repeat(64),
+                },
+            ))
+        };
+        let vst3_instrument = selection(hex_plugin_catalog::PluginRole::Instrument);
+        let vst3_effect = selection(hex_plugin_catalog::PluginRole::Effect);
+
+        let left_inst = drag::NativeDeviceDropTarget {
+            track,
+            before: Some(instrument),
+            replace: None,
+        };
+        let right_inst = drag::NativeDeviceDropTarget {
+            track,
+            before: None,
+            replace: None,
+        };
+        let front = drag::NativeDeviceDropTarget {
+            track,
+            before: Some(pre_effect),
+            replace: None,
+        };
+        let replace_inst = drag::NativeDeviceDropTarget {
+            track,
+            before: None,
+            replace: Some(instrument),
+        };
+
+        // Dragging a VST3 instrument onto an existing instrument card targets replacement,
+        // never post-instrument insertion.
+        assert_eq!(
+            resolve_device_card_drop_target(
+                &vst3_instrument,
+                NativeDeviceClass::Instrument,
+                true,
+                false,
+                false,
+                left_inst,
+                right_inst,
+                front,
+                replace_inst,
+            ),
+            Some(replace_inst)
+        );
+        // Dragging a VST3 instrument onto an effect card targets front_target (matching native instruments).
+        assert_eq!(
+            resolve_device_card_drop_target(
+                &vst3_instrument,
+                NativeDeviceClass::Effect,
+                true,
+                false,
+                false,
+                left_inst,
+                right_inst,
+                front,
+                replace_inst,
+            ),
+            Some(front)
+        );
+        // Dragging a VST3 effect onto an instrument card targets post-instrument right_target.
+        assert_eq!(
+            resolve_device_card_drop_target(
+                &vst3_effect,
+                NativeDeviceClass::Instrument,
+                true,
+                false,
+                true,
+                left_inst,
+                right_inst,
+                front,
+                replace_inst,
+            ),
+            Some(right_inst)
+        );
+        // Dragging a VST3 effect onto the right half of pre_effect targets before == Some(instrument).
+        let left_pre = drag::NativeDeviceDropTarget {
+            track,
+            before: Some(pre_effect),
+            replace: None,
+        };
+        let right_pre = drag::NativeDeviceDropTarget {
+            track,
+            before: Some(instrument),
+            replace: None,
+        };
+        let replace_pre = drag::NativeDeviceDropTarget {
+            track,
+            before: None,
+            replace: Some(pre_effect),
+        };
+        assert_eq!(
+            resolve_device_card_drop_target(
+                &vst3_effect,
+                NativeDeviceClass::Effect,
+                true,
+                false,
+                false,
+                left_pre,
+                right_pre,
+                front,
+                replace_pre,
+            ),
+            Some(right_pre)
+        );
     }
 }
