@@ -55,16 +55,24 @@ impl LogFilter<'_> {
             return true;
         }
         let query = self.text.map(str::to_lowercase);
+        let mut scratch = String::new();
         self.matches_record(
             &line.text,
             line.event
                 .as_ref()
                 .map(|event| (event.category.as_str(), event.unix_nanos)),
             query.as_deref(),
+            &mut scratch,
         )
     }
 
-    fn matches_record(&self, text: &str, event: Option<(&str, u128)>, query: Option<&str>) -> bool {
+    fn matches_record(
+        &self,
+        text: &str,
+        event: Option<(&str, u128)>,
+        query: Option<&str>,
+        scratch: &mut String,
+    ) -> bool {
         let Some((category, unix_nanos)) = event else {
             return true;
         };
@@ -75,7 +83,18 @@ impl LogFilter<'_> {
             && self
                 .until_unix_nanos
                 .is_none_or(|until| unix_nanos <= until)
-            && query.is_none_or(|query| text.to_lowercase().contains(query))
+            && query.is_none_or(|query| contains_case_insensitive(text, query, scratch))
+    }
+}
+
+fn contains_case_insensitive(text: &str, lowercase_query: &str, scratch: &mut String) -> bool {
+    if text.is_ascii() {
+        scratch.clear();
+        scratch.push_str(text);
+        scratch.make_ascii_lowercase();
+        scratch.contains(lowercase_query)
+    } else {
+        text.to_lowercase().contains(lowercase_query)
     }
 }
 
@@ -225,6 +244,7 @@ fn read_selected(
         0
     };
     let query = filter.text.map(str::to_lowercase);
+    let mut scratch = String::new();
     let mut matching_events = 0;
     let mut omitted_lines = 0;
     let mut retained_bytes = 0_usize;
@@ -299,6 +319,7 @@ fn read_selected(
                         .as_ref()
                         .map(|event| (event.category, event.unix_nanos)),
                     query.as_deref(),
+                    &mut scratch,
                 )
             {
                 matching_events += usize::from(event.is_some());
@@ -553,6 +574,52 @@ mod tests {
                 .any(|warning| warning.contains("no longer available"))
         );
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn case_insensitive_filter_reuses_ascii_scratch_and_handles_unicode() {
+        let filter = LogFilter {
+            category: Some("audio"),
+            since_unix_nanos: None,
+            until_unix_nanos: None,
+            text: Some("Über"),
+        };
+        let mut scratch = String::with_capacity(128);
+        let initial_ptr = scratch.as_ptr();
+        let initial_cap = scratch.capacity();
+
+        // ASCII fast path matches case-insensitively and reuses scratch allocation.
+        assert!(filter.matches_record(
+            "event seq=1 AudioCallback Underrun",
+            Some(("audio", 10)),
+            Some("underrun"),
+            &mut scratch,
+        ));
+        assert!(!filter.matches_record(
+            "event seq=2 AudioCallback Healthy",
+            Some(("audio", 11)),
+            Some("underrun"),
+            &mut scratch,
+        ));
+        assert_eq!(scratch.as_ptr(), initial_ptr);
+        assert_eq!(scratch.capacity(), initial_cap);
+
+        // Non-ASCII Unicode fallback preserves full case-folding semantics.
+        assert!(filter.matches_record(
+            "event seq=3 Loaded ÜBER_Synth.vst3",
+            Some(("audio", 12)),
+            Some("über_synth"),
+            &mut scratch,
+        ));
+        assert!(!filter.matches_record(
+            "event seq=4 Loaded Straße.vst3",
+            Some(("audio", 13)),
+            Some("über_synth"),
+            &mut scratch,
+        ));
+
+        // Non-event context lines remain unfiltered regardless of text query.
+        assert!(filter.matches_record("session_started", None, Some("nomatch"), &mut scratch));
     }
 }
 
