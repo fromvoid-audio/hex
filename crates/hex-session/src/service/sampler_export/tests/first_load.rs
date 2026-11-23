@@ -298,7 +298,7 @@ fn first_load_worker_commits_one_source_and_binding_and_exports_original_pcm() {
                 signal: hex_session_export_signal(),
                 control: Default::default(),
                 format: hex_export::ExportFormat::Pcm16,
-                overwrite: false,
+                publication: ExportPublication::CreateNew,
             })
             .unwrap();
         assert!(event(&service).error.is_none());

@@ -1212,6 +1212,7 @@ pub enum Request {
     /// Explicit half-open Arrangement range; worker captures the current revision.
     /// `format` applies to the single file or to every stem file of a batch.
     /// It is a per-request choice and is never saved in the project.
+    /// Capture publication policy when the caller confirms the destination, before queuing.
     ExportRange {
         path: PathBuf,
         start: u64,
@@ -1219,7 +1220,7 @@ pub enum Request {
         signal: hex_export::ExportSignal,
         control: hex_export::ExportControl,
         format: hex_export::ExportFormat,
-        overwrite: bool,
+        publication: ExportPublication,
     },
 }
 
@@ -1233,7 +1234,7 @@ pub(super) struct ControlledExport {
     pub(super) signal: hex_export::ExportSignal,
     pub(super) control: hex_export::ExportControl,
     pub(super) format: hex_export::ExportFormat,
-    pub(super) overwrite: bool,
+    pub(super) publication: ExportPublication,
 }
 
 impl ControlledExport {
@@ -1244,19 +1245,7 @@ impl ControlledExport {
             signal: hex_export::ExportSignal::Main,
             control: hex_export::ExportControl::default(),
             format: hex_export::ExportFormat::default(),
-            overwrite: false,
-        }
-    }
-
-    /// Publication policy: confirmed replacement only with overwrite consent.
-    pub(super) fn publication(
-        &self,
-        path: &Path,
-    ) -> Result<hex_export::Publication, hex_export::ExportError> {
-        if self.overwrite {
-            hex_export::Publication::confirmed_save(path)
-        } else {
-            Ok(hex_export::Publication::CreateNew)
+            publication: ExportPublication::CreateNew,
         }
     }
 }
@@ -1306,7 +1295,7 @@ impl Request {
                 signal,
                 control,
                 format,
-                overwrite,
+                publication,
             } => Some((
                 path,
                 frames,
@@ -1315,7 +1304,7 @@ impl Request {
                     signal,
                     control,
                     format,
-                    overwrite,
+                    publication,
                 },
             )),
             _ => None,

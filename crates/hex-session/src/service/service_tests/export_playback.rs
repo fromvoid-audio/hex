@@ -629,7 +629,7 @@ fn explicit_export_range_uses_canonical_track_capture_and_releases_cancelled_res
             signal: ExportSignal::CapturedMix(vec![hex_engine::OutputCaptureId::Track(track)]),
             control: cancelled,
             format: hex_export::ExportFormat::Pcm16,
-            overwrite: false,
+            publication: ExportPublication::CreateNew,
         })
         .unwrap();
     next_event(&service);
@@ -644,9 +644,8 @@ fn explicit_export_range_uses_canonical_track_capture_and_releases_cancelled_res
             frames: Some(1),
             signal: ExportSignal::CapturedMix(vec![hex_engine::OutputCaptureId::Track(track)]),
             control: control.clone(),
-            // Native save confirmation also permits a new destination.
             format: hex_export::ExportFormat::Pcm16,
-            overwrite: true,
+            publication: ExportPublication::confirmed_save(&output).unwrap(),
         })
         .unwrap();
     next_event(&service);
@@ -664,6 +663,114 @@ fn explicit_export_range_uses_canonical_track_capture_and_releases_cancelled_res
             total_frames: 1
         }
     );
+}
+
+#[test]
+fn queued_export_keeps_the_confirmed_destination_policy() {
+    let directory = TestDir::new();
+    let source = directory.0.join("source.wav");
+    fs::write(&source, wav_mono(&[16_384, 8_192])).unwrap();
+    let service = Service::new(48_000, 16, 8).unwrap();
+    next_event(&service);
+    service.submit(Request::Import(source)).unwrap();
+    let imported = next_event(&service);
+    let change = directory.0.join("other.wav");
+
+    for initially_exists in [false, true] {
+        let path = directory.0.join(if initially_exists {
+            "replace.wav"
+        } else {
+            "new.wav"
+        });
+        if initially_exists {
+            fs::write(&path, b"original file").unwrap();
+        }
+        let publication = ExportPublication::confirmed_save(&path).unwrap();
+        let (entered, wait_for_worker) = mpsc::channel();
+        let (release, wait_for_release) = mpsc::channel();
+        *service.export_test_hook.lock().unwrap() = Some(Box::new(move || {
+            entered.send(()).unwrap();
+            let _ = wait_for_release.recv_timeout(crate::test_wait::HANG_BOUND);
+        }));
+        service
+            .submit(Request::ExportRange {
+                path: path.clone(),
+                start: 0,
+                frames: Some(2),
+                signal: ExportSignal::Main,
+                control: ExportControl::default(),
+                format: ExportFormat::Pcm16,
+                publication,
+            })
+            .unwrap();
+        assert_eq!(next_event(&service).state.revision, imported.state.revision);
+        wait_for_worker
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap();
+        let changed = b"another file!";
+        fs::write(&change, changed).unwrap();
+        fs::rename(&change, &path).unwrap();
+        release.send(()).unwrap();
+
+        let completed = next_export_event(&service);
+        assert_eq!(completed.path, path);
+        let error = completed
+            .result
+            .expect_err("destination changed while queued");
+        let cause = error
+            .source_error()
+            .map(hex_export::ExportError::original_failure);
+        if initially_exists {
+            assert!(
+                matches!(
+                    cause,
+                    Some(hex_export::ExportError::Invalid(
+                        "confirmed overwrite destination changed"
+                    ))
+                ),
+                "{error}"
+            );
+        } else {
+            assert!(
+                matches!(cause, Some(hex_export::ExportError::Io { source, .. }) if source.kind() == std::io::ErrorKind::AlreadyExists),
+                "{error}"
+            );
+        }
+        assert_eq!(fs::read(&path).unwrap(), changed);
+    }
+}
+
+#[test]
+fn queued_export_publishes_a_confirmed_unchanged_replacement() {
+    let directory = TestDir::new();
+    let source = directory.0.join("source.wav");
+    fs::write(&source, wav_mono(&[16_384, 8_192])).unwrap();
+    let path = directory.0.join("replace.wav");
+    let previous = b"previous export";
+    fs::write(&path, previous).unwrap();
+    let service = Service::new(48_000, 16, 8).unwrap();
+    next_event(&service);
+    service.submit(Request::Import(source)).unwrap();
+    next_event(&service);
+
+    service
+        .submit(Request::ExportRange {
+            path: path.clone(),
+            start: 0,
+            frames: Some(2),
+            signal: ExportSignal::Main,
+            control: ExportControl::default(),
+            format: ExportFormat::Pcm16,
+            publication: ExportPublication::confirmed_save(&path).unwrap(),
+        })
+        .unwrap();
+    next_event(&service);
+    let report = next_export_event(&service).result.unwrap();
+    assert_eq!(report.frames, 2);
+    assert_eq!(fs::read(report.recovery_path.unwrap()).unwrap(), previous);
+    let bytes = fs::read(path).unwrap();
+    assert_eq!(&bytes[..4], b"RIFF");
+    assert_pcm16_near(&bytes, 44, 0x4000);
 }
 
 #[test]
@@ -685,7 +792,7 @@ fn export_range_writes_the_requested_format_from_one_render() {
                 signal: ExportSignal::Main,
                 control: ExportControl::default(),
                 format,
-                overwrite: false,
+                publication: ExportPublication::CreateNew,
             })
             .unwrap();
         next_event(&service);

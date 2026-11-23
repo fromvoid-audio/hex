@@ -299,7 +299,7 @@ fn native_effect_export_case(limit: u64, refusal: Option<&str>) {
             signal: ExportSignal::Main,
             control: ExportControl::default(),
             format: hex_export::ExportFormat::Pcm16,
-            overwrite: refusal.is_some(),
+            publication: hex_session::service::ExportPublication::confirmed_save(&path).unwrap(),
         },
     );
     assert!(queued.error.is_none(), "{:?}", queued.error);
@@ -348,7 +348,8 @@ fn native_effect_export_case(limit: u64, refusal: Option<&str>) {
             signal: ExportSignal::Main,
             control: ExportControl::default(),
             format: hex_export::ExportFormat::Pcm16,
-            overwrite: true,
+            publication: hex_session::service::ExportPublication::confirmed_save(&original)
+                .unwrap(),
         },
     );
     assert!(refused.error.is_none(), "{:?}", refused.error);

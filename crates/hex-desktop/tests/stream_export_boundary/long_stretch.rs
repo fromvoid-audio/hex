@@ -204,7 +204,7 @@ fn export_pcm(service: &Service, revision: &Event, destination: &Path) -> Vec<he
             frames: Some(OUTPUT_FRAMES),
             signal: ExportSignal::Main,
             format: ExportFormat::Float32,
-            overwrite: false,
+            publication: hex_session::service::ExportPublication::CreateNew,
             control: ExportControl::default(),
         },
     );

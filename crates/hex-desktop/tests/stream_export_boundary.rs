@@ -176,7 +176,7 @@ fn verified_stem_page_miss_removes_the_entire_unpublished_batch() {
             signal: ExportSignal::Stems(stems),
             control: ExportControl::default(),
             format: hex_export::ExportFormat::Pcm16,
-            overwrite: false,
+            publication: hex_session::service::ExportPublication::CreateNew,
         },
     );
     let error = exported(&service).result.unwrap_err();
@@ -417,7 +417,7 @@ fn assert_verified_export_matches_resident(rate: u32, grouped: bool, signal_inde
                     signal: signal.clone(),
                     control: control.clone(),
                     format: hex_export::ExportFormat::Pcm16,
-                    overwrite: false,
+                    publication: hex_session::service::ExportPublication::CreateNew,
                 },
             );
             assert_eq!(queued.state.project, scenes[i].2.state.project);
@@ -557,7 +557,7 @@ fn verified_pages_feed_offline_processor_and_failures_preserve_existing_output()
         signal: ExportSignal::Main,
         control: ExportControl::default(),
         format: hex_export::ExportFormat::Pcm16,
-        overwrite: true,
+        publication: hex_session::service::ExportPublication::confirmed_save(&existing).unwrap(),
     };
     run(&failing, request());
     assert!(exported(&failing).result.is_err());
@@ -582,7 +582,8 @@ fn verified_pages_feed_offline_processor_and_failures_preserve_existing_output()
             signal: ExportSignal::CapturedMix(vec![hex_engine::OutputCaptureId::Track(track)]),
             control: ExportControl::default(),
             format: hex_export::ExportFormat::Pcm16,
-            overwrite: true,
+            publication: hex_session::service::ExportPublication::confirmed_save(&existing)
+                .unwrap(),
         },
     );
     let error = exported(&foreign).result.unwrap_err();
@@ -665,7 +666,7 @@ fn granular_export(mode: hex_project::WarpMode) {
                 path: path.clone(),
                 start: 31,
                 frames: Some(8192),
-                overwrite: false,
+                publication: hex_session::service::ExportPublication::CreateNew,
                 signal: hex_export::ExportSignal::Main,
                 format: hex_export::ExportFormat::Pcm16,
                 control: hex_export::ExportControl::default(),
@@ -707,7 +708,7 @@ fn granular_export(mode: hex_project::WarpMode) {
             path: refused.clone(),
             start: 31,
             frames: Some(8192),
-            overwrite: false,
+            publication: hex_session::service::ExportPublication::CreateNew,
             signal: hex_export::ExportSignal::Main,
             format: hex_export::ExportFormat::Pcm16,
             control: hex_export::ExportControl::default(),

@@ -1592,7 +1592,7 @@ mod window_tests {
                 signal: hex_session::service::ExportSignal::Main,
                 control: export_control.clone(),
                 format: hex_session::service::ExportFormat::Pcm16,
-                overwrite: false,
+                publication: hex_session::service::ExportPublication::CreateNew,
             }));
             view.export_control = Some(export_control.clone());
             view.export_window = Some(handle);

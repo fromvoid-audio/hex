@@ -102,7 +102,7 @@ mod tests {
                 signal: ExportSignal::Main,
                 control: control.clone(),
                 format: hex_export::ExportFormat::Pcm16,
-                overwrite: false,
+                publication: ExportPublication::CreateNew,
             })
             .unwrap();
         let until = Instant::now() + Duration::from_secs(5);
@@ -154,7 +154,7 @@ mod tests {
                 signal: ExportSignal::Main,
                 control: control.clone(),
                 format: hex_export::ExportFormat::Pcm16,
-                overwrite: false,
+                publication: ExportPublication::CreateNew,
             })
             .unwrap();
         let until = Instant::now() + Duration::from_secs(5);

@@ -4504,7 +4504,7 @@ fn verify_instrument_takeover(
                         signal: hex_session::service::ExportSignal::Main,
                         control: hex_session::service::ExportControl::default(),
                         format: hex_session::service::ExportFormat::Pcm16,
-                        overwrite: false,
+                        publication: hex_session::service::ExportPublication::CreateNew,
                     }
                 })
                 .unwrap();
@@ -5334,7 +5334,7 @@ fn native_vst3_instrument_and_streamed_audio_export() {
             signal: ExportSignal::Main,
             control: ExportControl::default(),
             format: hex_export::ExportFormat::Pcm16,
-            overwrite: false,
+            publication: hex_session::service::ExportPublication::CreateNew,
         },
     );
     assert!(queued.error.is_none(), "{:?}", queued.error);
@@ -6137,7 +6137,7 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
             signal: ExportSignal::Main,
             control: control.clone(),
             format: hex_export::ExportFormat::Pcm16,
-            overwrite: false,
+            publication: hex_session::service::ExportPublication::CreateNew,
         },
     );
     assert!(queued.error.is_none(), "{:?}", queued.error);
@@ -6319,7 +6319,7 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
             signal: ExportSignal::Main,
             control: ExportControl::default(),
             format: hex_export::ExportFormat::Pcm16,
-            overwrite: false,
+            publication: hex_session::service::ExportPublication::CreateNew,
         },
     );
     assert!(muted_queued.error.is_none(), "{:?}", muted_queued.error);
@@ -6382,7 +6382,8 @@ fn installed_instrument_and_effect_export_with_streamed_audio() {
                 signal: ExportSignal::Main,
                 control,
                 format: hex_export::ExportFormat::Pcm16,
-                overwrite: true,
+                publication: hex_session::service::ExportPublication::confirmed_save(&destination)
+                    .unwrap(),
             },
         );
         assert_eq!(refused.state.project, muted.state.project);

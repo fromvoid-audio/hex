@@ -96,71 +96,62 @@ pub(crate) fn run_export_worker(
                         .controlled
                         .take()
                         .unwrap_or_else(ControlledExport::whole_main);
-                    match controlled.publication(&job.path) {
-                        Ok(publication) => (streamed.render)(&StreamedExportRequest {
-                            foreign: std::cell::RefCell::new(job.foreign.as_deref_mut().map(
-                                |source| source as &mut dyn hex_export::ForeignBounceRenderer,
-                            )),
-                            source: &streamed.source,
-                            prepared: &job.prepared,
-                            resources: job.resources.as_ref(),
-                            path: &job.path,
-                            start: controlled.start,
-                            frames: job.frames,
-                            signal: &controlled.signal,
-                            format: controlled.format,
-                            control: &controlled.control,
-                            publication: &publication,
-                        }),
-                        Err(error) => Err(error.into()),
-                    }
+                    (streamed.render)(&StreamedExportRequest {
+                        foreign: std::cell::RefCell::new(
+                            job.foreign
+                                .as_deref_mut()
+                                .map(|source| source as &mut dyn hex_export::ForeignBounceRenderer),
+                        ),
+                        source: &streamed.source,
+                        prepared: &job.prepared,
+                        resources: job.resources.as_ref(),
+                        path: &job.path,
+                        start: controlled.start,
+                        frames: job.frames,
+                        signal: &controlled.signal,
+                        format: controlled.format,
+                        control: &controlled.control,
+                        publication: &controlled.publication,
+                    })
                 }
             } else if let Some(foreign) = job.foreign.as_deref_mut() {
                 let controlled = job
                     .controlled
                     .take()
                     .unwrap_or_else(ControlledExport::whole_main);
-                match controlled.publication(&job.path) {
-                    Ok(publication)
-                        if matches!(controlled.signal, hex_export::ExportSignal::Main) =>
-                    {
-                        hex_export::render_linear_main_with_foreign(
-                            &job.path,
-                            Arc::clone(&job.prepared),
-                            job.resources.as_ref(),
-                            controlled.start,
-                            job.frames,
-                            controlled.format,
-                            &controlled.control,
-                            &publication,
-                            None,
-                            foreign,
-                        )
-                        .map_err(ExportFailure::from)
-                    }
-                    Ok(_) => Err("private vst3 export requires main output".into()),
-                    Err(error) => Err(error.into()),
+                if matches!(controlled.signal, hex_export::ExportSignal::Main) {
+                    hex_export::render_linear_main_with_foreign(
+                        &job.path,
+                        Arc::clone(&job.prepared),
+                        job.resources.as_ref(),
+                        controlled.start,
+                        job.frames,
+                        controlled.format,
+                        &controlled.control,
+                        &controlled.publication,
+                        None,
+                        foreign,
+                    )
+                    .map_err(ExportFailure::from)
+                } else {
+                    Err("private vst3 export requires main output".into())
                 }
             } else if job.sources.is_some() && job.resources.is_some() {
                 Err("export cannot combine private and ordinary source scopes".into())
             } else if let Some(resources) = job.resources.take() {
                 if let Some(controlled) = job.controlled.take() {
-                    controlled
-                        .publication(&job.path)
-                        .and_then(|policy| {
-                            hex_export::render_prepared_with_device_resources_and_policy(
-                                &job.path,
-                                job.prepared,
-                                &resources,
-                                controlled.start,
-                                job.frames,
-                                controlled.signal,
-                                controlled.format,
-                                &controlled.control,
-                                &policy,
-                            )
-                        })
-                        .map_err(ExportFailure::from)
+                    hex_export::render_prepared_with_device_resources_and_policy(
+                        &job.path,
+                        job.prepared,
+                        &resources,
+                        controlled.start,
+                        job.frames,
+                        controlled.signal,
+                        controlled.format,
+                        &controlled.control,
+                        &controlled.publication,
+                    )
+                    .map_err(ExportFailure::from)
                 } else {
                     hex_export::render_prepared_new_with_device_resources(
                         &job.path,
@@ -176,41 +167,32 @@ pub(crate) fn run_export_worker(
                     .controlled
                     .take()
                     .unwrap_or_else(ControlledExport::whole_main);
-                controlled
-                    .publication(&job.path)
-                    .and_then(|policy| {
-                        hex_export::render_control_sampler_with_policy(
-                            &job.path,
-                            job.prepared,
-                            sources,
-                            controlled.start,
-                            job.frames,
-                            controlled.signal,
-                            controlled.format,
-                            &controlled.control,
-                            &policy,
-                        )
-                    })
-                    .map_err(ExportFailure::from)
+                hex_export::render_control_sampler_with_policy(
+                    &job.path,
+                    job.prepared,
+                    sources,
+                    controlled.start,
+                    job.frames,
+                    controlled.signal,
+                    controlled.format,
+                    &controlled.control,
+                    &controlled.publication,
+                )
+                .map_err(ExportFailure::from)
             } else {
                 // Every service request carries controlled parts; a bare job
                 // renders as the automatic whole-project Main export.
                 let controlled = job.controlled.unwrap_or_else(ControlledExport::whole_main);
-                controlled
-                    .publication(&job.path)
-                    .map_err(ExportFailure::from)
-                    .and_then(|policy| {
-                        exporter(
-                            &job.path,
-                            &job.prepared,
-                            controlled.start,
-                            job.frames,
-                            controlled.signal,
-                            controlled.format,
-                            &controlled.control,
-                            &policy,
-                        )
-                    })
+                exporter(
+                    &job.path,
+                    &job.prepared,
+                    controlled.start,
+                    job.frames,
+                    controlled.signal,
+                    controlled.format,
+                    &controlled.control,
+                    &controlled.publication,
+                )
             };
             (
                 job.job_id,
