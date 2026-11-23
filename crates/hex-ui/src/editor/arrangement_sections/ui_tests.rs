@@ -1762,7 +1762,14 @@ fn section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels(
         view.receive(event);
         view.pending_playback = None;
     });
-    let source = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+    let (source, project_generation, editor_revision) = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        (
+            state.project.clone(),
+            view.project_generation,
+            state.revision,
+        )
+    });
     let prepared = Arc::new(
         hex_engine::PreparedRevision::prepare(
             &source,
@@ -1773,13 +1780,28 @@ fn section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels(
         .unwrap(),
     );
     assert!(!prepared.arrangement_seek_requires_preroll());
-    let audio_revision = output
-        .publication
-        .control()
-        .unwrap()
-        .publish(
+    let control = output.publication.control().unwrap();
+    control
+        .configure_device_resource_publication_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 256,
+                root_rows: 128,
+                max_retained_bytes: 32_000_000,
+                max_construction_peak_bytes: 32_000_000,
+            },
+        )
+        .unwrap();
+    let audio_revision = control
+        .publish_with_admission_and_source_on_control(
             hex_engine::playback::Playback::try_from_prepared_with_session(Arc::clone(&prepared))
                 .unwrap(),
+            hex_audio::prepared::PublicationPolicy::InheritRuntime,
+            hex_engine::AudioSourceContext {
+                project_generation,
+                editor_revision,
+            },
+            |_| Ok::<_, ()>(()),
         )
         .unwrap();
     backend.render(&mut [[0.0; 2]; 1]).unwrap();

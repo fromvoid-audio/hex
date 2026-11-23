@@ -704,23 +704,10 @@ impl EditorView {
             return true;
         }
         if time_range {
-            if let Some(revision) = self
-                .state
-                .as_ref()
-                .filter(|state| state.project.tracks().is_empty())
-                .map(|state| state.revision)
-            {
-                self.sections.cursor = Some(SectionCursor {
-                    beat: anchor,
-                    generation: self.project_generation,
-                    revision,
-                });
-                self.select_section_metadata(None);
-                return true;
-            }
             // Do not start a competing capture. Main's existing range receiver
-            // sees this same press next: drags keep canonical all-track scope,
-            // while a stationary release places the section cursor.
+            // sees this same press next (including in empty projects): drags
+            // keep canonical all-track scope, while a stationary release places
+            // the section cursor.
             self.retire_section_pointer_context_for_range();
             return false;
         }
