@@ -704,6 +704,7 @@ pub(super) fn run_worker(
         session.native_reservation.is_some() || pending_recovery_outcome.is_some(),
         pending_plugin_effect.as_ref(),
         device_gesture.snapshot().is_some(),
+        tuning_gesture.snapshot().is_some(),
         pending_device_insert.as_ref(),
         pending_stopped_restore,
         hex_engine::AudioSourceContext {
@@ -2786,6 +2787,15 @@ pub(super) fn run_worker(
             // A recorded terminal has its own asynchronous durable transaction.
             // Do not send it through ordinary opaque/manual gesture finalization.
             barrier_failure = Some("finish or cancel the vst3 recording before this action".into());
+        }
+        if barrier
+            && barrier_failure.is_none()
+            && pending_device_insert.is_some()
+            && (device_gesture.snapshot().is_some() || tuning_gesture.snapshot().is_some())
+        {
+            // Requests served while a staged graph edit is pending must never
+            // run mutating gesture barriers underneath the staged edit.
+            barrier_failure = Some("finish the pending device edit before saving".into());
         }
         if barrier && barrier_failure.is_none() {
             let device_finished = if events.resident_publication_enabled()
