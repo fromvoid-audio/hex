@@ -175,7 +175,6 @@ impl EditorView {
         }
         if event.project_replaced {
             self.stopped_playback_restore = None;
-            self.browser_sample_insert_in_flight = false;
             self.pending_browser_insertions.clear();
         }
         if event.request_complete
@@ -229,15 +228,13 @@ impl EditorView {
         }
         if event.request_complete && !event.plugin_parameter_observation {
             self.worker_requests_pending = self.worker_requests_pending.saturating_sub(1);
-            if self.browser_sample_insert_in_flight
-                && self.audio_batch.is_none()
-                && self.worker_requests_pending == 0
-            {
-                self.browser_sample_insert_in_flight = false;
-                if event.error.is_some() {
-                    self.pending_browser_insertions.clear();
-                }
-            }
+        }
+        if self
+            .browser_insertion_flight
+            .as_mut()
+            .is_some_and(|flight| flight.finished(self.project_generation, &event))
+        {
+            self.browser_insertion_flight = None;
         }
         if let Some(input) = &event.live_expression_complete {
             if self

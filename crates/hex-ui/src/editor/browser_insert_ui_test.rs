@@ -899,7 +899,7 @@ fn rapid_browser_enter_queues_follow_up_insertions_without_busy_refusal(cx: &mut
     editor.update(visual, |view, _| {
         assert!(view.error.is_none(), "{:?}", view.error);
         assert!(view.audio_batch.is_some());
-        assert!(view.browser_sample_insert_in_flight);
+        assert!(view.browser_insertion_flight.is_some());
         assert!(view.pending_browser_insertions.is_empty());
         view.offline_cursor = 2_000;
     });
@@ -917,7 +917,7 @@ fn rapid_browser_enter_queues_follow_up_insertions_without_busy_refusal(cx: &mut
     receive_worker(&editor, visual, false);
     editor.read_with(visual, |view, _| {
         assert!(view.error.is_none(), "{:?}", view.error);
-        assert!(!view.browser_sample_insert_in_flight);
+        assert!(view.browser_insertion_flight.is_none());
         assert!(view.pending_browser_insertions.is_empty());
         let starts: Vec<_> = view
             .state
