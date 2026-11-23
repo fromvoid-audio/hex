@@ -1417,7 +1417,7 @@ impl Callback {
         }
     }
 
-    pub(super) fn consume_commands_through_inner(&mut self, cut: CommandCut, fault: bool) {
+    pub(super) fn consume_commands_through_inner(&mut self, cut: CommandCut, mut fault: bool) {
         // A publication can complete a streamed terminal before handing the
         // same block to resident consumption. Preserve completion order.
         self.flush_stream_outcomes();
@@ -1445,16 +1445,29 @@ impl Callback {
                 self.invalidate_gain_recording(
                     crate::gain_recording::AbortReason::TransportChanged,
                 );
+                let mut priority_stop_failed = None;
                 if let Some(mut active) = self
                     .active
                     .as_mut()
                     .and_then(ActivePublication::current_mut)
                 {
-                    active
+                    let block_start = active.playback.position();
+                    if active
                         .playback
-                        .apply_priority_stop(&self.status.keyboard_activation);
+                        .apply_priority_stop(&self.status.keyboard_activation)
+                        .is_err()
+                    {
+                        priority_stop_failed = Some(block_start);
+                    }
                 }
                 self.invalidate_processor_audition_request();
+                if let Some(block_start) = priority_stop_failed {
+                    self.report_render_fault(
+                        Some(&Invalid("priority stop failed on active playback")),
+                        block_start,
+                    );
+                    fault = true;
+                }
             }
         }
         let mut consumed = None;
@@ -1693,12 +1706,26 @@ impl Callback {
         #[cfg(all(test, feature = "allocation-probe"))]
         self.apply_candidate_action(PlaybackAction::Transport(PlaybackCommand::Stop));
         self.invalidate_gain_recording(crate::gain_recording::AbortReason::OutputFailed);
+        let mut fault_stop_failed = None;
         if let Some(mut active) = self
             .active
             .as_mut()
             .and_then(ActivePublication::current_mut)
         {
-            active.playback.apply(PlaybackCommand::Stop);
+            let block_start = active.playback.position();
+            if active.playback.apply(PlaybackCommand::Stop).is_err() {
+                fault_stop_failed = Some(block_start);
+            }
+        }
+        if let Some(block_start) = fault_stop_failed
+            && !self.status.render_fault.load(Acquire)
+        {
+            self.status.render_fault_record.publish(
+                "fault stop failed on active playback",
+                self.status.applied_revision.load(Relaxed),
+                block_start,
+            );
+            self.status.render_fault.store(true, Release);
         }
         self.processor_audition.invalidate_current_immediately();
         self.invalidate_processor_audition_request();
