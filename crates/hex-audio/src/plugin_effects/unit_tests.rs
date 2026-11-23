@@ -92,3 +92,61 @@ fn unreserved_or_wrong_dense_target_refuses_before_any_request() {
         assert!(matches!(worker.receive_request(), Err(Fault::Revoked)));
     }
 }
+
+#[test]
+fn renewal_preserves_state_authority_across_latency_and_tail_updates_only() {
+    let binding_v1 = Binding {
+        root: 1,
+        instance: 7,
+        graph: 2,
+        epoch: 1,
+    };
+    let binding_v2 = Binding {
+        epoch: 2,
+        ..binding_v1
+    };
+    let old = PreparedForeignProcessor::new(256, 0, 512)
+        .unwrap()
+        .with_output_tail(hex_lattice::OutputTail::Finite {
+            max_tail_frames: 512,
+        })
+        .with_binding(binding_v1)
+        .unwrap();
+    let latency_updated = PreparedForeignProcessor::new(256, 1024, 512)
+        .unwrap()
+        .with_output_tail(hex_lattice::OutputTail::Unbounded)
+        .with_binding(binding_v2)
+        .unwrap();
+
+    // Same SDK instance with updated latency/tail preserves Vst3StateAuthority
+    // so previously UI-edited states remain approved for Save, gestures, and compile.
+    assert!(renewal_preserves_state_authority(old, latency_updated));
+    let authority = hex_lattice_contract::Vst3StateAuthority::new_on_control().unwrap();
+    let ui_edited =
+        NativeDeviceState::new(hex_lattice_contract::VST3_DEVICE_TYPE_ID, 1, vec![42, 99]).unwrap();
+    let approved = authority.approve_on_control(ui_edited).unwrap();
+    let preserved = renewal_preserves_state_authority(old, latency_updated).then_some(authority);
+    let verifier = preserved
+        .expect("latency-only reactivation must preserve Vst3StateAuthority")
+        .verifier();
+    assert!(verifier.approves(&approved));
+
+    // Changing quantum, bridge latency, or instrument/effect profile requires
+    // fresh state qualification.
+    let different_quantum = PreparedForeignProcessor::new(128, 0, 512)
+        .unwrap()
+        .with_binding(binding_v2)
+        .unwrap();
+    let different_bridge = PreparedForeignProcessor::new(256, 0, 1024)
+        .unwrap()
+        .with_binding(binding_v2)
+        .unwrap();
+    let different_profile = PreparedForeignProcessor::new(256, 0, 512)
+        .unwrap()
+        .with_instrument_profile()
+        .with_binding(binding_v2)
+        .unwrap();
+    assert!(!renewal_preserves_state_authority(old, different_quantum));
+    assert!(!renewal_preserves_state_authority(old, different_bridge));
+    assert!(!renewal_preserves_state_authority(old, different_profile));
+}
