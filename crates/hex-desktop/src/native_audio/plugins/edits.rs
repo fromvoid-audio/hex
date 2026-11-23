@@ -372,6 +372,7 @@ impl Plugins {
             }
         }
         if accepted {
+            self.installed_removals_checked = None;
             // A newly restored version supersedes earlier instances of this
             // canonical device. History owns their opaque payloads, not their
             // live DSP state: epoch resume deliberately does not restore those
@@ -698,8 +699,11 @@ impl Plugins {
         if self.pending.is_some() || self.restore.is_some() || self.reopen.is_some() {
             return Err("another vst3 source operation is pending".into());
         }
-        if !self.configured || self.sources.len() == self.sources.capacity() {
+        if !self.configured {
             return Err("vst3 source/history capacity is full".into());
+        }
+        if self.sources.len() >= self.sources.capacity() {
+            self.wait_for_reclaimed_slot(control, desired, cancellation)?;
         }
         if self.edit.is_some_and(|current| current != context) {
             return Err("vst3 edit source changed".into());
@@ -724,9 +728,10 @@ impl Plugins {
             None
         };
         let control = output.publication.control().ok_or("native output closed")?;
+        let begin_deadline = std::time::Instant::now() + PREPARATION_TIMEOUT;
         let binding = loop {
             check_cancel(cancellation)?;
-            match self
+            let result = self
                 .host
                 .as_ref()
                 .ok_or("qualified vst3 helper unavailable")?
@@ -740,9 +745,20 @@ impl Plugins {
                     hosting_profile(destination),
                     Some(state.clone()),
                     None,
-                ) {
+                );
+            match result {
                 Ok(binding) => break binding,
                 Err(error) if error == "native preparation is busy" => poll_control(control),
+                Err(error) if error == "native preparation cells are full" => {
+                    let reclaimed = self.reclaim_retired_sources(control, desired, true);
+                    if (reclaimed > 0 || self.has_reclaimable_retiring_source())
+                        && std::time::Instant::now() < begin_deadline
+                    {
+                        poll_control(control);
+                    } else {
+                        return Err(error);
+                    }
+                }
                 Err(error) => return Err(error),
             }
         };
@@ -857,6 +873,26 @@ impl Plugins {
         };
         check_cancel(cancellation)?;
         Ok(cut)
+    }
+
+    fn wait_for_reclaimed_slot(
+        &mut self,
+        control: &mut PublicationControl,
+        desired: Option<&CanonicalAudioSourceSnapshot>,
+        cancellation: Option<&RequestCancellation>,
+    ) -> Result<(), String> {
+        let deadline = std::time::Instant::now() + PREPARATION_TIMEOUT;
+        loop {
+            self.reclaim_retired_sources(control, desired, true);
+            if self.sources.len() < self.sources.capacity() {
+                return Ok(());
+            }
+            if !self.has_reclaimable_retiring_source() || std::time::Instant::now() >= deadline {
+                return Err("vst3 source/history capacity is full".into());
+            }
+            check_cancel(cancellation)?;
+            poll_control(control);
+        }
     }
 }
 fn matches_direct_effect_profile(

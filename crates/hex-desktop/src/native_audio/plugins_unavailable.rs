@@ -59,6 +59,7 @@ impl Plugins {
         &mut self,
         _: &mut WorkerPreparedOutput,
         _: PluginEffectPreparation<'_>,
+        _: Option<&CanonicalAudioSourceSnapshot>,
     ) -> Result<PluginEffectPreparationState, String> {
         Err(UNAVAILABLE.into())
     }

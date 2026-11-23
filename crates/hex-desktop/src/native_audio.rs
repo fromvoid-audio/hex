@@ -1931,7 +1931,7 @@ impl WorkerAudioSink for NativeAudioSink {
                 mismatch.device_hz, mismatch.project_hz, mismatch.project_hz
             ));
         }
-        self.plugins.prepare(output, input)
+        self.plugins.prepare(output, input, self.desired.as_deref())
     }
     fn plugin_effect_ready(&self) -> bool {
         self.plugins.ready()

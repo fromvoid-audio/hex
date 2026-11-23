@@ -378,6 +378,7 @@ impl Plugins {
             self.restore = None;
         }
         self.sources.clear();
+        self.installed_removals_checked = None;
         self.pool_held = false;
     }
     /// The newest changed degraded vst3 device set, project generation and output, once.
@@ -423,6 +424,7 @@ impl Plugins {
             source.editor_open_on_insert = false;
         }
         self.editor_checked = None;
+        self.installed_removals_checked = None;
         let queued_generation = self
             .queued_editor_toggle
             .take()
@@ -666,6 +668,7 @@ impl Plugins {
         &mut self,
         output: &mut WorkerPreparedOutput,
         input: PluginEffectPreparation<'_>,
+        desired: Option<&CanonicalAudioSourceSnapshot>,
     ) -> Result<PluginEffectPreparationState, String> {
         if let Some(pending) = self.pending.as_mut() {
             if !Arc::ptr_eq(&pending.operation, &input.insertion.control)
@@ -684,20 +687,23 @@ impl Plugins {
                     .clone()
                     .unwrap_or_else(|| "vst3 hosting unavailable for this output".into()));
             }
-            if self.sources.len() >= self.sources.capacity() {
-                return Err(
-                    "vst3 source/history capacity is full · close the project before loading more"
-                        .into(),
-                );
-            }
             if input.insertion.control.is_cancelled() {
                 return Err("vst3 insertion cancelled".into());
             }
-            let host = self
-                .host
-                .as_ref()
-                .ok_or("qualified vst3 helper unavailable")?;
             let control = output.publication.control().ok_or("native output closed")?;
+            if self.sources.len() >= self.sources.capacity() {
+                self.reclaim_retired_sources(control, desired, true);
+                if self.sources.len() >= self.sources.capacity() {
+                    if self.has_reclaimable_retiring_source() {
+                        edits::poll_control(control);
+                        return Ok(PluginEffectPreparationState::Preparing);
+                    }
+                    return Err(
+                        "vst3 source/history capacity is full · close the project before loading more"
+                            .into(),
+                    );
+                }
+            }
             let selection = &input.insertion.selection;
             let owner = input.insertion.destination.owner();
             let graph = input
@@ -710,23 +716,28 @@ impl Plugins {
                 .diagnostics
                 .as_ref()
                 .map(|_| (std::time::Instant::now(), EffectStartupTimings::default()));
-            let binding = match host.begin_on_control(
-                control,
-                EffectSelection {
-                    module: &selection.module,
-                    executable: &selection.executable,
-                    cid: selection.cid,
-                    executable_sha256: &selection.executable_sha256,
-                    info_sha256: &selection.info_sha256,
-                },
-                owner,
-                input.device_id,
-                graph,
-                output.sample_rate,
-                hosting_profile(input.insertion.destination),
-                None,
-                timing.as_mut().map(|(_, timings)| timings),
-            ) {
+            let begin = self
+                .host
+                .as_ref()
+                .ok_or("qualified vst3 helper unavailable")?
+                .begin_on_control(
+                    control,
+                    EffectSelection {
+                        module: &selection.module,
+                        executable: &selection.executable,
+                        cid: selection.cid,
+                        executable_sha256: &selection.executable_sha256,
+                        info_sha256: &selection.info_sha256,
+                    },
+                    owner,
+                    input.device_id,
+                    graph,
+                    output.sample_rate,
+                    hosting_profile(input.insertion.destination),
+                    None,
+                    timing.as_mut().map(|(_, timings)| timings),
+                );
+            let binding = match begin {
                 Ok(binding) => binding,
                 // Root's contended Work mutex refuses before reserving a slot
                 // or native owner. Retain the existing ordered request and retry
@@ -734,6 +745,14 @@ impl Plugins {
                 Err(reason) if reason == "native preparation is busy" => {
                     edits::poll_control(control);
                     return Ok(PluginEffectPreparationState::Preparing);
+                }
+                Err(reason) if reason == "native preparation cells are full" => {
+                    let reclaimed = self.reclaim_retired_sources(control, desired, true);
+                    if reclaimed > 0 || self.has_reclaimable_retiring_source() {
+                        edits::poll_control(control);
+                        return Ok(PluginEffectPreparationState::Preparing);
+                    }
+                    return Err(reason);
                 }
                 Err(reason) => return Err(reason),
             };
@@ -878,11 +897,12 @@ impl Plugins {
         {
             self.facts_gate = None;
         }
-        if let Some(source) = self.sources.iter_mut().find(|s| {
+        if let Some(accepted_index) = self.sources.iter().position(|s| {
             s.operation
                 .insertion()
                 .is_some_and(|current| Arc::ptr_eq(current, operation))
         }) {
+            let source = &mut self.sources[accepted_index];
             source.accepted = accepted
                 && pending
                     .as_ref()
@@ -890,13 +910,31 @@ impl Plugins {
             source.editor_retirement.ever_accepted |= source.accepted;
             source.retiring |= !source.accepted;
             source.editor_open_on_insert = source.accepted && operation.opens_editor();
+            let accepted_now = source.accepted;
+            let accepted_binding = source.binding;
+            let accepted_generation = source.project_generation;
+            let accepted_device = source.device;
             record_insertion_stage(
                 self.diagnostics.as_ref(),
-                source.binding,
-                source.project_generation,
+                accepted_binding,
+                accepted_generation,
                 "graph_terminal",
-                format_args!(" committed={}", source.accepted),
+                format_args!(" committed={accepted_now}"),
             );
+            if accepted_now {
+                self.installed_removals_checked = None;
+                for prior in &mut self.sources {
+                    if prior.binding != accepted_binding
+                        && prior.accepted
+                        && !prior.retiring
+                        && prior.project_generation == accepted_generation
+                        && prior.device == accepted_device
+                    {
+                        prior.accepted = false;
+                        prior.retiring = true;
+                    }
+                }
+            }
         }
     }
     pub fn poll(
@@ -1118,24 +1156,7 @@ impl Plugins {
         // Refused operations, deleted sources and superseded versions retain
         // their original bindings until Root's graph and endpoint returns and
         // the editor receipt owner have released them.
-        let mut index = 0;
-        // Renewal's bounded indices refer to this original record set. Leave
-        // refused records in control custody until the epoch operation retires;
-        // removing one here would shift a later source past its renewal stage.
-        while self.restore.is_none() && index < self.sources.len() {
-            let source = &self.sources[index];
-            if source.retiring && !source.editor_transfer && !self.editor_holds(source.binding) {
-                let _ = control.retire_native_source_preparation(source.binding);
-                if control
-                    .recover_native_source_preparation(source.binding)
-                    .is_some()
-                {
-                    self.sources.remove(index);
-                    continue;
-                }
-            }
-            index += 1;
-        }
+        self.reclaim_retired_sources(control, desired, false);
         #[cfg(all(test, feature = "allocation-probe"))]
         {
             if let Some(observed) = &self.progress
@@ -1202,6 +1223,72 @@ impl Plugins {
         }
     }
 
+    /// Whether any retiring source slot can still make reclamation progress
+    /// without violating editor transfer/hold or parked user-disposition custody.
+    pub(super) fn has_reclaimable_retiring_source(&self) -> bool {
+        self.restore.is_none()
+            && self.sources.iter().any(|source| {
+                source.retiring
+                    && !source.editor_transfer
+                    && !self.editor_holds(source.binding)
+                    && !source.editor_retirement.parked()
+            })
+    }
+
+    /// Drive retirement requests, retiring-editor receipt completion, and Root
+    /// cell recovery for all eligible retiring sources while preserving Root's
+    /// active-graph, tail, endpoint-return, and editor-hold custody.
+    pub(super) fn reclaim_retired_sources(
+        &mut self,
+        control: &mut hex_audio::prepared::PublicationControl,
+        desired: Option<&CanonicalAudioSourceSnapshot>,
+        pump_reclaim: bool,
+    ) -> usize {
+        if let Some(desired) = desired {
+            self.retire_installed_removals(control, desired);
+        }
+        // Renewal's bounded indices refer to this original record set. Leave
+        // refused records in control custody until the epoch operation retires;
+        // removing one here would shift a later source past its renewal stage.
+        if self.restore.is_some() {
+            return 0;
+        }
+        let mut requested_any = false;
+        for source in &self.sources {
+            if source.retiring && !source.editor_transfer && !self.editor_holds(source.binding) {
+                let _ = control.retire_native_source_preparation(source.binding);
+                requested_any = true;
+            }
+        }
+        if requested_any {
+            // Advance retiring-editor leases right after signaling Root so
+            // `retiring_edit_reserved` can release in the same turn instead of
+            // deferring reclamation to a later poll.
+            self.poll_retiring_edits();
+            if pump_reclaim {
+                control.reclaim();
+            }
+        }
+        let mut reclaimed = 0;
+        let mut index = 0;
+        while index < self.sources.len() {
+            let source = &self.sources[index];
+            if source.retiring && !source.editor_transfer && !self.editor_holds(source.binding) {
+                let _ = control.retire_native_source_preparation(source.binding);
+                if control
+                    .recover_native_source_preparation(source.binding)
+                    .is_some()
+                {
+                    self.sources.remove(index);
+                    reclaimed += 1;
+                    continue;
+                }
+            }
+            index += 1;
+        }
+        reclaimed
+    }
+
     /// An installed canonical revision ends the device's project membership.
     /// Root still controls return of every graph, endpoint and editor receipt.
     fn retire_installed_removals(
@@ -1210,9 +1297,7 @@ impl Plugins {
         desired: &CanonicalAudioSourceSnapshot,
     ) {
         let context = desired.context();
-        if self.catalog.is_none()
-            || desired.audio_mode() != DocumentAudioMode::Resident
-            || self.installed_removals_checked == Some(context)
+        if self.installed_removals_checked == Some(context)
             || control
                 .status
                 .recording_source()
@@ -1227,18 +1312,77 @@ impl Plugins {
     /// Called only after the exact canonical graph installs. Source absence
     /// ends editor admission while Root retains actual runtime custody.
     pub(super) fn retire_absent_catalog_sources(&mut self, desired: &CanonicalAudioSourceSnapshot) {
-        if self.catalog.is_none() {
-            return;
-        }
         let context = desired.context();
         let preparation = desired.effect_preparation();
-        for source in &mut self.sources {
-            if source.accepted
-                && source.project_generation == context.project_generation
-                && preparation.plugin_device_bypassed(source.device).is_none()
+        self.retire_absent_sources_for_context(context, |visit| {
+            preparation.visit_plugin_devices(|destination, device, _| {
+                visit(destination.owner(), device);
+                Ok(())
+            })
+        });
+    }
+
+    fn retire_absent_sources_for_context(
+        &mut self,
+        context: AudioSourceContext,
+        mut visit_live: impl FnMut(&mut dyn FnMut(ProcessorChainOwner, u64)) -> Result<(), String>,
+    ) {
+        let has_catalog = self.catalog.is_some();
+        for index in 0..self.sources.len() {
+            let source = &self.sources[index];
+            if !source.accepted || source.retiring {
+                continue;
+            }
+            if source.project_generation < context.project_generation {
+                self.sources[index].accepted = false;
+                self.sources[index].retiring = true;
+                continue;
+            }
+            if source.project_generation != context.project_generation {
+                continue;
+            }
+            let target_owner = source.owner;
+            let target_device = source.device;
+            let mut present_on_owner = false;
+            let mut present_anywhere = false;
+            if visit_live(&mut |owner, device| {
+                if device == target_device {
+                    present_anywhere = true;
+                    present_on_owner |= owner == target_owner;
+                }
+            })
+            .is_err()
             {
-                source.accepted = false;
-                source.retiring = true;
+                continue;
+            }
+            let superseded_by_newer = self.sources[index + 1..].iter().any(|newer| {
+                newer.accepted
+                    && !newer.retiring
+                    && newer.project_generation == context.project_generation
+                    && newer.device == target_device
+            });
+            let retire = if present_on_owner {
+                superseded_by_newer
+            } else if has_catalog || present_anywhere || superseded_by_newer {
+                true
+            } else {
+                // Catalog-less test fixtures cannot reload a provider from disk
+                // after the last source of that provider retires; still retire
+                // extra absent sources whenever another live source for the
+                // same provider remains.
+                self.sources[index].provider.is_some_and(|provider| {
+                    self.sources.iter().enumerate().any(|(other_index, other)| {
+                        other_index != index
+                            && other.accepted
+                            && !other.retiring
+                            && other.project_generation == context.project_generation
+                            && other.provider == Some(provider)
+                    })
+                })
+            };
+            if retire {
+                self.sources[index].accepted = false;
+                self.sources[index].retiring = true;
             }
         }
     }
@@ -1950,5 +2094,467 @@ mod powered_off_document_tests {
         assert!(!control.has_vacant_native_source_slots_on_control(scratch + 1));
         drop(backend);
         output.publication.close();
+    }
+}
+
+#[cfg(test)]
+mod pool_reclamation_tests {
+    use super::*;
+
+    fn vst3_state(tag: u8) -> NativeDeviceState {
+        NativeDeviceState::new(
+            hex_engine::DeviceTypeId::from_static("hex.vst3"),
+            1,
+            vec![tag],
+        )
+        .unwrap()
+    }
+
+    fn provider(tag: u8) -> ProviderIdentity {
+        ProviderIdentity {
+            class: [tag; 16],
+            executable_sha256: [tag; 32],
+            info_sha256: [tag; 32],
+        }
+    }
+
+    fn source_record(
+        owner: ProcessorChainOwner,
+        device: u64,
+        epoch: u64,
+        generation: u64,
+        provider_tag: u8,
+    ) -> Source {
+        Source {
+            binding: Binding {
+                root: 1,
+                instance: device,
+                graph: epoch,
+                epoch,
+            },
+            provider: Some(provider(provider_tag)),
+            owner,
+            device,
+            project_generation: generation,
+            operation: SourceOperation::Reopen,
+            authored: None,
+            accepted: true,
+            retiring: false,
+            queued: true,
+            observes_latency: false,
+            editor_open: false,
+            editor_transfer: false,
+            editor_open_on_insert: false,
+            edit_backlog: false,
+            edit_recovery: None,
+            open_editor_group: None,
+            editor_retirement: Default::default(),
+            pending_touch: None,
+            #[cfg(feature = "allocation-probe")]
+            observed_latency_receipt: false,
+            #[cfg(feature = "allocation-probe")]
+            attempts: 0,
+        }
+    }
+
+    fn retire_for_project(
+        plugins: &mut Plugins,
+        project: &hex_project::Project,
+        generation: u64,
+        revision: u64,
+    ) {
+        let context = AudioSourceContext {
+            project_generation: generation,
+            editor_revision: revision,
+        };
+        let vst3 = hex_engine::DeviceTypeId::from_static("hex.vst3");
+        plugins.retire_absent_sources_for_context(context, |visit| {
+            for track in project.tracks() {
+                if let Some(inst) = track.instrument()
+                    && inst.state().type_id() == vst3
+                {
+                    visit(
+                        ProcessorChainOwner::Track(track.id().value()),
+                        inst.id().value(),
+                    );
+                }
+                for device in track.devices() {
+                    if device.state().type_id() == vst3 {
+                        visit(
+                            ProcessorChainOwner::Track(track.id().value()),
+                            device.id().value(),
+                        );
+                    }
+                }
+            }
+            for bus in project.return_tracks() {
+                for device in bus.devices() {
+                    if device.state().type_id() == vst3 {
+                        visit(
+                            ProcessorChainOwner::Return(bus.id().value()),
+                            device.id().value(),
+                        );
+                    }
+                }
+            }
+            for device in project.main_devices() {
+                if device.state().type_id() == vst3 {
+                    visit(ProcessorChainOwner::Main, device.id().value());
+                }
+            }
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn retire_absent_catalog_sources_marks_removed_replaced_moved_duplicate_and_old_generation_slots()
+     {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 16).unwrap();
+        let hex_project::Created::Track(track_a) = editor
+            .execute(hex_project::Command::AddTrack { name: "a".into() })
+            .unwrap()
+        else {
+            panic!("track a");
+        };
+        let hex_project::Created::Track(track_b) = editor
+            .execute(hex_project::Command::AddTrack { name: "b".into() })
+            .unwrap()
+        else {
+            panic!("track b");
+        };
+        let hex_project::Created::Device(live_main) = editor
+            .execute(hex_project::Command::InsertMainDevice {
+                before: None,
+                state: vst3_state(1),
+            })
+            .unwrap()
+        else {
+            panic!("main device");
+        };
+        let hex_project::Created::Device(moved_device) = editor
+            .execute(hex_project::Command::InsertDevice {
+                track: track_b,
+                before: None,
+                state: vst3_state(2),
+            })
+            .unwrap()
+        else {
+            panic!("track b device");
+        };
+
+        let mut plugins = Plugins {
+            catalog: Some(std::path::PathBuf::from("/tmp/hex-test-catalog.json")),
+            ..Plugins::default()
+        };
+        // 0: older project generation -> must retire
+        plugins.sources.push(source_record(
+            ProcessorChainOwner::Main,
+            live_main.value(),
+            1,
+            1,
+            1,
+        ));
+        // 1: removed device -> must retire
+        plugins
+            .sources
+            .push(source_record(ProcessorChainOwner::Main, 999, 2, 2, 1));
+        // 2: stale donor-owner slot after cross-track move (device lives on track_b) -> must retire
+        plugins.sources.push(source_record(
+            ProcessorChainOwner::Track(track_a.value()),
+            moved_device.value(),
+            3,
+            2,
+            2,
+        ));
+        // 3: duplicate older accepted slot for live_main -> must retire
+        plugins.sources.push(source_record(
+            ProcessorChainOwner::Main,
+            live_main.value(),
+            4,
+            2,
+            1,
+        ));
+        // 4: current live_main -> must stay accepted
+        plugins.sources.push(source_record(
+            ProcessorChainOwner::Main,
+            live_main.value(),
+            5,
+            2,
+            1,
+        ));
+        // 5: current moved_device on track_b -> must stay accepted
+        plugins.sources.push(source_record(
+            ProcessorChainOwner::Track(track_b.value()),
+            moved_device.value(),
+            6,
+            2,
+            2,
+        ));
+
+        retire_for_project(&mut plugins, editor.project(), 2, 5);
+
+        for retired_index in [0, 1, 2, 3] {
+            assert!(
+                !plugins.sources[retired_index].accepted && plugins.sources[retired_index].retiring,
+                "slot {retired_index} should be retired"
+            );
+        }
+        for live_index in [4, 5] {
+            assert!(
+                plugins.sources[live_index].accepted && !plugins.sources[live_index].retiring,
+                "slot {live_index} should remain accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_less_retirement_still_drops_moved_duplicate_and_extra_provider_slots() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 16).unwrap();
+        let hex_project::Created::Track(track_a) = editor
+            .execute(hex_project::Command::AddTrack { name: "a".into() })
+            .unwrap()
+        else {
+            panic!("track a");
+        };
+        let hex_project::Created::Track(track_b) = editor
+            .execute(hex_project::Command::AddTrack { name: "b".into() })
+            .unwrap()
+        else {
+            panic!("track b");
+        };
+        let hex_project::Created::Device(moved_device) = editor
+            .execute(hex_project::Command::InsertDevice {
+                track: track_b,
+                before: None,
+                state: vst3_state(1),
+            })
+            .unwrap()
+        else {
+            panic!("track b device");
+        };
+
+        let mut plugins = Plugins::default();
+        assert!(plugins.catalog.is_none());
+        // 0: removed device of provider 1 (another live source of provider 1 exists) -> retire
+        plugins
+            .sources
+            .push(source_record(ProcessorChainOwner::Main, 900, 1, 1, 1));
+        // 1: stale donor-owner after move -> retire
+        plugins.sources.push(source_record(
+            ProcessorChainOwner::Track(track_a.value()),
+            moved_device.value(),
+            2,
+            1,
+            1,
+        ));
+        // 2: live moved device on track_b (provider 1) -> stay accepted
+        plugins.sources.push(source_record(
+            ProcessorChainOwner::Track(track_b.value()),
+            moved_device.value(),
+            3,
+            1,
+            1,
+        ));
+        // 3 & 4: two removed devices of provider 2 -> index 3 retires, index 4 stays sole fallback
+        plugins
+            .sources
+            .push(source_record(ProcessorChainOwner::Main, 901, 4, 1, 2));
+        plugins
+            .sources
+            .push(source_record(ProcessorChainOwner::Main, 902, 5, 1, 2));
+
+        retire_for_project(&mut plugins, editor.project(), 1, 4);
+
+        assert!(plugins.sources[0].retiring && !plugins.sources[0].accepted);
+        assert!(plugins.sources[1].retiring && !plugins.sources[1].accepted);
+        assert!(plugins.sources[2].accepted && !plugins.sources[2].retiring);
+        assert!(plugins.sources[3].retiring && !plugins.sources[3].accepted);
+        assert!(plugins.sources[4].accepted && !plugins.sources[4].retiring);
+    }
+
+    #[test]
+    fn finish_retires_refused_insertions_and_superseded_same_device_slots() {
+        let context = AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 3,
+        };
+        let mut plugins = Plugins {
+            installed_removals_checked: Some(context),
+            ..Plugins::default()
+        };
+        plugins
+            .sources
+            .push(source_record(ProcessorChainOwner::Main, 7, 1, 1, 1));
+
+        let accepted_op = Arc::new(PluginEffectControl::default());
+        let mut replacement = source_record(ProcessorChainOwner::Main, 7, 2, 1, 1);
+        replacement.accepted = false;
+        replacement.operation = SourceOperation::Insertion(Arc::clone(&accepted_op));
+        let replacement_binding = replacement.binding;
+        plugins.sources.push(replacement);
+        plugins.pending = Some(Pending {
+            operation: Arc::clone(&accepted_op),
+            binding: replacement_binding,
+            context,
+            canonical_context: context,
+            result: Some(Ok(vst3_state(1))),
+            facts_ready_for_session: true,
+            facts_observed: true,
+            #[cfg(feature = "allocation-probe")]
+            facts_attempt_from_session: false,
+        });
+        plugins.finish(&accepted_op, true);
+        assert!(plugins.installed_removals_checked.is_none());
+        assert!(plugins.sources[0].retiring && !plugins.sources[0].accepted);
+        assert!(plugins.sources[1].accepted && !plugins.sources[1].retiring);
+
+        let refused_op = Arc::new(PluginEffectControl::default());
+        let mut refused = source_record(ProcessorChainOwner::Main, 8, 3, 1, 1);
+        refused.accepted = false;
+        refused.operation = SourceOperation::Insertion(Arc::clone(&refused_op));
+        let refused_binding = refused.binding;
+        plugins.sources.push(refused);
+        plugins.pending = Some(Pending {
+            operation: Arc::clone(&refused_op),
+            binding: refused_binding,
+            context,
+            canonical_context: context,
+            result: Some(Ok(vst3_state(1))),
+            facts_ready_for_session: true,
+            facts_observed: true,
+            #[cfg(feature = "allocation-probe")]
+            facts_attempt_from_session: false,
+        });
+        plugins.finish(&refused_op, false);
+        assert!(plugins.sources[2].retiring && !plugins.sources[2].accepted);
+    }
+
+    #[test]
+    fn has_reclaimable_retiring_source_honors_editor_transfer_and_hold_custody() {
+        let mut plugins = Plugins::default();
+        plugins
+            .sources
+            .push(source_record(ProcessorChainOwner::Main, 10, 1, 1, 1));
+        assert!(!plugins.has_reclaimable_retiring_source());
+
+        plugins.sources[0].accepted = false;
+        plugins.sources[0].retiring = true;
+        assert!(plugins.has_reclaimable_retiring_source());
+
+        plugins.sources[0].editor_transfer = true;
+        assert!(!plugins.has_reclaimable_retiring_source());
+        plugins.sources[0].editor_transfer = false;
+        assert!(plugins.has_reclaimable_retiring_source());
+
+        let binding = plugins.sources[0].binding;
+        plugins.editor = Some(editor::EditorOperation::Pending {
+            binding,
+            generation: 1,
+            action: editor::EditorAction::Detach,
+            request: None,
+            admission_deadline: std::time::Instant::now() + std::time::Duration::from_secs(1),
+            retry_after: None,
+        });
+        assert!(plugins.editor_holds(binding));
+        assert!(!plugins.has_reclaimable_retiring_source());
+        plugins.editor = None;
+        assert!(plugins.has_reclaimable_retiring_source());
+    }
+
+    #[test]
+    fn repeated_add_remove_replace_and_undo_cycles_over_2x_active_capacity_never_accumulate_slots()
+    {
+        let active_capacity = 8;
+        let mut plugins = Plugins {
+            catalog: Some(std::path::PathBuf::from("/tmp/hex-test-catalog.json")),
+            configured: true,
+            ..Plugins::default()
+        };
+        plugins.sources.try_reserve_exact(active_capacity).unwrap();
+
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 64).unwrap();
+        let mut next_epoch = 1u64;
+
+        // Run 2.5x active_capacity add -> replace -> remove -> undo -> redo cycles.
+        for cycle in 0..(active_capacity * 5 / 2) {
+            let hex_project::Created::Device(first) = editor
+                .execute(hex_project::Command::InsertMainDevice {
+                    before: None,
+                    state: vst3_state(1),
+                })
+                .unwrap()
+            else {
+                panic!("first insert");
+            };
+            assert!(
+                plugins.sources.len() < plugins.sources.capacity(),
+                "cycle {cycle}: slot pool must not exhaust before insert"
+            );
+            plugins.sources.push(source_record(
+                ProcessorChainOwner::Main,
+                first.value(),
+                next_epoch,
+                1,
+                1,
+            ));
+            next_epoch += 1;
+
+            // Replace with a second device and verify the old slot retires.
+            let hex_project::Created::Device(replaced) = editor
+                .execute(hex_project::Command::ReplaceMainDevice {
+                    replacing: first,
+                    state: vst3_state(2),
+                })
+                .unwrap()
+            else {
+                panic!("replace insert");
+            };
+            plugins.sources.push(source_record(
+                ProcessorChainOwner::Main,
+                replaced.value(),
+                next_epoch,
+                1,
+                2,
+            ));
+            next_epoch += 1;
+            retire_for_project(&mut plugins, editor.project(), 1, next_epoch);
+            assert!(plugins.sources[0].retiring && !plugins.sources[0].accepted);
+            assert!(plugins.sources[1].accepted && !plugins.sources[1].retiring);
+            plugins.sources.retain(|source| !source.retiring);
+            assert_eq!(plugins.sources.len(), 1);
+
+            // Remove the replacement device and verify its slot retires.
+            editor
+                .execute(hex_project::Command::RemoveDevice(replaced))
+                .unwrap();
+            next_epoch += 1;
+            retire_for_project(&mut plugins, editor.project(), 1, next_epoch);
+            assert!(plugins.sources.iter().all(|source| source.retiring));
+            plugins.sources.retain(|source| !source.retiring);
+            assert_eq!(plugins.sources.len(), 0);
+
+            // Undo reintroduces the removed device as a fresh slot; redo retires it again.
+            assert!(editor.undo());
+            assert!(editor.project().device(replaced).is_some());
+            assert!(plugins.sources.len() < plugins.sources.capacity());
+            plugins.sources.push(source_record(
+                ProcessorChainOwner::Main,
+                replaced.value(),
+                next_epoch,
+                1,
+                2,
+            ));
+            next_epoch += 1;
+
+            assert!(editor.redo());
+            assert!(editor.project().device(replaced).is_none());
+            retire_for_project(&mut plugins, editor.project(), 1, next_epoch);
+            assert!(plugins.sources.iter().all(|source| source.retiring));
+            plugins.sources.retain(|source| !source.retiring);
+            assert_eq!(plugins.sources.len(), 0);
+        }
     }
 }

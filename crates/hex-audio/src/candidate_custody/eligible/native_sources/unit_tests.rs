@@ -236,3 +236,108 @@ fn endpoint_return_reservation_orders_decisions_without_delaying_return_requests
     assert!(signal.load(Ordering::Acquire));
     assert!(signal.reserve().is_none());
 }
+
+#[test]
+fn retired_native_source_cells_respect_custody_and_reclaim_across_repeated_cycles() {
+    let outer = CandidateRoot::new(2).unwrap();
+    let root = &outer.0.eligible;
+    let capacity = 4;
+    let per_source = resources::PoolResources::new(1).unwrap();
+    root.configure_publications(
+        outer.root_id(),
+        AudioCandidatePublicationReservation {
+            runtime_slots: 2,
+            archive_slots: 2,
+            member_rows: 64,
+            transfer_rows: 64,
+            receipt_rows: 2,
+            data_rows: 4096,
+            handle_rows: 2 * 5 + 28 + capacity * per_source.shared_handles,
+            max_retained_data_bytes: 256 * 1024 * 1024,
+            max_construction_peak_data_bytes: 256 * 1024 * 1024,
+        },
+        std::mem::size_of::<Inner>(),
+    )
+    .unwrap();
+    outer
+        .configure_native_source_preparation(capacity, source_reservation())
+        .unwrap();
+    assert!(outer.has_vacant_native_source_slots(capacity));
+    assert!(!outer.has_vacant_native_source_slots(capacity + 1));
+
+    // Simulate 3x pool capacity sequential add -> retire -> hold -> release ->
+    // recover cycles to prove Root cells never leak and always enforce active
+    // tail/endpoint/retiring-edit custody before returning a cell to Vacant.
+    for cycle in 1..=(capacity * 3) {
+        let device_id = cycle as u64;
+        let identity =
+            ProcessorInstanceIdentity::new(hex_engine::ProcessorChainOwner::Main, device_id)
+                .unwrap();
+        let signal = Arc::new(EndpointSignal::new());
+        signal.runtime_required.store(true, Ordering::Release);
+        let (slot_index, binding) = {
+            let mut bank = lock(&root.bank);
+            let index = bank
+                .sources
+                .slots
+                .iter()
+                .position(|slot| slot.phase == Phase::Vacant)
+                .expect("vacant cell must be available after prior reclamation");
+            let epoch = bank.sources.next_epoch;
+            bank.sources.next_epoch += 1;
+            let binding = Binding {
+                root: bank.root,
+                instance: device_id,
+                graph: cycle as u64,
+                epoch,
+            };
+            let slot = &mut bank.sources.slots[index];
+            slot.binding = Some(binding);
+            slot.identity = Some(identity);
+            slot.phase = Phase::Reserved;
+            slot.endpoint_loaned = true;
+            slot.endpoint_return = Some(Arc::clone(&signal));
+            slot.retiring_edit_reserved = true;
+            root.retiring_edit_alive[index].store(true, Ordering::Release);
+            (index, binding)
+        };
+        assert!(!outer.has_vacant_native_source_slots(capacity));
+        assert!(outer.has_vacant_native_source_slots(capacity - 1));
+
+        // Retirement signals the slot, but runtime_required (active tail) keeps
+        // endpoint return deferred and prevents premature recovery.
+        assert!(outer.retire_native_source_preparation(binding));
+        assert!(!signal.load(Ordering::Acquire));
+        assert!(outer.recover_native_source_preparation(binding).is_none());
+
+        // Ending runtime_required lets Root's control pump request endpoint
+        // return, while endpoint_loaned and retiring_edit_reserved still hold
+        // custody and block recovery.
+        signal.runtime_required.store(false, Ordering::Release);
+        root.advance_on_control(false);
+        assert!(signal.load(Ordering::Acquire));
+        assert!(outer.recover_native_source_preparation(binding).is_none());
+
+        // Once the callback returns the endpoint and the retiring-edit lease
+        // finishes, disposal reaches Complete and recovery vacates the cell.
+        {
+            let mut work = root.work.try_lock().unwrap();
+            let mut bank = lock(&root.bank);
+            let slot = &mut bank.sources.slots[slot_index];
+            slot.endpoint_loaned = false;
+            slot.retiring_edit_reserved = false;
+            root.retiring_edit_alive[slot_index].store(false, Ordering::Release);
+            slot.phase = Phase::Complete;
+            work.sources.cells[slot_index].disposal = Some(PreparationDisposal::NoInstance);
+        }
+        let returned = outer
+            .recover_native_source_preparation(binding)
+            .expect("completed retired cell must recover");
+        assert_eq!(returned.binding, binding);
+        assert!(outer.recover_native_source_preparation(binding).is_none());
+        assert!(outer.has_vacant_native_source_slots(capacity));
+    }
+
+    assert!(!lock(&root.bank).sources.occupied());
+    assert!(root.complete());
+}
