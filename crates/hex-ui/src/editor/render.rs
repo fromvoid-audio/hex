@@ -663,6 +663,7 @@ impl Render for EditorView {
         self.reconcile_clip_selection();
         self.reconcile_detail_context();
         self.restore_proposed_plugin_focus(window);
+        self.restore_device_confirmation_focus(window, cx);
         self.reconcile_track_name(window, cx);
         self.reconcile_fade_gesture();
         self.reconcile_clip_gain();
@@ -1890,7 +1891,6 @@ impl Render for EditorView {
             }))
             .child(self.transport(window, cx))
             .child(workspace)
-            .children(self.device_insert_confirmation_bar(window, cx))
             .child(self.status_bar(cx))
             .children(self.return_send_menu_overlay(window, cx))
             .children(self.floating_browser_audio_drag_ghost(window.scale_factor()))
@@ -1903,6 +1903,7 @@ impl Render for EditorView {
             .children(self.missing_media_overlay(cx))
             .children(super::device_panel::picker_overlay(self, window, cx))
             .children(super::device_panel::source_name_overlay(self, cx))
+            .children(self.device_insert_confirmation_overlay(window, cx))
             .when(self.update_preparing(), |root| {
                 root.child(
                     div()

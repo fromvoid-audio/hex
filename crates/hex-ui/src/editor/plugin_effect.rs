@@ -10,12 +10,35 @@ use hex_session::service::{
 };
 use std::rc::Rc;
 
-gpui::actions!(hex_plugin_proposal, [ActivatePluginProposal]);
+#[cfg(all(test, feature = "ui-test-support"))]
+mod confirmation_tests;
+
+fn device_confirmation_title(operation: GraphEditOperation) -> &'static str {
+    match operation {
+        GraphEditOperation::InsertDevice => "interrupt playback to insert this device?",
+        GraphEditOperation::ReplaceDevice => "interrupt playback to replace this device?",
+        GraphEditOperation::RemoveDevice => "interrupt playback to remove this device?",
+        GraphEditOperation::MoveDevice => "interrupt playback to move devices?",
+        GraphEditOperation::MoveTrack => "interrupt playback to move this track?",
+        GraphEditOperation::PowerDevice => "interrupt playback to change device power?",
+        GraphEditOperation::RemoveTrack => "interrupt playback to remove this track?",
+    }
+}
+
+gpui::actions!(
+    hex_plugin_proposal,
+    [ActivatePluginProposal, CancelDeviceConfirmation]
+);
 
 pub(super) fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         gpui::KeyBinding::new("enter", ActivatePluginProposal, Some("hex_plugin_proposal")),
         gpui::KeyBinding::new("space", ActivatePluginProposal, Some("hex_plugin_proposal")),
+        gpui::KeyBinding::new(
+            "escape",
+            CancelDeviceConfirmation,
+            Some("hex_device_confirmation"),
+        ),
     ]);
 }
 
@@ -104,15 +127,44 @@ pub(super) struct PendingPluginEffect {
 
 pub(super) struct DeviceConfirmation {
     offer: DeviceInsertConfirmation,
+    modal_focus: Option<gpui::FocusHandle>,
     action_focus: Option<[gpui::FocusHandle; 2]>,
+    focused_once: bool,
+    previous_focus: Option<gpui::FocusHandle>,
+}
+
+pub(super) struct DeviceConfirmationFocusRestore {
+    target: gpui::FocusHandle,
+    retired: Vec<gpui::FocusHandle>,
 }
 
 impl DeviceConfirmation {
     pub(super) fn new(offer: DeviceInsertConfirmation) -> Self {
         Self {
             offer,
+            modal_focus: None,
             action_focus: None,
+            focused_once: false,
+            previous_focus: None,
         }
+    }
+
+    fn owns_focus_handle(&self, handle: &gpui::FocusHandle) -> bool {
+        self.modal_focus.as_ref().is_some_and(|own| own == handle)
+            || self
+                .action_focus
+                .as_ref()
+                .is_some_and(|handles| handles.iter().any(|own| own == handle))
+    }
+
+    fn has_focus(&self, window: &Window) -> bool {
+        self.modal_focus
+            .as_ref()
+            .is_some_and(|handle| handle.is_focused(window))
+            || self
+                .action_focus
+                .as_ref()
+                .is_some_and(|handles| handles.iter().any(|handle| handle.is_focused(window)))
     }
 }
 
@@ -442,60 +494,113 @@ impl EditorView {
         )
     }
 
-    pub(super) fn device_insert_confirmation_bar(
+    pub(super) fn install_device_confirmation(&mut self, offer: DeviceInsertConfirmation) {
+        let previous_focus = self
+            .device_insert_confirmation
+            .as_ref()
+            .and_then(|current| current.previous_focus.clone());
+        let mut next = DeviceConfirmation::new(offer);
+        next.previous_focus = previous_focus;
+        self.device_confirmation_restore_focus = None;
+        self.device_insert_confirmation = Some(next);
+    }
+
+    pub(super) fn clear_device_confirmation_on_project_replace(&mut self) {
+        if let Some(confirmation) = self.device_insert_confirmation.take() {
+            let mut retired = Vec::with_capacity(3);
+            if let Some(modal) = &confirmation.modal_focus {
+                retired.push(modal.clone());
+            }
+            if let Some(actions) = &confirmation.action_focus {
+                retired.extend(actions.iter().cloned());
+            }
+            self.device_confirmation_restore_focus = Some(DeviceConfirmationFocusRestore {
+                target: self.focus.clone(),
+                retired,
+            });
+        }
+    }
+
+    pub(super) fn restore_device_confirmation_focus(&mut self, window: &mut Window, cx: &App) {
+        if self.device_insert_confirmation.is_none()
+            && let Some(restore) = self.device_confirmation_restore_focus.take()
+            && (window.focused(cx).is_none()
+                || restore
+                    .retired
+                    .iter()
+                    .any(|handle| handle.is_focused(window)))
+        {
+            restore.target.focus(window);
+        }
+    }
+
+    pub(super) fn device_insert_confirmation_overlay(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<Div> {
-        let confirmation = self.device_insert_confirmation.as_mut()?;
-        if !confirmation.offer.is_pending() {
-            if confirmation
-                .action_focus
-                .as_ref()
-                .is_some_and(|handles| handles.iter().any(|handle| handle.is_focused(window)))
+    ) -> Option<gpui::Stateful<Div>> {
+        let pending = self.device_insert_confirmation.as_ref()?.offer.is_pending();
+        if !pending {
+            let retired = self.device_insert_confirmation.take();
+            if let Some(confirmation) = retired
+                && (confirmation.has_focus(window) || window.focused(cx).is_none())
             {
-                self.focus.focus(window);
+                let target = confirmation
+                    .previous_focus
+                    .clone()
+                    .unwrap_or_else(|| self.focus.clone());
+                target.focus(window);
             }
-            self.device_insert_confirmation = None;
+            self.device_confirmation_restore_focus = None;
             return None;
         }
         if self.opening_project || self.close_prompt_open || self.save_dialog_open {
+            if let Some(confirmation) = self.device_insert_confirmation.as_mut() {
+                confirmation.focused_once = false;
+            }
             return None;
         }
-        let title = match confirmation.offer.operation() {
-            GraphEditOperation::InsertDevice => "interrupt playback to insert this device?",
-            GraphEditOperation::ReplaceDevice => "interrupt playback to replace this device?",
-            GraphEditOperation::RemoveDevice => "interrupt playback to remove this device?",
-            GraphEditOperation::MoveDevice => "interrupt playback to move devices?",
-            GraphEditOperation::MoveTrack => "interrupt playback to move this track?",
-            GraphEditOperation::PowerDevice => "interrupt playback to change device power?",
-            GraphEditOperation::RemoveTrack => "interrupt playback to remove this track?",
-        };
+        let confirmation = self.device_insert_confirmation.as_mut()?;
+        let title = device_confirmation_title(confirmation.offer.operation());
         // Keep the choice on the editor through repaint and native focus
-        // changes. Only the matching button action answers the worker's offer.
+        // changes. Only the matching button/key action answers the worker's offer.
         let submission = confirmation.offer.submission();
-        let [cancel_focus, proceed_focus] = confirmation.action_focus.get_or_insert_with(|| {
-            std::array::from_fn(|_| cx.focus_handle().tab_index(0).tab_stop(true))
-        });
+        let modal_focus = confirmation
+            .modal_focus
+            .get_or_insert_with(|| cx.focus_handle())
+            .clone();
+        let [cancel_focus, proceed_focus] = confirmation
+            .action_focus
+            .get_or_insert_with(|| {
+                std::array::from_fn(|_| cx.focus_handle().tab_index(0).tab_stop(true))
+            })
+            .clone();
+        if !confirmation.focused_once {
+            if confirmation.previous_focus.is_none() {
+                confirmation.previous_focus = window
+                    .focused(cx)
+                    .filter(|handle| !confirmation.owns_focus_handle(handle));
+            }
+            cancel_focus.focus(window);
+            confirmation.focused_once = true;
+        }
         let actions = [false, true].map(|proceed| {
             let (label, id, focus) = if proceed {
                 (
                     "proceed",
                     "device-insert-confirmation-proceed",
-                    &*proceed_focus,
+                    &proceed_focus,
                 )
             } else {
-                (
-                    "cancel",
-                    "device-insert-confirmation-cancel",
-                    &*cancel_focus,
-                )
+                ("cancel", "device-insert-confirmation-cancel", &cancel_focus)
             };
             hex_widgets::action(theme::text(label), theme::action_style())
                 .id(id)
                 .debug_selector(move || id.into())
-                .h(px(22.0))
-                .px_2()
+                .h(px(24.0))
+                .px_3()
+                .border_1()
+                .border_color(rgb(theme::color(theme::PaletteRole::Border)))
                 .track_focus(focus)
                 .key_context("hex_plugin_proposal")
                 .focus(|style| {
@@ -503,43 +608,110 @@ impl EditorView {
                         .border_1()
                         .border_color(rgb(theme::color(theme::PaletteRole::Text)))
                 })
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    view.answer_device_confirmation(submission, proceed, cx);
+                .on_click(cx.listener(move |view, _, window, cx| {
+                    view.answer_device_confirmation(submission, proceed, window, cx);
                 }))
-                .on_action(cx.listener(move |view, _: &ActivatePluginProposal, _, cx| {
-                    view.answer_device_confirmation(submission, proceed, cx);
-                }))
+                .on_action(
+                    cx.listener(move |view, _: &ActivatePluginProposal, window, cx| {
+                        view.answer_device_confirmation(submission, proceed, window, cx);
+                    }),
+                )
         });
+        let key_cancel_focus = cancel_focus.clone();
+        let key_proceed_focus = proceed_focus.clone();
+        let card = div()
+            .id("device-insert-confirmation")
+            .debug_selector(|| "device-insert-confirmation".into())
+            .w(px(420.0))
+            .max_w_full()
+            .p(px(14.0))
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
+            .border_1()
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .text_xs()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .child(theme::text(title)),
+            )
+            .child(
+                div()
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                    .child(theme::text(
+                        "proceeding will noticeably interrupt playback: audio fades briefly \
+                         and resumes from the same position, and held notes or effect tails \
+                         may reset.",
+                    )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap_2()
+                    .children(actions),
+            );
         Some(
             div()
-                .debug_selector(|| "device-insert-confirmation".into())
-                .flex_shrink_0()
+                .id("device-insert-confirmation-modal")
+                .debug_selector(|| "device-insert-confirmation-modal".into())
+                .absolute()
+                .inset_0()
+                .occlude()
                 .flex()
                 .items_center()
-                .gap_2()
-                .px_2()
-                .py_1()
-                .border_t_1()
-                .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-                .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-                .text_xs()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(theme::text(title))
-                        .child(
-                            div()
-                                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                                .child(theme::text(
-                                    "playback fades briefly and resumes from the same position. \
-                                     held notes and effect tails may reset.",
-                                )),
-                        ),
+                .justify_center()
+                .p_4()
+                .bg(gpui::rgba(0x00000077))
+                .track_focus(&modal_focus)
+                .key_context("hex_device_confirmation")
+                .on_action(
+                    cx.listener(move |view, _: &CancelDeviceConfirmation, window, cx| {
+                        view.answer_device_confirmation(submission, false, window, cx);
+                    }),
                 )
-                .children(actions),
+                .on_key_down(
+                    cx.listener(move |view, event: &gpui::KeyDownEvent, window, cx| {
+                        match event.keystroke.key.as_str() {
+                            "escape" => {
+                                view.answer_device_confirmation(submission, false, window, cx);
+                            }
+                            "tab" => {
+                                if key_cancel_focus.is_focused(window) {
+                                    key_proceed_focus.focus(window);
+                                } else {
+                                    key_cancel_focus.focus(window);
+                                }
+                                cx.notify();
+                                cx.stop_propagation();
+                            }
+                            "enter" | "space" => {
+                                if key_proceed_focus.is_focused(window) {
+                                    view.answer_device_confirmation(submission, true, window, cx);
+                                } else if key_cancel_focus.is_focused(window) {
+                                    view.answer_device_confirmation(submission, false, window, cx);
+                                } else {
+                                    cx.stop_propagation();
+                                }
+                            }
+                            _ => {
+                                cx.stop_propagation();
+                            }
+                        }
+                    }),
+                )
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down(gpui::MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down(gpui::MouseButton::Middle, |_, _, cx| cx.stop_propagation())
+                .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_up(gpui::MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                .on_mouse_up(gpui::MouseButton::Middle, |_, _, cx| cx.stop_propagation())
+                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .child(card),
         )
     }
 
@@ -547,6 +719,7 @@ impl EditorView {
         &mut self,
         submission: ResidentGraphSubmission,
         proceed: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if let Some(confirmation) = self.device_insert_confirmation.as_ref()
@@ -558,6 +731,12 @@ impl EditorView {
             } else {
                 confirmation.offer.cancel();
             }
+            let retired = self.device_insert_confirmation.take();
+            self.device_confirmation_restore_focus = None;
+            let target = retired
+                .and_then(|confirmation| confirmation.previous_focus.clone())
+                .unwrap_or_else(|| self.focus.clone());
+            target.focus(window);
             cx.notify();
         }
         cx.stop_propagation();
