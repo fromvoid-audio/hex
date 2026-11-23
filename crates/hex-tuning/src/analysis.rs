@@ -84,8 +84,8 @@ impl Analysis {
         result
     }
 
-    /// Three strongest three-note combinations containing the root.
-    pub fn root_shapes(&self, scale: Scale) -> [(usize, usize, f32); 3] {
+    /// Up to three strongest three-note combinations containing the root.
+    pub fn root_shapes(&self, scale: Scale) -> Vec<(usize, usize, f32)> {
         let mut shapes = Vec::new();
         for a in 0..scale.count() {
             if a == scale.root_degree() {
@@ -114,7 +114,8 @@ impl Analysis {
             }
         }
         shapes.sort_by(|a, b| b.2.total_cmp(&a.2));
-        std::array::from_fn(|index| shapes.get(index).copied().unwrap_or((0, 0, 0.0)))
+        shapes.truncate(3);
+        shapes
     }
 }
 
@@ -217,5 +218,46 @@ mod tests {
         let after = Analysis::new(scale);
         assert_eq!(after.root_fit[4], 1.0);
         assert_eq!(after.root_fit[0], before.pair_fit[0][4]);
+    }
+
+    #[test]
+    fn root_shapes_returns_only_real_triads_up_to_three() {
+        let mut three = Scale::equal(3);
+        for root in 0..3 {
+            three
+                .set_reference(three.root_key(), three.root_hz(), root)
+                .unwrap();
+            let shapes = Analysis::new(three).root_shapes(three);
+            assert_eq!(shapes.len(), 1, "root={root}");
+            let (a, b, score) = shapes[0];
+            assert!(a < 3 && b < 3 && a != b && a != root && b != root);
+            assert!(score.is_finite() && score > 0.0);
+        }
+
+        let four = Scale::equal(4);
+        let four_shapes = Analysis::new(four).root_shapes(four);
+        assert_eq!(four_shapes.len(), 3);
+        for window in four_shapes.windows(2) {
+            assert!(window[0].2 >= window[1].2);
+        }
+        let mut pairs: Vec<(usize, usize)> = four_shapes.iter().map(|&(a, b, _)| (a, b)).collect();
+        pairs.sort_unstable();
+        assert_eq!(pairs, vec![(1, 2), (1, 3), (2, 3)]);
+
+        let seven = Scale::default();
+        let seven_shapes = Analysis::new(seven).root_shapes(seven);
+        assert_eq!(seven_shapes.len(), 3);
+        for window in seven_shapes.windows(2) {
+            assert!(window[0].2 >= window[1].2);
+        }
+        for &(a, b, _) in &seven_shapes {
+            assert!(
+                a < seven.count()
+                    && b < seven.count()
+                    && a != b
+                    && a != seven.root_degree()
+                    && b != seven.root_degree()
+            );
+        }
     }
 }
