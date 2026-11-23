@@ -1,6 +1,7 @@
 use crate::{
-    AudioDomainClock, AudioEventEdit, AudioViewProjection, AudioViewResizeOperation, ClipFade,
-    ClipFlavor, ClipId, Command, Created, Editor, Project, TrimEdge,
+    AudioClipFadeClock, AudioDomainClock, AudioEventEdit, AudioViewProjection,
+    AudioViewResizeOperation, ClipFade, ClipFlavor, ClipId, Command, Created, Editor, Project,
+    TrimEdge,
 };
 
 fn fixture() -> (Editor, ClipId) {
@@ -101,9 +102,23 @@ fn silent_prefix_keeps_media_fade_and_metadata_with_repeatable_history() {
                 original.gain()
             )
         );
+        let expected_fade = original
+            .retained_fade()
+            .reanchor(placed.duration())
+            .unwrap();
         assert_eq!(edit.domain.clock, AudioDomainClock::Frames(128 + lead));
-        assert_eq!(edit.domain.fade, original.retained_fade());
-        assert_eq!(edit.domain.fade_start, lead);
+        assert_eq!(edit.domain.fade_clock, AudioClipFadeClock::Outer);
+        assert_eq!(edit.domain.fade, expected_fade);
+        assert_eq!(edit.domain.fade_start, 0);
+        assert_eq!(
+            placed
+                .projected_outer_fade(editor.project().tempo_map())
+                .unwrap()
+                .unwrap()
+                .frame_playback_envelope()
+                .unwrap(),
+            expected_fade
+        );
         let events = placed.audio_events();
         assert!(events.sources.is_empty(), "no retained-root nesting");
         assert_eq!(events.next_id, 2);
