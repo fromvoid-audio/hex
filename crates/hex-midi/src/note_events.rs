@@ -4,7 +4,8 @@ use crate::HeldNoteFault;
 
 /// Messages retain wire order, pitch, channel and seven-bit velocity or pressure.
 /// Zero-velocity NoteOn has NoteOff semantics; release velocity is preserved.
-/// AllNotesOff also represents MIDI reset and dropped burst input. InputLost
+/// AllNotesOff represents channel-mode note-release messages (CC120 and CC123–127),
+/// MIDI reset, and dropped burst input. InputLost
 /// (a held-note fault) requires terminal host
 /// cancellation outside any bounded event queue, so overflow cannot stick notes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,6 +28,13 @@ pub enum NoteEvent {
     },
     AllNotesOff,
     InputLost(HeldNoteFault),
+}
+
+/// MIDI 1.0 channel-mode controllers that release all sounding notes on the
+/// selected channel: All Sound Off (120), All Notes Off (123), Omni Off/On
+/// (124/125), Mono On (126), and Poly On (127).
+pub(crate) fn is_all_notes_off_cc(controller: u8) -> bool {
+    matches!(controller, 120 | 123..=127)
 }
 
 impl NoteEvent {
@@ -53,7 +61,7 @@ impl NoteEvent {
                 pitch,
                 value: velocity,
             }),
-            0xb0 if matches!(pitch, 120 | 123) => Some(Self::AllNotesOff),
+            0xb0 if is_all_notes_off_cc(pitch) => Some(Self::AllNotesOff),
             _ => None,
         }
     }
@@ -205,6 +213,92 @@ mod tests {
                 NoteEvent::AllNotesOff,
             ]
         );
+    }
+
+    #[test]
+    fn channel_mode_messages_release_held_notes_on_selected_channel_only() {
+        for cc in [120u8, 123, 124, 125, 126, 127] {
+            let mut decoder = Decoder::default();
+            let held = HeldNoteInput::default();
+            let events = RefCell::new(Vec::new());
+            // Mode message on another channel must leave selected channel held notes intact;
+            // the same mode message on the selected channel clears held notes and emits AllNotesOff.
+            let mode_value = if cc == 126 { 4 } else { 0 };
+            deliver_packets_with_notes(
+                &mut decoder,
+                2,
+                Controllers::default(),
+                [&[0x92, 60, 100, 0xb1, cc, mode_value][..]],
+                &held,
+                &|_| {},
+                &|event| events.borrow_mut().push(event),
+            );
+            let HeldNotesRead::Snapshot(after_other_channel) = held.read() else {
+                panic!("expected snapshot for other-channel CC {cc}")
+            };
+            assert_eq!(
+                after_other_channel
+                    .after(0)
+                    .map(|note| (note.pitch, note.velocity))
+                    .collect::<Vec<_>>(),
+                [(60, 100)],
+                "other-channel CC {cc} must not release selected channel"
+            );
+            assert_eq!(
+                *events.borrow(),
+                vec![NoteEvent::On {
+                    channel: 2,
+                    pitch: 60,
+                    velocity: 100,
+                }],
+                "other-channel CC {cc} must not emit AllNotesOff"
+            );
+
+            deliver_packets_with_notes(
+                &mut decoder,
+                2,
+                Controllers::default(),
+                [&[0xb2, cc, mode_value][..]],
+                &held,
+                &|_| {},
+                &|event| events.borrow_mut().push(event),
+            );
+            let HeldNotesRead::Snapshot(after_selected_channel) = held.read() else {
+                panic!("expected snapshot after selected-channel CC {cc}")
+            };
+            assert_eq!(
+                after_selected_channel.after(0).count(),
+                0,
+                "selected-channel CC {cc} must clear held notes"
+            );
+
+            deliver_packets_with_notes(
+                &mut decoder,
+                2,
+                Controllers::default(),
+                [&[0x92, 64, 90][..]],
+                &held,
+                &|_| {},
+                &|event| events.borrow_mut().push(event),
+            );
+            assert_eq!(
+                *events.borrow(),
+                vec![
+                    NoteEvent::On {
+                        channel: 2,
+                        pitch: 60,
+                        velocity: 100,
+                    },
+                    NoteEvent::AllNotesOff,
+                    NoteEvent::On {
+                        channel: 2,
+                        pitch: 64,
+                        velocity: 90,
+                    },
+                ],
+                "selected-channel CC {cc} must emit ordered AllNotesOff before next Note On"
+            );
+        }
     }
 
     fn deliver<'a>(

@@ -73,7 +73,7 @@ impl HeldNotes {
                 *word = 0;
                 Ok(changed)
             }
-            0xb0 if matches!(*pitch, 120 | 123) => {
+            0xb0 if crate::note_events::is_all_notes_off_cc(*pitch) => {
                 let changed = self.words.iter().any(|word| *word != 0);
                 self.clear();
                 Ok(changed)
