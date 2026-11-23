@@ -171,14 +171,10 @@ fn compressor_power_reversals_and_settled_off_follow_the_external_key() {
                 StereoAuxiliaryBlock::new(chunk, Some(&key[..length]), &mut [], BLOCK).unwrap();
             chain.begin_block();
             chain
-                .process_auxiliary_stage(
+                .process_auxiliary_stage_with_context(
                     0,
                     block,
-                    0,
-                    None,
-                    None,
-                    None,
-                    None,
+                    hex_lattice::StageProcessContext::new(0, None, None),
                     &mut |_, _, _, _, _, _| {},
                 )
                 .unwrap();

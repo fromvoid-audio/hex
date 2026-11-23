@@ -60,14 +60,10 @@ fn transient_output_set_reversal_clear_and_rollback_survive_missing_requests() {
             operation,
         });
         chain
-            .process_range_tapped_with_foreign_and_input(
+            .process_range_tapped_with_context(
                 0..1,
                 pcm,
-                0,
-                None,
-                None,
-                &mut RefuseForeign,
-                Some(&mut input),
+                crate::StageProcessContext::new(0, None, None).with_transient(Some(&mut input)),
                 &mut |_, _, _, _, _, _| {},
             )
             .unwrap();

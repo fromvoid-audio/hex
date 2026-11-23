@@ -4,6 +4,7 @@ use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct NativeSpectrumIdentity {
     capture_buffer: usize,
+    input_capture_buffer: usize,
     stop: usize,
     result_cache: usize,
     pub(super) sample_rate: u32,
@@ -15,8 +16,10 @@ pub(crate) struct NativeSpectrumReceipt {
     pub(crate) storage: crate::native_callback_owner::ChannelStorage,
 }
 impl NativeSpectrumReceipt {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         producer: &Producer<CaptureBatch>,
+        input_producer: &Producer<[[f32; 2]; MAX_CAPTURE_FRAMES]>,
         stop: &Arc<AtomicBool>,
         cores: &[SpectrumCore],
         latest_targets: &[Option<PublishedSpectra>],
@@ -38,6 +41,7 @@ impl NativeSpectrumReceipt {
             .checked_add(std::mem::size_of_val(latest_targets))?
             .checked_add(std::mem::size_of::<Option<SpectrumReaper>>())?;
         let mut storage = ChannelStorage::ring(producer.buffer())?
+            .plus(ChannelStorage::ring(input_producer.buffer())?)?
             .plus(ChannelStorage::paired_payload(stop.as_ref()))?
             .plus(ChannelStorage {
                 data_bytes,
@@ -57,6 +61,7 @@ impl NativeSpectrumReceipt {
         Some(Self {
             identity: NativeSpectrumIdentity {
                 capture_buffer: producer.buffer() as *const _ as usize,
+                input_capture_buffer: input_producer.buffer() as *const _ as usize,
                 stop: Arc::as_ptr(stop) as usize,
                 result_cache: latest_targets.as_ptr() as usize,
                 sample_rate,
@@ -70,6 +75,7 @@ impl SpectrumCapture {
     pub(crate) fn native_receipt(&self) -> Option<NativeSpectrumReceipt> {
         let Self {
             producer,
+            input_producer,
             next_sequences: _,
             exhausted: _,
             native,
@@ -77,6 +83,8 @@ impl SpectrumCapture {
         } = self;
         let receipt = (*native)?;
         (receipt.identity.capture_buffer == producer.buffer() as *const _ as usize
+            && receipt.identity.input_capture_buffer
+                == input_producer.buffer() as *const _ as usize
             && receipt.identity.project == project.as_ref().map(|project| project.ring_identity()))
         .then_some(receipt)
     }
@@ -156,6 +164,9 @@ pub(crate) fn constructor_storage_quote() -> Option<usize> {
         .checked_add(ChannelStorage::ring_bytes::<CaptureBatch>(
             CAPTURE_QUEUE_CAPACITY,
         )?)?
+        .checked_add(
+            ChannelStorage::ring_bytes::<[[f32; 2]; MAX_CAPTURE_FRAMES]>(CAPTURE_QUEUE_CAPACITY)?,
+        )?
         .checked_add(std::mem::size_of::<AtomicBool>())?
         .checked_add(project::constructor_storage_quote()?)
 }
@@ -184,7 +195,7 @@ mod tests {
                 receipt.storage.shared_groups,
                 receipt.storage.shared_handles
             ),
-            (6, 12)
+            (7, 14)
         );
         // Two signal windows (full-rate and bass rings) plus both stages'
         // window, real and imaginary boxes, excluding headers and queue.

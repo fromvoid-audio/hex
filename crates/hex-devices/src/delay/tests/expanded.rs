@@ -1227,14 +1227,11 @@ fn powered_off_delay_does_not_acknowledge_unprocessed_parameter_input() {
         let mut transient = NativeTransientProcessing::new(input);
         chain.begin_block();
         chain
-            .process_range_tapped_with_foreign_and_input(
+            .process_range_tapped_with_context(
                 0..1,
                 &mut [[0.25; 2]; 1],
-                0,
-                None,
-                None,
-                &mut hex_lattice::RefuseForeign,
-                Some(&mut transient),
+                hex_lattice::StageProcessContext::new(0, None, None)
+                    .with_transient(Some(&mut transient)),
                 &mut |_, _, _, _, _, _| {},
             )
             .unwrap();

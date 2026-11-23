@@ -22,10 +22,11 @@ fn snapshot_full_and_closed_queue_return_exact_inline_terminal_for_retry() {
     for _ in 0..REQUEST_CAPACITY {
         assert!(try_submit(&tx, Request::DeviceGesture(terminal)).is_ok());
     }
-    let Err(SubmitError::Full(Request::DeviceGesture(retry))) =
-        try_submit(&tx, Request::DeviceGesture(terminal))
-    else {
+    let Err(SubmitError::Full(request)) = try_submit(&tx, Request::DeviceGesture(terminal)) else {
         panic!("full queue must return terminal");
+    };
+    let Request::DeviceGesture(retry) = *request else {
+        panic!("full queue must return device gesture terminal");
     };
     assert_eq!(retry, terminal);
     assert!(
@@ -33,10 +34,12 @@ fn snapshot_full_and_closed_queue_return_exact_inline_terminal_for_retry() {
     );
     assert!(try_submit(&tx, Request::DeviceGesture(retry)).is_ok());
     drop(rx);
-    let Err(SubmitError::Closed(Request::DeviceGesture(retry))) =
-        try_submit(&tx, Request::DeviceGesture(terminal))
+    let Err(SubmitError::Closed(request)) = try_submit(&tx, Request::DeviceGesture(terminal))
     else {
         panic!("closed queue must return terminal");
+    };
+    let Request::DeviceGesture(retry) = *request else {
+        panic!("closed queue must return device gesture terminal");
     };
     assert_eq!(retry, terminal);
 }

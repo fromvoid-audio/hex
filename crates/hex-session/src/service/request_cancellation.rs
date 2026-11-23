@@ -123,12 +123,10 @@ impl Sender {
     pub(super) fn set_device_defaults_directory(&mut self, root: PathBuf) {
         self.device_defaults_directory = Some(Arc::new(root));
     }
-    #[allow(clippy::result_large_err)] // Exact original request on bounded admission refusal.
     #[cfg(test)]
     pub(super) fn submit(&self, request: Request) -> Result<(), SubmitError> {
         self.submit_traced(request, None)
     }
-    #[allow(clippy::result_large_err)] // Exact request custody is unchanged by diagnostic metadata.
     pub(super) fn submit_traced(
         &self,
         request: Request,
@@ -137,7 +135,6 @@ impl Sender {
         self.submit_traced_save(request, diagnostic, None)
     }
 
-    #[allow(clippy::result_large_err)] // Exact request custody is unchanged by save metadata.
     pub(super) fn submit_traced_save(
         &self,
         request: Request,
@@ -155,7 +152,7 @@ impl Sender {
         let intent = self.document_intent.load(Ordering::Acquire);
         let next = if replaces_document {
             let Some(next) = intent.checked_add(1) else {
-                return Err(SubmitError::Busy(
+                return Err(SubmitError::busy(
                     request,
                     super::BusyReason::DocumentIntentExhausted,
                 ));
@@ -199,8 +196,8 @@ impl Sender {
                 }
                 Ok(())
             }
-            Err(TrySendError::Full(queued)) => Err(SubmitError::Full(queued.request)),
-            Err(TrySendError::Disconnected(queued)) => Err(SubmitError::Closed(queued.request)),
+            Err(TrySendError::Full(queued)) => Err(SubmitError::full(queued.request)),
+            Err(TrySendError::Disconnected(queued)) => Err(SubmitError::closed(queued.request)),
         }
     }
 }
@@ -273,7 +270,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             sender.submit_traced_save(Request::SaveCurrent, None, Some(correlation)),
-            Err(SubmitError::Full(Request::SaveCurrent))
+            Err(SubmitError::Full(request)) if matches!(*request, Request::SaveCurrent)
         ));
         let queued = receiver.recv().unwrap();
         assert!(matches!(queued.request, Request::SaveCurrent));
@@ -331,12 +328,12 @@ mod tests {
         let intent = Arc::new(AtomicU64::new(0));
         let sender = Sender::new(channel, Arc::clone(&intent));
         assert!(
-            matches!(sender.submit(Request::Open(PathBuf::from("full.hex"))), Err(SubmitError::Full(Request::Open(path))) if path == Path::new("full.hex"))
+            matches!(sender.submit(Request::Open(PathBuf::from("full.hex"))), Err(SubmitError::Full(request)) if matches!(&*request, Request::Open(path) if path == Path::new("full.hex")))
         );
         assert_eq!(intent.load(Ordering::Acquire), 0);
         drop(receiver);
         assert!(
-            matches!(sender.submit(Request::Open(PathBuf::from("closed.hex"))), Err(SubmitError::Closed(Request::Open(path))) if path == Path::new("closed.hex"))
+            matches!(sender.submit(Request::Open(PathBuf::from("closed.hex"))), Err(SubmitError::Closed(request)) if matches!(&*request, Request::Open(path) if path == Path::new("closed.hex")))
         );
         assert_eq!(intent.load(Ordering::Acquire), 0);
     }

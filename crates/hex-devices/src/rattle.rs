@@ -178,10 +178,7 @@ impl NativeDeviceMetadata for RattleDefinition {
         state: &NativeDeviceState,
         id: ParameterId,
     ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
-        decode(state)?;
-        Ok(Some(
-            crate::parameter_binding::binding(&BINDINGS, id)?.semantics,
-        ))
+        crate::parameter_binding::parameter_semantics_for_state(&BINDINGS, state, id, decode)
     }
     fn patch_parameter(
         &self,
@@ -189,9 +186,7 @@ impl NativeDeviceMetadata for RattleDefinition {
         id: ParameterId,
         value: ParameterValue,
     ) -> Result<NativeDeviceState, DeviceContractError> {
-        let mut settings = decode(state)?;
-        crate::parameter_binding::binding(&BINDINGS, id)?.write(&mut settings, value)?;
-        encode(settings)
+        crate::parameter_binding::patch_parameter(&BINDINGS, state, id, value, decode, encode)
     }
 }
 
@@ -263,12 +258,9 @@ impl NativeDeviceDefinition for RattleDefinition {
         context: &hex_lattice::DevicePreparationContext<'_>,
         parameters: &[ParameterId],
     ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
-        Ok(hex_lattice::PreparedRuntimeDevice {
-            matrix: StereoMatrix::identity(),
-            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
-                std::sync::Arc::new(Self::prepare_owned(state, context.sample_rate, parameters)?),
-            )),
-        })
+        Ok(crate::parameter_binding::prepared_legacy_runtime(
+            Self::prepare_owned(state, context.sample_rate, parameters)?,
+        ))
     }
     fn prepare_matrix(
         &self,
@@ -670,24 +662,7 @@ impl NativeProcessorRuntime for RattleRuntime {
     fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
         self.base.supports(parameter)
     }
-    fn process_block_with_automation(
-        &mut self,
-        frames: &mut [StereoFrame],
-        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
-        values: &dyn hex_lattice::NativeParameterAutomation,
-        _resources: &dyn hex_lattice::DeviceResources,
-    ) -> Result<(), DeviceContractError> {
-        self.process_automated(frames, values, false)
-    }
-    fn process_bypassed_block_with_automation(
-        &mut self,
-        frames: &mut [StereoFrame],
-        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
-        values: &dyn hex_lattice::NativeParameterAutomation,
-        _resources: &dyn hex_lattice::DeviceResources,
-    ) -> Result<(), DeviceContractError> {
-        self.process_automated(frames, values, true)
-    }
+    crate::parameter_binding::delegate_automated_block_processing!(process_automated);
     fn process_block(&mut self, frames: &mut [StereoFrame], _: &dyn hex_lattice::DeviceResources) {
         for frame in frames {
             self.process_frame(frame);

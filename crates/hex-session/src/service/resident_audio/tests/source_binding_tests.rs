@@ -49,15 +49,7 @@ fn prepare(session: &Session, sink: &mut OfflineSink) -> Snapshot {
     session
         .resident_seek_inputs(sampler_export::Admission::default(), None, None)
         .unwrap()
-        .prepare(
-            session.project(),
-            sink,
-            &session.media_bank(),
-            session.sine_table(),
-            &session.audio_transforms,
-            &session.audio_clip_waveforms,
-            context(0),
-        )
+        .prepare_for_session(session.project(), session, sink, context(0))
         .unwrap()
 }
 
@@ -1253,10 +1245,12 @@ fn preview_runtime_publication_updates_only_the_audible_snapshot() {
     session
         .publish_resident_runtime_inputs(
             current.as_mut().unwrap(),
-            &mut sink,
-            sampler_export::Admission::default(),
-            metadata,
-            ResidentPublicationPolicy::InheritRuntime,
+            ResidentPublishContext {
+                sink: &mut sink,
+                admission: sampler_export::Admission::default(),
+                metadata,
+                policy: ResidentPublicationPolicy::InheritRuntime,
+            },
             RuntimeInputs::default(),
             None,
         )
@@ -1295,10 +1289,12 @@ fn seek_publication_never_attributes_a_different_prepared_graph_to_current() {
             session.project(),
             &mut current,
             playback,
-            &mut sink,
-            sampler_export::Admission::default(),
-            canonical_metadata(&different, context(0)),
-            ResidentPublicationPolicy::InheritRuntime,
+            ResidentPublishContext {
+                sink: &mut sink,
+                admission: sampler_export::Admission::default(),
+                metadata: canonical_metadata(&different, context(0)),
+                policy: ResidentPublicationPolicy::InheritRuntime,
+            },
             &AtomicBool::new(false),
         )
         .unwrap();
@@ -1320,10 +1316,12 @@ fn seek_publication_never_attributes_a_different_prepared_graph_to_current() {
             session.project(),
             &mut current,
             playback,
-            &mut sink,
-            sampler_export::Admission::default(),
-            canonical_metadata(&same, context(0)),
-            ResidentPublicationPolicy::InheritRuntime,
+            ResidentPublishContext {
+                sink: &mut sink,
+                admission: sampler_export::Admission::default(),
+                metadata: canonical_metadata(&same, context(0)),
+                policy: ResidentPublicationPolicy::InheritRuntime,
+            },
             &AtomicBool::new(false),
         )
         .unwrap();

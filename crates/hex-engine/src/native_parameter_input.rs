@@ -125,26 +125,22 @@ fn dispatch_stage(
             1,
         )
         .map_err(|_| hex_lattice_contract::DeviceContractError::InvalidDescriptor)?;
-        chain.process_auxiliary_stage_with_external_set(
+        chain.process_auxiliary_stage_with_context(
             range.start,
             block,
-            offset,
-            clock,
-            output_clock,
-            transient,
-            external,
+            hex_lattice::StageProcessContext::new(offset, clock, output_clock)
+                .with_transient(transient)
+                .with_external(external),
             &mut observe,
         )
     } else {
-        chain.process_range_tapped_with_foreign_input_and_external_set(
+        chain.process_range_tapped_with_context(
             range,
             frames,
-            offset,
-            clock,
-            output_clock,
-            foreign,
-            transient,
-            external,
+            hex_lattice::StageProcessContext::new(offset, clock, output_clock)
+                .with_foreign(foreign)
+                .with_transient(transient)
+                .with_external(external),
             &mut observe,
         )
     }

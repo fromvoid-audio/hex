@@ -99,6 +99,7 @@ pub enum CaptureOutcome {
 /// callback owner. It must be returned to control after callback quiescence.
 pub struct SpectrumCapture {
     producer: Producer<CaptureBatch>,
+    input_producer: Producer<[[f32; 2]; MAX_CAPTURE_FRAMES]>,
     next_sequences: [u64; MAX_SPECTRUM_TARGETS],
     exhausted: bool,
     native: Option<NativeSpectrumReceipt>,
@@ -191,11 +192,17 @@ impl SpectrumCapture {
             return CaptureOutcome::InvalidBatch { sequence };
         }
 
+        if self.producer.slots() == 0 || (input.is_some() && self.input_producer.slots() == 0) {
+            return CaptureOutcome::QueueFull { sequence };
+        }
         let mut samples = [[0.0; 2]; MAX_CAPTURE_FRAMES];
         samples[..frames.len()].copy_from_slice(frames);
-        let mut input_samples = [[0.0; 2]; MAX_CAPTURE_FRAMES];
         if let Some(input) = input {
+            let mut input_samples = [[0.0; 2]; MAX_CAPTURE_FRAMES];
             input_samples[..input.len()].copy_from_slice(input);
+            if self.input_producer.push(input_samples).is_err() {
+                return CaptureOutcome::QueueFull { sequence };
+            }
         }
         let batch = CaptureBatch {
             slot: slot as u8,
@@ -204,7 +211,6 @@ impl SpectrumCapture {
             captured_start,
             frame_count: frames.len() as u16,
             samples,
-            input_samples,
             paired: input.is_some(),
         };
         match self.producer.push(batch) {
@@ -476,12 +482,14 @@ fn spawn_worker(
     latest_targets.resize_with(MAX_SPECTRUM_TARGETS, || None);
     let latest_targets = latest_targets.into_boxed_slice();
     let (producer, consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
+    let (input_producer, input_consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
     let (result_sender, result_receiver) = sync_channel(RESULT_QUEUE_CAPACITY);
     let stop = Arc::new(AtomicBool::new(false));
     let receipt = if fixed_native {
         Some(
             NativeSpectrumReceipt::new(
                 &producer,
+                &input_producer,
                 &stop,
                 &cores,
                 &latest_targets,
@@ -501,13 +509,21 @@ fn spawn_worker(
             if let Some(entry) = entry {
                 entry();
             }
-            worker_loop(consumer, result_sender, worker_stop, cores, project_worker)
+            worker_loop(
+                consumer,
+                input_consumer,
+                result_sender,
+                worker_stop,
+                cores,
+                project_worker,
+            )
         })
         .map_err(SpectrumWorkerError::ThreadSpawn)?;
 
     Ok((
         SpectrumCapture {
             producer,
+            input_producer,
             next_sequences: [0; MAX_SPECTRUM_TARGETS],
             exhausted: false,
             native: receipt,
@@ -538,12 +554,12 @@ struct CaptureBatch {
     captured_start: Instant,
     frame_count: u16,
     samples: [[f32; 2]; MAX_CAPTURE_FRAMES],
-    input_samples: [[f32; 2]; MAX_CAPTURE_FRAMES],
     paired: bool,
 }
 
 fn worker_loop(
     mut consumer: Consumer<CaptureBatch>,
+    mut input_consumer: Consumer<[[f32; 2]; MAX_CAPTURE_FRAMES]>,
     result_sender: SyncSender<PublishedSpectra>,
     stop: Arc<AtomicBool>,
     mut cores: Box<[SpectrumCore]>,
@@ -555,8 +571,13 @@ fn worker_loop(
             let Ok(batch) = consumer.pop() else {
                 break;
             };
+            let input_samples = if batch.paired {
+                input_consumer.pop().ok()
+            } else {
+                None
+            };
             if let Some(core) = cores.get_mut(usize::from(batch.slot)) {
-                core.ingest(batch);
+                core.ingest_with_input(batch, input_samples);
             }
             drained += 1;
         }
@@ -632,19 +653,31 @@ impl SpectrumCore {
         ))
     }
 
+    #[cfg(test)]
     fn ingest(&mut self, batch: CaptureBatch) -> IngestOutcome {
+        self.ingest_with_input(batch, None)
+    }
+
+    fn ingest_with_input(
+        &mut self,
+        batch: CaptureBatch,
+        input_samples: Option<[[f32; 2]; MAX_CAPTURE_FRAMES]>,
+    ) -> IngestOutcome {
         let frame_count = usize::from(batch.frame_count);
+        let missing_input = batch.paired && input_samples.is_none();
         if frame_count == 0
             || frame_count > MAX_CAPTURE_FRAMES
+            || missing_input
             || batch.samples[..frame_count]
                 .iter()
                 .flatten()
                 .any(|sample| !sample.is_finite())
-            || (batch.paired
-                && batch.input_samples[..frame_count]
+            || input_samples.is_some_and(|input| {
+                input[..frame_count]
                     .iter()
                     .flatten()
-                    .any(|sample| !sample.is_finite()))
+                    .any(|sample| !sample.is_finite())
+            })
         {
             self.clear_window();
             self.last_sequence = Some(batch.sequence);
@@ -689,8 +722,8 @@ impl SpectrumCore {
         self.captured_at = Some(batch.captured_start);
         // Finiteness was checked above, so neither push can refuse.
         let _ = self.output_window.push(&batch.samples[..frame_count]);
-        if batch.paired {
-            let _ = self.input_window.push(&batch.input_samples[..frame_count]);
+        if let Some(input_samples) = input_samples.filter(|_| batch.paired) {
+            let _ = self.input_window.push(&input_samples[..frame_count]);
         }
         self.dirty_since_analysis = true;
 
@@ -893,9 +926,8 @@ mod tests {
         for sequence in 0..16 {
             let mut capture = batch(sequence, context, 0.5, 256);
             capture.paired = true;
-            capture.input_samples.fill([0.25; 2]);
             capture.captured_start = now;
-            analysis.ingest(capture);
+            analysis.ingest_with_input(capture, Some([[0.25; 2]; MAX_CAPTURE_FRAMES]));
         }
         let first = analysis.analyze_pair_if_due(now).unwrap();
         let later = now + Duration::from_millis(100);
@@ -903,7 +935,7 @@ mod tests {
             let mut capture = batch(sequence, context, 0.0, 256);
             capture.paired = true;
             capture.captured_start = later;
-            analysis.ingest(capture);
+            analysis.ingest_with_input(capture, Some([[0.0; 2]; MAX_CAPTURE_FRAMES]));
         }
         let falling = analysis.analyze_pair_if_due(later).unwrap();
         for (old, new) in [
@@ -932,7 +964,7 @@ mod tests {
         for sequence in 33..49 {
             let mut capture = batch(sequence, context, 0.0, 256);
             capture.paired = true;
-            analysis.ingest(capture);
+            analysis.ingest_with_input(capture, Some([[0.0; 2]; MAX_CAPTURE_FRAMES]));
         }
         let reset = analysis
             .analyze_pair_if_due(later + ANALYSIS_INTERVAL)
@@ -964,16 +996,22 @@ mod tests {
             let mut capture = batch(sequence, context, 0.0, 256);
             capture.paired = true;
             capture.captured_start = now;
-            for i in 0..256 {
+            let mut input_samples = [[0.0; 2]; MAX_CAPTURE_FRAMES];
+            for (i, (input_frame, output_frame)) in input_samples
+                .iter_mut()
+                .zip(capture.samples.iter_mut())
+                .take(256)
+                .enumerate()
+            {
                 let position = sequence as usize * 256 + i;
                 let signal = (std::f32::consts::TAU * 32.0 * position as f32
                     / crate::spectrum::FFT_SIZE as f32)
                     .sin()
                     * 0.5;
-                capture.input_samples[i] = [signal, -signal];
-                capture.samples[i] = [signal * 0.25, -signal * 0.25];
+                *input_frame = [signal, -signal];
+                *output_frame = [signal * 0.25, -signal * 0.25];
             }
-            analysis.ingest(capture);
+            analysis.ingest_with_input(capture, Some(input_samples));
         }
         let pair = analysis.analyze_pair_if_due(now).unwrap();
         let peak = |frame: &SpectrumFrame| {
@@ -995,7 +1033,10 @@ mod tests {
         // A missing capture resets both phases, never joining samples across a gap.
         let mut after_gap = batch(17, context, 0.0, 256);
         after_gap.paired = true;
-        assert_eq!(analysis.ingest(after_gap), IngestOutcome::Reset);
+        assert_eq!(
+            analysis.ingest_with_input(after_gap, Some([[0.0; 2]; MAX_CAPTURE_FRAMES])),
+            IngestOutcome::Reset
+        );
         assert_eq!(analysis.output_window.filled(), 256);
         assert!(
             analysis
@@ -1005,7 +1046,7 @@ mod tests {
         for sequence in 18..33 {
             let mut silence = batch(sequence, context, 0.0, 256);
             silence.paired = true;
-            analysis.ingest(silence);
+            analysis.ingest_with_input(silence, Some([[0.0; 2]; MAX_CAPTURE_FRAMES]));
         }
         let silent = analysis
             .analyze_pair_if_due(now + ANALYSIS_INTERVAL)
@@ -1037,8 +1078,10 @@ mod tests {
     #[test]
     fn paired_capture_refuses_mismatched_or_nonfinite_input_and_preserves_sequence_gaps() {
         let (producer, mut consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
+        let (input_producer, mut input_consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
         let mut capture = SpectrumCapture {
             producer,
+            input_producer,
             next_sequences: [0; MAX_SPECTRUM_TARGETS],
             exhausted: false,
             native: None,
@@ -1054,6 +1097,7 @@ mod tests {
             CaptureOutcome::InvalidBatch { sequence: 1 }
         );
         assert!(consumer.pop().is_err());
+        assert!(input_consumer.pop().is_err());
         let mut submit = || {
             assert_eq!(
                 capture.submit_pair(context, &[[0.5, -0.5]; 256], &[[0.1, -0.1]; 256]),
@@ -1080,7 +1124,7 @@ mod tests {
         let queued = consumer.pop().unwrap();
         assert_eq!(queued.sequence, 2);
         assert!(queued.paired);
-        assert_eq!(queued.input_samples, [[0.5, -0.5]; 256]);
+        assert_eq!(input_consumer.pop().unwrap(), [[0.5, -0.5]; 256]);
         assert_eq!(queued.samples, [[0.1, -0.1]; 256]);
     }
 
@@ -1103,7 +1147,6 @@ mod tests {
             captured_start: Instant::now(),
             frame_count: count as u16,
             samples,
-            input_samples: [[0.0; 2]; MAX_CAPTURE_FRAMES],
             paired: false,
         }
     }
@@ -1115,8 +1158,10 @@ mod tests {
     #[test]
     fn full_queue_drops_only_capture_and_next_sequence_exposes_gap() {
         let (producer, mut consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
+        let (input_producer, _input_consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
         let mut capture = SpectrumCapture {
             producer,
+            input_producer,
             next_sequences: [0; MAX_SPECTRUM_TARGETS],
             exhausted: false,
             native: None,
@@ -1351,8 +1396,10 @@ mod tests {
     #[test]
     fn sequence_exhaustion_requires_a_new_capture_generation() {
         let (producer, _consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
+        let (input_producer, _input_consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
         let mut capture = SpectrumCapture {
             producer,
+            input_producer,
             next_sequences: [u64::MAX; MAX_SPECTRUM_TARGETS],
             exhausted: false,
             native: None,
@@ -1371,8 +1418,10 @@ mod tests {
     #[test]
     fn invalid_capture_is_refused_and_consumes_a_sequence() {
         let (producer, mut consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
+        let (input_producer, _input_consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
         let mut capture = SpectrumCapture {
             producer,
+            input_producer,
             next_sequences: [0; MAX_SPECTRUM_TARGETS],
             exhausted: false,
             native: None,

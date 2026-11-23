@@ -5,7 +5,7 @@ use hex_dsp::StereoMatrix;
 use hex_lattice::{
     NativeRuntimeChain, NativeTransientInput, NativeTransientOperation, NativeTransientProcessing,
     NativeTransientValue, PreparedProcessorInstance, PreparedRuntimeInstance, ProcessorChainOwner,
-    ProcessorInstanceIdentity, RefuseForeign,
+    ProcessorInstanceIdentity,
 };
 use hex_lattice_contract::{
     DeviceAutomationTarget::HostOutputGain, DeviceTypeId, HostGain, NativeDeviceState,
@@ -59,14 +59,11 @@ fn profile_transient(block: usize) -> Result<(), Box<dyn Error>> {
         });
         let start = Instant::now();
         current.begin_block();
-        current.process_range_tapped_with_foreign_and_input(
+        current.process_range_tapped_with_context(
             0..1,
             black_box(&mut pcm),
-            0,
-            None,
-            None,
-            &mut RefuseForeign,
-            Some(black_box(&mut context)),
+            hex_lattice::StageProcessContext::new(0, None, None)
+                .with_transient(Some(black_box(&mut context))),
             &mut |_, _, _, _, _, _| {},
         )?;
         current.commit_block();

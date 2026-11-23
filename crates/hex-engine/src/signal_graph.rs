@@ -2708,28 +2708,28 @@ impl SignalRuntime {
             )
             .map_err(|_| Invalid("sidechain auxiliary block is invalid"))?;
             chain
-                .process_auxiliary_stage_with_external_set(
+                .process_auxiliary_stage_with_context(
                     index,
                     block,
-                    offset,
-                    Some(&input_clock),
-                    Some(&output_clock),
-                    None,
-                    None,
+                    hex_lattice::StageProcessContext::new(
+                        offset,
+                        Some(&input_clock),
+                        Some(&output_clock),
+                    ),
                     &mut observe,
                 )
                 .map_err(|_| Invalid("native effect processing failed"))?;
         } else {
             chain
-                .process_range_tapped_with_foreign_input_and_external_set(
+                .process_range_tapped_with_context(
                     index..index + 1,
                     frames,
-                    offset,
-                    Some(&input_clock),
-                    Some(&output_clock),
-                    foreign,
-                    None,
-                    None,
+                    hex_lattice::StageProcessContext::new(
+                        offset,
+                        Some(&input_clock),
+                        Some(&output_clock),
+                    )
+                    .with_foreign(foreign),
                     &mut observe,
                 )
                 .map_err(|_| Invalid("native effect processing failed"))?;

@@ -270,13 +270,11 @@ fn foreign_nodes_borrow_exact_configuration_and_route_segments_for_all_chain_own
             let (first, second) = frames.split_at_mut(3);
             for (offset, segment) in [(0, first), (3, second)] {
                 chain
-                    .process_range_tapped_with_foreign(
+                    .process_range_tapped_with_context(
                         0..1,
                         segment,
-                        offset,
-                        None,
-                        None,
-                        &mut foreign,
+                        crate::StageProcessContext::new(offset, None, None)
+                            .with_foreign(&mut foreign),
                         &mut |actual_owner, device, kind, phase, at, samples| {
                             assert_eq!((actual_owner, device, kind), (owner, 17, TYPE));
                             taps.push((phase, at, samples.len()));
@@ -330,13 +328,10 @@ fn missing_foreign_context_refuses_and_failed_processing_revokes_without_replayi
     let mut taps = Vec::new();
     chain.begin_block();
     assert_eq!(
-        chain.process_range_tapped_with_foreign(
+        chain.process_range_tapped_with_context(
             0..1,
             &mut [[1.0; 2]],
-            0,
-            None,
-            None,
-            &mut foreign,
+            crate::StageProcessContext::new(0, None, None).with_foreign(&mut foreign),
             &mut |_, _, _, phase, _, _| taps.push(phase),
         ),
         Err(DeviceContractError::ForeignProcessingFailed)
@@ -346,13 +341,10 @@ fn missing_foreign_context_refuses_and_failed_processing_revokes_without_replayi
     assert_eq!(taps, vec![NodeSignalPhase::Input]);
     chain.begin_block();
     assert_eq!(
-        chain.process_range_tapped_with_foreign(
+        chain.process_range_tapped_with_context(
             0..1,
             &mut [[1.0; 2]],
-            0,
-            None,
-            None,
-            &mut foreign,
+            crate::StageProcessContext::new(0, None, None).with_foreign(&mut foreign),
             &mut |_, _, _, _, _, _| {},
         ),
         Err(DeviceContractError::ForeignProcessingFailed)

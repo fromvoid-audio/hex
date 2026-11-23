@@ -24,15 +24,7 @@ pub(in crate::service) fn bounce_clip(
                 .resident_seek_inputs(admission, current.as_ref(), None)
                 .map_err(|e| e.to_string())?;
             let mut isolated = inputs
-                .prepare(
-                    project,
-                    &mut **sink,
-                    &session.media_bank(),
-                    session.sine_table(),
-                    &session.audio_transforms,
-                    &session.audio_clip_waveforms,
-                    context,
-                )
+                .prepare_for_session(project, session, &mut **sink, context)
                 .map_err(|e| e.to_string())?;
             // Offline conversion is authored synthesis only. No monitor selection is attached.
             isolated.inputs = RuntimeInputs::default();
@@ -185,18 +177,22 @@ pub(in crate::service) fn bounce_arrangement(
             )?;
             let project = captured.as_ref().unwrap_or(project);
             let mut offline = sink.prepare_offline_bounce(effect_input(project), control)?;
+            let media = session.media_bank();
             let mut isolated = inputs
                 .prepare_with_gain(
                     project,
                     &mut **sink,
-                    &session.media_bank(),
-                    session.sine_table(),
-                    &session.audio_transforms,
-                    &waveforms,
-                    None,
-                    None,
+                    CompileResources {
+                        media: &media,
+                        table: session.sine_table(),
+                        transforms: &session.audio_transforms,
+                        waveforms: &waveforms,
+                    },
+                    PrepareOptions {
+                        offline: offline.as_deref(),
+                        ..PrepareOptions::default()
+                    },
                     context,
-                    offline.as_deref(),
                 )
                 .map_err(|e| e.to_string())?;
             isolated.inputs = RuntimeInputs::default();

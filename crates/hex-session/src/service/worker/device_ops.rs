@@ -1298,16 +1298,18 @@ pub(super) fn handle<'a>(
                         decoded,
                         &cancel,
                         destination,
-                        hex_engine::AudioSourceContext {
-                            project_generation,
-                            editor_revision: revision.saturating_add(1),
+                        resident_audio::ResidentSinkContext {
+                            context: hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision.saturating_add(1),
+                            },
+                            sink,
+                            admission: export_lane.admission_with_resident_owners(
+                                current,
+                                resident_seek.as_ref(),
+                                resident_preview.as_ref(),
+                            ),
                         },
-                        sink,
-                        export_lane.admission_with_resident_owners(
-                            current,
-                            resident_seek.as_ref(),
-                            resident_preview.as_ref(),
-                        ),
                         resident_snapshot.as_ref(),
                     )?;
                     let prepared = Arc::clone(&snapshot.prepared);
@@ -1458,21 +1460,23 @@ pub(super) fn handle<'a>(
                     decoded,
                     &cancel,
                     crate::native_assets::NativeAssetDestination::Unassigned,
-                    hex_engine::AudioSourceContext {
-                        project_generation,
-                        editor_revision: revision.saturating_add(1),
+                    resident_audio::ResidentSinkContext {
+                        context: hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision.saturating_add(1),
+                        },
+                        sink,
+                        admission: export_lane.admission_with_resident_owners(
+                            compiled.as_ref().map(|(_, prepared)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: current_sources.as_ref(),
+                                    prepared: Some(prepared),
+                                }
+                            }),
+                            resident_seek.as_ref(),
+                            resident_preview.as_ref(),
+                        ),
                     },
-                    sink,
-                    export_lane.admission_with_resident_owners(
-                        compiled.as_ref().map(|(_, prepared)| {
-                            hex_engine::native_device_resources::ControlSamplerSelection {
-                                sources: current_sources.as_ref(),
-                                prepared: Some(prepared),
-                            }
-                        }),
-                        resident_seek.as_ref(),
-                        resident_preview.as_ref(),
-                    ),
                     resident_snapshot.as_ref(),
                 )
             })();

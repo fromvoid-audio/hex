@@ -15,8 +15,8 @@ fn an_empty_bounce_target_is_refused_as_invalid_not_export_pending() {
     assert!(matches!(
         refused,
         Err(SubmitError::Busy(
-            Request::BounceArrangement { .. },
+            request,
             BusyReason::InvalidBounceTarget
-        ))
+        )) if matches!(*request, Request::BounceArrangement { .. })
     ));
 }

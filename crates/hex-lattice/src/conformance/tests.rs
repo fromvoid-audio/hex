@@ -359,14 +359,10 @@ fn auxiliary_stage_delivers_independent_pcm_and_rolls_back_with_the_chain() {
         for (i, (main, key)) in main.chunks_mut(2).zip(key.chunks(2)).enumerate() {
             let block = crate::StereoAuxiliaryBlock::new(main, Some(key), &mut silence, 4).unwrap();
             chain
-                .process_auxiliary_stage(
+                .process_auxiliary_stage_with_context(
                     0,
                     block,
-                    i * 2,
-                    None,
-                    None,
-                    None,
-                    None,
+                    crate::StageProcessContext::new(i * 2, None, None),
                     &mut |owner, device, kind, phase, offset, frames| {
                         assert_eq!(
                             (owner, device, kind),
@@ -393,14 +389,10 @@ fn auxiliary_stage_delivers_independent_pcm_and_rolls_back_with_the_chain() {
         let block =
             crate::StereoAuxiliaryBlock::new(&mut main, Some(&key), &mut silence, 4).unwrap();
         chain
-            .process_auxiliary_stage(
+            .process_auxiliary_stage_with_context(
                 0,
                 block,
-                0,
-                None,
-                None,
-                None,
-                None,
+                crate::StageProcessContext::new(0, None, None),
                 &mut |_, _, _, _, _, _| {},
             )
             .unwrap();
@@ -408,14 +400,10 @@ fn auxiliary_stage_delivers_independent_pcm_and_rolls_back_with_the_chain() {
         let block =
             crate::StereoAuxiliaryBlock::new(&mut main, Some(&key), &mut silence, 4).unwrap();
         assert_eq!(
-            chain.process_auxiliary_stage(
+            chain.process_auxiliary_stage_with_context(
                 1,
                 block,
-                0,
-                None,
-                None,
-                None,
-                None,
+                crate::StageProcessContext::new(0, None, None),
                 &mut |_, _, _, _, _, _| {}
             ),
             Err(DeviceContractError::InvalidDescriptor)

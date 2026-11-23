@@ -285,28 +285,30 @@ impl TailSplit {
             let result = NativeRuntimeChain::process_entry_with_foreign_inner(
                 previous,
                 old_output,
-                None,
-                frame_offset,
-                clock,
-                clock,
-                &mut RefuseForeign,
-                None,
-                None,
+                crate::EntryProcessContext {
+                    key: None,
+                    frame_offset,
+                    clock,
+                    output_clock: clock,
+                    foreign: &mut RefuseForeign,
+                    input: None,
+                    external: None,
+                },
             );
             previous.bypassed = self.old_bypassed;
             result
         };
         previous.metering = old_metering;
         let result = old_result.and_then(|()| {
-            next.process_range_tapped_with_foreign_input_and_external(
+            let external_set = external
+                .as_ref()
+                .map(|window| window as &dyn crate::NativeExternalAutomationSet);
+            next.process_range_tapped_with_context(
                 self.index..self.index + 1,
                 new_output,
-                frame_offset,
-                clock,
-                clock,
-                &mut RefuseForeign,
-                transient.as_deref_mut(),
-                external,
+                crate::StageProcessContext::new(frame_offset, clock, clock)
+                    .with_transient(transient.as_deref_mut())
+                    .with_external(external_set),
                 &mut |_, _, _, _, _, _| {},
             )
         });

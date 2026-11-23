@@ -439,34 +439,39 @@ impl Lane {
                             .map_or(session.project(), |preview| preview.project.as_ref()),
                         current.ok_or("seek source unavailable")?,
                         playback,
-                        sink,
-                        admission,
-                        ResidentPublicationMetadata {
-                            source_origin: crate::service::ResidentSourceOrigin::Unknown,
-                            clip_preview: None,
-                            context,
-                            device_preview: job.intent.device_preview,
-                            tuning_preview: job.intent.tuning_preview,
-                            seek_request: Some(job.intent.request_id),
-                            stopped_restore: false,
-                            computer_keyboard_request: None,
-                            gain_recording_track: job.snapshot.prepared.gain_recording_track(),
-                            requires_preroll: job
-                                .snapshot
-                                .prepared
-                                .arrangement_seek_requires_preroll(),
+                        resident_audio::ResidentPublishContext {
+                            sink,
+                            admission,
+                            metadata: ResidentPublicationMetadata {
+                                source_origin: crate::service::ResidentSourceOrigin::Unknown,
+                                clip_preview: None,
+                                context,
+                                device_preview: job.intent.device_preview,
+                                tuning_preview: job.intent.tuning_preview,
+                                seek_request: Some(job.intent.request_id),
+                                stopped_restore: false,
+                                computer_keyboard_request: None,
+                                gain_recording_track: job.snapshot.prepared.gain_recording_track(),
+                                requires_preroll: job
+                                    .snapshot
+                                    .prepared
+                                    .arrangement_seek_requires_preroll(),
+                            },
+                            policy: job
+                                .intent
+                                .section
+                                .map(|section| section.quantization)
+                                .or(job.intent.locator_quantization)
+                                .map_or(
+                                    ResidentPublicationPolicy::FreshIfUnchanged(job.intent.fence),
+                                    |quantization| {
+                                        ResidentPublicationPolicy::QuantizedSeekWhenReady {
+                                            fence: job.intent.fence,
+                                            quantization,
+                                        }
+                                    },
+                                ),
                         },
-                        job.intent
-                            .section
-                            .map(|section| section.quantization)
-                            .or(job.intent.locator_quantization)
-                            .map_or(
-                                ResidentPublicationPolicy::FreshIfUnchanged(job.intent.fence),
-                                |quantization| ResidentPublicationPolicy::QuantizedSeekWhenReady {
-                                    fence: job.intent.fence,
-                                    quantization,
-                                },
-                            ),
                         &job.intent.cancelled,
                     )
                     .map_err(|e| e.to_string())

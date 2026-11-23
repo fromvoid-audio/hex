@@ -73,9 +73,11 @@ pub(super) fn command(
                 .section_marker_transition(
                     Some(command),
                     false,
-                    context,
-                    sink,
-                    admission,
+                    resident_audio::ResidentSinkContext {
+                        context,
+                        sink,
+                        admission,
+                    },
                     current,
                     &mut phases,
                 )
@@ -90,9 +92,8 @@ pub(super) fn command(
             command,
             previous,
             context,
-            events,
+            resident_audio::ResidentWorkerContext { events, admission },
             resident,
-            admission,
             Some(&mut phases),
         );
         events.record_section_phases(phases);
@@ -129,7 +130,6 @@ pub(super) fn command(
     )?
     .ok_or(SessionError::Invalid("section edit produced no candidate"))
 }
-#[allow(clippy::too_many_arguments)]
 pub(super) fn history(
     session: &mut Session,
     redo: bool,
@@ -162,9 +162,11 @@ pub(super) fn marker_history(
     let result = session.section_marker_transition(
         None,
         redo,
-        context,
-        sink,
-        admission,
+        resident_audio::ResidentSinkContext {
+            context,
+            sink,
+            admission,
+        },
         current,
         &mut phases,
     );
@@ -174,7 +176,6 @@ pub(super) fn marker_history(
 /// One callback-fenced resident transition for an edit or its history step.
 /// The lease is cancelled unless a candidate commits; worker phases are
 /// recorded for the request's diagnostic outcome, including failures.
-#[allow(clippy::too_many_arguments)]
 fn fenced_transition(
     session: &mut Session,
     command: Option<Command>,
@@ -215,9 +216,11 @@ fn fenced_transition(
             command,
             redo,
             position,
-            context,
-            sink,
-            admission,
+            resident_audio::ResidentSinkContext {
+                context,
+                sink,
+                admission,
+            },
             resident.as_ref(),
             &mut phases,
         ) {

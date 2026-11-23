@@ -638,12 +638,13 @@ impl NativeDeviceMetadata for UtilityDefinition {
         state: &NativeDeviceState,
         id: ParameterId,
     ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
-        UtilityControls::decode(state)?;
-        let mut semantics = crate::parameter_binding::binding(&BINDINGS, id)?.semantics;
-        if runtime_parameter_automation_supported(id) {
-            semantics.modulation = hex_lattice_contract::ParameterModulation::SampleRate;
-        }
-        Ok(Some(semantics))
+        crate::parameter_binding::parameter_semantics_with_sample_rate_modulation(
+            &BINDINGS,
+            state,
+            id,
+            UtilityControls::decode,
+            runtime_parameter_automation_supported,
+        )
     }
     fn patch_parameter(
         &self,
@@ -651,9 +652,14 @@ impl NativeDeviceMetadata for UtilityDefinition {
         id: ParameterId,
         value: ParameterValue,
     ) -> Result<NativeDeviceState, DeviceContractError> {
-        let mut controls = UtilityControls::decode(state)?;
-        crate::parameter_binding::binding(&BINDINGS, id)?.write(&mut controls, value)?;
-        controls.encode()
+        crate::parameter_binding::patch_parameter(
+            &BINDINGS,
+            state,
+            id,
+            value,
+            UtilityControls::decode,
+            UtilityControls::encode,
+        )
     }
 }
 
@@ -701,16 +707,13 @@ impl NativeDeviceDefinition for UtilityDefinition {
         context: &hex_lattice::DevicePreparationContext<'_>,
         parameters: &[ParameterId],
     ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
-        Ok(hex_lattice::PreparedRuntimeDevice {
-            matrix: StereoMatrix::identity(),
-            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
-                std::sync::Arc::new(Self::prepare_owned_automated_filter_for_parameters(
-                    state,
-                    context.sample_rate,
-                    parameters,
-                )?),
-            )),
-        })
+        Ok(crate::parameter_binding::prepared_legacy_runtime(
+            Self::prepare_owned_automated_filter_for_parameters(
+                state,
+                context.sample_rate,
+                parameters,
+            )?,
+        ))
     }
 
     fn prepare_matrix(

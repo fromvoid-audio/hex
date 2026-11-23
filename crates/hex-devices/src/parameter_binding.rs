@@ -135,6 +135,99 @@ pub(crate) fn binding<C>(bindings: &[Binding<C>], id: ParameterId) -> Result<&Bi
         .map_err(|_| Error::UnknownParameter)?;
     bindings.get(index).ok_or(Error::UnknownParameter)
 }
+
+pub(crate) fn patch_parameter<C>(
+    bindings: &[Binding<C>],
+    state: &hex_lattice_contract::NativeDeviceState,
+    id: ParameterId,
+    value: ParameterValue,
+    decode: fn(&hex_lattice_contract::NativeDeviceState) -> Result<C, Error>,
+    encode: fn(C) -> Result<hex_lattice_contract::NativeDeviceState, Error>,
+) -> Result<hex_lattice_contract::NativeDeviceState, Error> {
+    let mut settings = decode(state)?;
+    binding(bindings, id)?.write(&mut settings, value)?;
+    encode(settings)
+}
+
+pub(crate) fn parameter_semantics_for_state<C>(
+    bindings: &[Binding<C>],
+    state: &hex_lattice_contract::NativeDeviceState,
+    id: ParameterId,
+    decode: fn(&hex_lattice_contract::NativeDeviceState) -> Result<C, Error>,
+) -> Result<Option<ParameterSemantics>, Error> {
+    decode(state)?;
+    Ok(Some(binding(bindings, id)?.semantics))
+}
+
+pub(crate) fn parameter_semantics_with_sample_rate_modulation<C>(
+    bindings: &[Binding<C>],
+    state: &hex_lattice_contract::NativeDeviceState,
+    id: ParameterId,
+    decode: fn(&hex_lattice_contract::NativeDeviceState) -> Result<C, Error>,
+    sample_rate_modulated: fn(ParameterId) -> bool,
+) -> Result<Option<ParameterSemantics>, Error> {
+    decode(state)?;
+    let mut semantics = binding(bindings, id)?.semantics;
+    if sample_rate_modulated(id) {
+        semantics.modulation = hex_lattice_contract::ParameterModulation::SampleRate;
+    }
+    Ok(Some(semantics))
+}
+
+pub(crate) fn prepared_legacy_runtime<F: hex_lattice::PreparedNativeProcessor + 'static>(
+    factory: F,
+) -> hex_lattice::PreparedRuntimeDevice {
+    hex_lattice::PreparedRuntimeDevice {
+        matrix: hex_lattice::StereoMatrix::identity(),
+        processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
+            std::sync::Arc::new(factory),
+        )),
+    }
+}
+
+macro_rules! delegate_automated_block_processing {
+    ($method:ident) => {
+        fn process_block_with_automation(
+            &mut self,
+            frames: &mut [hex_lattice::StereoFrame],
+            _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+            values: &dyn hex_lattice::NativeParameterAutomation,
+            _resources: &dyn hex_lattice::DeviceResources,
+        ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+            self.$method(frames, values, false)
+        }
+        fn process_bypassed_block_with_automation(
+            &mut self,
+            frames: &mut [hex_lattice::StereoFrame],
+            _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+            values: &dyn hex_lattice::NativeParameterAutomation,
+            _resources: &dyn hex_lattice::DeviceResources,
+        ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+            self.$method(frames, values, true)
+        }
+    };
+    (with_clock $method:ident) => {
+        fn process_block_with_automation(
+            &mut self,
+            frames: &mut [hex_lattice::StereoFrame],
+            clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+            values: &dyn hex_lattice::NativeParameterAutomation,
+            _resources: &dyn hex_lattice::DeviceResources,
+        ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+            self.$method(frames, clock, values, false)
+        }
+        fn process_bypassed_block_with_automation(
+            &mut self,
+            frames: &mut [hex_lattice::StereoFrame],
+            clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+            values: &dyn hex_lattice::NativeParameterAutomation,
+            _resources: &dyn hex_lattice::DeviceResources,
+        ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+            self.$method(frames, clock, values, true)
+        }
+    };
+}
+pub(crate) use delegate_automated_block_processing;
 const PRESENCE_WORDS: usize =
     hex_lattice_contract::MAX_PARAMETERS_PER_DEVICE.div_ceil(u64::BITS as usize);
 #[derive(Clone, Copy, Debug)]

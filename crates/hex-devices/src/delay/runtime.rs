@@ -740,24 +740,7 @@ impl OwnedProcessorRuntime for Runtime {
     fn supports_parameter_automation(&self, id: hex_lattice_contract::ParameterId) -> bool {
         self.primary.controls.supports(&automation::BINDINGS, id)
     }
-    fn process_block_with_automation(
-        &mut self,
-        frames: &mut [StereoFrame],
-        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
-        values: &dyn hex_lattice::NativeParameterAutomation,
-        _: &dyn hex_lattice::DeviceResources,
-    ) -> Result<(), DeviceContractError> {
-        self.process_automation(frames, clock, values, false)
-    }
-    fn process_bypassed_block_with_automation(
-        &mut self,
-        frames: &mut [StereoFrame],
-        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
-        values: &dyn hex_lattice::NativeParameterAutomation,
-        _: &dyn hex_lattice::DeviceResources,
-    ) -> Result<(), DeviceContractError> {
-        self.process_automation(frames, clock, values, true)
-    }
+    crate::parameter_binding::delegate_automated_block_processing!(with_clock process_automation);
 
     fn fixed_storage_pair_bytes(&self) -> Option<usize> {
         let (inline, [committed, scratch]) = self.control_storage()?;

@@ -239,7 +239,6 @@ pub(super) fn capture_runtime_fence(status: &Status) -> Option<FreshRuntimeFence
     })
 }
 
-#[allow(clippy::result_large_err)] // Refusals return the actual graph inline without allocating on failure.
 impl PublicationControl {
     /// Correlation for nonowning client/view metadata, never custody authority.
     pub fn output_identity(&self) -> Option<u64> {
@@ -557,6 +556,7 @@ impl PublicationControl {
     /// Admit the actual current/prospective resource union, then enqueue as the final fallible
     /// prepared-transition step. The caller must reserve canonical commit storage beforehand and
     /// must not report cancellation/rollback after success. Submitted is not callback-applied.
+    #[allow(clippy::result_large_err)] // Refusals return the actual graph inline without allocating on failure.
     pub fn publish_with_admission_on_control<E>(
         &mut self,
         playback: Playback,
@@ -579,6 +579,7 @@ impl PublicationControl {
     }
     /// Tag the actual admitted ordinary graph with its captured canonical source.
     /// Existing generation-only methods remain unknown to MIDI recording.
+    #[allow(clippy::result_large_err)] // Refusals return the actual graph inline without allocating on failure.
     pub fn publish_with_admission_and_source_on_control<E>(
         &mut self,
         playback: Playback,
@@ -602,6 +603,7 @@ impl PublicationControl {
     /// Bind a device insert's exact receipt after preparation and before the
     /// graph becomes visible to the callback. The attempt deadline also bounds
     /// the callback's apply decision.
+    #[allow(clippy::result_large_err)] // Refusals return the actual graph inline without allocating on failure.
     pub fn publish_device_insert_with_receipt_on_control<E>(
         &mut self,
         playback: Playback,
@@ -636,7 +638,7 @@ impl PublicationControl {
         )
     }
 
-    #[allow(clippy::too_many_arguments)] // One accounted publication with optional native and receipt inputs.
+    #[allow(clippy::too_many_arguments, clippy::result_large_err)] // One accounted publication with optional native/receipt inputs; refusals return the graph inline.
     pub(super) fn publish_admitted_with_source<E>(
         &mut self,
         playback: Playback,
@@ -707,10 +709,12 @@ impl PublicationControl {
             .map_or(0, |resources| resources.outstanding_leases())
     }
 
+    #[allow(clippy::result_large_err)] // Refusals return the actual graph inline without allocating on failure.
     pub fn publish(&mut self, playback: Playback) -> Result<u64, PublishError> {
         self.publish_with_policy(playback, PublicationPolicy::InheritRuntime)
     }
 
+    #[allow(clippy::result_large_err)] // Refusals return the actual graph inline without allocating on failure.
     pub fn publish_with_policy(
         &mut self,
         playback: Playback,
@@ -722,6 +726,7 @@ impl PublicationControl {
     /// Publish a prepared graph tagged with the control-side project context
     /// that produced it. Legacy `publish`/`publish_with_policy` retain unknown context,
     /// even though their scalar generation remains zero for existing telemetry.
+    #[allow(clippy::result_large_err)] // Refusals return the actual graph inline without allocating on failure.
     pub fn publish_with_policy_and_context_generation(
         &mut self,
         playback: Playback,
@@ -730,6 +735,7 @@ impl PublicationControl {
     ) -> Result<u64, PublishError> {
         self.publish_with_pcm_obligation(playback, policy, control_context_generation, true, false)
     }
+    #[allow(clippy::result_large_err)] // Refusals return the actual graph inline without allocating on failure.
     pub(super) fn publish_with_pcm_obligation(
         &mut self,
         playback: Playback,
@@ -787,6 +793,7 @@ impl PublicationControl {
         self.device_resources = Some(resources);
         result
     }
+    #[allow(clippy::result_large_err)] // Refusals return the actual graph inline without allocating on failure.
     pub(super) fn publish_unaccounted_pcm_obligation(
         &mut self,
         playback: Playback,
@@ -809,7 +816,7 @@ impl PublicationControl {
         )
     }
 
-    #[allow(clippy::too_many_arguments)] // Existing ownership plus the exact move-only source observation.
+    #[allow(clippy::too_many_arguments, clippy::result_large_err)] // Existing ownership plus exact move-only source observation; refusals return the graph inline.
     pub(super) fn publish_unaccounted_with_native_continuation(
         &mut self,
         mut playback: Playback,

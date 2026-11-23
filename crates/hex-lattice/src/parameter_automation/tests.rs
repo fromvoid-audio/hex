@@ -539,13 +539,11 @@ fn all_chain_clock_entrypoints_keep_unavailable_host_stage_origins_independent()
                     output_clock,
                     foreign,
                 ),
-                _ => chain.process_range_tapped_with_foreign(
+                _ => chain.process_range_tapped_with_context(
                     0..1,
                     &mut frame,
-                    0,
-                    input_clock,
-                    output_clock,
-                    foreign,
+                    crate::StageProcessContext::new(0, input_clock, output_clock)
+                        .with_foreign(foreign),
                     &mut |_, _, _, _, _, _| {},
                 ),
             }
@@ -953,14 +951,10 @@ fn process_transient_host(
     transient: Option<&mut crate::NativeTransientProcessing>,
     offset: usize,
 ) -> Result<(), Error> {
-    chain.process_range_tapped_with_foreign_and_input(
+    chain.process_range_tapped_with_context(
         0..1,
         frames,
-        offset,
-        None,
-        None,
-        &mut crate::RefuseForeign,
-        transient,
+        crate::StageProcessContext::new(offset, None, None).with_transient(transient),
         &mut |_, _, _, _, _, _| {},
     )
 }
@@ -1151,14 +1145,10 @@ fn armed_provider_clear_is_processed_and_late_refusal_discards_observation() {
     let process = |chain: &mut NativeRuntimeChain,
                    frames: &mut [StereoFrame],
                    context: Option<&mut NativeTransientProcessing>| {
-        chain.process_range_tapped_with_foreign_and_input(
+        chain.process_range_tapped_with_context(
             0..2,
             frames,
-            4,
-            None,
-            None,
-            &mut RefuseForeign,
-            context,
+            crate::StageProcessContext::new(4, None, None).with_transient(context),
             &mut |_, _, _, _, _, _| {},
         )
     };
@@ -1418,15 +1408,10 @@ fn external_groups_apply_multiple_targets_and_processors_once() {
     chain.begin_block();
     let mut output = [[1.0; 2]; 2];
     chain
-        .process_range_tapped_with_foreign_input_and_external_set(
+        .process_range_tapped_with_context(
             0..2,
             &mut output,
-            0,
-            None,
-            None,
-            &mut crate::RefuseForeign,
-            None,
-            Some(&windows),
+            crate::StageProcessContext::new(0, None, None).with_external(Some(&windows)),
             &mut |_, _, _, _, _, _| {},
         )
         .unwrap();
@@ -1446,15 +1431,10 @@ fn external_groups_apply_multiple_targets_and_processors_once() {
     let mut untouched = [[1.0; 2]; 2];
     assert!(
         duplicate
-            .process_range_tapped_with_foreign_input_and_external_set(
+            .process_range_tapped_with_context(
                 0..2,
                 &mut untouched,
-                0,
-                None,
-                None,
-                &mut crate::RefuseForeign,
-                None,
-                Some(&windows),
+                crate::StageProcessContext::new(0, None, None).with_external(Some(&windows)),
                 &mut |_, _, _, _, _, _| {},
             )
             .is_err()

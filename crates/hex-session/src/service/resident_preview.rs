@@ -226,10 +226,12 @@ pub(super) fn restore(
         let selected = snapshot.inputs.clone();
         session.publish_resident_runtime_inputs(
             snapshot,
-            sink,
-            admission,
-            metadata(context, None, &snapshot.prepared),
-            ResidentPublicationPolicy::InheritRuntime,
+            resident_audio::ResidentPublishContext {
+                sink,
+                admission,
+                metadata: metadata(context, None, &snapshot.prepared),
+                policy: ResidentPublicationPolicy::InheritRuntime,
+            },
             selected,
             None,
         )?;
@@ -327,10 +329,12 @@ fn prepare_preview(
         .ok_or(SessionError::Invalid("preview metadata overflow"))?;
     let (project, snapshot) = session.prepare_resident_preview(
         command,
-        context,
         identity.clone(),
-        sink,
-        admission,
+        resident_audio::ResidentSinkContext {
+            context,
+            sink,
+            admission,
+        },
         canonical,
         cancel,
     )?;
@@ -363,7 +367,15 @@ pub(super) fn publish_inputs(
         .ok_or(SessionError::Invalid("native input source unavailable"))?;
     let Some(overlay) = preview.as_mut() else {
         return session.publish_resident_runtime_inputs(
-            canonical, sink, admission, metadata, policy, selected, required,
+            canonical,
+            resident_audio::ResidentPublishContext {
+                sink,
+                admission,
+                metadata,
+                policy,
+            },
+            selected,
+            required,
         );
     };
     let registered = admission
@@ -388,14 +400,16 @@ pub(super) fn publish_inputs(
     let (hint, accepted, submission) = session.prepare_resident_runtime_inputs(
         &overlay.snapshot,
         &overlay.project,
-        sink,
-        sampler_export::Admission {
-            registered: &registered,
-            runtime_bytes,
-            ..admission
+        resident_audio::ResidentPublishContext {
+            sink,
+            admission: sampler_export::Admission {
+                registered: &registered,
+                runtime_bytes,
+                ..admission
+            },
+            metadata,
+            policy,
         },
-        metadata,
-        policy,
         selected,
         required,
     )?;

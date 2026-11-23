@@ -206,15 +206,10 @@ impl ProcessorAuditionTargetControl {
     }
 
     pub fn retry_pending(&mut self) -> TargetUpdate {
-        let Some(command) = self.pending else {
-            return TargetUpdate::Queued;
-        };
-        match self.producer.push(command) {
-            Ok(()) => {
-                self.pending = None;
-                TargetUpdate::Queued
-            }
-            Err(_) => TargetUpdate::PendingQueueFull,
+        if crate::retry_pending_push(&mut self.pending, &mut self.producer) {
+            TargetUpdate::Queued
+        } else {
+            TargetUpdate::PendingQueueFull
         }
     }
 
