@@ -99,6 +99,7 @@ impl Decoder {
     ) -> Option<Controllers> {
         if byte == 0xff {
             self.reset(note);
+            return Some(Controllers::default());
         }
         if byte >= 0xf8 {
             return None;
@@ -786,6 +787,124 @@ mod tests {
         assert_eq!(decoder.byte(100, 0, state), None);
         assert_eq!(decoder.byte(1, 0, state), None);
         assert_eq!(decoder.byte(100, 0, state), None);
+    }
+
+    #[test]
+    fn system_reset_publishes_default_controllers_releases_notes_and_clock_stays_transparent() {
+        let mut decoder = Decoder::default();
+        let held = HeldNoteInput::default();
+        let published = std::cell::RefCell::new(Vec::new());
+        let events = std::cell::RefCell::new(Vec::new());
+
+        // Set bend +4096 (0x00, 0x60 => 96*128 - 8192 = +4096), wheel 90, pressure 64,
+        // hold a note, and interleave a MIDI clock inside a partial channel message.
+        let before_reset = deliver_packets_with_notes(
+            &mut decoder,
+            0,
+            Controllers::default(),
+            [&[
+                0x90, 60, 100, // Note On 60
+                0xe0, 0x00, 0xf8, 0x60, // Pitch bend +4096 with interleaved clock
+                0xb0, 1, 90, // Mod wheel 90
+                0xd0, 64, // Channel pressure 64
+            ][..]],
+            &held,
+            &|snapshot| published.borrow_mut().push(snapshot),
+            &|event| events.borrow_mut().push(event),
+        );
+        assert_eq!(
+            before_reset,
+            Controllers {
+                pressure: 64,
+                bend: 4096,
+                wheel: 90,
+            }
+        );
+
+        // System Reset ending the packet publishes and returns Controllers::default()
+        // and clears held notes.
+        published.borrow_mut().clear();
+        events.borrow_mut().clear();
+        let after_reset = deliver_packets_with_notes(
+            &mut decoder,
+            0,
+            before_reset,
+            [&[0xff][..]],
+            &held,
+            &|snapshot| published.borrow_mut().push(snapshot),
+            &|event| events.borrow_mut().push(event),
+        );
+        assert_eq!(after_reset, Controllers::default());
+        assert_eq!(*published.borrow(), vec![Controllers::default()]);
+        assert_eq!(*events.borrow(), vec![NoteEvent::AllNotesOff]);
+        let HeldNotesRead::Snapshot(snapshot) = held.read() else {
+            panic!("expected snapshot after system reset")
+        };
+        assert_eq!(snapshot.after(0).count(), 0);
+
+        // Same packet: non-neutral controllers + held note + 0xFF + later mod wheel starts
+        // from the reset state, while an interleaved clock preserves partial state.
+        published.borrow_mut().clear();
+        events.borrow_mut().clear();
+        let resumed = deliver_packets_with_notes(
+            &mut decoder,
+            0,
+            Controllers::default(),
+            [&[
+                0x90, 62, 110, // Note On 62
+                0xe0, 0x00, 0x60, // Bend +4096
+                0xd0, 64, // Pressure 64
+                0xff, // System Reset
+                0xb0, 1, 0xf8, 42, // Mod wheel 42 with interleaved clock
+            ][..]],
+            &held,
+            &|snapshot| published.borrow_mut().push(snapshot),
+            &|event| events.borrow_mut().push(event),
+        );
+        assert_eq!(
+            resumed,
+            Controllers {
+                pressure: 0,
+                bend: 0,
+                wheel: 42,
+            }
+        );
+        assert_eq!(
+            *published.borrow(),
+            vec![
+                Controllers {
+                    pressure: 0,
+                    bend: 4096,
+                    wheel: 0,
+                },
+                Controllers {
+                    pressure: 64,
+                    bend: 4096,
+                    wheel: 0,
+                },
+                Controllers::default(),
+                Controllers {
+                    pressure: 0,
+                    bend: 0,
+                    wheel: 42,
+                },
+            ]
+        );
+        assert_eq!(
+            *events.borrow(),
+            vec![
+                NoteEvent::On {
+                    channel: 0,
+                    pitch: 62,
+                    velocity: 110,
+                },
+                NoteEvent::AllNotesOff,
+            ]
+        );
+        let HeldNotesRead::Snapshot(after_resumed) = held.read() else {
+            panic!("expected snapshot after resumed packet")
+        };
+        assert_eq!(after_resumed.after(0).count(), 0);
     }
 
     #[test]
