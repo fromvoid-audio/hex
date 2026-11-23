@@ -395,6 +395,7 @@ fn midi_shift_stretch_pending_receipt_ignores_earlier_ack_and_retires_real_worke
             beat: BeatTime::from_raw(candidate.start().raw() + candidate.length().raw()),
         });
         v.pending_trim = Some(super::PendingTrim {
+            replayed: false,
             generation: v.project_generation,
             revision: state.revision,
             track: drag.source_track,

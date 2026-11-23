@@ -655,6 +655,8 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
             if ctx.worker.events.resident_publication_enabled()
                 && ctx.worker.session.audio_mode() == DocumentAudioMode::Resident =>
         {
+            let recoverable_edit = ctx.outcome.time_range_copy
+                || matches!(command, Command::ResizeAudioClipView { .. });
             let context = hex_engine::AudioSourceContext {
                 project_generation: ctx.worker.project_generation,
                 editor_revision: ctx.worker.revision.saturating_add(1),
@@ -796,10 +798,10 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                     ctx.worker.resident_snapshot = Some(snapshot);
                 }
                 Err(reason) => {
-                    if ctx.outcome.time_range_copy
+                    if recoverable_edit
                         && matches!(reason, SessionError::NativeSourceUnavailable(_))
                     {
-                        ctx.outcome.range_copy_source_unavailable =
+                        ctx.outcome.resident_edit_source_unavailable =
                             Some(hex_engine::AudioSourceContext {
                                 project_generation: ctx.worker.project_generation,
                                 editor_revision: ctx.worker.revision,
