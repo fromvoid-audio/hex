@@ -1419,12 +1419,25 @@ diff --git a/src/elements/div.rs b/src/elements/div.rs
 +>;
 @@ -1227,0 +1272 @@
 +        accessibility: None,
-@@ -1236,0 +1282,4 @@
+@@ -1228,0 +1274 @@
++        modal_mouse: false,
+@@ -1236,0 +1283,4 @@
 +    accessibility: Option<(
 +        crate::AccessibilityDescriptor,
 +        crate::accessibility::AccessibilityCallback,
 +    )>,
-@@ -1240,0 +1290,11 @@
+@@ -1237,0 +1288 @@
++    modal_mouse: bool,
+@@ -1240,0 +1292,20 @@
++    /// Restrict window mouse dispatch to this full-window modal and its directly painted
++    /// descendants. This also excludes raw capture-phase listeners and retires pointer
++    /// captures outside the modal.
++    pub fn modal_mouse(mut self) -> Self {
++        self.modal_mouse = true;
++        self.interactivity.occlude_mouse();
++        self
++    }
++
 +    /// Expose this actual laid-out control through the native semantic boundary.
 +    /// IDs must identify the owner lifetime, not an index or reusable label.
 +    pub fn accessibility(
@@ -1436,7 +1449,7 @@ diff --git a/src/elements/div.rs b/src/elements/div.rs
 +        self
 +    }
 +
-@@ -1412,0 +1473,12 @@
+@@ -1412,0 +1484,12 @@
 +                if let Some((descriptor, callback)) = &self.accessibility {
 +                    let bounds = bounds.intersect(&window.content_mask().bounds);
 +                    if bounds.size.width > px(0.) && bounds.size.height > px(0.) {
@@ -1449,10 +1462,50 @@ diff --git a/src/elements/div.rs b/src/elements/div.rs
 +                        );
 +                    }
 +                }
-@@ -1520 +1592 @@
+@@ -1443,0 +1527 @@
++        let modal = self.modal_mouse && hitbox.is_some();
+@@ -1445,12 +1529,13 @@
+-            self.interactivity.paint(
+-                global_id,
+-                inspector_id,
+-                bounds,
+-                hitbox.as_ref(),
+-                window,
+-                cx,
+-                |style, window, cx| {
+-                    // skip children
+-                    if style.display == Display::None {
+-                        return;
+-                    }
++            window.with_modal_mouse_scope(modal, |window| {
++                self.interactivity.paint(
++                    global_id,
++                    inspector_id,
++                    bounds,
++                    hitbox.as_ref(),
++                    window,
++                    cx,
++                    |style, window, cx| {
++                        // skip children
++                        if style.display == Display::None {
++                            return;
++                        }
+@@ -1458,5 +1543,6 @@
+-                    for child in &mut self.children {
+-                        child.paint(window, cx);
+-                    }
+-                },
+-            )
++                        for child in &mut self.children {
++                            child.paint(window, cx);
++                        }
++                    },
++                )
++            });
+@@ -1520 +1606 @@
 -    pub(crate) drag_listener: Option<(Arc<dyn Any>, DragListener)>,
 +    pub(crate) drag_listener: Option<DragListener>,
-@@ -1789,0 +1862,20 @@
+@@ -1789,0 +1876,20 @@
 +        if self.hover_style.is_some()
 +            || self.group_hover_style.is_some()
 +            || self.hover_listener.is_some()
@@ -1473,25 +1526,25 @@ diff --git a/src/elements/div.rs b/src/elements/div.rs
 +                painted_hover,
 +            );
 +        }
-@@ -1845 +1937 @@
+@@ -1845 +1951 @@
 -                                                GroupHitboxes::push(group, hitbox.id, cx);
 +                                                GroupHitboxes::push(group, hitbox, cx);
-@@ -2087,0 +2180,4 @@
+@@ -2087,0 +2194,4 @@
 +        let tracks_pointer_click = !click_listeners.is_empty()
 +            || drag_listener.is_some()
 +            || self.active_style.is_some()
 +            || self.group_active_style.is_some();
-@@ -2159,2 +2255,3 @@
+@@ -2159,2 +2269,3 @@
 -                            && (event.position - mouse_down.position).magnitude() > DRAG_THRESHOLD
 -                            && let Some((drag_value, drag_listener)) = drag_listener.take()
 +                            && (event.position - mouse_down.position).magnitude()
 +                                > POINTER_DRAG_THRESHOLD
 +                            && let Some(drag_listener) = drag_listener.take()
-@@ -2162 +2259,2 @@
+@@ -2162 +2273,2 @@
 -                            *clicked_state.borrow_mut() = ElementClickedState::default();
 +                            let previous_click =
 +                                clicked_state.replace(ElementClickedState::default());
-@@ -2164,2 +2262,6 @@
+@@ -2164,2 +2276,6 @@
 -                            let drag =
 -                                (drag_listener)(drag_value.as_ref(), cursor_offset, window, cx);
 +                            let Some((value, view)) =
@@ -1500,33 +1553,33 @@ diff --git a/src/elements/div.rs b/src/elements/div.rs
 +                                clicked_state.replace(previous_click);
 +                                return;
 +                            };
-@@ -2167,2 +2269,2 @@
+@@ -2167,2 +2283,2 @@
 -                                view: drag,
 -                                value: drag_value,
 +                                view,
 +                                value,
-@@ -2261,4 +2363 @@
+@@ -2261,4 +2377 @@
 -                window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
 -                    if phase != DispatchPhase::Bubble {
 -                        return;
 -                    }
 +                window.on_pointer_hover_change(move |window, cx| {
-@@ -2266,0 +2366 @@
+@@ -2266,0 +2380 @@
 +                        && !window.is_pointer_dragging()
-@@ -2274,0 +2375,3 @@
+@@ -2274,0 +2389,3 @@
 +                        true
 +                    } else {
 +                        false
-@@ -2298 +2401,2 @@
+@@ -2298 +2415,2 @@
 -                        pending_mouse_down.borrow().is_none()
 +                        !window.is_pointer_dragging()
 +                            && pending_mouse_down.borrow().is_none()
-@@ -2305 +2409,3 @@
+@@ -2305 +2423,3 @@
 -                        pending_mouse_down.borrow().is_none() && hitbox.is_hovered(window)
 +                        !window.is_pointer_dragging()
 +                            && pending_mouse_down.borrow().is_none()
 +                            && hitbox.is_hovered(window)
-@@ -2321,0 +2428,21 @@
+@@ -2321,0 +2442,21 @@
 +            if tracks_pointer_click {
 +                let pending = element_state.pending_mouse_down.clone();
 +                let clicked = active_state.clone();
@@ -1548,44 +1601,39 @@ diff --git a/src/elements/div.rs b/src/elements/div.rs
 +                    had_press || was_clicked
 +                });
 +            }
-@@ -2498 +2625 @@
+@@ -2498 +2639 @@
 -            if !cx.has_active_drag() {
 +            if !cx.has_active_drag() && !window.is_pointer_dragging() {
-@@ -2758,0 +2886,6 @@
+@@ -2758,0 +2900,6 @@
 +                        // A capture listener can consume movement before this
 +                        // pending tooltip receives its cancellation event.
 +                        if window.is_pointer_dragging() {
 +                            active_tooltip.borrow_mut().take();
 +                            return;
 +                        }
-@@ -2874,0 +3008,4 @@
+@@ -2874,0 +3022,4 @@
 +// Bounds are conservative invalidation metadata only. Style calculation still
 +// uses the current group's actual hitbox and ordinary occlusion rules.
 +type GroupHitboxDependency = (HitboxId, Bounds<Pixels>);
 +
-@@ -2876 +3013 @@
+@@ -2876 +3027 @@
 -pub(crate) struct GroupHitboxes(HashMap<SharedString, SmallVec<[HitboxId; 1]>>);
 +pub(crate) struct GroupHitboxes(HashMap<SharedString, SmallVec<[GroupHitboxDependency; 1]>>);
-@@ -2881,0 +3019,4 @@
+@@ -2881,0 +3033,4 @@
 +        Self::dependency(name, cx).map(|(id, _)| id)
 +    }
 +
 +    fn dependency(name: &SharedString, cx: &mut App) -> Option<GroupHitboxDependency> {
-@@ -2886,4 +3027,4 @@
+@@ -2886 +3041 @@
 -            .cloned()
--    }
--
--    pub fn push(name: SharedString, hitbox_id: HitboxId, cx: &mut App) {
 +            .copied()
-+    }
-+
+@@ -2889 +3044 @@
+-    pub fn push(name: SharedString, hitbox_id: HitboxId, cx: &mut App) {
 +    pub fn push(name: SharedString, hitbox: &Hitbox, cx: &mut App) {
-@@ -2894 +3035 @@
+@@ -2894 +3049 @@
 -            .push(hitbox_id);
 +            .push((hitbox.id, hitbox.bounds.intersect(&hitbox.content_mask.bounds)));
-@@ -2904,0 +3046,12 @@
-+}
-+
+@@ -2906,0 +3062,12 @@
 +impl Stateful<Div> {
 +    /// Attach native semantics to this stateful control without changing its layout.
 +    pub fn accessibility(
@@ -1596,6 +1644,8 @@ diff --git a/src/elements/div.rs b/src/elements/div.rs
 +        self.element = self.element.accessibility(descriptor, action);
 +        self
 +    }
++}
++
 diff --git a/src/gpui.rs b/src/gpui.rs
 --- a/src/gpui.rs
 +++ b/src/gpui.rs
@@ -5813,15 +5863,24 @@ diff --git a/src/window.rs b/src/window.rs
 @@ -659 +684 @@
 -    element_id_stack: SmallVec<[ElementId; 32]>,
 +    element_id_stack: SmallVec<[ElementId; 8]>,
-@@ -667,0 +693 @@
+@@ -666,0 +692,6 @@
++// A full-window modal owns the painted interval in both flat dispatch lists.
++struct ModalMouseScope {
++    listeners: Range<usize>,
++    capture_owners: Range<usize>,
++}
++
+@@ -667,0 +699 @@
 +    pub(crate) accessibility: crate::accessibility::AccessibilityFrame,
-@@ -680,0 +707,2 @@
+@@ -672,0 +705 @@
++    modal_mouse_scopes: Vec<ModalMouseScope>,
+@@ -680,0 +714,2 @@
 +    pointer_hover_observers: Vec<PointerHoverObserver>,
 +    pointer_capture_owners: Vec<EntityId>,
-@@ -682 +710 @@
+@@ -682 +717 @@
 -    pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
 +    pub(crate) debug_bounds: DebugBounds,
-@@ -689,0 +718,33 @@
+@@ -689,0 +725,33 @@
 +// Test selectors follow paint ordering, including cached and nested view replay.
 +// Retaining only the final map loses each cached view's insertion range and can
 +// incorrectly restore another view's later overwrite of the same selector.
@@ -5855,36 +5914,42 @@ diff --git a/src/window.rs b/src/window.rs
 +    }
 +}
 +
-@@ -691,0 +753 @@
+@@ -691,0 +760 @@
 +    accessibility_index: usize,
-@@ -705,0 +768,2 @@
+@@ -703,0 +773 @@
++    modal_mouse_scopes_index: usize,
+@@ -705,0 +776,2 @@
 +    pointer_hover_observers_index: usize,
 +    pointer_capture_owners_index: usize,
-@@ -708,0 +773,2 @@
+@@ -708,0 +781,2 @@
 +    #[cfg(any(test, feature = "test-support"))]
 +    debug_bounds_index: usize,
-@@ -713,0 +780 @@
+@@ -713,0 +788 @@
 +            accessibility: Default::default(),
-@@ -726,0 +794,2 @@
+@@ -718,0 +794 @@
++            modal_mouse_scopes: Vec::new(),
+@@ -726,0 +803,2 @@
 +            pointer_hover_observers: Vec::new(),
 +            pointer_capture_owners: Vec::new(),
-@@ -729 +798 @@
+@@ -729 +807 @@
 -            debug_bounds: FxHashMap::default(),
 +            debug_bounds: DebugBounds::default(),
-@@ -740,0 +810 @@
+@@ -740,0 +819 @@
 +        self.accessibility = Default::default();
-@@ -748,0 +819,2 @@
+@@ -743,0 +823 @@
++        self.modal_mouse_scopes.clear();
+@@ -748,0 +829,2 @@
 +        self.pointer_hover_observers.clear();
 +        self.pointer_capture_owners.clear();
-@@ -754,0 +827,3 @@
+@@ -754,0 +837,3 @@
 +        #[cfg(any(test, feature = "test-support"))]
 +        self.debug_bounds.clear();
 +
-@@ -762,0 +838,3 @@
+@@ -762,0 +848,3 @@
 +        if let Some(capture) = &window.pointer_capture {
 +            return Some(capture.cursor);
 +        }
-@@ -817,0 +896,9 @@
+@@ -817,0 +906,9 @@
 +// A frame-owned cursor override must restore even when its window is destroyed.
 +struct HiddenCursorRestore(Rc<dyn crate::Platform>);
 +
@@ -5894,17 +5959,17 @@ diff --git a/src/window.rs b/src/window.rs
 +    }
 +}
 +
-@@ -822,0 +910 @@
+@@ -822,0 +920 @@
 +    hidden_cursor_restore: Option<HiddenCursorRestore>,
-@@ -836 +924 @@
+@@ -836 +934 @@
 -    pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
 +    pub(crate) element_id_stack: SmallVec<[ElementId; 8]>,
-@@ -855,0 +944,4 @@
+@@ -855,0 +954,4 @@
 +    pointer_press: Option<(MouseButton, Point<Pixels>)>,
 +    pointer_dragging: bool,
 +    pointer_capture: Option<PointerCapture>,
 +    suppressed_pointer_ups: SmallVec<[MouseButton; 5]>,
-@@ -1037,6 +1129,5 @@
+@@ -1037,6 +1139,5 @@
 -                // Keep presenting the current scene for 1 extra second since the
 -                // last input to prevent the display from underclocking the refresh rate.
 -                let needs_present = request_frame_options.require_presentation
@@ -5916,24 +5981,24 @@ diff --git a/src/window.rs b/src/window.rs
 +                // Keep the display warm for one second after ordinary input.
 +                let keepalive = active.get()
 +                    && last_input_timestamp.get().elapsed() < Duration::from_secs(1);
-@@ -1055 +1146 @@
+@@ -1055 +1156 @@
 -                } else if needs_present {
 +                } else if presentation_required || keepalive {
-@@ -1057 +1148,5 @@
+@@ -1057 +1158,5 @@
 -                        .update(&mut cx, |_, window, _| window.present())
 +                        .update(&mut cx, |_, window, _| {
 +                            if window.should_present_drawn_scene(presentation_required, keepalive) {
 +                                window.present();
 +                            }
 +                        })
-@@ -1097,0 +1193,6 @@
+@@ -1097,0 +1203,6 @@
 +                        if !active {
 +                            window.cancel_pointer_capture(cx);
 +                            window.hidden_cursor_restore.take();
 +                            window.pointer_press = None;
 +                            window.pointer_dragging = false;
 +                        }
-@@ -1123,0 +1225,10 @@
+@@ -1123,0 +1235,10 @@
 +        platform_window.on_accessibility_action({
 +            let mut cx = cx.to_async();
 +            Box::new(move |request: crate::AccessibilityRequest| {
@@ -5944,14 +6009,14 @@ diff --git a/src/window.rs b/src/window.rs
 +                    .unwrap_or(false)
 +            })
 +        });
-@@ -1210,0 +1322 @@
+@@ -1210,0 +1332 @@
 +            hidden_cursor_restore: None,
-@@ -1238,0 +1351,4 @@
+@@ -1238,0 +1361,4 @@
 +            pointer_press: None,
 +            pointer_dragging: false,
 +            pointer_capture: None,
 +            suppressed_pointer_ups: SmallVec::new(),
-@@ -1373,0 +1490,7 @@
+@@ -1373,0 +1500,7 @@
 +    /// Whether this window currently owns an invisible cursor override.
 +    /// Test support only: this does not establish physical cursor appearance.
 +    #[cfg(any(test, feature = "test-support"))]
@@ -5959,10 +6024,10 @@ diff --git a/src/window.rs b/src/window.rs
 +        self.hidden_cursor_restore.is_some()
 +    }
 +
-@@ -1375,0 +1499,2 @@
+@@ -1375,0 +1509,2 @@
 +        self.platform_window.revoke_accessibility();
 +        self.hidden_cursor_restore.take();
-@@ -1910,0 +2036,55 @@
+@@ -1910,0 +2046,55 @@
 +    /// Current bounded, actually mounted semantic nodes in rendered order.
 +    pub fn accessibility_nodes(&self) -> impl Iterator<Item = &crate::AccessibilityNode> {
 +        self.rendered_frame
@@ -6018,41 +6083,45 @@ diff --git a/src/window.rs b/src/window.rs
 +        })
 +    }
 +
-@@ -1943,0 +2124,4 @@
+@@ -1943,0 +2134,4 @@
 +        self.platform_window.publish_accessibility(
 +            self.accessibility_nodes().cloned().collect(),
 +            self.rendered_frame.accessibility.invalid,
 +        );
-@@ -1977,0 +2162,11 @@
-+        if self.pointer_capture.as_ref().is_some_and(|capture| {
-+            !self
-+                .rendered_frame
-+                .pointer_capture_owners
-+                .contains(&capture.owner)
-+        }) {
-+            // Roots have finished updating their entities. A removed, replaced or
-+            // no-longer-held control cannot retain input just because it is alive.
+@@ -1977,0 +2172,15 @@
++        let pointer_owners = &self.rendered_frame.pointer_capture_owners;
++        let pointer_owners = self.rendered_frame.modal_mouse_scopes.last().map_or(
++            pointer_owners.as_slice(),
++            |scope| &pointer_owners[scope.capture_owners.clone()],
++        );
++        if self
++            .pointer_capture
++            .as_ref()
++            .is_some_and(|capture| !pointer_owners.contains(&capture.owner))
++        {
++            // Roots have finished updating their entities. A control that is
++            // absent, no longer held or outside a modal cannot retain input.
 +            self.cancel_pointer_capture(cx);
 +            self.reset_cursor_style(cx);
 +        }
-@@ -2003,0 +2199,8 @@
-+    }
-+
+@@ -2005,0 +2215,8 @@
 +    pub(crate) fn should_present_drawn_scene(&self, required: bool, keepalive: bool) -> bool {
 +        // Snapping and held previews can leave a scene unchanged across many
 +        // display requests. On macOS, skip optional drawable acquisition while
 +        // the gesture is held. A new paint or required presentation still runs.
 +        required
 +            || (keepalive && (!cfg!(target_os = "macos") || !self.is_pointer_dragging()))
-@@ -2088,0 +2292,5 @@
++    }
++
+@@ -2088,0 +2306,5 @@
 +        // Hoverable tooltips may otherwise retain themselves or wait through a
 +        // hide delay even after their source stops being eligible.
 +        if self.is_pointer_dragging() {
 +            return None;
 +        }
-@@ -2222,0 +2431 @@
+@@ -2222,0 +2445 @@
 +            accessibility_index: self.next_frame.accessibility.nodes.len(),
-@@ -2232,0 +2442,8 @@
+@@ -2232,0 +2456,8 @@
 +        for (node, callback) in &self.rendered_frame.accessibility.nodes
 +            [range.start.accessibility_index..range.end.accessibility_index]
 +        {
@@ -6061,17 +6130,41 @@ diff --git a/src/window.rs b/src/window.rs
 +                .insert(node.clone(), callback.clone());
 +        }
 +        self.next_frame.accessibility.invalid |= self.rendered_frame.accessibility.invalid;
-@@ -2286,0 +2504,2 @@
+@@ -2284,0 +2516 @@
++            modal_mouse_scopes_index: self.next_frame.modal_mouse_scopes.len(),
+@@ -2286,0 +2519,2 @@
 +            pointer_hover_observers_index: self.next_frame.pointer_hover_observers.len(),
 +            pointer_capture_owners_index: self.next_frame.pointer_capture_owners.len(),
-@@ -2289,0 +2509,2 @@
+@@ -2289,0 +2524,2 @@
 +            #[cfg(any(test, feature = "test-support"))]
 +            debug_bounds_index: self.next_frame.debug_bounds.insertion_history.len(),
-@@ -2293,0 +2515,21 @@
+@@ -2293,0 +2530,43 @@
 +        #[cfg(any(test, feature = "test-support"))]
 +        self.next_frame.debug_bounds.replay(
 +            &self.rendered_frame.debug_bounds.insertion_history
 +                [range.start.debug_bounds_index..range.end.debug_bounds_index],
++        );
++        let rebase = |interval: &Range<usize>, from, to| {
++            (interval.start - from + to)..(interval.end - from + to)
++        };
++        let next_listener = self.next_frame.mouse_listeners.len();
++        let next_owner = self.next_frame.pointer_capture_owners.len();
++        self.next_frame.modal_mouse_scopes.extend(
++            self.rendered_frame.modal_mouse_scopes
++                [range.start.modal_mouse_scopes_index..range.end.modal_mouse_scopes_index]
++                .iter()
++                .map(|scope| ModalMouseScope {
++                    listeners: rebase(
++                        &scope.listeners,
++                        range.start.mouse_listeners_index,
++                        next_listener,
++                    ),
++                    capture_owners: rebase(
++                        &scope.capture_owners,
++                        range.start.pointer_capture_owners_index,
++                        next_owner,
++                    ),
++                }),
 +        );
 +        self.next_frame.pointer_capture_owners.extend_from_slice(
 +            &self.rendered_frame.pointer_capture_owners
@@ -6089,7 +6182,7 @@ diff --git a/src/window.rs b/src/window.rs
 +                    painted_hover: observer.painted_hover,
 +                }),
 +        );
-@@ -2549,0 +2792,7 @@
+@@ -2549,0 +2829,7 @@
 +    /// Whether the active element and its ancestors apply no opacity attenuation.
 +    /// Call during paint. Individual fills can still have their own transparency.
 +    pub fn is_paint_fully_opaque(&self) -> bool {
@@ -6097,7 +6190,7 @@ diff --git a/src/window.rs b/src/window.rs
 +        self.element_opacity() == 1.0
 +    }
 +
-@@ -2802,0 +3052,20 @@
+@@ -2802,0 +3089,20 @@
 +    /// Record a test-support debug selector rectangle for a custom-painted
 +    /// surface that does not instantiate a separate `Div` per logical region.
 +    #[cfg(any(test, feature = "test-support"))]
@@ -6118,7 +6211,7 @@ diff --git a/src/window.rs b/src/window.rs
 +        result
 +    }
 +
-@@ -2954,0 +3224,25 @@
+@@ -2954,0 +3261,25 @@
 +    ) -> Result<()> {
 +        self.paint_oriented_glyph(origin, font_id, glyph_id, font_size, color, false)
 +    }
@@ -6144,7 +6237,7 @@ diff --git a/src/window.rs b/src/window.rs
 +        font_size: Pixels,
 +        color: Hsla,
 +        vertical: bool,
-@@ -2988,0 +3283,9 @@
+@@ -2988,0 +3320,9 @@
 +            let transformation = if vertical {
 +                let Point { x, y } = glyph_origin;
 +                TransformationMatrix {
@@ -6154,10 +6247,25 @@ diff --git a/src/window.rs b/src/window.rs
 +            } else {
 +                TransformationMatrix::unit()
 +            };
-@@ -2996 +3299 @@
+@@ -2996 +3336 @@
 -                transformation: TransformationMatrix::unit(),
 +                transformation,
-@@ -3527,7 +3830,11 @@
+@@ -3415,0 +3756,14 @@
++    pub(crate) fn with_modal_mouse_scope(&mut self, modal: bool, paint: impl FnOnce(&mut Self)) {
++        if modal {
++            let first_listener = self.next_frame.mouse_listeners.len();
++            let first_owner = self.next_frame.pointer_capture_owners.len();
++            paint(self);
++            self.next_frame.modal_mouse_scopes.push(ModalMouseScope {
++                listeners: first_listener..self.next_frame.mouse_listeners.len(),
++                capture_owners: first_owner..self.next_frame.pointer_capture_owners.len(),
++            });
++        } else {
++            paint(self);
++        }
++    }
++
+@@ -3527,7 +3881,11 @@
 -    fn reset_cursor_style(&self, cx: &mut App) {
 -        // Set the cursor only if we're the active window.
 -        if self.is_window_hovered() {
@@ -6176,7 +6284,7 @@ diff --git a/src/window.rs b/src/window.rs
 +            if self.hidden_cursor_restore.is_none() {
 +                self.hidden_cursor_restore = Some(HiddenCursorRestore(cx.platform.clone()));
 +            }
-@@ -3534,0 +3842,10 @@
+@@ -3534,0 +3893,10 @@
 +        } else {
 +            self.hidden_cursor_restore.take();
 +            if self.is_window_hovered() {
@@ -6187,7 +6295,7 @@ diff --git a/src/window.rs b/src/window.rs
 +                        style
 +                    });
 +            }
-@@ -3578,0 +3896,182 @@
+@@ -3578,0 +3947,182 @@
 +    /// Record a paint dependency on pressed-pointer hover state. Entries retain
 +    /// their insertion ranges through cached/deferred paint replay.
 +    pub(crate) fn observe_pointer_hover(
@@ -6370,7 +6478,7 @@ diff --git a/src/window.rs b/src/window.rs
 +        self.dispatch_event(event, cx);
 +    }
 +
-@@ -3587,0 +4087,57 @@
+@@ -3587,0 +4138,57 @@
 +        let was_dragging = self.is_pointer_dragging();
 +        // Retain isolation for the entire terminal event, even if cancellation
 +        // or the owner clears its lease while handling it.
@@ -6428,7 +6536,7 @@ diff --git a/src/window.rs b/src/window.rs
 +            }
 +            _ => {}
 +        }
-@@ -3664,0 +4221,7 @@
+@@ -3664,0 +4272,7 @@
 +        let pointer_hover_transition = was_dragging != self.is_pointer_dragging();
 +        let keyboard_hover_transition =
 +            event.keyboard_event().is_some() && pointer_hover_transition;
@@ -6436,7 +6544,7 @@ diff --git a/src/window.rs b/src/window.rs
 +            self.invalidate_pointer_hover();
 +            self.dispatch_pointer_hover(cx);
 +        }
-@@ -3666 +4229,6 @@
+@@ -3666 +4280,6 @@
 -            self.dispatch_mouse_event(any_mouse_event, cx);
 +            self.dispatch_mouse_event(
 +                any_mouse_event,
@@ -6444,9 +6552,7 @@ diff --git a/src/window.rs b/src/window.rs
 +                isolated_mouse_event,
 +                cx,
 +            );
-@@ -3668,0 +4237,38 @@
-+        }
-+
+@@ -3670,0 +4290,38 @@
 +        if keyboard_hover_transition {
 +            self.dispatch_pointer_hover(cx);
 +            self.invalidate_pointer_hover();
@@ -6483,7 +6589,9 @@ diff --git a/src/window.rs b/src/window.rs
 +        }
 +        if isolated_mouse_event != self.pointer_capture.is_some() {
 +            self.reset_cursor_style(cx);
-@@ -3677 +4283,7 @@
++        }
++
+@@ -3677 +4334,7 @@
 -    fn dispatch_mouse_event(&mut self, event: &dyn Any, cx: &mut App) {
 +    fn dispatch_mouse_event(
 +        &mut self,
@@ -6492,17 +6600,14 @@ diff --git a/src/window.rs b/src/window.rs
 +        isolated: bool,
 +        cx: &mut App,
 +    ) {
-@@ -3683,0 +4296,6 @@
+@@ -3683,0 +4347,6 @@
 +        if hover_transition {
 +            // Use the updated hit test: both painted hover and newly eligible
 +            // hover must retire/restore even if capture consumes this event.
 +            self.invalidate_pointer_hover();
 +        }
 +
-@@ -3687,0 +4306,21 @@
-+            return;
-+        }
-+
+@@ -3690,0 +4360,21 @@
 +        if event.is::<MouseMoveEvent>() {
 +            self.dispatch_pointer_hover(cx);
 +        }
@@ -6521,7 +6626,24 @@ diff --git a/src/window.rs b/src/window.rs
 +            // No underlying action, wheel, raw listener or trailing click can
 +            // receive this input, even if the owner ignored this event type.
 +            cx.stop_propagation();
-@@ -5103,0 +5743,42 @@
++            return;
++        }
++
+@@ -3691,0 +4382,7 @@
++        let modal_range = self
++            .rendered_frame
++            .modal_mouse_scopes
++            .last()
++            .map(|scope| scope.listeners.clone())
++            .unwrap_or(0..mouse_listeners.len());
++        let listeners = &mut mouse_listeners[modal_range];
+@@ -3695 +4392 @@
+-        for listener in &mut mouse_listeners {
++        for listener in &mut *listeners {
+@@ -3705 +4402 @@
+-            for listener in mouse_listeners.iter_mut().rev() {
++            for listener in listeners.iter_mut().rev() {
+@@ -5103,0 +5801,42 @@
 +
 +impl Window {
 +    /// Paint two retained paths at a logical-pixel offset. Visible paths at least

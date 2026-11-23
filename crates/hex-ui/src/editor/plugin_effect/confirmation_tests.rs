@@ -1,6 +1,9 @@
 //! Centered playback-interruption confirmation modal tests (Pulse #8943).
 use super::*;
-use gpui::{Modifiers, TestAppContext, VisualTestContext, point};
+use gpui::{
+    Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, ScrollDelta, ScrollWheelEvent,
+    TestAppContext, VisualTestContext, point,
+};
 use hex_engine::PreparedRevision;
 use hex_engine::native_device_resources::{DeviceResourceAdmission, PreparedDeviceResources};
 use hex_engine::playback::Playback;
@@ -286,11 +289,9 @@ fn confirmation_modal_renders_centered_isolates_backdrop_and_answers_clicks(
     cx: &mut TestAppContext,
 ) {
     cx.update(super::super::bind_editor_keys);
-    let (handle, editor) = crate::editor::clip_drag_ui_test::editor_window(
-        cx,
-        Project::new(48_000).unwrap(),
-        Arc::default(),
-    );
+    let (project, _, _, clip) = crate::editor::rendered_test_fixture::audio_project();
+    let (handle, editor) =
+        crate::editor::rendered_test_fixture::editor_window(cx, project, Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());
     visual.run_until_parked();
@@ -365,6 +366,61 @@ fn confirmation_modal_renders_centered_isolates_backdrop_and_answers_clicks(
         "editor shortcut `t` must not pass through modal"
     );
 
+    let arrangement = visual.debug_bounds("arrangement-content").unwrap();
+    let grid = point(
+        arrangement.origin.x + arrangement.size.width * 0.5,
+        arrangement.top() + px(12.0),
+    );
+    let modifiers = Modifiers::default();
+    let clip_center = visual
+        .debug_bounds(Box::leak(
+            format!("clip-name-{}", clip.value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    let initial_selection = editor.read_with(&visual, |view, _| view.selected_clip);
+    visual.simulate_event(MouseDownEvent {
+        position: clip_center,
+        button: MouseButton::Left,
+        modifiers,
+        click_count: 2,
+        first_mouse: false,
+    });
+    visual.simulate_event(MouseUpEvent {
+        position: clip_center,
+        button: MouseButton::Left,
+        modifiers,
+        click_count: 2,
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        editor.read_with(&visual, |view, _| view.selected_clip),
+        initial_selection,
+        "double-clicking through the backdrop must not select a clip"
+    );
+
+    let initial_viewport = editor.read_with(&visual, |view, _| view.viewport);
+    visual.simulate_event(ScrollWheelEvent {
+        position: grid,
+        delta: ScrollDelta::Pixels(point(px(0.0), px(80.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        editor.read_with(&visual, |view, _| view.viewport),
+        initial_viewport,
+        "scrolling the backdrop must not zoom the timeline"
+    );
+
+    // The Arrangement canvas handles middle presses in the window capture phase.
+    visual.simulate_mouse_down(grid, MouseButton::Middle, modifiers);
+    visual.run_until_parked();
+    assert!(
+        editor.read_with(&visual, |view, _| view.arrangement_pan.is_none()),
+        "the modal must block Arrangement capture before it starts a pan"
+    );
+    visual.simulate_mouse_up(grid, MouseButton::Middle, modifiers);
+
     // Clicking cancel answers the one-shot offer, closes the modal, and restores editor focus.
     let cancel_center = visual
         .debug_bounds("device-insert-confirmation-cancel")
@@ -382,6 +438,15 @@ fn confirmation_modal_renders_centered_isolates_backdrop_and_answers_clicks(
         visual.update(|window, _| editor_focus.is_focused(window)),
         "cancelling modal must restore previous editor focus"
     );
+
+    visual.simulate_mouse_down(grid, MouseButton::Middle, modifiers);
+    visual.run_until_parked();
+    assert!(
+        editor.read_with(&visual, |view, _| view.arrangement_pan.is_some()),
+        "the same point must start a pan once the modal closes"
+    );
+    visual.simulate_mouse_up(grid, MouseButton::Middle, modifiers);
+    visual.run_until_parked();
 
     // 2. Clicking proceed answers the one-shot offer, closes the modal, and restores focus.
     let (_service_proceed, offer_proceed) = make_confirmation_offer(Duration::from_secs(30));

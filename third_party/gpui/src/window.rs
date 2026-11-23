@@ -689,6 +689,12 @@ pub(crate) struct DeferredDraw {
     paint_range: Range<PaintIndex>,
 }
 
+// A full-window modal owns the painted interval in both flat dispatch lists.
+struct ModalMouseScope {
+    listeners: Range<usize>,
+    capture_owners: Range<usize>,
+}
+
 pub(crate) struct Frame {
     pub(crate) accessibility: crate::accessibility::AccessibilityFrame,
     pub(crate) focus: Option<FocusId>,
@@ -696,6 +702,7 @@ pub(crate) struct Frame {
     pub(crate) element_states: FxHashMap<(GlobalElementId, TypeId), ElementStateBox>,
     accessed_element_states: Vec<(GlobalElementId, TypeId)>,
     pub(crate) mouse_listeners: Vec<Option<AnyMouseListener>>,
+    modal_mouse_scopes: Vec<ModalMouseScope>,
     pub(crate) dispatch_tree: DispatchTree,
     pub(crate) scene: Scene,
     pub(crate) hitboxes: Vec<Hitbox>,
@@ -763,6 +770,7 @@ pub(crate) struct PrepaintStateIndex {
 pub(crate) struct PaintIndex {
     scene_index: usize,
     mouse_listeners_index: usize,
+    modal_mouse_scopes_index: usize,
     input_handlers_index: usize,
     cursor_styles_index: usize,
     pointer_hover_observers_index: usize,
@@ -783,6 +791,7 @@ impl Frame {
             element_states: FxHashMap::default(),
             accessed_element_states: Vec::new(),
             mouse_listeners: Vec::new(),
+            modal_mouse_scopes: Vec::new(),
             dispatch_tree,
             scene: Scene::default(),
             hitboxes: Vec::new(),
@@ -811,6 +820,7 @@ impl Frame {
         self.element_states.clear();
         self.accessed_element_states.clear();
         self.mouse_listeners.clear();
+        self.modal_mouse_scopes.clear();
         self.dispatch_tree.clear();
         self.scene.clear();
         self.input_handlers.clear();
@@ -2159,14 +2169,18 @@ impl Window {
         self.reset_cursor_style(cx);
         self.refreshing = false;
         self.invalidator.set_phase(DrawPhase::None);
-        if self.pointer_capture.as_ref().is_some_and(|capture| {
-            !self
-                .rendered_frame
-                .pointer_capture_owners
-                .contains(&capture.owner)
-        }) {
-            // Roots have finished updating their entities. A removed, replaced or
-            // no-longer-held control cannot retain input just because it is alive.
+        let pointer_owners = &self.rendered_frame.pointer_capture_owners;
+        let pointer_owners = self.rendered_frame.modal_mouse_scopes.last().map_or(
+            pointer_owners.as_slice(),
+            |scope| &pointer_owners[scope.capture_owners.clone()],
+        );
+        if self
+            .pointer_capture
+            .as_ref()
+            .is_some_and(|capture| !pointer_owners.contains(&capture.owner))
+        {
+            // Roots have finished updating their entities. A control that is
+            // absent, no longer held or outside a modal cannot retain input.
             self.cancel_pointer_capture(cx);
             self.reset_cursor_style(cx);
         }
@@ -2499,6 +2513,7 @@ impl Window {
         PaintIndex {
             scene_index: self.next_frame.scene.len(),
             mouse_listeners_index: self.next_frame.mouse_listeners.len(),
+            modal_mouse_scopes_index: self.next_frame.modal_mouse_scopes.len(),
             input_handlers_index: self.next_frame.input_handlers.len(),
             cursor_styles_index: self.next_frame.cursor_styles.len(),
             pointer_hover_observers_index: self.next_frame.pointer_hover_observers.len(),
@@ -2516,6 +2531,28 @@ impl Window {
         self.next_frame.debug_bounds.replay(
             &self.rendered_frame.debug_bounds.insertion_history
                 [range.start.debug_bounds_index..range.end.debug_bounds_index],
+        );
+        let rebase = |interval: &Range<usize>, from, to| {
+            (interval.start - from + to)..(interval.end - from + to)
+        };
+        let next_listener = self.next_frame.mouse_listeners.len();
+        let next_owner = self.next_frame.pointer_capture_owners.len();
+        self.next_frame.modal_mouse_scopes.extend(
+            self.rendered_frame.modal_mouse_scopes
+                [range.start.modal_mouse_scopes_index..range.end.modal_mouse_scopes_index]
+                .iter()
+                .map(|scope| ModalMouseScope {
+                    listeners: rebase(
+                        &scope.listeners,
+                        range.start.mouse_listeners_index,
+                        next_listener,
+                    ),
+                    capture_owners: rebase(
+                        &scope.capture_owners,
+                        range.start.pointer_capture_owners_index,
+                        next_owner,
+                    ),
+                }),
         );
         self.next_frame.pointer_capture_owners.extend_from_slice(
             &self.rendered_frame.pointer_capture_owners
@@ -3716,6 +3753,20 @@ impl Window {
         }
     }
 
+    pub(crate) fn with_modal_mouse_scope(&mut self, modal: bool, paint: impl FnOnce(&mut Self)) {
+        if modal {
+            let first_listener = self.next_frame.mouse_listeners.len();
+            let first_owner = self.next_frame.pointer_capture_owners.len();
+            paint(self);
+            self.next_frame.modal_mouse_scopes.push(ModalMouseScope {
+                listeners: first_listener..self.next_frame.mouse_listeners.len(),
+                capture_owners: first_owner..self.next_frame.pointer_capture_owners.len(),
+            });
+        } else {
+            paint(self);
+        }
+    }
+
     /// Register a mouse event listener on the window for the next frame. The type of event
     /// is determined by the first parameter of the given listener. When the next frame is rendered
     /// the listener will be cleared.
@@ -4328,10 +4379,17 @@ impl Window {
         }
 
         let mut mouse_listeners = mem::take(&mut self.rendered_frame.mouse_listeners);
+        let modal_range = self
+            .rendered_frame
+            .modal_mouse_scopes
+            .last()
+            .map(|scope| scope.listeners.clone())
+            .unwrap_or(0..mouse_listeners.len());
+        let listeners = &mut mouse_listeners[modal_range];
 
         // Capture phase, events bubble from back to front. Handlers for this phase are used for
         // special purposes, such as detecting events outside of a given Bounds.
-        for listener in &mut mouse_listeners {
+        for listener in &mut *listeners {
             let listener = listener.as_mut().unwrap();
             listener(event, DispatchPhase::Capture, self, cx);
             if !cx.propagate_event {
@@ -4341,7 +4399,7 @@ impl Window {
 
         // Bubble phase, where most normal handlers do their work.
         if cx.propagate_event {
-            for listener in mouse_listeners.iter_mut().rev() {
+            for listener in listeners.iter_mut().rev() {
                 let listener = listener.as_mut().unwrap();
                 listener(event, DispatchPhase::Bubble, self, cx);
                 if !cx.propagate_event {

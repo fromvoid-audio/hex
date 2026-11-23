@@ -535,3 +535,11 @@ exposes the existing test-support `Frame::debug_bounds` insertion to custom
 canvas/element painters without instantiating per-region `Div`s. Compiled only
 under `#[cfg(any(test, feature = "test-support"))]`; no production code, native
 API, or scene behavior changes.
+
+23 November modal mouse dispatch: a full-window `Div::modal_mouse` limits
+capture and bubble dispatch to its painted subtree. Hitbox occlusion also
+hides the background from hover and scroll hit testing. Frame paint replay
+carries the modal ranges for listeners and pointer capture renewals. A held
+pointer capture outside the modal retires through the existing cancellation
+path. The playback interruption confirmation opts in to keep raw canvas
+listeners from receiving its clicks and scrolls.
