@@ -1053,8 +1053,10 @@ impl SessionPlayback {
                 output,
                 frame_offset,
                 capture,
-                Some(detached),
-                detached_sends.as_mut().map(|sends| sends.as_mut_slice()),
+                DetachedTailRouting {
+                    routed: Some(detached),
+                    routed_sends: detached_sends.as_mut().map(|sends| sends.as_mut_slice()),
+                },
                 foreign,
             )?;
         }
@@ -1700,8 +1702,7 @@ impl SessionPlayback {
                 output,
                 frame_offset,
                 capture,
-                None,
-                None,
+                DetachedTailRouting::UNROUTED,
                 foreign,
             )?;
         }

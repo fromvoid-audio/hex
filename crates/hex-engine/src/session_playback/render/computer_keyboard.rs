@@ -439,8 +439,10 @@ impl SessionPlayback {
                 None,
                 observer,
                 capture,
-                &mut hex_lattice::RefuseForeign,
-                None,
+                ForeignRenderStage {
+                    foreign: &mut hex_lattice::RefuseForeign,
+                    external: None,
+                },
             )?;
             if drain_edit_tails {
                 self.return_effect_tails
@@ -451,8 +453,7 @@ impl SessionPlayback {
                 chunk,
                 offset,
                 capture,
-                None,
-                None,
+                DetachedTailRouting::UNROUTED,
                 foreign,
             )?;
             self.advance_paused_analytic_releases(count)?;

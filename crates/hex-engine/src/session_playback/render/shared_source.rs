@@ -354,28 +354,16 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
         .and_then(Option::as_mut)
         .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?;
     let receiver_id = routes[receiver].id;
-    let scoped = sources
-        .filter(|sources| sources.has_track(receiver_id))
-        .map(|sources| sources.resources(receiver_id))
-        .transpose()
-        .map_err(|_| {
-            SessionPlaybackError::MutableInstrumentDiagnostic(
-                "sampler resource scope is unavailable",
-            )
-        })?;
-    let resources: &dyn hex_lattice::DeviceResources = scoped.as_ref().map_or(
-        &hex_lattice::EMPTY_DEVICE_RESOURCES as &dyn hex_lattice::DeviceResources,
-        |resources| resources,
-    );
+    let scoped = super::mutable_setup::resolve_track_sampler_resources(sources, receiver_id)?;
+    let resources = super::mutable_setup::as_device_resources(&scoped);
     let parameter_context = instrument_automation::SourceAutomation::new(
         revision,
         receiver,
-        instrument_automation::Origin {
-            arrangement: Some(arrangement_frame),
-            performance: performance_frame,
-            pass: arrangement_loop_pass,
-            running: true,
-        },
+        super::mutable_setup::running_automation_origin(
+            arrangement_frame,
+            performance_frame,
+            arrangement_loop_pass,
+        ),
         output.len(),
     )?;
     let parameter_block = parameter_context.block_with_input(transient)?;
@@ -405,7 +393,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
                       performance: u64,
                       frames: usize,
                       retaining_muted: bool| {
-        use crate::midi_clip_volume::{VolumePlacement, VolumeRamp};
+        use crate::midi_clip_volume::VolumePlacement;
         use crate::mutable_instrument::{MutableInstrumentRuntimeError as Error, VolumeSlice};
         let key = signature.key();
         let Some(index) = revision
@@ -438,36 +426,10 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
         let console_program = console.as_ref().and_then(|(_, origin, prepared)| {
             prepared.volume_program().map(|program| (*origin, program))
         });
-        let console_historical = console_program
-            .map(|(origin, program)| {
-                program.historical_end_gain(timing, VolumePlacement::Session { origin })
-            })
-            .transpose()
-            .map_err(|_| Error::InvalidSourceSpan)?
-            .flatten()
-            .is_some();
-        let console_endpoint = if console_historical {
-            None
-        } else {
-            console_program
-                .map(|(origin, program)| {
-                    program.finite_endpoint(timing, VolumePlacement::Session { origin })
-                })
-                .transpose()
-                .map_err(|_| Error::InvalidSourceSpan)?
-                .flatten()
-        };
-        let unity = |at| VolumeSlice {
-            at,
-            terminal: None,
-            ramp: VolumeRamp {
-                start_frame: 0,
-                end_frame: u64::MAX,
-                start_gain: 1.0,
-                end_gain: 1.0,
-                next_boundary: None,
-            },
-        };
+        let (console_historical, console_endpoint) =
+            super::mutable_setup::console_volume_bounds(console_program, timing)
+                .map_err(|()| Error::InvalidSourceSpan)?;
+        let unity = super::mutable_setup::unity_volume_slice;
         match midi_route.owner {
             RouteOwner::Arrangement => {
                 if key.track != track_id || key.loop_pass != arrangement_loop_pass {

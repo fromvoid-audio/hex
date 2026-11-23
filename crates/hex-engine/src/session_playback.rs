@@ -2983,6 +2983,8 @@ pub use paused_track_monitor::{
 };
 mod preroll;
 mod render;
+pub(crate) use render::LiveAudioInputs;
+pub use render::LiveTrackAudio;
 mod stream_actions;
 mod stream_demand;
 pub use capture::{

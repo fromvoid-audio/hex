@@ -3482,7 +3482,17 @@ fn live_track_audio_reaches_borrowed_foreign_effect() {
     playback.apply(SessionPlaybackCommand::Play).unwrap();
     let mut output = [[0.0; 2]; 64];
     playback
-        .render_with_live_track_audio(&mut output, track, &samples, None, None, None, &mut effect)
+        .render_with_live_track_audio(
+            &mut output,
+            LiveTrackAudio {
+                track,
+                frames: &samples,
+            },
+            None,
+            None,
+            None,
+            &mut effect,
+        )
         .unwrap();
     assert_eq!(effect.processed, 64);
     assert_eq!(output[19], [samples[0][0] * 0.5, samples[0][1] * 0.5]);
