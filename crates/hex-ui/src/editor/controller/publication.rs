@@ -349,6 +349,60 @@ pub(super) fn retained_install_fresh_policy(
         || previous.is_some_and(|(generation, reset)| generation == project_generation && reset)
 }
 
+pub(super) fn submitted_audio_revision_status(audio_revision: u64) -> String {
+    format!("audio revision {audio_revision} submitted · waiting for playback")
+}
+
+fn parse_submitted_audio_revision(status: &str) -> Option<u64> {
+    status
+        .strip_prefix("audio revision ")?
+        .strip_suffix(" submitted · waiting for playback")?
+        .parse()
+        .ok()
+}
+
+pub(super) fn record_submitted_audio_status(
+    status: &mut String,
+    audio_revision: u64,
+    applied_revision: u64,
+) -> bool {
+    if applied_revision >= audio_revision {
+        let is_transient = matches!(
+            status.as_str(),
+            "preparing audio"
+                | "audio busy · waiting to publish"
+                | "audio publication queued · waiting for worker"
+        ) || parse_submitted_audio_revision(status)
+            .is_some_and(|submitted| submitted <= applied_revision);
+        if is_transient && status != "audio ready" {
+            *status = "audio ready".into();
+            return true;
+        }
+        return false;
+    }
+    let next = submitted_audio_revision_status(audio_revision);
+    if *status == next {
+        return false;
+    }
+    *status = next;
+    true
+}
+
+pub(super) fn clear_applied_submitted_audio_status(
+    status: &mut String,
+    applied_revision: u64,
+) -> bool {
+    if applied_revision == 0 {
+        return false;
+    }
+    if parse_submitted_audio_revision(status).is_some_and(|submitted| submitted <= applied_revision)
+    {
+        *status = "audio ready".into();
+        return true;
+    }
+    false
+}
+
 #[cfg(all(test, feature = "ui-unit-tier"))]
 #[path = "publication_unit_tests.rs"]
 mod publication_unit_tests;
