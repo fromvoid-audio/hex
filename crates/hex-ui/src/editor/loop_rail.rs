@@ -427,7 +427,10 @@ pub(super) fn view(
                                 move |event: &MouseDownEvent, phase, window, cx| {
                                     if !phase.capture()
                                         || event.button != MouseButton::Left
-                                        || !bounds.contains(&event.position)
+                                        || !super::arrangement::bounds_or_leading_buffer_contains(
+                                            bounds,
+                                            event.position,
+                                        )
                                     {
                                         return;
                                     }
@@ -461,7 +464,10 @@ pub(super) fn view(
                                     if event.pressed_button != Some(MouseButton::Left) {
                                         let hover = move_entity.update(cx, |view, _| {
                                             let cancelled = view.cancel_loop_rail_gesture();
-                                            let hover = if move_bounds.contains(&event.position) {
+                                            let hover = if super::arrangement::bounds_or_leading_buffer_contains(
+                                                move_bounds,
+                                                event.position,
+                                            ) {
                                                 match view.loop_rail_hover(
                                                     f32::from(event.position.x),
                                                     viewport,

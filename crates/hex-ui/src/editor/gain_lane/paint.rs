@@ -410,7 +410,10 @@ fn plot(
                     window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                         if !phase.capture()
                             || event.button != MouseButton::Left
-                            || !bounds.contains(&event.position)
+                            || !super::super::arrangement::bounds_or_leading_buffer_contains(
+                                bounds,
+                                event.position,
+                            )
                         {
                             return;
                         }

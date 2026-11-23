@@ -2204,16 +2204,11 @@ impl EditorView {
 }
 
 fn lane_contains(x: f32, y: f32, lane: super::drag::LaneBounds) -> bool {
-    x.is_finite()
+    super::arrangement::timeline_x_in_bounds_or_buffer(x, lane.left, lane.width)
         && y.is_finite()
-        && lane.left.is_finite()
         && lane.top.is_finite()
-        && lane.width.is_finite()
         && lane.height.is_finite()
-        && lane.width > 0.0
         && lane.height > 0.0
-        && x >= lane.left
-        && x < lane.left + lane.width
         && y >= lane.top
         && y < lane.top + lane.height - 1.0
 }

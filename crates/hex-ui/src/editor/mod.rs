@@ -15,6 +15,8 @@ mod arrangement_device_drop;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod arrangement_device_drop_ui_test;
 mod arrangement_focus;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod arrangement_leading_buffer_ui_test;
 mod arrangement_locators;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod arrangement_main_track_ui_test;

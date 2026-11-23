@@ -69,7 +69,11 @@ impl EditorView {
         free: bool,
     ) -> Option<BeatTime> {
         let [left, top, width, height] = self.section_layout()?;
-        if x < left || x > left + width || y < top || y > top + height {
+        if x < left - crate::editor::arrangement::LEADING_BUFFER_WIDTH
+            || x > left + width
+            || y < top
+            || y > top + height
+        {
             return None;
         }
         let state = self.state.as_ref()?;
@@ -84,7 +88,11 @@ impl EditorView {
     }
     pub(super) fn section_hit(&self, x: f32, y: f32) -> Option<SectionId> {
         let [left, top, width, height] = self.section_layout()?;
-        if x < left || x > left + width || y < top || y > top + height {
+        if x < left - crate::editor::arrangement::LEADING_BUFFER_WIDTH
+            || x > left + width
+            || y < top
+            || y > top + height
+        {
             return None;
         }
         let state = self.state.as_ref()?;

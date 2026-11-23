@@ -8,6 +8,39 @@ use gpui::{
 };
 use std::sync::Arc;
 
+/// Visible leading gutter width before frame `0` (bar `1`) in the Arrangement timeline.
+pub(super) const LEADING_BUFFER_WIDTH: f32 = 12.0;
+
+/// True when `x` lies inside `[left - LEADING_BUFFER_WIDTH, left + width)` (including the leading buffer).
+pub(super) fn timeline_x_in_bounds_or_buffer(x: f32, left: f32, width: f32) -> bool {
+    x.is_finite()
+        && left.is_finite()
+        && width.is_finite()
+        && width > 0.0
+        && x >= left - LEADING_BUFFER_WIDTH
+        && x < left + width
+}
+
+/// True when `position` lies inside `bounds` or its immediately adjacent leading buffer on the left.
+pub(super) fn bounds_or_leading_buffer_contains(
+    bounds: gpui::Bounds<gpui::Pixels>,
+    position: gpui::Point<gpui::Pixels>,
+) -> bool {
+    let x = f32::from(position.x);
+    let y = f32::from(position.y);
+    let left = f32::from(bounds.origin.x);
+    let width = f32::from(bounds.size.width);
+    let top = f32::from(bounds.origin.y);
+    let height = f32::from(bounds.size.height);
+    timeline_x_in_bounds_or_buffer(x, left, width)
+        && y.is_finite()
+        && top.is_finite()
+        && height.is_finite()
+        && height > 0.0
+        && y >= top
+        && y < top + height
+}
+
 impl EditorView {
     pub(super) fn begin_arrangement_pan(&mut self, x: f32, y: f32) -> bool {
         let Some(state) = self.state.as_ref() else {
@@ -130,7 +163,7 @@ impl EditorView {
                 .bg(rgb(theme::color(theme::PaletteRole::Background)));
             let main = self.main_track_row(viewport, &[], &[], window.scale_factor(), window, cx);
             let returns = self.return_tracks_view(cx);
-            return self.arrangement_surface(upper, returns, main, None, cx);
+            return self.arrangement_surface(upper, returns, main, None, true, cx);
         };
         let locator_state = self
             .locator_display_state()
@@ -155,7 +188,9 @@ impl EditorView {
                         1.0 / window.scale_factor().max(1.0),
                     )])
             });
-        let ruler_width = (self.workspace_body_width(window) - self.track_header_width()).max(0.0);
+        let ruler_width =
+            (self.workspace_body_width(window) - self.track_header_width() - LEADING_BUFFER_WIDTH)
+                .max(0.0);
         if self.track_scroll.list.item_count() == 0 {
             let empty_viewport = viewport;
             self.refresh_locators(&locator_state, empty_viewport);
@@ -256,7 +291,14 @@ impl EditorView {
                 cx,
             );
             let returns = self.return_tracks_view(cx);
-            return self.arrangement_surface(upper, returns, main, guide_line, cx);
+            return self.arrangement_surface(
+                upper,
+                returns,
+                main,
+                guide_line,
+                empty_viewport.start == 0,
+                cx,
+            );
         }
 
         self.refresh_locators(&locator_state, viewport);
@@ -367,7 +409,7 @@ impl EditorView {
             ));
         let main = self.main_track_row(viewport, &bands, &grid, window.scale_factor(), window, cx);
         let returns = self.return_tracks_view(cx);
-        self.arrangement_surface(upper, returns, main, guide_line, cx)
+        self.arrangement_surface(upper, returns, main, guide_line, viewport.start == 0, cx)
     }
 
     fn arrangement_body(&self, mut body: Div, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
@@ -416,7 +458,9 @@ impl EditorView {
                     });
                     let zoom_entity = measure_entity.clone();
                     window.on_mouse_event(move |event: &ScrollWheelEvent, phase, _window, cx| {
-                        if !phase.capture() || !bounds.contains(&event.position) {
+                        if !phase.capture()
+                            || !bounds_or_leading_buffer_contains(bounds, event.position)
+                        {
                             return;
                         }
                         if Self::row_size_wheel(event) {
@@ -458,7 +502,7 @@ impl EditorView {
                     window.on_mouse_event(move |event: &MouseDownEvent, phase, _, cx| {
                         if !phase.capture()
                             || event.button != MouseButton::Middle
-                            || !pan_bounds.contains(&event.position)
+                            || !bounds_or_leading_buffer_contains(pan_bounds, event.position)
                             || f32::from(event.position.x)
                                 >= f32::from(pan_bounds.origin.x)
                                     + (f32::from(pan_bounds.size.width) - header_width).max(0.0)
@@ -1000,16 +1044,31 @@ impl EditorView {
         returns: impl IntoElement,
         main: Div,
         clip_move_guide: Option<Div>,
+        at_start: bool,
         cx: &mut Context<Self>,
     ) -> Div {
         let entity = cx.entity();
         let clip_entity = entity.clone();
         let device_entity = entity.clone();
-        div()
-            .debug_selector(|| "arrangement-surface".into())
+        let leading_buffer = div()
+            .id("arrangement-leading-buffer")
+            .debug_selector(|| "arrangement-leading-buffer".into())
+            .w(px(LEADING_BUFFER_WIDTH))
+            .h_full()
+            .flex_shrink_0()
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+            .border_r_1()
+            .border_color(rgb(theme::color(if at_start {
+                theme::PaletteRole::Muted
+            } else {
+                theme::PaletteRole::Border
+            })));
+        let timeline_column = div()
+            .id("arrangement-timeline-column")
             .relative()
             .flex_1()
-            .min_h_0()
+            .min_w_0()
+            .h_full()
             .flex()
             .flex_col()
             .child(upper.flex_1().min_h_0())
@@ -1018,7 +1077,15 @@ impl EditorView {
             .child(self.arrangement_playback_layer(cx))
             .children(clip_move_guide)
             .child(self.track_resize_events(cx))
-            .children([self.track_reorder_events(cx)])
+            .children([self.track_reorder_events(cx)]);
+        div()
+            .debug_selector(|| "arrangement-surface".into())
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_row()
+            .children([leading_buffer, timeline_column])
             .on_drag_move::<super::drag::NativeDeviceDrag>(move |event, _, cx| {
                 let Some(payload) = event
                     .dragged_item()
@@ -1377,7 +1444,7 @@ impl EditorView {
                     window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                         if !phase.bubble()
                             || event.button != MouseButton::Left
-                            || !bounds.contains(&event.position)
+                            || !bounds_or_leading_buffer_contains(bounds, event.position)
                         {
                             return;
                         }
@@ -1471,7 +1538,9 @@ impl EditorView {
                     });
                     let wheel_entity = entity.clone();
                     window.on_mouse_event(move |event: &ScrollWheelEvent, phase, _, cx| {
-                        if !phase.capture() || !bounds.contains(&event.position) {
+                        if !phase.capture()
+                            || !bounds_or_leading_buffer_contains(bounds, event.position)
+                        {
                             return;
                         }
                         let delta_y = -f32::from(event.physical_delta().pixel_delta(px(80.0)).y);
