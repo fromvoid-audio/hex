@@ -700,8 +700,41 @@ impl EditorView {
             Err(error) => {
                 let cancelled = pending.cancelled;
                 let recovery = pending.recovery_generation;
+                let request_id = pending.request_id;
+                let superseded = !cancelled
+                    && recovery.is_some()
+                    && self.project_generation == pending.project_generation
+                    && self
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.revision == pending.project_revision)
+                    && self.audio.as_ref().is_some_and(|audio| {
+                        audio.control.output_identity() == pending.native_output_identity
+                            && audio.control.status().is_some_and(|status| {
+                                !status.device_fault.load(Acquire)
+                                    && !status.render_fault.load(Acquire)
+                                    && status.applied_revision.load(Acquire)
+                                        > pending.fence.expected_active_revision()
+                            })
+                    });
                 self.prepared_seek = None;
-                if !cancelled {
+                if let Some(generation) = recovery.filter(|generation| {
+                    superseded && self.recovery.permits_seek(Some(*generation))
+                }) {
+                    if self.recovery.retry_prepared_seek(generation, request_id) {
+                        self.status = "restarting audio · updating playback position".into();
+                        self.error = None;
+                    } else {
+                        // A second advancing source still belongs to the healthy
+                        // output. End this attempt with an explicit cursor retry.
+                        self.clear_recovery();
+                        self.pending_recovery_generation = None;
+                        self.playback_settings.pending = None;
+                        self.deferred_play = None;
+                        self.status = "audio ready · playback position needs retry".into();
+                        self.error = Some("audio changed again · recovery cancelled · set playback position and retry play".into());
+                    }
+                } else if !cancelled {
                     if recovery.is_some() && self.recovery.permits_seek(recovery) {
                         self.fail_audio_recovery(error);
                     } else {

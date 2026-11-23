@@ -995,6 +995,23 @@ impl EditorView {
                     .as_ref()
                     .is_some_and(|audio| audio.control.worker_owns_graph_publication());
             if prepared {
+                // A completed restoration can advance the callback before its
+                // protected source metadata reaches this view. Wait for the
+                // exact source before capturing another preparation fence.
+                let source_ready = self.audio.as_ref().is_some_and(|audio| {
+                    audio.control.status().is_some_and(|status| {
+                        self.audible_playback.as_ref().is_some_and(|candidate| {
+                            candidate.audio_revision == status.applied_revision.load(Acquire)
+                        })
+                    })
+                });
+                if !source_ready
+                    || self.pending_playback.is_some()
+                    || self.pending_resident_publication.is_some()
+                    || !self.playback_candidates.is_empty()
+                {
+                    return false;
+                }
                 let Some(generation) = self.recovery.generation() else {
                     return false;
                 };

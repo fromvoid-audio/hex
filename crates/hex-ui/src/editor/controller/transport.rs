@@ -666,12 +666,26 @@ impl EditorView {
             self.error = Some("applying edit · wait for audio".into());
             return;
         }
-        if self.stopped_playback_restore.is_some() {
-            self.error = Some("restoring stopped playback · wait before seeking".into());
+        if self.recovery.generation().is_some() {
+            self.recovery.retarget(frame);
+            if let Some((PlaybackAction::Transport(command), _, _)) = self.deferred_play.as_mut() {
+                match command {
+                    PlaybackCommand::PlayFrom(position)
+                    | PlaybackCommand::PlayFromWithNoteChase {
+                        frame: position, ..
+                    } => {
+                        *position = frame;
+                    }
+                    _ => {}
+                }
+            }
+            self.offline_cursor = frame;
+            self.status = "restarting audio · playback position updated".into();
+            self.error = None;
             return;
         }
-        if self.recovery.generation().is_some() {
-            self.error = Some("audio recovery pending · cannot seek yet".into());
+        if self.stopped_playback_restore.is_some() {
+            self.error = Some("restoring stopped playback · wait before seeking".into());
             return;
         }
         if self.opening_project || self.close_prompt_open {

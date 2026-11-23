@@ -64,3 +64,29 @@ fn real_new_control_restores_cursor_without_inheriting_old_tickets_or_play() {
     assert_eq!(control.status.position.load(Relaxed), 96);
     assert!(!control.status.playing.load(Relaxed));
 }
+
+#[test]
+fn prepared_recovery_retry_and_latest_cursor_keep_exact_receipts() {
+    let mut state = RecoveryState::default();
+    let generation = state.begin(129).unwrap();
+    assert!(state.opened(generation));
+    assert!(state.restored(generation));
+    assert!(state.prepared_seeking(generation, 1));
+    assert!(!state.retry_prepared_seek(generation + 1, 1));
+    assert!(!state.retry_prepared_seek(generation, 2));
+    assert!(state.retry_prepared_seek(generation, 1));
+    assert_eq!(state.seek_needed(true), Some(129));
+    assert!(state.prepared_seeking(generation, 2));
+    assert!(!state.retry_prepared_seek(generation, 2));
+    state.prepared_published(2, 7);
+    state.retarget(193);
+    assert!(!state.complete_prepared(true, Some((1, 7)), 7, 129, false));
+    assert_eq!(state.prepared_request(), Some(2));
+    assert!(!state.complete_prepared(true, Some((2, 7)), 7, 129, false));
+    assert_eq!(state.seek_needed(true), Some(193));
+    assert!(state.prepared_seeking(generation, 3));
+    state.prepared_published(3, 8);
+    assert!(!state.complete_prepared(true, Some((2, 7)), 8, 193, false));
+    assert!(state.complete_prepared(true, Some((3, 8)), 8, 193, false));
+    assert_eq!(state.generation(), None);
+}
