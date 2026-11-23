@@ -300,6 +300,13 @@ impl Plugins {
             }) {
                 return Err(refused("stopped vst3 restoration was refused"));
             }
+            if self
+                .parameter_gesture
+                .as_ref()
+                .is_some_and(|gesture| gesture.commit_accepted)
+            {
+                self.poll_parameter_override(control, Some(input.context()));
+            }
             if self.parameter_gesture.is_some() || self.restore.is_some() {
                 return Err(refused("vst3 controller is busy"));
             }
