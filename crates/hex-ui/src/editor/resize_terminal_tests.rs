@@ -105,6 +105,7 @@ fn install(v: &mut EditorView, clip: ClipId) -> Request {
     let track = state.project.tracks()[0].id();
     v.viewport = Some(OWNED);
     v.pending_trim = Some(PendingTrim {
+        replayed: false,
         generation: v.project_generation,
         revision,
         track,

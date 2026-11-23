@@ -542,6 +542,7 @@ fn install_pending_audio(v: &mut EditorView, clip: ClipId) -> Request {
         frame,
     });
     v.pending_trim = Some(super::PendingTrim {
+        replayed: false,
         generation: v.project_generation,
         revision: state.revision,
         track,
