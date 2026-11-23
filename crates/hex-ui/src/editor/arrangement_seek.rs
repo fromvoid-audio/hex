@@ -674,7 +674,8 @@ impl EditorView {
                 .audio
                 .as_ref()
                 .and_then(|audio| audio.control.output_identity())
-                == Some(output_identity) =>
+                == Some(output_identity)
+                && pending.native_output_identity == Some(output_identity) =>
             {
                 Ok(audio_revision)
             }
