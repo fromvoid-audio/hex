@@ -1796,7 +1796,7 @@ impl NativeRuntimeChain {
     ) -> Option<NativeInsertTransition> {
         let position = self.extra_native_stage_from(
             previous,
-            |added| !added.bypassed && !matches!(added.runtime, RuntimeOwnership::Memoryless),
+            |added| !added.bypassed,
             |old, current| Self::entry_configuration_matches(old, current, continuation),
         )?;
         self.can_inherit_from(previous)

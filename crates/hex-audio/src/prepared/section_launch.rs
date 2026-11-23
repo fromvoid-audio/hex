@@ -77,8 +77,7 @@ impl Callback {
                 streams.cancel_install(&mut self.domain_pages);
             }
             self.status.publish_rejected_revision(next.revision, reason);
-            self.return_graph(next);
-            self.status.publication_pending.store(false, Release);
+            self.return_rejected_graph(next);
         }
         false
     }

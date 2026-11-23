@@ -773,7 +773,20 @@ impl Callback {
         self.held_retirement.is_none() && self.publications.is_empty()
     }
 
-    pub(super) fn return_graph(&mut self, mut publication: Publication) {
+    pub(super) fn return_graph(&mut self, publication: Publication) {
+        self.return_graph_inner(publication, false);
+    }
+
+    /// Return a rejected pending graph and clear `publication_pending` before
+    /// publishing its terminal receipt state so control threads observing the
+    /// receipt never see a stale `publication_in_flight()` window (for example,
+    /// when offering device-insert consent). Keeps the receipt owned inside
+    /// `publication` so no `Arc` can drop on the audio callback thread.
+    pub(super) fn return_rejected_graph(&mut self, publication: Publication) {
+        self.return_graph_inner(publication, true);
+    }
+
+    fn return_graph_inner(&mut self, mut publication: Publication, clear_pending: bool) {
         if publication.approved_device_insert().is_some() {
             self.release_device_insert_fade_pins();
         }
@@ -786,6 +799,11 @@ impl Callback {
         }
         self.release_refused_device_insert_cut(&publication);
         self.restore_refused_native_removal(&mut publication);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.restore_parameter_predecessor_prewarm(&publication);
+        if clear_pending {
+            self.status.publication_pending.store(false, Release);
+        }
         if let Some(receipt) = publication.fresh_runtime_cancellation.as_ref() {
             // The callback is the sole writer of these refusal fields. A
             // refused graph is returned in the same callback branch that
@@ -805,8 +823,6 @@ impl Callback {
                 );
             }
         }
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        self.restore_parameter_predecessor_prewarm(&publication);
         self.return_publication(ReturnedPublication::Legacy(publication));
     }
 
@@ -918,8 +934,7 @@ impl Callback {
             if !self.retired.is_full()
                 && let Some(publication) = self.deferred.take()
             {
-                self.return_graph(publication);
-                self.status.publication_pending.store(false, Release);
+                self.return_rejected_graph(publication);
             }
             if !self.retired.is_full() {
                 if let Some(mut active) = self
@@ -965,8 +980,7 @@ impl Callback {
                         return;
                     }
                 };
-                self.return_graph(publication);
-                self.status.publication_pending.store(false, Release);
+                self.return_rejected_graph(publication);
             }
             self.status.playing.store(false, Relaxed);
             if self.active.is_none()

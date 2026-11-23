@@ -223,7 +223,7 @@ fn direct_replacement_predecessor<'a>(
     let source = old.source_id()?;
     (old.instrument_slot_enabled()
         && next.instrument_id.is_some()
-        && next.instrument_id != old.instrument_id
+        && (next.instrument_id != old.instrument_id || old.foreign_instrument.is_none())
         && old.midi_source_index.is_none()
         && next.midi_source_index.is_none()
         && next.source_id() == Some(source)
@@ -482,11 +482,18 @@ impl ForeignArrangement {
                             let old = old.as_ref()?;
                             let binding = old.processor.binding()?;
                             let ledger = &old.committed;
+                            let route_ok = if ledger.has_held_notes() {
+                                ledger.route == Some(RouteOwner::Arrangement)
+                            } else {
+                                matches!(
+                                    ledger.route,
+                                    Some(RouteOwner::Arrangement | RouteOwner::Silence) | None
+                                )
+                            };
                             (old.track == candidate.track
                                 && next_binding.root == binding.root
                                 && next_binding.instance != binding.instance
-                                && ledger.route == Some(RouteOwner::Arrangement)
-                                && ledger.has_held_notes()
+                                && route_ok
                                 && !ledger.live.held()
                                 && !ledger.hardware.held())
                             .then_some((index, binding))
@@ -500,15 +507,35 @@ impl ForeignArrangement {
                     continue;
                 }
                 if cut.playing && (tempo_cut.is_some() || fresh != Some(candidate.track)) {
-                    if !may_offer_device_cut
-                        || !replacement.is_some_and(|track| {
-                            track.instrument_enabled()
-                                && !track.has_mutable_instrument()
-                                && track.foreign_instrument.is_none()
-                                && track.instrument_state.as_ref().is_some_and(|state| {
-                                    state.type_id() == hex_project::DEFAULT_INSTRUMENT_TYPE_ID
+                    let insert_on_existing_empty_track = !held_edit_needs_cut
+                        && displaced_index.is_none()
+                        && fresh.is_none()
+                        && tempo_cut.is_none()
+                        && tracks.get(index).is_some_and(|next| {
+                            next.midi_source_index.is_none()
+                                && next.receives_source_audio()
+                                && next.source_id().is_some_and(|source| {
+                                    tracks
+                                        .iter()
+                                        .filter(|member| member.source_id() == Some(source))
+                                        .take(2)
+                                        .count()
+                                        == 1
                                 })
-                        })
+                                && old_tracks
+                                    .iter()
+                                    .find(|old| old.canonical_track_id() == Some(candidate.track))
+                                    .is_some_and(|old| {
+                                        old.instrument_id.is_none()
+                                            && old.source_id().is_none()
+                                            && old.midi_source_index.is_none()
+                                    })
+                        });
+                    if !may_offer_device_cut
+                        || (!insert_on_existing_empty_track
+                            && !replacement.is_some_and(|track| {
+                                track.instrument_enabled() && track.foreign_instrument.is_none()
+                            }))
                     {
                         return Err(INCOMPATIBLE_HANDOFF);
                     }

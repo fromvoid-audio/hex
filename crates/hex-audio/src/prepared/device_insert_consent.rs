@@ -5,7 +5,10 @@
 use super::*;
 use std::{sync::OnceLock, time::Duration};
 
-const INSTALL_WINDOW: Duration = Duration::from_millis(250);
+// Match the control-side resident confirmation window so streamed prewarm,
+// queued session cuts, and loaded VST3 callbacks do not prematurely expire
+// a valid live device insert while still bounding stale graphs on callback.
+const INSTALL_WINDOW: Duration = Duration::from_secs(2);
 const CONSENT_WINDOW: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
@@ -1045,5 +1048,85 @@ mod tests {
             revision
         );
         assert!(!control.device_insert_consent_is_current(&offer));
+    }
+
+    #[test]
+    fn rejected_and_installed_device_inserts_clear_publication_pending_before_receipt_terminal() {
+        let ([old, next], _) = revisions();
+        let (mut control, mut callback, predecessor, receipt) =
+            begin_insert_with_pending_track(Arc::clone(&old), Arc::clone(&next), None, 512);
+        let mut reject_step = || {
+            callback.begin_block();
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let counts = allocation_counter::measure(&mut reject_step);
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current,
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        reject_step();
+
+        assert_eq!(
+            receipt.state(),
+            PublicationReceiptState::Refused(
+                PlaybackHandoffRejection::DeviceInsertNeedsConfirmation,
+            )
+        );
+        assert!(
+            !control.status.publication_in_flight(),
+            "publication_pending must already be false when Refused is visible"
+        );
+        let offer = control
+            .offer_resident_device_insert_consent(&receipt)
+            .expect("consent offer must succeed immediately after refusal");
+        assert_eq!(offer.predecessor(), predecessor);
+        control.reclaim();
+
+        let mut bind_receipt = |_: &CancellablePublicationReceipt| {};
+        let confirmed_revision = control
+            .publish_unaccounted_with_native_continuation(
+                Playback::try_from_prepared_with_session(next).unwrap(),
+                PublicationPolicy::DeviceInsert {
+                    predecessor: offer.predecessor(),
+                    fence: offer.fence,
+                },
+                offer.candidate_context().project_generation,
+                true,
+                false,
+                Some(offer.candidate_context()),
+                Some(FencedAdmission::DeviceInsert(DeviceInsertAdmission {
+                    bind: &mut bind_receipt,
+                    approved: Some(offer),
+                    preparation_deadline: Instant::now() + Duration::from_secs(10),
+                })),
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                None,
+            )
+            .unwrap();
+        let confirmed_receipt = control.fresh_runtime_receipt(confirmed_revision).unwrap();
+        let mut pcm = [[0.0; 2]; 256];
+        for _ in 0..8 {
+            callback.begin_block();
+            if confirmed_receipt.state() == PublicationReceiptState::Installed {
+                break;
+            }
+            callback.render(&mut pcm).unwrap();
+        }
+        assert_eq!(
+            confirmed_receipt.state(),
+            PublicationReceiptState::Installed
+        );
+        assert!(
+            !control.status.publication_in_flight(),
+            "publication_pending must already be false when Installed is visible"
+        );
     }
 }

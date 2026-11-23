@@ -230,7 +230,8 @@ impl SessionPlayback {
         let Some(old_graph) = old_graph else {
             return true;
         };
-        new.tracks()
+        let tracks_ok = new
+            .tracks()
             .iter()
             .zip(&self.device_chains)
             .all(|(track, chain)| {
@@ -248,7 +249,25 @@ impl SessionPlayback {
                             != DeviceEditTailPolicy::Cut
                             || keeps_clocks(old_chain, chain)
                     })
-            })
+            });
+        let returns_ok = new
+            .return_buses()
+            .iter()
+            .zip(&self.return_chains)
+            .all(|(bus, chain)| {
+                let Some((old_bus, old_chain)) = old
+                    .return_buses()
+                    .iter()
+                    .zip(&previous.return_chains)
+                    .find(|(old_bus, _)| old_bus.id == bus.id)
+                else {
+                    return true;
+                };
+                policy.for_chain(&old_bus.device_chain, &bus.device_chain)
+                    != DeviceEditTailPolicy::Cut
+                    || keeps_clocks(old_chain, chain)
+            });
+        tracks_ok && returns_ok
     }
 
     /// Retain direct native audio histories through a confirmed reset when

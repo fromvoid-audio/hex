@@ -3279,3 +3279,127 @@ fn cancelling_a_native_removal_restores_the_wet_predecessor() {
             .any(|sample| sample.abs() > 1e-6)
     );
 }
+
+#[test]
+fn confirmed_latency_insert_succeeds_while_detached_return_tail_is_active() {
+    use hex_project::{Command, Project};
+
+    let (mut editor, track, bus, reverb, media, table) = real_main_limiter_reverb_fixture();
+    let prepare = |project: &Project| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+    };
+    let mut old = SessionPlayback::new(prepare(editor.project())).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut vec![[0.0; 2]; 6_000]).unwrap();
+
+    // Remove the Return reverb via ordinary handoff so a detached Return tail
+    // is actively ringing out in `old.return_effect_tails`.
+    editor.execute(Command::RemoveDevice(reverb)).unwrap();
+    let mut with_tail = SessionPlayback::new(prepare(editor.project())).unwrap();
+    with_tail.try_inherit_state_live_from(&mut old).unwrap();
+    with_tail.render(&mut vec![[0.0; 2]; 64]).unwrap();
+    assert!(
+        with_tail
+            .return_effect_tails
+            .slots()
+            .iter()
+            .flatten()
+            .any(|tail| tail.output_active && tail.return_id() == Some(bus)),
+        "fixture must have an active detached Return tail"
+    );
+
+    // Insert a latency-introducing limiter on the audio track while the Return
+    // tail is ringing out: continuous insert must offer confirmation and the
+    // confirmed cut must succeed instead of failing with LatencyLayoutChanged.
+    let limiter =
+        crate::default_native_device_state(DeviceTypeId::from_static("hex.limiter")).unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: limiter,
+        })
+        .unwrap();
+    let after = prepare(editor.project());
+    let mut unapproved = SessionPlayback::new(Arc::clone(&after)).unwrap();
+    unapproved.require_continuous_insert = true;
+    assert!(matches!(
+        unapproved.try_inherit_state_live_from(&mut with_tail),
+        Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+    ));
+
+    with_tail.set_playing_at_device_insert_cut(false);
+    let mut confirmed = SessionPlayback::new(after).unwrap();
+    confirmed
+        .try_inherit_state_at_device_insert_cut(&mut with_tail)
+        .expect("confirmed latency insert must succeed while a detached Return tail is active");
+    assert_eq!(confirmed.performance_frame(), 6_064);
+}
+
+#[test]
+fn memoryless_utility_insert_before_existing_device_succeeds_seamlessly_on_track_return_and_main() {
+    use hex_project::{Command, Project};
+
+    let utility =
+        crate::default_native_device_state(DeviceTypeId::from_static("hex.utility")).unwrap();
+    for location in [
+        NativeInsertLocation::Track,
+        NativeInsertLocation::Return,
+        NativeInsertLocation::Main,
+    ] {
+        let (mut editor, track, bus, reverb, media, table) = real_main_limiter_reverb_fixture();
+        let prepare = |project: &Project| {
+            Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+        };
+        let eq = crate::default_native_device_state(DeviceTypeId::from_static("hex.eq8")).unwrap();
+        let existing_track_device = match editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: eq,
+            })
+            .unwrap()
+        {
+            hex_project::Created::Device(id) => id,
+            _ => panic!("eq8"),
+        };
+        let existing_main_device = editor.project().main_devices()[0].id();
+
+        let before = prepare(editor.project());
+        let mut playing = SessionPlayback::new(before).unwrap();
+        playing.apply(SessionPlaybackCommand::Play).unwrap();
+        playing.render(&mut vec![[0.0; 2]; 6_000]).unwrap();
+
+        let insert_cmd = match location {
+            NativeInsertLocation::Track => Command::InsertDevice {
+                track,
+                before: Some(existing_track_device),
+                state: utility.clone(),
+            },
+            NativeInsertLocation::Return => Command::InsertReturnDevice {
+                return_track: bus,
+                before: Some(reverb),
+                state: utility.clone(),
+            },
+            NativeInsertLocation::Main => Command::InsertMainDevice {
+                before: Some(existing_main_device),
+                state: utility.clone(),
+            },
+            NativeInsertLocation::Group => unreachable!(),
+        };
+        editor.execute(insert_cmd).unwrap();
+        let after = prepare(editor.project());
+        let mut candidate = SessionPlayback::new(after).unwrap();
+        candidate.require_continuous_insert = true;
+        let report = candidate
+            .try_inherit_state_live_from(&mut playing)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "memoryless utility insert at {location:?} must succeed seamlessly: {error:?}"
+                )
+            });
+        assert!(!report.running_audio_restart);
+        assert_eq!(candidate.performance_frame(), 6_000);
+        assert!(candidate.playing());
+    }
+}
