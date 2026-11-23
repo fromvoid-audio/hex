@@ -149,6 +149,27 @@ impl EqRuntime {
                 .binary_search_by_key(id, |grant| grant.descriptor.id)
                 .map_err(|_| DeviceContractError::UnsupportedProcessingClass)?;
         }
+        let mut preflight_nodes = Nodes::new(&self.configuration);
+        let mut readings = [None; MAX_PARAMETERS_PER_DEVICE];
+        // Preflight every frame offset on the stack before mutating filter
+        // histories, gain state, or the caller's audio buffer.
+        for offset in 0..frames.len() {
+            values.values_at(offset, &mut readings[..ids.len()])?;
+            for (&reading, &binding) in readings[..ids.len()].iter().zip(&bindings) {
+                let grant = self.configuration.parameters[binding];
+                if let Some(value) = reading {
+                    grant.descriptor.validate(value)?;
+                }
+                if let Some((index, field)) = grant.node
+                    && let Some(patch) = preflight_nodes.patches[index].as_mut()
+                {
+                    patch.node.set(
+                        field,
+                        reading.unwrap_or_else(|| self.configuration.nodes[index].value(field)),
+                    )?;
+                }
+            }
+        }
         let mut nodes = Nodes::new(&self.configuration);
         let has_nodes = self
             .configuration
@@ -156,7 +177,6 @@ impl EqRuntime {
             .iter()
             .any(|grant| grant.node.is_some());
         let mapped_gain = values.has_sample_rate_modulation(OUTPUT_GAIN);
-        let mut readings = [None; MAX_PARAMETERS_PER_DEVICE];
         for (offset, frame) in frames.iter_mut().enumerate() {
             values.values_at(offset, &mut readings[..ids.len()])?;
             let mut targets = Targets {
@@ -441,6 +461,49 @@ mod tests {
             !PreparedEq::new(EqState::default(), 48000)
                 .unwrap()
                 .supports_parameter_automation(OUTPUT_GAIN)
+        );
+    }
+
+    #[test]
+    fn mid_block_invalid_automation_leaves_frames_and_dsp_state_unmutated() {
+        let mut settings = EqState::default();
+        settings
+            .add(Node::new(NodeId::new(1).unwrap(), 1_000.0, 6.0, 0).unwrap())
+            .unwrap();
+        let prepared = PreparedEq::automated(settings, 48_000, &[OUTPUT_GAIN]).unwrap();
+        let mut candidate = prepared.create_runtime();
+        let mut reference = prepared.create_runtime();
+        let input: Vec<[f32; 2]> = (0..64)
+            .map(|i| [(i as f32 * 0.13).sin() * 0.5, (i as f32 * 0.29).cos() * 0.5])
+            .collect();
+        let mut failed_block = input.clone();
+        let bad_values = Values {
+            start: 0,
+            held: Some(0.5),
+            moving: false,
+            bad: Some(ParameterValue::Float(f32::NAN)),
+        };
+        let err = candidate
+            .process_block_with_automation(&mut failed_block, None, &bad_values, &R)
+            .expect_err("mid-block NaN automation must fail");
+        assert_eq!(err, DeviceContractError::InvalidParameterValue);
+        assert_eq!(
+            failed_block, input,
+            "failed block must not partially overwrite caller frames"
+        );
+        // Subsequent valid processing must match an untouched runtime bit-for-bit.
+        let mut after_failure = input.clone();
+        let mut expected = input.clone();
+        let valid_values = Values::held(Some(0.75));
+        candidate
+            .process_block_with_automation(&mut after_failure, None, &valid_values, &R)
+            .unwrap();
+        reference
+            .process_block_with_automation(&mut expected, None, &valid_values, &R)
+            .unwrap();
+        assert_eq!(
+            after_failure, expected,
+            "DSP state must remain unmutated after mid-block automation error"
         );
     }
 }
