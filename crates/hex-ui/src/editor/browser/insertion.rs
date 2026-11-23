@@ -26,6 +26,7 @@ pub(in crate::editor) enum PendingBrowserInsertionSource {
 pub(in crate::editor) struct PendingBrowserInsertion {
     project_generation: u64,
     source: PendingBrowserInsertionSource,
+    warp: hex_project::AudioImportWarp,
     track: hex_project::TrackId,
     start: u64,
     audition_timing: Option<BrowserAuditionTiming>,
@@ -189,7 +190,12 @@ impl EditorView {
                     context,
                     audition_timing,
                 ) {
-                    Ok((request, control)) => (request, BrowserInsertionFlight::AudioFile(control)),
+                    Ok((mut request, control)) => {
+                        if let Request::ImportAudioBatch { options, .. } = &mut request {
+                            options.warp = insertion.warp;
+                        }
+                        (request, BrowserInsertionFlight::AudioFile(control))
+                    }
                     Err(error) => {
                         self.error = Some(error.into());
                         return;
@@ -211,7 +217,7 @@ impl EditorView {
                     asset,
                     destination,
                     new_track_gain: None,
-                    warp: hex_project::AudioImportWarp::Off,
+                    warp: insertion.warp,
                     audition_timing,
                 };
                 (
@@ -228,7 +234,7 @@ impl EditorView {
         // Install custody before enqueue so immediate admission and UI FIFO retries
         // both stamp the same request. A refused entry leaves later taps intact.
         self.browser_insertion_flight = Some(flight);
-        if !self.enqueue(request) {
+        if !self.enqueue_captured_audio_import(request) {
             self.browser_insertion_flight = None;
             return;
         }
@@ -315,6 +321,7 @@ impl EditorView {
         let insertion = PendingBrowserInsertion {
             project_generation: self.project_generation,
             source,
+            warp: self.audio_import_settings.arrangement_policy()?,
             track,
             start,
             audition_timing,
