@@ -903,6 +903,7 @@ impl EditorView {
                 source,
             );
         }
+        visible_change |= clear_applied_submitted_audio_status(&mut self.status, applied);
         if let Some((revision, _)) = rejected_revision {
             self.observed_rejected_revision = revision;
             self.playback_candidates

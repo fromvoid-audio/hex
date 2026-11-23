@@ -538,3 +538,34 @@ fn coalesced_submission_keeps_actual_audible_context_when_newer_edit_refuses() {
         "late refusal"
     ));
 }
+
+#[test]
+fn submitted_audio_status_does_not_overwrite_already_applied_revision_and_clears_on_apply() {
+    use super::{clear_applied_submitted_audio_status, record_submitted_audio_status};
+
+    let mut status = String::from("audio batch imported · one undo");
+    assert!(!record_submitted_audio_status(&mut status, 644, 644));
+    assert_eq!(status, "audio batch imported · one undo");
+
+    let mut transient = String::from("preparing audio");
+    assert!(record_submitted_audio_status(&mut transient, 644, 644));
+    assert_eq!(transient, "audio ready");
+
+    let mut pending = String::from("audio batch imported · one undo");
+    assert!(record_submitted_audio_status(&mut pending, 645, 644));
+    assert_eq!(
+        pending,
+        "audio revision 645 submitted · waiting for playback"
+    );
+    assert!(!clear_applied_submitted_audio_status(&mut pending, 644));
+    assert_eq!(
+        pending,
+        "audio revision 645 submitted · waiting for playback"
+    );
+    assert!(clear_applied_submitted_audio_status(&mut pending, 645));
+    assert_eq!(pending, "audio ready");
+
+    let mut unrelated = String::from("track selected");
+    assert!(!clear_applied_submitted_audio_status(&mut unrelated, 645));
+    assert_eq!(unrelated, "track selected");
+}

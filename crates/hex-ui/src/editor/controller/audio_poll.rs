@@ -631,8 +631,10 @@ impl EditorView {
                 {
                     self.recovery.restored(generation);
                 }
-                self.status =
-                    format!("audio revision {audio_revision} submitted · waiting for playback");
+                let applied_revision = self
+                    .audio_status()
+                    .map_or(0, |status| status.applied_revision.load(Acquire));
+                record_submitted_audio_status(&mut self.status, audio_revision, applied_revision);
             }
             crate::EditorPublicationState::Refused(reason) => {
                 self.audio_admission.unpublished_refusal(
@@ -1090,8 +1092,10 @@ impl EditorView {
                     self.invalidate_prepared_seek();
                     self.latched_seek_intent = latest;
                 }
-                self.status =
-                    format!("audio revision {audio_revision} submitted · waiting for playback");
+                let applied_revision = self
+                    .audio_status()
+                    .map_or(0, |status| status.applied_revision.load(Acquire));
+                record_submitted_audio_status(&mut self.status, audio_revision, applied_revision);
             }
             Err(rejected) => {
                 self.pending_playback = Some(PendingPlayback {
@@ -1157,5 +1161,26 @@ mod tests {
         assert!(!relinquish_client_matches(3, Some(5), Some(12), 11, ctx));
         assert!(relinquish_client_matches(3, None, Some(11), 11, ctx));
         assert!(!relinquish_client_matches(3, Some(5), None, 11, ctx));
+    }
+
+    #[test]
+    fn submitted_audio_status_respects_already_applied_and_clears_on_ack() {
+        let mut status = String::from("audio batch imported · one undo");
+        assert!(!record_submitted_audio_status(&mut status, 644, 644));
+        assert_eq!(status, "audio batch imported · one undo");
+
+        let mut stale_waiting = String::from("audio revision 643 submitted · waiting for playback");
+        assert!(record_submitted_audio_status(&mut stale_waiting, 644, 644));
+        assert_eq!(stale_waiting, "audio ready");
+
+        let mut pending = String::from("preparing audio");
+        assert!(record_submitted_audio_status(&mut pending, 645, 644));
+        assert_eq!(
+            pending,
+            "audio revision 645 submitted · waiting for playback"
+        );
+        assert!(!clear_applied_submitted_audio_status(&mut pending, 644));
+        assert!(clear_applied_submitted_audio_status(&mut pending, 645));
+        assert_eq!(pending, "audio ready");
     }
 }

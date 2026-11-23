@@ -2377,8 +2377,7 @@ pub(super) fn record_paused_republish_rejection(
         output,
         audio_revision,
     });
-    let submitted_status =
-        format!("audio revision {audio_revision} submitted · waiting for playback");
+    let submitted_status = super::submitted_audio_revision_status(audio_revision);
     if *status == submitted_status {
         changed |= replace_status(status, "audio update waiting for pause or stop");
     }
