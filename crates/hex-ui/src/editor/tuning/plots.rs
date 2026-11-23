@@ -463,20 +463,32 @@ mod tests {
 
     #[test]
     fn palette_hit_uses_pixel_space_geometry_and_radius() {
-        let bounds = Bounds::new(point(px(100.0), px(50.0)), gpui::size(px(1000.0), px(180.0)));
+        let bounds = Bounds::new(
+            point(px(100.0), px(50.0)),
+            gpui::size(px(1000.0), px(180.0)),
+        );
         // On a wide 1000x180 canvas, a 7 px vertical offset (0.0389 normalized)
         // must still hit node 0 rather than a neighbor 25 px away horizontally (0.025 normalized).
         let nodes = [(0.50_f32, 0.50_f32), (0.525_f32, 0.50_f32)];
         let (ax, ay) = palette_node_center(bounds, nodes[0]);
-        assert_eq!(palette_hit(bounds, &nodes, point(px(ax), px(ay + 7.0))), Some(0));
+        assert_eq!(
+            palette_hit(bounds, &nodes, point(px(ax), px(ay + 7.0))),
+            Some(0)
+        );
 
         let (bx, by) = palette_node_center(bounds, nodes[1]);
         assert_eq!(palette_hit(bounds, &nodes, point(px(bx), px(by))), Some(1));
 
         // Empty background outside hit radius returns None.
-        assert_eq!(palette_hit(bounds, &nodes, point(px(120.0), px(60.0))), None);
+        assert_eq!(
+            palette_hit(bounds, &nodes, point(px(120.0), px(60.0))),
+            None
+        );
         // Outside bounds returns None even if within radius of a boundary node.
         let edge_nodes = [(0.005_f32, 0.50_f32)];
-        assert_eq!(palette_hit(bounds, &edge_nodes, point(px(99.0), px(140.0))), None);
+        assert_eq!(
+            palette_hit(bounds, &edge_nodes, point(px(99.0), px(140.0))),
+            None
+        );
     }
 }
