@@ -1271,6 +1271,7 @@ pub fn div() -> Div {
         prepaint_listener: None,
         accessibility: None,
         image_cache: None,
+        modal_mouse: false,
     }
 }
 
@@ -1284,9 +1285,19 @@ pub struct Div {
         crate::accessibility::AccessibilityCallback,
     )>,
     image_cache: Option<Box<dyn ImageCacheProvider>>,
+    modal_mouse: bool,
 }
 
 impl Div {
+    /// Restrict window mouse dispatch to this full-window modal and its directly painted
+    /// descendants. This also excludes raw capture-phase listeners and retires pointer
+    /// captures outside the modal.
+    pub fn modal_mouse(mut self) -> Self {
+        self.modal_mouse = true;
+        self.interactivity.occlude_mouse();
+        self
+    }
+
     /// Expose this actual laid-out control through the native semantic boundary.
     /// IDs must identify the owner lifetime, not an index or reusable label.
     pub fn accessibility(
@@ -1513,25 +1524,28 @@ impl Element for Div {
             .as_mut()
             .map(|provider| provider.provide(window, cx));
 
+        let modal = self.modal_mouse && hitbox.is_some();
         window.with_image_cache(image_cache, |window| {
-            self.interactivity.paint(
-                global_id,
-                inspector_id,
-                bounds,
-                hitbox.as_ref(),
-                window,
-                cx,
-                |style, window, cx| {
-                    // skip children
-                    if style.display == Display::None {
-                        return;
-                    }
+            window.with_modal_mouse_scope(modal, |window| {
+                self.interactivity.paint(
+                    global_id,
+                    inspector_id,
+                    bounds,
+                    hitbox.as_ref(),
+                    window,
+                    cx,
+                    |style, window, cx| {
+                        // skip children
+                        if style.display == Display::None {
+                            return;
+                        }
 
-                    for child in &mut self.children {
-                        child.paint(window, cx);
-                    }
-                },
-            )
+                        for child in &mut self.children {
+                            child.paint(window, cx);
+                        }
+                    },
+                )
+            });
         });
     }
 }

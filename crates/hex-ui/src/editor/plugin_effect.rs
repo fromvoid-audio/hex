@@ -560,7 +560,11 @@ impl EditorView {
             self.device_confirmation_restore_focus = None;
             return None;
         }
-        if self.opening_project || self.close_prompt_open || self.save_dialog_open {
+        if self.opening_project
+            || self.close_prompt_open
+            || self.save_dialog_open
+            || self.update_preparing()
+        {
             if let Some(confirmation) = self.device_insert_confirmation.as_mut() {
                 confirmation.focused_once = false;
             }
@@ -663,11 +667,11 @@ impl EditorView {
             );
         Some(
             div()
+                .modal_mouse()
                 .id("device-insert-confirmation-modal")
                 .debug_selector(|| "device-insert-confirmation-modal".into())
                 .absolute()
                 .inset_0()
-                .occlude()
                 .flex()
                 .items_center()
                 .justify_center()
