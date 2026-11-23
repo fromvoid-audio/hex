@@ -1,6 +1,7 @@
 //! Actual Mac child control/worker custody. No process-global signal changes or
 //! numeric PID signalling. The helper's pre-SDK guardian owns self-cancellation.
 mod deadline;
+pub use deadline::MAX_DEADLINE_PAIRS;
 mod edits;
 mod epoch;
 mod live_capture;

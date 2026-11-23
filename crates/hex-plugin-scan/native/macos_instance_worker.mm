@@ -46,11 +46,16 @@ public:
         mach_timebase_info_data_t clock{};
         if(mach_timebase_info(&clock)!=KERN_SUCCESS || !clock.numer || !clock.denom) return;
         const double ticks_per_ns=static_cast<double>(clock.denom)/clock.numer;
+        const double constraint_ns=std::min(period_ns*0.75,4'500'000.0);
+        const double computation_ns=std::min(period_ns*0.35,constraint_ns*0.5);
         if(period_ns*ticks_per_ns>std::numeric_limits<uint32_t>::max() ||
-            300'000*ticks_per_ns<1) return;
+            computation_ns*ticks_per_ns<1) return;
         const auto ticks=[&](double ns) { return static_cast<uint32_t>(ns*ticks_per_ns); };
-        policy_={ticks(period_ns),ticks(300'000),ticks(4'000'000),true};
-        idle_=std::chrono::milliseconds(static_cast<int>(std::ceil(2*period_ns/1e6)));
+        policy_={ticks(period_ns),ticks(computation_ns),ticks(constraint_ns),true};
+        // Retain deadline priority across transient multi-quantum gaps (up to
+        // the six-quantum concealment bound and 40 ms quiet window) so a brief
+        // hiccup never demotes the helper to standard priority mid-stream.
+        idle_=std::chrono::milliseconds(std::max(40,static_cast<int>(std::ceil(8*period_ns/1e6))));
     }
     WorkerDeadline(const WorkerDeadline&)=delete;
     WorkerDeadline& operator=(const WorkerDeadline&)=delete;
@@ -72,16 +77,22 @@ public:
 
     bool before_read(int channel) {
         if(idle_.count()==0) return true;
-        const auto remaining=live_until_-std::chrono::steady_clock::now();
-        if(remaining<=std::chrono::steady_clock::duration::zero()) return leave();
+        auto now=std::chrono::steady_clock::now();
+        if(live_until_<=now) return leave();
         // Control packets run at ordinary priority. If one completes inside
         // the current PCM interval, resume the remaining wait for audio.
         enter();
         if(!active_) return true;
-        const auto wait=std::chrono::ceil<std::chrono::milliseconds>(remaining);
-        pollfd input{channel,POLLIN,0};
-        const int ready=::poll(&input,1,static_cast<int>(wait.count()));
-        return (ready>0 && (input.revents&POLLIN)) || leave();
+        while(true) {
+            now=std::chrono::steady_clock::now();
+            if(live_until_<=now) return leave();
+            const auto wait=std::chrono::ceil<std::chrono::milliseconds>(live_until_-now);
+            pollfd input{channel,POLLIN,0};
+            const int ready=::poll(&input,1,static_cast<int>(wait.count()));
+            if(ready>0 && (input.revents&POLLIN)) return true;
+            if(ready<0 && errno==EINTR) continue;
+            return leave();
+        }
     }
 
     bool leave() {
@@ -92,6 +103,9 @@ public:
             reinterpret_cast<thread_policy_t>(&standard),THREAD_STANDARD_POLICY_COUNT)!=KERN_SUCCESS)
             return false;
         active_=false;
+        // Best-effort QoS restore so non-deadline standby and resume wakeups
+        // stay off background/efficiency throttling when the OS permits it.
+        (void)pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED,0);
         return true;
     }
 };
@@ -527,6 +541,10 @@ int main(int argc,char** argv) {
             std::thread worker([&] {
                 bool started=false;
                 try {
+                    // Match the Rust transport worker's high QoS baseline so
+                    // instances beyond MAX_DEADLINE_PAIRS and post-idle wakeups
+                    // stay off background/efficiency throttling.
+                    if(!offline) (void)pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED,0);
                     started=instance.start_processing();if(!started) worker_failure.store(Processing);
                     startup.store(started?1:2,std::memory_order_release);
                     { std::unique_lock<std::mutex> lock(startup_mutex);startup_changed.wait(lock,[&]{return go;}); }

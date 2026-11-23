@@ -28,13 +28,14 @@ fn excess_live_children_keep_processing_and_reaped_child_returns_scheduling_slot
         .unwrap()
     };
 
-    let mut admitted = (1..=12).map(launch).collect::<Vec<_>>();
+    let cap = hex_plugin_host::native::MAX_DEADLINE_PAIRS as u64;
+    let mut admitted = (1..=cap).map(launch).collect::<Vec<_>>();
     assert!(
         admitted
             .iter()
             .all(|prepared| prepared.deadline_period_on_worker().is_some())
     );
-    let mut ordinary = launch(13);
+    let mut ordinary = launch(cap + 1);
     assert_eq!(ordinary.deadline_period_on_worker(), None);
     let block = request(ordinary.configuration(), 0);
     let reply = ordinary.exchange_on_worker(block).unwrap();
@@ -44,7 +45,7 @@ fn excess_live_children_keep_processing_and_reaped_child_returns_scheduling_slot
     let retired = admitted[0].stop_and_reap_on_control().unwrap();
     assert!(retired.status.success());
     assert_eq!(admitted[0].deadline_period_on_worker(), None);
-    let mut replacement = launch(14);
+    let mut replacement = launch(cap + 2);
     assert!(replacement.deadline_period_on_worker().is_some());
     assert!(
         replacement

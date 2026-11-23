@@ -124,6 +124,76 @@ fn live_poll_wait(
     }
 }
 
+/// Pure worker-side cadence tracker that avoids waking realtime transport
+/// threads dozens of times mid-quantum once paced hardware delivery is
+/// established, while preserving fine `active_poll` pickup during the arrival
+/// window, unpaced/burst runs, and pending control work.
+struct LivePollCadence {
+    period: Option<Duration>,
+    last_pickup: Option<Instant>,
+    paced_blocks: u8,
+}
+
+impl LivePollCadence {
+    fn new(period: Option<Duration>) -> Self {
+        Self {
+            period: period.filter(|period| *period >= Duration::from_millis(2)),
+            last_pickup: None,
+            paced_blocks: 0,
+        }
+    }
+
+    fn record_pickup(&mut self, now: Instant) {
+        if let (Some(period), Some(previous)) = (self.period, self.last_pickup) {
+            let gap = now.saturating_duration_since(previous);
+            if gap >= period / 2 && gap <= period * 2 {
+                self.paced_blocks = self.paced_blocks.saturating_add(1).min(4);
+            } else {
+                self.paced_blocks = 0;
+            }
+        }
+        self.last_pickup = Some(now);
+    }
+
+    fn wait(
+        &self,
+        empty_since: &mut Option<Instant>,
+        now: Instant,
+        active_poll: Duration,
+        control_pending: bool,
+    ) -> Duration {
+        let base = live_poll_wait(empty_since, now, active_poll);
+        if base != active_poll || control_pending || self.paced_blocks < 2 {
+            return base;
+        }
+        let (Some(period), Some(last_pickup)) = (self.period, self.last_pickup) else {
+            return base;
+        };
+        let lead = (period / 8).clamp(Duration::from_micros(400), Duration::from_millis(1));
+        let Some(expected_next) = last_pickup.checked_add(period) else {
+            return base;
+        };
+        let Some(coarse_target) = expected_next.checked_sub(lead) else {
+            return base;
+        };
+        if let Some(remaining) = coarse_target.checked_duration_since(now)
+            && remaining > active_poll
+        {
+            remaining.min(period / 2)
+        } else {
+            base
+        }
+    }
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+fn native_quantum_period(quantum: u16, sample_rate: f64) -> Option<Duration> {
+    if !sample_rate.is_finite() || sample_rate <= 0.0 || quantum == 0 {
+        return None;
+    }
+    Duration::try_from_secs_f64(f64::from(quantum) / sample_rate).ok()
+}
+
 // Give active workers more pickup opportunities under scheduling contention
 // by polling at most one sixty-fourth of a native quantum, subject to the
 // existing wait bounds. The quiet-window backoff still owns idle cadence.
@@ -350,6 +420,30 @@ impl State {
             return native_active_poll(configuration.quantum, configuration.sample_rate);
         }
         LIVE_POLL
+    }
+
+    fn quantum_period(&self) -> Option<Duration> {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if let Some(Processor::Native(instance)) = &self.processor {
+            let configuration = instance.configuration();
+            return native_quantum_period(configuration.quantum, configuration.sample_rate);
+        }
+        None
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn has_pending_control(&self, signal: &Signal) -> bool {
+        signal.capture_requested.load(Acquire)
+            || self.capture.is_in_flight()
+            || signal.controller_requested.load(Acquire)
+            || self.controller.is_in_flight()
+            || signal.edits_requested.load(Acquire)
+            || signal.parameter_change_requested.load(Acquire)
+    }
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    fn has_pending_control(&self, _signal: &Signal) -> bool {
+        false
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -676,12 +770,12 @@ fn transport_runner_with_setup(
 ) -> impl FnOnce() -> Completion + Send + 'static {
     move || {
         let mut fault = None;
-        let active_poll = match guard.owner_mut() {
+        let (active_poll, quantum_period) = match guard.owner_mut() {
             Some(state) => {
                 if let Err(error) = setup(state) {
                     return Completion { fault: Some(error) };
                 }
-                state.active_poll()
+                (state.active_poll(), state.quantum_period())
             }
             None => {
                 return Completion {
@@ -690,6 +784,7 @@ fn transport_runner_with_setup(
             }
         };
         let mut empty_since = None;
+        let mut cadence = LivePollCadence::new(quantum_period);
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let mut deadline = if published.offline.is_none() {
             guard
@@ -723,10 +818,12 @@ fn transport_runner_with_setup(
                     if let Some(deadline) = &mut deadline {
                         deadline.enter();
                     }
+                    let pickup_now = Instant::now();
+                    cadence.record_pickup(pickup_now);
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     let empty_poll_to_pickup_ns = last_empty_poll
                         .take()
-                        .and_then(|empty| Instant::now().checked_duration_since(empty))
+                        .and_then(|empty| pickup_now.checked_duration_since(empty))
                         .and_then(|elapsed| u64::try_from(elapsed.as_nanos()).ok());
                     let dense = dense_parameter.as_ref().map(|request| request.lane());
                     let authored = authored_program.is_some() || dense.is_some();
@@ -882,7 +979,13 @@ fn transport_runner_with_setup(
                         if matches!(state.processor, Some(Processor::Native(_))) {
                             last_empty_poll = Some(now);
                         }
-                        thread::sleep(live_poll_wait(&mut empty_since, now, active_poll));
+                        let control_pending = state.has_pending_control(&published);
+                        thread::sleep(cadence.wait(
+                            &mut empty_since,
+                            now,
+                            active_poll,
+                            control_pending,
+                        ));
                     }
                 }
                 Err(Fault::Revoked) => break,
@@ -1440,6 +1543,93 @@ mod tests {
         assert_eq!(
             live_poll_wait(&mut empty_since, start + QUIET_TRANSPORT, LIVE_POLL),
             LIVE_POLL
+        );
+    }
+
+    #[test]
+    fn paced_cadence_coarsens_mid_quantum_waits_and_keeps_fine_arrival_polling() {
+        let period = native_quantum_period(256, 44_100.0).unwrap();
+        let active_poll = native_active_poll(256, 44_100.0);
+        let mut cadence = LivePollCadence::new(Some(period));
+        let t0 = Instant::now();
+        let mut empty_since = None;
+
+        // Startup and single-block bursts stay at fine active_poll.
+        cadence.record_pickup(t0);
+        assert_eq!(
+            cadence.wait(
+                &mut empty_since,
+                t0 + Duration::from_micros(300),
+                active_poll,
+                false
+            ),
+            active_poll
+        );
+        cadence.record_pickup(t0 + period);
+        assert_eq!(
+            cadence.wait(
+                &mut empty_since,
+                t0 + period + Duration::from_micros(300),
+                active_poll,
+                false
+            ),
+            active_poll
+        );
+
+        // Once two consecutive paced inter-arrivals are observed, mid-quantum
+        // sleeps coarsen to reduce RT timer wakeups while waking >= 725 us
+        // before the next expected callback.
+        let t2 = t0 + period * 2;
+        cadence.record_pickup(t2);
+        empty_since = None;
+        let first_wait = cadence.wait(
+            &mut empty_since,
+            t2 + Duration::from_micros(500),
+            active_poll,
+            false,
+        );
+        assert!(
+            first_wait >= Duration::from_millis(2) && first_wait <= period / 2,
+            "expected coarse mid-quantum wait, got {first_wait:?}"
+        );
+        // Pending control work always bypasses coarse sleep.
+        assert_eq!(
+            cadence.wait(
+                &mut empty_since,
+                t2 + Duration::from_micros(500),
+                active_poll,
+                true
+            ),
+            active_poll
+        );
+        // Inside the arrival lead window (~725 us before expected_next), fine
+        // polling resumes so pickup latency stays bounded by active_poll.
+        let lead_entry = t2 + period - Duration::from_micros(700);
+        assert_eq!(
+            cadence.wait(&mut empty_since, lead_entry, active_poll, false),
+            active_poll
+        );
+        // Past QUIET_TRANSPORT, idle backoff still wins.
+        assert_eq!(
+            cadence.wait(
+                &mut empty_since,
+                t2 + Duration::from_micros(500) + QUIET_TRANSPORT,
+                active_poll,
+                false
+            ),
+            LIVE_IDLE_POLL
+        );
+        // An unpaced/serial burst resets paced_blocks immediately.
+        cadence.record_pickup(t2 + Duration::from_micros(400));
+        empty_since = None;
+        assert_eq!(
+            cadence.wait(
+                &mut empty_since,
+                t2 + Duration::from_micros(600),
+                active_poll,
+                false
+            ),
+            active_poll
         );
     }
 
