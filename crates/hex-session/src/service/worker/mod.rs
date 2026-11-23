@@ -45,7 +45,8 @@ pub(super) enum ArrangementClipboard {
     Clips(Arc<hex_project::ClipClipboard>),
 }
 
-pub(super) struct WorkerDispatch<'a> {
+/// Long-lived worker state and borrowed request context carried across dispatch.
+pub(super) struct WorkerState<'a> {
     pub(super) session: Session,
     pub(super) history_capacity: usize,
     pub(super) requests: Receiver<QueuedRequest>,
@@ -88,9 +89,16 @@ pub(super) struct WorkerDispatch<'a> {
     pub(super) pending_stopped_restore: Option<hex_engine::AudioSourceContext>,
     pub(super) native_automation_take: native_automation_recording::Lane,
     pub(super) plugin_recording: plugin_recording::State,
-    pub(super) request_document_intent: u64,
     pub(super) defaults_root: Option<&'a Path>,
     pub(super) import_decode: truncated_import::ImportDecode,
+    pub(super) adopted_device_draft:
+        &'a Option<(PathBuf, native_automation_recording::TakePublication)>,
+    pub(super) comparison_binding: &'a Option<ComparisonAudioBinding>,
+}
+
+/// Per-request outcome, acknowledgement, and publication scratch fields.
+pub(super) struct RequestOutcome {
+    pub(super) request_document_intent: u64,
     pub(super) device_insert_proposal: Option<Arc<PluginEffectControl>>,
     pub(super) device_insert_proposal_accepted: bool,
     pub(super) replacing_catalog_instrument: bool,
@@ -144,13 +152,14 @@ pub(super) struct WorkerDispatch<'a> {
     pub(super) preview_project: Option<Arc<Project>>,
     pub(super) cut_clipboard: Option<Arc<hex_project::TrackClipboard>>,
     pub(super) cut_device_clipboard: Option<Arc<hex_project::DeviceClipboard>>,
-    pub(super) adopted_device_draft:
-        &'a Option<(PathBuf, native_automation_recording::TakePublication)>,
     pub(super) failed_plugin_adoption: bool,
     pub(super) failed_plugin_publication_confirmed: bool,
-    pub(super) barrier: bool,
-    pub(super) comparison_binding: &'a Option<ComparisonAudioBinding>,
     pub(super) private_sampler: bool,
+}
+
+pub(super) struct WorkerDispatch<'a> {
+    pub(super) worker: WorkerState<'a>,
+    pub(super) outcome: RequestOutcome,
 }
 
 fn view_state(
@@ -3349,104 +3358,107 @@ pub(super) fn run_worker(
             }
             error = Some(reason);
         } else {
-            let ctx = WorkerDispatch {
-                session,
-                history_capacity,
-                requests,
-                document_intent,
-                events,
-                export_lane,
-                recovery,
-                resident_seek,
-                revision,
-                unsaved,
-                range_clipboard,
-                track_clipboard,
-                device_clipboard,
-                media_base,
-                document,
-                journal,
-                recovery_tracker,
-                midi_preview,
-                project_generation,
-                state,
-                keyboard_activation,
-                keyboard_tuning_hint,
-                audition_activation,
-                live_expression,
-                compiled,
-                current_sources,
-                resident_snapshot,
-                resident_preview,
-                device_gesture,
-                tuning_gesture,
-                pending_sampler_parameter,
-                pending_plugin_effect,
-                pending_device_insert,
-                pending_stopped_restore,
-                native_automation_take,
-                plugin_recording,
-                request_document_intent,
-                defaults_root,
-                import_decode,
-                device_insert_proposal,
-                device_insert_proposal_accepted,
-                replacing_catalog_instrument,
-                time_range_copy,
-                seek_submitted,
-                request_complete,
-                plugin_effect_complete,
-                device_insert_confirmation,
-                device_insert_complete,
-                plugin_parameters,
-                plugin_parameter_conversion,
-                sampler_edit_complete,
-                midi_take_complete,
-                computer_keyboard_complete,
-                tuning_audition_complete,
-                live_expression_complete,
-                computer_keyboard_playback,
-                tuning_input_publication,
-                audio_batch_complete,
-                audio_batch_failure,
-                rate_transition,
-                open_complete,
-                save_complete,
-                save_confirmation_required,
-                project_replaced,
-                replacement_revision,
-                installed_verified_source,
-                replacement_sources,
-                comparison_changed,
-                created,
-                revision_before_request,
-                duplicate_complete,
-                restore_complete,
-                stopped_playback_restore_complete,
-                restore_prepared,
-                status,
-                error,
-                range_copy_source_unavailable,
-                export_completion,
-                export_job,
-                gesture_ack,
-                tuning_gesture_ack,
-                tuning_gesture_request,
-                tuning_library,
-                gesture_protocol_ack,
-                gesture_request,
-                preview_prepared,
-                preview_project,
-                cut_clipboard,
-                cut_device_clipboard,
-                adopted_device_draft: &adopted_device_draft,
-                failed_plugin_adoption: failed_plugin_adoption.is_some(),
-                failed_plugin_publication_confirmed,
-                barrier,
-                comparison_binding: &comparison_binding,
-                private_sampler,
+            let mut ctx = WorkerDispatch {
+                worker: WorkerState {
+                    session,
+                    history_capacity,
+                    requests,
+                    document_intent,
+                    events,
+                    export_lane,
+                    recovery,
+                    resident_seek,
+                    revision,
+                    unsaved,
+                    range_clipboard,
+                    track_clipboard,
+                    device_clipboard,
+                    media_base,
+                    document,
+                    journal,
+                    recovery_tracker,
+                    midi_preview,
+                    project_generation,
+                    state,
+                    keyboard_activation,
+                    keyboard_tuning_hint,
+                    audition_activation,
+                    live_expression,
+                    compiled,
+                    current_sources,
+                    resident_snapshot,
+                    resident_preview,
+                    device_gesture,
+                    tuning_gesture,
+                    pending_sampler_parameter,
+                    pending_plugin_effect,
+                    pending_device_insert,
+                    pending_stopped_restore,
+                    native_automation_take,
+                    plugin_recording,
+                    defaults_root,
+                    import_decode,
+                    adopted_device_draft: &adopted_device_draft,
+                    comparison_binding: &comparison_binding,
+                },
+                outcome: RequestOutcome {
+                    request_document_intent,
+                    device_insert_proposal,
+                    device_insert_proposal_accepted,
+                    replacing_catalog_instrument,
+                    time_range_copy,
+                    seek_submitted,
+                    request_complete,
+                    plugin_effect_complete,
+                    device_insert_confirmation,
+                    device_insert_complete,
+                    plugin_parameters,
+                    plugin_parameter_conversion,
+                    sampler_edit_complete,
+                    midi_take_complete,
+                    computer_keyboard_complete,
+                    tuning_audition_complete,
+                    live_expression_complete,
+                    computer_keyboard_playback,
+                    tuning_input_publication,
+                    audio_batch_complete,
+                    audio_batch_failure,
+                    rate_transition,
+                    open_complete,
+                    save_complete,
+                    save_confirmation_required,
+                    project_replaced,
+                    replacement_revision,
+                    installed_verified_source,
+                    replacement_sources,
+                    comparison_changed,
+                    created,
+                    revision_before_request,
+                    duplicate_complete,
+                    restore_complete,
+                    stopped_playback_restore_complete,
+                    restore_prepared,
+                    status,
+                    error,
+                    range_copy_source_unavailable,
+                    export_completion,
+                    export_job,
+                    gesture_ack,
+                    tuning_gesture_ack,
+                    tuning_gesture_request,
+                    tuning_library,
+                    gesture_protocol_ack,
+                    gesture_request,
+                    preview_prepared,
+                    preview_project,
+                    cut_clipboard,
+                    cut_device_clipboard,
+                    failed_plugin_adoption: failed_plugin_adoption.is_some(),
+                    failed_plugin_publication_confirmed,
+                    private_sampler,
+                },
             };
-            let (ctx, flow) = match request {
+            let flow = match request {
                 req @ (Request::ArmGainRecording { .. }
                 | Request::BounceArrangement { .. }
                 | Request::CommitMidiTake { .. }
@@ -3479,7 +3491,7 @@ pub(super) fn run_worker(
                 | Request::PasteTimeRange { .. }
                 | Request::ReorderTracks { .. }
                 | Request::ReparentTracks { .. }
-                | Request::TrackClipboard { .. }) => clip_ops::handle(ctx, req),
+                | Request::TrackClipboard { .. }) => clip_ops::handle(&mut ctx, req),
                 req @ (Request::AddNativeDevice { .. }
                 | Request::AppendSourceUtility { .. }
                 | Request::ArmNativeParameterRecording { .. }
@@ -3535,7 +3547,7 @@ pub(super) fn run_worker(
                 | Request::SetDeviceParameter { .. }
                 | Request::StartPluginEditorRecording { .. }
                 | Request::StopPluginEditorRecording { .. }
-                | Request::TogglePluginEditor { .. }) => device_ops::handle(ctx, req),
+                | Request::TogglePluginEditor { .. }) => device_ops::handle(&mut ctx, req),
                 req @ (Request::ChangeProjectSampleRate { .. }
                 | Request::ContinueRecovery
                 | Request::Export(..)
@@ -3553,7 +3565,7 @@ pub(super) fn run_worker(
                 | Request::SaveNew(..)
                 | Request::SaveProjectAs { .. }
                 | Request::TuningLibrary { .. }
-                | Request::Undo) => document_ops::handle(ctx, req),
+                | Request::Undo) => document_ops::handle(&mut ctx, req),
                 req @ (Request::ContinueStoppedPlaybackRestore
                 | Request::PrepareComputerKeyboard { .. }
                 | Request::PrepareLiveExpression { .. }
@@ -3564,90 +3576,90 @@ pub(super) fn run_worker(
                 | Request::RestartAudio { .. }
                 | Request::RestorePlayback { .. }
                 | Request::RestoreStoppedPlayback
-                | Request::TuningGesture(..)) => live_input::handle(ctx, req),
+                | Request::TuningGesture(..)) => live_input::handle(&mut ctx, req),
             };
-            session = ctx.session;
-            requests = ctx.requests;
-            document_intent = ctx.document_intent;
-            events = ctx.events;
-            export_lane = ctx.export_lane;
-            recovery = ctx.recovery;
-            resident_seek = ctx.resident_seek;
-            revision = ctx.revision;
-            unsaved = ctx.unsaved;
-            range_clipboard = ctx.range_clipboard;
-            track_clipboard = ctx.track_clipboard;
-            device_clipboard = ctx.device_clipboard;
-            media_base = ctx.media_base;
-            document = ctx.document;
-            journal = ctx.journal;
-            recovery_tracker = ctx.recovery_tracker;
-            midi_preview = ctx.midi_preview;
-            state = ctx.state;
-            keyboard_activation = ctx.keyboard_activation;
-            keyboard_tuning_hint = ctx.keyboard_tuning_hint;
-            audition_activation = ctx.audition_activation;
-            live_expression = ctx.live_expression;
-            compiled = ctx.compiled;
-            current_sources = ctx.current_sources;
-            resident_snapshot = ctx.resident_snapshot;
-            resident_preview = ctx.resident_preview;
-            device_gesture = ctx.device_gesture;
-            tuning_gesture = ctx.tuning_gesture;
-            pending_sampler_parameter = ctx.pending_sampler_parameter;
-            pending_plugin_effect = ctx.pending_plugin_effect;
-            pending_device_insert = ctx.pending_device_insert;
-            pending_stopped_restore = ctx.pending_stopped_restore;
-            native_automation_take = ctx.native_automation_take;
-            plugin_recording = ctx.plugin_recording;
-            import_decode = ctx.import_decode;
-            device_insert_proposal = ctx.device_insert_proposal;
-            device_insert_proposal_accepted = ctx.device_insert_proposal_accepted;
-            seek_submitted = ctx.seek_submitted;
-            request_complete = ctx.request_complete;
-            plugin_effect_complete = ctx.plugin_effect_complete;
-            device_insert_confirmation = ctx.device_insert_confirmation;
-            device_insert_complete = ctx.device_insert_complete;
-            plugin_parameters = ctx.plugin_parameters;
-            plugin_parameter_conversion = ctx.plugin_parameter_conversion;
-            sampler_edit_complete = ctx.sampler_edit_complete;
-            midi_take_complete = ctx.midi_take_complete;
-            computer_keyboard_complete = ctx.computer_keyboard_complete;
-            tuning_audition_complete = ctx.tuning_audition_complete;
-            live_expression_complete = ctx.live_expression_complete;
-            computer_keyboard_playback = ctx.computer_keyboard_playback;
-            tuning_input_publication = ctx.tuning_input_publication;
-            audio_batch_complete = ctx.audio_batch_complete;
-            audio_batch_failure = ctx.audio_batch_failure;
-            open_complete = ctx.open_complete;
-            save_complete = ctx.save_complete;
-            save_confirmation_required = ctx.save_confirmation_required;
-            project_replaced = ctx.project_replaced;
-            replacement_revision = ctx.replacement_revision;
-            installed_verified_source = ctx.installed_verified_source;
-            replacement_sources = ctx.replacement_sources;
-            comparison_changed = ctx.comparison_changed;
-            created = ctx.created;
-            duplicate_complete = ctx.duplicate_complete;
-            restore_complete = ctx.restore_complete;
-            stopped_playback_restore_complete = ctx.stopped_playback_restore_complete;
-            restore_prepared = ctx.restore_prepared;
-            status = ctx.status;
-            error = ctx.error;
-            range_copy_source_unavailable = ctx.range_copy_source_unavailable;
-            export_completion = ctx.export_completion;
-            export_job = ctx.export_job;
-            gesture_ack = ctx.gesture_ack;
-            tuning_gesture_ack = ctx.tuning_gesture_ack;
-            tuning_gesture_request = ctx.tuning_gesture_request;
-            tuning_library = ctx.tuning_library;
-            gesture_protocol_ack = ctx.gesture_protocol_ack;
-            gesture_request = ctx.gesture_request;
-            preview_prepared = ctx.preview_prepared;
-            preview_project = ctx.preview_project;
-            cut_clipboard = ctx.cut_clipboard;
-            cut_device_clipboard = ctx.cut_device_clipboard;
-            failed_plugin_publication_confirmed = ctx.failed_plugin_publication_confirmed;
+            session = ctx.worker.session;
+            requests = ctx.worker.requests;
+            document_intent = ctx.worker.document_intent;
+            events = ctx.worker.events;
+            export_lane = ctx.worker.export_lane;
+            recovery = ctx.worker.recovery;
+            resident_seek = ctx.worker.resident_seek;
+            revision = ctx.worker.revision;
+            unsaved = ctx.worker.unsaved;
+            range_clipboard = ctx.worker.range_clipboard;
+            track_clipboard = ctx.worker.track_clipboard;
+            device_clipboard = ctx.worker.device_clipboard;
+            media_base = ctx.worker.media_base;
+            document = ctx.worker.document;
+            journal = ctx.worker.journal;
+            recovery_tracker = ctx.worker.recovery_tracker;
+            midi_preview = ctx.worker.midi_preview;
+            state = ctx.worker.state;
+            keyboard_activation = ctx.worker.keyboard_activation;
+            keyboard_tuning_hint = ctx.worker.keyboard_tuning_hint;
+            audition_activation = ctx.worker.audition_activation;
+            live_expression = ctx.worker.live_expression;
+            compiled = ctx.worker.compiled;
+            current_sources = ctx.worker.current_sources;
+            resident_snapshot = ctx.worker.resident_snapshot;
+            resident_preview = ctx.worker.resident_preview;
+            device_gesture = ctx.worker.device_gesture;
+            tuning_gesture = ctx.worker.tuning_gesture;
+            pending_sampler_parameter = ctx.worker.pending_sampler_parameter;
+            pending_plugin_effect = ctx.worker.pending_plugin_effect;
+            pending_device_insert = ctx.worker.pending_device_insert;
+            pending_stopped_restore = ctx.worker.pending_stopped_restore;
+            native_automation_take = ctx.worker.native_automation_take;
+            plugin_recording = ctx.worker.plugin_recording;
+            import_decode = ctx.worker.import_decode;
+            device_insert_proposal = ctx.outcome.device_insert_proposal;
+            device_insert_proposal_accepted = ctx.outcome.device_insert_proposal_accepted;
+            seek_submitted = ctx.outcome.seek_submitted;
+            request_complete = ctx.outcome.request_complete;
+            plugin_effect_complete = ctx.outcome.plugin_effect_complete;
+            device_insert_confirmation = ctx.outcome.device_insert_confirmation;
+            device_insert_complete = ctx.outcome.device_insert_complete;
+            plugin_parameters = ctx.outcome.plugin_parameters;
+            plugin_parameter_conversion = ctx.outcome.plugin_parameter_conversion;
+            sampler_edit_complete = ctx.outcome.sampler_edit_complete;
+            midi_take_complete = ctx.outcome.midi_take_complete;
+            computer_keyboard_complete = ctx.outcome.computer_keyboard_complete;
+            tuning_audition_complete = ctx.outcome.tuning_audition_complete;
+            live_expression_complete = ctx.outcome.live_expression_complete;
+            computer_keyboard_playback = ctx.outcome.computer_keyboard_playback;
+            tuning_input_publication = ctx.outcome.tuning_input_publication;
+            audio_batch_complete = ctx.outcome.audio_batch_complete;
+            audio_batch_failure = ctx.outcome.audio_batch_failure;
+            open_complete = ctx.outcome.open_complete;
+            save_complete = ctx.outcome.save_complete;
+            save_confirmation_required = ctx.outcome.save_confirmation_required;
+            project_replaced = ctx.outcome.project_replaced;
+            replacement_revision = ctx.outcome.replacement_revision;
+            installed_verified_source = ctx.outcome.installed_verified_source;
+            replacement_sources = ctx.outcome.replacement_sources;
+            comparison_changed = ctx.outcome.comparison_changed;
+            created = ctx.outcome.created;
+            duplicate_complete = ctx.outcome.duplicate_complete;
+            restore_complete = ctx.outcome.restore_complete;
+            stopped_playback_restore_complete = ctx.outcome.stopped_playback_restore_complete;
+            restore_prepared = ctx.outcome.restore_prepared;
+            status = ctx.outcome.status;
+            error = ctx.outcome.error;
+            range_copy_source_unavailable = ctx.outcome.range_copy_source_unavailable;
+            export_completion = ctx.outcome.export_completion;
+            export_job = ctx.outcome.export_job;
+            gesture_ack = ctx.outcome.gesture_ack;
+            tuning_gesture_ack = ctx.outcome.tuning_gesture_ack;
+            tuning_gesture_request = ctx.outcome.tuning_gesture_request;
+            tuning_library = ctx.outcome.tuning_library;
+            gesture_protocol_ack = ctx.outcome.gesture_protocol_ack;
+            gesture_request = ctx.outcome.gesture_request;
+            preview_prepared = ctx.outcome.preview_prepared;
+            preview_project = ctx.outcome.preview_project;
+            cut_clipboard = ctx.outcome.cut_clipboard;
+            cut_device_clipboard = ctx.outcome.cut_device_clipboard;
+            failed_plugin_publication_confirmed = ctx.outcome.failed_plugin_publication_confirmed;
             if flow.is_break() {
                 continue 'requests;
             }
