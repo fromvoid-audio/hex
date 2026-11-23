@@ -3,7 +3,7 @@ use super::*;
 
 pub(super) fn render(
     view: &mut EditorView,
-    window: Option<&Window>,
+    window: Option<&mut Window>,
     cx: &mut Context<EditorView>,
     state: &ViewState,
     owner: EffectBusOwner,
@@ -211,7 +211,11 @@ pub(super) fn render(
         .px(px(5.0))
         .text_xs()
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-        .children(std::iter::once(source_manager::button(view, window, cx)))
+        .children(std::iter::once(source_manager::button(
+            view,
+            window.as_deref(),
+            cx,
+        )))
         .child(track_name_view)
         .child(add_button);
     let chain = super::return_drag::render_chain(view, window, cx, owner, &devices);

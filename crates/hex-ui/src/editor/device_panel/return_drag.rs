@@ -5,7 +5,7 @@ use std::{cell::RefCell, rc::Rc};
 
 pub(super) fn render_chain(
     view: &mut EditorView,
-    window: Option<&Window>,
+    mut window: Option<&mut Window>,
     cx: &mut Context<EditorView>,
     owner: EffectBusOwner,
     devices: &[hex_project::Device],
@@ -31,6 +31,12 @@ pub(super) fn render_chain(
         geometry.iter().map(|&(id, _)| id),
     );
     view.device_panel.chain_window.prepare(&geometry, proposed);
+    if let Some(window) = window.as_deref_mut() {
+        view.device_panel
+            .chain_window
+            .apply_focus_after_prepare(window, cx);
+    }
+    let window = window.as_deref();
     let spectrum_identities: Vec<_> = devices
         .iter()
         .filter(|device| {
