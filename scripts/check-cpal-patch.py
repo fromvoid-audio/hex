@@ -12,10 +12,13 @@ def main() -> int:
     manifest = json.loads((root / "hex-provenance.json").read_text())
     expected = manifest["files"]
     metadata = {"HEX-PATCHES.md", "hex-patches.diff", "hex-provenance.json"}
+    # Finder metadata is ignored by Git and is not a dependency build input.
+    # Keep symlinks and every other unexpected file visible to this check.
     actual = {
         str(path.relative_to(root))
         for path in root.rglob("*")
-        if path.is_file() and "target" not in path.relative_to(root).parts
+        if "target" not in path.relative_to(root).parts
+        and (path.is_symlink() or (path.is_file() and path.name != ".DS_Store"))
     }
     if actual != set(expected) | metadata:
         print(f"cpal file inventory differs: {sorted(actual ^ (set(expected) | metadata))}", file=sys.stderr)

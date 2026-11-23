@@ -1951,7 +1951,9 @@ class LocalCiRunner:
             digest.update(data)
         fonts_dir = self.root / "assets/fonts"
         if fonts_dir.is_dir():
-            for path in sorted(p for p in fonts_dir.rglob("*") if p.is_file()):
+            for path in sorted(
+                p for p in fonts_dir.rglob("*") if p.is_file() and p.name != ".DS_Store"
+            ):
                 rel = path.relative_to(self.root).as_posix().encode()
                 data = path.read_bytes()
                 digest.update(b"font\0")

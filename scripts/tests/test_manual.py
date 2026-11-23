@@ -55,6 +55,13 @@ class ManualTests(unittest.TestCase):
         font.write_bytes(b"font-one")
         (font.parent / "OFL.txt").write_text("license")
         before = manual.inputs(source)
+        (source / "docs/manual/.DS_Store").write_bytes(b"Finder metadata")
+        self.assertEqual(before, manual.inputs(source))
+        (source / "docs/manual/.DS_Store").unlink()
+        (source / "docs/manual/.DS_Store").symlink_to(source / "docs/manual/manual.md")
+        with self.assertRaisesRegex(manual.Refusal, "symlinks"):
+            manual.inputs(source)
+        (source / "docs/manual/.DS_Store").unlink()
         font.write_bytes(b"font-two")
         self.assertNotEqual(before, manual.inputs(source))
         font.unlink()

@@ -24,7 +24,14 @@ def verify():
         "xattr", "0.2.3", ARCHIVE_SHA256)
     assert set(provenance["patched_files"]) == {"src/sys/mod.rs", "src/sys/linux_macos/macos.rs"}
     expected = provenance["original_files"] | provenance["patched_files"]
-    extras = {str(p.relative_to(VENDOR)) for p in VENDOR.rglob("*") if p.is_file()} - set(expected)
+    # Finder metadata is ignored by Git and is not a dependency build input.
+    # Keep symlinks and every other unexpected file visible to this check.
+    extras = {
+        str(p.relative_to(VENDOR))
+        for p in VENDOR.rglob("*")
+        if "target" not in p.relative_to(VENDOR).parts
+        and (p.is_symlink() or (p.is_file() and p.name != ".DS_Store"))
+    } - set(expected)
     assert extras == {"hex-provenance.json", "hex-patches.diff", "HEX-PATCHES.md"}, extras
     for name, digest in expected.items():
         assert hashlib.sha256((VENDOR / name).read_bytes()).hexdigest() == digest, name
