@@ -61,6 +61,21 @@ pub(super) struct Active {
 }
 
 impl Plugins {
+    fn record_extended_authored(
+        &mut self,
+        binding: Binding,
+        selection: AuthoredSelection,
+    ) -> Result<(), String> {
+        self.sources
+            .iter_mut()
+            .find(|source| source.binding == binding)
+            .ok_or_else(|| {
+                "the selected vst3 editor source is unavailable on this output".to_owned()
+            })?
+            .authored = Some(selection);
+        Ok(())
+    }
+
     pub(in crate::native_audio) fn prepare_editor_recording(
         &mut self,
         control: &mut PublicationControl,
@@ -137,7 +152,7 @@ impl Plugins {
                     Some(base) => base,
                     None => {
                         let host = self.host.as_ref().ok_or("vst3 host is unavailable")?;
-                        parameter_gesture::metadata::extend_authored(
+                        let selection = parameter_gesture::metadata::extend_authored(
                             host,
                             control,
                             binding,
@@ -146,6 +161,7 @@ impl Plugins {
                             None,
                             cancellation,
                         )?;
+                        self.record_extended_authored(binding, selection)?;
                         read_base(control)?.ok_or("vst3 editor parameter has no exact base")?
                     }
                 };
@@ -613,5 +629,75 @@ impl ActiveCorrelation {
             Self::Group(group) => (!group.terminal_sent)
                 .then(|| group.observation(Vst3EditorGroupReceipt::Interrupted)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_extended_authored_updates_matching_source_so_take_commit_reuses_worker() {
+        let context = AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 2,
+        };
+        let binding = Binding {
+            root: 1,
+            instance: 7,
+            graph: 2,
+            epoch: 1,
+        };
+        let class = [0x42; 16];
+        let mut plugins = Plugins::default();
+        plugins.sources.push(Source {
+            binding,
+            owner: ProcessorChainOwner::Track(3),
+            device: binding.instance,
+            project_generation: context.project_generation,
+            operation: SourceOperation::Edit {
+                context,
+                predecessor: None,
+            },
+            authored: None,
+            accepted: true,
+            retiring: false,
+            queued: true,
+            observes_latency: false,
+            editor_open: true,
+            editor_transfer: false,
+            editor_open_on_insert: false,
+            edit_backlog: false,
+            edit_recovery: None,
+            open_editor_group: None,
+            provider: None,
+            editor_retirement: Default::default(),
+            pending_touch: None,
+            #[cfg(feature = "allocation-probe")]
+            observed_latency_receipt: false,
+            #[cfg(feature = "allocation-probe")]
+            attempts: 0,
+        });
+
+        let extended = AuthoredSelection::from_targets([(11, Some(class))])
+            .unwrap()
+            .unwrap();
+        plugins
+            .record_extended_authored(binding, extended.clone())
+            .unwrap();
+        assert_eq!(plugins.sources[0].authored.as_ref(), Some(&extended));
+        assert!(
+            plugins.sources[0]
+                .authored
+                .as_ref()
+                .is_some_and(|armed| armed.contains(class, 11)),
+            "armed source must retain the newly extended parameter across take commit and Stop/epoch renewal"
+        );
+
+        let missing = Binding {
+            epoch: 99,
+            ..binding
+        };
+        assert!(plugins.record_extended_authored(missing, extended).is_err());
     }
 }

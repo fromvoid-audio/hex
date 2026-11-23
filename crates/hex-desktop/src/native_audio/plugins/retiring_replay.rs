@@ -6,7 +6,6 @@ use hex_audio::{
         ControllerRequest, NativeWorkerCaptureProgress, NativeWorkerControllerProgress,
         NativeWorkerControllerQuery, NativeWorkerGuardedCaptureProgress,
         NativeWorkerGuardedEditorWriteProgress, NativeWorkerStateAfterGuardedWrite,
-        ParameterPageQuery,
     },
     prepared::{
         AppliedAudioSource, NativeParameterContinuationCapture, NativeParameterContinuationRequest,
@@ -753,22 +752,70 @@ fn guarded_terminal(
     }
 }
 
-fn recovery_values(
-    control: &mut PublicationControl,
-    binding: Binding,
+struct RecoveryPage {
+    first: u16,
+    total: u16,
+    descriptor_signature: [u8; 32],
+    page_len: usize,
+    editable_values: Vec<(u32, f64)>,
+}
+
+fn recovery_values_with_pages(
     points: &[(u32, f64)],
-    cancellation: Option<&RequestCancellation>,
+    mut read_page: impl FnMut(u16) -> Result<RecoveryPage, String>,
 ) -> Result<Vec<(u32, f64)>, String> {
     let mut values = Vec::new();
     values
         .try_reserve_exact(points.len())
         .map_err(|_| "vst3 replay value allocation failed")?;
     values.resize(points.len(), None);
+    let mut first = 0_u16;
+    let mut expected_total = None;
+    let mut expected_signature = None;
     let deadline = Instant::now() + Duration::from_secs(2);
-    let mut query = ParameterPageQuery::default();
     while Instant::now() < deadline {
+        let page = read_page(first)?;
+        if page.first != first
+            || *expected_total.get_or_insert(page.total) != page.total
+            || *expected_signature.get_or_insert(page.descriptor_signature)
+                != page.descriptor_signature
+        {
+            return Err("vst3 replay could not read the original controller values".into());
+        }
+        for &(id, normalized) in &page.editable_values {
+            if let Some(index) = points.iter().position(|&(target, _)| target == id) {
+                values[index] = Some((id, normalized));
+            }
+        }
+        if values.iter().all(Option::is_some) {
+            return Ok(values.into_iter().flatten().collect());
+        }
+        let next = first
+            .checked_add(
+                u16::try_from(page.page_len)
+                    .map_err(|_| "vst3 replay could not read the original controller values")?,
+            )
+            .ok_or("vst3 replay could not read the original controller values")?;
+        if next <= first || next >= page.total {
+            break;
+        }
+        first = next;
+    }
+    Err("vst3 replay could not determine every prior parameter value".into())
+}
+
+fn recovery_values(
+    control: &mut PublicationControl,
+    binding: Binding,
+    points: &[(u32, f64)],
+    cancellation: Option<&RequestCancellation>,
+) -> Result<Vec<(u32, f64)>, String> {
+    recovery_values_with_pages(points, |first| {
         let request = admit(control, cancellation, |control| {
-            control.begin_native_source_controller_query_on_control(binding, query)
+            control.begin_native_source_controller_query_on_control(
+                binding,
+                ControllerRequest::SelectedParameters { first },
+            )
         })?;
         let page = loop {
             match control.poll_native_source_controller_query_on_control(binding, &request) {
@@ -779,26 +826,20 @@ fn recovery_values(
                 _ => return Err("vst3 replay could not read the original controller values".into()),
             }
         };
-        for parameter in page
+        let editable_values = page
             .as_slice()
             .iter()
             .filter(|parameter| parameter.is_editable())
-        {
-            if let Some(index) = points.iter().position(|&(id, _)| id == parameter.id) {
-                values[index] = Some((parameter.id, parameter.normalized));
-            }
-        }
-        if values.iter().all(Option::is_some) {
-            return Ok(values.into_iter().flatten().collect());
-        }
-        let first = page.first + page.as_slice().len() as u16;
-        if first == page.total {
-            break;
-        }
-        query.first = first;
-        query.revision = page.revision;
-    }
-    Err("vst3 replay could not determine every prior parameter value".into())
+            .map(|parameter| (parameter.id, parameter.normalized))
+            .collect();
+        Ok(RecoveryPage {
+            first: page.first,
+            total: page.total,
+            descriptor_signature: page.descriptor_signature,
+            page_len: page.as_slice().len(),
+            editable_values,
+        })
+    })
 }
 
 fn capture(
@@ -844,5 +885,90 @@ fn admit<T>(
             ) if Instant::now() < until => edits::poll_control(control),
             result => return result.map_err(str::to_owned),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recovery_values_reads_multiple_pages_without_revision_pinning_and_validates_descriptor_invariants()
+     {
+        let sig = [0xAA; 32];
+        let mut queried_offsets = Vec::new();
+        let resolved = recovery_values_with_pages(&[(103, 0.9), (100, 0.1)], |first| {
+            queried_offsets.push(first);
+            match first {
+                0 => Ok(RecoveryPage {
+                    first: 0,
+                    total: 4,
+                    descriptor_signature: sig,
+                    page_len: 2,
+                    editable_values: vec![(100, 0.25)],
+                }),
+                2 => Ok(RecoveryPage {
+                    first: 2,
+                    total: 4,
+                    descriptor_signature: sig,
+                    page_len: 2,
+                    editable_values: vec![(102, 0.5), (103, 0.75)],
+                }),
+                other => panic!("unexpected offset {other}"),
+            }
+        })
+        .unwrap();
+        assert_eq!(queried_offsets, vec![0, 2]);
+        assert_eq!(resolved, vec![(103, 0.75), (100, 0.25)]);
+
+        // Changing descriptor_signature across pages must still refuse.
+        let sig_changed = recovery_values_with_pages(&[(103, 0.9)], |first| match first {
+            0 => Ok(RecoveryPage {
+                first: 0,
+                total: 4,
+                descriptor_signature: sig,
+                page_len: 2,
+                editable_values: vec![(100, 0.25)],
+            }),
+            _ => Ok(RecoveryPage {
+                first: 2,
+                total: 4,
+                descriptor_signature: [0xBB; 32],
+                page_len: 2,
+                editable_values: vec![(103, 0.75)],
+            }),
+        });
+        assert!(sig_changed.is_err());
+
+        // Changing total across pages must still refuse.
+        let total_changed = recovery_values_with_pages(&[(103, 0.9)], |first| match first {
+            0 => Ok(RecoveryPage {
+                first: 0,
+                total: 4,
+                descriptor_signature: sig,
+                page_len: 2,
+                editable_values: vec![(100, 0.25)],
+            }),
+            _ => Ok(RecoveryPage {
+                first: 2,
+                total: 5,
+                descriptor_signature: sig,
+                page_len: 2,
+                editable_values: vec![(103, 0.75)],
+            }),
+        });
+        assert!(total_changed.is_err());
+
+        // Mismatched page.first must refuse.
+        let first_mismatch = recovery_values_with_pages(&[(103, 0.9)], |_| {
+            Ok(RecoveryPage {
+                first: 1,
+                total: 4,
+                descriptor_signature: sig,
+                page_len: 2,
+                editable_values: vec![(103, 0.75)],
+            })
+        });
+        assert!(first_mismatch.is_err());
     }
 }
