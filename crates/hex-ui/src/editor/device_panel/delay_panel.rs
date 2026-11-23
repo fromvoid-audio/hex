@@ -18,6 +18,10 @@ pub(super) struct Panel {
 }
 
 impl Panel {
+    pub(super) fn entity_id(&self) -> gpui::EntityId {
+        self.graph.entity_id()
+    }
+
     pub(super) fn cancel(&self, cx: &mut Context<EditorView>) {
         self.graph.update(cx, |graph, cx| graph.cancel(cx));
     }
@@ -200,10 +204,12 @@ pub(super) fn render_body(
                 graph.set_tab_navigation(true, cx);
                 graph
             });
-            let subscription =
-                cx.subscribe(&graph, move |view, _, event: &ResponseGraphEvent, cx| {
-                    graph_event(view, cx, device, generation, *event);
-                });
+            let subscription = cx.subscribe(
+                &graph,
+                move |view, graph, event: &ResponseGraphEvent, cx| {
+                    graph_event(view, cx, device, generation, graph.entity_id(), *event);
+                },
+            );
             Panel {
                 graph,
                 _subscription: subscription,
@@ -533,6 +539,7 @@ fn graph_event(
     cx: &mut Context<EditorView>,
     device: DeviceId,
     generation: u64,
+    graph: gpui::EntityId,
     event: ResponseGraphEvent,
 ) {
     if generation != view.project_generation {
@@ -550,7 +557,7 @@ fn graph_event(
         second: ParameterValue::Float(width),
     };
     if event.phase == ResponseGraphPhase::Begin {
-        if !finalize_controls(view, cx) {
+        if !finalize_controls_except_graph(view, cx, graph) {
             return;
         }
         if let Some(panel) = view.device_panel.delay_panels.get_mut(&device) {
