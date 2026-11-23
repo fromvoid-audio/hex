@@ -679,6 +679,37 @@ fn configured_controller_keeps_its_root_during_note_and_marquee_audition(cx: &mu
     assert_eq!(render(), [[0.0; 2]; 128]);
     assert!(live.same_current_activation(activation));
     assert!(!input.is_cancelled());
+
+    // Fill the instrument with held controller notes. The declined click must
+    // reach the editor without disconnecting the controller or selecting another root.
+    for pitch in 32..96 {
+        live.publish(
+            activation,
+            LiveNoteEvent::NoteOn {
+                channel: 2,
+                pitch,
+                velocity: 64,
+            },
+        )
+        .unwrap();
+    }
+    render();
+    toggle(&mut visual);
+    visual.simulate_click(a, Modifiers::default());
+    pump(&editor, &mut visual);
+    let trigger = input.live_audition_id();
+    assert_ne!(trigger, 0);
+    render();
+    assert!(input.live_note_audition_refused(trigger));
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.error.as_deref(),
+            Some("instrument could not play the complete audition chord")
+        );
+    });
+    assert_route(&visual, "refused preview");
+    assert!(live.same_current_activation(activation));
 }
 
 fn assert_audition_silent(editor: &Entity<super::EditorView>, visual: &VisualTestContext) {

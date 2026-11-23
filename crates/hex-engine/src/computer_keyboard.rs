@@ -1540,7 +1540,8 @@ impl ComputerKeyboardRuntime {
                 if refused_chord
                     || !snapshot_physical
                     || token == 0
-                    || self.scratch_rejected_desired[key] == token
+                    || (desired_source == VoiceSource::Physical
+                        && self.scratch_rejected_desired[key] == token)
                     || self.scratch.iter().flatten().any(|voice| {
                         voice.source == desired_source && voice.key == key && voice.token == token
                     })
