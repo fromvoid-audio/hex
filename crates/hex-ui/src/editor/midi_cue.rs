@@ -6,8 +6,8 @@ use hex_engine::SessionPlaybackCommand;
 use hex_project::{BeatTime, ClipId, SessionCellContent};
 
 mod timing;
-use timing::arrangement_destination;
 pub(super) use timing::arrangement_elapsed;
+use timing::{arrangement_destination, arrangement_source_beat};
 
 impl EditorView {
     pub(super) fn midi_editor_cursor_play_start(&self) -> Option<u64> {
@@ -148,19 +148,20 @@ impl EditorView {
                 _ => return None,
             }
         };
-        let elapsed = if let Some(placement) = placement {
+        let phase = if let Some(placement) = placement {
             let route = self
                 .session_routes
                 .entry_for_track(snapshot, true, track.id().value())?;
             if route.owner != SessionRouteOwner::Arrangement {
                 return None;
             }
-            arrangement_elapsed(
+            let elapsed = arrangement_elapsed(
                 state.project.tempo_map(),
                 placement.start(),
                 placement.arrangement_length(),
                 status.position.load(Acquire),
-            )?
+            )?;
+            arrangement_source_beat(placement, elapsed)?
         } else {
             let route = self
                 .session_routes
@@ -184,13 +185,13 @@ impl EditorView {
                     .midi_performance_beat_at(frame, snapshot.clock_anchor)
                     .ok()?,
             };
-            route.active_origin?.elapsed_at(beat)?
+            let elapsed = route.active_origin?.elapsed_at(beat)?;
+            let playback = source
+                .playback_for_duration(BeatTime::from_raw(1))
+                .and_then(|playback| playback.with_playback_offset(offset))
+                .ok()?;
+            playback.source_phase_at_elapsed(elapsed)?
         };
-        let playback = source
-            .playback_for_duration(BeatTime::from_raw(1))
-            .and_then(|playback| playback.with_playback_offset(offset))
-            .ok()?;
-        let phase = playback.source_phase_at_elapsed(elapsed)?;
         // A publication can change during scalar reads; never paint it against
         // another compiled revision's mapping.
         (status.applied_revision.load(Acquire) == audible.audio_revision).then_some(phase.raw())

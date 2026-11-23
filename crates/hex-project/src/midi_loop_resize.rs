@@ -20,6 +20,16 @@ pub enum MidiViewResizeOperation {
     /// the same beats while its end and every note keep their song beat.
     /// Looped and directed clips keep their source controls instead.
     PlayStart { source_start: BeatTime },
+    /// Set the clip editor's scope bounds. With looping off (or when enabling
+    /// looping on a changed range), Arrangement bounds follow the scope while
+    /// preserving each authored note's song beat. With looping already on (or
+    /// when toggling looping without changing the scope), Arrangement bounds
+    /// stay fixed.
+    ScopeRange {
+        start: BeatTime,
+        end: BeatTime,
+        looping: bool,
+    },
 }
 
 /// Opaque Copy geometry for a loop gesture. The command recomputes against the
@@ -103,6 +113,104 @@ impl MidiSourcePlayback {
 }
 
 impl MidiClip {
+    /// Clip-local scope bounds in source beats. A looping clip's scope is its
+    /// repeating cycle; an unlooped clip's scope aligns with its visible
+    /// Arrangement window (`length` beats starting at its first read position).
+    pub fn scope_range(&self) -> Option<(BeatTime, BeatTime)> {
+        if self.looping() {
+            return Some((self.loop_start(), self.loop_end()));
+        }
+        let offset = self
+            .content_view
+            .map_or(self.playback_offset().raw(), |view| view.start);
+        let start = self.source_start().raw().checked_add(offset)?;
+        let end = start.checked_add(self.length().raw())?;
+        Some((BeatTime::from_raw(start), BeatTime::from_raw(end)))
+    }
+
+    /// Preview or materialize a clip-local scope edit without cloning note data
+    /// unless `source_length` must grow. When `looping` is off (or enabling
+    /// looping on a changed interval), Arrangement bounds follow the scope and
+    /// authored notes retain their song beats. When already looping (or
+    /// toggling looping without changing the scope), Arrangement bounds remain
+    /// fixed.
+    pub fn with_scope_range(
+        &self,
+        start: BeatTime,
+        end: BeatTime,
+        looping: bool,
+    ) -> Result<MidiClip, Invalid> {
+        if start >= end {
+            return Err(Invalid("midi scope must be a positive interval"));
+        }
+        let (old_start, old_end) = self
+            .scope_range()
+            .ok_or(Invalid("midi scope exceeds beat range"))?;
+        let unchanged_range = (start, end) == (old_start, old_end);
+        let moves_gate = !(unchanged_range || self.looping() && looping);
+        let mut next = self.clone();
+        if moves_gate {
+            let shift = i128::from(start.raw()) - i128::from(old_start.raw());
+            let clip_start = u64::try_from(i128::from(self.start().raw()) + shift)
+                .map_err(|_| Invalid("midi scope would move the clip before song start"))?;
+            let length = end.raw() - start.raw();
+            next.start = BeatTime::from_raw(clip_start);
+            next.length = BeatTime::from_raw(length);
+            let reset_origin = self.looping() || start != old_start || self.source_start() >= end;
+            if let Some(view) = self.content_view {
+                let window_start = if reset_origin { 0 } else { view.start };
+                let window_end = window_start
+                    .checked_add(length)
+                    .ok_or(Invalid("midi scope content window overflow"))?;
+                next.content_view = Some(crate::ContentWindow::new(
+                    window_start,
+                    window_end,
+                    view.reversed,
+                )?);
+                next.playback_offset = BeatTime::from_raw(window_start);
+            } else if reset_origin {
+                next.playback_offset = BeatTime::ZERO;
+            }
+            let source = std::sync::Arc::make_mut(&mut next.source);
+            if source.source_length < end {
+                source.source_length = end;
+            }
+            if reset_origin {
+                source.source_start = start;
+            }
+            source.loop_start = start;
+            source.loop_end = end;
+            source.looping = looping;
+        } else if !looping {
+            if next.looping() {
+                std::sync::Arc::make_mut(&mut next.source).looping = false;
+            }
+        } else {
+            let source = std::sync::Arc::make_mut(&mut next.source);
+            if source.source_length < end {
+                source.source_length = end;
+            }
+            if source.source_start >= end {
+                source.source_start = start;
+            }
+            source.loop_start = start;
+            source.loop_end = end;
+            source.looping = true;
+        }
+        crate::midi::validate_clip(next.start, next.length)?;
+        next.volume.validate_source_length(next.source_length())?;
+        crate::midi::validate_source_boundary(
+            next.source_length(),
+            next.source_start(),
+            next.loop_start(),
+            next.loop_end(),
+            next.looping(),
+            next.one_shot_boundary(),
+        )?;
+        next.source_playback()?;
+        Ok(next)
+    }
+
     /// Moved one-shot region for a new source start marker, without copying
     /// notes. A note at source beat n keeps its song beat
     /// `start + n - source_start - playback_offset`.
@@ -161,8 +269,9 @@ impl MidiClip {
         let beat = match operation {
             MidiViewResizeOperation::RepeatOuterEnd { beat }
             | MidiViewResizeOperation::CycleEnd { beat } => beat,
-            MidiViewResizeOperation::PlayStart { .. } => {
-                return Err(Invalid("midi play start is not a loop resize"));
+            MidiViewResizeOperation::PlayStart { .. }
+            | MidiViewResizeOperation::ScopeRange { .. } => {
+                return Err(Invalid("midi play start or scope is not a loop resize"));
             }
         };
         let delta = beat
@@ -197,8 +306,9 @@ impl MidiClip {
                 }
                 next.length = BeatTime::from_raw(delta);
             }
-            MidiViewResizeOperation::PlayStart { .. } => {
-                return Err(Invalid("midi play start is not a loop resize"));
+            MidiViewResizeOperation::PlayStart { .. }
+            | MidiViewResizeOperation::ScopeRange { .. } => {
+                return Err(Invalid("midi play start or scope is not a loop resize"));
             }
             MidiViewResizeOperation::CycleEnd { .. } => {
                 if !self.looping() {
@@ -298,6 +408,18 @@ pub(crate) fn apply(
         let candidate = original.with_play_start(source_start)?;
         return crate::clip_group::replace_midi(project, candidate);
     }
+    if let MidiViewResizeOperation::ScopeRange {
+        start,
+        end,
+        looping,
+    } = operation
+    {
+        let candidate = original.with_scope_range(start, end, looping)?;
+        if candidate == *original {
+            return Ok(Created::None);
+        }
+        return crate::clip_group::replace_midi(project, candidate);
+    }
     let next = original.preview_loop_resize(operation)?;
     let mut candidate = original.clone();
     candidate.content_view = next.content_view;
@@ -355,6 +477,140 @@ mod tests {
         assert_eq!(
             resized.first_repeat_boundary(),
             Some(BeatTime::from_quarters(4).unwrap())
+        );
+    }
+
+    #[test]
+    fn scope_range_aligns_unlooped_arrangement_window_and_tracks_scope_edits() {
+        let b = |quarters: u64| BeatTime::from_quarters(quarters).unwrap();
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: "m".into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Clip(clip_id) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: b(4),
+                length: b(1),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip: clip_id,
+                start: BeatTime::from_ratio(1, 4).unwrap(),
+                duration: BeatTime::from_ratio(1, 4).unwrap(),
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        // Extending an unlooped clip in Arrangement past its source aligns scope_range.
+        editor
+            .execute(Command::TrimMidiClipEdge {
+                clip: clip_id,
+                edge: crate::TrimEdge::Right,
+                beat: b(8),
+            })
+            .unwrap();
+        let clip = editor.project().midi_clip(clip_id).unwrap();
+        assert_eq!(clip.length(), b(4));
+        assert_eq!(clip.source_length(), b(1));
+        assert_eq!(clip.loop_end(), b(1));
+        assert_eq!(clip.scope_range(), Some((b(0), b(4))));
+
+        // Left-trimming inward advances playback_offset and shifts the unlooped scope window.
+        editor
+            .execute(Command::TrimMidiClipEdge {
+                clip: clip_id,
+                edge: crate::TrimEdge::Left,
+                beat: b(5),
+            })
+            .unwrap();
+        let clip = editor.project().midi_clip(clip_id).unwrap();
+        assert_eq!(clip.scope_range(), Some((b(1), b(4))));
+
+        // Scope edit with looping off moves Arrangement bounds and keeps authored note song beats.
+        let before_scope = editor.project().snapshot();
+        editor
+            .execute(Command::ResizeMidiClipView {
+                clip: clip_id,
+                operation: MidiViewResizeOperation::ScopeRange {
+                    start: b(0),
+                    end: b(6),
+                    looping: false,
+                },
+            })
+            .unwrap();
+        let widened = editor.project().midi_clip(clip_id).unwrap();
+        assert_eq!((widened.start(), widened.length()), (b(4), b(6)));
+        assert_eq!(widened.source_start(), b(0));
+        assert_eq!(widened.playback_offset(), b(0));
+        assert_eq!(widened.source_length(), b(6));
+        assert_eq!(widened.scope_range(), Some((b(0), b(6))));
+        assert_eq!(widened.notes().len(), 1);
+        assert!(editor.undo());
+        assert_eq!(editor.project().snapshot(), before_scope);
+        assert!(editor.redo());
+
+        // Toggling looping on without changing scope keeps Arrangement bounds and loops 0..6b.
+        editor
+            .execute(Command::ResizeMidiClipView {
+                clip: clip_id,
+                operation: MidiViewResizeOperation::ScopeRange {
+                    start: b(0),
+                    end: b(6),
+                    looping: true,
+                },
+            })
+            .unwrap();
+        let looped = editor.project().midi_clip(clip_id).unwrap();
+        assert!(looped.looping());
+        assert_eq!((looped.start(), looped.length()), (b(4), b(6)));
+        assert_eq!(looped.scope_range(), Some((b(0), b(6))));
+
+        // Editing scope while already looping keeps Arrangement bounds fixed.
+        editor
+            .execute(Command::ResizeMidiClipView {
+                clip: clip_id,
+                operation: MidiViewResizeOperation::ScopeRange {
+                    start: b(1),
+                    end: b(3),
+                    looping: true,
+                },
+            })
+            .unwrap();
+        let narrowed = editor.project().midi_clip(clip_id).unwrap();
+        assert_eq!((narrowed.start(), narrowed.length()), (b(4), b(6)));
+        assert_eq!(narrowed.scope_range(), Some((b(1), b(3))));
+        assert_eq!(
+            Project::from_snapshot(editor.project().snapshot()).unwrap(),
+            *editor.project()
+        );
+
+        // Moving an unlooped scope before song start is refused cleanly.
+        editor
+            .execute(Command::ResizeMidiClipView {
+                clip: clip_id,
+                operation: MidiViewResizeOperation::ScopeRange {
+                    start: b(1),
+                    end: b(3),
+                    looping: false,
+                },
+            })
+            .unwrap();
+        assert!(
+            editor
+                .project()
+                .midi_clip(clip_id)
+                .unwrap()
+                .with_scope_range(b(2), b(2), false)
+                .is_err()
         );
     }
 }

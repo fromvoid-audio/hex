@@ -59,7 +59,7 @@ fn loop_endpoints_and_body_preview_then_ack_once_with_undo_redo_and_saved_repeat
             source_start: beat(0),
             loop_start: beat(0),
             loop_end: beat(4),
-            looping: false,
+            looping: true,
             length: beat(12),
         },
         Command::AddMidiNote {
@@ -96,9 +96,9 @@ fn loop_endpoints_and_body_preview_then_ack_once_with_undo_redo_and_saved_repeat
                 (p.loop_start, p.loop_end),
                 (beat(first).raw(), beat(last).raw())
             );
-            assert!(!p.looping);
+            assert!(p.looping);
         });
-        assert_scope(&mut visual, first as f32 / 4.0, last as f32 / 4.0, false);
+        assert_scope(&mut visual, first as f32 / 4.0, last as f32 / 4.0, true);
         visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
         let terminal = crate::editor::clip_editor_loop_ui_tests::hold(&editor, &mut visual);
         assert!(
@@ -109,7 +109,7 @@ fn loop_endpoints_and_body_preview_then_ack_once_with_undo_redo_and_saved_repeat
         for _ in 0..3 {
             editor.update(&mut visual, |_, cx| cx.notify());
             visual.run_until_parked();
-            assert_scope(&mut visual, first as f32 / 4.0, last as f32 / 4.0, false);
+            assert_scope(&mut visual, first as f32 / 4.0, last as f32 / 4.0, true);
         }
         editor.update(&mut visual, |v, cx| {
             v.receive(terminal);
@@ -134,7 +134,7 @@ fn loop_endpoints_and_body_preview_then_ack_once_with_undo_redo_and_saved_repeat
             editor.update(&mut visual, |_, cx| cx.notify());
             visual.run_until_parked();
         }
-        assert_scope(&mut visual, first as f32 / 4.0, last as f32 / 4.0, false);
+        assert_scope(&mut visual, first as f32 / 4.0, last as f32 / 4.0, true);
         visual.simulate_keystrokes("cmd-z");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
@@ -146,10 +146,6 @@ fn loop_endpoints_and_body_preview_then_ack_once_with_undo_redo_and_saved_repeat
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
         });
     }
-    let toggle = visual.debug_bounds("midi-loop-ruler-toggle").unwrap();
-    visual.simulate_click(toggle.center(), Modifiers::default());
-    pump(&editor, &mut visual);
-    assert_scope(&mut visual, 0.5, 1.0, true);
     let after = editor.read_with(&visual, |v, _| {
         assert!(
             v.state
@@ -203,17 +199,131 @@ fn loop_endpoints_and_body_preview_then_ack_once_with_undo_redo_and_saved_repeat
     }
 }
 #[gpui::test]
-fn disabled_loop_keeps_markers_and_refuses_invalid_enable_without_history(cx: &mut TestAppContext) {
+fn unlooped_midi_scope_bar_aligns_with_arranger_clip_length_and_tracks_scope_edits(
+    cx: &mut TestAppContext,
+) {
     let (mut visual, editor, _environment, clip) = fixture(cx);
+    // Reproduce an unlooped Arrangement clip trimmed longer than its source/loop markers:
+    // arr = 4b, src = 1.25b, loop_end = 0.5b, loop = off.
     editor.update(&mut visual, |v, _| {
         assert!(v.enqueue(Request::Edit(Command::SetMidiClipSource {
+            clip,
+            source_length: BeatTime::from_ratio(5, 4).unwrap(),
+            source_start: BeatTime::ZERO,
+            loop_start: BeatTime::ZERO,
+            loop_end: BeatTime::from_ratio(1, 2).unwrap(),
+            looping: false,
+            length: beat(4),
+        })));
+    });
+    pump(&editor, &mut visual);
+    visual.run_until_parked();
+    // Scope bar aligns with the actual 4b Arrangement clip length (0..4b), not 0..0.5b.
+    assert_scope(&mut visual, 0.0, 1.0, false);
+
+    // Dragging the right scope edge shrinks the Arrangement clip with live preview and zero
+    // release flicker across delayed-ACK repaints.
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let down = at(&mut visual, 1.0);
+    let up = at(&mut visual, 0.5);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(up, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    assert_scope(&mut visual, 0.0, 0.5, false);
+    let visual_selector = Box::leak(format!("midi-clip-visual-{}", clip.value()).into_boxed_str());
+    let held_clip_bounds = visual
+        .debug_bounds(visual_selector)
+        .expect("live arranger MIDI scope preview overlay");
+    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    let terminal = crate::editor::clip_editor_loop_ui_tests::hold(&editor, &mut visual);
+    assert!(
+        terminal.request_complete && terminal.error.is_none(),
+        "{:?}",
+        terminal.error
+    );
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert_scope(&mut visual, 0.0, 0.5, false);
+        assert_eq!(
+            visual.debug_bounds(visual_selector),
+            Some(held_clip_bounds),
+            "released arranger MIDI scope preview stays stable until exact ACK"
+        );
+    }
+    editor.update(&mut visual, |v, cx| {
+        v.receive(terminal);
+        cx.notify();
+    });
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        let c = v.state.as_ref().unwrap().project.midi_clip(clip).unwrap();
+        assert!(!c.looping());
+        assert_eq!(c.length(), beat(2));
+        assert_eq!(c.scope_range(), Some((beat(0), beat(2))));
+    });
+    assert_scope(&mut visual, 0.0, 0.5, false);
+
+    // Undo restores the 4b Arrangement clip and 0..4b scope bar.
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+    });
+    assert_scope(&mut visual, 0.0, 1.0, false);
+}
+
+#[gpui::test]
+fn disabled_loop_keeps_markers_and_refuses_invalid_enable_without_history(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, arrangement) = fixture(cx);
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::AddScene {
+            name: "disabled loop".into()
+        })));
+    });
+    pump(&editor, &mut visual);
+    let scene = editor.read_with(&visual, |v, _| {
+        v.state.as_ref().unwrap().project.scenes()[0].id()
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(
+            v.enqueue(Request::Edit(Command::CopyArrangementMidiToSession {
+                source: arrangement,
+                scene
+            }))
+        );
+    });
+    pump(&editor, &mut visual);
+    let clip = editor.update(&mut visual, |v, cx| {
+        let track = v.selected_track.unwrap();
+        let hex_project::SessionCellContent::Midi(cell) = v
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .session_cell(track, scene)
+            .unwrap()
+        else {
+            panic!("midi")
+        };
+        let clip = cell.id();
+        v.mode = crate::editor::EditorMode::Session;
+        v.selected_scene = Some(scene);
+        v.selected_cell = Some((track, scene));
+        v.selected_clip = Some(clip);
+        v.piano_view_clip = None;
+        cx.notify();
+        clip
+    });
+    visual.run_until_parked();
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::SetSessionMidiClipSource {
             clip,
             source_length: beat(4),
             source_start: beat(3),
             loop_start: beat(1),
             loop_end: beat(2),
             looping: false,
-            length: beat(4)
         })))
     });
     pump(&editor, &mut visual);

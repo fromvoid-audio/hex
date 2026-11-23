@@ -53,21 +53,16 @@ impl EditorView {
         }
         let state = self.state.as_ref()?;
         let clip = self.detail_clip_id()?;
-        let source = state.project.midi_source(clip)?;
+        let values = SourceValues::for_clip(&state.project, clip)?;
         let arrangement = state.project.midi_clip(clip);
         let context = Context {
             generation: self.project_generation,
             revision: state.revision,
             clip,
-            values: SourceValues::from_source(
-                source,
-                arrangement.map_or(0, |clip| clip.start().raw()),
-                arrangement.map_or(source.source_length().raw(), |clip| {
-                    clip.arrangement_length().raw()
-                }),
-            ),
+            values,
             play_start_region: arrangement
                 .is_some_and(|clip| !clip.looping() && clip.content_view().is_none()),
+            arrangement_scope: arrangement.is_some(),
             start: self.piano_beat_start,
             span: self.piano_beat_span.raw(),
             grid: self.midi_snap_grid,
@@ -284,6 +279,31 @@ impl EditorView {
             self.settle_released_play_start_audition(gesture.context.clip);
         }
     }
+    pub(super) fn midi_ruler_held_preview_clip(
+        &self,
+        clip: &hex_project::MidiClip,
+        revision: u64,
+    ) -> Option<hex_project::MidiClip> {
+        let g = self.midi_ruler.gesture.filter(|g| {
+            g.context.clip == clip.id()
+                && g.context.generation == self.project_generation
+                && g.context.revision == revision
+                && g.preview != g.context.values
+        })?;
+        match g.handle {
+            Handle::Start => clip
+                .with_play_start(hex_project::BeatTime::from_raw(g.preview.source_start))
+                .ok(),
+            Handle::LoopStart | Handle::LoopEnd | Handle::LoopBody => clip
+                .with_scope_range(
+                    hex_project::BeatTime::from_raw(g.preview.loop_start),
+                    hex_project::BeatTime::from_raw(g.preview.loop_end),
+                    g.preview.looping,
+                )
+                .ok(),
+        }
+    }
+
     pub(super) fn midi_header_loop_values(
         &self,
         clip: ClipId,

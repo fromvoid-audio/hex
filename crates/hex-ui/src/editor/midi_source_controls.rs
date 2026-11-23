@@ -62,6 +62,32 @@ impl SourceValues {
             looping: source.looping(),
         }
     }
+
+    /// Arrangement MIDI clips align their unlooped scope with their visible
+    /// Arrangement window so the clip editor's scope bar matches clip length.
+    pub(super) fn from_clip(clip: &hex_project::MidiClip) -> Self {
+        let (loop_start, loop_end) = clip
+            .scope_range()
+            .unwrap_or((clip.loop_start(), clip.loop_end()));
+        Self {
+            arrangement_start: clip.start().raw(),
+            arrangement_length: clip.arrangement_length().raw(),
+            source_length: clip.source_length().raw(),
+            source_start: clip.source_start().raw(),
+            loop_start: loop_start.raw(),
+            loop_end: loop_end.raw(),
+            looping: clip.looping(),
+        }
+    }
+
+    pub(super) fn for_clip(project: &Project, clip: hex_project::ClipId) -> Option<Self> {
+        if let Some(arrangement) = project.midi_clip(clip) {
+            Some(Self::from_clip(arrangement))
+        } else {
+            let source = project.midi_source(clip)?;
+            Some(Self::from_source(source, 0, source.source_length().raw()))
+        }
+    }
 }
 
 pub(super) fn edit_command(
@@ -70,13 +96,9 @@ pub(super) fn edit_command(
     values: SourceValues,
 ) -> Option<hex_project::Command> {
     if let Some(arrangement) = project.midi_clip(clip) {
+        let current = SourceValues::from_clip(arrangement);
         // A forward one-shot's start marker moves its region, keeping notes at
-        // their song beats; every other source edit replaces the source fields.
-        let current = SourceValues::from_source(
-            project.midi_source(clip)?,
-            arrangement.start().raw(),
-            arrangement.length().raw(),
-        );
+        // their song beats.
         if !arrangement.looping()
             && arrangement.content_view().is_none()
             && values.source_start != current.source_start
@@ -93,12 +115,26 @@ pub(super) fn edit_command(
                 },
             });
         }
+        // Scope edits route through ScopeRange so unlooped Arrangement bounds
+        // stay aligned with the clip editor scope bar.
+        if (values.loop_start, values.loop_end, values.looping)
+            != (current.loop_start, current.loop_end, current.looping)
+        {
+            return Some(hex_project::Command::ResizeMidiClipView {
+                clip,
+                operation: hex_project::MidiViewResizeOperation::ScopeRange {
+                    start: hex_project::BeatTime::from_raw(values.loop_start),
+                    end: hex_project::BeatTime::from_raw(values.loop_end),
+                    looping: values.looping,
+                },
+            });
+        }
         Some(hex_project::Command::SetMidiClipSource {
             clip,
             source_length: hex_project::BeatTime::from_raw(values.source_length),
             source_start: hex_project::BeatTime::from_raw(values.source_start),
-            loop_start: hex_project::BeatTime::from_raw(values.loop_start),
-            loop_end: hex_project::BeatTime::from_raw(values.loop_end),
+            loop_start: arrangement.loop_start(),
+            loop_end: arrangement.loop_end(),
             looping: values.looping,
             length: hex_project::BeatTime::from_raw(values.arrangement_length),
         })
@@ -116,8 +152,10 @@ pub(super) fn edit_command(
     }
 }
 
-pub(super) fn adjust(
+pub(super) fn adjust_clip(
     mut values: SourceValues,
+    arrangement_scope: bool,
+    canonical_loop_end: u64,
     field: SourceField,
     direction: i8,
     step: u64,
@@ -160,7 +198,12 @@ pub(super) fn adjust(
             if latest_note_end > length {
                 return Err("source length cannot exclude authored notes");
             }
-            if values.loop_end > length {
+            let min_loop_end = if arrangement_scope && !values.looping {
+                canonical_loop_end
+            } else {
+                values.loop_end
+            };
+            if min_loop_end > length {
                 return Err("source length cannot exclude retained scope markers");
             }
             values.source_length = length;
@@ -184,26 +227,62 @@ pub(super) fn adjust(
             if start >= values.loop_end {
                 return Err("scope start must precede scope end");
             }
+            if arrangement_scope && !values.looping {
+                let shift = i128::from(start) - i128::from(values.loop_start);
+                let arrangement_start = u64::try_from(i128::from(values.arrangement_start) + shift)
+                    .map_err(|_| "midi scope would move the clip before song start")?;
+                let arrangement_length = values.loop_end - start;
+                arrangement_start
+                    .checked_add(arrangement_length)
+                    .ok_or("arrangement clip end exceeds the beat range")?;
+                values.arrangement_start = arrangement_start;
+                values.arrangement_length = arrangement_length;
+                values.source_start = start;
+                values.source_length = values.source_length.max(values.loop_end);
+            }
             values.loop_start = start;
         }
         SourceField::LoopEnd => {
             let end =
                 update(values.loop_end, direction).ok_or("scope end exceeds the beat range")?;
-            if end <= values.loop_start || end > values.source_length {
+            if end <= values.loop_start {
                 return Err("scope end must stay inside the source after scope start");
             }
-            if values.looping && values.source_start >= end {
-                return Err("scope end must stay after source start while looping");
+            if arrangement_scope && !values.looping {
+                let arrangement_length = end - values.loop_start;
+                values
+                    .arrangement_start
+                    .checked_add(arrangement_length)
+                    .ok_or("arrangement clip end exceeds the beat range")?;
+                values.arrangement_length = arrangement_length;
+                values.source_length = values.source_length.max(end);
+            } else {
+                if end > values.source_length {
+                    return Err("scope end must stay inside the source after scope start");
+                }
+                if values.looping && values.source_start >= end {
+                    return Err("scope end must stay after source start while looping");
+                }
             }
             values.loop_end = end;
         }
-        SourceField::Looping => values.looping = !values.looping,
+        SourceField::Looping => {
+            values.looping = !values.looping;
+            if arrangement_scope && values.looping {
+                values.source_length = values.source_length.max(values.loop_end);
+                if values.source_start >= values.loop_end {
+                    values.source_start = values.loop_start;
+                }
+            }
+        }
     }
 
+    let scope_exceeds_source =
+        (values.looping || !arrangement_scope) && values.loop_end > values.source_length;
     if values.arrangement_length == 0
         || values.source_length == 0
         || values.loop_start >= values.loop_end
-        || values.loop_end > values.source_length
+        || scope_exceeds_source
         || (values.looping && values.source_start >= values.loop_end)
         || (!values.looping && values.source_start >= values.source_length)
     {
@@ -211,6 +290,25 @@ pub(super) fn adjust(
     }
 
     Ok((values != original).then_some(values))
+}
+
+#[cfg(all(test, feature = "ui-unit-tier"))]
+pub(super) fn adjust(
+    values: SourceValues,
+    field: SourceField,
+    direction: i8,
+    step: u64,
+    latest_note_end: u64,
+) -> Result<Option<SourceValues>, &'static str> {
+    adjust_clip(
+        values,
+        false,
+        values.loop_end,
+        field,
+        direction,
+        step,
+        latest_note_end,
+    )
 }
 
 #[cfg(all(test, feature = "ui-unit-tier"))]
@@ -300,6 +398,40 @@ mod tests {
             adjust(values(), SourceField::SourceStart, 1, 10, 0),
             Err("source start must precede its playback end")
         );
+    }
+
+    #[test]
+    fn arrangement_unlooped_scope_adjusts_arrangement_bounds_and_grows_source() {
+        let unlooped = SourceValues {
+            arrangement_start: 4,
+            arrangement_length: 8,
+            source_length: 4,
+            source_start: 0,
+            loop_start: 0,
+            loop_end: 8,
+            looping: false,
+        };
+        let extended = adjust_clip(unlooped, true, 2, SourceField::LoopEnd, 1, 2, 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(extended.loop_end, 10);
+        assert_eq!(extended.arrangement_length, 10);
+        assert_eq!(extended.source_length, 10);
+
+        let trimmed = adjust_clip(unlooped, true, 2, SourceField::LoopStart, 1, 2, 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(trimmed.loop_start, 2);
+        assert_eq!(trimmed.arrangement_start, 6);
+        assert_eq!(trimmed.arrangement_length, 6);
+        assert_eq!(trimmed.source_start, 2);
+
+        let enabled = adjust_clip(unlooped, true, 2, SourceField::Looping, 1, 2, 0)
+            .unwrap()
+            .unwrap();
+        assert!(enabled.looping);
+        assert_eq!(enabled.loop_end, 8);
+        assert_eq!(enabled.source_length, 8);
     }
 
     #[test]

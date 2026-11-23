@@ -77,10 +77,15 @@ impl EditorView {
             if self.midi_step.enabled {
                 self.cancel_computer_keyboard();
             }
+            let initial_end = state
+                .project
+                .midi_clip(clip_id)
+                .and_then(hex_project::MidiClip::scope_range)
+                .map_or(clip_len.raw(), |(_, end)| end.raw().max(clip_len.raw()));
             self.piano_zoom_wheel_accum = 0.0;
             self.piano_beat_start = 0;
             self.piano_beat_span = BeatTime::from_raw(super::midi_scene::fit_span(
-                clip_len.raw(),
+                initial_end,
                 BeatTime::ONE.raw(),
             ));
         } else if self.piano_pitch_grid_height != grid_height && !self.piano_pitch_note_fit {
@@ -95,13 +100,11 @@ impl EditorView {
         let arrangement = state.project.midi_clip(clip_id);
         let revision = state.revision;
         let generation = self.project_generation;
-        let source_values = super::midi_source_controls::SourceValues::from_source(
-            source,
-            arrangement.map_or(0, |clip| clip.start().raw()),
-            arrangement.map_or(source.source_length().raw(), |clip| {
-                clip.arrangement_length().raw()
-            }),
-        );
+        let source_values = self
+            .midi_header_loop_values(clip_id, revision)
+            .or_else(|| {
+                super::midi_source_controls::SourceValues::for_clip(&state.project, clip_id)
+            })?;
         let beat_start = self.piano_beat_start;
         let beat_span = self.piano_beat_span;
         let pitch = self.piano_pitch;

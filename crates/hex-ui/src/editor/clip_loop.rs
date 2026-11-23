@@ -41,8 +41,21 @@ struct Pending {
     start_camera: Option<super::audio_event_editor::PlayStartCamera>,
 }
 enum Preview {
-    Audio { clip: Clip, edit: AudioEdit },
-    Midi(SourceValues),
+    Audio {
+        clip: Clip,
+        edit: AudioEdit,
+    },
+    Midi {
+        values: SourceValues,
+        clip: Option<hex_project::MidiClip>,
+        edit: MidiEdit,
+    },
+}
+#[derive(Clone, Copy)]
+enum MidiEdit {
+    Resize(hex_project::MidiViewResizeOperation),
+    Source(SourceValues),
+    Session(SourceValues),
 }
 #[derive(Clone, Copy)]
 enum AudioEdit {
@@ -117,6 +130,27 @@ impl EditorView {
         self.clip_loop_held() || self.pending_audio_clip_loop().is_some()
     }
 
+    /// Keep the Arrangement overlay eligible during held and released MIDI
+    /// scope/start edits until their exact terminal.
+    pub(super) fn shows_midi_clip_loop_preview(&self) -> bool {
+        self.midi_ruler.held() || self.pending_midi_clip_loop_clip().is_some()
+    }
+
+    pub(super) fn midi_scope_display_clip<'a>(
+        &'a self,
+        clip: &'a hex_project::MidiClip,
+        state: &super::ViewState,
+    ) -> std::borrow::Cow<'a, hex_project::MidiClip> {
+        if let Some(preview) = self.midi_ruler_held_preview_clip(clip, state.revision) {
+            return std::borrow::Cow::Owned(preview);
+        }
+        std::borrow::Cow::Borrowed(
+            self.pending_midi_clip_loop_clip()
+                .filter(|preview| preview.id() == clip.id())
+                .unwrap_or(clip),
+        )
+    }
+
     /// Consume clip-editor context even when no edit is possible; it must never
     /// fall through to the Arrangement transport-loop action.
     pub(super) fn clip_loop_key(&mut self, window: &gpui::Window) -> bool {
@@ -147,37 +181,68 @@ impl EditorView {
             return true;
         };
         if midi {
-            let Some(source) = state.project.midi_source(clip) else {
+            let Some(mut values) =
+                midi_source_controls::SourceValues::for_clip(&state.project, clip)
+            else {
                 return true;
             };
             let arrangement = state.project.midi_clip(clip);
-            let mut values = SourceValues::from_source(
-                source,
-                arrangement.map_or(0, |c| c.start().raw()),
-                arrangement.map_or(source.source_length().raw(), |c| {
-                    c.arrangement_length().raw()
-                }),
-            );
-            if let Some((a, b)) = self.midi_time_selection_bounds().filter(|(a, b)| a != b) {
-                let (first, last) = (a.min(b), a.max(b));
-                if last > values.source_length {
-                    self.error = Some("clip scope selection exceeds its source".into());
-                    return true;
-                }
-                values.looping = if (first, last) == (values.loop_start, values.loop_end) {
-                    !values.looping
+            let selected = self
+                .midi_time_selection_bounds()
+                .filter(|(a, b)| a != b)
+                .map(|(a, b)| (a.min(b), a.max(b)));
+            if let Some(clip_item) = arrangement {
+                let (first, last, next_looping) = if let Some((first, last)) = selected {
+                    let unchanged = (first, last) == (values.loop_start, values.loop_end);
+                    (first, last, if unchanged { !values.looping } else { true })
                 } else {
-                    true
+                    (values.loop_start, values.loop_end, !values.looping)
                 };
-                values.loop_start = first;
-                values.loop_end = last;
+                let preview = match clip_item.with_scope_range(
+                    hex_project::BeatTime::from_raw(first),
+                    hex_project::BeatTime::from_raw(last),
+                    next_looping,
+                ) {
+                    Ok(preview) => preview,
+                    Err(error) => {
+                        self.error = Some(error.to_string().into());
+                        return true;
+                    }
+                };
+                let displayed = SourceValues::from_clip(&preview);
+                let operation = hex_project::MidiViewResizeOperation::ScopeRange {
+                    start: hex_project::BeatTime::from_raw(first),
+                    end: hex_project::BeatTime::from_raw(last),
+                    looping: next_looping,
+                };
+                self.commit_midi_clip_command(
+                    clip,
+                    displayed,
+                    Some(preview),
+                    MidiEdit::Resize(operation),
+                    Command::ResizeMidiClipView { clip, operation },
+                );
             } else {
-                values.looping = !values.looping;
+                if let Some((first, last)) = selected {
+                    if last > values.source_length {
+                        self.error = Some("clip scope selection exceeds its source".into());
+                        return true;
+                    }
+                    values.looping = if (first, last) == (values.loop_start, values.loop_end) {
+                        !values.looping
+                    } else {
+                        true
+                    };
+                    values.loop_start = first;
+                    values.loop_end = last;
+                } else {
+                    values.looping = !values.looping;
+                }
+                if values.looping && values.source_start >= values.loop_end {
+                    values.source_start = values.loop_start;
+                }
+                self.commit_midi_clip_loop(clip, values);
             }
-            if values.looping && values.source_start >= values.loop_end {
-                values.source_start = values.loop_start;
-            }
-            self.commit_midi_clip_loop(clip, values);
         } else if !self.audio_event_editor.source_view {
             if !self.audio_loop_current() {
                 return true;
@@ -219,8 +284,18 @@ impl EditorView {
         if p.generation != self.project_generation || p.clip != clip {
             return None;
         }
-        match p.preview {
-            Preview::Midi(values) => Some(values),
+        match &p.preview {
+            Preview::Midi { values, .. } => Some(*values),
+            _ => None,
+        }
+    }
+    fn pending_midi_clip_loop_clip(&self) -> Option<&hex_project::MidiClip> {
+        let p = self.clip_loop.pending.as_ref()?;
+        if p.generation != self.project_generation {
+            return None;
+        }
+        match &p.preview {
+            Preview::Midi { clip, .. } => clip.as_ref(),
             _ => None,
         }
     }
@@ -243,17 +318,58 @@ impl EditorView {
         if self.edit_pending() || self.clip_loop.pending.is_some() {
             return;
         }
-        let Some(command) = self
-            .state
-            .as_ref()
-            .and_then(|s| midi_source_controls::edit_command(&s.project, clip, values))
-        else {
+        let Some((command, edit, preview_clip)) = self.state.as_ref().and_then(|s| {
+            let command = midi_source_controls::edit_command(&s.project, clip, values)?;
+            let edit = match &command {
+                Command::ResizeMidiClipView { operation, .. } => MidiEdit::Resize(*operation),
+                Command::SetMidiClipSource { .. } => MidiEdit::Source(values),
+                Command::SetSessionMidiClipSource { .. } => MidiEdit::Session(values),
+                _ => return None,
+            };
+            let preview_clip = s
+                .project
+                .midi_clip(clip)
+                .and_then(|arrangement| match &command {
+                    Command::ResizeMidiClipView {
+                        operation: hex_project::MidiViewResizeOperation::PlayStart { source_start },
+                        ..
+                    } => arrangement.with_play_start(*source_start).ok(),
+                    Command::ResizeMidiClipView {
+                        operation:
+                            hex_project::MidiViewResizeOperation::ScopeRange {
+                                start,
+                                end,
+                                looping,
+                            },
+                        ..
+                    } => arrangement.with_scope_range(*start, *end, *looping).ok(),
+                    _ => None,
+                });
+            Some((command, edit, preview_clip))
+        }) else {
             return;
         };
+        self.commit_midi_clip_command(clip, values, preview_clip, edit, command);
+    }
+    fn commit_midi_clip_command(
+        &mut self,
+        clip: ClipId,
+        values: SourceValues,
+        preview_clip: Option<hex_project::MidiClip>,
+        edit: MidiEdit,
+        command: Command,
+    ) {
+        if self.edit_pending() || self.clip_loop.pending.is_some() {
+            return;
+        }
         self.clip_loop.pending = Some(Pending {
             generation: self.project_generation,
             clip,
-            preview: Preview::Midi(values),
+            preview: Preview::Midi {
+                values,
+                clip: preview_clip,
+                edit,
+            },
             start_camera: None,
             receipt: Receipt::new(self.project_generation),
         });
@@ -356,34 +472,40 @@ impl EditorView {
                 }),
             ) => *clip == p.clip && looping == actual,
             (
-                Preview::Midi(v),
+                Preview::Midi {
+                    edit: MidiEdit::Resize(operation),
+                    ..
+                },
                 Request::Edit(Command::ResizeMidiClipView {
                     clip,
-                    operation: hex_project::MidiViewResizeOperation::PlayStart { source_start },
+                    operation: actual,
                 }),
-            ) => *clip == p.clip && source_start.raw() == v.source_start,
+            ) => *clip == p.clip && operation == actual,
             (
-                Preview::Midi(v),
+                Preview::Midi {
+                    edit: MidiEdit::Source(v),
+                    ..
+                },
                 Request::Edit(Command::SetMidiClipSource {
                     clip,
                     source_length,
                     source_start,
-                    loop_start,
-                    loop_end,
                     looping,
                     length,
+                    ..
                 }),
             ) => {
                 *clip == p.clip
                     && source_length.raw() == v.source_length
                     && source_start.raw() == v.source_start
-                    && loop_start.raw() == v.loop_start
-                    && loop_end.raw() == v.loop_end
                     && *looping == v.looping
                     && length.raw() == v.arrangement_length
             }
             (
-                Preview::Midi(v),
+                Preview::Midi {
+                    edit: MidiEdit::Session(v),
+                    ..
+                },
                 Request::Edit(Command::SetSessionMidiClipSource {
                     clip,
                     source_length,

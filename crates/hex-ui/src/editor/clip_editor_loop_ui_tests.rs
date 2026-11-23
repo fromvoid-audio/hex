@@ -95,9 +95,18 @@ fn check_midi_loop_keys(cx: &mut TestAppContext, console: bool) {
             assert!(p.loop_region().is_none());
             assert_eq!(v.midi_time_selection_bounds(), Some(selection));
             if !console {
+                let arrangement = p.midi_clip(clip).unwrap();
                 assert_eq!(
-                    p.midi_clip(clip).unwrap().length(),
-                    BeatTime::from_quarters(4).unwrap()
+                    arrangement.length(),
+                    BeatTime::from_quarters(2).unwrap(),
+                    "arranger clip length follows newly selected scope"
+                );
+                assert_eq!(
+                    arrangement.scope_range(),
+                    Some((
+                        BeatTime::from_raw(selection.0),
+                        BeatTime::from_raw(selection.1)
+                    ))
                 );
             }
         });
