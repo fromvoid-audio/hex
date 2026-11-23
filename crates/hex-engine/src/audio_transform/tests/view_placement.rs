@@ -792,9 +792,27 @@ fn section_outer_placement_case(
                 }
             }
         };
-        editor.execute(command).unwrap_or_else(|error| {
+        let created = editor.execute(command).unwrap_or_else(|error| {
             panic!("variant={variant} mode={mode:?} operation={operation}: {error}")
         });
+        if operation == 0 {
+            let Created::ArrangementSection(copy) = created else {
+                panic!("duplicated section");
+            };
+            let marker = editor.project().arrangement_section(copy).unwrap();
+            let copy_end = editor
+                .project()
+                .tempo_map()
+                .beat_to_frame(marker.end())
+                .unwrap() as usize;
+            let copy_len = copy_end - e;
+            let copied = copy_len.min(e - s);
+            expected = source.clone();
+            expected.splice(e..e, source[s..s + copied].iter().copied());
+            if copy_len > copied {
+                expected.splice(e + copied..e + copied, vec![[0.0; 2]; copy_len - copied]);
+            }
+        }
         if operation == 2 {
             let marker = editor.project().arrangement_section(section).unwrap();
             let end = editor

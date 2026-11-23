@@ -308,7 +308,7 @@ mod tests {
     #[test]
     fn distinct_musical_occurrences_keep_neutral_source_clocks_and_cache_identity() {
         use crate::audio_transform::{
-            AudioTransformPreparation, MusicalEventFadePreview,
+            MusicalEventFadePreview,
             tests::{fixture, isolated, prepare},
         };
         use hex_project::{
@@ -353,7 +353,7 @@ mod tests {
         ] {
             editor.execute(command).unwrap();
         }
-        let context = AudioTransformPreparation::default();
+        let context = isolated(64 * 1024 * 1024, 64 * 1024 * 1024, 64 * 1024 * 1024);
         let original = prepare(&editor, &media, &context);
         let view = &original.arrangement().audio_clip_views()[0];
         assert!(view.repeat.is_none());
