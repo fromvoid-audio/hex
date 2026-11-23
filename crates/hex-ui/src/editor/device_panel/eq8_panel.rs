@@ -5,7 +5,8 @@ mod selection;
 
 use super::{
     ControlPresentation, ControlText, DeviceControlIdentity, EditorView, ParameterKey,
-    action_button, finalize_controls, parameter_control_with_presentation,
+    action_button, finalize_controls, finalize_controls_except_graph,
+    parameter_control_with_presentation,
 };
 use crate::theme;
 use gpui::{Context, Div, ElementId, Entity, Stateful, Subscription, div, prelude::*, px, rgb};
@@ -57,6 +58,10 @@ pub(super) struct GraphControl {
 }
 
 impl GraphControl {
+    pub(super) fn entity_id(&self) -> gpui::EntityId {
+        self.entity.entity_id()
+    }
+
     pub(super) fn release_pointer_capture(&mut self, cx: &mut Context<EditorView>) {
         self.entity
             .update(cx, |graph, cx| graph.release_pointer_capture(cx));

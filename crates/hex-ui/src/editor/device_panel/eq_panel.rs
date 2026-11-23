@@ -98,6 +98,10 @@ pub(super) struct Panel {
 }
 
 impl Panel {
+    pub(super) fn entity_id(&self) -> gpui::EntityId {
+        self.entity.entity_id()
+    }
+
     pub(super) fn cancel(&self, cx: &mut Context<EditorView>) {
         self.entity.update(cx, |graph, cx| graph.cancel(cx));
     }
@@ -184,9 +188,12 @@ pub(super) fn render_body(
             graph
         });
         let generation = view.project_generation;
-        let subscription = cx.subscribe(&entity, move |view, _, event: &ResponseGraphEvent, cx| {
-            handle_event(view, cx, device, generation, *event);
-        });
+        let subscription = cx.subscribe(
+            &entity,
+            move |view, graph, event: &ResponseGraphEvent, cx| {
+                handle_event(view, cx, device, generation, graph.entity_id(), *event);
+            },
+        );
         let scroll_subscription = cx.subscribe(
             &entity,
             move |view, _, event: &hex_widgets::ResponseGraphScrollEvent, cx| {
@@ -195,8 +202,8 @@ pub(super) fn render_body(
         );
         let marquee_subscription = cx.subscribe(
             &entity,
-            move |view, _, event: &ResponseGraphMarqueeEvent, cx| {
-                marquee_event(view, cx, device, generation, event);
+            move |view, graph, event: &ResponseGraphMarqueeEvent, cx| {
+                marquee_event(view, cx, device, generation, graph.entity_id(), event);
             },
         );
         view.device_panel.eq_panels.insert(
@@ -584,7 +591,19 @@ fn current(view: &EditorView, device: DeviceId) -> Option<NativeDeviceState> {
     Some(view.state.as_ref()?.project.device(device)?.state().clone())
 }
 fn ready(view: &mut EditorView, cx: &mut Context<EditorView>) -> bool {
-    if !finalize_controls(view, cx) {
+    ready_with_excluded_graph(view, cx, None)
+}
+
+fn ready_with_excluded_graph(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    excluded_graph: Option<gpui::EntityId>,
+) -> bool {
+    let finalized = match excluded_graph {
+        Some(graph) => finalize_controls_except_graph(view, cx, graph),
+        None => finalize_controls(view, cx),
+    };
+    if !finalized {
         return false;
     }
     if let Err(error) = view.check_device_gesture_admission() {
@@ -914,9 +933,10 @@ fn marquee_event(
     cx: &mut Context<EditorView>,
     device: DeviceId,
     generation: u64,
+    graph: gpui::EntityId,
     event: &ResponseGraphMarqueeEvent,
 ) {
-    if generation != view.project_generation || !finalize_controls(view, cx) {
+    if generation != view.project_generation || !finalize_controls_except_graph(view, cx, graph) {
         return;
     }
     let Some(panel) = view.device_panel.eq_panels.get_mut(&device) else {
@@ -985,6 +1005,7 @@ fn begin_creation(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: DeviceId,
+    graph: gpui::EntityId,
     position: [f32; 2],
     bank: u8,
 ) {
@@ -994,7 +1015,7 @@ fn begin_creation(
         cx.notify();
         return;
     }
-    if !ready(view, cx) {
+    if !ready_with_excluded_graph(view, cx, Some(graph)) {
         return;
     }
     let Some(expected) = current(view, device) else {
@@ -1160,6 +1181,7 @@ fn handle_event(
     cx: &mut Context<EditorView>,
     device: DeviceId,
     generation: u64,
+    graph: gpui::EntityId,
     event: ResponseGraphEvent,
 ) {
     if generation != view.project_generation {
@@ -1186,7 +1208,7 @@ fn handle_event(
     }
     if event.node_id == 0 {
         if event.phase == ResponseGraphPhase::Create {
-            begin_creation(view, cx, device, event.position, bank);
+            begin_creation(view, cx, device, graph, event.position, bank);
         } else {
             creation_event(view, cx, device, event);
         }
@@ -1231,7 +1253,7 @@ fn handle_event(
             }
         }
         ResponseGraphPhase::Select => {
-            if finalize_controls(view, cx)
+            if finalize_controls_except_graph(view, cx, graph)
                 && let Some(p) = view.device_panel.eq_panels.get_mut(&device)
             {
                 selection::select_node(

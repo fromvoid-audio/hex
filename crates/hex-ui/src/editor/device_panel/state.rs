@@ -390,6 +390,24 @@ pub(in crate::editor) fn finalize_controls(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
 ) -> bool {
+    finalize_controls_with_excluded_graph(view, cx, None)
+}
+
+/// Commit every live numeric draft and release other graph captures while
+/// preserving the pointer capture of the graph handling the current input event.
+pub(super) fn finalize_controls_except_graph(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    excluded_graph: gpui::EntityId,
+) -> bool {
+    finalize_controls_with_excluded_graph(view, cx, Some(excluded_graph))
+}
+
+fn finalize_controls_with_excluded_graph(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    excluded_graph: Option<gpui::EntityId>,
+) -> bool {
     if source_sampler_edit_active(view) {
         view.error = Some("finish the sampler edit before changing the source view".into());
         cx.notify();
@@ -400,16 +418,18 @@ pub(in crate::editor) fn finalize_controls(
         cx.notify();
         return false;
     }
-    finalize_controls_except(view, cx, &[])
+    finalize_controls_except(view, cx, &[], excluded_graph)
 }
 
 /// Finish every device edit except controls whose pointer-down must continue
 /// into a new gesture in the same update (for example an Operator shell row
-/// that is changing which oscillator is shown in the center panel).
+/// that is changing which oscillator is shown in the center panel) and an
+/// optional response graph whose active pointer capture initiated this check.
 pub(super) fn finalize_controls_except(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     excluded: &[ParameterKey],
+    excluded_graph: Option<gpui::EntityId>,
 ) -> bool {
     retire_removed_send_controls(view, cx);
     // A canonical replacement can arrive before the next render reconciles
@@ -520,21 +540,40 @@ pub(super) fn finalize_controls_except(
         );
         false
     } else {
-        release_active_graph_captures(view, cx);
+        release_active_graph_captures(view, cx, excluded_graph);
         true
     }
 }
 
-fn release_active_graph_captures(view: &mut EditorView, cx: &mut Context<EditorView>) {
+fn release_active_graph_captures(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    excluded_graph: Option<gpui::EntityId>,
+) {
     for panel in view.device_panel.eq_panels.values_mut() {
-        panel.release_pointer_capture(cx);
+        if Some(panel.entity_id()) != excluded_graph {
+            panel.release_pointer_capture(cx);
+        }
     }
-    for graph in view.device_panel.eq8_graphs.values_mut() {
-        graph.release_pointer_capture(cx);
+    let mut excluded_eq8_device = None;
+    for (&device, graph) in &mut view.device_panel.eq8_graphs {
+        if Some(graph.entity_id()) == excluded_graph {
+            excluded_eq8_device = Some(device);
+        } else {
+            graph.release_pointer_capture(cx);
+        }
     }
-    view.device_panel.eq8_graph_gestures.clear();
+    if let Some(device) = excluded_eq8_device {
+        view.device_panel
+            .eq8_graph_gestures
+            .retain(|&gesture_device, _| gesture_device == device);
+    } else {
+        view.device_panel.eq8_graph_gestures.clear();
+    }
     for panel in view.device_panel.delay_panels.values_mut() {
-        panel.release_pointer_capture(cx);
+        if Some(panel.entity_id()) != excluded_graph {
+            panel.release_pointer_capture(cx);
+        }
     }
 }
 
@@ -818,6 +857,170 @@ pub(in crate::editor) fn retire_transfer_previews(
     panel.reverb_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.reverb"))
     });
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod graph_capture_tests {
+    use super::super::tests::{actor_editor_window, pump_until, receive_service_event};
+    use super::*;
+    use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px, size};
+    use hex_engine::eq::{EQ_TYPE_ID, EqState};
+    use hex_project::{Command, Created};
+    use hex_session::service::{Request, Service};
+
+    fn read_eq(view: &EditorView, device: DeviceId) -> EqState {
+        EqState::decode(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .state(),
+        )
+        .unwrap()
+    }
+
+    fn settled(view: &EditorView) -> bool {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.device_gesture_barriers.is_empty()
+            && view.device_gesture.snapshot().is_none()
+    }
+
+    #[gpui::test]
+    fn eq_graph_create_drag_and_mid_drag_undo_barrier_preserve_and_release_capture(
+        cx: &mut TestAppContext,
+    ) {
+        #[cfg(target_os = "macos")]
+        cx.use_native_text_system().unwrap();
+        cx.update(|cx| {
+            theme::load_fonts(cx).unwrap();
+            hex_widgets::bind_numeric_control_keys(cx);
+        });
+        let service = Service::new(48_000, 16, 8_000_000).unwrap();
+        let _ = receive_service_event(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack { name: "eq".into() }))
+            .unwrap();
+        let Created::Track(track) = receive_service_event(&service).created.unwrap() else {
+            panic!("expected created track");
+        };
+        service
+            .submit(Request::AddNativeDevice {
+                track,
+                class: NativeDeviceClass::Effect,
+                type_id: Box::new(EQ_TYPE_ID),
+                before: None,
+            })
+            .unwrap();
+        let state = receive_service_event(&service).state;
+        let device = state.project.track(track).unwrap().devices()[0].id();
+
+        let (handle, editor) = actor_editor_window(cx, service, state, track);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.simulate_resize(size(px(1500.0), px(650.0)));
+        visual.run_until_parked();
+
+        let graph = editor.read_with(cx, |view, _| eq_panel::graph_for_test(view, device));
+        let plot = graph.read_with(cx, |g, _| g.plot_bounds().expect("painted eq plot"));
+        let point_at = |x: f32, y: f32| {
+            point(
+                plot.left() + plot.size.width * x,
+                plot.bottom() - plot.size.height * y,
+            )
+        };
+        let modifiers = Modifiers::default();
+
+        // 1. Double-click to create a node on the newly added EQ, drag while held, then release.
+        let create_start = point_at(0.45, 0.50);
+        let create_end = point_at(0.50, 0.60);
+        visual.simulate_click(create_start, modifiers);
+        visual.simulate_event(gpui::MouseDownEvent {
+            position: create_start,
+            modifiers,
+            button: MouseButton::Left,
+            click_count: 2,
+            first_mouse: false,
+        });
+        visual.simulate_mouse_move(create_end, Some(MouseButton::Left), modifiers);
+        visual.simulate_event(gpui::MouseUpEvent {
+            position: create_end,
+            modifiers,
+            button: MouseButton::Left,
+            click_count: 2,
+        });
+        pump_until(&editor, cx, |view| {
+            settled(view) && read_eq(view, device).nodes.len() == 1
+        });
+        let created = editor.read_with(cx, |view, _| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert!(
+                view.device_panel.message.is_none(),
+                "{:?}",
+                view.device_panel.message
+            );
+            read_eq(view, device).nodes[0]
+        });
+
+        // 2. Click and drag that newly created node across multiple moves and commit on release.
+        let node_pos = graph
+            .read_with(cx, |g, _| g.node_position(created.id.value()))
+            .expect("created node position");
+        let drag_start = point_at(node_pos[0], node_pos[1]);
+        let drag_mid = point_at(0.65, 0.70);
+        let drag_end = point_at(0.72, 0.78);
+        visual.simulate_mouse_down(drag_start, MouseButton::Left, modifiers);
+        visual.simulate_mouse_move(drag_mid, Some(MouseButton::Left), modifiers);
+        visual.simulate_mouse_move(drag_end, Some(MouseButton::Left), modifiers);
+        visual.simulate_mouse_up(drag_end, MouseButton::Left, modifiers);
+        pump_until(&editor, cx, settled);
+        let moved = editor.read_with(cx, |view, _| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert!(
+                view.device_panel.message.is_none(),
+                "{:?}",
+                view.device_panel.message
+            );
+            read_eq(view, device).nodes[0]
+        });
+        assert!(
+            moved.frequency_hz > created.frequency_hz * 1.5
+                && moved.gain_db > created.gain_db + 3.0,
+            "dragging a newly created eq node must move its frequency and gain: {created:?} -> {moved:?}"
+        );
+
+        // 3. External barrier (Undo) mid-drag still releases pointer capture cleanly.
+        let moved_pos = graph
+            .read_with(cx, |g, _| g.node_position(moved.id.value()))
+            .expect("moved node position");
+        visual.simulate_mouse_down(
+            point_at(moved_pos[0], moved_pos[1]),
+            MouseButton::Left,
+            modifiers,
+        );
+        visual.simulate_mouse_move(point_at(0.30, 0.30), Some(MouseButton::Left), modifiers);
+        visual.run_until_parked();
+        assert!(graph.read_with(cx, |g, _| g.is_dragging()));
+        editor.update(cx, |view, cx| {
+            view.history_action(Request::Undo, cx);
+        });
+        assert!(
+            !graph.read_with(cx, |g, _| g.is_dragging()),
+            "external Undo barrier must release eq graph pointer capture"
+        );
+        visual.simulate_mouse_move(point_at(0.20, 0.20), Some(MouseButton::Left), modifiers);
+        visual.simulate_mouse_up(point_at(0.20, 0.20), MouseButton::Left, modifiers);
+        pump_until(&editor, cx, settled);
+        editor.read_with(cx, |view, _| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert_ne!(
+                view.device_panel.message.as_deref(),
+                Some("device gesture is already finishing")
+            );
+        });
+    }
 }
 
 #[cfg(test)]

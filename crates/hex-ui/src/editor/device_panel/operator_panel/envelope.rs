@@ -308,7 +308,15 @@ fn handle_event(
     cx: &mut Context<EditorView>,
 ) {
     if event.phase == hex_widgets::ResponseGraphPhase::Select {
-        if event.node_id > 3 || !finalize_controls(view, cx) {
+        let Some(graph) = view
+            .device_panel
+            .operator_envelope_graphs
+            .get(&key)
+            .map(|graph| graph.entity.entity_id())
+        else {
+            return;
+        };
+        if event.node_id > 3 || !finalize_controls_except_graph(view, cx, graph) {
             return;
         }
         if let Some(graph) = view.device_panel.operator_envelope_graphs.get_mut(&key) {
@@ -482,7 +490,17 @@ fn begin_gesture(
     event: ResponseGraphEvent,
     cx: &mut Context<EditorView>,
 ) {
-    if event.node_id > 3 || !finalize_controls(view, cx) || view.device_gesture.snapshot().is_some()
+    let Some(graph) = view
+        .device_panel
+        .operator_envelope_graphs
+        .get(&key)
+        .map(|graph| graph.entity.entity_id())
+    else {
+        return;
+    };
+    if event.node_id > 3
+        || !finalize_controls_except_graph(view, cx, graph)
+        || view.device_gesture.snapshot().is_some()
     {
         return;
     }

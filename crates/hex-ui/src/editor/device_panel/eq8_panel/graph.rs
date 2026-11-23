@@ -22,16 +22,20 @@ pub(super) fn graph_entity(
                 graph
             });
             let generation = view.project_generation;
-            let subscription =
-                cx.subscribe(&entity, move |view, _, event: &ResponseGraphEvent, cx| {
+            let subscription = cx.subscribe(
+                &entity,
+                move |view, graph, event: &ResponseGraphEvent, cx| {
                     if view.project_generation == generation {
-                        handle_graph_event(view, device, owner, *event, cx);
+                        handle_graph_event(view, device, owner, graph.entity_id(), *event, cx);
                     }
-                });
+                },
+            );
             let marquee = cx.subscribe(
                 &entity,
-                move |view, _, event: &hex_widgets::ResponseGraphMarqueeEvent, cx| {
-                    if view.project_generation == generation && finalize_controls(view, cx) {
+                move |view, graph, event: &hex_widgets::ResponseGraphMarqueeEvent, cx| {
+                    if view.project_generation == generation
+                        && finalize_controls_except_graph(view, cx, graph.entity_id())
+                    {
                         if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {
                             selection::marquee_event(panel, event);
                         }
@@ -76,6 +80,7 @@ fn handle_graph_event(
     view: &mut EditorView,
     device: DeviceId,
     owner: hex_engine::ProcessorChainOwner,
+    graph: gpui::EntityId,
     event: ResponseGraphEvent,
     cx: &mut Context<EditorView>,
 ) {
@@ -84,7 +89,7 @@ fn handle_graph_event(
         return;
     }
     if event.phase == hex_widgets::ResponseGraphPhase::Select {
-        if !finalize_controls(view, cx) {
+        if !finalize_controls_except_graph(view, cx, graph) {
             return;
         }
         if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {

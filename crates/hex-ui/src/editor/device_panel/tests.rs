@@ -59,7 +59,7 @@ mod source_housing_tests;
 pub(in crate::editor) mod source_picker_ui_tests;
 mod vst3_degraded_tests;
 
-fn receive_service_event(service: &Service) -> Event {
+pub(super) fn receive_service_event(service: &Service) -> Event {
     let deadline = crate::test_wait::hang_deadline();
     loop {
         match service.try_event() {
@@ -200,7 +200,7 @@ fn actor_return_utility_fixture() -> (
     )
 }
 
-fn actor_editor_window(
+pub(super) fn actor_editor_window(
     cx: &mut TestAppContext,
     service: Service,
     state: Arc<ViewState>,
@@ -227,7 +227,7 @@ fn actor_editor_window(
     (handle, editor)
 }
 
-fn pump_until(
+pub(super) fn pump_until(
     editor: &gpui::Entity<EditorView>,
     cx: &mut TestAppContext,
     mut done: impl FnMut(&EditorView) -> bool,
