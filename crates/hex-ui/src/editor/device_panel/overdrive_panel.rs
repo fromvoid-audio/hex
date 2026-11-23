@@ -1,13 +1,12 @@
 //! Compact overdrive composition using the shared Lattice controls and plot.
 use super::{
-    ControlPresentation, ControlText, DeviceControlIdentity, EditorView, ParameterKey,
-    effective_parameter_value, numeric_display::NumericDisplayCodec,
-    parameter_control_with_presentation,
+    ControlPresentation, ControlText, DeviceControlIdentity, EditorView, effect_preview,
+    numeric_display::NumericDisplayCodec, parameter_control_with_presentation,
 };
 use crate::theme;
 use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px};
 use hex_engine::{NativeDeviceClass, NativeDeviceView, OverdriveFilterResponse};
-use hex_lattice_contract::{NativeDeviceState, ParameterId, ParameterValue};
+use hex_lattice_contract::{NativeDeviceState, ParameterId};
 use hex_project::DeviceId;
 
 pub(super) const FRAME_WIDTH: f32 = crate::device_composition::OVERDRIVE_FRAME_WIDTH;
@@ -19,12 +18,7 @@ const DYNAMICS: ParameterId = ParameterId::from_static(5);
 const WET: ParameterId = ParameterId::from_static(6);
 const PARAMETERS: [ParameterId; 2] = [FREQUENCY, BANDWIDTH];
 
-pub(super) struct PreviewCache {
-    state: NativeDeviceState,
-    sample_rate: u32,
-    values: [ParameterValue; 2],
-    curve: Result<OverdriveFilterResponse, String>,
-}
+pub(super) type PreviewCache = effect_preview::PreviewCache<OverdriveFilterResponse, 2, u32>;
 
 #[cfg(all(test, feature = "ui-test-support"))]
 pub(super) fn cached_curve(
@@ -34,9 +28,7 @@ pub(super) fn cached_curve(
     view.device_panel
         .overdrive_previews
         .get(&device)?
-        .curve
-        .as_ref()
-        .ok()
+        .ok_curve()
 }
 
 fn preview(
@@ -49,58 +41,22 @@ fn preview(
         .state
         .as_ref()
         .map_or(48_000, |s| s.project.sample_rate());
-    let mut values = [ParameterValue::Float(0.0); 2];
-    for (index, id) in PARAMETERS.iter().enumerate() {
-        let parameter = device_view
-            .parameters
-            .iter()
-            .find(|parameter| parameter.descriptor.id == *id)
-            .ok_or_else(|| "missing overdrive parameter".to_owned())?;
-        values[index] = effective_parameter_value(
-            view,
-            ParameterKey {
-                device,
-                parameter: *id,
-            },
-            parameter.value,
-        );
-    }
-    if let Some(cached) = view.device_panel.overdrive_previews.get(&device)
-        && cached.state == *state
-        && cached.sample_rate == sample_rate
-        && cached.values == values
-    {
-        return cached.curve.clone();
-    }
-    let curve = (|| {
-        let mut draft = state.clone();
-        for (id, value) in PARAMETERS.into_iter().zip(values) {
-            if hex_engine::native_device_parameter_for_class(NativeDeviceClass::Effect, &draft, id)
-                .map_err(|error| error.to_string())?
-                != value
-            {
-                draft = hex_engine::patch_native_device_parameter_for_class(
-                    NativeDeviceClass::Effect,
-                    &draft,
-                    id,
-                    value,
-                )
-                .map_err(|error| error.to_string())?;
-            }
-        }
-        hex_engine::native_overdrive_filter_response(&draft, sample_rate)
-            .map_err(|error| error.to_string())
-    })();
-    view.device_panel.overdrive_previews.insert(
-        device,
-        PreviewCache {
-            state: state.clone(),
-            sample_rate,
-            values,
-            curve: curve.clone(),
+    effect_preview::resolve(
+        view,
+        effect_preview::PreviewQuery {
+            device,
+            state,
+            device_view,
+            parameters: PARAMETERS,
+            missing_error: "missing overdrive parameter",
+            extra: sample_rate,
         },
-    );
-    curve
+        |view| &mut view.device_panel.overdrive_previews,
+        |draft| {
+            hex_engine::native_overdrive_filter_response(draft, sample_rate)
+                .map_err(|error| error.to_string())
+        },
+    )
 }
 
 pub(super) fn render_body(
