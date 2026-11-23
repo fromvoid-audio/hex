@@ -12,7 +12,7 @@ mod scrollbar_geometry;
 mod audition;
 mod folder_places;
 mod history;
-mod insertion;
+pub(in crate::editor) mod insertion;
 mod place_icons;
 mod plugins;
 mod random;
