@@ -330,6 +330,8 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
         device_insertion_component = (
             path.relative_to(ROOT).as_posix() in (
                 'crates/hex-ui/src/editor/device_panel.rs',
+                'crates/hex-ui/src/editor/device_panel/chain_render.rs',
+                'crates/hex-ui/src/editor/device_panel/drop_targets.rs',
                 'crates/hex-ui/src/editor/device_panel/return_drag.rs',
             )
             and suffix.startswith('insertion_gap(')
@@ -341,7 +343,10 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
         )
         # The rotated title paints the already themed label in the inherited font.
         device_insertion_component = device_insertion_component or (
-            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel.rs'
+            path.relative_to(ROOT).as_posix() in (
+                'crates/hex-ui/src/editor/device_panel.rs',
+                'crates/hex-ui/src/editor/device_panel/drop_targets.rs',
+            )
             and suffix.startswith('hex_widgets::vertical_device_name(title)')
         )
         # The log viewer displays source bytes and native filenames verbatim;
