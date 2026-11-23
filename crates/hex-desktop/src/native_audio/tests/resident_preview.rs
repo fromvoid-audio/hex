@@ -3,6 +3,7 @@
 use super::*;
 mod native_automation;
 mod native_source_effect;
+mod parameter_tail;
 use hex_engine::{
     PreparedPlaybackObservation,
     native_device_resources::{DeviceResourceAdmission, PreparedDeviceResources},

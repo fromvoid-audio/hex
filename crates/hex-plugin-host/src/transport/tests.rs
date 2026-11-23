@@ -538,7 +538,7 @@ fn missed_deadline_silences_and_revokes_without_replaying_last_output() {
     callback.reject(Fault::Protocol);
     assert_eq!(control.take_callback_fault(), Some(Fault::MissingOutput));
     assert_eq!(
-        control.deadline_miss(),
+        control.deadline_miss().map(|terminal| terminal.miss),
         Some(DeadlineMiss {
             reply_sequence: 0,
             worker_phase: DeadlineWorkerPhase::Processing,
@@ -561,12 +561,15 @@ fn deadline_observation_distinguishes_a_worker_that_has_not_picked_up_the_reques
         Some(Fault::MissingOutput)
     );
     assert_eq!(
-        control.deadline_miss(),
+        control.deadline_miss().map(|terminal| terminal.miss),
         Some(DeadlineMiss {
             reply_sequence: 37,
             worker_phase: DeadlineWorkerPhase::AwaitingPickup,
         })
     );
+    let terminal = control.deadline_miss().unwrap();
+    assert_eq!(terminal.last_received_sequence, None);
+    assert_eq!(terminal.last_processed_sequence, None);
 }
 
 #[test]
@@ -758,12 +761,23 @@ fn native_instrument_revokes_after_bounded_consecutive_missed_replies() {
     // A stale reply does not reset the consecutive-miss limit.
     let late = worker.receive().unwrap().unwrap();
     worker.complete(late).unwrap();
+    let held = worker.receive().unwrap().unwrap();
+    assert_eq!(held.sequence, 1);
     assert_eq!(
         callback.stage(&[[0.0; 2]; 8], &[], &mut output).err(),
         Some(Fault::MissingOutput)
     );
     assert!(control.is_revoked());
-    assert_eq!(control.deadline_miss().unwrap().reply_sequence, 6);
+    let terminal = control.deadline_miss().unwrap();
+    assert_eq!(terminal.miss.reply_sequence, 6);
+    assert_eq!(
+        terminal.miss.worker_phase,
+        DeadlineWorkerPhase::AwaitingPickup
+    );
+    assert_eq!(terminal.last_received_sequence, Some(1));
+    assert_eq!(terminal.last_processed_sequence, Some(0));
+    assert_eq!(worker.complete(held), Err(Fault::Revoked));
+    assert_eq!(control.deadline_miss(), Some(terminal));
 }
 
 #[test]

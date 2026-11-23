@@ -90,6 +90,16 @@ pub struct DeadlineMiss {
     pub worker_phase: DeadlineWorkerPhase,
 }
 
+/// Worker progress sampled by the callback that declared MissingOutput.
+/// The last sequences describe this transport pair only. A restored pair
+/// can begin at a nonzero sequence without having picked up a new request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TerminalDeadlineMiss {
+    pub miss: DeadlineMiss,
+    pub last_received_sequence: Option<u64>,
+    pub last_processed_sequence: Option<u64>,
+}
+
 /// Best-effort observation of an accepted concealed quantum. An overflow flag
 /// means at least one other accepted gap could not occupy the single slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,6 +141,8 @@ struct Revocation {
     received_programs: [AtomicU64; 2],
     processed_prefix: AtomicU64,
     missed_reply: AtomicU64,
+    missed_received_prefix: AtomicU64,
+    missed_processed_prefix: AtomicU64,
     missed_phase: AtomicU8,
     concealed_slot: AtomicU8,
     concealed_reply: AtomicU64,
@@ -157,6 +169,8 @@ impl Revocation {
             received_programs: std::array::from_fn(|_| AtomicU64::new(0)),
             processed_prefix: AtomicU64::new(0),
             missed_reply: AtomicU64::new(0),
+            missed_received_prefix: AtomicU64::new(0),
+            missed_processed_prefix: AtomicU64::new(0),
             missed_phase: AtomicU8::new(0),
             concealed_slot: AtomicU8::new(0),
             concealed_reply: AtomicU64::new(0),
@@ -239,18 +253,23 @@ impl Revocation {
         (prefix == self.received_prefix.load(Acquire)).then_some((sequence, NonZeroU64::new(key)))
     }
 
-    fn worker_phase(&self, sequence: u64) -> DeadlineWorkerPhase {
-        if self.processed_prefix.load(Acquire) > sequence {
+    fn worker_progress(&self, sequence: u64) -> (DeadlineWorkerPhase, u64, u64) {
+        let processed = self.processed_prefix.load(Acquire);
+        let received = self.received_prefix.load(Acquire);
+        let phase = if processed > sequence {
             DeadlineWorkerPhase::Publishing
-        } else if self.received_prefix.load(Acquire) > sequence {
+        } else if received > sequence {
             DeadlineWorkerPhase::Processing
         } else {
             DeadlineWorkerPhase::AwaitingPickup
-        }
+        };
+        (phase, received, processed)
     }
 
     fn record_deadline_miss(&self, sequence: u64) {
-        let phase = self.worker_phase(sequence);
+        let (phase, received, processed) = self.worker_progress(sequence);
+        self.missed_received_prefix.store(received, Relaxed);
+        self.missed_processed_prefix.store(processed, Relaxed);
         self.missed_reply.store(sequence, Relaxed);
         self.missed_phase.store(phase as u8, Release);
     }
@@ -683,16 +702,28 @@ impl Control {
     }
 
     /// Retained observation for the terminal MissingOutput of this exact pair.
-    pub fn deadline_miss(&self) -> Option<DeadlineMiss> {
+    pub fn deadline_miss(&self) -> Option<TerminalDeadlineMiss> {
         let worker_phase = match self.revoked.missed_phase.load(Acquire) {
             1 => DeadlineWorkerPhase::AwaitingPickup,
             2 => DeadlineWorkerPhase::Processing,
             3 => DeadlineWorkerPhase::Publishing,
             _ => return None,
         };
-        Some(DeadlineMiss {
-            reply_sequence: self.revoked.missed_reply.load(Relaxed),
-            worker_phase,
+        Some(TerminalDeadlineMiss {
+            miss: DeadlineMiss {
+                reply_sequence: self.revoked.missed_reply.load(Relaxed),
+                worker_phase,
+            },
+            last_received_sequence: self
+                .revoked
+                .missed_received_prefix
+                .load(Relaxed)
+                .checked_sub(1),
+            last_processed_sequence: self
+                .revoked
+                .missed_processed_prefix
+                .load(Relaxed)
+                .checked_sub(1),
         })
     }
     /// Drain at most one accepted concealment from this exact pair. Contention
@@ -1498,7 +1529,7 @@ impl Callback {
                     if stage.state.output_gap {
                         stage.concealed = Some(DeadlineMiss {
                             reply_sequence: sequence - 2,
-                            worker_phase: self.revoked.worker_phase(sequence - 2),
+                            worker_phase: self.revoked.worker_progress(sequence - 2).0,
                         });
                         let start = concealed_output.map_or(index, |span| span.0);
                         concealed_output = Some((start, input.len().min(index + quantum_frames)));
