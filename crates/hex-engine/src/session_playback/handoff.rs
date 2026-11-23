@@ -9,6 +9,7 @@ use std::sync::Weak;
 mod commit;
 mod compensation_plan;
 mod continuation_plan;
+mod loop_gate_continuation;
 mod preflight;
 mod shared_sources;
 mod tempo_anchor;

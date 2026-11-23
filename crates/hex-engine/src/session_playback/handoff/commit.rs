@@ -1319,9 +1319,9 @@ impl SessionPlayback {
             && first_pass_arrangement_loop_continuity(self, previous);
         // When a running VST3 instrument requires clock continuity across a
         // compatible loop edit, the live fallback cannot restart the graph.
-        // Cut held Arrangement native mutable gates at the cut (same contract
-        // as `arrangement_tempo_remap`, Pulse #4117) so playback adopts the
-        // new scope bar without restarting or stalling on the old loop bounds.
+        // Adopt the new scope without restarting the foreign clock. Native
+        // held gates are cut unless exact inclusion in the candidate's admitted
+        // stream is proved below; tempo changes retain their existing cut.
         let arrangement_loop_cut = live
             && same_base
             && old_loop != new_loop
@@ -1681,6 +1681,8 @@ impl SessionPlayback {
                 }
             }
         }
+        // Only independently proven native sources escape the mixed loop cut.
+        let mut preserved_loop_gates = [false; MAX_TRACKS];
         let candidate_anchor = if timing_changed {
             Some(SessionClockAnchor {
                 cut_frame: previous.performance_frame,
@@ -4486,6 +4488,18 @@ impl SessionPlayback {
             if new_index == usize::MAX {
                 continue;
             }
+            // Earlier stages only planned scratch state; these exact donor
+            // ledgers, routes, revision and admitted envelopes are still intact.
+            let loop_plan = if arrangement_loop_cut
+                && !timing_changed
+                && carried_cut.is_none()
+                && arrangement_cut == previous.arrangement_frame
+                && arrangement_cut_pass == previous.arrangement_loop_pass
+            {
+                loop_gate_continuation::plan(previous, self, old_index, new_index)
+            } else {
+                None
+            };
             let old_runtime = previous
                 .mutable_instruments
                 .get(old_index)
@@ -4499,6 +4513,10 @@ impl SessionPlayback {
             new_runtime
                 .inherit_from(old_runtime)
                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+            if let Some(plan) = loop_plan {
+                plan.apply(new_runtime);
+                preserved_loop_gates[old_index] = true;
+            }
         }
         for (old_index, new_index) in mutable_retarget_new_for_old.iter().copied().enumerate() {
             if new_index == usize::MAX {
@@ -5133,7 +5151,13 @@ impl SessionPlayback {
                 };
                 if revision.midi_clip_inactive(key.track, key.clip)
                     || revision.midi_note_inactive(key.clip, key.note)
-                    || (cut_arrangement_mutable_gates && arrangement_key())
+                    || (cut_arrangement_mutable_gates
+                        && arrangement_key()
+                        && !previous
+                            .routes
+                            .iter()
+                            .position(|route| route.id == key.track)
+                            .is_some_and(|index| preserved_loop_gates[index]))
                     || (!timing_changed
                         && old_loop == new_loop
                         && !midi_layout_changed
