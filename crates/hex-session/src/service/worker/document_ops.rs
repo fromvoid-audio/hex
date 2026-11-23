@@ -815,14 +815,18 @@ pub(super) fn handle<'a>(
             );
             let candidate = resident_audio::open_document(
                 &session,
-                history_capacity,
-                &source,
-                &relinks,
-                mode,
-                reservation,
-                &mut events,
+                resident_audio::OpenDocumentSpec {
+                    history_capacity,
+                    source: &source,
+                    relinks: &relinks,
+                    mode,
+                    reservation,
+                },
+                resident_audio::ResidentWorkerContext {
+                    events: &mut events,
+                    admission,
+                },
                 resident_snapshot.as_ref(),
-                admission,
             );
             match candidate {
                 Ok((candidate, candidate_base, candidate_document, dirty)) => {

@@ -274,7 +274,7 @@ impl EditorView {
                 };
                 match refused.error {
                     SubmitError::Full(request) => {
-                        self.pending_requests.push_front(request);
+                        self.pending_requests.push_front(*request);
                         break;
                     }
                     SubmitError::Busy(request, reason) => {

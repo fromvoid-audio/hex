@@ -57,13 +57,10 @@ pub(crate) fn process_with_foreign(
     observer: &mut Option<&mut NodeSignalObserver<'_>>,
 ) -> Result<(), hex_lattice_contract::DeviceContractError> {
     if let Some(observer) = observer.as_mut() {
-        chain.process_range_tapped_with_foreign(
+        chain.process_range_tapped_with_context(
             0..chain.len(),
             frames,
-            offset,
-            clock,
-            clock,
-            foreign,
+            hex_lattice::StageProcessContext::new(offset, clock, clock).with_foreign(foreign),
             &mut |owner, device, kind, phase, offset, frames| {
                 observer(
                     PostNodeIdentity::new(owner, device, kind),

@@ -612,7 +612,6 @@ impl Service {
     }
 
     /// Submit without waiting for worker capacity.
-    #[allow(clippy::result_large_err)] // The rejected command is returned intact for retry.
     pub fn submit(&self, request: Request) -> Result<(), SubmitError> {
         let replaces_audition_source = matches!(
             &request,
@@ -635,7 +634,6 @@ impl Service {
     /// Rejection returns the original request; a delivered terminal echoes the
     /// identity, including validation or persistence failure. A stopped worker
     /// remains a separate disconnection, never a successful save terminal.
-    #[allow(clippy::result_large_err)]
     pub fn submit_correlated_save(
         &self,
         request: Request,
@@ -649,7 +647,7 @@ impl Service {
                 | Request::SaveCurrentWithFormatUpgrade { .. }
         ) || correlation.request_id == 0
         {
-            return Err(SubmitError::Busy(
+            return Err(SubmitError::busy(
                 request,
                 BusyReason::InvalidSaveCorrelation,
             ));
@@ -657,7 +655,7 @@ impl Service {
         let diagnostic = self.diagnostics.begin(&request);
         let result = match self.requests.as_ref() {
             Some(requests) => requests.submit_traced_save(request, diagnostic, Some(correlation)),
-            None => Err(SubmitError::Closed(request)),
+            None => Err(SubmitError::closed(request)),
         };
         self.diagnostics.returned(diagnostic, &result);
         result
@@ -679,7 +677,6 @@ impl Service {
         self.diagnostics.install(observer)
     }
 
-    #[allow(clippy::result_large_err)] // Original bounded request returned for caller retry.
     pub(super) fn submit_traced(
         &self,
         request: Request,
@@ -695,11 +692,11 @@ impl Service {
                 || ids.len() > hex_project::MAX_CLIPS
                 || ids.capacity() > hex_project::MAX_CLIPS)
         {
-            return Err(SubmitError::Busy(request, BusyReason::InvalidBounceTarget));
+            return Err(SubmitError::busy(request, BusyReason::InvalidBounceTarget));
         }
         if matches!(&request, Request::ResidentArrangementSeek(_)) {
             if self.arrangement_seek.is_some() {
-                return Err(SubmitError::Busy(request, BusyReason::SeekWorkerActive));
+                return Err(SubmitError::busy(request, BusyReason::SeekWorkerActive));
             }
             if self
                 .resident_seek_count
@@ -708,7 +705,7 @@ impl Service {
                 })
                 .is_err()
             {
-                return Err(SubmitError::Busy(request, BusyReason::SeekQueueFull));
+                return Err(SubmitError::busy(request, BusyReason::SeekQueueFull));
             }
             return match try_submit_traced(self.requests.as_ref(), request, diagnostic) {
                 Ok(()) => Ok(()),
@@ -724,7 +721,7 @@ impl Service {
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                 .is_err()
             {
-                return Err(SubmitError::Busy(request, BusyReason::ExportPending));
+                return Err(SubmitError::busy(request, BusyReason::ExportPending));
             }
             match try_submit_traced(self.requests.as_ref(), request, diagnostic) {
                 Ok(()) => Ok(()),
@@ -776,13 +773,12 @@ impl Service {
     }
 
     /// Submit scalar native seek intent without publishing an owning graph through the UI.
-    #[allow(clippy::result_large_err)] // Preserve the exact scalar request on bounded queue refusal.
     pub fn submit_resident_arrangement_seek(
         &self,
         intent: ResidentArrangementSeekIntent,
     ) -> Result<(), SubmitError> {
         if self.arrangement_seek.is_some() {
-            return Err(SubmitError::Busy(
+            return Err(SubmitError::busy(
                 Request::ResidentArrangementSeek(intent),
                 BusyReason::SeekWorkerActive,
             ));
@@ -835,7 +831,6 @@ impl Service {
     }
 }
 
-#[allow(clippy::result_large_err)] // Preserve the exact bounded request on queue refusal.
 #[cfg(test)]
 pub(super) fn try_submit(
     sender: &request_cancellation::Sender,
@@ -843,7 +838,6 @@ pub(super) fn try_submit(
 ) -> Result<(), SubmitError> {
     sender.submit(request)
 }
-#[allow(clippy::result_large_err)]
 pub(super) fn try_submit_traced(
     sender: Option<&request_cancellation::Sender>,
     request: Request,
@@ -851,7 +845,7 @@ pub(super) fn try_submit_traced(
 ) -> Result<(), SubmitError> {
     match sender {
         Some(sender) => sender.submit_traced(request, diagnostic),
-        None => Err(SubmitError::Closed(request)),
+        None => Err(SubmitError::closed(request)),
     }
 }
 

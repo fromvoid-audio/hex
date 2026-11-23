@@ -137,10 +137,10 @@ pub use adapters::{
 };
 pub(crate) use adapters::{OffsetAutomation, OffsetClock};
 pub use registry::NativeDeviceRegistry;
-pub(crate) use runtime_chain::RuntimeEntry;
+pub(crate) use runtime_chain::{EntryProcessContext, RuntimeEntry};
 pub use runtime_chain::{
     NativeInsertTransition, NativeRemovalTransition, NativeRuntimeChain, NativeRuntimeEntryStorage,
-    NativeRuntimeStorage,
+    NativeRuntimeStorage, StageProcessContext,
 };
 pub use traits::{
     MAX_OWNED_PROCESSOR_PAIR_BYTES, MAX_PROCESSOR_BANK_RUNTIME_BYTES, MAX_PROCESSOR_RUNTIME_BYTES,

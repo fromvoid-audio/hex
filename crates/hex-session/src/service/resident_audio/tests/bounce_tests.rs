@@ -330,15 +330,7 @@ fn resident_sampler_console_bounce_case(whole_track: bool) {
     let mut snapshot = session
         .resident_seek_inputs(sampler_export::Admission::default(), None, None)
         .unwrap()
-        .prepare(
-            session.project(),
-            &mut sink,
-            &session.media_bank(),
-            session.sine_table(),
-            &session.audio_transforms,
-            &session.audio_clip_waveforms,
-            context(0),
-        )
+        .prepare_for_session(session.project(), &session, &mut sink, context(0))
         .unwrap();
     let length = hex_project::BeatTime::from_ratio(1, 100).unwrap();
     let Created::Clip(clip) = edit(

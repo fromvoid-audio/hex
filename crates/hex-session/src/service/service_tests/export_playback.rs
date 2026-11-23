@@ -583,9 +583,9 @@ fn export_keeps_edit_worker_responsive_and_returns_captured_revision_separately(
     assert!(matches!(
         service.submit(Request::Export(directory.0.join("busy.wav"))),
         Err(SubmitError::Busy(
-            Request::Export(_),
+            request,
             BusyReason::ExportPending
-        ))
+        )) if matches!(*request, Request::Export(_))
     ));
     service
         .submit(Request::Edit(Command::ToggleMute(track)))
@@ -771,7 +771,7 @@ fn export_reservation_rolls_back_when_request_admission_fails() {
     };
     assert!(matches!(
         service.submit(Request::Export(PathBuf::from("busy.wav"))),
-        Err(SubmitError::Full(Request::Export(_)))
+        Err(SubmitError::Full(request)) if matches!(*request, Request::Export(_))
     ));
     assert!(!service.export_busy.load(Ordering::Acquire));
 }

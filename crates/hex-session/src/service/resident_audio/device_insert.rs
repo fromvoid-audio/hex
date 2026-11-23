@@ -1922,15 +1922,18 @@ impl Session {
                 device_insert_control: proposal_control,
                 ..self.resident_seek_inputs(admission, current, None)?
             };
+            let media = self.media_bank();
             let mut snapshot = inputs.prepare_transition(
                 self.project(),
                 edit.project(),
                 false,
                 sink,
-                &self.media_bank(),
-                self.sine_table(),
-                &self.audio_transforms,
-                &self.audio_clip_waveforms,
+                CompileResources {
+                    media: &media,
+                    table: self.sine_table(),
+                    transforms: &self.audio_transforms,
+                    waveforms: &self.audio_clip_waveforms,
+                },
                 context,
             )?;
             snapshot.source_origin = ResidentSourceOrigin::CanonicalCandidate;

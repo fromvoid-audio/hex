@@ -639,12 +639,12 @@ impl EditorView {
                 if self.pending_requests.len() + self.device_gesture_barriers.len()
                     < UI_REQUEST_CAPACITY =>
             {
-                self.pending_requests.push_back(request);
+                self.pending_requests.push_back(*request);
                 return true;
             }
-            SubmitError::Full(request) => (request, submission::Refusal::QueueFull),
-            SubmitError::Busy(request, reason) => (request, submission::Refusal::Busy(reason)),
-            SubmitError::Closed(request) => (request, submission::Refusal::Closed),
+            SubmitError::Full(request) => (*request, submission::Refusal::QueueFull),
+            SubmitError::Busy(request, reason) => (*request, submission::Refusal::Busy(reason)),
+            SubmitError::Closed(request) => (*request, submission::Refusal::Closed),
         };
         self.on_request_refused(refused.kinds, &request, refusal);
         false

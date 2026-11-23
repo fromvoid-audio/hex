@@ -74,10 +74,61 @@ impl Snapshot {
     }
 }
 
+/// Borrowed media/waveform compilation inputs shared by resident snapshot preparation.
+pub(super) struct CompileResources<'a> {
+    pub(super) media: &'a MediaBank,
+    pub(super) table: Arc<hex_engine::SineTable>,
+    pub(super) transforms: &'a hex_engine::audio_transform::AudioTransformPreparation,
+    pub(super) waveforms: &'a std::cell::RefCell<BTreeMap<hex_project::ClipId, AudioClipWaveform>>,
+}
+
+#[derive(Default)]
+pub(super) struct PrepareOptions<'a> {
+    pub(super) gain_recording: Option<hex_project::TrackId>,
+    pub(super) tuning_source: Option<(&'a Project, bool)>,
+    pub(super) offline: Option<&'a dyn super::OfflineBounceSource>,
+}
+
+/// Borrowed sink, audio context, and resource admission shared by resident transitions.
+pub(super) struct ResidentSinkContext<'a> {
+    pub(super) context: hex_engine::AudioSourceContext,
+    pub(super) sink: &'a mut dyn WorkerAudioSink,
+    pub(super) admission: sampler_export::Admission<'a>,
+}
+
+/// Publication metadata and policy paired for runtime publication calls.
+#[derive(Clone, Copy)]
+pub(super) struct PublicationDirective {
+    pub(super) metadata: ResidentPublicationMetadata,
+    pub(super) policy: ResidentPublicationPolicy,
+}
+
+/// Borrowed sink, admission, and publication directive for resident seek/input publication.
+pub(super) struct ResidentPublishContext<'a> {
+    pub(super) sink: &'a mut dyn WorkerAudioSink,
+    pub(super) admission: sampler_export::Admission<'a>,
+    pub(super) metadata: ResidentPublicationMetadata,
+    pub(super) policy: ResidentPublicationPolicy,
+}
+
+/// Borrowed worker event sink and admission context for resident worker helpers.
+pub(super) struct ResidentWorkerContext<'a> {
+    pub(super) events: &'a mut WorkerEvents,
+    pub(super) admission: sampler_export::Admission<'a>,
+}
+
+/// Document-opening parameters bundled for resident media preparation.
+pub(super) struct OpenDocumentSpec<'a> {
+    pub(super) history_capacity: usize,
+    pub(super) source: &'a ProjectSource,
+    pub(super) relinks: &'a BTreeMap<hex_project::AssetId, PathBuf>,
+    pub(super) mode: DocumentAudioMode,
+    pub(super) reservation: Option<SourcePlanReservation>,
+}
+
 /// Build an export-only graph from captured live plug-in state and private
 /// processors. The canonical snapshot remains admitted and is never published
 /// or mutated by this preparation.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn prepare_private_export(
     session: &Session,
     context: hex_engine::AudioSourceContext,
@@ -108,18 +159,22 @@ pub(super) fn prepare_private_export(
     let mut owner = sink
         .prepare_offline_bounce(input, control)?
         .ok_or("private vst3 export processor unavailable")?;
+    let media = session.media_bank();
     let mut snapshot = inputs
         .prepare_with_gain(
             &project,
             sink,
-            &session.media_bank(),
-            session.sine_table(),
-            &session.audio_transforms,
-            &session.audio_clip_waveforms,
-            None,
-            None,
+            CompileResources {
+                media: &media,
+                table: session.sine_table(),
+                transforms: &session.audio_transforms,
+                waveforms: &session.audio_clip_waveforms,
+            },
+            PrepareOptions {
+                offline: Some(owner.as_ref()),
+                ..PrepareOptions::default()
+            },
             context,
-            Some(owner.as_ref()),
         )
         .map_err(|error| error.to_string())?;
     snapshot.inputs = RuntimeInputs::default();
@@ -280,64 +335,77 @@ impl Inputs<'_> {
         }
         Ok(())
     }
-    #[allow(clippy::too_many_arguments)] // Existing compile inputs plus the captured native source context.
     fn prepare(
         &self,
         project: &Project,
         sink: &mut dyn WorkerAudioSink,
-        media: &MediaBank,
-        table: Arc<hex_engine::SineTable>,
-        transforms: &hex_engine::audio_transform::AudioTransformPreparation,
-        waveforms: &std::cell::RefCell<BTreeMap<hex_project::ClipId, AudioClipWaveform>>,
+        compile: CompileResources<'_>,
         context: hex_engine::AudioSourceContext,
     ) -> Result<Snapshot, SessionError> {
-        self.prepare_with_gain(
-            project, sink, media, table, transforms, waveforms, None, None, context, None,
+        self.prepare_with_gain(project, sink, compile, PrepareOptions::default(), context)
+    }
+    fn prepare_for_session(
+        &self,
+        project: &Project,
+        session: &Session,
+        sink: &mut dyn WorkerAudioSink,
+        context: hex_engine::AudioSourceContext,
+    ) -> Result<Snapshot, SessionError> {
+        let media = session.media_bank();
+        self.prepare(
+            project,
+            sink,
+            CompileResources {
+                media: &media,
+                table: session.sine_table(),
+                transforms: &session.audio_transforms,
+                waveforms: &session.audio_clip_waveforms,
+            },
+            context,
         )
     }
     /// Validate a canonical tuning transition before Arc publication. Explicit
     /// tuning previews/commits also retain the family when returning exactly to
     /// the canonical value; document replacement never enters this path.
-    #[allow(clippy::too_many_arguments)]
     fn prepare_transition(
         &self,
         source: &Project,
         project: &Project,
         explicit_tuning: bool,
         sink: &mut dyn WorkerAudioSink,
-        media: &MediaBank,
-        table: Arc<hex_engine::SineTable>,
-        transforms: &hex_engine::audio_transform::AudioTransformPreparation,
-        waveforms: &std::cell::RefCell<BTreeMap<hex_project::ClipId, AudioClipWaveform>>,
+        compile: CompileResources<'_>,
         context: hex_engine::AudioSourceContext,
     ) -> Result<Snapshot, SessionError> {
         self.prepare_with_gain(
             project,
             sink,
-            media,
-            table,
-            transforms,
-            waveforms,
-            None,
-            Some((source, explicit_tuning)),
+            compile,
+            PrepareOptions {
+                tuning_source: Some((source, explicit_tuning)),
+                ..PrepareOptions::default()
+            },
             context,
-            None,
         )
     }
-    #[allow(clippy::too_many_arguments)] // Compile inputs plus raw-fader and exact canonical tuning source.
     fn prepare_with_gain(
         &self,
         project: &Project,
         sink: &mut dyn WorkerAudioSink,
-        media: &MediaBank,
-        table: Arc<hex_engine::SineTable>,
-        transforms: &hex_engine::audio_transform::AudioTransformPreparation,
-        waveforms: &std::cell::RefCell<BTreeMap<hex_project::ClipId, AudioClipWaveform>>,
-        gain_recording: Option<hex_project::TrackId>,
-        tuning_source: Option<(&Project, bool)>,
+        compile: CompileResources<'_>,
+        options: PrepareOptions<'_>,
         context: hex_engine::AudioSourceContext,
-        offline: Option<&dyn super::OfflineBounceSource>,
     ) -> Result<Snapshot, SessionError> {
+        let CompileResources {
+            media,
+            table,
+            transforms,
+            waveforms,
+        } = compile;
+        let PrepareOptions {
+            gain_recording,
+            tuning_source,
+            offline,
+        } = options;
         if self.shutdown.load(Ordering::Acquire)
             || self
                 .cancel
@@ -811,19 +879,21 @@ impl Inputs<'_> {
             snapshot,
             playback,
             sink,
-            ResidentPublicationMetadata {
-                source_origin: crate::service::ResidentSourceOrigin::Unknown,
-                clip_preview: None,
-                context,
-                device_preview: None,
-                tuning_preview: None,
-                seek_request: None,
-                stopped_restore: false,
-                computer_keyboard_request: None,
-                gain_recording_track: None,
-                requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
+            PublicationDirective {
+                metadata: ResidentPublicationMetadata {
+                    source_origin: crate::service::ResidentSourceOrigin::Unknown,
+                    clip_preview: None,
+                    context,
+                    device_preview: None,
+                    tuning_preview: None,
+                    seek_request: None,
+                    stopped_restore: false,
+                    computer_keyboard_request: None,
+                    gain_recording_track: None,
+                    requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
+                },
+                policy: ResidentPublicationPolicy::ArrangementEdit,
             },
-            ResidentPublicationPolicy::ArrangementEdit,
             selected.allowance(snapshot)?,
             None,
         )?;
@@ -868,7 +938,6 @@ impl Inputs<'_> {
         let (policy, section_loop) = inherited_runtime(sink, metadata.context, policy)?;
         self.publish_tagged_with_loop(snapshot, project, sink, metadata, policy, section_loop)
     }
-    #[allow(clippy::too_many_arguments)] // One existing publication path with an optional transient clock.
     fn publish_tagged_with_loop(
         &self,
         snapshot: &mut Snapshot,
@@ -973,8 +1042,7 @@ impl Inputs<'_> {
                 snapshot,
                 playback,
                 sink,
-                metadata,
-                policy,
+                PublicationDirective { metadata, policy },
                 additional_bytes,
                 tempo_edit,
             )?;
@@ -1027,17 +1095,16 @@ impl Inputs<'_> {
         snapshot.inputs = selected;
         Ok(accepted)
     }
-    #[allow(clippy::too_many_arguments)] // Existing admission and optional exact tempo intent.
     fn publish_runtime(
         &self,
         snapshot: &Snapshot,
         playback: Playback,
         sink: &mut dyn WorkerAudioSink,
-        metadata: ResidentPublicationMetadata,
-        policy: ResidentPublicationPolicy,
+        directive: PublicationDirective,
         additional_runtime_bytes: usize,
         tempo_edit: Option<ResidentTempoEdit<'_>>,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
+        let PublicationDirective { metadata, policy } = directive;
         if self.shutdown.load(Ordering::Acquire)
             || self
                 .cancel
@@ -1249,30 +1316,37 @@ pub(super) fn execute_command(
     admission: sampler_export::Admission<'_>,
 ) -> Result<(Created, Arc<PreparedRevision>), SessionError> {
     execute_command_timed(
-        session, command, previous, context, events, resident, admission, None,
+        session,
+        command,
+        previous,
+        context,
+        ResidentWorkerContext { events, admission },
+        resident,
+        None,
     )
 }
 /// `execute_command` that reports resident transition phases when measured.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn execute_command_timed(
     session: &mut Session,
     command: Command,
     previous: Option<&PreparedRevision>,
     context: hex_engine::AudioSourceContext,
-    events: &mut WorkerEvents,
+    worker: ResidentWorkerContext<'_>,
     resident: &mut Option<Snapshot>,
-    admission: sampler_export::Admission<'_>,
     phases: Option<&mut super::diagnostics::SectionPhases>,
 ) -> Result<(Created, Arc<PreparedRevision>), SessionError> {
+    let ResidentWorkerContext { events, admission } = worker;
     if session.audio_mode() == DocumentAudioMode::Resident
         && let Some(sink) = events.resident_audio()
     {
         let (created, snapshot) = session
             .resident_transition_timed(
                 Transition::Command(Box::new(command)),
-                context,
-                sink,
-                admission,
+                ResidentSinkContext {
+                    context,
+                    sink,
+                    admission,
+                },
                 resident.as_ref(),
                 None,
                 phases,
@@ -1342,7 +1416,6 @@ pub(super) struct PreparedDocumentReplacement {
 }
 /// Prepare and admit the exact candidate before changing canonical state. The caller
 /// performs only fixed moves into its canonical/document slots, then emits generation replacement.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn prepare_document_replacement(
     candidate: &Session,
     old: &Session,
@@ -1471,18 +1544,20 @@ pub(super) fn prepare_document_replacement(
 
 /// Source decoding/reconstruction borrows the live sink inventory too: cached export-lane
 /// scalars cannot substitute for original banks retained by current/retired/pending outputs.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn open_document(
     old: &Session,
-    history_capacity: usize,
-    source: &ProjectSource,
-    relinks: &BTreeMap<hex_project::AssetId, PathBuf>,
-    mode: DocumentAudioMode,
-    reservation: Option<SourcePlanReservation>,
-    events: &mut WorkerEvents,
+    spec: OpenDocumentSpec<'_>,
+    worker: ResidentWorkerContext<'_>,
     current: Option<&Snapshot>,
-    admission: sampler_export::Admission<'_>,
 ) -> Result<recovery::OpenCandidate, String> {
+    let OpenDocumentSpec {
+        history_capacity,
+        source,
+        relinks,
+        mode,
+        reservation,
+    } = spec;
+    let ResidentWorkerContext { events, admission } = worker;
     prepare_document_media(old, events, current, admission, |allowance, admission| {
         recovery::open_source_with_limits(
             old,
@@ -1580,7 +1655,6 @@ pub(super) enum ImportPlayback {
     },
 }
 
-#[allow(clippy::too_many_arguments)] // One prospective import with a transient playback intent.
 pub(super) fn prepare_import_playback(
     input: crate::import_batch::Preparation<'_>,
     context: hex_engine::AudioSourceContext,
@@ -1633,10 +1707,12 @@ pub(super) fn prepare_import_playback(
         let mut snapshot = inputs.prepare(
             input.project,
             sink,
-            input.media,
-            input.table,
-            input.transforms,
-            input.waveforms,
+            CompileResources {
+                media: input.media,
+                table: input.table,
+                transforms: input.transforms,
+                waveforms: input.waveforms,
+            },
             context,
         )?;
         snapshot.source_origin = ResidentSourceOrigin::CanonicalCandidate;
@@ -1702,18 +1778,20 @@ pub(super) fn import_frame_allowance(
     })
 }
 
-#[allow(clippy::too_many_arguments)] // Captured file/destination and current publication union are one synchronous import.
 pub(super) fn import_file(
     session: &mut Session,
     path: PathBuf,
     destination: AudioBatchDestination,
     options: crate::import_batch::AudioImportOptions,
-    context: hex_engine::AudioSourceContext,
-    sink: &mut dyn WorkerAudioSink,
-    admission: sampler_export::Admission<'_>,
+    resident: ResidentSinkContext<'_>,
     current: &mut Option<Snapshot>,
     decode: &mut super::truncated_import::ImportDecode,
 ) -> Result<Arc<PreparedRevision>, SessionError> {
+    let ResidentSinkContext {
+        context,
+        sink,
+        admission,
+    } = resident;
     options.validate()?;
     if !options.overwrite
         && let AudioBatchDestination::Console(crate::import_batch::ConsoleDestination::Cell {
@@ -1910,17 +1988,19 @@ enum Transition {
 }
 
 impl Session {
-    #[allow(clippy::too_many_arguments)] // Captured target, source, control union and final publication remain explicit.
     pub(super) fn import_resident_sampler(
         &mut self,
         decoded: hex_media::DecodedAudio,
         cancel: &AtomicBool,
         destination: crate::native_assets::NativeAssetDestination,
-        context: hex_engine::AudioSourceContext,
-        sink: &mut dyn WorkerAudioSink,
-        admission: sampler_export::Admission<'_>,
+        resident: ResidentSinkContext<'_>,
         current: Option<&Snapshot>,
     ) -> Result<(Created, Snapshot), SessionError> {
+        let ResidentSinkContext {
+            context,
+            sink,
+            admission,
+        } = resident;
         let legacy = self
             .media
             .values()
@@ -1988,10 +2068,12 @@ impl Session {
                 inputs.prepare(
                     project,
                     &mut **sink,
-                    media,
-                    table,
-                    transforms,
-                    waveforms,
+                    CompileResources {
+                        media,
+                        table,
+                        transforms,
+                        waveforms,
+                    },
                     context,
                 )
             },
@@ -2097,9 +2179,11 @@ impl Session {
                         state,
                         source_slot,
                     },
-                    context,
-                    sink,
-                    admission,
+                    ResidentSinkContext {
+                        context,
+                        sink,
+                        admission,
+                    },
                     current,
                 )
                 .map(Some)
@@ -2125,19 +2209,21 @@ impl Session {
             0,
         )
     }
-    #[allow(clippy::too_many_arguments)] // Exact source/current graph, fence and cancellation remain explicit.
     pub(super) fn publish_resident_seek(
         &self,
         snapshot: &Snapshot,
         project: &Project,
         current: &mut Snapshot,
         mut playback: Playback,
-        sink: &mut dyn WorkerAudioSink,
-        admission: sampler_export::Admission<'_>,
-        metadata: ResidentPublicationMetadata,
-        policy: ResidentPublicationPolicy,
+        publish: ResidentPublishContext<'_>,
         cancelled: &AtomicBool,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
+        let ResidentPublishContext {
+            sink,
+            admission,
+            metadata,
+            policy,
+        } = publish;
         let mut selected = snapshot.inputs.clone();
         let extra = selected.allowance(snapshot)?;
         self.admit_resident_seek(current, sink, admission, extra)?;
@@ -2145,7 +2231,14 @@ impl Session {
         selected.selected_after(&current.inputs)?;
         let accepted = self
             .resident_seek_inputs(admission, Some(current), Some(cancelled))?
-            .publish_runtime(snapshot, playback, sink, metadata, policy, extra, None)?;
+            .publish_runtime(
+                snapshot,
+                playback,
+                sink,
+                PublicationDirective { metadata, policy },
+                extra,
+                None,
+            )?;
         if Arc::ptr_eq(&current.prepared, &snapshot.prepared) {
             current.record_submission(metadata.context, accepted);
         } else {
@@ -2155,42 +2248,32 @@ impl Session {
         current.inputs = selected;
         Ok(accepted)
     }
-    #[allow(clippy::too_many_arguments)] // One actual source graph, fixed input bindings and final acceptance.
     pub(super) fn publish_resident_runtime_inputs(
         &self,
         snapshot: &mut Snapshot,
-        sink: &mut dyn WorkerAudioSink,
-        admission: sampler_export::Admission<'_>,
-        metadata: ResidentPublicationMetadata,
-        policy: ResidentPublicationPolicy,
+        publish: ResidentPublishContext<'_>,
         selected: RuntimeInputs,
         required: Option<RequiredInput>,
     ) -> Result<Option<hex_engine::computer_keyboard::ComputerKeyboardTuningHint>, SessionError>
     {
+        let context = publish.metadata.context;
         let (hint, accepted, submission) = self.prepare_resident_runtime_inputs(
             snapshot,
             self.project(),
-            sink,
-            admission,
-            metadata,
-            policy,
+            publish,
             selected,
             required,
         )?;
-        snapshot.record_submission(metadata.context, submission);
+        snapshot.record_submission(context, submission);
         accepted.cancel_retired_from(&snapshot.inputs);
         snapshot.inputs = accepted;
         Ok(hint)
     }
-    #[allow(clippy::too_many_arguments)] // Borrow exact source owners until final enqueue; caller updates bindings only after success.
     pub(super) fn prepare_resident_runtime_inputs(
         &self,
         snapshot: &Snapshot,
         project: &Project,
-        sink: &mut dyn WorkerAudioSink,
-        admission: sampler_export::Admission<'_>,
-        metadata: ResidentPublicationMetadata,
-        policy: ResidentPublicationPolicy,
+        publish: ResidentPublishContext<'_>,
         mut selected: RuntimeInputs,
         required: Option<RequiredInput>,
     ) -> Result<
@@ -2201,6 +2284,12 @@ impl Session {
         ),
         SessionError,
     > {
+        let ResidentPublishContext {
+            sink,
+            admission,
+            metadata,
+            policy,
+        } = publish;
         let inputs = self.resident_seek_inputs(admission, None, None)?;
         let (policy, section_loop) = inherited_runtime(sink, metadata.context, policy)?;
         let quote = runtime_allowance_with_loop(
@@ -2234,8 +2323,7 @@ impl Session {
             snapshot,
             playback,
             sink,
-            metadata,
-            policy,
+            PublicationDirective { metadata, policy },
             selected.allowance(snapshot)?,
             None,
         )?;
@@ -2366,15 +2454,7 @@ impl Session {
         current: Option<&Snapshot>,
     ) -> Result<Snapshot, SessionError> {
         let inputs = self.document_replacement_inputs(old, admission, current)?;
-        let mut snapshot = inputs.prepare(
-            self.project(),
-            sink,
-            &self.media_bank(),
-            self.sine_table(),
-            &self.audio_transforms,
-            &self.audio_clip_waveforms,
-            context,
-        )?;
+        let mut snapshot = inputs.prepare_for_session(self.project(), self, sink, context)?;
         let metadata = ResidentPublicationMetadata {
             source_origin: crate::service::ResidentSourceOrigin::Unknown,
             clip_preview: None,
@@ -2471,15 +2551,7 @@ impl Session {
                 .collect(),
         };
         let result = (|| {
-            let mut snapshot = inputs.prepare(
-                self.project(),
-                sink,
-                &self.media_bank(),
-                self.sine_table(),
-                &self.audio_transforms,
-                &self.audio_clip_waveforms,
-                context,
-            )?;
+            let mut snapshot = inputs.prepare_for_session(self.project(), self, sink, context)?;
             snapshot.source_origin = ResidentSourceOrigin::CanonicalCandidate;
             inputs.publish(&mut snapshot, self.project(), sink, context)?;
             Ok(snapshot)
@@ -2522,15 +2594,7 @@ impl Session {
     ) -> Result<Snapshot, SessionError> {
         let mut inputs = self.resident_seek_inputs(admission, current, None)?;
         inputs.restoring_plugin_state = !stopped_restore;
-        let mut snapshot = inputs.prepare(
-            self.project(),
-            sink,
-            &self.media_bank(),
-            self.sine_table(),
-            &self.audio_transforms,
-            &self.audio_clip_waveforms,
-            context,
-        )?;
+        let mut snapshot = inputs.prepare_for_session(self.project(), self, sink, context)?;
         let metadata = ResidentPublicationMetadata {
             source_origin: crate::service::ResidentSourceOrigin::Unknown,
             clip_preview: None,
@@ -2546,13 +2610,15 @@ impl Session {
         let selected = snapshot.inputs.clone();
         self.publish_resident_runtime_inputs(
             &mut snapshot,
-            sink,
-            admission,
-            metadata,
-            if stopped_restore {
-                ResidentPublicationPolicy::InstallFreshRuntime
-            } else {
-                ResidentPublicationPolicy::RestorePluginState
+            ResidentPublishContext {
+                sink,
+                admission,
+                metadata,
+                policy: if stopped_restore {
+                    ResidentPublicationPolicy::InstallFreshRuntime
+                } else {
+                    ResidentPublicationPolicy::RestorePluginState
+                },
             },
             selected,
             None,
@@ -2560,30 +2626,35 @@ impl Session {
         Ok(snapshot)
     }
 
-    #[allow(clippy::too_many_arguments)] // The overlay borrows existing resident custody through admission.
     pub(super) fn prepare_resident_preview(
         &self,
         command: Command,
-        context: hex_engine::AudioSourceContext,
         identity: resident_preview::Identity,
-        sink: &mut dyn WorkerAudioSink,
-        admission: sampler_export::Admission<'_>,
+        resident: ResidentSinkContext<'_>,
         current: &Snapshot,
         cancel: Option<&AtomicBool>,
     ) -> Result<(Arc<Project>, Snapshot), SessionError> {
+        let ResidentSinkContext {
+            context,
+            sink,
+            admission,
+        } = resident;
         let mut inputs = self.resident_seek_inputs(admission, Some(current), cancel)?;
         inputs.stopped_history = true;
         let mut editor = hex_project::Editor::new(self.project().clone(), 1)?;
         let result = editor.execute_prepared_transition(command, |source, candidate| {
+            let media = self.media_bank();
             let mut snapshot = inputs.prepare_transition(
                 source,
                 candidate,
                 matches!(identity, resident_preview::Identity::Tuning(_)),
                 sink,
-                &self.media_bank(),
-                self.sine_table(),
-                &self.audio_transforms,
-                &self.audio_clip_waveforms,
+                CompileResources {
+                    media: &media,
+                    table: self.sine_table(),
+                    transforms: &self.audio_transforms,
+                    waveforms: &self.audio_clip_waveforms,
+                },
                 context,
             )?;
             snapshot.source_origin = identity.source_origin();
@@ -2636,17 +2707,21 @@ impl Session {
         };
         let project = self.project();
         let result = (|| {
+            let media = self.media_bank();
             let mut snapshot = inputs.prepare_with_gain(
                 project,
                 sink,
-                &self.media_bank(),
-                self.sine_table(),
-                &self.audio_transforms,
-                &self.audio_clip_waveforms,
-                current.prepared.gain_recording_track(),
-                None,
+                CompileResources {
+                    media: &media,
+                    table: self.sine_table(),
+                    transforms: &self.audio_transforms,
+                    waveforms: &self.audio_clip_waveforms,
+                },
+                PrepareOptions {
+                    gain_recording: current.prepared.gain_recording_track(),
+                    ..PrepareOptions::default()
+                },
                 context,
-                None,
             )?;
             inputs.publish(&mut snapshot, project, sink, context)?;
             Ok(snapshot)
@@ -2666,17 +2741,21 @@ impl Session {
         let mut inputs = self.resident_seek_inputs(admission, Some(current), None)?;
         inputs.stopped_history = true;
         let result = (|| {
+            let media = self.media_bank();
             let mut snapshot = inputs.prepare_with_gain(
                 self.project(),
                 sink,
-                &self.media_bank(),
-                self.sine_table(),
-                &self.audio_transforms,
-                &self.audio_clip_waveforms,
-                Some(track),
-                None,
+                CompileResources {
+                    media: &media,
+                    table: self.sine_table(),
+                    transforms: &self.audio_transforms,
+                    waveforms: &self.audio_clip_waveforms,
+                },
+                PrepareOptions {
+                    gain_recording: Some(track),
+                    ..PrepareOptions::default()
+                },
                 context,
-                None,
             )?;
             inputs.publish(&mut snapshot, self.project(), sink, context)?;
             Ok(snapshot)
@@ -2698,15 +2777,7 @@ impl Session {
             ..self.resident_seek_inputs(admission, Some(current), None)?
         };
         let result = (|| {
-            let mut snapshot = inputs.prepare(
-                self.project(),
-                sink,
-                &self.media_bank(),
-                self.sine_table(),
-                &self.audio_transforms,
-                &self.audio_clip_waveforms,
-                context,
-            )?;
+            let mut snapshot = inputs.prepare_for_session(self.project(), self, sink, context)?;
             inputs.publish(&mut snapshot, self.project(), sink, context)?;
             Ok(snapshot)
         })();
@@ -2768,17 +2839,19 @@ impl Session {
     /// runs because the native source context must follow the revision; only
     /// `prepare_transition` is skipped. A failed publication leaves the current
     /// snapshot and history unchanged.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn section_marker_transition(
         &mut self,
         command: Option<Command>,
         redo: bool,
-        context: hex_engine::AudioSourceContext,
-        sink: &mut dyn WorkerAudioSink,
-        admission: sampler_export::Admission<'_>,
+        resident: ResidentSinkContext<'_>,
         current: &mut Snapshot,
         phases: &mut super::diagnostics::SectionPhases,
     ) -> Result<Option<(Created, Arc<PreparedRevision>)>, SessionError> {
+        let ResidentSinkContext {
+            context,
+            sink,
+            admission,
+        } = resident;
         let started = Instant::now();
         let mut publish_time = Duration::ZERO;
         let inputs = Inputs {
@@ -2849,15 +2922,12 @@ impl Session {
                 })
                 .unwrap_or(false)
     }
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn section_snapshot(
         &mut self,
         command: Option<Command>,
         redo: bool,
         position: ArrangementEditPosition,
-        context: hex_engine::AudioSourceContext,
-        sink: &mut dyn WorkerAudioSink,
-        admission: sampler_export::Admission<'_>,
+        resident: ResidentSinkContext<'_>,
         current: Option<&Snapshot>,
         phases: &mut super::diagnostics::SectionPhases,
     ) -> Result<Option<(Created, Snapshot)>, SessionError> {
@@ -2887,15 +2957,7 @@ impl Session {
                 section_loop,
             },
         };
-        self.resident_transition_timed(
-            transition,
-            context,
-            sink,
-            admission,
-            current,
-            None,
-            Some(phases),
-        )
+        self.resident_transition_timed(transition, resident, current, None, Some(phases))
     }
     pub(super) fn command_resident_snapshot(
         &mut self,
@@ -2945,7 +3007,6 @@ impl Session {
         ))
     }
 
-    #[allow(clippy::too_many_arguments)] // Exact native capture plus the existing publication owners.
     pub(super) fn plugin_parameter_resident_snapshot(
         &mut self,
         commit: PluginParameterCommit,
@@ -3062,8 +3123,17 @@ impl Session {
                             context
                         };
                         finish_context = context;
-                        let mut snapshot = inputs
-                            .prepare(target, sink, &media, table, transforms, waveforms, context)?;
+                        let mut snapshot = inputs.prepare(
+                            target,
+                            sink,
+                            CompileResources {
+                                media: &media,
+                                table: Arc::clone(&table),
+                                transforms,
+                                waveforms,
+                            },
+                            context,
+                        )?;
                         inputs.publish(&mut snapshot, target, sink, context)?;
                         Ok((Arc::clone(&snapshot.prepared), snapshot))
                     },
@@ -3099,21 +3169,33 @@ impl Session {
         current: Option<&Snapshot>,
         cancel: Option<&AtomicBool>,
     ) -> Result<Option<(Created, Snapshot)>, SessionError> {
-        self.resident_transition_timed(transition, context, sink, admission, current, cancel, None)
+        self.resident_transition_timed(
+            transition,
+            ResidentSinkContext {
+                context,
+                sink,
+                admission,
+            },
+            current,
+            cancel,
+            None,
+        )
     }
     /// `phases` receives control-worker durations; `edit` is the remainder of
     /// the canonical transition around preparation and publication.
-    #[allow(clippy::too_many_arguments)]
     fn resident_transition_timed(
         &mut self,
         transition: Transition,
-        context: hex_engine::AudioSourceContext,
-        sink: &mut dyn WorkerAudioSink,
-        admission: sampler_export::Admission<'_>,
+        resident: ResidentSinkContext<'_>,
         current: Option<&Snapshot>,
         cancel: Option<&AtomicBool>,
         phases: Option<&mut super::diagnostics::SectionPhases>,
     ) -> Result<Option<(Created, Snapshot)>, SessionError> {
+        let ResidentSinkContext {
+            context,
+            sink,
+            admission,
+        } = resident;
         let started = Instant::now();
         let mut prepare_time = Duration::ZERO;
         let mut publish_time = Duration::ZERO;
@@ -3220,10 +3302,12 @@ impl Session {
                 project,
                 explicit_tuning,
                 sink,
-                &media,
-                table,
-                transforms,
-                waveforms,
+                CompileResources {
+                    media: &media,
+                    table: Arc::clone(&table),
+                    transforms,
+                    waveforms,
+                },
                 context,
             )?;
             snapshot.source_origin = ResidentSourceOrigin::CanonicalCandidate;

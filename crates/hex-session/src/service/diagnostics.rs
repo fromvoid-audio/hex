@@ -756,7 +756,7 @@ mod tests {
             .begin_at_worker(&Request::Undo, DiagnosticOrigin::Continuation)
             .unwrap();
         assert_eq!(wakeup.ui_action_id, None);
-        hooks.returned(Some(wakeup), &Err(SubmitError::Full(Request::Undo)));
+        hooks.returned(Some(wakeup), &Err(SubmitError::full(Request::Undo)));
         let rows = records.lock().unwrap();
         assert!(
             rows.iter()

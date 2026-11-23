@@ -163,9 +163,9 @@ mod tests {
     fn submit_errors_never_dump_the_request() {
         let request = || hex_session::service::Request::ContinuePluginEffect;
         for error in [
-            SubmitError::Full(request()),
-            SubmitError::Closed(request()),
-            SubmitError::Busy(request(), BusyReason::ExportPending),
+            SubmitError::full(request()),
+            SubmitError::closed(request()),
+            SubmitError::busy(request(), BusyReason::ExportPending),
         ] {
             assert_readable(submit(&error));
         }

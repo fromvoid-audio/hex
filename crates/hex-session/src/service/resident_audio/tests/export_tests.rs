@@ -207,13 +207,10 @@ fn ordinary_export_scope_budget_and_failed_dispatch_refuse_without_publishing() 
     let snapshot = session
         .resident_seek_inputs(sampler_export::Admission::default(), None, None)
         .unwrap()
-        .prepare(
+        .prepare_for_session(
             session.project(),
+            &session,
             &mut sink,
-            &session.media_bank(),
-            session.sine_table(),
-            &session.audio_transforms,
-            &session.audio_clip_waveforms,
             hex_engine::AudioSourceContext {
                 project_generation: 0,
                 editor_revision: 0,
@@ -252,13 +249,10 @@ fn ordinary_export_scope_budget_and_failed_dispatch_refuse_without_publishing() 
     let foreign = session
         .resident_seek_inputs(sampler_export::Admission::default(), None, None)
         .unwrap()
-        .prepare(
+        .prepare_for_session(
             session.project(),
+            &session,
             &mut sink,
-            &session.media_bank(),
-            session.sine_table(),
-            &session.audio_transforms,
-            &session.audio_clip_waveforms,
             hex_engine::AudioSourceContext {
                 project_generation: 0,
                 editor_revision: 0,

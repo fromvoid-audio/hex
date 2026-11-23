@@ -497,12 +497,14 @@ fn library_load_uses_admitted_source_transaction_and_preserves_owner_on_refusal(
                 state,
                 source_slot,
             },
-            hex_engine::AudioSourceContext {
-                project_generation: 0,
-                editor_revision: 1,
+            ResidentSinkContext {
+                context: hex_engine::AudioSourceContext {
+                    project_generation: 0,
+                    editor_revision: 1,
+                },
+                sink: &mut sink,
+                admission: sampler_export::Admission::default(),
             },
-            &mut sink,
-            sampler_export::Admission::default(),
             None,
         )
         .unwrap();
@@ -1525,30 +1527,32 @@ fn section_seek_publication_uses_actual_loop_metadata_allowance() {
                     session.project(),
                     &mut current,
                     playback,
-                    &mut sink,
-                    sampler_export::Admission::default(),
-                    ResidentPublicationMetadata {
-                        source_origin: crate::service::ResidentSourceOrigin::Unknown,
-                        clip_preview: None,
-                        context,
-                        device_preview: None,
-                        tuning_preview: None,
-                        seek_request: Some(1),
-                        stopped_restore: false,
-                        computer_keyboard_request: None,
-                        gain_recording_track: None,
-                        requires_preroll: false,
-                    },
-                    ResidentPublicationPolicy::QuantizedSeekWhenReady {
-                        fence: ResidentFreshRuntimeFence {
-                            output_identity: 1,
-                            active_audio_revision: 1,
-                            route_generation: 0,
-                            admitted_command_ticket: 0,
-                            output_fault_epoch: 0,
-                            consumed_stop_generation: 0,
+                    ResidentPublishContext {
+                        sink: &mut sink,
+                        admission: sampler_export::Admission::default(),
+                        metadata: ResidentPublicationMetadata {
+                            source_origin: crate::service::ResidentSourceOrigin::Unknown,
+                            clip_preview: None,
+                            context,
+                            device_preview: None,
+                            tuning_preview: None,
+                            seek_request: Some(1),
+                            stopped_restore: false,
+                            computer_keyboard_request: None,
+                            gain_recording_track: None,
+                            requires_preroll: false,
                         },
-                        quantization: hex_engine::LaunchQuantization::Quarter,
+                        policy: ResidentPublicationPolicy::QuantizedSeekWhenReady {
+                            fence: ResidentFreshRuntimeFence {
+                                output_identity: 1,
+                                active_audio_revision: 1,
+                                route_generation: 0,
+                                admitted_command_ticket: 0,
+                                output_fault_epoch: 0,
+                                consumed_stop_generation: 0,
+                            },
+                            quantization: hex_engine::LaunchQuantization::Quarter,
+                        },
                     },
                     &AtomicBool::new(false),
                 )
@@ -1684,10 +1688,12 @@ fn resident_keyboard_publication_admits_and_replaces_the_paused_route() {
         session
             .publish_resident_runtime_inputs(
                 &mut current,
-                &mut sink,
-                sampler_export::Admission::default(),
-                metadata,
-                ResidentPublicationPolicy::InheritRuntime,
+                ResidentPublishContext {
+                    sink: &mut sink,
+                    admission: sampler_export::Admission::default(),
+                    metadata,
+                    policy: ResidentPublicationPolicy::InheritRuntime,
+                },
                 selected,
                 Some(RequiredInput::Keyboard),
             )
@@ -1816,13 +1822,15 @@ fn captured_seek_refuses_a_later_accepted_input_selection_at_the_same_project_re
     session
         .publish_resident_runtime_inputs(
             &mut current,
-            &mut sink,
-            sampler_export::Admission {
-                seeks: Some(&lane),
-                ..Default::default()
+            ResidentPublishContext {
+                sink: &mut sink,
+                admission: sampler_export::Admission {
+                    seeks: Some(&lane),
+                    ..Default::default()
+                },
+                metadata,
+                policy: ResidentPublicationPolicy::InheritRuntime,
             },
-            metadata,
-            ResidentPublicationPolicy::InheritRuntime,
             selected,
             Some(RequiredInput::Keyboard),
         )

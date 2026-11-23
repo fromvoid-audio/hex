@@ -19,6 +19,62 @@ use crate::{
 use hex_lattice_contract::{DeviceContractError, DeviceTypeId, NativeDeviceState};
 use std::num::NonZeroU32;
 
+/// Borrowed per-block processing inputs for tapped and auxiliary chain stages.
+pub struct StageProcessContext<'a> {
+    pub frame_offset: usize,
+    pub clock: Option<&'a dyn NativeInstrumentClock>,
+    pub output_clock: Option<&'a dyn NativeInstrumentClock>,
+    pub foreign: Option<&'a mut dyn ForeignProcessors>,
+    pub transient: Option<&'a mut NativeTransientProcessing>,
+    pub external: Option<&'a dyn NativeExternalAutomationSet>,
+}
+
+impl<'a> StageProcessContext<'a> {
+    /// Construct a stage processing context with clocks and no optional inputs.
+    pub fn new(
+        frame_offset: usize,
+        clock: Option<&'a dyn NativeInstrumentClock>,
+        output_clock: Option<&'a dyn NativeInstrumentClock>,
+    ) -> Self {
+        Self {
+            frame_offset,
+            clock,
+            output_clock,
+            foreign: None,
+            transient: None,
+            external: None,
+        }
+    }
+
+    /// Attach a borrowed foreign processor bank for this stage call.
+    pub fn with_foreign(mut self, foreign: &'a mut dyn ForeignProcessors) -> Self {
+        self.foreign = Some(foreign);
+        self
+    }
+
+    /// Attach optional live transient parameter input for this stage call.
+    pub fn with_transient(mut self, transient: Option<&'a mut NativeTransientProcessing>) -> Self {
+        self.transient = transient;
+        self
+    }
+
+    /// Attach optional materialized external automation for this stage call.
+    pub fn with_external(mut self, external: Option<&'a dyn NativeExternalAutomationSet>) -> Self {
+        self.external = external;
+        self
+    }
+}
+
+pub(crate) struct EntryProcessContext<'a> {
+    pub(crate) key: Option<&'a [StereoFrame]>,
+    pub(crate) frame_offset: usize,
+    pub(crate) clock: Option<&'a dyn NativeInstrumentClock>,
+    pub(crate) output_clock: Option<&'a dyn NativeInstrumentClock>,
+    pub(crate) foreign: &'a mut dyn ForeignProcessors,
+    pub(crate) input: Option<NativeTransientValue>,
+    pub(crate) external: Option<NativeExternalAutomation<'a>>,
+}
+
 pub(crate) struct RuntimeEntry {
     pub(crate) modulation: Option<ModulationRuntime>,
     pub(crate) automation: PreparedParameterAutomation,
@@ -2459,49 +2515,11 @@ impl NativeRuntimeChain {
         output_clock: Option<&dyn NativeInstrumentClock>,
         foreign: &mut dyn ForeignProcessors,
     ) -> Result<(), DeviceContractError> {
-        self.process_range_tapped_with_foreign(
+        self.process_range_tapped_with_context(
             range,
             frames,
-            frame_offset,
-            clock,
-            output_clock,
-            foreign,
+            StageProcessContext::new(frame_offset, clock, output_clock).with_foreign(foreign),
             &mut |_, _, _, _, _, _| {},
-        )
-    }
-
-    /// Stage a graph segment through the host's actual borrowed endpoints.
-    /// Successful processing still grants no dispatch: final host-format
-    /// acceptance remains exclusively with the audio owner. On error all
-    /// foreign work for this callback is revoked; owned DSP can then roll back.
-    /// Independent stage origins follow `process_range_with_clock`.
-    #[allow(clippy::too_many_arguments)] // Two explicit borrowed stage clocks and existing foreign/tap endpoints.
-    pub fn process_range_tapped_with_foreign(
-        &mut self,
-        range: std::ops::Range<usize>,
-        frames: &mut [StereoFrame],
-        frame_offset: usize,
-        clock: Option<&dyn NativeInstrumentClock>,
-        output_clock: Option<&dyn NativeInstrumentClock>,
-        foreign: &mut dyn ForeignProcessors,
-        observer: &mut impl FnMut(
-            ProcessorChainOwner,
-            u64,
-            DeviceTypeId,
-            NodeSignalPhase,
-            usize,
-            &[StereoFrame],
-        ),
-    ) -> Result<(), DeviceContractError> {
-        self.process_range_tapped_with_foreign_and_input(
-            range,
-            frames,
-            frame_offset,
-            clock,
-            output_clock,
-            foreign,
-            None,
-            observer,
         )
     }
 
@@ -2561,20 +2579,16 @@ impl NativeRuntimeChain {
         }
     }
 
-    /// Same transaction and taps with one prepared transient input. Only the
-    /// exact current, non-frozen instance can consume it. A successful range
-    /// stages its first nonempty application; final host delivery is not owned
-    /// here. A settled powered-off entry stages no application.
-    #[allow(clippy::too_many_arguments)] // Existing borrowed endpoints plus one inline transient context.
-    pub fn process_range_tapped_with_foreign_and_input(
+    /// Stage a graph segment through borrowed clocks, optional foreign endpoints,
+    /// transient input, and materialized external automation with per-node taps.
+    /// Successful processing still grants no dispatch: final host-format
+    /// acceptance remains exclusively with the audio owner. On error all
+    /// foreign work for this callback is revoked; owned DSP can then roll back.
+    pub fn process_range_tapped_with_context(
         &mut self,
         range: std::ops::Range<usize>,
         frames: &mut [StereoFrame],
-        frame_offset: usize,
-        clock: Option<&dyn NativeInstrumentClock>,
-        output_clock: Option<&dyn NativeInstrumentClock>,
-        foreign: &mut dyn ForeignProcessors,
-        transient: Option<&mut NativeTransientProcessing>,
+        context: StageProcessContext<'_>,
         observer: &mut impl FnMut(
             ProcessorChainOwner,
             u64,
@@ -2584,141 +2598,18 @@ impl NativeRuntimeChain {
             &[StereoFrame],
         ),
     ) -> Result<(), DeviceContractError> {
-        self.process_range_tapped_with_foreign_input_and_external(
-            range,
-            frames,
-            frame_offset,
-            clock,
-            output_clock,
-            foreign,
-            transient,
-            None,
-            observer,
-        )
-    }
-
-    /// Same processing transaction with available normalized recorded samples.
-    /// Frozen retained processors do not read a current external source.
-    #[allow(clippy::too_many_arguments)]
-    pub fn process_range_tapped_with_foreign_input_and_external(
-        &mut self,
-        range: std::ops::Range<usize>,
-        frames: &mut [StereoFrame],
-        frame_offset: usize,
-        clock: Option<&dyn NativeInstrumentClock>,
-        output_clock: Option<&dyn NativeInstrumentClock>,
-        foreign: &mut dyn ForeignProcessors,
-        transient: Option<&mut NativeTransientProcessing>,
-        external: Option<NativeExternalAutomation<'_>>,
-        observer: &mut impl FnMut(
-            ProcessorChainOwner,
-            u64,
-            DeviceTypeId,
-            NodeSignalPhase,
-            usize,
-            &[StereoFrame],
-        ),
-    ) -> Result<(), DeviceContractError> {
-        let set = external
-            .as_ref()
-            .map(|window| window as &dyn NativeExternalAutomationSet);
-        self.process_range_tapped_with_foreign_input_and_external_set(
-            range,
-            frames,
-            frame_offset,
-            clock,
-            output_clock,
-            foreign,
-            transient,
-            set,
-            observer,
-        )
-    }
-
-    /// The same transaction with at most one materialized target group per
-    /// exact processor. Frozen tails cannot consume current groups.
-    #[allow(clippy::too_many_arguments)]
-    pub fn process_range_tapped_with_foreign_input_and_external_set(
-        &mut self,
-        range: std::ops::Range<usize>,
-        frames: &mut [StereoFrame],
-        frame_offset: usize,
-        clock: Option<&dyn NativeInstrumentClock>,
-        output_clock: Option<&dyn NativeInstrumentClock>,
-        foreign: &mut dyn ForeignProcessors,
-        transient: Option<&mut NativeTransientProcessing>,
-        external: Option<&dyn NativeExternalAutomationSet>,
-        observer: &mut impl FnMut(
-            ProcessorChainOwner,
-            u64,
-            DeviceTypeId,
-            NodeSignalPhase,
-            usize,
-            &[StereoFrame],
-        ),
-    ) -> Result<(), DeviceContractError> {
-        self.process_tapped(
-            range,
-            frames,
-            None,
-            frame_offset,
-            clock,
-            output_clock,
-            foreign,
-            transient,
-            external,
-            observer,
-        )
+        self.process_tapped(range, frames, None, context, observer)
     }
 
     /// Run one exact effect stage with its admitted key in the ordinary
     /// begin/commit/rollback transaction. Main and key are borrowed only for
     /// this call. A stereo key requires a stateful native identity-matrix stage.
     /// The caller rolls back the complete block on any stage refusal.
-    #[allow(clippy::too_many_arguments)]
-    pub fn process_auxiliary_stage(
+    pub fn process_auxiliary_stage_with_context(
         &mut self,
         stage: usize,
         block: StereoAuxiliaryBlock<'_>,
-        frame_offset: usize,
-        clock: Option<&dyn NativeInstrumentClock>,
-        output_clock: Option<&dyn NativeInstrumentClock>,
-        transient: Option<&mut NativeTransientProcessing>,
-        external: Option<NativeExternalAutomation<'_>>,
-        observer: &mut impl FnMut(
-            ProcessorChainOwner,
-            u64,
-            DeviceTypeId,
-            NodeSignalPhase,
-            usize,
-            &[StereoFrame],
-        ),
-    ) -> Result<(), DeviceContractError> {
-        let set = external
-            .as_ref()
-            .map(|window| window as &dyn NativeExternalAutomationSet);
-        self.process_auxiliary_stage_with_external_set(
-            stage,
-            block,
-            frame_offset,
-            clock,
-            output_clock,
-            transient,
-            set,
-            observer,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn process_auxiliary_stage_with_external_set(
-        &mut self,
-        stage: usize,
-        block: StereoAuxiliaryBlock<'_>,
-        frame_offset: usize,
-        clock: Option<&dyn NativeInstrumentClock>,
-        output_clock: Option<&dyn NativeInstrumentClock>,
-        transient: Option<&mut NativeTransientProcessing>,
-        external: Option<&dyn NativeExternalAutomationSet>,
+        mut context: StageProcessContext<'_>,
         observer: &mut impl FnMut(
             ProcessorChainOwner,
             u64,
@@ -2732,32 +2623,16 @@ impl NativeRuntimeChain {
             .checked_add(1)
             .ok_or(DeviceContractError::InvalidDescriptor)?;
         let (main, key) = block.into_parts();
-        self.process_tapped(
-            stage..end,
-            main,
-            Some(key),
-            frame_offset,
-            clock,
-            output_clock,
-            &mut RefuseForeign,
-            transient,
-            external,
-            observer,
-        )
+        context.foreign = None;
+        self.process_tapped(stage..end, main, Some(key), context, observer)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn process_tapped(
         &mut self,
         range: std::ops::Range<usize>,
         frames: &mut [StereoFrame],
         key: Option<&[StereoFrame]>,
-        frame_offset: usize,
-        clock: Option<&dyn NativeInstrumentClock>,
-        output_clock: Option<&dyn NativeInstrumentClock>,
-        foreign: &mut dyn ForeignProcessors,
-        mut transient: Option<&mut NativeTransientProcessing>,
-        external: Option<&dyn NativeExternalAutomationSet>,
+        context: StageProcessContext<'_>,
         observer: &mut impl FnMut(
             ProcessorChainOwner,
             u64,
@@ -2767,143 +2642,156 @@ impl NativeRuntimeChain {
             &[StereoFrame],
         ),
     ) -> Result<(), DeviceContractError> {
+        let StageProcessContext {
+            frame_offset,
+            clock,
+            output_clock,
+            foreign,
+            mut transient,
+            external,
+        } = context;
+        let mut refuse_foreign = RefuseForeign;
+        let foreign: &mut dyn ForeignProcessors = foreign.unwrap_or(&mut refuse_foreign);
         let requested = transient.as_ref().map(|context| context.input);
         let mut applied = None;
-        let result = (|| {
-            let entries = self
-                .entries
-                .get_mut(range)
-                .ok_or(DeviceContractError::InvalidDescriptor)?;
-            if let Some(requested) = requested
-                && entries
-                    .iter()
-                    .filter(|entry| {
-                        entry.owner == requested.identity.owner()
-                            && entry.device_id == requested.identity.device_id()
-                    })
-                    .take(2)
-                    .count()
-                    > 1
-            {
-                return Err(DeviceContractError::InvalidDescriptor);
-            }
-            if let Some(set) = external {
-                for (index, entry) in entries
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, entry)| !entry.automation_frozen)
+        let result =
+            (|| {
+                let entries = self
+                    .entries
+                    .get_mut(range)
+                    .ok_or(DeviceContractError::InvalidDescriptor)?;
+                if let Some(requested) = requested
+                    && entries
+                        .iter()
+                        .filter(|entry| {
+                            entry.owner == requested.identity.owner()
+                                && entry.device_id == requested.identity.device_id()
+                        })
+                        .take(2)
+                        .count()
+                        > 1
                 {
+                    return Err(DeviceContractError::InvalidDescriptor);
+                }
+                if let Some(set) = external {
+                    for (index, entry) in entries
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, entry)| !entry.automation_frozen)
+                    {
+                        let identity = ProcessorInstanceIdentity {
+                            owner: entry.owner,
+                            device_id: entry.device_id,
+                        };
+                        if let Some(window) = set.window(identity)
+                            && (window.identity != identity
+                                || entries[..index].iter().any(|previous| {
+                                    !previous.automation_frozen
+                                        && previous.owner == entry.owner
+                                        && previous.device_id == entry.device_id
+                                }))
+                        {
+                            return Err(DeviceContractError::InvalidDescriptor);
+                        }
+                    }
+                }
+                for entry in entries {
+                    let input = requested
+                        .filter(|requested| {
+                            !entry.automation_frozen
+                                && entry.owner == requested.identity.owner()
+                                && entry.device_id == requested.identity.device_id()
+                        })
+                        .map(|requested| requested.operation);
+                    if let Some(operation) = input {
+                        if entry.automation.input_target() != Some(operation.target()) {
+                            return Err(DeviceContractError::InvalidDescriptor);
+                        }
+                        if let Some(value) = operation.value() {
+                            entry.automation.validate_input(value)?;
+                        }
+                        if let hex_lattice_contract::DeviceAutomationTarget::Parameter(parameter) =
+                            operation.target()
+                            && (!entry.matrix.is_identity()
+                                || !entry.runtime.supports_parameter_automation(parameter))
+                        {
+                            return Err(DeviceContractError::UnsupportedProcessingClass);
+                        }
+                    }
+
+                    if !frames.is_empty()
+                        && !entry.bypassed
+                        && let Some(operation) = input
+                    {
+                        host_output_gain_ramp::stage_transient(entry, operation)?;
+                    }
+                    observer(
+                        entry.owner,
+                        entry.device_id,
+                        entry.device_type,
+                        NodeSignalPhase::Input,
+                        frame_offset,
+                        frames,
+                    );
                     let identity = ProcessorInstanceIdentity {
                         owner: entry.owner,
                         device_id: entry.device_id,
                     };
-                    if let Some(window) = set.window(identity)
-                        && (window.identity != identity
-                            || entries[..index].iter().any(|previous| {
-                                !previous.automation_frozen
-                                    && previous.owner == entry.owner
-                                    && previous.device_id == entry.device_id
-                            }))
-                    {
+                    let window = if entry.automation_frozen {
+                        None
+                    } else {
+                        external.and_then(|set| set.window(identity))
+                    };
+                    if window.is_some_and(|window| window.identity != identity) {
                         return Err(DeviceContractError::InvalidDescriptor);
                     }
-                }
-            }
-            for entry in entries {
-                let input = requested
-                    .filter(|requested| {
-                        !entry.automation_frozen
-                            && entry.owner == requested.identity.owner()
-                            && entry.device_id == requested.identity.device_id()
-                    })
-                    .map(|requested| requested.operation);
-                if let Some(operation) = input {
-                    if entry.automation.input_target() != Some(operation.target()) {
-                        return Err(DeviceContractError::InvalidDescriptor);
-                    }
-                    if let Some(value) = operation.value() {
-                        entry.automation.validate_input(value)?;
-                    }
-                    if let hex_lattice_contract::DeviceAutomationTarget::Parameter(parameter) =
-                        operation.target()
-                        && (!entry.matrix.is_identity()
-                            || !entry.runtime.supports_parameter_automation(parameter))
-                    {
-                        return Err(DeviceContractError::UnsupportedProcessingClass);
-                    }
-                }
-
-                if !frames.is_empty()
-                    && !entry.bypassed
-                    && let Some(operation) = input
-                {
-                    host_output_gain_ramp::stage_transient(entry, operation)?;
-                }
-                observer(
-                    entry.owner,
-                    entry.device_id,
-                    entry.device_type,
-                    NodeSignalPhase::Input,
-                    frame_offset,
-                    frames,
-                );
-                let identity = ProcessorInstanceIdentity {
-                    owner: entry.owner,
-                    device_id: entry.device_id,
-                };
-                let window = if entry.automation_frozen {
-                    None
-                } else {
-                    external.and_then(|set| set.window(identity))
-                };
-                if window.is_some_and(|window| window.identity != identity) {
-                    return Err(DeviceContractError::InvalidDescriptor);
-                }
-                let started_powered_off =
-                    input.is_some() && entry.powered_off(entry.scratch_bypass_ramp);
-                Self::process_entry_with_foreign(
-                    entry,
-                    frames,
-                    key,
-                    frame_offset,
-                    clock,
-                    output_clock,
-                    foreign,
-                    input
-                        .and_then(NativeTransientOperation::value)
-                        .filter(|value| !matches!(value, NativeTransientValue::HostOutputGain(_))),
-                    window,
-                )?;
-                if !frames.is_empty()
-                    && !started_powered_off
-                    && let Some(operation) = input
-                    && (!entry.bypassed
-                        || matches!(
-                            operation.target(),
-                            hex_lattice_contract::DeviceAutomationTarget::Parameter(_)
-                        ))
-                {
-                    applied = Some(NativeTransientApplication {
-                        identity: ProcessorInstanceIdentity {
-                            owner: entry.owner,
-                            device_id: entry.device_id,
+                    let started_powered_off =
+                        input.is_some() && entry.powered_off(entry.scratch_bypass_ramp);
+                    Self::process_entry_with_foreign(
+                        entry,
+                        frames,
+                        EntryProcessContext {
+                            key,
+                            frame_offset,
+                            clock,
+                            output_clock,
+                            foreign,
+                            input: input.and_then(NativeTransientOperation::value).filter(
+                                |value| !matches!(value, NativeTransientValue::HostOutputGain(_)),
+                            ),
+                            external: window,
                         },
-                        operation,
-                        offset: frame_offset,
-                    });
-                }
+                    )?;
+                    if !frames.is_empty()
+                        && !started_powered_off
+                        && let Some(operation) = input
+                        && (!entry.bypassed
+                            || matches!(
+                                operation.target(),
+                                hex_lattice_contract::DeviceAutomationTarget::Parameter(_)
+                            ))
+                    {
+                        applied = Some(NativeTransientApplication {
+                            identity: ProcessorInstanceIdentity {
+                                owner: entry.owner,
+                                device_id: entry.device_id,
+                            },
+                            operation,
+                            offset: frame_offset,
+                        });
+                    }
 
-                observer(
-                    entry.owner,
-                    entry.device_id,
-                    entry.device_type,
-                    NodeSignalPhase::Output,
-                    frame_offset,
-                    frames,
-                );
-            }
-            Ok(())
-        })();
+                    observer(
+                        entry.owner,
+                        entry.device_id,
+                        entry.device_type,
+                        NodeSignalPhase::Output,
+                        frame_offset,
+                        frames,
+                    );
+                }
+                Ok(())
+            })();
         if result.is_err() {
             foreign.reject_callback();
             if let Some(context) = &mut transient {
@@ -2996,28 +2884,32 @@ impl NativeRuntimeChain {
         Self::process_entry_with_foreign(
             entry,
             frames,
-            None,
-            0,
-            clock,
-            output_clock,
-            &mut RefuseForeign,
-            None,
-            None,
+            EntryProcessContext {
+                key: None,
+                frame_offset: 0,
+                clock,
+                output_clock,
+                foreign: &mut RefuseForeign,
+                input: None,
+                external: None,
+            },
         )
     }
 
-    #[allow(clippy::too_many_arguments)] // Borrowed stages plus independent live/recorded inputs.
     fn process_entry_with_foreign(
         entry: &mut RuntimeEntry,
         frames: &mut [StereoFrame],
-        key: Option<&[StereoFrame]>,
-        frame_offset: usize,
-        clock: Option<&dyn NativeInstrumentClock>,
-        output_clock: Option<&dyn NativeInstrumentClock>,
-        foreign: &mut dyn ForeignProcessors,
-        input: Option<NativeTransientValue>,
-        external: Option<NativeExternalAutomation<'_>>,
+        context: EntryProcessContext<'_>,
     ) -> Result<(), DeviceContractError> {
+        let EntryProcessContext {
+            key,
+            frame_offset,
+            clock,
+            output_clock,
+            foreign,
+            input,
+            external,
+        } = context;
         let aligned = entry.scratch_aligned_dry.is_some();
         let aligned_bypass =
             aligned && entry.bypassed && (!entry.supports_power_off || entry.removal_bypassing);
@@ -3030,13 +2922,15 @@ impl NativeRuntimeChain {
             return Self::process_entry_with_foreign_inner(
                 entry,
                 frames,
-                key,
-                frame_offset,
-                clock,
-                output_clock,
-                foreign,
-                input,
-                external,
+                EntryProcessContext {
+                    key,
+                    frame_offset,
+                    clock,
+                    output_clock,
+                    foreign,
+                    input,
+                    external,
+                },
             );
         }
         let mut offset = 0;
@@ -3069,17 +2963,19 @@ impl NativeRuntimeChain {
             let result = Self::process_entry_with_foreign_inner(
                 entry,
                 &mut frames[offset..end],
-                key.map(|key| &key[offset..end]),
-                shifted_frame_offset,
-                shifted_clock
-                    .as_ref()
-                    .map(|c| c as &dyn NativeInstrumentClock),
-                shifted_output_clock
-                    .as_ref()
-                    .map(|c| c as &dyn NativeInstrumentClock),
-                foreign,
-                input,
-                external,
+                EntryProcessContext {
+                    key: key.map(|key| &key[offset..end]),
+                    frame_offset: shifted_frame_offset,
+                    clock: shifted_clock
+                        .as_ref()
+                        .map(|c| c as &dyn NativeInstrumentClock),
+                    output_clock: shifted_output_clock
+                        .as_ref()
+                        .map(|c| c as &dyn NativeInstrumentClock),
+                    foreign,
+                    input,
+                    external,
+                },
             );
             entry.bypassed = bypassed;
             entry.metering |= aligned_metering;
@@ -3112,34 +3008,38 @@ impl NativeRuntimeChain {
         Self::process_entry_with_foreign_inner(
             entry,
             &mut frames[offset..],
-            key.map(|key| &key[offset..]),
-            frame_offset
-                .checked_add(offset)
-                .ok_or(DeviceContractError::InvalidDescriptor)?,
-            shifted_clock
-                .as_ref()
-                .map(|c| c as &dyn NativeInstrumentClock),
-            shifted_output_clock
-                .as_ref()
-                .map(|c| c as &dyn NativeInstrumentClock),
-            foreign,
-            input,
-            external,
+            EntryProcessContext {
+                key: key.map(|key| &key[offset..]),
+                frame_offset: frame_offset
+                    .checked_add(offset)
+                    .ok_or(DeviceContractError::InvalidDescriptor)?,
+                clock: shifted_clock
+                    .as_ref()
+                    .map(|c| c as &dyn NativeInstrumentClock),
+                output_clock: shifted_output_clock
+                    .as_ref()
+                    .map(|c| c as &dyn NativeInstrumentClock),
+                foreign,
+                input,
+                external,
+            },
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn process_entry_with_foreign_inner(
         entry: &mut RuntimeEntry,
         frames: &mut [StereoFrame],
-        key: Option<&[StereoFrame]>,
-        frame_offset: usize,
-        clock: Option<&dyn NativeInstrumentClock>,
-        output_clock: Option<&dyn NativeInstrumentClock>,
-        foreign: &mut dyn ForeignProcessors,
-        input: Option<NativeTransientValue>,
-        external: Option<NativeExternalAutomation<'_>>,
+        context: EntryProcessContext<'_>,
     ) -> Result<(), DeviceContractError> {
+        let EntryProcessContext {
+            key,
+            frame_offset,
+            clock,
+            output_clock,
+            foreign,
+            input,
+            external,
+        } = context;
         let external = external.filter(|window| {
             !entry.automation_frozen
                 && window.identity.owner() == entry.owner

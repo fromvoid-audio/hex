@@ -71,7 +71,7 @@ fn compressor_modulation_and_keyed_retry_do_not_allocate_or_free() {
 
         runtime.begin_block();
         runtime
-            .process_auxiliary_stage(
+            .process_auxiliary_stage_with_context(
                 0,
                 StereoAuxiliaryBlock::new(
                     black_box(&mut keyed),
@@ -80,11 +80,7 @@ fn compressor_modulation_and_keyed_retry_do_not_allocate_or_free() {
                     key.len(),
                 )
                 .unwrap(),
-                0,
-                None,
-                None,
-                None,
-                None,
+                hex_lattice::StageProcessContext::new(0, None, None),
                 &mut |_, _, _, _, _, _| {},
             )
             .unwrap();

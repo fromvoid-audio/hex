@@ -369,13 +369,9 @@ impl NativeDeviceDefinition for Eq8Definition {
         context: &hex_lattice::DevicePreparationContext<'_>,
         ids: &[ParameterId],
     ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
-        let prepared = automation::prepare(state, context.sample_rate, ids)?;
-        Ok(hex_lattice::PreparedRuntimeDevice {
-            matrix: StereoMatrix::identity(),
-            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(Arc::new(
-                prepared,
-            ))),
-        })
+        Ok(crate::parameter_binding::prepared_legacy_runtime(
+            automation::prepare(state, context.sample_rate, ids)?,
+        ))
     }
     fn prepare_matrix(
         &self,
@@ -1093,24 +1089,7 @@ impl NativeProcessorRuntime for Eq8Runtime {
     fn supports_parameter_automation(&self, id: ParameterId) -> bool {
         automation::slot(id).is_some_and(|i| self.controls.admitted(i))
     }
-    fn process_block_with_automation(
-        &mut self,
-        frames: &mut [StereoFrame],
-        _: Option<&dyn hex_lattice::NativeInstrumentClock>,
-        values: &dyn hex_lattice::NativeParameterAutomation,
-        _: &dyn hex_lattice::DeviceResources,
-    ) -> Result<(), DeviceContractError> {
-        self.process_automation(frames, values, false)
-    }
-    fn process_bypassed_block_with_automation(
-        &mut self,
-        frames: &mut [StereoFrame],
-        _: Option<&dyn hex_lattice::NativeInstrumentClock>,
-        values: &dyn hex_lattice::NativeParameterAutomation,
-        _: &dyn hex_lattice::DeviceResources,
-    ) -> Result<(), DeviceContractError> {
-        self.process_automation(frames, values, true)
-    }
+    crate::parameter_binding::delegate_automated_block_processing!(process_automation);
     fn reset(&mut self) {
         Eq8Runtime::reset(self);
     }

@@ -103,14 +103,10 @@ fn compressor_auxiliary_transaction_does_not_allocate_or_free() {
             let block =
                 StereoAuxiliaryBlock::new(&mut main, Some(&key), &mut silence, 256).unwrap();
             success &= chain
-                .process_auxiliary_stage(
+                .process_auxiliary_stage_with_context(
                     0,
                     block,
-                    0,
-                    None,
-                    None,
-                    None,
-                    None,
+                    hex_lattice::StageProcessContext::new(0, None, None),
                     &mut |_, _, _, _, _, _| {},
                 )
                 .is_ok();

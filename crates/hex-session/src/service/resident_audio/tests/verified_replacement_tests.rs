@@ -595,15 +595,7 @@ fn verified_recovered_sampler_and_file_prepare_in_one_bounded_control_graph() {
         .unwrap();
     let mut sink = CatalogSink { reject: false };
     let build = |sink: &mut CatalogSink| {
-        inputs.prepare(
-            candidate.project(),
-            sink,
-            &candidate.media_bank(),
-            candidate.sine_table(),
-            &candidate.audio_transforms,
-            &candidate.audio_clip_waveforms,
-            context,
-        )
+        inputs.prepare_for_session(candidate.project(), &candidate, sink, context)
     };
     let snapshot = build(&mut sink).unwrap();
     assert_eq!(snapshot.prepared_context, context);
@@ -641,15 +633,7 @@ fn verified_recovered_sampler_and_file_prepare_in_one_bounded_control_graph() {
         })
         .unwrap();
     let pitched = inputs
-        .prepare(
-            editor.project(),
-            &mut sink,
-            &candidate.media_bank(),
-            candidate.sine_table(),
-            &candidate.audio_transforms,
-            &candidate.audio_clip_waveforms,
-            context,
-        )
+        .prepare_for_session(editor.project(), &candidate, &mut sink, context)
         .unwrap();
     let pitched_files = pitched.file_sources.as_ref().unwrap();
     assert_eq!(pitched_files.pitches().len(), 1);
@@ -694,15 +678,7 @@ fn verified_recovered_sampler_and_file_prepare_in_one_bounded_control_graph() {
         hex_project::Created::Clip(_)
     ));
     let repitched = inputs
-        .prepare(
-            repitched_editor.project(),
-            &mut sink,
-            &candidate.media_bank(),
-            candidate.sine_table(),
-            &candidate.audio_transforms,
-            &candidate.audio_clip_waveforms,
-            context,
-        )
+        .prepare_for_session(repitched_editor.project(), &candidate, &mut sink, context)
         .unwrap();
     assert!(
         repitched
@@ -750,13 +726,10 @@ fn verified_recovered_sampler_and_file_prepare_in_one_bounded_control_graph() {
     let mut refusing = CatalogSink { reject: true };
     assert!(
         inputs
-            .prepare(
+            .prepare_for_session(
                 repitched_editor.project(),
+                &candidate,
                 &mut refusing,
-                &candidate.media_bank(),
-                candidate.sine_table(),
-                &candidate.audio_transforms,
-                &candidate.audio_clip_waveforms,
                 context,
             )
             .is_err()
@@ -867,15 +840,7 @@ fn verified_recovered_sampler_and_file_prepare_in_one_bounded_control_graph() {
     limited.max_frames = 0;
     assert!(
         limited
-            .prepare(
-                candidate.project(),
-                &mut sink,
-                &candidate.media_bank(),
-                candidate.sine_table(),
-                &candidate.audio_transforms,
-                &candidate.audio_clip_waveforms,
-                context
-            )
+            .prepare_for_session(candidate.project(), &candidate, &mut sink, context)
             .is_err()
     );
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));

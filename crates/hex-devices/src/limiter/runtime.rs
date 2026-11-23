@@ -903,24 +903,7 @@ impl OwnedProcessorRuntime for Runtime {
     fn process_block(&mut self, frames: &mut [StereoFrame], _: &dyn hex_lattice::DeviceResources) {
         self.process(frames, false);
     }
-    fn process_block_with_automation(
-        &mut self,
-        frames: &mut [StereoFrame],
-        _: Option<&dyn hex_lattice::NativeInstrumentClock>,
-        values: &dyn hex_lattice::NativeParameterAutomation,
-        _: &dyn hex_lattice::DeviceResources,
-    ) -> Result<(), DeviceContractError> {
-        self.process_automation(frames, values, false)
-    }
-    fn process_bypassed_block_with_automation(
-        &mut self,
-        frames: &mut [StereoFrame],
-        _: Option<&dyn hex_lattice::NativeInstrumentClock>,
-        values: &dyn hex_lattice::NativeParameterAutomation,
-        _: &dyn hex_lattice::DeviceResources,
-    ) -> Result<(), DeviceContractError> {
-        self.process_automation(frames, values, true)
-    }
+    crate::parameter_binding::delegate_automated_block_processing!(process_automation);
     fn process_bypassed_block_with_clock(
         &mut self,
         frames: &mut [StereoFrame],

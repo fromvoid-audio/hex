@@ -1488,12 +1488,26 @@ pub enum NativeDeviceDropSource {
 #[derive(Debug)]
 pub enum SubmitError {
     /// The bounded request queue is full; the same request may be retried.
-    Full(Request),
+    Full(Box<Request>),
     /// The session worker has stopped; no request will be processed.
-    Closed(Request),
+    Closed(Box<Request>),
     /// The service refused this request before queueing it, for the stated
     /// reason. No terminal event will arrive for it.
-    Busy(Request, BusyReason),
+    Busy(Box<Request>, BusyReason),
+}
+
+impl SubmitError {
+    pub fn full(request: Request) -> Self {
+        Self::Full(Box::new(request))
+    }
+
+    pub fn closed(request: Request) -> Self {
+        Self::Closed(Box::new(request))
+    }
+
+    pub fn busy(request: Request, reason: BusyReason) -> Self {
+        Self::Busy(Box::new(request), reason)
+    }
 }
 
 /// Why [`Service`] refused a request with [`SubmitError::Busy`]. Each reason

@@ -1180,7 +1180,7 @@ fn request_queue_is_bounded_and_dropping_service_is_nonblocking() {
         })) {
             Ok(()) => {}
             Err(SubmitError::Full(request)) => {
-                full_request = Some(request);
+                full_request = Some(*request);
                 break;
             }
             Err(SubmitError::Closed(_)) => panic!("worker exited unexpectedly"),

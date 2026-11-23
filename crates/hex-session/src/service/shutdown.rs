@@ -128,7 +128,7 @@ mod tests {
         assert!(!output.exists());
         assert!(matches!(
             service.submit(Request::Undo),
-            Err(SubmitError::Closed(Request::Undo))
+            Err(SubmitError::Closed(request)) if matches!(*request, Request::Undo)
         ));
         assert_eq!(service.shutdown(Duration::ZERO), Ok(()), "idempotent");
     }
