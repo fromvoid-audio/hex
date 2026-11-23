@@ -2234,11 +2234,11 @@ impl WorkerEvents {
                 audio.resident_publication_readiness()
             });
         match super::publication_wait::Wait::begin(queued, readiness) {
-            Ok(wait) => {
+            super::publication_wait::Step::Waiting(wait) => {
                 self.publication_wait = Some(wait);
                 None
             }
-            Err(queued) => Some(queued),
+            super::publication_wait::Step::Ready(queued) => Some(queued),
         }
     }
     /// Begin the stopped Arrangement lease for a request that fences first;
@@ -2450,8 +2450,8 @@ impl WorkerEvents {
                     audio.resident_publication_readiness()
                 });
             match wait.poll(readiness, document_intent.load(Ordering::Acquire)) {
-                Ok(request) => return Some(request),
-                Err(wait) => self.publication_wait = Some(wait),
+                super::publication_wait::Step::Ready(request) => return Some(request),
+                super::publication_wait::Step::Waiting(wait) => self.publication_wait = Some(wait),
             }
             thread::sleep(super::publication_wait::POLL);
         }
@@ -2504,7 +2504,7 @@ impl WorkerEvents {
             }
             if let Some(gesture) = control_pending.gesture {
                 return Some(QueuedRequest::continuation(
-                    Request::DeviceGesture(gesture),
+                    Request::device_gesture(gesture),
                     document_intent,
                 ));
             }

@@ -17,8 +17,8 @@ impl EditorView {
         self.enqueue_with_clip_scope(request, false)
     }
 
-    /// Recorded takes retain their own no-warp policy, not the browser-import preference.
-    pub(in crate::editor) fn enqueue_recorded_audio(&mut self, request: Request) -> bool {
+    /// Submit an import whose producer already owns its warp policy.
+    pub(in crate::editor) fn enqueue_captured_audio_import(&mut self, request: Request) -> bool {
         self.enqueue_with_clip_scope(request, false)
     }
 
@@ -2388,24 +2388,6 @@ pub(super) fn record_paused_republish_rejection(
         changed |= replace_status(status, "audio update waiting for pause or stop");
     }
     changed
-}
-
-pub(in crate::editor) fn clear_stale_playback_unavailable_error<
-    E: std::ops::Deref<Target = str>,
->(
-    error: &mut Option<E>,
-) -> bool {
-    let stale = error.as_deref().is_some_and(|message| {
-        matches!(
-            message,
-            "playback source is unavailable · cannot seek safely"
-                | "playback source is unavailable · retry playback when audio is ready"
-        )
-    });
-    if stale {
-        *error = None;
-    }
-    stale
 }
 
 #[cfg(test)]

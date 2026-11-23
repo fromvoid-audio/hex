@@ -215,6 +215,7 @@ impl EditorView {
                             "project worker stopped · new project cancelled",
                         );
                     }
+                    self.submitted_clip_cuts.clear();
                     self.pending_created_note_selection = None;
                     self.midi_step.cancel_pending();
                     visible_change |= self.retire_pending_trim();
@@ -246,7 +247,7 @@ impl EditorView {
                     visible_change |= self.retire_all_eq_creations();
                     visible_change |= self.pending_loop.take().is_some();
                     visible_change |= self.section_launch_after_loop.take().is_some();
-                    self.browser_sample_insert_in_flight = false;
+                    self.browser_insertion_flight = None;
                     visible_change |= !self.pending_browser_insertions.is_empty();
                     self.pending_browser_insertions.clear();
                     break;

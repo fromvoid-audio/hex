@@ -380,7 +380,7 @@ pub(super) fn eq_gesture(h: &mut Harness, request: GestureRequest) -> Event {
     h.service
         .as_ref()
         .unwrap()
-        .submit(Request::DeviceGesture(request))
+        .submit(Request::device_gesture(request))
         .unwrap();
     loop {
         let event = h.next();

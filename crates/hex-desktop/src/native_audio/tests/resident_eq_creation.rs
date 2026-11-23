@@ -66,7 +66,7 @@ fn eq_curve_drag_and_burst_reach_the_actual_callback() {
         generation: 0,
         token: 17,
     };
-    let began = h.run(Request::DeviceGesture(GestureRequest::Begin {
+    let began = h.run(Request::device_gesture(GestureRequest::Begin {
         key,
         target: GestureTarget::DeviceParameterPair {
             device,
@@ -79,7 +79,7 @@ fn eq_curve_drag_and_burst_reach_the_actual_callback() {
     assert!(last.iter().all(|sample| (*sample - 0.25).abs() < 0.001));
     for (sequence, frequency, gain) in [(1, 1000.0, 12.0), (2, 400.0, -12.0), (3, 750.0, 0.0)] {
         h.service
-            .submit(Request::DeviceGesture(GestureRequest::ChangePair {
+            .submit(Request::device_gesture(GestureRequest::ChangePair {
                 key,
                 sequence,
                 value: ParameterPairValue {
@@ -152,7 +152,7 @@ fn eq_curve_drag_and_burst_reach_the_actual_callback() {
     // that the final preview is really installed and its audio stays smooth.
     for sequence in 4..=11 {
         h.service
-            .submit(Request::DeviceGesture(GestureRequest::ChangePair {
+            .submit(Request::device_gesture(GestureRequest::ChangePair {
                 key,
                 sequence,
                 value: ParameterPairValue {
@@ -355,7 +355,7 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                 generation: 0,
                 token: 1,
             };
-            let begin = h.run(Request::DeviceGesture(GestureRequest::BeginEqCreation {
+            let begin = h.run(Request::device_gesture(GestureRequest::BeginEqCreation {
                 key,
                 device,
                 snapshot: draft,
@@ -363,7 +363,7 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
             assert!(begin.gesture_ack.unwrap().accepted);
             if owner == 0 && kind == NodeKind::Bell {
                 h.refuse.store(true, Ordering::Release);
-                let refused = h.run(Request::DeviceGesture(GestureRequest::ChangeEqCreation {
+                let refused = h.run(Request::device_gesture(GestureRequest::ChangeEqCreation {
                     key,
                     sequence: 1,
                     snapshot: draft,
@@ -374,7 +374,7 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                 assert!((level(&h) - dry).abs() < dry * 0.05);
                 h.refuse.store(false, Ordering::Release);
             }
-            let preview = h.run(Request::DeviceGesture(GestureRequest::ChangeEqCreation {
+            let preview = h.run(Request::device_gesture(GestureRequest::ChangeEqCreation {
                 key,
                 sequence: 1,
                 snapshot: draft,
@@ -415,7 +415,7 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                 let mut changed = draft;
                 changed.node.gain_db = -12.0;
                 h.service
-                    .submit(Request::DeviceGesture(GestureRequest::CommitEqCreation {
+                    .submit(Request::device_gesture(GestureRequest::CommitEqCreation {
                         key,
                         sequence: 2,
                         snapshot: changed,
@@ -430,7 +430,7 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                     "refused final state cannot replace accepted preview"
                 );
                 h.refuse.store(false, Ordering::Release);
-                let cancelled = h.run(Request::DeviceGesture(GestureRequest::Cancel { key }));
+                let cancelled = h.run(Request::device_gesture(GestureRequest::Cancel { key }));
                 (applied, _) = h.applied(preview_audio);
                 assert_eq!(cancelled.state.project.snapshot(), before);
                 assert!((level(&h) - dry).abs() < dry * 0.05);
@@ -440,7 +440,7 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                 h.applied(applied);
                 continue;
             }
-            let committed = h.run(Request::DeviceGesture(GestureRequest::CommitEqCreation {
+            let committed = h.run(Request::device_gesture(GestureRequest::CommitEqCreation {
                 key,
                 sequence: 2,
                 snapshot: draft,
@@ -685,7 +685,7 @@ fn held_sampler_note_survives_eq_creation_commit_and_history_inside_a_launched_l
         token: 1,
     };
     assert!(
-        h.run(Request::DeviceGesture(GestureRequest::BeginEqCreation {
+        h.run(Request::device_gesture(GestureRequest::BeginEqCreation {
             key,
             device,
             snapshot: draft,
@@ -694,7 +694,7 @@ fn held_sampler_note_survives_eq_creation_commit_and_history_inside_a_launched_l
         .unwrap()
         .accepted
     );
-    let preview = h.run(Request::DeviceGesture(GestureRequest::ChangeEqCreation {
+    let preview = h.run(Request::device_gesture(GestureRequest::ChangeEqCreation {
         key,
         sequence: 1,
         snapshot: draft,
@@ -704,7 +704,7 @@ fn held_sampler_note_survives_eq_creation_commit_and_history_inside_a_launched_l
     let held = level(&h);
     assert!(held > dry * 1.5);
     assert_runtime_loop(&h);
-    let committed = h.run(Request::DeviceGesture(GestureRequest::CommitEqCreation {
+    let committed = h.run(Request::device_gesture(GestureRequest::CommitEqCreation {
         key,
         sequence: 2,
         snapshot: draft,
@@ -772,21 +772,21 @@ fn refused_eq_creation_releases_the_editor_and_restart_discards_only_the_preview
         token,
     };
     let begin = |token, snapshot| {
-        Request::DeviceGesture(GestureRequest::BeginEqCreation {
+        Request::device_gesture(GestureRequest::BeginEqCreation {
             key: key(token),
             device,
             snapshot,
         })
     };
     let change = |token, snapshot| {
-        Request::DeviceGesture(GestureRequest::ChangeEqCreation {
+        Request::device_gesture(GestureRequest::ChangeEqCreation {
             key: key(token),
             sequence: 1,
             snapshot,
         })
     };
     let commit = |token, snapshot| {
-        Request::DeviceGesture(GestureRequest::CommitEqCreation {
+        Request::device_gesture(GestureRequest::CommitEqCreation {
             key: key(token),
             sequence: 2,
             snapshot,

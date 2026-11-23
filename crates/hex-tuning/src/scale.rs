@@ -242,7 +242,7 @@ impl Scale {
         if self.count >= MAX_DEGREES
             || !cents.is_finite()
             || cents <= 0.0
-            || cents > self.period_cents - MIN_GAP_CENTS
+            || cents >= self.period_cents
         {
             return None;
         }
@@ -596,6 +596,30 @@ mod tests {
         scale.set_count(3);
         assert!(scale.valid());
         assert_eq!(scale.frequency(60), 220.0);
+    }
+
+    #[test]
+    fn clicked_insertion_measures_the_gap_to_the_first_degree_across_the_seam() {
+        for first in [0.0, 20.0] {
+            let mut cents = [0.0; MAX_DEGREES];
+            cents[..3].copy_from_slice(&[first, 400.0, 1000.0]);
+            let mut scale = Scale::new(3, cents, 60, 220.0, 1, 1200.0).unwrap();
+            let original = scale;
+            for rejected in [0.0, 1200.0, 1000.5] {
+                assert_eq!(scale.insert_degree(rejected), None);
+                assert_eq!(scale, original);
+            }
+            if first == 0.0 {
+                assert_eq!(scale.insert_degree(1199.5), None);
+                assert_eq!(scale, original);
+                assert_eq!(scale.insert_degree(1199.0), Some(3));
+            } else {
+                assert_eq!(scale.insert_degree(1199.5), Some(3));
+                assert_eq!(&scale.cents[..scale.count], &[20.0, 400.0, 1000.0, 1199.5]);
+            }
+            assert!(scale.valid());
+            assert_eq!(scale.frequency(60), 220.0);
+        }
     }
 
     #[test]

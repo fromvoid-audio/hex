@@ -15,6 +15,28 @@ const TIMES: [f32; 8] = [
 const TAPS: [f32; 8] = [
     0.0043, 0.0117, 0.0193, 0.0271, 0.0379, 0.0499, 0.0611, 0.0737,
 ];
+// Precomputed (sin, cos) for early-reflection spin tap offsets `TAU * i * 0.137`.
+const SPIN_TAP_SIN_COS: [(f32, f32); 8] = [
+    (0.0, 1.0),
+    (0.7583619, 0.6518337),
+    (0.9886518, -0.1502256),
+    (0.5305112, -0.8476779),
+    (-0.2970416, -0.9548646),
+    (-0.9177547, -0.3971479),
+    (-0.8994052, 0.4371158),
+    (-0.2547707, 0.9670015),
+];
+// Precomputed (sin, cos) for late-tank chorus tap offsets `TAU * i * 0.173`.
+const CHORUS_TAP_SIN_COS: [(f32, f32); 8] = [
+    (0.0, 1.0),
+    (0.8852313, 0.4651511),
+    (0.8235326, -0.567269),
+    (-0.1190972, -0.9928826),
+    (-0.9343289, -0.3564119),
+    (-0.750111, 0.6613119),
+    (0.236499, 0.9716317),
+    (0.9701266, 0.2425992),
+];
 const COEFFICIENTS: usize = 32;
 type FeedbackGains = (f32, f32, f32, f32);
 type Rotations = [Option<(f32, f32)>; 3];
@@ -704,6 +726,13 @@ impl ReverbRuntime {
         let hi_alpha = output.high_alpha.unwrap_or(self.coefficients[27].current);
         let mut late_input = [0.0; 2];
         let mut early = [0.0; 2];
+        let spin_scale = output.spin.unwrap_or_else(|| self.v(p::SPIN))
+            * spin_amount
+            * 0.000025
+            * self.tank_rate;
+        let spin_sc =
+            (spin_scale != 0.0).then(|| (std::f32::consts::TAU * self.spin_phase).sin_cos());
+        let tap_scale = size * (0.75 + 0.5 * shape) * self.tank_rate;
         for c in 0..2 {
             let mut x = input[c] * excitation;
             let high = high_filter.apply(&mut self.input_low[c], x, true);
@@ -712,16 +741,16 @@ impl ReverbRuntime {
             x += (low - x) * output.hi_cut.unwrap_or_else(|| self.v(p::HI_CUT));
             self.inputs[c].push(x);
             late_input[c] = self.inputs[c].read::<MATURE>(predelay + 1.0);
+            // Channel 1 adds +0.25 turns (+pi/2): sin(a + pi/2 + b) = cos(a)cos(b) - sin(a)sin(b).
+            let spin_channel = spin_sc.map(|(s, co)| if c == 0 { (s, co) } else { (co, -s) });
             for (i, seconds) in TAPS.into_iter().enumerate() {
-                let phase = self.spin_phase + c as f32 * 0.25 + i as f32 * 0.137;
-                let spin = (std::f32::consts::TAU * phase).sin()
-                    * output.spin.unwrap_or_else(|| self.v(p::SPIN))
-                    * spin_amount
-                    * 0.000025
-                    * self.tank_rate;
-                let delay = predelay
-                    + (seconds * size * (0.75 + 0.5 * shape) * self.tank_rate + spin).max(0.0)
-                    + 1.0;
+                let spin = if let Some((s, co)) = spin_channel {
+                    let (tap_sin, tap_cos) = SPIN_TAP_SIN_COS[i];
+                    (s * tap_cos + co * tap_sin) * spin_scale
+                } else {
+                    0.0
+                };
+                let delay = predelay + (seconds * tap_scale + spin).max(0.0) + 1.0;
                 let weight = (1.0 - shape + shape * (i as f32 / 7.0)) * 0.125;
                 early[c] += self.inputs[c].read::<MATURE>(delay)
                     * weight
@@ -734,9 +763,15 @@ impl ReverbRuntime {
             * 0.001
             * self.tank_rate
             * (1.0 - freeze);
+        let chorus_sc =
+            (depth != 0.0).then(|| (std::f32::consts::TAU * self.chorus_phase).sin_cos());
         let delayed = std::array::from_fn(|i| {
-            let modulation =
-                (std::f32::consts::TAU * (self.chorus_phase + i as f32 * 0.173)).sin() * depth;
+            let modulation = if let Some((s, co)) = chorus_sc {
+                let (tap_sin, tap_cos) = CHORUS_TAP_SIN_COS[i];
+                (s * tap_cos + co * tap_sin) * depth
+            } else {
+                0.0
+            };
             let base = TIMES[i] * size * self.tank_rate;
             let delay = base + freeze * (base.round() - base);
             self.lines[i].read::<MATURE>(delay + modulation)
@@ -1276,6 +1311,45 @@ mod tests {
                 std::mem::size_of::<ReverbRuntime>() + heap
             );
             assert!(prepared.declared_runtime_bytes() <= hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES);
+        }
+    }
+
+    #[test]
+    fn modulation_angle_addition_tables_match_direct_sin_for_all_taps_and_channels() {
+        for i in 0..8 {
+            let (expected_spin_sin, expected_spin_cos) =
+                (std::f32::consts::TAU * i as f32 * 0.137).sin_cos();
+            assert!((SPIN_TAP_SIN_COS[i].0 - expected_spin_sin).abs() < 1e-6);
+            assert!((SPIN_TAP_SIN_COS[i].1 - expected_spin_cos).abs() < 1e-6);
+
+            let (expected_chorus_sin, expected_chorus_cos) =
+                (std::f32::consts::TAU * i as f32 * 0.173).sin_cos();
+            assert!((CHORUS_TAP_SIN_COS[i].0 - expected_chorus_sin).abs() < 1e-6);
+            assert!((CHORUS_TAP_SIN_COS[i].1 - expected_chorus_cos).abs() < 1e-6);
+        }
+        for phase in [0.0_f32, 0.07, 0.25, 0.43, 0.77, 0.99] {
+            let (s, co) = (std::f32::consts::TAU * phase).sin_cos();
+            for c in 0..2 {
+                let (cs, cco) = if c == 0 { (s, co) } else { (co, -s) };
+                for (i, &(tap_sin, tap_cos)) in SPIN_TAP_SIN_COS.iter().enumerate() {
+                    let approx = cs * tap_cos + cco * tap_sin;
+                    let exact = (std::f32::consts::TAU
+                        * (phase + c as f32 * 0.25 + i as f32 * 0.137))
+                        .sin();
+                    assert!(
+                        (approx - exact).abs() < 1e-5,
+                        "spin phase={phase} c={c} i={i}: approx={approx} exact={exact}"
+                    );
+                }
+            }
+            for (i, &(tap_sin, tap_cos)) in CHORUS_TAP_SIN_COS.iter().enumerate() {
+                let approx = s * tap_cos + co * tap_sin;
+                let exact = (std::f32::consts::TAU * (phase + i as f32 * 0.173)).sin();
+                assert!(
+                    (approx - exact).abs() < 1e-5,
+                    "chorus phase={phase} i={i}: approx={approx} exact={exact}"
+                );
+            }
         }
     }
 }

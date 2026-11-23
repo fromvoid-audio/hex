@@ -437,7 +437,7 @@ fn removing_return_with_active_parameter_gesture_cancels_stale_owner() {
         token: 1,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::DeviceParameter {
                 device,
@@ -453,7 +453,7 @@ fn removing_return_with_active_parameter_gesture_cancels_stale_owner() {
             .is_some_and(|ack| ack.reason.is_none())
     );
     service
-        .submit(Request::DeviceGesture(GestureRequest::Change {
+        .submit(Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(2.0),
@@ -665,7 +665,7 @@ fn return_send_gesture_previews_transiently_and_save_barrier_commits_once() {
         return_track,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key,
             target,
         }))
@@ -682,7 +682,7 @@ fn return_send_gesture_previews_transiently_and_save_barrier_commits_once() {
     );
 
     service
-        .submit(Request::DeviceGesture(GestureRequest::Change {
+        .submit(Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(0.75),
@@ -792,14 +792,14 @@ fn return_send_gesture_cancel_rebases_after_same_target_and_unrelated_edits() {
         token: 1,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key: first_key,
             target,
         }))
         .expect("begin send gesture");
     let _ = wait(&service);
     service
-        .submit(Request::DeviceGesture(GestureRequest::Change {
+        .submit(Request::device_gesture(GestureRequest::Change {
             key: first_key,
             sequence: 1,
             value: ParameterValue::Float(0.75),
@@ -833,7 +833,7 @@ fn return_send_gesture_cancel_rebases_after_same_target_and_unrelated_edits() {
         0.75
     );
     service
-        .submit(Request::DeviceGesture(GestureRequest::Cancel {
+        .submit(Request::device_gesture(GestureRequest::Cancel {
             key: first_key,
         }))
         .expect("cancel after unrelated edit");
@@ -865,14 +865,14 @@ fn return_send_gesture_cancel_rebases_after_same_target_and_unrelated_edits() {
         token: 2,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key: second_key,
             target,
         }))
         .expect("begin second send gesture");
     let _ = wait(&service);
     service
-        .submit(Request::DeviceGesture(GestureRequest::Change {
+        .submit(Request::device_gesture(GestureRequest::Change {
             key: second_key,
             sequence: 1,
             value: ParameterValue::Float(0.8),
@@ -905,7 +905,7 @@ fn return_send_gesture_cancel_rebases_after_same_target_and_unrelated_edits() {
         0.8
     );
     service
-        .submit(Request::DeviceGesture(GestureRequest::Cancel {
+        .submit(Request::device_gesture(GestureRequest::Cancel {
             key: second_key,
         }))
         .expect("cancel after same-target edit");
@@ -972,7 +972,7 @@ fn rejected_send_gesture_values_and_removed_targets_never_change_canonical_state
         token: 1,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key,
             target,
         }))
@@ -983,7 +983,7 @@ fn rejected_send_gesture_values_and_removed_targets_never_change_canonical_state
         .enumerate()
     {
         service
-            .submit(Request::DeviceGesture(GestureRequest::Change {
+            .submit(Request::device_gesture(GestureRequest::Change {
                 key,
                 sequence: sequence as u64 + 1,
                 value: ParameterValue::Float(value),
@@ -997,7 +997,7 @@ fn rejected_send_gesture_values_and_removed_targets_never_change_canonical_state
         assert_eq!(event.active_device_gesture.unwrap().sequence, 0);
     }
     service
-        .submit(Request::DeviceGesture(GestureRequest::Commit {
+        .submit(Request::device_gesture(GestureRequest::Commit {
             manual_edit: false,
             key,
             sequence: 1,
@@ -1024,14 +1024,14 @@ fn rejected_send_gesture_values_and_removed_targets_never_change_canonical_state
         token: 2,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key: remove_key,
             target,
         }))
         .expect("begin removal gesture");
     let _ = wait(&service);
     service
-        .submit(Request::DeviceGesture(GestureRequest::Change {
+        .submit(Request::device_gesture(GestureRequest::Change {
             key: remove_key,
             sequence: 1,
             value: ParameterValue::Float(0.9),
@@ -1051,7 +1051,7 @@ fn rejected_send_gesture_values_and_removed_targets_never_change_canonical_state
     );
     assert!(removed.active_device_gesture.is_none());
     service
-        .submit(Request::DeviceGesture(GestureRequest::Commit {
+        .submit(Request::device_gesture(GestureRequest::Commit {
             manual_edit: false,
             key: remove_key,
             sequence: 2,

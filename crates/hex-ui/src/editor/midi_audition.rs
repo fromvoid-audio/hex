@@ -27,6 +27,7 @@ pub(super) struct Intent {
 }
 
 struct Active {
+    trigger: u64,
     intent: Intent,
     output: Arc<ComputerKeyboardInput>,
 }
@@ -45,7 +46,7 @@ impl MidiAudition {
                 && active.intent.len == notes.len()
                 && active.intent.notes[..active.intent.len] == *notes
                 && !active.output.is_cancelled()
-                && active.output.live_audition_id() != 0
+                && active.output.live_audition_id() == active.trigger
         })
     }
 }
@@ -399,9 +400,11 @@ impl EditorView {
         {
             *revision = state.revision;
         }
-        match input.trigger_live_note_audition_on_control(&intent.notes[..intent.len], gate_frames) {
-            Ok(()) => {
+        match input.trigger_live_note_audition_on_control(&intent.notes[..intent.len], gate_frames)
+        {
+            Ok(trigger) => {
                 self.midi_audition.active = Some(Active {
+                    trigger,
                     intent,
                     output: input,
                 });
@@ -463,6 +466,11 @@ impl EditorView {
         }
 
         if let Some(active) = &self.midi_audition.active {
+            if active.output.live_note_audition_refused(active.trigger) {
+                self.midi_audition.active = None;
+                self.error = Some("instrument could not play the complete audition chord".into());
+                return Some(true);
+            }
             let failed = self.computer_keyboard.input.as_ref().is_none_or(|input| {
                 !Arc::ptr_eq(input, &active.output)
                     || input.is_cancelled()
@@ -567,7 +575,7 @@ impl EditorView {
             && self.midi_audition.active.as_ref().is_some_and(|active| {
                 active.intent.track == track
                     && !active.output.is_cancelled()
-                    && active.output.live_audition_id() != 0
+                    && active.output.live_audition_id() == active.trigger
             })
         {
             return Some(false);

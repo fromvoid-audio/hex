@@ -7,6 +7,22 @@ use hex_session::{
     service::{BusyReason, SubmitError},
 };
 
+pub(super) fn clear_stale_playback_unavailable_error<E: std::ops::Deref<Target = str>>(
+    error: &mut Option<E>,
+) -> bool {
+    let stale = error.as_deref().is_some_and(|message| {
+        matches!(
+            message,
+            "playback source is unavailable · cannot seek safely"
+                | "playback source is unavailable · retry playback when audio is ready"
+        )
+    });
+    if stale {
+        *error = None;
+    }
+    stale
+}
+
 pub(super) fn seek_submit(error: &ArrangementSeekSubmitError) -> &'static str {
     match error {
         ArrangementSeekSubmitError::Closed => "the seek worker stopped · reopen the project",

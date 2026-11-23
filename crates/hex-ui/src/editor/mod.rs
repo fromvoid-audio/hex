@@ -878,6 +878,7 @@ pub(super) struct EditorView {
     routing_page: usize,
     pub(in crate::editor) selected_clip: Option<ClipId>,
     clip_selection: clip_selection::ClipSelection,
+    submitted_clip_cuts: Vec<pending_edit::Receipt>,
     clip_name_edit: Option<clip_name::NameEdit>,
     sections: arrangement_sections::Sections,
     locators: arrangement_locators::Locators,
@@ -943,7 +944,7 @@ pub(super) struct EditorView {
     sampler_parameter: sampler_parameter::State,
     audio_batch: Option<Arc<hex_session::import_batch_decode::AudioBatchControl>>,
     audio_batch_progress: Option<hex_session::import_batch_decode::AudioBatchProgress>,
-    browser_sample_insert_in_flight: bool,
+    browser_insertion_flight: Option<browser::insertion::BrowserInsertionFlight>,
     pending_browser_insertions: VecDeque<browser::insertion::PendingBrowserInsertion>,
     pending_playback: Option<PendingPlayback>,
     pending_resident_publication: Option<PendingResidentPublication>,
@@ -1789,6 +1790,7 @@ impl EditorView {
             routing_page: 0,
             selected_clip: None,
             clip_selection: clip_selection::ClipSelection::default(),
+            submitted_clip_cuts: Vec::new(),
             clip_name_edit: None,
             sections: arrangement_sections::Sections::default(),
             locators: arrangement_locators::Locators::new(cx),
@@ -1852,7 +1854,7 @@ impl EditorView {
             sampler_parameter: Default::default(),
             audio_batch: None,
             audio_batch_progress: None,
-            browser_sample_insert_in_flight: false,
+            browser_insertion_flight: None,
             pending_browser_insertions: VecDeque::new(),
             pending_playback: None,
             pending_resident_publication: None,
@@ -2222,7 +2224,7 @@ impl EditorView {
                 } else if self.can_defer_toggle_play_for_inflight_publication() {
                     self.deferred_toggle_play = Some((start_frame, self.project_generation));
                     self.status = "applying audio update · playback starts when ready".into();
-                    controller::clear_stale_playback_unavailable_error(&mut self.error);
+                    user_errors::clear_stale_playback_unavailable_error(&mut self.error);
                     self.wake_poll();
                 } else {
                     self.error = Some("playback source is unavailable · cannot seek safely".into());

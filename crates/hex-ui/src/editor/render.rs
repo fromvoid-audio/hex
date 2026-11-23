@@ -802,13 +802,15 @@ impl Render for EditorView {
                     }
                 });
             })
-            .capture_any_mouse_down(cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
-                // A fresh primary press cannot coexist with an unretired clip press.
-                if event.button == MouseButton::Left {
-                    view.pointer_down = None;
-                }
-                super::device_panel::capture_navigation_pointer_down(view, event, window, cx);
-            }))
+            .capture_any_mouse_down(cx.listener(
+                |view, event: &gpui::MouseDownEvent, window, cx| {
+                    // A fresh primary press cannot coexist with an unretired clip press.
+                    if event.button == MouseButton::Left {
+                        view.pointer_down = None;
+                    }
+                    super::device_panel::capture_navigation_pointer_down(view, event, window, cx);
+                },
+            ))
             .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, window, cx| {
                 if event.button == MouseButton::Left
                     && let Some(drag) = view.active_browser_audio_drag.clone()

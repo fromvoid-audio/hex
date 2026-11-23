@@ -403,7 +403,7 @@ pub(crate) fn resolve_prepared_seek_terminal<E: From<String> + std::ops::Deref<T
             _ => "cursor ready",
         }
         .into();
-        crate::editor::controller::clear_stale_playback_unavailable_error(error);
+        crate::editor::user_errors::clear_stale_playback_unavailable_error(error);
     }
     true
 }

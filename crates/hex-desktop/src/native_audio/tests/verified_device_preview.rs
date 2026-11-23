@@ -333,7 +333,7 @@ fn verified_eq_node_drag_previews_cancels_and_commits_with_one_undo() {
         generation: context.project_generation,
         token: 1,
     };
-    h.run(Request::DeviceGesture(GestureRequest::Begin {
+    h.run(Request::device_gesture(GestureRequest::Begin {
         key,
         target: GestureTarget::DeviceParameterPair {
             device,
@@ -341,7 +341,7 @@ fn verified_eq_node_drag_previews_cancels_and_commits_with_one_undo() {
             second,
         },
     }));
-    let preview = h.run(Request::DeviceGesture(GestureRequest::ChangePair {
+    let preview = h.run(Request::device_gesture(GestureRequest::ChangePair {
         key,
         sequence: 1,
         value: changed,
@@ -349,18 +349,18 @@ fn verified_eq_node_drag_previews_cancels_and_commits_with_one_undo() {
     assert!(preview.gesture_ack.unwrap().accepted);
     assert_eq!(preview.state.project, canonical);
     let audible = wait_tone(&h, applied + 1, 0.25);
-    let cancelled = h.run(Request::DeviceGesture(GestureRequest::Cancel { key }));
+    let cancelled = h.run(Request::device_gesture(GestureRequest::Cancel { key }));
     assert!(cancelled.gesture_ack.unwrap().accepted);
     assert_eq!(cancelled.state.project, canonical);
     let restored = wait_tone(&h, audible + 1, 0.125);
 
     let key = GestureKey { token: 2, ..key };
-    h.run(Request::DeviceGesture(GestureRequest::BeginSnapshot {
+    h.run(Request::device_gesture(GestureRequest::BeginSnapshot {
         key,
         device,
         snapshot: base,
     }));
-    let preview = h.run(Request::DeviceGesture(GestureRequest::ChangeSnapshot {
+    let preview = h.run(Request::device_gesture(GestureRequest::ChangeSnapshot {
         key,
         sequence: 1,
         snapshot,
@@ -369,7 +369,7 @@ fn verified_eq_node_drag_previews_cancels_and_commits_with_one_undo() {
     assert!(preview.gesture_ack.unwrap().accepted);
     assert_eq!(preview.state.project, canonical);
     let audible = wait_tone(&h, restored + 1, 0.25);
-    let committed = h.run(Request::DeviceGesture(GestureRequest::CommitSnapshot {
+    let committed = h.run(Request::device_gesture(GestureRequest::CommitSnapshot {
         key,
         sequence: 1,
         snapshot,
@@ -497,33 +497,33 @@ fn width_preview(automated_balance: bool, dc_remove: bool) {
             device,
             parameter: ParameterId::from_static(3),
         };
-        h.run(Request::DeviceGesture(GestureRequest::Begin {
+        h.run(Request::device_gesture(GestureRequest::Begin {
             key,
             target,
         }));
         for (index, request) in [
-            Request::DeviceGesture(GestureRequest::Change {
+            Request::device_gesture(GestureRequest::Change {
                 key,
                 sequence: 1,
                 value: ParameterValue::Float(0.0),
             }),
-            Request::DeviceGesture(GestureRequest::Change {
+            Request::device_gesture(GestureRequest::Change {
                 key,
                 sequence: 2,
                 value: ParameterValue::Float(2.0),
             }),
-            Request::DeviceGesture(GestureRequest::Change {
+            Request::device_gesture(GestureRequest::Change {
                 key,
                 sequence: 3,
                 value: ParameterValue::Float(4.0),
             }),
-            Request::DeviceGesture(GestureRequest::Cancel { key }),
-            Request::DeviceGesture(GestureRequest::Change {
+            Request::device_gesture(GestureRequest::Cancel { key }),
+            Request::device_gesture(GestureRequest::Change {
                 key: second,
                 sequence: 1,
                 value: ParameterValue::Float(0.0),
             }),
-            Request::DeviceGesture(GestureRequest::Commit {
+            Request::device_gesture(GestureRequest::Commit {
                 key: second,
                 sequence: 1,
                 value: ParameterValue::Float(0.0),
@@ -536,7 +536,7 @@ fn width_preview(automated_balance: bool, dc_remove: bool) {
         .enumerate()
         {
             if index == 4 {
-                h.run(Request::DeviceGesture(GestureRequest::Begin {
+                h.run(Request::device_gesture(GestureRequest::Begin {
                     key: second,
                     target,
                 }));
@@ -597,7 +597,7 @@ fn width_preview(automated_balance: bool, dc_remove: bool) {
         );
         return;
     }
-    let begin = h.run(Request::DeviceGesture(GestureRequest::Begin {
+    let begin = h.run(Request::device_gesture(GestureRequest::Begin {
         key,
         target: GestureTarget::DeviceParameter {
             device,
@@ -611,7 +611,7 @@ fn width_preview(automated_balance: bool, dc_remove: bool) {
         (3, 4.0, [0.8125, -0.6875]),
     ] {
         let target = expected(target);
-        let changed = h.run(Request::DeviceGesture(GestureRequest::Change {
+        let changed = h.run(Request::device_gesture(GestureRequest::Change {
             key,
             sequence,
             value: ParameterValue::Float(width),
@@ -698,7 +698,7 @@ fn width_preview(automated_balance: bool, dc_remove: bool) {
         .received_verified_device
         .clone()
         .unwrap();
-    let cancelled = h.run(Request::DeviceGesture(GestureRequest::Cancel { key }));
+    let cancelled = h.run(Request::device_gesture(GestureRequest::Cancel { key }));
     assert!(cancelled.gesture_ack.unwrap().accepted);
     assert_eq!(cancelled.state.project, canonical);
     applied = wait_pcm(&h, applied, expected([0.25, -0.125]));
@@ -724,7 +724,7 @@ fn width_preview(automated_balance: bool, dc_remove: bool) {
         std::thread::sleep(Duration::from_millis(1));
     }
     let second = GestureKey { token: 2, ..key };
-    h.run(Request::DeviceGesture(GestureRequest::Begin {
+    h.run(Request::device_gesture(GestureRequest::Begin {
         key: second,
         target: GestureTarget::DeviceParameter {
             device,
@@ -733,14 +733,14 @@ fn width_preview(automated_balance: bool, dc_remove: bool) {
     }));
     // Queue changes with the callback idle: the existing single overlay coalesces.
     for sequence in 1..=32 {
-        h.run(Request::DeviceGesture(GestureRequest::Change {
+        h.run(Request::device_gesture(GestureRequest::Change {
             key: second,
             sequence,
             value: ParameterValue::Float(sequence as f32 / 8.0),
         }));
     }
     applied = wait_pcm(&h, applied, expected([0.8125, -0.6875]));
-    let committed = h.run(Request::DeviceGesture(GestureRequest::Commit {
+    let committed = h.run(Request::device_gesture(GestureRequest::Commit {
         manual_edit: true,
         key: second,
         sequence: 32,
@@ -755,14 +755,14 @@ fn width_preview(automated_balance: bool, dc_remove: bool) {
     assert_eq!(redone.state.project, committed.state.project);
     applied = wait_pcm(&h, applied, expected([0.8125, -0.6875]));
     let third = GestureKey { token: 3, ..key };
-    h.run(Request::DeviceGesture(GestureRequest::Begin {
+    h.run(Request::device_gesture(GestureRequest::Begin {
         key: third,
         target: GestureTarget::DeviceParameter {
             device,
             parameter: ParameterId::from_static(3),
         },
     }));
-    h.run(Request::DeviceGesture(GestureRequest::Change {
+    h.run(Request::device_gesture(GestureRequest::Change {
         key: third,
         sequence: 1,
         value: ParameterValue::Float(0.0),
@@ -771,7 +771,7 @@ fn width_preview(automated_balance: bool, dc_remove: bool) {
     h.service
         .as_ref()
         .unwrap()
-        .submit(Request::DeviceGesture(GestureRequest::Commit {
+        .submit(Request::device_gesture(GestureRequest::Commit {
             manual_edit: true,
             key: third,
             sequence: 2,

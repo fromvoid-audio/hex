@@ -39,6 +39,7 @@ pub(super) struct PendingKinds {
     track_reorder: bool,
     duplicate: bool,
     track_clipboard: bool,
+    clip_cut: bool,
     empty_track: Option<u64>,
     device_duplicate: bool,
     midi_drag: bool,
@@ -53,6 +54,7 @@ pub(super) struct PendingKinds {
     time_copy: bool,
     time_duplicate: bool,
     sample_drop: bool,
+    browser_insertion: bool,
     project_rate: bool,
 }
 
@@ -113,6 +115,7 @@ impl EditorView {
                 track_reorder: self.pending_track_reorder_matches(request),
                 duplicate: self.pending_duplicate_matches(request),
                 track_clipboard: self.pending_track_clipboard_matches(request),
+                clip_cut: matches!(request, Request::CutClips(_)),
                 empty_track: self.pending_empty_track_for_request(request),
                 device_duplicate: self.device_panel.pending_duplicate_matches(request),
                 midi_drag: self.pending_midi_drag_matches(request),
@@ -127,6 +130,10 @@ impl EditorView {
                 time_copy: self.pending_time_copy_matches(request),
                 time_duplicate: self.pending_time_duplicate_matches(request),
                 sample_drop: self.pending_sample_drop_matches(request),
+                browser_insertion: self
+                    .browser_insertion_flight
+                    .as_ref()
+                    .is_some_and(|flight| flight.matches(request)),
                 project_rate: self.project_rate_settings.matches(request),
             },
             import_intent: ImportIntent::capture(request),
@@ -167,6 +174,11 @@ impl EditorView {
         }
         if kinds.sample_drop {
             self.sample_drop_submitted();
+        }
+        if kinds.browser_insertion
+            && let Some(flight) = &mut self.browser_insertion_flight
+        {
+            flight.submitted(self.worker_requests_pending);
         }
         self.truncated_import_submitted(import_intent);
         if kinds.time_copy {
@@ -219,6 +231,9 @@ impl EditorView {
         }
         if kinds.track_reorder {
             self.track_reorder_submitted();
+        }
+        if kinds.clip_cut {
+            self.clip_cut_submitted();
         }
         if kinds.track_clipboard {
             self.track_clipboard_submitted();
@@ -330,16 +345,18 @@ impl EditorView {
             visible |= self.abandon_bounce();
         }
         clear_rejected_scene_duplicate(&mut self.pending_scene_duplicate, request);
-        if matches!(
-            request,
-            Request::ImportAudioBatch { .. } | Request::InsertProjectSample { .. }
-        ) {
-            if let Some(control) = self.audio_batch.take() {
-                control.request_cancel();
-            }
+        if let Request::ImportAudioBatch { control, .. } = request
+            && self
+                .audio_batch
+                .as_ref()
+                .is_some_and(|active| std::sync::Arc::ptr_eq(active, control))
+        {
+            control.request_cancel();
+            self.audio_batch = None;
             self.audio_batch_progress = None;
-            self.browser_sample_insert_in_flight = false;
-            self.pending_browser_insertions.clear();
+        }
+        if kinds.browser_insertion {
+            self.browser_insertion_flight = None;
         }
         if matches!(
             request,

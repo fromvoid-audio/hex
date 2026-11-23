@@ -17,6 +17,9 @@ struct Configuration {
     authored_stages: Vec<BandStages>,
     lanes: Vec<CompiledLane>,
     points: Vec<AutomationPoint>,
+    node_lane_ranges: [(u8, u8); MAX_NODES],
+    automated_nodes: u64,
+    granted_nodes: u64,
     mode: u8,
     gain: f64,
     parameters: Vec<automation::Grant>,
@@ -32,23 +35,26 @@ impl Configuration {
     fn node_at(&self, index: usize, beat: Option<u64>) -> Node {
         let mut node = self.nodes[index];
         if let Some(beat) = beat {
-            for lane in self.lanes.iter().filter(|l| l.node == index) {
+            let (start, end) = self.node_lane_ranges[index];
+            for lane in &self.lanes[usize::from(start)..usize::from(end)] {
                 let points = &self.points[lane.start..lane.end];
-                let mut prior = points[0];
-                let mut normalized = prior.normalized;
-                for next in points {
-                    if next.beat > beat {
-                        if lane.parameter.continuous() && beat > prior.beat {
-                            normalized = prior.normalized
-                                + (next.normalized - prior.normalized)
-                                    * ((beat - prior.beat) as f64 / (next.beat - prior.beat) as f64)
-                                        as f32;
-                        }
-                        break;
+                let split = points.partition_point(|point| point.beat <= beat);
+                let normalized = if split == 0 {
+                    points[0].normalized
+                } else if split >= points.len() {
+                    points[points.len() - 1].normalized
+                } else {
+                    let prior = points[split - 1];
+                    let next = points[split];
+                    if lane.parameter.continuous() && beat > prior.beat {
+                        prior.normalized
+                            + (next.normalized - prior.normalized)
+                                * ((beat - prior.beat) as f64 / (next.beat - prior.beat) as f64)
+                                    as f32
+                    } else {
+                        prior.normalized
                     }
-                    prior = *next;
-                    normalized = prior.normalized;
-                }
+                };
                 // All field/value pairs were validated on control. This match has
                 // no fallible callback path and preserves legacy S metadata.
                 match lane.parameter.value(normalized) {
@@ -161,6 +167,25 @@ impl PreparedEq {
                 end: points.len(),
             });
         }
+        lanes.sort_by_key(|lane| lane.node);
+        let mut node_lane_ranges = [(0_u8, 0_u8); MAX_NODES];
+        let mut automated_nodes = 0_u64;
+        let mut cursor = 0_usize;
+        while cursor < lanes.len() {
+            let node_index = lanes[cursor].node;
+            let start = cursor;
+            while cursor < lanes.len() && lanes[cursor].node == node_index {
+                cursor += 1;
+            }
+            node_lane_ranges[node_index] = (start as u8, cursor as u8);
+            automated_nodes |= 1_u64 << node_index;
+        }
+        let mut granted_nodes = 0_u64;
+        for grant in &parameters {
+            if let Some((index, _)) = grant.node_slot() {
+                granted_nodes |= 1_u64 << index;
+            }
+        }
         Ok(Self {
             sample_rate,
             configuration: Arc::new(Configuration {
@@ -168,6 +193,9 @@ impl PreparedEq {
                 authored_stages: stages,
                 lanes,
                 points,
+                node_lane_ranges,
+                automated_nodes,
+                granted_nodes,
                 mode: settings.mode,
                 gain: f64::from(settings.output_gain),
                 parameters,
@@ -192,9 +220,9 @@ impl PreparedNativeProcessor for PreparedEq {
     fn parameter_automation_descriptor(&self, id: ParameterId) -> Option<ParameterDescriptor> {
         self.configuration
             .parameters
-            .iter()
-            .find(|grant| grant.descriptor.id == id)
-            .map(|grant| grant.descriptor)
+            .binary_search_by_key(&id, |grant| grant.descriptor.id)
+            .ok()
+            .map(|index| self.configuration.parameters[index].descriptor)
     }
     fn supports_smoothed_bypass(&self) -> bool {
         true
@@ -702,18 +730,23 @@ impl EqRuntime {
                 self.audition_history = [[[0.0; 2]; 4]; 2];
                 self.mode_fade.clear();
             }
-            if self.refresh_target
-                || arrangement_changed
-                || discontinuity
-                || (automated && position % CADENCE == 0)
-            {
+            let refresh_all = self.refresh_target || discontinuity;
+            if refresh_all || arrangement_changed || (automated && position % CADENCE == 0) {
                 self.refresh_target = false;
                 let beat = if origin.is_some() && automated {
                     clock.and_then(|clock| clock.arrangement_beat_at_offset(offset))
                 } else {
                     None
                 };
+                let mut dynamic_mask = self.configuration.automated_nodes;
+                if node_overrides.is_some() {
+                    dynamic_mask |= self.configuration.granted_nodes;
+                }
                 for index in 0..self.configuration.nodes.len() {
+                    let is_dynamic = (dynamic_mask & (1_u64 << index)) != 0;
+                    if !refresh_all && !is_dynamic {
+                        continue;
+                    }
                     let mut node = self.configuration.node_at(index, beat);
                     if let Some(overrides) = node_overrides {
                         overrides.apply(index, &mut node);
@@ -721,7 +754,9 @@ impl EqRuntime {
                     let bank_changed = self.effective_banks[index] != node.bank;
                     self.effective_banks[index] = node.bank;
                     self.effective_enabled[index] = node.enabled;
-                    let target = if node.enabled {
+                    let target = if !is_dynamic {
+                        self.configuration.authored_stages[index]
+                    } else if node.enabled {
                         design(node, self.sample_rate)
                     } else {
                         [Coefficients::IDENTITY; 4]
