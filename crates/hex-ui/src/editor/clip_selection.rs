@@ -151,6 +151,45 @@ impl EditorView {
         self.midi_hit_cycle = None;
         true
     }
+    pub(super) fn clip_cut_submitted(&mut self) {
+        let mut receipt = super::pending_edit::Receipt::new(self.project_generation);
+        if receipt.submitted(self.worker_requests_pending) {
+            self.submitted_clip_cuts.push(receipt);
+        }
+    }
+
+    pub(super) fn observe_clip_cuts(&mut self, event: &hex_session::service::Event) -> bool {
+        use super::pending_edit::Disposition;
+        let mut completed = false;
+        self.submitted_clip_cuts.retain_mut(|receipt| {
+            match receipt.observe(
+                self.project_generation,
+                event.project_replaced,
+                event.request_complete,
+            ) {
+                Disposition::Waiting => true,
+                Disposition::Invalidated => false,
+                Disposition::Terminal => {
+                    completed = true;
+                    false
+                }
+            }
+        });
+        completed
+    }
+
+    /// When a cut removes the primary, keep only surviving members of the user's
+    /// current selection. Ordinary reconciliation otherwise picks a neighboring clip.
+    pub(super) fn surviving_cut_selection(
+        &mut self,
+        project: &Project,
+        revision: u64,
+    ) -> Option<ClipId> {
+        self.clip_selection
+            .reconcile(project, self.project_generation, revision);
+        self.clip_selection.members.first().copied()
+    }
+
     pub(super) fn reconcile_clip_selection(&mut self) {
         // A lane/header focus change clears the visible clip selection. A later
         // additive click must not resurrect those now invisible members.
