@@ -379,6 +379,41 @@ pub(in crate::service) fn defers_behind_resident_publication(request: &Request) 
     }
 }
 
+/// Buffers worker-produced `ExportEvent`s when the capacity-1 `export_events`
+/// channel already holds an unread event, flushing FIFO on subsequent polls
+/// without blocking the worker loop or dropping terminal completions/errors.
+#[derive(Default)]
+struct PendingExportEvents {
+    queued: std::collections::VecDeque<ExportEvent>,
+}
+
+impl PendingExportEvents {
+    fn is_empty(&self) -> bool {
+        self.queued.is_empty()
+    }
+
+    fn push_and_flush(&mut self, event: ExportEvent, sender: &SyncSender<ExportEvent>) {
+        self.queued.push_back(event);
+        self.flush(sender);
+    }
+
+    fn flush(&mut self, sender: &SyncSender<ExportEvent>) {
+        while let Some(event) = self.queued.pop_front() {
+            match sender.try_send(event) {
+                Ok(()) => {}
+                Err(TrySendError::Full(event)) => {
+                    self.queued.push_front(event);
+                    break;
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    self.queued.clear();
+                    break;
+                }
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // Existing worker composition plus private ownership of the existing seek worker.
 pub(super) fn run_worker(
     mut session: Session,
@@ -770,11 +805,14 @@ pub(super) fn run_worker(
         };
     }
     let worker_diagnostics = events.diagnostics();
+    let mut pending_export_events = PendingExportEvents::default();
     'requests: while let Some(queued) = events.next_request_with_control_poll(
         &requests,
         &document_intent,
         &mut recording_barrier,
-        session.native_reservation.is_some() || pending_recovery_outcome.is_some(),
+        session.native_reservation.is_some()
+            || pending_recovery_outcome.is_some()
+            || !pending_export_events.is_empty(),
         pending_plugin_effect.as_ref(),
         device_gesture.snapshot().is_some(),
         tuning_gesture.snapshot().is_some(),
@@ -981,10 +1019,12 @@ pub(super) fn run_worker(
                     }
                 }),
             );
+            pending_export_events.flush(&export_events);
             audio_sink::ControlPoll {
                 pending: control_lanes_pending(resident_seek.as_ref(), &export_lane)
                     || plugin_recording.pending()
-                    || pending_recovery_outcome.is_some(),
+                    || pending_recovery_outcome.is_some()
+                    || !pending_export_events.is_empty(),
                 gesture: plugin_recording.ready(),
                 editor_take: plugin_recording.editor_ready(),
                 recovery_ready: recovery_tracker.async_ready(),
@@ -4536,17 +4576,112 @@ pub(super) fn run_worker(
         if let Some(job) = export_job
             && let Err(event) = export_lane.submit(job)
         {
-            let _ = export_events.try_send(event);
+            pending_export_events.push_and_flush(event, &export_events);
         }
         if let Some(event) = export_completion {
-            let _ = export_events.try_send(event);
+            pending_export_events.push_and_flush(event, &export_events);
         }
+        pending_export_events.flush(&export_events);
     }
+    pending_export_events.flush(&export_events);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_export_event(revision: u64, name: &str, message: &str) -> ExportEvent {
+        ExportEvent {
+            revision,
+            path: PathBuf::from(name),
+            result: Err(ExportFailure::from(message)),
+        }
+    }
+
+    #[test]
+    fn pending_export_events_preserves_fifo_delivery_when_capacity_one_channel_is_full() {
+        let (tx, rx) = mpsc::sync_channel::<ExportEvent>(EXPORT_EVENT_CAPACITY);
+        // Simulate an unread prior export completion occupying the capacity-1 channel.
+        tx.try_send(sample_export_event(1, "first.wav", "first"))
+            .expect("prefill capacity-1 slot");
+
+        let mut pending = PendingExportEvents::default();
+        pending.push_and_flush(sample_export_event(2, "second.wav", "rejected"), &tx);
+        pending.push_and_flush(sample_export_event(3, "third.wav", "completed"), &tx);
+        assert!(!pending.is_empty());
+
+        let first = rx.try_recv().expect("first event");
+        assert_eq!(first.revision, 1);
+        pending.flush(&tx);
+        assert!(!pending.is_empty());
+
+        let second = rx.try_recv().expect("second event delivered after drain");
+        assert_eq!(second.revision, 2);
+        pending.flush(&tx);
+        assert!(pending.is_empty());
+
+        let third = rx.try_recv().expect("third event delivered after drain");
+        assert_eq!(third.revision, 3);
+    }
+
+    #[test]
+    fn pending_export_events_clears_on_disconnected_receiver() {
+        let (tx, rx) = mpsc::sync_channel::<ExportEvent>(EXPORT_EVENT_CAPACITY);
+        tx.try_send(sample_export_event(1, "first.wav", "first"))
+            .expect("prefill");
+        let mut pending = PendingExportEvents::default();
+        pending.push_and_flush(sample_export_event(2, "second.wav", "second"), &tx);
+        assert!(!pending.is_empty());
+
+        drop(rx);
+        pending.flush(&tx);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn service_delivers_second_synchronous_export_failure_when_first_event_is_unread() {
+        let service = Service::new(48_000, 8, 1_024 * 1_024).expect("service");
+        let _initial = service
+            .events
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("initial event");
+
+        // Trigger two synchronous export rejections (empty project has no timeline audio)
+        // before draining export_events so the capacity-1 channel is full on the second one.
+        service
+            .submit(Request::Export(PathBuf::from("first-empty.wav")))
+            .expect("submit first");
+        let _first_reply = service
+            .events
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("first reply");
+
+        // Simulate the background export worker clearing export_busy while the
+        // first ExportEvent is still unread in the capacity-1 export_events channel.
+        service.export_busy.store(false, Ordering::Release);
+
+        service
+            .submit(Request::Export(PathBuf::from("second-empty.wav")))
+            .expect("submit second");
+        let _second_reply = service
+            .events
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("second reply");
+
+        let first_export = service
+            .export_events
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("first export event");
+        assert_eq!(first_export.path, PathBuf::from("first-empty.wav"));
+        assert!(first_export.result.is_err());
+
+        let second_export = service
+            .export_events
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("second export event must not be dropped when channel was full");
+        assert_eq!(second_export.path, PathBuf::from("second-empty.wav"));
+        assert!(second_export.result.is_err());
+    }
 
     #[test]
     fn deferred_recovery_kind_classifies_track_switches_and_arrangement_ops() {
