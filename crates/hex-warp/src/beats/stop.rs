@@ -85,9 +85,10 @@ struct Bounds<'a> {
 }
 impl<'a> Bounds<'a> {
     fn new(physical: &'a [Anchor]) -> Self {
+        let last = physical.len().saturating_sub(1);
         let next = (1..physical.len())
-            .find(|i| physical[*i].attack || *i == physical.len() - 1)
-            .expect("the final anchor always terminates the search");
+            .find(|i| physical[*i].attack)
+            .unwrap_or(last);
         Self {
             physical,
             previous: 0,
@@ -95,11 +96,12 @@ impl<'a> Bounds<'a> {
         }
     }
     fn sample(&mut self, input: Input<'_>, bank: &Bandlimited, position: f64) -> [f64; 2] {
-        while self.next < self.physical.len() - 1 && position >= self.physical[self.next].source {
+        let last = self.physical.len().saturating_sub(1);
+        while self.next < last && position >= self.physical[self.next].source {
             self.previous = self.next;
             self.next = (self.next + 1..self.physical.len())
-                .find(|i| self.physical[*i].attack || *i == self.physical.len() - 1)
-                .expect("the final anchor always terminates the search");
+                .find(|i| self.physical[*i].attack)
+                .unwrap_or(last);
         }
         let lower = self.physical[self.previous].source.floor() as i128;
         let upper = self.physical[self.next].source.ceil() as i128 - 1;

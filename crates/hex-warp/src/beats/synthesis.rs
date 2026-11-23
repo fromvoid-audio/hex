@@ -105,12 +105,13 @@ impl Search<'_, '_> {
                 .iter()
                 .position(|p| p.1.is_finite() && (p.0 - position).abs() < step * 2.0);
             let index = nearby.unwrap_or_else(|| {
-                peaks
-                    .iter()
-                    .enumerate()
-                    .min_by(|a, b| a.1.1.total_cmp(&b.1.1))
-                    .expect("peaks is a fixed eight-element array")
-                    .0
+                let mut lowest = 0;
+                for (candidate, peak) in peaks.iter().enumerate().skip(1) {
+                    if peak.1.total_cmp(&peaks[lowest].1).is_lt() {
+                        lowest = candidate;
+                    }
+                }
+                lowest
             });
             if score > peaks[index].1 {
                 peaks[index] = (position, score);

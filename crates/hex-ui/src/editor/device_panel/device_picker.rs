@@ -47,38 +47,33 @@ pub(in crate::editor) fn bind_keys(cx: &mut App) {
         .map(|key| gpui::KeyBinding::new(key, gpui::NoAction, Some("hex_device_picker"))),
     );
 }
-fn ensure(view: &mut EditorView, cx: &mut Context<EditorView>) {
-    if view.device_panel.add_search.is_some() {
-        return;
-    }
-    let input = cx.new(super::super::browser_input::device_search);
-    let subscription = cx.subscribe(&input, |view, _, _: &TextInputChanged, cx| {
-        if let Some(search) = &mut view.device_panel.add_search {
-            search.selected = 0;
-            search.scroll.set_offset(gpui::point(px(0.0), px(0.0)));
+fn ensure<'a>(view: &'a mut EditorView, cx: &mut Context<EditorView>) -> &'a mut Search {
+    view.device_panel.add_search.get_or_insert_with(|| {
+        let input = cx.new(super::super::browser_input::device_search);
+        let subscription = cx.subscribe(&input, |view, _, _: &TextInputChanged, cx| {
+            if let Some(search) = &mut view.device_panel.add_search {
+                search.selected = 0;
+                search.scroll.set_offset(gpui::point(px(0.0), px(0.0)));
+            }
+            cx.notify();
+        });
+        Search {
+            input,
+            selected: 0,
+            scroll: gpui::ScrollHandle::new(),
+            _subscription: subscription,
+            modal_scope: None,
         }
-        cx.notify();
-    });
-    view.device_panel.add_search = Some(Search {
-        input,
-        selected: 0,
-        scroll: gpui::ScrollHandle::new(),
-        _subscription: subscription,
-        modal_scope: None,
-    });
+    })
 }
 pub(super) fn open(view: &mut EditorView, window: &mut Window, cx: &mut Context<EditorView>) {
-    ensure(view, cx);
-    let search = view
-        .device_panel
-        .add_search
-        .as_mut()
-        .expect("search initialized above");
-    search.selected = 0;
-    search.modal_scope = view
+    let modal_scope = view
         .device_panel
         .owner
         .map(|owner| (view.project_generation, owner));
+    let search = ensure(view, cx);
+    search.selected = 0;
+    search.modal_scope = modal_scope;
     search.scroll.set_offset(gpui::point(px(0.0), px(0.0)));
     let input = search.input.clone();
     input.update(cx, |input, cx| input.set_text("", cx));
@@ -239,16 +234,13 @@ pub(super) fn render(
     owner: DevicePanelOwner,
     cx: &mut Context<EditorView>,
 ) -> Stateful<Div> {
-    ensure(view, cx);
-    let search = view
-        .device_panel
-        .add_search
-        .as_ref()
-        .expect("search initialized above");
-    let input = search.input.clone();
+    let (input, search_selected, scroll) = {
+        let search = ensure(view, cx);
+        (search.input.clone(), search.selected, search.scroll.clone())
+    };
     super::super::browser_input::restyle(&input, cx);
     let (rows, errors) = entries(view, owner, input.read(cx).text());
-    let selected = search.selected.min(rows.len().saturating_sub(1));
+    let selected = search_selected.min(rows.len().saturating_sub(1));
     let empty = rows.is_empty() && errors.is_empty();
     let list_height = ((rows.len() + errors.len()).max(1) as f32 * ROW_HEIGHT).min(240.0);
     let mut list = div()
@@ -258,7 +250,7 @@ pub(super) fn render(
         .min_h_0()
         .flex_shrink_0()
         .overflow_y_scroll()
-        .track_scroll(&search.scroll)
+        .track_scroll(&scroll)
         .flex()
         .flex_col();
     for (index, entry) in rows.into_iter().enumerate() {

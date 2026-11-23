@@ -51,12 +51,16 @@ impl<'a> Schedule<'a> {
         points
             .try_reserve_exact(MAX_MAP_SEGMENTS + 2)
             .map_err(|_| Error::Allocation)?;
+        let Some((first_segment, rest_segments)) = request.map.segments().split_first() else {
+            return Err(Error::Invalid("time map requires at least one segment"));
+        };
+        let last_segment = rest_segments.last().unwrap_or(first_segment);
         points.push(Boundary {
-            source: request.map.segments()[0].source_start_q32 as f64 / Q32 as f64,
+            source: first_segment.source_start_q32 as f64 / Q32 as f64,
             output: 0,
         });
         let region = i128::from(request.input.region_length);
-        let first = request.map.segments()[0]
+        let first = first_segment
             .source_start_q32
             .div_euclid(Q32)
             .div_euclid(region);
@@ -65,12 +69,7 @@ impl<'a> Schedule<'a> {
         } else {
             first.max(0)
         };
-        let end = request
-            .map
-            .segments()
-            .last()
-            .expect("segments()[0] indexed above")
-            .source_end_q32;
+        let end = last_segment.source_end_q32;
         let last = end.div_euclid(Q32).div_euclid(region);
         if last - first > MAX_MAP_SEGMENTS as i128 {
             return Err(Error::Invalid(
@@ -78,9 +77,13 @@ impl<'a> Schedule<'a> {
             ));
         }
         // Empty attacks with no division returned Physical above.
-        let division = || division_frames.expect("division set when attacks are empty");
-        let count = if request.attacks.is_empty() {
-            ((request.input.region_length - 1) / division() + 1) as usize
+        let step_division = if request.attacks.is_empty() {
+            Some(division_frames.ok_or(Error::Invalid("preserve division missing"))?)
+        } else {
+            None
+        };
+        let count = if let Some(division) = step_division {
+            ((request.input.region_length - 1) / division + 1) as usize
         } else {
             request.attacks.len()
         };
@@ -90,8 +93,8 @@ impl<'a> Schedule<'a> {
             }
             work.check(count as u64 * 16)?;
             for i in 0..count {
-                let at = if request.attacks.is_empty() {
-                    i as u64 * division()
+                let at = if let Some(division) = step_division {
+                    i as u64 * division
                 } else {
                     request.attacks[i]
                 };
