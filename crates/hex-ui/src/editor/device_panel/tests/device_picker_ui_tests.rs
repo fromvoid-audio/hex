@@ -191,3 +191,150 @@ fn native_picker_replacement_keeps_the_instrument_until_its_terminal(cx: &mut Te
         );
     });
 }
+
+#[gpui::test]
+fn device_picker_plus_on_first_effect_of_multi_effect_track_inserts_native_instrument(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::editor::bind_editor_keys);
+    cx.update(hex_widgets::bind_text_input_keys);
+    let (service, state, track, first_effect, _, _) = actor_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1440.0), px(800.0)));
+    editor.update(&mut visual, |view, _| {
+        if view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .instrument()
+            .is_some()
+        {
+            assert!(view.enqueue(Request::Edit(Command::RemoveInstrument { track })));
+        }
+        let eq_state = hex_engine::default_native_device_state(
+            hex_lattice_contract::DeviceTypeId::from_static("hex.eq"),
+        )
+        .unwrap();
+        assert!(view.enqueue(Request::Edit(Command::InsertDevice {
+            track,
+            before: None,
+            state: eq_state,
+        })));
+    });
+    pump_until(&editor, &mut visual, |view| !view.edit_pending());
+    visual.run_until_parked();
+
+    let (second_effect, effects_before) = editor.read_with(&visual, |view, _| {
+        let track_ref = view.state.as_ref().unwrap().project.track(track).unwrap();
+        assert!(track_ref.instrument().is_none());
+        assert_eq!(track_ref.devices().len(), 2);
+        assert_eq!(track_ref.devices()[0].id(), first_effect);
+        (track_ref.devices()[1].id(), track_ref.devices().to_vec())
+    });
+
+    // Click `+` on the first effect card (so `before == Some(second_effect)`), then pick a native instrument.
+    let add_after =
+        Box::leak(format!("device-{}-add-after", first_effect.value()).into_boxed_str());
+    click(&mut visual, add_after);
+    visual.simulate_input("hex.instrument.sine");
+    visual.simulate_keystrokes("enter");
+    pump_until(&editor, &mut visual, |view| !view.edit_pending());
+    visual.run_until_parked();
+
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            view.error.is_none(),
+            "adding native instrument from first effect `+` must succeed: {:?}",
+            view.error
+        );
+        let track_ref = view.state.as_ref().unwrap().project.track(track).unwrap();
+        let instrument = track_ref
+            .instrument()
+            .expect("native instrument must be inserted");
+        assert_eq!(
+            instrument.state().type_id().as_str().unwrap(),
+            "hex.instrument.sine"
+        );
+        assert_eq!(track_ref.devices(), effects_before.as_slice());
+        assert_eq!(track_ref.devices()[1].id(), second_effect);
+    });
+}
+
+#[gpui::test]
+fn device_picker_hides_instruments_on_group_track_and_allows_effects(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    cx.update(hex_widgets::bind_text_input_keys);
+    let (service, state, track, _, _, _) = actor_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1440.0), px(800.0)));
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::GroupTracks {
+            tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+            name: "group".into(),
+        })));
+    });
+    pump_until(&editor, &mut visual, |view| !view.edit_pending());
+    let group_track = editor.update(&mut visual, |view, cx| {
+        let group = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .find(|t| t.is_group())
+            .expect("group track")
+            .id();
+        view.selected_track = Some(group);
+        view.device_panel.owner = Some(DevicePanelOwner::Track(group));
+        cx.notify();
+        group
+    });
+    visual.run_until_parked();
+
+    click(&mut visual, "device-add-toggle");
+    visual.simulate_input("instrument");
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("add-native-instrument-hex.instrument.sine")
+            .is_none(),
+        "group track device picker must hide native instruments"
+    );
+    assert!(
+        visual.debug_bounds("device-picker-empty").is_some(),
+        "searching for instruments on a group track must show empty picker"
+    );
+
+    click(&mut visual, "device-picker-search-clear");
+    visual.simulate_input("hex.utility");
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("add-native-effect-hex.utility")
+            .is_some(),
+        "group track device picker must still offer native effects"
+    );
+    visual.simulate_keystrokes("enter");
+    pump_until(&editor, &mut visual, |view| !view.edit_pending());
+    editor.read_with(&visual, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        let group = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(group_track)
+            .unwrap();
+        assert_eq!(group.devices().len(), 1);
+        assert_eq!(
+            group.devices()[0].state().type_id().as_str().unwrap(),
+            "hex.utility"
+        );
+    });
+}
