@@ -76,8 +76,7 @@ impl Callback {
                     next.revision,
                     PlaybackHandoffRejection::FreshRuntimeCancelled,
                 );
-                self.return_graph(next);
-                self.status.publication_pending.store(false, Release);
+                self.return_rejected_graph(next);
                 return;
             }
             let ready = if confirmed_insert {
@@ -96,8 +95,7 @@ impl Callback {
                         streams.cancel_install(&mut self.domain_pages);
                     }
                     self.reject_publication(next.revision, reason);
-                    self.return_graph(next);
-                    self.status.publication_pending.store(false, Release);
+                    self.return_rejected_graph(next);
                     return;
                 }
             }
@@ -237,8 +235,7 @@ impl Callback {
                         next.revision,
                         PlaybackHandoffRejection::RuntimeFenceChanged,
                     );
-                    self.return_graph(next);
-                    self.status.publication_pending.store(false, Release);
+                    self.return_rejected_graph(next);
                     return;
                 }
                 // The live branch must render its committed transition
@@ -274,8 +271,7 @@ impl Callback {
                         }
                         Err(reason) => {
                             self.reject_publication(next.revision, reason);
-                            self.return_graph(next);
-                            self.status.publication_pending.store(false, Release);
+                            self.return_rejected_graph(next);
                             return;
                         }
                     }
@@ -294,8 +290,7 @@ impl Callback {
                             next.revision,
                             PlaybackHandoffRejection::StreamedPagesNotReady,
                         );
-                        self.return_graph(next);
-                        self.status.publication_pending.store(false, Release);
+                        self.return_rejected_graph(next);
                         return;
                     }
                 }
@@ -342,8 +337,7 @@ impl Callback {
                                             next.revision,
                                             PlaybackHandoffRejection::StreamedPageCapacity,
                                         );
-                                        self.return_graph(next);
-                                        self.status.publication_pending.store(false, Release);
+                                        self.return_rejected_graph(next);
                                         return;
                                     }
                                 }
@@ -355,8 +349,7 @@ impl Callback {
                                         next.revision,
                                         PlaybackHandoffRejection::StreamedPagesNotReady,
                                     );
-                                    self.return_graph(next);
-                                    self.status.publication_pending.store(false, Release);
+                                    self.return_rejected_graph(next);
                                     return;
                                 }
                             }
@@ -405,8 +398,7 @@ impl Callback {
                         next.revision,
                         PlaybackHandoffRejection::RuntimeFenceChanged,
                     );
-                    self.return_graph(next);
-                    self.status.publication_pending.store(false, Release);
+                    self.return_rejected_graph(next);
                     return;
                 }
                 if let Some(frames) = frames {
@@ -458,8 +450,7 @@ impl Callback {
                             streams.cancel_install(&mut self.domain_pages);
                         }
                         self.reject_publication(next.revision, reason);
-                        self.return_graph(next);
-                        self.status.publication_pending.store(false, Release);
+                        self.return_rejected_graph(next);
                         return;
                     }
                 }
@@ -546,8 +537,7 @@ impl Callback {
                         next.revision,
                         PlaybackHandoffRejection::RuntimeFenceChanged,
                     );
-                    self.return_graph(next);
-                    self.status.publication_pending.store(false, Release);
+                    self.return_rejected_graph(next);
                     return;
                 }
                 match prepared {
@@ -571,8 +561,7 @@ impl Callback {
                                     streams.cancel_install(&mut self.domain_pages);
                                 }
                                 self.reject_publication(next.revision, reason);
-                                self.return_graph(next);
-                                self.status.publication_pending.store(false, Release);
+                                self.return_rejected_graph(next);
                                 return;
                             }
                         }
@@ -588,8 +577,7 @@ impl Callback {
                                 next.revision,
                                 PlaybackHandoffRejection::RuntimeFenceChanged,
                             );
-                            self.return_graph(next);
-                            self.status.publication_pending.store(false, Release);
+                            self.return_rejected_graph(next);
                             return;
                         }
                         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -616,8 +604,7 @@ impl Callback {
                                         next.revision,
                                         PlaybackHandoffRejection::RuntimeFenceChanged,
                                     );
-                                    self.return_graph(next);
-                                    self.status.publication_pending.store(false, Release);
+                                    self.return_rejected_graph(next);
                                 } else {
                                     self.restore_parameter_predecessor_prewarm(&next);
                                     self.defer_for_stream_pages(next);
@@ -717,8 +704,7 @@ impl Callback {
                                 )
                             },
                         );
-                        self.return_graph(next);
-                        self.status.publication_pending.store(false, Release);
+                        self.return_rejected_graph(next);
                         return;
                     }
                 }
@@ -949,8 +935,7 @@ impl Callback {
                     }) {
                         self.reject_publication(next.revision, reason);
                     }
-                    self.return_graph(next);
-                    self.status.publication_pending.store(false, Release);
+                    self.return_rejected_graph(next);
                 }
                 _ => {
                     #[cfg(test)]
@@ -980,8 +965,7 @@ impl Callback {
                             next.revision,
                             PlaybackHandoffRejection::FreshRuntimeCancelled,
                         );
-                        self.return_graph(next);
-                        self.status.publication_pending.store(false, Release);
+                        self.return_rejected_graph(next);
                         return;
                     }
                     #[cfg(test)]
@@ -1150,6 +1134,7 @@ impl Callback {
                     self.status.stream_read_failed.store(false, Release);
                     self.status.applied_source.publish(None);
                     self.status.applied_revision.store(revision, Release);
+                    self.status.publication_pending.store(false, Release);
                     if let Some(receipt) = self
                         .active
                         .as_ref()
@@ -1158,7 +1143,6 @@ impl Callback {
                     {
                         receipt.installed();
                     }
-                    self.status.publication_pending.store(false, Release);
                     self.trace_audio(
                         AudioDiagnosticKind::PublicationApplied,
                         revision,

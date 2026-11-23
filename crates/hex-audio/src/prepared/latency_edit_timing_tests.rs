@@ -1629,9 +1629,13 @@ fn device_insert_expires_at_callback_without_control_polling() {
     let (control, mut callback, predecessor, receipt) = begin_insert(old, next, track, 2990);
     callback.begin_block();
     assert_eq!(receipt.state(), PublicationReceiptState::Pending);
-    // Withhold both owners. The next callback must enforce the install
-    // deadline independently of a worker which might be occupied by Save.
-    receipt.advance_install_clock(std::time::Duration::from_millis(280));
+    // A 300 ms wait (typical for streamed prewarm or loaded callbacks) must
+    // still be well inside the 2 s install window; withholding past 2 s must
+    // expire independently of control polling.
+    receipt.advance_install_clock(std::time::Duration::from_millis(300));
+    callback.begin_block();
+    assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+    receipt.advance_install_clock(std::time::Duration::from_millis(1_750));
     let mut pcm = [[0.0; 2]; BLOCK];
     let mut render = || {
         callback.begin_block();

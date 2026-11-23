@@ -841,9 +841,12 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
         }
         // An ordinary reset cannot transfer a detached Return tail. A fenced
-        // bounce has already baked that audio into the successor.
+        // bounce has already baked that audio into the successor, and a
+        // confirmed insert cut has already faded the predecessor (including its
+        // detached Return tails) to silence.
         if relocate
             && restart != Restart::Baked
+            && !confirmed_insert
             && previous
                 .return_effect_tails
                 .slots()
@@ -854,8 +857,10 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::LatencyLayoutChanged);
         }
         // A reset cannot carry residual output from a changed Return. A
-        // confirmed cut may keep a prefix with the same input clock, or cut
-        // the obsolete chain when its endpoints are absent from the successor.
+        // confirmed cut has already faded the predecessor to silence and may
+        // keep a prefix with the same input clock, or cut the obsolete chain
+        // (leaving `device_cut_keeps_effect_clocks` to verify surviving foreign
+        // input clocks without detaching a live tail).
         let mut restart_return_prefixes = [None; hex_project::MAX_RETURN_TRACKS];
         if relocate && restart != Restart::Baked {
             let old_buses = previous.revision.arrangement().return_buses();
@@ -892,7 +897,8 @@ impl SessionPlayback {
                         && new.can_inherit_from(old))
                         || (tail_policy.for_chain(&bus.device_chain, &new_bus.device_chain)
                             == DeviceEditTailPolicy::Cut
-                            && validate_foreign_tail_sources(self, old, 0).is_ok())
+                            && (validate_foreign_tail_sources(self, old, 0).is_ok()
+                                || (confirmed_insert && new.can_inherit_from(old))))
                 });
                 if !can_relocate {
                     return Err(SessionPlaybackError::LatencyLayoutChanged);
@@ -950,33 +956,18 @@ impl SessionPlayback {
         let running_restart =
             relocate && previous.playing && mapped_main_clock && same_periodic_timing;
         let preserve_restart_clock = running_restart || (relocate && confirmed_insert);
-        // A confirmed Main effect append can rebuild local delay history
-        // without altering any instrument's input clock. The foreign plan
-        // has already matched the exact instrument workers and checked held
-        // gates at the cut. Preserve their ledgers while the new delay fills.
-        let confirmed_main_effect_append = confirmed_insert
-            && self.revision.arrangement().main_latency_frames()
-                > previous.revision.arrangement().main_latency_frames()
-            && self
-                .revision
-                .arrangement()
-                .main_device_chain
-                .split_last()
-                .is_some_and(|(appended, prefix)| {
-                    let old = &previous.revision.arrangement().main_device_chain;
-                    appended.definition.is_some()
-                        && prefix.len() == old.len()
-                        && prefix
-                            .iter()
-                            .zip(old.iter())
-                            .all(|(next, old)| next.device_id == old.device_id)
-                });
-        // The existing running hosted-suffix restart also preserves the
-        // worker clock. An active removed effect still needs the tail planner.
+        // A confirmed device insert cut rebuilds local delay history at the
+        // unchanged performance/arrangement cursor without altering any
+        // surviving instrument's generator clock (`input_arrival_frames == 0`).
+        // The foreign plan has already matched the exact instrument workers
+        // and checked held gates at the cut; preserve their ledgers while the
+        // new delay fills. The existing running hosted-suffix restart also
+        // preserves the worker clock. An active removed effect still needs the
+        // tail planner.
         let keep_foreign_gates = foreign_handoff.requires_clock_continuity
             && !force_restart
             && source_transfer.is_none()
-            && (confirmed_main_effect_append
+            && (confirmed_insert
                 || running_restart
                     && self
                         .revision

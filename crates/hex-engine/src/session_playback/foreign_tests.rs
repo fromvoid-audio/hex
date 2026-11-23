@@ -3621,3 +3621,115 @@ fn delayed_hosted_output_keeps_native_eq_history_across_arrangement_wraps() {
         );
     }
 }
+
+#[test]
+fn confirmed_return_latency_append_keeps_surviving_return_vst3_and_rejects_shifted_insert() {
+    use hex_devices::limiter::DEFINITION as LIMITER;
+    use hex_project::{Command, Created};
+
+    const CUT: usize = 64;
+    for trailing in [true, false] {
+        let mut f = fixture(&[&[]], 512);
+        let track = f.tracks[0];
+        let Created::ReturnTrack(bus) = f
+            .editor
+            .execute(Command::AddReturnTrack {
+                name: "return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return bus");
+        };
+        f.editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 0.5,
+            })
+            .unwrap();
+        let Created::Device(hosted) = f
+            .editor
+            .execute(Command::InsertReturnDevice {
+                return_track: bus,
+                before: None,
+                state: state(19).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("return vst3");
+        };
+        let owner = ProcessorChainOwner::Return(bus.value());
+        let definition = BorrowedDefinition {
+            binding_epoch: Some(1),
+            instances: vec![(
+                ProcessorInstanceIdentity::new(owner, hosted.value()).unwrap(),
+                3,
+            )],
+            unbounded_tail: false,
+        };
+        let definitions: [&dyn NativeDeviceDefinition; 2] = [&definition, &LIMITER];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let prepare = |project: &hex_project::Project| {
+            Arc::new(
+                PreparedRevision::prepare_with_effect_registry(
+                    project,
+                    &f.media,
+                    Arc::new(SineTable::new()),
+                    None,
+                    &registry,
+                )
+                .unwrap(),
+            )
+        };
+        let before = prepare(f.editor.project());
+        f.editor
+            .execute(Command::InsertReturnDevice {
+                return_track: bus,
+                before: (!trailing).then_some(hosted),
+                state: LIMITER.default_state().unwrap(),
+            })
+            .unwrap();
+        let after = prepare(f.editor.project());
+        assert_eq!(before.arrangement().main_latency_frames(), 19);
+        assert_eq!(after.arrangement().main_latency_frames(), 91);
+
+        let mut donor = SessionPlayback::new(Arc::clone(&before)).unwrap();
+        let mut worker = Borrowed::new(owner, hosted.value());
+        donor.apply(SessionPlaybackCommand::Play).unwrap();
+        donor
+            .render_with_foreign_processors(&mut [[0.0; 2]; CUT], None, None, None, &mut worker)
+            .unwrap();
+        let original_binding = donor.return_chains[0]
+            .foreign_bindings()
+            .flatten()
+            .next()
+            .unwrap();
+
+        let mut unapproved = SessionPlayback::new(Arc::clone(&after)).unwrap();
+        unapproved.require_continuous_insert = true;
+        assert!(matches!(
+            unapproved.try_inherit_state_live_from(&mut donor),
+            Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+        ));
+
+        donor.set_playing_at_device_insert_cut(false);
+        let mut candidate = SessionPlayback::new(after).unwrap();
+        let result = candidate.try_inherit_state_at_device_insert_cut(&mut donor);
+        if trailing {
+            result.expect("appending latency device after surviving Return VST3 must succeed at confirmed cut");
+            assert_eq!(candidate.performance_frame(), CUT as u64);
+            assert_eq!(
+                candidate.return_chains[0]
+                    .foreign_bindings()
+                    .flatten()
+                    .next(),
+                Some(original_binding)
+            );
+        } else {
+            assert!(
+                matches!(result, Err(SessionPlaybackError::LatencyLayoutChanged)),
+                "inserting latency device before surviving Return VST3 shifts its input clock and must stay refused: {result:?}"
+            );
+        }
+    }
+}

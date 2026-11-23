@@ -3440,3 +3440,192 @@ fn live_loop_edit_succeeds_with_both_vst3_and_native_mutable_instrument() {
         .unwrap();
     assert_eq!(disabled.arrangement_frame(), 9_300);
 }
+
+#[test]
+fn confirmed_track_and_return_latency_inserts_keep_playing_vst3_instrument_gates() {
+    let (mut editor, identity) = fixture();
+    let Created::Track(audio_track) = editor
+        .execute(Command::AddTrack {
+            name: "audio".into(),
+        })
+        .unwrap()
+    else {
+        panic!("audio track");
+    };
+    let Created::ReturnTrack(return_track) = editor
+        .execute(Command::AddReturnTrack {
+            name: "return".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return track");
+    };
+    let instrument_track = editor.project().tracks()[0].id();
+    let before = prepare(&editor, identity, true).unwrap();
+    let limiter =
+        crate::default_native_device_state(DeviceTypeId::from_static("hex.limiter")).unwrap();
+
+    for target in [
+        Command::InsertDevice {
+            track: audio_track,
+            before: None,
+            state: limiter.clone(),
+        },
+        Command::InsertDevice {
+            track: instrument_track,
+            before: None,
+            state: limiter.clone(),
+        },
+        Command::InsertReturnDevice {
+            return_track,
+            before: None,
+            state: limiter.clone(),
+        },
+    ] {
+        let mut branch = Editor::new(editor.project().clone(), 16).unwrap();
+        branch.execute(target).unwrap();
+        let after = prepare(&branch, identity, true).unwrap();
+        assert!(
+            after.arrangement().main_latency_frames() > before.arrangement().main_latency_frames()
+        );
+
+        let mut playing = SessionPlayback::new(Arc::clone(&before)).unwrap();
+        let mut endpoint = NoteEndpoint::default();
+        playing.apply(SessionPlaybackCommand::Play).unwrap();
+        endpoint.render(&mut playing, &mut [[0.0; 2]; 32]).unwrap();
+        assert_eq!(endpoint.notes.len(), 1);
+        assert!(endpoint.notes[0].1.on);
+
+        let mut unapproved = SessionPlayback::new(Arc::clone(&after)).unwrap();
+        unapproved.require_continuous_insert = true;
+        assert!(matches!(
+            unapproved.try_inherit_state_live_from(&mut playing),
+            Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+        ));
+
+        playing.set_playing_at_device_insert_cut(false);
+        let mut confirmed = SessionPlayback::new(after).unwrap();
+        confirmed
+            .try_inherit_state_at_device_insert_cut(&mut playing)
+            .expect("confirmed latency insert must keep playing VST3 instrument gates");
+        assert_eq!(confirmed.performance_frame(), 32);
+        assert_eq!(confirmed.arrangement_frame(), 32);
+        confirmed.set_playing_at_device_insert_cut(true);
+
+        // Held note gate must stay intact and release at its original deadline.
+        endpoint.notes.clear();
+        endpoint
+            .render(&mut confirmed, &mut vec![[0.0; 2]; 24_000])
+            .unwrap();
+        assert!(
+            endpoint.notes.iter().any(|note| !note.1.on),
+            "preserved VST3 instrument gate must still emit its note-off"
+        );
+    }
+}
+
+#[test]
+fn live_vst3_instrument_insert_on_existing_midi_track_and_native_synth_replacement_request_cut() {
+    for with_native_synth in [false, true] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "midi".into(),
+            })
+            .unwrap()
+        else {
+            panic!("midi track");
+        };
+        if with_native_synth {
+            let fm4 = hex_devices::fm4::device::Fm4Definition
+                .default_state()
+                .unwrap();
+            editor
+                .execute(Command::LoadInstrument {
+                    track,
+                    replacing: None,
+                    state: fm4,
+                    device_name: "fm4".into(),
+                })
+                .unwrap();
+        }
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(2).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip");
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                pitch: 60,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_quarters(1).unwrap(),
+                velocity: 100,
+                channel: 0,
+            })
+            .unwrap();
+
+        let previous = Arc::new(
+            PreparedRevision::prepare(
+                editor.project(),
+                &std::collections::BTreeMap::new(),
+                Arc::new(SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let replacing = editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .map(|i| i.id());
+        editor
+            .execute(Command::LoadInstrument {
+                track,
+                replacing,
+                state: NativeDeviceState::new(VST3, 1, vec![19]).unwrap(),
+                device_name: "synth".into(),
+            })
+            .unwrap();
+        let foreign = editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        let identity = ProcessorInstanceIdentity::new(
+            ProcessorChainOwner::Track(track.value()),
+            foreign.value(),
+        )
+        .unwrap();
+        let after = prepare(&editor, identity, true).unwrap();
+
+        let mut playing = SessionPlayback::new(previous).unwrap();
+        playing.apply(SessionPlaybackCommand::Play).unwrap();
+        playing.render(&mut [[0.0; 2]; 64]).unwrap();
+
+        let mut unapproved = SessionPlayback::new(Arc::clone(&after)).unwrap();
+        unapproved.require_continuous_insert = true;
+        assert!(
+            matches!(
+                unapproved.try_inherit_state_live_from(&mut playing),
+                Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+            ),
+            "with_native_synth={with_native_synth}: inserting VST3 instrument while playing must offer cut instead of INCOMPATIBLE_HANDOFF"
+        );
+
+        playing.set_playing_at_device_insert_cut(false);
+        let mut confirmed = SessionPlayback::new(after).unwrap();
+        confirmed
+            .try_inherit_state_at_device_insert_cut(&mut playing)
+            .expect("confirmed VST3 instrument insert must succeed");
+        assert_eq!(confirmed.performance_frame(), 64);
+    }
+}

@@ -1769,3 +1769,58 @@ fn source_parameter_proof_requires_same_identity_matrix_and_no_automation() {
         .unwrap();
     assert!(!automated.can_transfer_source_recipe_history_from(&old, true));
 }
+
+#[test]
+fn memoryless_native_insert_transition_ramps_dry_to_wet() {
+    let stateful_type = DeviceTypeId::from_static("test.bypass-retarget");
+    let utility_type = DeviceTypeId::from_static("test.memoryless-utility");
+    let stateful = |device_id| {
+        let configuration =
+            std::sync::Arc::new(NativeDeviceState::new(stateful_type, 1, vec![1]).unwrap());
+        PreparedProcessorInstance {
+            meter: Default::default(),
+            owner: ProcessorChainOwner::Track(1),
+            device_id,
+            device_type: stateful_type,
+            matrix: StereoMatrix::identity(),
+            bypassed: false,
+            sample_rate: 48_000,
+            configuration: Some(configuration),
+            definition: Some(std::sync::Arc::new(BypassRetargetPrepared {
+                smooth: true,
+                retarget: true,
+                latency: 0,
+            })),
+        }
+    };
+    let memoryless = |device_id| {
+        let configuration =
+            std::sync::Arc::new(NativeDeviceState::new(utility_type, 1, vec![2]).unwrap());
+        PreparedProcessorInstance {
+            meter: Default::default(),
+            owner: ProcessorChainOwner::Track(1),
+            device_id,
+            device_type: utility_type,
+            matrix: StereoMatrix::new([[0.5, 0.0], [0.0, 0.5]]).unwrap(),
+            bypassed: false,
+            sample_rate: 48_000,
+            configuration: Some(configuration),
+            definition: None,
+        }
+    };
+
+    let mut old = NativeRuntimeChain::new(vec![stateful(1), stateful(2)]).unwrap();
+    let mut candidate =
+        NativeRuntimeChain::new(vec![stateful(1), memoryless(3), stateful(2)]).unwrap();
+    let transition = candidate
+        .native_insert_transition_from(&old, None)
+        .expect("memoryless zero-latency insert must support smooth transition");
+    candidate.transfer_history_with_native_insert_from(&mut old, transition);
+
+    // Ramp begins dry (1.0) and settles to wet (0.5) without stepping.
+    let mut frames = [[1.0_f32; 2]; 512];
+    candidate.process_block(&mut frames).unwrap();
+    candidate.commit_block();
+    assert!((frames[0][0] - 1.0).abs() < 0.05);
+    assert!((frames[511][0] - 0.5).abs() < 1e-6);
+}

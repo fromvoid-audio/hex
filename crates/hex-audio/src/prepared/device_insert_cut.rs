@@ -164,8 +164,7 @@ impl Callback {
             next.revision,
             PlaybackHandoffRejection::StreamedPagesNotReady,
         );
-        self.return_graph(next);
-        self.status.publication_pending.store(false, Release);
+        self.return_rejected_graph(next);
     }
 
     /// The rejected candidate may restore only the exact active predecessor.
@@ -261,7 +260,13 @@ impl Callback {
             && cut > current
             && let Some(deadline) = receipt.device_insert_deadline()
         {
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            // Only wait for an imminent quantized cut; keep the wider install
+            // window for callback delivery, fades, and streamed page prewarm.
+            const MAX_PENDING_ACTION_WAIT: std::time::Duration =
+                std::time::Duration::from_millis(250);
+            let remaining = deadline
+                .saturating_duration_since(Instant::now())
+                .min(MAX_PENDING_ACTION_WAIT);
             let available =
                 remaining.as_nanos() * u128::from(active.playback.sample_rate()) / 1_000_000_000;
             if u128::from(cut - current) <= available {
