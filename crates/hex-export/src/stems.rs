@@ -44,6 +44,17 @@ pub fn render_stems_new_with_device_resources(
         control,
     )
 }
+pub(super) struct StemBatchSpec<'a> {
+    pub(super) path: &'a Path,
+    pub(super) revision: Arc<PreparedRevision>,
+    pub(super) resources: Option<&'a PreparedDeviceResources>,
+    pub(super) start: u64,
+    pub(super) frames: u64,
+    pub(super) stems: &'a [Stem],
+    pub(super) format: ExportFormat,
+    pub(super) control: &'a ExportControl,
+}
+
 pub(super) fn render_stems_using(
     path: &Path,
     revision: Arc<PreparedRevision>,
@@ -54,41 +65,24 @@ pub(super) fn render_stems_using(
     control: &ExportControl,
 ) -> Result<ExportReport, ExportError> {
     render_stems_using_pages(
-        path,
-        revision,
-        resources,
-        start,
-        frames,
-        stems,
-        ExportFormat::Pcm16,
-        control,
+        StemBatchSpec {
+            path,
+            revision,
+            resources,
+            start,
+            frames,
+            stems,
+            format: ExportFormat::Pcm16,
+            control,
+        },
         None,
     )
 }
-#[allow(clippy::too_many_arguments)] // Existing batch contract plus exact control-worker pages.
 pub(super) fn render_stems_using_pages(
-    path: &Path,
-    revision: Arc<PreparedRevision>,
-    resources: Option<&PreparedDeviceResources>,
-    start: u64,
-    frames: u64,
-    stems: &[Stem],
-    format: ExportFormat,
-    control: &ExportControl,
+    spec: StemBatchSpec<'_>,
     pages: Option<&mut dyn PreparedExportPages>,
 ) -> Result<ExportReport, ExportError> {
-    render_stems_with_resources_and_hook(
-        path,
-        revision,
-        resources,
-        start,
-        frames,
-        stems,
-        format,
-        control,
-        || {},
-        pages,
-    )
+    render_stems_with_resources_and_hook(spec, || {}, pages)
 }
 #[cfg(test)]
 fn render_stems_with_hook(
@@ -101,32 +95,36 @@ fn render_stems_with_hook(
     before_publication: impl FnOnce(),
 ) -> Result<ExportReport, ExportError> {
     render_stems_with_resources_and_hook(
-        path,
-        revision,
-        None,
-        start,
-        frames,
-        stems,
-        ExportFormat::Pcm16,
-        control,
+        StemBatchSpec {
+            path,
+            revision,
+            resources: None,
+            start,
+            frames,
+            stems,
+            format: ExportFormat::Pcm16,
+            control,
+        },
         before_publication,
         None,
     )
 }
 
-#[allow(clippy::too_many_arguments)] // One shared batch renderer plus borrowed resources and publication test hook.
 fn render_stems_with_resources_and_hook(
-    path: &Path,
-    revision: Arc<PreparedRevision>,
-    resources: Option<&PreparedDeviceResources>,
-    start: u64,
-    frames: u64,
-    stems: &[Stem],
-    format: ExportFormat,
-    control: &ExportControl,
+    spec: StemBatchSpec<'_>,
     before_publication: impl FnOnce(),
     mut pages: Option<&mut dyn PreparedExportPages>,
 ) -> Result<ExportReport, ExportError> {
+    let StemBatchSpec {
+        path,
+        revision,
+        resources,
+        start,
+        frames,
+        stems,
+        format,
+        control,
+    } = spec;
     control.claim()?;
     if stems.is_empty()
         || stems.len() > hex_engine::MAX_OUTPUT_CAPTURES
@@ -438,16 +436,17 @@ mod tests {
             (ExportFormat::Float32, 3, 32),
         ] {
             let path = parent.join(format!("{format:?}"));
-            let report = crate::render_prepared_with_policy(
-                &path,
-                Arc::clone(&revision),
-                0,
-                257,
-                ExportSignal::Stems(stems.to_vec()),
+            let report = crate::render_prepared_with_policy(crate::ExportJobSpec {
+                path: &path,
+                revision: Arc::clone(&revision),
+                resources: None,
+                start: 0,
+                frames: 257,
+                signal: ExportSignal::Stems(stems.to_vec()),
                 format,
-                &ExportControl::default(),
-                &Publication::CreateNew,
-            )
+                control: &ExportControl::default(),
+                publication: &Publication::CreateNew,
+            })
             .unwrap();
             assert_eq!(report.data_bytes, 257 * format.frame_bytes());
             assert_eq!(report.clipped_samples, 0);
