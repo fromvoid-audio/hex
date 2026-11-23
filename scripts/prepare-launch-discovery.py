@@ -75,13 +75,13 @@ def verify_tools(app: Path, signing: dict, instance: bool) -> None:
 
 
 def native_source_checkout(root: Path, staging: Path) -> Path:
-    if delivery.run(["git", "status", "--porcelain", "--untracked-files=no"], root=root):
-        raise delivery.DeliveryError("prepare new vst3 tools with unmodified tracked files")
+    if delivery.run(["git", "status", "--porcelain", "--untracked-files=no",
+                     "--", "crates/hex-plugin-scan/native"], root=root):
+        raise delivery.DeliveryError("prepare new vst3 tools with unmodified native helper sources")
     if not delivery.run(["git", "status", "--porcelain"], root=root):
         return root
-    # Keep untracked files out of the compiler and preserve the existing exact
-    # clean-checkout receipt. The private clone shares only Git objects and is
-    # removed with the rest of the owned staging directory.
+    # Build the committed helper without local edits or untracked files.
+    # The private clone shares only Git objects and is removed with staging.
     candidate = delivery.run(["git", "rev-parse", "HEAD"], root=root)
     source = staging / "source"
     delivery.run(["git", "clone", "--quiet", "--shared", "--no-checkout", "--", str(root), str(source)], root=root)
