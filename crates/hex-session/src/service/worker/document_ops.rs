@@ -402,7 +402,13 @@ pub(super) fn handle<'a>(
             project_generation: captured,
             revision: captured_revision,
             ..
-        } if captured != project_generation || captured_revision != revision => {
+        } if captured != project_generation
+            || super::reconcile_barrier_revision(
+                captured_revision,
+                revision_before_request,
+                revision,
+            ) != revision =>
+        {
             error = Some("project changed · sample rate request cancelled".into());
         }
 
@@ -503,11 +509,11 @@ pub(super) fn handle<'a>(
             // tuning drag just before the captured library operation.
             // Accept its original revision only across that serialized
             // barrier commit; earlier queued project edits remain stale.
-            let effective_revision = if expected_revision == revision_before_request {
-                revision
-            } else {
-                expected_revision
-            };
+            let effective_revision = super::reconcile_barrier_revision(
+                expected_revision,
+                revision_before_request,
+                revision,
+            );
             let (result, prepared) = run_tuning_library_operation(
                 &mut session,
                 TuningLibraryContext {

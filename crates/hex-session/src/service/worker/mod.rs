@@ -25,6 +25,21 @@ pub(crate) use live_input::{
     TuningInputPublication, compile, native_playback, prepare_tuning_input_publication,
 };
 
+/// A same-request gesture barrier may have committed a live parameter or tuning
+/// drag just before this request runs. Accept its original revision only across
+/// that serialized barrier commit; earlier queued project edits remain stale.
+pub(super) fn reconcile_barrier_revision(
+    captured_revision: u64,
+    revision_before_request: u64,
+    current_revision: u64,
+) -> u64 {
+    if captured_revision == revision_before_request {
+        current_revision
+    } else {
+        captured_revision
+    }
+}
+
 pub(super) enum ArrangementClipboard {
     Range(Arc<hex_project::RangeClipboard>),
     Clips(Arc<hex_project::ClipClipboard>),
@@ -2836,6 +2851,34 @@ pub(super) fn run_worker(
                 *expected,
             )
             .err(),
+            Request::SaveDevicePreset { owner, .. }
+            | Request::LoadDevicePreset { owner, .. }
+            | Request::SaveDeviceDefault { owner, .. }
+            | Request::SaveDeviceUnitPreset { owner, .. }
+            | Request::SaveDeviceUnitDefault { owner, .. } => {
+                preset::validate_owner(&session, project_generation, revision, *owner).err()
+            }
+            Request::LoadFirstSampler {
+                project_generation: target_generation,
+                revision: target_revision,
+                ..
+            } if *target_generation != project_generation || *target_revision != revision => {
+                Some("sampler load target changed".into())
+            }
+            Request::ConvertClip {
+                project_generation: expected_generation,
+                revision: expected_revision,
+                ..
+            } if *expected_generation != project_generation || *expected_revision != revision => {
+                Some("clip conversion canceled · project changed".into())
+            }
+            Request::ChangeProjectSampleRate {
+                project_generation: captured,
+                revision: captured_revision,
+                ..
+            } if *captured != project_generation || *captured_revision != revision => {
+                Some("project changed · sample rate request cancelled".into())
+            }
             _ => None,
         });
         if barrier_failure.is_none() {
