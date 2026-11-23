@@ -1240,6 +1240,46 @@ pub(super) fn handle<'a>(
             Err(reason) => error = Some(reason.to_string()),
         },
 
+        Request::CutClips(ids) => match session.project().capture_clips(&ids) {
+            Ok(captured) => {
+                match resident_audio::execute_command(
+                    &mut session,
+                    Command::EditClips {
+                        clips: ids,
+                        edit: hex_project::ClipEdit::Delete,
+                    },
+                    compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                    hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision.saturating_add(1),
+                    },
+                    &mut events,
+                    &mut resident_snapshot,
+                    export_lane.admission_with_resident_owners(
+                        compiled.as_ref().map(|(_, prepared)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(prepared),
+                            }
+                        }),
+                        resident_seek.as_ref(),
+                        resident_preview.as_ref(),
+                    ),
+                ) {
+                    Ok((_, prepared)) => {
+                        range_clipboard = Some(ArrangementClipboard::Clips(Arc::new(captured)));
+                        if session.project() != state.project.as_ref() {
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                        }
+                        status = Some("clips cut".into());
+                    }
+                    Err(reason) => error = Some(reason.to_string()),
+                }
+            }
+            Err(reason) => error = Some(reason.to_string()),
+        },
+
         Request::CopyTimeRange(range) => match session.project().capture_time_range(&range) {
             Ok(captured) => {
                 range_clipboard = Some(ArrangementClipboard::Range(Arc::new(captured)));

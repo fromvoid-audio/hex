@@ -97,7 +97,8 @@ impl EditorView {
                     | TrackClipboardAction::Duplicate { .. }
                     | TrackClipboardAction::Paste { .. },
                 ..
-            } | Request::CutTimeRange(_)
+            } | Request::CutClips(_)
+                | Request::CutTimeRange(_)
                 | Request::PasteTimeRange { .. }
                 | Request::InsertTimeRange { .. }
         )
@@ -326,7 +327,9 @@ impl EditorView {
         #[cfg(test)]
         match &request {
             Request::CopyTimeRange(_) => self.last_time_request = Some(("copy", None)),
-            Request::CutTimeRange(_) => self.last_time_request = Some(("cut", None)),
+            Request::CutClips(_) | Request::CutTimeRange(_) => {
+                self.last_time_request = Some(("cut", None))
+            }
             Request::PasteTimeRange { track, frame } => {
                 self.last_time_request = Some(("paste", Some((*track, *frame))))
             }

@@ -428,3 +428,118 @@ fn pasted_clip_group_is_selected_and_unrequested_batch_births_are_not(cx: &mut T
         );
     });
 }
+
+#[gpui::test]
+fn cmd_x_cuts_single_and_multi_selected_clips_and_pastes_with_atomic_undo(
+    cx: &mut TestAppContext,
+) {
+    for multiple in [false, true] {
+        cx.update(super::bind_editor_keys);
+        let files = super::external_audio_drop_ui_test::BatchFiles::new();
+        let path = files.wav("cut.wav", 48_000, 48_000);
+        let service = Service::new(48_000, 32, 8_000_000).unwrap();
+        next(&service);
+        service.submit(Request::Import(path)).unwrap();
+        let imported = next(&service);
+        let source = imported.state.project.tracks()[0].id();
+        let first = imported.state.project.tracks()[0].clips()[0].id();
+        service
+            .submit(Request::Edit(Command::CopyClipTo {
+                clip: first,
+                track: source,
+                start: 96_000,
+            }))
+            .unwrap();
+        let second_event = next(&service);
+        let second = second_event
+            .state
+            .project
+            .track(source)
+            .unwrap()
+            .clips()
+            .iter()
+            .find(|c| c.start() == 96_000)
+            .unwrap()
+            .id();
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "destination".into(),
+            }))
+            .unwrap();
+        let state = next(&service).state;
+        let target = state.project.tracks()[1].id();
+        let before_clips = state.project.track(source).unwrap().clips().to_vec();
+        let handle = *cx.add_window(|_, _| gpui::Empty);
+        let editor = cx
+            .update_window(handle, |_, window, cx| {
+                let editor = window.replace_root(cx, |window, cx| {
+                    EditorView::new(window, cx, service, Err("offline UI test".into()))
+                });
+                editor.update(cx, |view, cx| {
+                    view.state = Some(state);
+                    view.snap_grid = SnapGrid::Off;
+                    cx.notify();
+                });
+                editor
+            })
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+
+        click(
+            &mut visual,
+            Box::leak(format!("clip-name-{}", first.value()).into_boxed_str()),
+            Modifiers::default(),
+        );
+        if multiple {
+            click(
+                &mut visual,
+                Box::leak(format!("clip-name-{}", second.value()).into_boxed_str()),
+                Modifiers {
+                    shift: true,
+                    ..Modifiers::default()
+                },
+            );
+        }
+        let expected_cut = if multiple { 2 } else { 1 };
+        let expected_remaining = 2 - expected_cut;
+        visual.simulate_keystrokes("cmd-x");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            let project = &view.state.as_ref().unwrap().project;
+            assert_eq!(project.track(source).unwrap().clips().len(), expected_remaining);
+            assert!(view.selected_clip.is_none());
+            assert!(view.selected_clip_ids().is_empty());
+        });
+
+        let start = destination(&editor, &mut visual, target, 0.45);
+        visual.simulate_keystrokes("cmd-v");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            let clips = project.track(target).unwrap().clips();
+            assert_eq!(clips.len(), expected_cut);
+            for index in 0..expected_cut {
+                assert!(
+                    clips
+                        .iter()
+                        .any(|c| c.start() == start + index as u64 * 96_000
+                            && c.duration() == 48_000)
+                );
+            }
+        });
+
+        // Undo paste, then one atomic Undo restores the cut clip(s).
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            assert_eq!(project.track(source).unwrap().clips().len(), 2);
+            assert!(project.track(target).unwrap().clips().is_empty());
+            assert_eq!(project.tracks()[0].clips(), before_clips.as_slice());
+        });
+    }
+}

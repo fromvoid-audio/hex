@@ -124,3 +124,86 @@ fn clip_paste_and_insert_events_report_created_clips() {
             .any(|c| c.id() == clip)
     );
 }
+
+#[test]
+fn cut_clips_captures_and_removes_atomically_supports_paste_undo_and_refuses_invalid_inputs() {
+    let service = Service::new(48_000, 32, 0).unwrap();
+    next_event(&service);
+    let source = run(
+        &service,
+        Request::Edit(Command::AddTrack {
+            name: "source".into(),
+        }),
+    )
+    .state
+    .project
+    .tracks()[0]
+        .id();
+    let target = run(
+        &service,
+        Request::Edit(Command::AddTrack {
+            name: "target".into(),
+        }),
+    )
+    .state
+    .project
+    .tracks()[1]
+        .id();
+    let mut clips = Vec::new();
+    for start in [0, 2] {
+        let placed = run(
+            &service,
+            Request::Edit(Command::PlaceMidiClip {
+                track: source,
+                start: BeatTime::from_quarters(start).unwrap(),
+                length: BeatTime::ONE,
+            }),
+        );
+        let Some(Created::Clip(clip)) = placed.created else {
+            panic!("placed clip")
+        };
+        clips.push(clip);
+    }
+
+    let cut = run(&service, Request::CutClips(clips.clone()));
+    assert_eq!(cut.status.as_deref(), Some("clips cut"));
+    assert!(cut.state.project.track(source).unwrap().midi_clips().is_empty());
+
+    // Malformed cuts refuse without replacing the previously captured clipboard.
+    for invalid in [vec![], vec![clips[0]], vec![clips[0], clips[0]]] {
+        service.submit(Request::CutClips(invalid)).unwrap();
+        let refused = next_event(&service);
+        assert!(refused.error.is_some());
+    }
+
+    let pasted = run(
+        &service,
+        Request::PasteTimeRange {
+            track: target,
+            frame: 48_000,
+        },
+    );
+    let target_clips = pasted.state.project.track(target).unwrap().midi_clips();
+    assert_eq!(target_clips.len(), 2);
+    assert_eq!(
+        target_clips[1].start().raw() - target_clips[0].start().raw(),
+        BeatTime::from_quarters(2).unwrap().raw()
+    );
+
+    // Undo paste, then one atomic Undo restores both cut clips.
+    run(&service, Request::Undo);
+    let restored = run(&service, Request::Undo);
+    assert_eq!(
+        restored.state.project.track(source).unwrap().midi_clips().len(),
+        2
+    );
+    assert!(
+        restored
+            .state
+            .project
+            .track(target)
+            .unwrap()
+            .midi_clips()
+            .is_empty()
+    );
+}

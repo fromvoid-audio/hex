@@ -43,6 +43,7 @@ fn graph_republishing_classifier_covers_solo_mute_history_and_excludes_control_o
     })));
     assert!(is_graph_republishing_edit(&Request::Undo));
     assert!(is_graph_republishing_edit(&Request::Redo));
+    assert!(is_graph_republishing_edit(&Request::CutClips(Vec::new())));
     assert!(is_graph_republishing_edit(&Request::TrackClipboard {
         project_generation: 0,
         revision: 0,

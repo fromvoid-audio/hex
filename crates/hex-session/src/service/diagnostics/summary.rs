@@ -2016,6 +2016,9 @@ pub(super) fn request(value: &Request) -> Description {
         Request::CopyClips(value0) => {
             describe!("copy_clips"; ["value0_count" => value0.len()]; omitted="")
         }
+        Request::CutClips(value0) => {
+            describe!("cut_clips"; ["value0_count" => value0.len()]; omitted="")
+        }
         Request::CutTimeRange(_) => describe!("cut_time_range"; []; omitted="value0"),
         Request::PasteTimeRange { track, frame } => {
             describe!("paste_time_range"; ["track" => track.value(), "frame" => frame]; omitted="")

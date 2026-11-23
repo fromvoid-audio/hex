@@ -1079,9 +1079,16 @@ impl EditorView {
             return;
         }
         let Some(range) = self.normalized_time_selection() else {
-            if !cut {
-                let clips = self.selected_clip_ids();
-                if !clips.is_empty() {
+            let clips = self.selected_clip_ids();
+            if !clips.is_empty() {
+                if cut {
+                    if self.enqueue(Request::CutClips(clips)) {
+                        self.cancel_duplicate_chain();
+                        self.cancel_midi_note_gesture();
+                        self.selected_clip = None;
+                        self.reconcile_clip_selection();
+                    }
+                } else {
                     self.enqueue(Request::CopyClips(clips));
                 }
             }

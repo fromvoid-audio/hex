@@ -1164,6 +1164,7 @@ pub enum Request {
     },
     CopyTimeRange(hex_project::TimeRange),
     CopyClips(Vec<hex_project::ClipId>),
+    CutClips(Vec<hex_project::ClipId>),
     CutTimeRange(hex_project::TimeRange),
     /// Paste the worker clipboard. Clip clipboard completions report an
     /// inclusive `Created::Clips` range, including a single birth.

@@ -54,6 +54,7 @@ pub(super) fn is_graph_republishing_edit(request: &Request) -> bool {
         Request::Edit(_)
         | Request::Undo
         | Request::Redo
+        | Request::CutClips(_)
         | Request::CutTimeRange(_)
         | Request::PasteTimeRange { .. }
         | Request::InsertTimeRange { .. }

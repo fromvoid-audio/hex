@@ -3412,6 +3412,7 @@ pub(super) fn run_worker(
                 | Request::ConvertClip { .. }
                 | Request::CopyArrangementClipToConsoleTrack { .. }
                 | Request::CopyClips(..)
+                | Request::CutClips(..)
                 | Request::CopyTimeRange(..)
                 | Request::CutTimeRange(..)
                 | Request::DuplicateAliasClips { .. }
