@@ -152,16 +152,17 @@ pub fn render_project(input: &Path, output: &Path) -> Result<(), Box<dyn Error>>
         .name("hex-export".into())
         .stack_size(EXPORT_STACK_BYTES)
         .spawn(move || {
-            hex_export::render_prepared_with_policy(
-                &destination,
-                prepared,
-                0,
+            hex_export::render_prepared_with_policy(hex_export::ExportJobSpec {
+                path: &destination,
+                revision: prepared,
+                resources: None,
+                start: 0,
                 frames,
                 signal,
-                hex_export::ExportFormat::default(),
-                &hex_export::ExportControl::default(),
-                &hex_export::Publication::CreateNew,
-            )
+                format: hex_export::ExportFormat::default(),
+                control: &hex_export::ExportControl::default(),
+                publication: &hex_export::Publication::CreateNew,
+            })
         })?
         .join()
         .map_err(|_| "export worker stopped")??;
@@ -318,16 +319,17 @@ pub fn export_project(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>>
         .name("hex-export".into())
         .stack_size(EXPORT_STACK_BYTES)
         .spawn(move || {
-            hex_export::render_prepared_with_policy(
-                &destination,
-                prepared,
+            hex_export::render_prepared_with_policy(hex_export::ExportJobSpec {
+                path: &destination,
+                revision: prepared,
+                resources: None,
                 start,
                 frames,
                 signal,
-                format.unwrap_or_default(),
-                &render_control,
-                &publication,
-            )
+                format: format.unwrap_or_default(),
+                control: &render_control,
+                publication: &publication,
+            })
         })?;
     let mut previous = None;
     while !worker.is_finished() {

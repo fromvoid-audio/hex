@@ -82,6 +82,17 @@ impl BlockRenderer for BounceRenderer {
     }
 }
 
+/// Complete description of an arrangement bounce job.
+pub struct BounceSpec<'a> {
+    pub path: &'a Path,
+    pub revision: Arc<PreparedRevision>,
+    pub resources: Option<&'a PreparedDeviceResources>,
+    pub start: u64,
+    pub frames: u64,
+    pub include_tails: bool,
+    pub control: &'a ExportControl,
+}
+
 /// Selected-track bounce, post-device and before the retained mixer. Exact
 /// ranges discard causal preroll then write exactly `frames`; clip mode keeps
 /// rendering actual releases until the isolated runtime is quiescent, up to
@@ -95,26 +106,8 @@ impl BlockRenderer for BounceRenderer {
 /// selected span. Tail completion also drains any pending compensation delay.
 /// The control may cancel rendering/publication; the session seals it only at
 /// the final model-adoption boundary, after all files are prepared.
-#[allow(clippy::too_many_arguments)]
-pub fn render_arrangement_bounce_new(
-    path: &Path,
-    revision: Arc<PreparedRevision>,
-    resources: Option<&PreparedDeviceResources>,
-    start: u64,
-    frames: u64,
-    include_tails: bool,
-    control: &ExportControl,
-) -> Result<ExportReport, ExportError> {
-    render_arrangement_bounce_with_pages(
-        path,
-        revision,
-        resources,
-        start,
-        frames,
-        include_tails,
-        control,
-        None,
-    )
+pub fn render_arrangement_bounce_new(spec: BounceSpec<'_>) -> Result<ExportReport, ExportError> {
+    render_arrangement_bounce_with_pages(spec, None)
 }
 
 /// As [`render_arrangement_bounce_new`], with an optional caller-owned offline
@@ -123,25 +116,12 @@ pub fn render_arrangement_bounce_new(
 /// job instead of rendering silence. `finish` runs after the last block and before
 /// any publication; the provider's resources are its own and stay with the caller.
 /// Without a provider, a streamed source refuses as before.
-#[allow(clippy::too_many_arguments)] // Same bounce contract plus one borrowed provider.
 pub fn render_arrangement_bounce_with_pages(
-    path: &Path,
-    revision: Arc<PreparedRevision>,
-    resources: Option<&PreparedDeviceResources>,
-    start: u64,
-    frames: u64,
-    include_tails: bool,
-    control: &ExportControl,
+    spec: BounceSpec<'_>,
     pages: Option<&mut dyn PreparedExportPages>,
 ) -> Result<ExportReport, ExportError> {
     render_arrangement_bounce_partitioned(
-        path,
-        revision,
-        resources,
-        start,
-        frames,
-        include_tails,
-        control,
+        spec,
         RenderInputs {
             pages,
             foreign: None,
@@ -174,27 +154,14 @@ pub trait ForeignBounceRenderer {
 }
 
 /// Run the same finite bounce with a caller-owned offline processor set.
-#[allow(clippy::too_many_arguments)]
 pub fn render_arrangement_bounce_with_foreign(
-    path: &Path,
-    revision: Arc<PreparedRevision>,
-    resources: Option<&PreparedDeviceResources>,
-    start: u64,
-    frames: u64,
-    include_tails: bool,
-    control: &ExportControl,
+    spec: BounceSpec<'_>,
     pages: Option<&mut dyn PreparedExportPages>,
     foreign: &mut dyn ForeignBounceRenderer,
 ) -> Result<ExportReport, ExportError> {
     let block_frames = foreign.max_block_frames().min(FRAMES_PER_BLOCK);
     render_arrangement_bounce_partitioned(
-        path,
-        revision,
-        resources,
-        start,
-        frames,
-        include_tails,
-        control,
+        spec,
         RenderInputs {
             pages,
             foreign: Some(foreign),
@@ -233,18 +200,20 @@ impl RenderInputs<'_, '_, '_> {
     }
 }
 
-#[allow(clippy::too_many_arguments)] // Internal partition used to verify block-boundary invariance.
 fn render_arrangement_bounce_partitioned(
-    path: &Path,
-    revision: Arc<PreparedRevision>,
-    resources: Option<&PreparedDeviceResources>,
-    start: u64,
-    frames: u64,
-    include_tails: bool,
-    control: &ExportControl,
+    spec: BounceSpec<'_>,
     mut inputs: RenderInputs<'_, '_, '_>,
     block_frames: usize,
 ) -> Result<ExportReport, ExportError> {
+    let BounceSpec {
+        path,
+        revision,
+        resources,
+        start,
+        frames,
+        include_tails,
+        control,
+    } = spec;
     if block_frames == 0 || block_frames > FRAMES_PER_BLOCK {
         return Err(ExportError::Invalid("invalid bounce block size"));
     }

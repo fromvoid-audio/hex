@@ -206,30 +206,21 @@ pub(crate) fn render(
         )
         .map(|report| report.frames);
     }
-    if let Some(foreign) = foreign {
-        return hex_export::render_arrangement_bounce_with_foreign(
-            path,
-            revision.prepared,
-            resources,
-            start,
-            frames,
-            include_tails,
-            control,
-            None,
-            foreign,
-        )
-        .map(|report| report.frames)
-        .map_err(|error| error.to_string());
-    }
-    hex_export::render_arrangement_bounce_new(
+    let spec = hex_export::BounceSpec {
         path,
-        revision.prepared,
+        revision: revision.prepared,
         resources,
         start,
         frames,
         include_tails,
         control,
-    )
-    .map(|report| report.frames)
-    .map_err(|e| e.to_string())
+    };
+    if let Some(foreign) = foreign {
+        return hex_export::render_arrangement_bounce_with_foreign(spec, None, foreign)
+            .map(|report| report.frames)
+            .map_err(|error| error.to_string());
+    }
+    hex_export::render_arrangement_bounce_new(spec)
+        .map(|report| report.frames)
+        .map_err(|e| e.to_string())
 }

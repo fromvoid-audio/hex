@@ -121,14 +121,16 @@ pub(crate) fn run_export_worker(
                     .unwrap_or_else(ControlledExport::whole_main);
                 if matches!(controlled.signal, hex_export::ExportSignal::Main) {
                     hex_export::render_linear_main_with_foreign(
-                        &job.path,
-                        Arc::clone(&job.prepared),
-                        job.resources.as_ref(),
-                        controlled.start,
-                        job.frames,
-                        controlled.format,
-                        &controlled.control,
-                        &controlled.publication,
+                        hex_export::ForeignLinearExportSpec {
+                            path: &job.path,
+                            revision: Arc::clone(&job.prepared),
+                            resources: job.resources.as_ref(),
+                            start: controlled.start,
+                            frames: job.frames,
+                            format: controlled.format,
+                            control: &controlled.control,
+                            publication: &controlled.publication,
+                        },
                         None,
                         foreign,
                     )
@@ -141,15 +143,18 @@ pub(crate) fn run_export_worker(
             } else if let Some(resources) = job.resources.take() {
                 if let Some(controlled) = job.controlled.take() {
                     hex_export::render_prepared_with_device_resources_and_policy(
-                        &job.path,
-                        job.prepared,
+                        hex_export::ExportJobSpec {
+                            path: &job.path,
+                            revision: job.prepared,
+                            resources: None,
+                            start: controlled.start,
+                            frames: job.frames,
+                            signal: controlled.signal,
+                            format: controlled.format,
+                            control: &controlled.control,
+                            publication: &controlled.publication,
+                        },
                         &resources,
-                        controlled.start,
-                        job.frames,
-                        controlled.signal,
-                        controlled.format,
-                        &controlled.control,
-                        &controlled.publication,
                     )
                     .map_err(ExportFailure::from)
                 } else {
@@ -168,15 +173,18 @@ pub(crate) fn run_export_worker(
                     .take()
                     .unwrap_or_else(ControlledExport::whole_main);
                 hex_export::render_control_sampler_with_policy(
-                    &job.path,
-                    job.prepared,
+                    hex_export::ExportJobSpec {
+                        path: &job.path,
+                        revision: job.prepared,
+                        resources: None,
+                        start: controlled.start,
+                        frames: job.frames,
+                        signal: controlled.signal,
+                        format: controlled.format,
+                        control: &controlled.control,
+                        publication: &controlled.publication,
+                    },
                     sources,
-                    controlled.start,
-                    job.frames,
-                    controlled.signal,
-                    controlled.format,
-                    &controlled.control,
-                    &controlled.publication,
                 )
                 .map_err(ExportFailure::from)
             } else {

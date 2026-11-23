@@ -439,15 +439,15 @@ fn multi_track_failure_and_cancellation_after_render_preserve_the_entire_transac
                     assert_eq!(control.bounce_fraction(), 0.5);
                     return Err("second output failed".into());
                 }
-                let report = hex_export::render_arrangement_bounce_new(
+                let report = hex_export::render_arrangement_bounce_new(hex_export::BounceSpec {
                     path,
                     revision,
-                    None,
-                    item.start,
-                    item.end - item.start,
-                    tails,
+                    resources: None,
+                    start: item.start,
+                    frames: item.end - item.start,
+                    include_tails: tails,
                     control,
-                )
+                })
                 .map_err(|e| e.to_string())?;
                 rendered.push(path.to_owned());
                 if cancel {
@@ -2392,15 +2392,15 @@ fn whole_track_console_second_output_cancel_and_final_publication_fail_without_p
                 if failure == 0 && paths.len() == 1 {
                     return Err("second console output failed".into());
                 }
-                let frames = hex_export::render_arrangement_bounce_new(
+                let frames = hex_export::render_arrangement_bounce_new(hex_export::BounceSpec {
                     path,
                     revision,
-                    None,
-                    item.start,
-                    item.end - item.start,
-                    tails,
+                    resources: None,
+                    start: item.start,
+                    frames: item.end - item.start,
+                    include_tails: tails,
                     control,
-                )
+                })
                 .map_err(|e| e.to_string())?
                 .frames;
                 paths.push(path.to_owned());

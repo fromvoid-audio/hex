@@ -414,15 +414,15 @@ fn grouping_final_preparation_failure_removes_unpublished_render_and_preserves_c
         },
         |path, revision, _, item, tails, control| {
             assert!(!tails);
-            let report = hex_export::render_arrangement_bounce_new(
+            let report = hex_export::render_arrangement_bounce_new(hex_export::BounceSpec {
                 path,
                 revision,
-                None,
-                item.start,
-                item.end - item.start,
-                tails,
+                resources: None,
+                start: item.start,
+                frames: item.end - item.start,
+                include_tails: tails,
                 control,
-            )
+            })
             .map_err(|e| e.to_string())?;
             rendered = Some(path.to_owned());
             Ok(report.frames)
