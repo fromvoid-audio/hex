@@ -185,13 +185,15 @@ impl PreparedExportPages for MemoryPages {
 fn render_with(request: &StreamedBounceRequest<'_>, serve: bool) -> Result<ExportReport, String> {
     let mut pages = MemoryPages::capture(request, serve)?;
     hex_export::render_arrangement_bounce_with_pages(
-        request.path(),
-        std::sync::Arc::clone(request.prepared()),
-        request.resources(),
-        request.start(),
-        request.frames(),
-        request.include_tails(),
-        request.control(),
+        hex_export::BounceSpec {
+            path: request.path(),
+            revision: std::sync::Arc::clone(request.prepared()),
+            resources: request.resources(),
+            start: request.start(),
+            frames: request.frames(),
+            include_tails: request.include_tails(),
+            control: request.control(),
+        },
         Some(&mut pages),
     )
     .map_err(|e| e.to_string())

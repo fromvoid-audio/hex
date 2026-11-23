@@ -165,14 +165,16 @@ fn linear_foreign_export_verifies_pages_and_provider_before_publication() {
             19
         };
         let result = render_linear_main_with_foreign(
-            &path,
-            Arc::clone(&revision),
-            None,
-            5,
-            frames,
-            ExportFormat::Float32,
-            &ExportControl::default(),
-            &publication,
+            ForeignLinearExportSpec {
+                path: &path,
+                revision: Arc::clone(&revision),
+                resources: None,
+                start: 5,
+                frames,
+                format: ExportFormat::Float32,
+                control: &ExportControl::default(),
+                publication: &publication,
+            },
             Some(&mut pages),
             &mut provider,
         );
@@ -208,14 +210,16 @@ fn linear_foreign_export_verifies_pages_and_provider_before_publication() {
     };
     assert!(matches!(
         render_linear_main_with_foreign(
-            &path,
-            revision,
-            None,
-            0,
-            19,
-            ExportFormat::Float32,
-            &ExportControl::default(),
-            &Publication::CreateNew,
+            ForeignLinearExportSpec {
+                path: &path,
+                revision,
+                resources: None,
+                start: 0,
+                frames: 19,
+                format: ExportFormat::Float32,
+                control: &ExportControl::default(),
+                publication: &Publication::CreateNew,
+            },
             None,
             &mut provider,
         ),

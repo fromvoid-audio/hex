@@ -815,15 +815,15 @@ fn arrangement_bounce_caps_actual_nonquiescent_tail_and_preserves_destinations()
         NativeDeviceState::new(FIXTURE_TYPE, 1, vec![2]).unwrap(),
         TAIL_RATE,
     );
-    let report = hex_export::render_arrangement_bounce_new(
-        &path,
+    let report = hex_export::render_arrangement_bounce_new(hex_export::BounceSpec {
+        path: &path,
         revision,
-        None,
-        0,
-        320,
-        true,
-        &hex_export::ExportControl::default(),
-    )
+        resources: None,
+        start: 0,
+        frames: 320,
+        include_tails: true,
+        control: &hex_export::ExportControl::default(),
+    })
     .expect("unfinished tail is a successful capped bounce");
     assert_eq!(report.frames, 320 + u64::from(TAIL_RATE) * 30);
     assert_eq!(report.data_bytes, report.frames as u32 * 8);
@@ -850,15 +850,15 @@ fn arrangement_bounce_caps_actual_nonquiescent_tail_and_preserves_destinations()
     let original = bytes;
     let (revision, _) = prepared_hybrid(false, false, false);
     assert!(
-        hex_export::render_arrangement_bounce_new(
-            &path,
+        hex_export::render_arrangement_bounce_new(hex_export::BounceSpec {
+            path: &path,
             revision,
-            None,
-            0,
-            320,
-            false,
-            &hex_export::ExportControl::default(),
-        )
+            resources: None,
+            start: 0,
+            frames: 320,
+            include_tails: false,
+            control: &hex_export::ExportControl::default(),
+        })
         .is_err()
     );
     assert_eq!(
@@ -885,15 +885,15 @@ fn arrangement_bounce_keeps_a_naturally_ending_tail_beyond_ten_seconds() {
         NativeDeviceState::new(FIXTURE_TYPE, 1, vec![3]).unwrap(),
         TAIL_RATE,
     );
-    let report = hex_export::render_arrangement_bounce_new(
-        &path,
+    let report = hex_export::render_arrangement_bounce_new(hex_export::BounceSpec {
+        path: &path,
         revision,
-        None,
-        0,
-        320,
-        true,
-        &hex_export::ExportControl::default(),
-    )
+        resources: None,
+        start: 0,
+        frames: 320,
+        include_tails: true,
+        control: &hex_export::ExportControl::default(),
+    })
     .expect("a twelve-second release finishes naturally");
     assert!(report.frames > u64::from(TAIL_RATE) * 12);
     assert!(report.frames < u64::from(TAIL_RATE) * 13);
@@ -923,30 +923,30 @@ fn arrangement_bounce_ignores_quiet_noise_without_trimming_selected_content() {
         TAIL_RATE,
     );
     let path = dir.0.join("quiet-tail.wav");
-    let report = hex_export::render_arrangement_bounce_new(
-        &path,
-        Arc::clone(&revision),
-        None,
-        0,
-        1024,
-        true,
-        &hex_export::ExportControl::default(),
-    )
+    let report = hex_export::render_arrangement_bounce_new(hex_export::BounceSpec {
+        path: &path,
+        revision: Arc::clone(&revision),
+        resources: None,
+        start: 0,
+        frames: 1024,
+        include_tails: true,
+        control: &hex_export::ExportControl::default(),
+    })
     .unwrap();
     assert_eq!(
         report.frames, 1024,
         "quiet background must not extend the selected span"
     );
     let exact_path = dir.0.join("exact.wav");
-    let exact = hex_export::render_arrangement_bounce_new(
-        &exact_path,
+    let exact = hex_export::render_arrangement_bounce_new(hex_export::BounceSpec {
+        path: &exact_path,
         revision,
-        None,
-        0,
-        1024,
-        false,
-        &hex_export::ExportControl::default(),
-    )
+        resources: None,
+        start: 0,
+        frames: 1024,
+        include_tails: false,
+        control: &hex_export::ExportControl::default(),
+    })
     .unwrap();
     assert_eq!(exact.frames, 1024);
     let bytes = fs::read(&path).unwrap();
@@ -975,15 +975,15 @@ fn arrangement_bounce_keeps_a_late_one_channel_echo_across_quiet_noise() {
         TAIL_RATE,
     );
     let path = dir.0.join("late-echo.wav");
-    let report = hex_export::render_arrangement_bounce_new(
-        &path,
+    let report = hex_export::render_arrangement_bounce_new(hex_export::BounceSpec {
+        path: &path,
         revision,
-        None,
-        0,
-        1024,
-        true,
-        &hex_export::ExportControl::default(),
-    )
+        resources: None,
+        start: 0,
+        frames: 1024,
+        include_tails: true,
+        control: &hex_export::ExportControl::default(),
+    })
     .unwrap();
     let echo_frame = u64::from(TAIL_RATE) * 12;
     assert_eq!(

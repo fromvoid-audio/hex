@@ -549,16 +549,17 @@ fn export_keeps_edit_worker_responsive_and_returns_captured_revision_separately(
             move |path, project, start, frames, signal, format, control, publication| {
                 entered.wait();
                 release.wait();
-                hex_export::render_prepared_with_policy(
+                hex_export::render_prepared_with_policy(hex_export::ExportJobSpec {
                     path,
-                    Arc::clone(project),
+                    revision: Arc::clone(project),
+                    resources: None,
                     start,
                     frames,
                     signal,
                     format,
                     control,
                     publication,
-                )
+                })
                 .map_err(ExportFailure::from)
             },
         )

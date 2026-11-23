@@ -110,15 +110,15 @@ fn arrangement_bounce_aligns_short_and_long_latency_for_ranges_and_tails() {
         // 40-device path has 280 frames of latency, crossing a block boundary.
         for (start, frames, tails) in [(0, 17, false), (29, 310, false), (0, SOURCE, true)] {
             let path = directory.join(format!("{devices}-{start}-{frames}-{tails}.wav"));
-            let report = hex_export::render_arrangement_bounce_new(
-                &path,
-                Arc::clone(&revision),
-                None,
-                start as u64,
-                frames as u64,
-                tails,
-                &hex_export::ExportControl::default(),
-            )
+            let report = hex_export::render_arrangement_bounce_new(hex_export::BounceSpec {
+                path: &path,
+                revision: Arc::clone(&revision),
+                resources: None,
+                start: start as u64,
+                frames: frames as u64,
+                include_tails: tails,
+                control: &hex_export::ExportControl::default(),
+            })
             .expect("aligned bounce");
             assert_eq!(report.frames, frames as u64);
             let bytes = std::fs::read(path).unwrap();
@@ -140,13 +140,15 @@ fn arrangement_bounce_aligns_short_and_long_latency_for_ranges_and_tails() {
             let mut pages = CancelDuringDiscard { calls: 0 };
             let path = directory.join("cancelled.wav");
             let result = hex_export::render_arrangement_bounce_with_pages(
-                &path,
-                Arc::clone(&revision),
-                None,
-                0,
-                17,
-                false,
-                &hex_export::ExportControl::default(),
+                hex_export::BounceSpec {
+                    path: &path,
+                    revision: Arc::clone(&revision),
+                    resources: None,
+                    start: 0,
+                    frames: 17,
+                    include_tails: false,
+                    control: &hex_export::ExportControl::default(),
+                },
                 Some(&mut pages),
             );
             assert!(matches!(result, Err(hex_export::ExportError::Cancelled)));
@@ -242,15 +244,15 @@ fn latent_bounce_keeps_the_same_musical_tail_as_the_uncompensated_path() {
             .unwrap(),
         );
         let path = directory.join(format!("tail-{mode}.wav"));
-        let report = hex_export::render_arrangement_bounce_new(
-            &path,
+        let report = hex_export::render_arrangement_bounce_new(hex_export::BounceSpec {
+            path: &path,
             revision,
-            None,
-            0,
-            32,
-            true,
-            &hex_export::ExportControl::default(),
-        )
+            resources: None,
+            start: 0,
+            frames: 32,
+            include_tails: true,
+            control: &hex_export::ExportControl::default(),
+        })
         .expect("bounce with finite musical tail");
         let bytes = std::fs::read(path).unwrap();
         let samples: Vec<_> = bytes[hex_export::FLOAT32_WAV_HEADER_BYTES as usize..]
@@ -345,15 +347,15 @@ fn assert_default_export_final_frame(track_delay: bool, main_delay: bool) {
     ));
     std::fs::create_dir(&directory).unwrap();
     let bounce_path = directory.join("latency-bounce.wav");
-    let bounce = hex_export::render_arrangement_bounce_new(
-        &bounce_path,
-        Arc::clone(&prepared),
-        None,
-        0,
-        17,
-        false,
-        &hex_export::ExportControl::default(),
-    );
+    let bounce = hex_export::render_arrangement_bounce_new(hex_export::BounceSpec {
+        path: &bounce_path,
+        revision: Arc::clone(&prepared),
+        resources: None,
+        start: 0,
+        frames: 17,
+        include_tails: false,
+        control: &hex_export::ExportControl::default(),
+    });
     assert_eq!(bounce.expect("latency-compensated bounce").frames, 17);
     let bytes = std::fs::read(&bounce_path).unwrap();
     let actual: Vec<_> = bytes[hex_export::FLOAT32_WAV_HEADER_BYTES as usize..]

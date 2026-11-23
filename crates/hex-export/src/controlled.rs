@@ -315,6 +315,31 @@ pub fn controlled_frame_count(
     Ok(frames)
 }
 
+/// Complete description of a controlled prepared-revision export job.
+pub struct ExportJobSpec<'a> {
+    pub path: &'a Path,
+    pub revision: Arc<PreparedRevision>,
+    pub resources: Option<&'a PreparedDeviceResources>,
+    pub start: u64,
+    pub frames: u64,
+    pub signal: ExportSignal,
+    pub format: ExportFormat,
+    pub control: &'a ExportControl,
+    pub publication: &'a Publication,
+}
+
+/// Complete description of a linear Main export through caller-owned foreign processors.
+pub struct ForeignLinearExportSpec<'a> {
+    pub path: &'a Path,
+    pub revision: Arc<PreparedRevision>,
+    pub resources: Option<&'a PreparedDeviceResources>,
+    pub start: u64,
+    pub frames: u64,
+    pub format: ExportFormat,
+    pub control: &'a ExportControl,
+    pub publication: &'a Publication,
+}
+
 /// Render a selected half-open frame range to a new dithered PCM16 WAV. Stateful history
 /// is reconstructed from zero without Seek, in cancellable 256-frame blocks.
 /// Preroll has the existing bounded engine work ceiling. Authored Arrangement
@@ -328,16 +353,17 @@ pub fn render_prepared_controlled(
     signal: ExportSignal,
     control: &ExportControl,
 ) -> Result<ExportReport, ExportError> {
-    render_prepared_with_policy(
+    render_prepared_with_policy(ExportJobSpec {
         path,
         revision,
+        resources: None,
         start,
         frames,
         signal,
-        ExportFormat::Pcm16,
+        format: ExportFormat::Pcm16,
         control,
-        &Publication::CreateNew,
-    )
+        publication: &Publication::CreateNew,
+    })
 }
 
 /// Controlled range export under an explicit publication policy.
@@ -349,28 +375,8 @@ pub fn render_prepared_controlled(
 /// preroll rather than audio. Captured mixes and stems keep their causal
 /// pre-Main capture timing. `format` selects the WAV sample format of the file
 /// or of every stem file in a batch.
-#[allow(clippy::too_many_arguments)] // Range, scope, format, control and publication.
-pub fn render_prepared_with_policy(
-    path: &Path,
-    revision: Arc<PreparedRevision>,
-    start: u64,
-    frames: u64,
-    signal: ExportSignal,
-    format: ExportFormat,
-    control: &ExportControl,
-    publication: &Publication,
-) -> Result<ExportReport, ExportError> {
-    render_prepared_using(
-        path,
-        revision,
-        None,
-        start,
-        frames,
-        signal,
-        format,
-        control,
-        publication,
-    )
+pub fn render_prepared_with_policy(spec: ExportJobSpec<'_>) -> Result<ExportReport, ExportError> {
+    render_prepared_using(spec)
 }
 
 /// Causal range export through exact ordinary resource scopes. Preroll, selected outputs,
@@ -385,69 +391,30 @@ pub fn render_prepared_controlled_with_device_resources(
     signal: ExportSignal,
     control: &ExportControl,
 ) -> Result<ExportReport, ExportError> {
-    render_prepared_using(
+    render_prepared_using(ExportJobSpec {
         path,
         revision,
-        Some(resources),
+        resources: Some(resources),
         start,
         frames,
         signal,
-        ExportFormat::Pcm16,
+        format: ExportFormat::Pcm16,
         control,
-        &Publication::CreateNew,
-    )
+        publication: &Publication::CreateNew,
+    })
 }
 
 /// The same ordinary resource range with existing explicit overwrite consent semantics.
-#[allow(clippy::too_many_arguments)]
-pub fn render_prepared_with_device_resources_and_policy(
-    path: &Path,
-    revision: Arc<PreparedRevision>,
-    resources: &PreparedDeviceResources,
-    start: u64,
-    frames: u64,
-    signal: ExportSignal,
-    format: ExportFormat,
-    control: &ExportControl,
-    publication: &Publication,
+pub fn render_prepared_with_device_resources_and_policy<'a>(
+    mut spec: ExportJobSpec<'a>,
+    resources: &'a PreparedDeviceResources,
 ) -> Result<ExportReport, ExportError> {
-    render_prepared_using(
-        path,
-        revision,
-        Some(resources),
-        start,
-        frames,
-        signal,
-        format,
-        control,
-        publication,
-    )
+    spec.resources = Some(resources);
+    render_prepared_using(spec)
 }
 
-#[allow(clippy::too_many_arguments)] // Same renderer/publication, with one borrowed exact resource scope.
-fn render_prepared_using(
-    path: &Path,
-    revision: Arc<PreparedRevision>,
-    resources: Option<&PreparedDeviceResources>,
-    start: u64,
-    frames: u64,
-    signal: ExportSignal,
-    format: ExportFormat,
-    control: &ExportControl,
-    publication: &Publication,
-) -> Result<ExportReport, ExportError> {
-    render_prepared_using_pages(
-        path,
-        revision,
-        resources,
-        start,
-        frames,
-        signal,
-        format,
-        control,
-        publication,
-        None,
-    )
+fn render_prepared_using(spec: ExportJobSpec<'_>) -> Result<ExportReport, ExportError> {
+    render_prepared_using_pages(spec, None)
 }
 
 /// Linear export with caller-owned, independently verified offline pages.
@@ -455,49 +422,31 @@ fn render_prepared_using(
 /// preparation does not create or replace those leases. Preparation covers
 /// preroll and every output/capture/stem chunk. A miss or
 /// failed final verification refuses ordinary publication; no resident fallback.
-#[allow(clippy::too_many_arguments)] // Existing range/publication plus one borrowed page boundary.
 pub fn render_prepared_with_pages_and_policy(
-    path: &Path,
-    revision: Arc<PreparedRevision>,
-    resources: Option<&PreparedDeviceResources>,
-    start: u64,
-    frames: u64,
-    signal: ExportSignal,
-    format: ExportFormat,
-    control: &ExportControl,
-    publication: &Publication,
+    spec: ExportJobSpec<'_>,
     pages: &mut dyn PreparedExportPages,
 ) -> Result<ExportReport, ExportError> {
-    render_prepared_using_pages(
-        path,
-        revision,
-        resources,
-        start,
-        frames,
-        signal,
-        format,
-        control,
-        publication,
-        Some(pages),
-    )
+    render_prepared_using_pages(spec, Some(pages))
 }
 
 /// Render linear Main through independently owned offline processors and,
 /// optionally, verified pages. Both owners finish before publication. Their
 /// custody remains with the caller and failures abort the staged export.
-#[allow(clippy::too_many_arguments)]
 pub fn render_linear_main_with_foreign(
-    path: &Path,
-    revision: Arc<PreparedRevision>,
-    resources: Option<&PreparedDeviceResources>,
-    start: u64,
-    frames: u64,
-    format: ExportFormat,
-    control: &ExportControl,
-    publication: &Publication,
+    spec: ForeignLinearExportSpec<'_>,
     pages: Option<&mut dyn PreparedExportPages>,
     foreign: &mut dyn crate::ForeignBounceRenderer,
 ) -> Result<ExportReport, ExportError> {
+    let ForeignLinearExportSpec {
+        path,
+        revision,
+        resources,
+        start,
+        frames,
+        format,
+        control,
+        publication,
+    } = spec;
     let block_frames = foreign.max_block_frames().min(FRAMES_PER_BLOCK);
     if block_frames == 0 || frames == 0 {
         return Err(ExportError::Invalid(
@@ -521,11 +470,13 @@ pub fn render_linear_main_with_foreign(
                 foreign: Some(foreign),
             };
             let playback = prepare_runtime_with_inputs(
-                revision,
-                resources,
-                start,
-                rendered_frames,
-                control,
+                RuntimePrepSpec {
+                    revision,
+                    resources,
+                    start,
+                    frames: rendered_frames,
+                    control,
+                },
                 foreign_linear_runtime,
                 || {},
                 &mut inputs,
@@ -580,25 +531,37 @@ impl BlockRenderer for ForeignLinearRenderer<'_, '_, '_> {
     }
 }
 
-#[allow(clippy::too_many_arguments)] // Same renderer; optional exact borrowed page preparation.
 fn render_prepared_using_pages(
-    path: &Path,
-    revision: Arc<PreparedRevision>,
-    resources: Option<&PreparedDeviceResources>,
-    start: u64,
-    frames: u64,
-    signal: ExportSignal,
-    format: ExportFormat,
-    control: &ExportControl,
-    publication: &Publication,
+    spec: ExportJobSpec<'_>,
     mut pages: Option<&mut dyn PreparedExportPages>,
 ) -> Result<ExportReport, ExportError> {
+    let ExportJobSpec {
+        path,
+        revision,
+        resources,
+        start,
+        frames,
+        signal,
+        format,
+        control,
+        publication,
+    } = spec;
     if let ExportSignal::Stems(stems) = &signal {
         if !matches!(publication, Publication::CreateNew) {
             return Err(ExportError::Invalid("stem batches require a new directory"));
         }
         return super::stems::render_stems_using_pages(
-            path, revision, resources, start, frames, stems, format, control, pages,
+            super::stems::StemBatchSpec {
+                path,
+                revision,
+                resources,
+                start,
+                frames,
+                stems,
+                format,
+                control,
+            },
+            pages,
         );
     }
     control.claim()?;
@@ -680,18 +643,21 @@ fn compensated_frames(start: u64, frames: u64, latency: u32) -> Result<u64, Expo
 
 /// Explicit private-control source capability. Same publication, cancellation,
 /// block renderer and SessionPlayback implementation as ordinary export.
-#[allow(clippy::too_many_arguments)]
 pub fn render_control_sampler_with_policy(
-    path: &Path,
-    revision: Arc<PreparedRevision>,
+    spec: ExportJobSpec<'_>,
     sources: hex_engine::native_device_resources::ControlSamplerSources,
-    start: u64,
-    frames: u64,
-    signal: ExportSignal,
-    format: ExportFormat,
-    control: &ExportControl,
-    publication: &Publication,
 ) -> Result<ExportReport, ExportError> {
+    let ExportJobSpec {
+        path,
+        revision,
+        resources: _,
+        start,
+        frames,
+        signal,
+        format,
+        control,
+        publication,
+    } = spec;
     if start != 0 || !matches!(signal, ExportSignal::Main) {
         return Err(ExportError::Invalid(
             "sampler supports frame-zero main export only",
@@ -733,6 +699,14 @@ pub(super) fn prepare_runtime(
     prepare_runtime_observed(revision, resources, start, frames, control, || {})
 }
 
+struct RuntimePrepSpec<'a> {
+    revision: Arc<PreparedRevision>,
+    resources: Option<&'a PreparedDeviceResources>,
+    start: u64,
+    frames: u64,
+    control: &'a ExportControl,
+}
+
 pub(super) fn prepare_runtime_with_pages<'provider>(
     revision: Arc<PreparedRevision>,
     resources: Option<&PreparedDeviceResources>,
@@ -747,11 +721,13 @@ pub(super) fn prepare_runtime_with_pages<'provider>(
         legacy_linear_runtime
     };
     prepare_runtime_using_pages(
-        revision,
-        resources,
-        start,
-        frames,
-        control,
+        RuntimePrepSpec {
+            revision,
+            resources,
+            start,
+            frames,
+            control,
+        },
         constructor,
         || {},
         pages,
@@ -772,11 +748,13 @@ fn prepare_runtime_observed(
         legacy_linear_runtime
     };
     prepare_runtime_using(
-        revision,
-        resources,
-        start,
-        frames,
-        control,
+        RuntimePrepSpec {
+            revision,
+            resources,
+            start,
+            frames,
+            control,
+        },
         constructor,
         after_block,
     )
@@ -819,11 +797,13 @@ pub(super) fn prepare_bounce_runtime_with_inputs(
         SessionPlayback::new_finite_arrangement_bounce
     };
     prepare_runtime_with_inputs(
-        revision,
-        resources,
-        start,
-        frames,
-        control,
+        RuntimePrepSpec {
+            revision,
+            resources,
+            start,
+            frames,
+            control,
+        },
         constructor,
         || {},
         inputs,
@@ -837,45 +817,22 @@ type RuntimeConstructor = fn(
     u64,
 ) -> Result<SessionPlayback, hex_engine::SessionPlaybackError>;
 
-#[allow(clippy::too_many_arguments)]
 fn prepare_runtime_using(
-    revision: Arc<PreparedRevision>,
-    resources: Option<&PreparedDeviceResources>,
-    start: u64,
-    frames: u64,
-    control: &ExportControl,
+    spec: RuntimePrepSpec<'_>,
     constructor: RuntimeConstructor,
     after_block: impl FnMut(),
 ) -> Result<SessionPlayback, ExportError> {
-    prepare_runtime_using_pages(
-        revision,
-        resources,
-        start,
-        frames,
-        control,
-        constructor,
-        after_block,
-        None,
-    )
+    prepare_runtime_using_pages(spec, constructor, after_block, None)
 }
 
-#[allow(clippy::too_many_arguments)] // One construction policy and optional control-only pages.
 fn prepare_runtime_using_pages<'provider>(
-    revision: Arc<PreparedRevision>,
-    resources: Option<&PreparedDeviceResources>,
-    start: u64,
-    frames: u64,
-    control: &ExportControl,
+    spec: RuntimePrepSpec<'_>,
     constructor: RuntimeConstructor,
     after_block: impl FnMut(),
     pages: Option<&mut (dyn PreparedExportPages + 'provider)>,
 ) -> Result<SessionPlayback, ExportError> {
     prepare_runtime_with_inputs(
-        revision,
-        resources,
-        start,
-        frames,
-        control,
+        spec,
         constructor,
         after_block,
         &mut crate::bounce::RenderInputs {
@@ -886,18 +843,20 @@ fn prepare_runtime_using_pages<'provider>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn prepare_runtime_with_inputs(
-    revision: Arc<PreparedRevision>,
-    resources: Option<&PreparedDeviceResources>,
-    start: u64,
-    frames: u64,
-    control: &ExportControl,
+    spec: RuntimePrepSpec<'_>,
     constructor: RuntimeConstructor,
     mut after_block: impl FnMut(),
     inputs: &mut crate::bounce::RenderInputs<'_, '_, '_>,
     block_frames: usize,
 ) -> Result<SessionPlayback, ExportError> {
+    let RuntimePrepSpec {
+        revision,
+        resources,
+        start,
+        frames,
+        control,
+    } = spec;
     control.check()?;
     let replay = start != 0
         && if inputs.foreign.is_some() {

@@ -61,28 +61,32 @@ pub(crate) fn render_with_config_and_foreign(
     let mut pages = VerifiedPages::capture(request, config)?;
     if let Some(foreign) = foreign {
         return hex_export::render_linear_main_with_foreign(
-            request.path(),
-            Arc::clone(request.prepared()),
-            request.resources(),
-            request.start(),
-            request.frames(),
-            request.format(),
-            request.control(),
-            request.publication(),
+            hex_export::ForeignLinearExportSpec {
+                path: request.path(),
+                revision: Arc::clone(request.prepared()),
+                resources: request.resources(),
+                start: request.start(),
+                frames: request.frames(),
+                format: request.format(),
+                control: request.control(),
+                publication: request.publication(),
+            },
             Some(&mut pages),
             foreign,
         );
     }
     hex_export::render_prepared_with_pages_and_policy(
-        request.path(),
-        Arc::clone(request.prepared()),
-        request.resources(),
-        request.start(),
-        request.frames(),
-        request.signal().clone(),
-        request.format(),
-        request.control(),
-        request.publication(),
+        hex_export::ExportJobSpec {
+            path: request.path(),
+            revision: Arc::clone(request.prepared()),
+            resources: request.resources(),
+            start: request.start(),
+            frames: request.frames(),
+            signal: request.signal().clone(),
+            format: request.format(),
+            control: request.control(),
+            publication: request.publication(),
+        },
         &mut pages,
     )
 }
@@ -118,29 +122,19 @@ pub(crate) fn bounce_with_config(
         config,
         request.control(),
     )?;
+    let spec = hex_export::BounceSpec {
+        path: request.path(),
+        revision: Arc::clone(request.prepared()),
+        resources: request.resources(),
+        start: request.start(),
+        frames: request.frames(),
+        include_tails: request.include_tails(),
+        control: request.control(),
+    };
     if let Some(foreign) = foreign {
-        return hex_export::render_arrangement_bounce_with_foreign(
-            request.path(),
-            Arc::clone(request.prepared()),
-            request.resources(),
-            request.start(),
-            request.frames(),
-            request.include_tails(),
-            request.control(),
-            Some(&mut pages),
-            foreign,
-        );
+        return hex_export::render_arrangement_bounce_with_foreign(spec, Some(&mut pages), foreign);
     }
-    hex_export::render_arrangement_bounce_with_pages(
-        request.path(),
-        Arc::clone(request.prepared()),
-        request.resources(),
-        request.start(),
-        request.frames(),
-        request.include_tails(),
-        request.control(),
-        Some(&mut pages),
-    )
+    hex_export::render_arrangement_bounce_with_pages(spec, Some(&mut pages))
 }
 trait Cancellation {
     fn is_cancelled(&self) -> bool;

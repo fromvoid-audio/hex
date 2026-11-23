@@ -80,13 +80,15 @@ fn foreign_bounce_requires_completed_provider_before_wav_publication() {
     let path = directory.join("bounce.wav");
     for fail_finish in [true, false] {
         let report = render_arrangement_bounce_with_foreign(
-            &path,
-            Arc::clone(&revision),
-            None,
-            5,
-            19,
-            false,
-            &ExportControl::default(),
+            BounceSpec {
+                path: &path,
+                revision: Arc::clone(&revision),
+                resources: None,
+                start: 5,
+                frames: 19,
+                include_tails: false,
+                control: &ExportControl::default(),
+            },
             None,
             &mut Provider {
                 frames: 0,
@@ -186,13 +188,15 @@ fn latent_bounce_matches_reference_across_render_partitions() {
             for (index, revision) in revisions.iter().enumerate() {
                 let path = directory.join(format!("{block}-{start}-{tails}-{index}.wav"));
                 let report = render_arrangement_bounce_partitioned(
-                    &path,
-                    Arc::clone(revision),
-                    None,
-                    start,
-                    frames,
-                    tails,
-                    &ExportControl::default(),
+                    BounceSpec {
+                        path: &path,
+                        revision: Arc::clone(revision),
+                        resources: None,
+                        start,
+                        frames,
+                        include_tails: tails,
+                        control: &ExportControl::default(),
+                    },
                     RenderInputs {
                         pages: None,
                         foreign: None,
