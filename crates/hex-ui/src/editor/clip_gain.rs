@@ -612,14 +612,7 @@ impl EditorView {
         let abandoned = self.clip_gain.pending.as_ref().is_some_and(|p| {
             !p.drag.source_current(self)
                 || (p.receipt.is_queued()
-                    && !self
-                        .pending_requests
-                        .iter()
-                        .any(|r| self.clip_gain_matches(r))
-                    && !self
-                        .device_gesture_barriers
-                        .iter()
-                        .any(|r| self.clip_gain_matches(r)))
+                    && !self.queued_requests().any(|r| self.clip_gain_matches(r)))
         });
         abandoned && self.retire_clip_gain()
     }

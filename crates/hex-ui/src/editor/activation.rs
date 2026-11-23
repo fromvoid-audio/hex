@@ -149,9 +149,7 @@ impl EditorView {
             .as_ref()
             .is_some_and(|pending| pending.receipt.is_queued())
             && !self
-                .pending_requests
-                .iter()
-                .chain(self.device_gesture_barriers.iter())
+                .queued_requests()
                 .any(|request| self.clip_activation_matches(request))
             && self.retire_clip_activation()
     }

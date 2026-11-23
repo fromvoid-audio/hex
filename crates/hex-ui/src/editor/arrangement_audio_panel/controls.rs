@@ -868,9 +868,7 @@ impl EditorView {
         let abandoned = self.audio_clip_controls.pending.as_ref().is_some_and(|p| {
             p.receipt.is_queued()
                 && !self
-                    .pending_requests
-                    .iter()
-                    .chain(self.device_gesture_barriers.iter())
+                    .queued_requests()
                     .any(|r| self.audio_clip_controls.matches(r))
         });
         abandoned && self.retire_clip_detail()

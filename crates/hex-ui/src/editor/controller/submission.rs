@@ -263,6 +263,18 @@ impl EditorView {
         }
     }
 
+    /// Retire every custody owned by a request that was never submitted to the
+    /// project worker (e.g. canceled or failed during audio recovery), without
+    /// overwriting `self.error`. Returns whether visible editor state changed.
+    pub(in crate::editor) fn retire_unsubmitted_request(
+        &mut self,
+        request: &Request,
+        message: Option<&str>,
+    ) -> bool {
+        let kinds = self.classify_submission(request).kinds;
+        self.retire_unsubmitted_custodies(kinds, request, false, message)
+    }
+
     /// Retire every custody owned by a request that will never reach the
     /// worker and show the refusal's actual reason. Returns whether visible
     /// editor state changed.
@@ -271,6 +283,28 @@ impl EditorView {
         kinds: PendingKinds,
         request: &Request,
         refusal: Refusal,
+    ) -> bool {
+        let message = match refusal {
+            Refusal::Busy(reason) => super::super::user_errors::busy(reason),
+            Refusal::Closed => "project worker stopped",
+            Refusal::QueueFull => "request queue full · edit was not applied",
+        };
+        let mut visible = self.retire_unsubmitted_custodies(
+            kinds,
+            request,
+            refusal == Refusal::Closed,
+            Some(message),
+        );
+        visible |= replace_error(&mut self.error, message);
+        visible
+    }
+
+    fn retire_unsubmitted_custodies(
+        &mut self,
+        kinds: PendingKinds,
+        request: &Request,
+        closed: bool,
+        message: Option<&str>,
     ) -> bool {
         let mut visible = false;
         if matches!(request, Request::RestoreStoppedPlayback) {
@@ -281,9 +315,9 @@ impl EditorView {
         }
         self.midi_take_not_submitted(request);
         self.gain_take_not_submitted(request);
-        self.native_automation_request_not_submitted(request, refusal == Refusal::Closed);
-        self.automation_take_recovery_not_submitted(request, refusal == Refusal::Closed);
-        if refusal == Refusal::Closed {
+        self.native_automation_request_not_submitted(request, closed);
+        self.automation_take_recovery_not_submitted(request, closed);
+        if closed {
             visible |= self.cancel_new_preparation();
         }
         self.retire_unsubmitted_export(request);
@@ -399,22 +433,21 @@ impl EditorView {
         if kinds.device_automation {
             visible |= self.retire_pending_device_automation();
         }
-        let message = match refusal {
-            Refusal::Busy(reason) => super::super::user_errors::busy(reason),
-            Refusal::Closed => "project worker stopped",
-            Refusal::QueueFull => "request queue full · edit was not applied",
-        };
         if let Request::InsertPluginEffect(insertion) = request {
-            visible |= self.retire_plugin_effect(&insertion.control, false, Some(message));
+            visible |= self.retire_plugin_effect(&insertion.control, false, message);
         }
         if let Some(control) = request.builtin_device_insert_control() {
-            visible |= self.retire_plugin_effect(control, false, Some(message));
+            visible |= self.retire_plugin_effect(control, false, message);
         }
         if kinds.project_rate {
-            self.project_rate_settings.refused(message.into());
+            if let Some(message) = message {
+                self.project_rate_settings.refused(message.into());
+            } else {
+                self.project_rate_settings
+                    .refused("audio recovery did not complete".into());
+            }
             visible = true;
         }
-        visible |= replace_error(&mut self.error, message);
         visible
     }
 }

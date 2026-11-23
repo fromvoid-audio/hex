@@ -356,9 +356,7 @@ impl EditorView {
             .is_some_and(|pending| {
                 pending.receipt.is_queued()
                     && !self
-                        .pending_requests
-                        .iter()
-                        .chain(self.device_gesture_barriers.iter())
+                        .queued_requests()
                         .any(|request| pending.matches(request))
             })
         {

@@ -835,9 +835,7 @@ impl EditorView {
     pub(super) fn retire_abandoned_fade(&mut self) -> bool {
         let abandoned = self.pending_fade.as_ref().is_some_and(|p| {
             !p.source_current(self)
-                || (p.receipt.is_queued()
-                    && !self.pending_requests.iter().any(|r| p.matches(r))
-                    && !self.device_gesture_barriers.iter().any(|r| p.matches(r)))
+                || (p.receipt.is_queued() && !self.queued_requests().any(|r| p.matches(r)))
         });
         abandoned && self.retire_pending_fade()
     }

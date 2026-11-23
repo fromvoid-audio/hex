@@ -2,84 +2,24 @@
 use super::{
     EditorView,
     drag::BrowserDropDestination,
-    pending_sample_drop::PendingSampleDrop,
-    recovery_state::{DeferredEditKind, DeferredGraphEdit, RecoveryState},
+    recovery_state::{DeferredEditKind, DeferredGraphEdit},
 };
 use hex_engine::playback::{PlaybackAction, PlaybackCommand};
 use hex_engine::{AudioSourceContext, NativeDeviceClass};
 use hex_project::{AudioViewResizeOperation, ClipId, Command};
-use hex_session::service::{NativeDeviceDropSource, Request};
+use hex_session::service::{
+    DeviceClipboardAction, NativeDeviceDropSource, Request, SamplerEdit, TrackClipboardAction,
+    ViewState,
+};
+use hex_session::tuning_gesture::TuningLibraryOperation;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "recovery_tests.rs"]
 pub(in crate::editor) mod tests;
 
-fn deferred_device_insert_control(
-    request: &Request,
-) -> Option<&std::sync::Arc<hex_session::service::PluginEffectControl>> {
-    match request {
-        Request::InsertPluginEffect(insertion) => Some(&insertion.control),
-        _ => request.builtin_device_insert_control(),
-    }
-}
-
-/// Retire a released preview still owned by the aborted recovery.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn clear_recovery(
-    recovery: &mut RecoveryState,
-    sample_drop: &mut Option<PendingSampleDrop>,
-    time_move: &mut Option<super::time_selection::PendingTimeRangeMove>,
-    pending_loop: &mut Option<super::loop_rail::PendingLoop>,
-    clip_loop: &mut super::clip_loop::State,
-    pending_device: &mut Option<super::plugin_effect::PendingPluginEffect>,
-    failed_device: &mut Option<super::plugin_effect::FailedPluginProposal>,
-    device_panel: &mut super::device_panel::DevicePanelState,
-    track_gain_controls: &mut super::track_gain::Controls,
-) {
-    if recovery
-        .deferred_edit
-        .as_ref()
-        .is_some_and(|edit| edit.kind == DeferredEditKind::SampleDrop)
-    {
-        *sample_drop = None;
-    }
-    if recovery
-        .deferred_edit
-        .as_ref()
-        .is_some_and(|edit| edit.kind == DeferredEditKind::TimeDuplicate)
-    {
-        *time_move = None;
-    }
-    if recovery.holds_loop_region() {
-        *pending_loop = None;
-    }
-    if recovery.holds_clip_play_start() {
-        clip_loop.retire_deferred_play_start();
-    }
-    if recovery.holds_mixer_edit() {
-        track_gain_controls.retire_deferred_recovery();
-    }
-    if let Some(edit) = recovery.deferred_edit.as_ref()
-        && edit.kind == DeferredEditKind::ToggleDeviceBypass
-    {
-        device_panel.retire_unsubmitted_bypass(&edit.request);
-    }
-    if let Some(control) = recovery
-        .deferred_edit
-        .as_ref()
-        .and_then(|edit| deferred_device_insert_control(&edit.request))
-    {
-        EditorView::settle_device_proposal(
-            pending_device,
-            failed_device,
-            control,
-            false,
-            Some("audio recovery did not complete"),
-        );
-    }
-    recovery.fail();
-}
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod classification_tests;
 
 fn clip_play_start(request: &Request) -> Option<ClipId> {
     match request {
@@ -104,7 +44,473 @@ fn is_mixer_control_edit(request: &Request) -> bool {
     )
 }
 
+/// Exhaustively classifies whether a service request mutates/republishes the
+/// resident playback graph (and therefore must recover degraded VST3 output
+/// before submission) versus non-graph, control-only, or explicitly guarded
+/// requests (`DeviceGesture`, `Save*`, `Open*`, `RestartAudio`, queries, etc.).
+pub(super) fn is_graph_republishing_edit(request: &Request) -> bool {
+    match request {
+        // Core project edits, history, and clipboard mutations.
+        Request::Edit(_)
+        | Request::Undo
+        | Request::Redo
+        | Request::CutTimeRange(_)
+        | Request::PasteTimeRange { .. }
+        | Request::InsertTimeRange { .. }
+        | Request::InsertProjectSample { .. }
+        | Request::BindUnassignedNativeSource { .. }
+        | Request::AppendSourceUtility { .. }
+        | Request::RemoveSourceUtility { .. }
+        | Request::MoveSourceUtility { .. }
+        | Request::RebindNativeSource { .. }
+        | Request::ChooseNativeSourceReceiver { .. }
+        | Request::RenameRetainedSource { .. }
+        | Request::DeleteRetainedSource { .. }
+        | Request::CreateRetainedNativeSource { .. }
+        | Request::PaintMidiClip(_)
+        | Request::ReplaceDeviceModulation { .. }
+        | Request::MoveTrackDevices { .. }
+        | Request::ReorderDevices { .. }
+        | Request::ReorderTracks { .. }
+        | Request::ReparentTracks { .. }
+        | Request::EditArrangementSection { .. }
+        | Request::MoveExistingClips { .. }
+        | Request::DuplicateClips { .. }
+        | Request::DuplicateAliasClips { .. }
+        | Request::DuplicateSessionCell { .. }
+        | Request::GroupClips { .. }
+        | Request::GroupTimeRange { .. }
+        | Request::GroupAudioEvents { .. }
+        | Request::LoadDevicePreset { .. }
+        | Request::InsertBrowserInstrumentTrack { .. }
+        | Request::InsertPluginEffect(_)
+        | Request::InsertEffectBusDevice { .. }
+        | Request::DropBrowserDeviceOnArrangement { .. }
+        | Request::CopyArrangementClipToConsoleTrack { .. }
+        | Request::CommitMidiTake { .. }
+        | Request::RecoverDeviceAutomationTake { .. }
+        | Request::GainLane { .. }
+        | Request::DeviceAutomation { .. }
+        | Request::DeviceAutomationControl { .. }
+        | Request::DropNativeDevice { .. }
+        | Request::AddNativeDevice { .. }
+        | Request::ReplaceNativeDevice { .. }
+        | Request::LoadTrackCatalogDevice { .. }
+        | Request::CompareDevice { .. }
+        | Request::SamplerEdit(_)
+        | Request::SetDeviceParameter { .. }
+        | Request::Import(_)
+        | Request::RecoverTruncatedImport(_)
+        | Request::RelinkMedia(_)
+        | Request::ImportDeviceAsset { .. }
+        | Request::LoadFirstSampler { .. }
+        | Request::AssignSampler { .. }
+        | Request::ImportAudioBatch { .. }
+        | Request::ImportToTrack { .. }
+        | Request::ImportToTrackWithOverwrite { .. }
+        | Request::ImportToNewTrack { .. }
+        | Request::ImportToNewTrackWithGain { .. }
+        | Request::ImportToSession { .. }
+        | Request::ChangeProjectSampleRate { .. }
+        | Request::BounceArrangement { .. }
+        | Request::ConvertClip { .. } => true,
+
+        // Clipboard Copy is read-only; Cut/Paste/Duplicate mutate the graph.
+        Request::DeviceClipboard { action, .. } => {
+            !matches!(action, DeviceClipboardAction::Copy { .. })
+        }
+        Request::TrackClipboard { action, .. } => !matches!(action, TrackClipboardAction::Copy(_)),
+        // Only Load mutates the project's tuning; other library ops are file-only.
+        Request::TuningLibrary { operation, .. } => {
+            matches!(operation, TuningLibraryOperation::Load { .. })
+        }
+
+        // Explicitly guarded live gestures, non-graph control/lifecycle requests,
+        // read-only observations/copies, saves, opens, and offline exports.
+        Request::DeviceGesture(_)
+        | Request::TuningGesture(_)
+        | Request::CopyTimeRange(_)
+        | Request::CopyClips(_)
+        | Request::SaveNew(_)
+        | Request::SaveProjectAs { .. }
+        | Request::SaveCurrent
+        | Request::SaveCurrentWithFormatUpgrade { .. }
+        | Request::SaveDevicePreset { .. }
+        | Request::SaveDeviceUnitPreset { .. }
+        | Request::SaveDeviceUnitDefault { .. }
+        | Request::SaveDeviceDefault { .. }
+        | Request::Open(_)
+        | Request::OpenWith { .. }
+        | Request::NewWithAudioMode { .. }
+        | Request::OpenWithAudioMode { .. }
+        | Request::RestartAudio { .. }
+        | Request::RestartRecovery(_)
+        | Request::RestorePlayback { .. }
+        | Request::RepublishPausedPlayback
+        | Request::RestoreStoppedPlayback
+        | Request::ContinueStoppedPlaybackRestore
+        | Request::ResidentArrangementSeek(_)
+        | Request::PrepareTuningAudition { .. }
+        | Request::PrepareLiveExpression { .. }
+        | Request::PrepareComputerKeyboard { .. }
+        | Request::PreparePausedInputMonitor { .. }
+        | Request::TogglePluginEditor { .. }
+        | Request::ContinuePluginEditor
+        | Request::ContinueRetiringEditorReplay
+        | Request::ContinuePluginEffect
+        | Request::ContinueDeviceInsert
+        | Request::ContinueRecovery
+        | Request::ContinueSamplerEdit
+        | Request::QueryPluginParameters(_)
+        | Request::ContinuePluginParameters
+        | Request::QueryPluginParameterConversion(_)
+        | Request::ContinuePluginParameterConversion
+        | Request::ContinuePluginStateRestore
+        | Request::DeviceAutomationTake { .. }
+        | Request::StartPluginEditorRecording { .. }
+        | Request::StopPluginEditorRecording { .. }
+        | Request::ContinuePluginEditorRecording { .. }
+        | Request::QueryFailedPluginAutomation { .. }
+        | Request::InspectSealedAutomationRecovery { .. }
+        | Request::QueryDeviceAutomationCloseSafety { .. }
+        | Request::PreparePluginEditorClose { .. }
+        | Request::ArmNativeParameterRecording { .. }
+        | Request::ArmGainRecording { .. }
+        | Request::Export(_)
+        | Request::ExportRange { .. } => false,
+    }
+}
+
+fn deferred_graph_edit_waiting_status(request: &Request) -> &'static str {
+    match request {
+        Request::Edit(Command::ToggleSolo { .. } | Command::ToggleSoloTracks { .. }) => {
+            "restarting audio · solo will update when ready"
+        }
+        Request::Edit(
+            Command::ToggleMute(_) | Command::ToggleTracksMute(_) | Command::Mute { .. },
+        ) => "restarting audio · mute will update when ready",
+        Request::Undo => "restarting audio · undo will apply when ready",
+        Request::Redo => "restarting audio · redo will apply when ready",
+        _ => "restarting audio · edit will apply when ready",
+    }
+}
+
+fn deferred_graph_edit_applying_status(request: &Request) -> &'static str {
+    match request {
+        Request::Edit(Command::ToggleSolo { .. } | Command::ToggleSoloTracks { .. }) => {
+            "updating solo"
+        }
+        Request::Edit(
+            Command::ToggleMute(_) | Command::ToggleTracksMute(_) | Command::Mute { .. },
+        ) => "updating mute",
+        Request::Undo => "undoing",
+        Request::Redo => "redoing",
+        _ => "applying edit",
+    }
+}
+
+fn request_is_current_for_recovery(
+    request: &Request,
+    state: &ViewState,
+    context: AudioSourceContext,
+) -> bool {
+    match request {
+        Request::InsertProjectSample {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::BindUnassignedNativeSource {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::AppendSourceUtility {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::RemoveSourceUtility {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::MoveSourceUtility {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::RebindNativeSource {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::ChooseNativeSourceReceiver {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::RenameRetainedSource {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::DeleteRetainedSource {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::CreateRetainedNativeSource {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::ReplaceDeviceModulation {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::DeviceClipboard {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::MoveTrackDevices {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::ReorderDevices {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::TrackClipboard {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::ReorderTracks {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::ReparentTracks {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::EditArrangementSection {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::MoveExistingClips {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::DuplicateClips {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::DuplicateAliasClips {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::DuplicateSessionCell {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::GroupClips {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::GroupTimeRange {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::GroupAudioEvents {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::InsertBrowserInstrumentTrack {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::InsertEffectBusDevice {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::DropBrowserDeviceOnArrangement {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::CopyArrangementClipToConsoleTrack {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::CommitMidiTake {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::GainLane {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::DeviceAutomation {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::DeviceAutomationControl {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::TuningLibrary {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::DropNativeDevice {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::LoadTrackCatalogDevice {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::LoadFirstSampler {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::ChangeProjectSampleRate {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::BounceArrangement {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::ConvertClip {
+            project_generation,
+            revision,
+            ..
+        } => {
+            (*project_generation, *revision)
+                == (context.project_generation, context.editor_revision)
+        }
+        Request::PaintMidiClip(paint) => {
+            (paint.project_generation, paint.revision)
+                == (context.project_generation, context.editor_revision)
+        }
+        Request::InsertPluginEffect(insertion) => insertion.context == context,
+        Request::RecoverDeviceAutomationTake {
+            context: target, ..
+        } => *target == context,
+        Request::SamplerEdit(edit) => {
+            let (project_generation, revision) = match edit {
+                SamplerEdit::Parameter(edit) => (edit.project_generation, edit.revision),
+                SamplerEdit::Replacement(edit) => (edit.project_generation, edit.revision),
+                SamplerEdit::Midi(edit) => (edit.project_generation, edit.revision),
+                SamplerEdit::History(edit) => (edit.project_generation, edit.revision),
+            };
+            (project_generation, revision) == (context.project_generation, context.editor_revision)
+        }
+        Request::AddNativeDevice { track, .. } => state.project.track(*track).is_some(),
+        Request::Edit(Command::RemoveDevice(device))
+        | Request::Edit(Command::ToggleDeviceBypass { device }) => {
+            state.project.device(*device).is_some()
+        }
+        Request::Edit(
+            Command::Gain { track, .. }
+            | Command::Balance { track, .. }
+            | Command::ToggleSolo { track, .. }
+            | Command::ToggleMute(track)
+            | Command::Mute { track, .. },
+        ) => state.project.track(*track).is_some(),
+        Request::Edit(Command::ToggleSoloTracks { tracks, .. })
+        | Request::Edit(Command::ToggleTracksMute(tracks)) => tracks
+            .ids()
+            .iter()
+            .all(|track| state.project.track(*track).is_some()),
+        Request::Edit(Command::SetTrackGains { gains }) => {
+            !gains.is_empty()
+                && gains
+                    .iter()
+                    .all(|(track, _)| state.project.track(*track).is_some())
+        }
+        Request::Edit(Command::MasterGain { .. }) => true,
+        Request::Edit(Command::ReturnGain { return_track, .. }) => state
+            .project
+            .return_tracks()
+            .iter()
+            .any(|track| track.id() == *return_track),
+        _ => true,
+    }
+}
+
 impl EditorView {
+    /// Every UI-queued request awaiting service submission, including one held
+    /// behind an in-flight degraded-VST3 audio recovery.
+    pub(in crate::editor) fn queued_requests(&self) -> impl Iterator<Item = &Request> {
+        self.pending_requests
+            .iter()
+            .chain(self.device_gesture_barriers.iter())
+            .chain(
+                self.recovery
+                    .deferred_edit
+                    .as_ref()
+                    .map(|edit| edit.request.as_ref()),
+            )
+    }
+
+    /// Retire any released previews/receipts owned by an aborted recovery.
+    pub(in crate::editor) fn clear_recovery(&mut self) {
+        if self.recovery.holds_loop_region() {
+            self.pending_loop = None;
+        }
+        if self.recovery.holds_clip_play_start() {
+            self.clip_loop.retire_deferred_play_start();
+        }
+        if self.recovery.holds_mixer_edit() {
+            self.track_gain_controls.retire_deferred_recovery();
+        }
+        let deferred = self.recovery.deferred_edit.take();
+        self.recovery.fail();
+        let Some(edit) = deferred else {
+            return;
+        };
+        if edit.kind == DeferredEditKind::SampleDrop {
+            self.pending_sample_drop = None;
+        }
+        if edit.kind == DeferredEditKind::TimeDuplicate {
+            self.pending_time_range_move = None;
+        }
+        if edit.kind == DeferredEditKind::ToggleDeviceBypass {
+            self.device_panel.retire_unsubmitted_bypass(&edit.request);
+        }
+        self.retire_unsubmitted_request(&edit.request, Some("audio recovery did not complete"));
+    }
+
     pub(super) fn has_resident_vst3(&self) -> bool {
         self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && self.state.as_ref().is_some_and(|state| {
@@ -169,7 +575,7 @@ impl EditorView {
         if matches!(request, Request::InsertPluginEffect(_)) {
             return Some(DeferredEditKind::PluginEffect);
         }
-        matches!(
+        if matches!(
             request,
             Request::DropBrowserDeviceOnArrangement {
                 class: NativeDeviceClass::Effect,
@@ -187,8 +593,10 @@ impl EditorView {
                 class: NativeDeviceClass::Effect,
                 ..
             }
-        )
-        .then_some(DeferredEditKind::NativeEffect)
+        ) {
+            return Some(DeferredEditKind::NativeEffect);
+        }
+        is_graph_republishing_edit(request).then_some(DeferredEditKind::GraphEdit)
     }
 
     pub(super) fn recovering_clip_play_start(&self, clip: ClipId) -> bool {
@@ -230,10 +638,8 @@ impl EditorView {
             if kind == DeferredEditKind::MixerControl {
                 view.retire_deferred_mixer_edit();
             }
-            if let Some(control) = deferred_device_insert_control(request).cloned() {
-                let error = view.error.as_ref().map(ToString::to_string);
-                view.retire_plugin_effect(&control, false, error.as_deref());
-            }
+            let error = view.error.as_ref().map(ToString::to_string);
+            view.retire_unsubmitted_request(request, error.as_deref());
         };
         let continuing_play_start = kind == DeferredEditKind::ClipPlayStart
             && clip_play_start(&request).is_some_and(|clip| self.recovering_clip_play_start(clip));
@@ -260,57 +666,19 @@ impl EditorView {
             project_generation: self.project_generation,
             editor_revision: state.revision,
         };
-        let current = match &request {
-            Request::DropBrowserDeviceOnArrangement {
-                project_generation,
-                revision,
-                ..
+        let current = match kind {
+            DeferredEditKind::SampleDrop => self.pending_sample_drop_matches(&request),
+            DeferredEditKind::TimeDuplicate => self.pending_time_duplicate_matches(&request),
+            DeferredEditKind::LoopRegion => self.pending_loop_matches(&request),
+            DeferredEditKind::ClipPlayStart => self.pending_clip_loop_matches(&request),
+            DeferredEditKind::NativeEffect
+            | DeferredEditKind::PluginEffect
+            | DeferredEditKind::RemoveDevice
+            | DeferredEditKind::ToggleDeviceBypass
+            | DeferredEditKind::MixerControl
+            | DeferredEditKind::GraphEdit => {
+                request_is_current_for_recovery(&request, state, context)
             }
-            | Request::DropNativeDevice {
-                project_generation,
-                revision,
-                ..
-            }
-            | Request::LoadTrackCatalogDevice {
-                project_generation,
-                revision,
-                ..
-            } => {
-                (*project_generation, *revision)
-                    == (context.project_generation, context.editor_revision)
-            }
-            Request::AddNativeDevice { track, .. } => state.project.track(*track).is_some(),
-            Request::InsertPluginEffect(insertion) => insertion.context == context,
-            Request::Edit(Command::RemoveDevice(device))
-            | Request::Edit(Command::ToggleDeviceBypass { device }) => {
-                state.project.device(*device).is_some()
-            }
-            Request::Edit(Command::Gain { track, .. } | Command::Balance { track, .. }) => {
-                state.project.track(*track).is_some()
-            }
-            Request::Edit(Command::SetTrackGains { gains }) => {
-                !gains.is_empty()
-                    && gains
-                        .iter()
-                        .all(|(track, _)| state.project.track(*track).is_some())
-            }
-            Request::Edit(Command::MasterGain { .. }) => true,
-            Request::Edit(Command::ReturnGain { return_track, .. }) => state
-                .project
-                .return_tracks()
-                .iter()
-                .any(|track| track.id() == *return_track),
-            _ => match kind {
-                DeferredEditKind::SampleDrop => self.pending_sample_drop_matches(&request),
-                DeferredEditKind::TimeDuplicate => self.pending_time_duplicate_matches(&request),
-                DeferredEditKind::LoopRegion => self.pending_loop_matches(&request),
-                DeferredEditKind::ClipPlayStart => self.pending_clip_loop_matches(&request),
-                DeferredEditKind::NativeEffect
-                | DeferredEditKind::PluginEffect
-                | DeferredEditKind::RemoveDevice
-                | DeferredEditKind::ToggleDeviceBypass
-                | DeferredEditKind::MixerControl => false,
-            },
         };
         if !current {
             self.error = Some("edit canceled · project changed".into());
@@ -335,6 +703,7 @@ impl EditorView {
             }
         }
         let is_pan = matches!(request, Request::Edit(Command::Balance { .. }));
+        let graph_status = deferred_graph_edit_waiting_status(&request);
         self.recovery.deferred_edit = Some(DeferredGraphEdit {
             kind,
             context,
@@ -364,6 +733,7 @@ impl EditorView {
                     "restarting audio · volume will update when ready"
                 }
             }
+            DeferredEditKind::GraphEdit => graph_status,
         }
         .into();
         true
@@ -381,15 +751,12 @@ impl EditorView {
         let toggle_bypass = pending.kind == DeferredEditKind::ToggleDeviceBypass;
         let plugin_effect = pending.kind == DeferredEditKind::PluginEffect;
         let mixer_control = pending.kind == DeferredEditKind::MixerControl;
+        let graph_edit = pending.kind == DeferredEditKind::GraphEdit;
         let is_pan = matches!(
             pending.request.as_ref(),
             Request::Edit(Command::Balance { .. })
         );
-        let control = deferred_device_insert_control(&pending.request).cloned();
-        let bypass_device = match pending.request.as_ref() {
-            Request::Edit(Command::ToggleDeviceBypass { device }) => Some(*device),
-            _ => None,
-        };
+        let graph_status = deferred_graph_edit_applying_status(pending.request.as_ref());
         if (sample_drop && !self.pending_sample_drop_matches(&pending.request))
             || (time_duplicate && !self.pending_time_duplicate_matches(&pending.request))
             || (loop_region && !self.pending_loop_matches(&pending.request))
@@ -400,38 +767,45 @@ impl EditorView {
         {
             return;
         }
-        let accepted = if time_duplicate && !self.pending_time_duplicate_intent_current() {
-            self.error =
-                Some("edit canceled · time selection changed during audio recovery".into());
-            false
+        let refusal_error = if time_duplicate && !self.pending_time_duplicate_intent_current() {
+            Some("edit canceled · time selection changed during audio recovery")
         } else if pending.context.project_generation != self.project_generation
             || self
                 .state
                 .as_ref()
                 .is_none_or(|state| state.revision != pending.context.editor_revision)
         {
-            self.error = Some("edit canceled · project changed during audio recovery".into());
-            false
+            Some("edit canceled · project changed during audio recovery")
         } else if (sample_drop
             || time_duplicate
             || loop_region
             || clip_play_start
             || remove_device
             || toggle_bypass
-            || mixer_control)
+            || mixer_control
+            || graph_edit)
             && self.edit_pending()
         {
             // A worker edit without an installed reply can already have
             // changed the captured revision for these unversioned requests.
-            self.error = Some("edit canceled · project work pending during audio recovery".into());
-            false
+            Some("edit canceled · project work pending during audio recovery")
         } else if self.has_degraded_vst3_output() {
-            self.error = Some("plug-in failed during audio recovery · edit was canceled".into());
-            false
+            Some("plug-in failed during audio recovery · edit was canceled")
         } else {
-            self.enqueue_request(*pending.request, false)
+            None
         };
-        if accepted {
+        if let Some(message) = refusal_error {
+            self.error = Some(message.into());
+            if loop_region {
+                self.loop_state_installed(false);
+            }
+            if mixer_control {
+                self.retire_deferred_mixer_edit();
+            }
+            self.retire_unsubmitted_request(&pending.request, Some(message));
+            return;
+        }
+        if self.enqueue_request(*pending.request, false) {
             self.status = if sample_drop {
                 "importing sample to arrangement".into()
             } else if time_duplicate {
@@ -452,28 +826,15 @@ impl EditorView {
                 }
             } else if plugin_effect {
                 "adding plug-in".into()
+            } else if graph_edit {
+                graph_status.into()
             } else {
                 "adding device".into()
             };
-        } else if sample_drop {
-            self.pending_sample_drop = None;
-        } else if time_duplicate {
-            self.pending_time_range_move = None;
         } else if loop_region {
             self.loop_state_installed(false);
-        } else if clip_play_start {
-            self.retire_pending_clip_loop();
         } else if mixer_control {
             self.retire_deferred_mixer_edit();
-        } else if toggle_bypass {
-            if let Some(device) = bypass_device {
-                self.retire_unsubmitted_bypass(&Request::Edit(Command::ToggleDeviceBypass {
-                    device,
-                }));
-            }
-        } else if let Some(control) = control {
-            let error = self.error.as_ref().map(ToString::to_string);
-            self.retire_plugin_effect(&control, false, error.as_deref());
         }
     }
 
@@ -544,17 +905,7 @@ impl EditorView {
         self.playback_settings.pending = None;
         self.offline_cursor = position;
         if !self.retire_audio_preserving_gain_take() {
-            clear_recovery(
-                &mut self.recovery,
-                &mut self.pending_sample_drop,
-                &mut self.pending_time_range_move,
-                &mut self.pending_loop,
-                &mut self.clip_loop,
-                &mut self.pending_plugin_effect,
-                &mut self.failed_plugin_proposal,
-                &mut self.device_panel,
-                &mut self.track_gain_controls,
-            );
+            self.clear_recovery();
             return;
         }
         self.clear_audio_accounting();
@@ -734,17 +1085,7 @@ impl EditorView {
         self.playback_settings.pending = None;
         let error = error.into();
         self.offline_cursor = self.cursor_position();
-        clear_recovery(
-            &mut self.recovery,
-            &mut self.pending_sample_drop,
-            &mut self.pending_time_range_move,
-            &mut self.pending_loop,
-            &mut self.clip_loop,
-            &mut self.pending_plugin_effect,
-            &mut self.failed_plugin_proposal,
-            &mut self.device_panel,
-            &mut self.track_gain_controls,
-        );
+        self.clear_recovery();
         self.retire_audio_preserving_gain_take();
         self.pending_recovery_generation = None;
         self.pending_restart_request = None;

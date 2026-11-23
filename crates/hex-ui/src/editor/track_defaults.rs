@@ -260,12 +260,7 @@ impl EditorView {
         {
             return false;
         }
-        let mut queued: Vec<_> = self
-            .pending_requests
-            .iter()
-            .chain(self.device_gesture_barriers.iter())
-            .filter_map(empty_track_key)
-            .collect();
+        let mut queued: Vec<_> = self.queued_requests().filter_map(empty_track_key).collect();
         let before = self.pending_empty_tracks.len();
         self.pending_empty_tracks.retain(|pending| {
             if !pending.receipt.is_queued() {
