@@ -59,7 +59,11 @@ def fingerprint(root: Path, env: dict, metadata: dict, tools: dict, *, paths=Non
             # Presence of an empty directory and every directory-symlink target
             # participates. Sorting also detects membership additions/removals.
             for child in sorted(path.iterdir()):
-                if child.name != ".git" and child.resolve() != Path(metadata["target_directory"]).resolve():
+                if (
+                    child.name != ".git"
+                    and (child.is_symlink() or child.name != ".DS_Store")
+                    and child.resolve() != Path(metadata["target_directory"]).resolve()
+                ):
                     observe(child, ancestors)
         else:
             raise ValueError("unsupported dependency input: " + str(path))

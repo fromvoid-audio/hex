@@ -118,7 +118,10 @@ def setup(directory):
 
 
 def inputs(root):
-    files = list((root / "docs/manual").rglob("*"))
+    files = [
+        p for p in (root / "docs/manual").rglob("*")
+        if p.is_symlink() or (p.is_file() and p.name != ".DS_Store")
+    ]
     files += list((root / "assets/fonts/ioskeley-mono").glob("*.ttf"))
     files += [root / "assets/fonts/ioskeley-mono/OFL.txt"]
     if any(p.is_symlink() for p in files):
