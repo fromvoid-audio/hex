@@ -393,25 +393,33 @@ fn plot(
                                 if !bounds.contains(&position) {
                                     continue;
                                 }
-                                let mut marker =
-                                    PathBuilder::stroke(px(if selected { 3.0 } else { 2.0 }));
-                                marker.move_to(point(position.x - px(2.0), position.y));
-                                marker.line_to(point(position.x + px(2.0), position.y));
-                                if let Ok(marker) = marker.build() {
-                                    window.paint_path(marker, color);
-                                }
+                                let thickness = if selected { 3.0 } else { 2.0 };
+                                window.paint_quad(gpui::fill(
+                                    Bounds::new(
+                                        point(
+                                            position.x - px(2.0),
+                                            position.y - px(thickness * 0.5),
+                                        ),
+                                        size(px(4.0), px(thickness)),
+                                    ),
+                                    color,
+                                ));
                             }
                         } else {
                             let y = y(base);
-                            let mut dash = ((x(section.start) - rect[0]) / 9.0).floor() * 9.0;
-                            while dash < x(section.end) - rect[0] {
-                                let mut path = PathBuilder::stroke(px(1.0));
-                                path.move_to(point(px(rect[0] + dash), px(y)));
-                                path.line_to(point(px(rect[0] + (dash + 5.0).min(rect[2])), px(y)));
-                                if let Ok(path) = path.build() {
-                                    window.paint_path(path, color);
-                                }
-                                dash += 9.0;
+                            for (dash_x, dash_w) in super::plot_geometry::dashed_baseline_segments(
+                                x(section.start),
+                                x(section.end),
+                                rect[0],
+                                rect[2],
+                            ) {
+                                window.paint_quad(gpui::fill(
+                                    Bounds::new(
+                                        point(px(dash_x), px(y - 0.5)),
+                                        size(px(dash_w), px(1.0)),
+                                    ),
+                                    color,
+                                ));
                             }
                         }
                     };
