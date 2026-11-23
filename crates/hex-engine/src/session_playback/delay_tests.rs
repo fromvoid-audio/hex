@@ -432,3 +432,82 @@ fn pasted_delay_starts_empty_while_the_unchanged_source_track_keeps_its_echoes()
     }
     assert_eq!(candidate.arrangement_frame(), FRAMES as u64);
 }
+
+#[test]
+fn stop_and_ordinary_play_keep_delay_history_empty_after_a_stopped_parameter_edit() {
+    // The first short note excites the delay before Stop. The next note starts
+    // after a silent restart window, proving the edited chain still renders.
+    for location in 0..3 {
+        let mut snapshot = delayed(location == 1, false).snapshot();
+        if location == 2 {
+            snapshot.main_devices = std::mem::take(&mut snapshot.tracks[0].devices);
+        }
+        let clips = match &mut snapshot.tracks[0].content {
+            TrackContentSnapshot::Instrument(clips)
+            | TrackContentSnapshot::Hybrid {
+                midi_clips: clips, ..
+            } => clips,
+            TrackContentSnapshot::Audio(_) => panic!("midi fixture"),
+        };
+        clips[0].notes[0].duration_raw = 1 << 26;
+        let mut next = clips[0].notes[0].clone();
+        next.id = snapshot.next_id;
+        snapshot.next_id += 1;
+        next.start_raw = 1 << 32;
+        next.pitch = 72;
+        clips[0].notes.push(next);
+        let limiter = DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
+            automation: Vec::new(),
+            comparison: None,
+            id: snapshot.next_id,
+            bypassed: false,
+            state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+        };
+        snapshot.next_id += 1;
+        snapshot.main_devices.push(limiter);
+        let original = Project::from_snapshot(snapshot).unwrap();
+        let prepared = revision(&original, Arc::new(hex_devices::SineTable::new()));
+        let mut running = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+        let mut ordinary = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+        for runtime in [&mut running, &mut ordinary] {
+            runtime.play_from(0).unwrap();
+            assert!(
+                render(runtime, 1_200)
+                    .iter()
+                    .flatten()
+                    .any(|v| v.abs() > 1e-6)
+            );
+            runtime.apply(SessionPlaybackCommand::Stop).unwrap();
+            assert!(render(runtime, 256).iter().flatten().all(|v| *v == 0.0));
+        }
+        let mut fresh = SessionPlayback::new(prepared).unwrap();
+        ordinary.play_from(12_000).unwrap();
+        fresh.play_from(12_000).unwrap();
+        assert_eq!(render(&mut ordinary, 14_000), render(&mut fresh, 14_000));
+
+        let mut changed = original.snapshot();
+        let delay = match location {
+            0 => &mut changed.tracks[0].devices[0],
+            1 => &mut changed.return_tracks[0].devices[0],
+            _ => &mut changed.main_devices[0],
+        };
+        delay.state = DEFINITION
+            .patch_parameter(&delay.state, FEEDBACK, ParameterValue::Float(0.7))
+            .unwrap();
+        let changed = Project::from_snapshot(changed).unwrap();
+        let edited = revision(&changed, Arc::new(hex_devices::SineTable::new()));
+        let mut after_edit = SessionPlayback::new(Arc::clone(&edited)).unwrap();
+        after_edit.try_inherit_state_from(&mut running).unwrap();
+        let mut fresh = SessionPlayback::new(edited).unwrap();
+        for runtime in [&mut after_edit, &mut fresh] {
+            runtime.play_from(12_000).unwrap();
+        }
+        let actual = render(&mut after_edit, 14_000);
+        let expected = render(&mut fresh, 14_000);
+        assert_eq!(actual, expected, "delay location {location}");
+        assert!(actual[..12_000].iter().flatten().all(|v| *v == 0.0));
+        assert!(actual[12_000..].iter().flatten().any(|v| v.abs() > 1e-6));
+    }
+}
