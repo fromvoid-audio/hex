@@ -451,10 +451,6 @@ fn reusable_chord_refuses_all_onsets_and_preserves_hardware_when_one_pitch_or_sl
         runtime.begin_block();
         runtime.render(&mut [[0.0; 2]; 128], None).unwrap();
         runtime.commit();
-        if !capacity_shortage {
-            let unavailable = runtime.input.sampler_index(1, 68, 95).unwrap();
-            runtime.supported[unavailable] = false;
-        }
         let voices_before: Vec<_> = runtime
             .primary
             .iter()
@@ -466,6 +462,12 @@ fn reusable_chord_refuses_all_onsets_and_preserves_hardware_when_one_pitch_or_sl
             .trigger_live_note_audition_on_control(&[(67, 37), (68, 95)], 256)
             .unwrap();
         runtime.begin_block();
+        if !capacity_shortage {
+            assert!(runtime.admits_live_chord(0, 2, true));
+            assert!(!runtime.admits_live_chord(0, 1, true));
+            let unavailable = runtime.input.sampler_index(1, 68, 95).unwrap();
+            runtime.supported[unavailable] = false;
+        }
         runtime.render(&mut [[0.0; 2]; 16], None).unwrap();
         assert!(
             !input.live_note_audition_refused(trigger),
@@ -473,10 +475,6 @@ fn reusable_chord_refuses_all_onsets_and_preserves_hardware_when_one_pitch_or_sl
         );
         runtime.rollback();
         runtime.begin_block();
-        assert!(
-            !runtime.admits_live_chord(0, 1, true),
-            "two onsets need two event slots"
-        );
         runtime.render(&mut [[0.0; 2]; 16], None).unwrap();
         runtime.commit();
         assert!(input.live_note_audition_refused(trigger));

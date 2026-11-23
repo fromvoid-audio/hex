@@ -680,9 +680,10 @@ fn configured_controller_keeps_its_root_during_note_and_marquee_audition(cx: &mu
     assert!(live.same_current_activation(activation));
     assert!(!input.is_cancelled());
 
-    // Fill the instrument with held controller notes. The declined click must
+    // The authored clip reserves one of the 64 source voices. Fill the live
+    // remainder with held controller notes. The declined click must
     // reach the editor without disconnecting the controller or selecting another root.
-    for pitch in 32..96 {
+    for pitch in 32..95 {
         live.publish(
             activation,
             LiveNoteEvent::NoteOn {
@@ -694,6 +695,10 @@ fn configured_controller_keeps_its_root_during_note_and_marquee_audition(cx: &mu
         .unwrap();
     }
     render();
+    assert!(
+        live.same_current_activation(activation),
+        "held controller notes fit"
+    );
     toggle(&mut visual);
     visual.simulate_click(a, Modifiers::default());
     pump(&editor, &mut visual);
