@@ -84,6 +84,8 @@ pub(super) fn retire_failed_finalize_barriers(
             | Request::Redo
             | Request::SaveDevicePreset { .. }
             | Request::SaveDeviceDefault { .. }
+            | Request::SaveDeviceUnitPreset { .. }
+            | Request::SaveDeviceUnitDefault { .. }
             | Request::LoadDevicePreset { .. } => {}
             Request::Open(_)
             | Request::OpenWith { .. }
@@ -122,6 +124,15 @@ fn device_gesture_admission_error(
         return Err("finish the current automation touch first");
     }
     Ok(())
+}
+
+pub(super) fn insertion_control(
+    request: &Request,
+) -> Option<std::sync::Arc<hex_session::service::PluginEffectControl>> {
+    match request {
+        Request::InsertPluginEffect(insertion) => Some(std::sync::Arc::clone(&insertion.control)),
+        other => other.builtin_device_insert_control().cloned(),
+    }
 }
 
 impl EditorView {
@@ -224,14 +235,22 @@ impl EditorView {
         self.device_gesture.snapshot().is_some() || !self.device_gesture_barriers.is_empty()
     }
 
-    fn refuse_device_gesture_barriers(&mut self, reason: &'static str) {
-        let insertion = self
+    pub(super) fn refuse_device_gesture_barriers(&mut self, reason: &'static str) {
+        let insertions: Vec<_> = self
             .device_gesture_barriers
             .iter()
-            .find_map(|request| request.builtin_device_insert_control().cloned());
+            .filter_map(insertion_control)
+            .collect();
+        let had_clipboard = self
+            .device_gesture_barriers
+            .iter()
+            .any(|request| matches!(request, Request::DeviceClipboard { .. }));
         self.device_gesture_barriers.clear();
         self.catalog_barrier.custody = None;
-        if let Some(control) = insertion {
+        if had_clipboard {
+            self.device_panel.pending_duplicate = None;
+        }
+        for control in insertions {
             self.retire_plugin_effect(&control, false, Some(reason));
         }
     }
@@ -453,6 +472,95 @@ impl EditorView {
             self.error = Some("device edit queue full · request was not applied".into());
             Some(false)
         }
+    }
+}
+
+#[cfg(test)]
+mod barrier_unit_tests {
+    use super::*;
+    use hex_engine::NativeDeviceClass;
+    use hex_lattice_contract::DeviceTypeId;
+    use hex_project::{Command, Created, Editor, Project};
+    use hex_session::service::preset::Owner;
+    use hex_session::service::{
+        PluginEffectControl, PluginEffectDestination, PluginEffectInsertion, PluginEffectSelection,
+    };
+    use std::sync::Arc;
+
+    #[test]
+    fn retire_failed_finalize_barriers_drops_unit_preset_and_default_saves() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: "a".into() })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let utility = DeviceTypeId::from_static("hex.utility");
+        let state = hex_engine::default_native_device_state(utility).unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state,
+            })
+            .unwrap()
+        else {
+            panic!("device");
+        };
+        let owner = Owner {
+            project_generation: 0,
+            revision: 1,
+            device,
+            class: NativeDeviceClass::Effect,
+            type_id: utility,
+        };
+        let mut deferred = VecDeque::from([
+            Request::SaveDevicePreset {
+                owner,
+                path: std::path::PathBuf::from("/tmp/p.hexpreset"),
+            },
+            Request::SaveDeviceDefault {
+                owner,
+                root: std::path::PathBuf::from("/tmp/defaults"),
+            },
+            Request::SaveDeviceUnitPreset {
+                owner,
+                path: std::path::PathBuf::from("/tmp/u.hexpreset"),
+            },
+            Request::SaveDeviceUnitDefault {
+                owner,
+                root: std::path::PathBuf::from("/tmp/defaults"),
+            },
+            Request::Open(std::path::PathBuf::from("/tmp/next.hex")),
+        ]);
+        let _ = retire_failed_finalize_barriers(&mut deferred);
+        assert_eq!(deferred.len(), 1);
+        assert!(matches!(deferred.front(), Some(Request::Open(_))));
+    }
+
+    #[test]
+    fn insertion_control_extracts_vst3_plugin_effect_control() {
+        let control = Arc::new(PluginEffectControl::default());
+        let request = Request::InsertPluginEffect(PluginEffectInsertion {
+            context: hex_engine::AudioSourceContext {
+                project_generation: 0,
+                editor_revision: 1,
+            },
+            selection: PluginEffectSelection {
+                module: std::path::PathBuf::from("/tmp/test.vst3"),
+                executable: "Contents/MacOS/test".into(),
+                cid: [0x11; 16],
+                executable_sha256: "a".repeat(64),
+                info_sha256: "b".repeat(64),
+            },
+            destination: PluginEffectDestination::Main,
+            before: None,
+            track_device_name: None,
+            control: Arc::clone(&control),
+        });
+        let extracted = insertion_control(&request).expect("plugin control");
+        assert!(Arc::ptr_eq(&extracted, &control));
     }
 }
 
@@ -992,5 +1100,246 @@ mod admission_tests {
                 });
             })
             .unwrap();
+    }
+
+    #[gpui::test]
+    fn refuse_device_gesture_barriers_and_commit_rebase_handle_vst3_and_device_requests(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use super::*;
+        use gpui::VisualTestContext;
+        use hex_engine::NativeDeviceClass;
+        use hex_lattice_contract::DeviceTypeId;
+        use hex_project::{Command, DeviceChainOwner, DeviceSelectionIds, Project};
+        use hex_session::device_gesture::GestureTarget;
+        use hex_session::service::{
+            ArrangementDeviceDestination, DeviceClipboardAction, NativeDeviceDropSource,
+            PluginEffectDestination,
+        };
+
+        let recv_event = |service: &hex_session::service::Service| {
+            let deadline = crate::test_wait::hang_deadline();
+            loop {
+                match service.try_event() {
+                    Ok(event) => return event,
+                    Err(std::sync::mpsc::TryRecvError::Empty)
+                        if std::time::Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("service response unavailable: {error}"),
+                }
+            }
+        };
+
+        let (handle, view) = crate::editor::rendered_test_fixture::editor_window(
+            cx,
+            Project::new(48_000).unwrap(),
+            std::sync::Arc::default(),
+        );
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+
+        let utility = DeviceTypeId::from_static("hex.utility");
+        let utility_state = hex_engine::default_native_device_state(utility).unwrap();
+        let (track, device) = view.update(&mut visual, |view, _| {
+            while let Ok(event) = view.service.try_event() {
+                view.receive(event);
+            }
+            view.service
+                .submit(Request::Edit(Command::AddTrack {
+                    name: "audio".into(),
+                }))
+                .unwrap();
+            let event = recv_event(&view.service);
+            view.receive(event);
+            let track = view.state.as_ref().unwrap().project.tracks()[0].id();
+            view.service
+                .submit(Request::Edit(Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: utility_state,
+                }))
+                .unwrap();
+            let event = recv_event(&view.service);
+            view.receive(event);
+            let device = view.state.as_ref().unwrap().project.tracks()[0].devices()[0].id();
+            (track, device)
+        });
+
+        let plugin_selection = hex_plugin_catalog::PluginSelection {
+            module: std::path::PathBuf::from("/tmp/test.vst3"),
+            executable_relative_path: "Contents/MacOS/test".into(),
+            cid: [0x11; 16],
+            class_name: "test vst3".into(),
+            role: hex_plugin_catalog::PluginRole::Effect,
+            executable_sha256: "a".repeat(64),
+            info_sha256: "b".repeat(64),
+        };
+
+        // 1. Refusing a queued Request::InsertPluginEffect retires pending_plugin_effect cleanly.
+        view.update(&mut visual, |view, cx| {
+            view.begin_device_gesture(
+                GestureTarget::TrackGain { track },
+                ParameterValue::Float(1.0),
+            )
+            .unwrap();
+            let _ = view.device_gesture.next_request();
+            view.device_gesture.mark_submitted();
+            view.insert_plugin_effect(
+                &plugin_selection,
+                PluginEffectDestination::Track(track),
+                None,
+                cx,
+            );
+            assert!(view.pending_plugin_effect.is_some());
+            assert_eq!(view.device_gesture_barriers.len(), 1);
+
+            view.refuse_device_gesture_barriers("project worker busy");
+            assert!(
+                view.pending_plugin_effect.is_none(),
+                "refuse_device_gesture_barriers must retire pending_plugin_effect"
+            );
+            assert!(view.device_gesture_barriers.is_empty());
+            view.device_gesture.reset();
+        });
+
+        // 2. Committing a gesture rebases all 7 newly covered revision-stamped device requests (R -> R+1).
+        let selected = DeviceSelectionIds::new(&[device]).unwrap();
+        let parameter = hex_lattice_contract::ParameterId::from_static(1);
+        let initial = view.read_with(&visual, |view, _| {
+            hex_engine::native_device_parameter_for_class(
+                NativeDeviceClass::Effect,
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .device(device)
+                    .unwrap()
+                    .state(),
+                parameter,
+            )
+            .unwrap()
+        });
+        let mut commit_event = None;
+        let mut start_rev = 0;
+        view.update(&mut visual, |view, cx| {
+            start_rev = view.state.as_ref().unwrap().revision;
+            let generation = view.project_generation;
+            view.begin_device_gesture(
+                GestureTarget::DeviceParameter { device, parameter },
+                initial,
+            )
+            .unwrap();
+            assert!(view.pump_device_gesture());
+            let begin_event = recv_event(&view.service);
+            assert!(
+                begin_event.gesture_ack.as_ref().unwrap().accepted,
+                "begin ack refused: {:?}",
+                begin_event.gesture_ack
+            );
+            view.receive(begin_event);
+
+            view.device_gesture
+                .finish(ParameterValue::Float(6.0))
+                .unwrap();
+            assert!(view.pump_device_gesture());
+
+            assert!(
+                view.enqueue_device_barrier(Request::InsertBrowserInstrumentTrack {
+                    project_generation: generation,
+                    revision: start_rev,
+                    class: NativeDeviceClass::Instrument,
+                    type_id: DeviceTypeId::from_static("hex.instrument.sine"),
+                    new_track_gain: None,
+                    control: None,
+                })
+            );
+            assert!(
+                view.enqueue_device_barrier(Request::DropBrowserDeviceOnArrangement {
+                    project_generation: generation,
+                    revision: start_rev,
+                    class: NativeDeviceClass::Effect,
+                    type_id: utility,
+                    destination: ArrangementDeviceDestination::ExistingTrack {
+                        track,
+                        instrument: None,
+                    },
+                    new_track_gain: None,
+                    control: None,
+                })
+            );
+            assert!(view.enqueue_device_barrier(Request::DropNativeDevice {
+                project_generation: generation,
+                revision: start_rev,
+                source: NativeDeviceDropSource::Browser {
+                    class: NativeDeviceClass::Effect,
+                    type_id: utility,
+                },
+                track,
+                before: Some(device),
+                replace: None,
+                control: None,
+            }));
+            assert!(view.enqueue_device_barrier(Request::MoveTrackDevices {
+                project_generation: generation,
+                revision: start_rev,
+                source: track,
+                selected: selected.clone(),
+                destination: track,
+            }));
+            assert!(view.enqueue_device_barrier(Request::ReorderDevices {
+                project_generation: generation,
+                revision: start_rev,
+                owner: DeviceChainOwner::Track(track),
+                selected: selected.clone(),
+                before: Some(device),
+            }));
+            assert!(view.enqueue_device_barrier(Request::DeviceClipboard {
+                project_generation: generation,
+                revision: start_rev,
+                action: DeviceClipboardAction::Duplicate {
+                    source: DeviceChainOwner::Track(track),
+                    selected: selected.clone(),
+                    destination: DeviceChainOwner::Track(track),
+                    before: None,
+                },
+            }));
+            view.insert_plugin_effect(
+                &plugin_selection,
+                PluginEffectDestination::Track(track),
+                None,
+                cx,
+            );
+            assert_eq!(view.device_gesture_barriers.len(), 7);
+
+            commit_event = Some(recv_event(&view.service));
+        });
+
+        view.update(&mut visual, |view, _| {
+            let event = commit_event.take().unwrap();
+            let next_rev = start_rev + 1;
+            assert_eq!(event.state.revision, next_rev);
+            view.receive(event);
+            assert!(view.device_gesture_barriers.is_empty());
+            assert_eq!(view.pending_requests.len(), 7);
+
+            for request in &view.pending_requests {
+                match request {
+                    Request::InsertBrowserInstrumentTrack { revision, .. }
+                    | Request::DropBrowserDeviceOnArrangement { revision, .. }
+                    | Request::DropNativeDevice { revision, .. }
+                    | Request::MoveTrackDevices { revision, .. }
+                    | Request::ReorderDevices { revision, .. }
+                    | Request::DeviceClipboard { revision, .. } => {
+                        assert_eq!(*revision, next_rev, "revision must rebase for {request:?}");
+                    }
+                    Request::InsertPluginEffect(insertion) => {
+                        assert_eq!(insertion.context.editor_revision, next_rev);
+                    }
+                    other => panic!("unexpected request: {other:?}"),
+                }
+            }
+        });
     }
 }
