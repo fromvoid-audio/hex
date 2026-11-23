@@ -292,3 +292,109 @@ fn replaces_retained_subtree_and_keeps_source_owner_and_unrelated_effect() {
     assert!(editor.redo());
     assert!(editor.project().device(child).is_some());
 }
+
+#[test]
+fn replacement_unit_allows_cross_type_while_same_provider_unit_still_refuses() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let track = add_track(&mut editor, "fx");
+    let provider_a =
+        NativeDeviceState::new(DeviceTypeId::from_static("test.provider.a"), 1, vec![1]).unwrap();
+    let root = run_device(
+        &mut editor,
+        Command::InsertDevice {
+            track,
+            before: None,
+            state: provider_a,
+        },
+    );
+    let old_child = run_device(
+        &mut editor,
+        Command::InsertNestedDevice {
+            parent: root,
+            state: effect(1),
+        },
+    );
+
+    let unit_b = PortableDeviceUnit::new(
+        DeviceUnitClass::Effect,
+        vec![node(None, effect(42)), node(Some(0), effect(7))],
+        Vec::new(),
+    )
+    .unwrap();
+
+    // Same-provider preset load (`new_unit`) must still refuse replacing type A with unit B.
+    let same_provider_cmd = Command::InitializeDevice(Box::new(
+        super::super::DeviceInitialization::new_unit(
+            Command::ReplaceDeviceState {
+                device: root,
+                state: effect(0),
+            },
+            unit_b.clone(),
+            Vec::new(),
+        )
+        .unwrap(),
+    ));
+    assert_eq!(
+        editor.execute(same_provider_cmd),
+        Err(Invalid(
+            "portable unit does not match the replacement target"
+        ))
+    );
+
+    // Cross-type replacement default (`new_replacement_unit`) must still reject a class mismatch.
+    let inst_unit = PortableDeviceUnit::new(
+        DeviceUnitClass::Instrument,
+        vec![node(None, effect(42))],
+        Vec::new(),
+    )
+    .unwrap();
+    let wrong_class_cmd = Command::InitializeDevice(Box::new(
+        super::super::DeviceInitialization::new_replacement_unit(
+            Command::ReplaceDeviceState {
+                device: root,
+                state: effect(0),
+            },
+            inst_unit,
+            Vec::new(),
+        )
+        .unwrap(),
+    ));
+    assert_eq!(
+        editor.execute(wrong_class_cmd),
+        Err(Invalid(
+            "portable unit does not match the replacement target"
+        ))
+    );
+
+    // Cross-type replacement default (`new_replacement_unit`) succeeds when class matches.
+    let before = editor.project().snapshot();
+    let replacement_cmd = Command::InitializeDevice(Box::new(
+        super::super::DeviceInitialization::new_replacement_unit(
+            Command::ReplaceDeviceState {
+                device: root,
+                state: effect(0),
+            },
+            unit_b.clone(),
+            Vec::new(),
+        )
+        .unwrap(),
+    ));
+    editor.execute(replacement_cmd).unwrap();
+    assert_eq!(editor.project().device(root).unwrap().state(), &effect(42));
+    assert!(editor.project().device(old_child).is_none());
+    assert_eq!(
+        editor.project().capture_portable_device_unit(root).unwrap(),
+        unit_b
+    );
+
+    let high_water = editor.project().snapshot().next_id;
+    assert!(editor.undo());
+    let mut expected = before;
+    expected.next_id = high_water;
+    assert_eq!(editor.project().snapshot(), expected);
+    assert!(editor.redo());
+    assert_eq!(
+        editor.project().capture_portable_device_unit(root).unwrap(),
+        unit_b
+    );
+}
