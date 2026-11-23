@@ -491,7 +491,7 @@ fn worker_refusal_keeps_same_source_take_retryable_and_explicit_discard_is_requi
             token: 1,
         };
         view.service
-            .submit(Request::DeviceGesture(GestureRequest::Begin {
+            .submit(Request::device_gesture(GestureRequest::Begin {
                 key,
                 target: GestureTarget::TrackGain { track },
             }))
@@ -509,7 +509,7 @@ fn worker_refusal_keeps_same_source_take_retryable_and_explicit_discard_is_requi
         assert_eq!(view.gain_recorder.events.len(), 1);
         assert!(view.gain_recorder.blocks_edits());
         view.service
-            .submit(Request::DeviceGesture(GestureRequest::Cancel { key }))
+            .submit(Request::device_gesture(GestureRequest::Cancel { key }))
             .unwrap();
         let cancelled = next(&view.service);
         assert!(cancelled.gesture_ack.as_ref().unwrap().accepted);

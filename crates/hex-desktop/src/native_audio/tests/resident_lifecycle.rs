@@ -736,7 +736,7 @@ fn production_default_verified_gestures_rebase_barriers_and_restore_use_verified
         generation,
         token: 1,
     };
-    let begin = h.run(Request::DeviceGesture(GestureRequest::Begin {
+    let begin = h.run(Request::device_gesture(GestureRequest::Begin {
         key,
         target: GestureTarget::DeviceParameter { device, parameter },
     }));
@@ -745,7 +745,7 @@ fn production_default_verified_gestures_rebase_barriers_and_restore_use_verified
         "{:?}",
         begin.gesture_ack
     );
-    let preview = h.run(Request::DeviceGesture(GestureRequest::Change {
+    let preview = h.run(Request::device_gesture(GestureRequest::Change {
         key,
         sequence: 1,
         value: ParameterValue::Float(0.5),

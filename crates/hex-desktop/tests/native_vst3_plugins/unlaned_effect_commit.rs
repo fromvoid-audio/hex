@@ -191,7 +191,7 @@ fn verify_unlaned_effect_commit(arrangement: Arrangement) {
     };
     let event = drive(
         &mut h,
-        Request::DeviceGesture(hex_session::device_gesture::GestureRequest::Begin { key, target }),
+        Request::device_gesture(hex_session::device_gesture::GestureRequest::Begin { key, target }),
     );
     assert!(
         event.gesture_ack.as_ref().unwrap().accepted,
@@ -204,7 +204,7 @@ fn verify_unlaned_effect_commit(arrangement: Arrangement) {
     };
     let event = drive(
         &mut h,
-        Request::DeviceGesture(hex_session::device_gesture::GestureRequest::CommitPair {
+        Request::device_gesture(hex_session::device_gesture::GestureRequest::CommitPair {
             key,
             sequence: 2,
             manual_edit: true,
@@ -379,7 +379,7 @@ fn verify_unlaned_effect_commit(arrangement: Arrangement) {
     let send = |h: &mut ResidentHarness, client: &mut GestureClient| {
         let request = client.next_request().unwrap();
         client.mark_submitted();
-        h.service.submit(Request::DeviceGesture(request)).unwrap();
+        h.service.submit(Request::device_gesture(request)).unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         let event = loop {
             h.pump();

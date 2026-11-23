@@ -90,7 +90,7 @@ fn captured_native_source_creation_is_unassigned_and_reversible() {
     };
     let begun = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::TrackGain { track },
         }),
@@ -104,7 +104,7 @@ fn captured_native_source_creation_is_unassigned_and_reversible() {
     assert!(blocked.active_device_gesture.is_some() && blocked.gesture_ack.is_none());
     let cancelled = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Cancel { key }),
+        Request::device_gesture(GestureRequest::Cancel { key }),
     );
     let before = cancelled.state.project.clone();
     let created = run(
@@ -278,7 +278,7 @@ fn captured_source_rename_and_delete_preserve_identity_and_history() {
     };
     let begun = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::TrackGain { track },
         }),
@@ -298,7 +298,7 @@ fn captured_source_rename_and_delete_preserve_identity_and_history() {
     );
     let cancelled = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Cancel { key }),
+        Request::device_gesture(GestureRequest::Cancel { key }),
     );
     let before = cancelled.state.project.clone();
     let renamed = run(
@@ -475,7 +475,7 @@ fn captured_receiver_choice_refuses_stale_and_preserves_history() {
     };
     let begun = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::TrackGain { track: contributor },
         }),
@@ -490,7 +490,7 @@ fn captured_receiver_choice_refuses_stale_and_preserves_history() {
     assert!(blocked.gesture_ack.is_none());
     let cancelled = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Cancel { key }),
+        Request::device_gesture(GestureRequest::Cancel { key }),
     );
     let before = cancelled.state.project.clone();
     let changed = run(
@@ -783,7 +783,7 @@ fn captured_rebinding_preserves_shared_receiver_and_history() {
     };
     let begun = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::TrackGain { track: contributor },
         }),
@@ -798,7 +798,7 @@ fn captured_rebinding_preserves_shared_receiver_and_history() {
     assert!(blocked.gesture_ack.is_none());
     let cancelled = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Cancel { key }),
+        Request::device_gesture(GestureRequest::Cancel { key }),
     );
     let before = cancelled.state.project.clone();
     let changed = run(
@@ -1002,7 +1002,7 @@ fn captured_unassigned_source_binding_refuses_stale_and_preserves_history() {
     };
     let begun = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::TrackGain { track: target },
         }),
@@ -1017,7 +1017,7 @@ fn captured_unassigned_source_binding_refuses_stale_and_preserves_history() {
     assert!(blocked.gesture_ack.is_none());
     let cancelled = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Cancel { key }),
+        Request::device_gesture(GestureRequest::Cancel { key }),
     );
     let before_bind = cancelled.state.project.clone();
     let bound = run(
@@ -1224,7 +1224,7 @@ fn first_source_utility_requires_current_shared_owner_and_preserves_history() {
     };
     let begun = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::TrackGain { track: contributor },
         }),
@@ -1237,7 +1237,7 @@ fn first_source_utility_requires_current_shared_owner_and_preserves_history() {
     );
     let cancelled = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Cancel { key }),
+        Request::device_gesture(GestureRequest::Cancel { key }),
     );
     let created = run(
         &service,
@@ -1388,7 +1388,7 @@ fn first_source_utility_requires_current_shared_owner_and_preserves_history() {
     };
     let begun = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::TrackGain { track: receiver },
         }),
@@ -1402,7 +1402,7 @@ fn first_source_utility_requires_current_shared_owner_and_preserves_history() {
     );
     let cancelled = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Cancel { key }),
+        Request::device_gesture(GestureRequest::Cancel { key }),
     );
     let removed = run(
         &service,
@@ -1825,7 +1825,7 @@ fn captured_source_utility_reorder_revalidates_siblings_and_history() {
     };
     let begun = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::TrackGain { track: contributor },
         }),
@@ -1845,7 +1845,7 @@ fn captured_source_utility_reorder_revalidates_siblings_and_history() {
     );
     let cancelled = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Cancel { key }),
+        Request::device_gesture(GestureRequest::Cancel { key }),
     );
     let moved = run(
         &service,
@@ -2001,7 +2001,7 @@ fn unassigned_source_instrument_gesture_preserves_identity_and_history() {
         token: 1,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key: stale,
             target,
         }))
@@ -2020,7 +2020,7 @@ fn unassigned_source_instrument_gesture_preserves_identity_and_history() {
     };
     let begun = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin { key, target }),
+        Request::device_gesture(GestureRequest::Begin { key, target }),
     );
     assert!(
         begun
@@ -2030,7 +2030,7 @@ fn unassigned_source_instrument_gesture_preserves_identity_and_history() {
     );
     let preview = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Change {
+        Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(2.0),
@@ -2052,7 +2052,7 @@ fn unassigned_source_instrument_gesture_preserves_identity_and_history() {
     );
     let committed = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Commit {
+        Request::device_gesture(GestureRequest::Commit {
             key,
             sequence: 2,
             manual_edit: false,
@@ -2102,14 +2102,14 @@ fn unassigned_source_instrument_gesture_preserves_identity_and_history() {
     };
     run(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key: cancel_key,
             target,
         }),
     );
     run(
         &service,
-        Request::DeviceGesture(GestureRequest::Change {
+        Request::device_gesture(GestureRequest::Change {
             key: cancel_key,
             sequence: 1,
             value: ParameterValue::Float(4.0),
@@ -2117,7 +2117,7 @@ fn unassigned_source_instrument_gesture_preserves_identity_and_history() {
     );
     let cancelled = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Cancel { key: cancel_key }),
+        Request::device_gesture(GestureRequest::Cancel { key: cancel_key }),
     );
     assert!(
         cancelled
@@ -2166,7 +2166,7 @@ fn unassigned_source_gesture_retires_with_replaced_instrument_state() {
     };
     run(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::DeviceParameter {
                 device: old,
@@ -2176,7 +2176,7 @@ fn unassigned_source_gesture_retires_with_replaced_instrument_state() {
     );
     let preview = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Change {
+        Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(2.0),
@@ -2236,7 +2236,7 @@ fn unassigned_source_gesture_retires_with_replaced_instrument_state() {
     )
     .unwrap();
     service
-        .submit(Request::DeviceGesture(GestureRequest::Commit {
+        .submit(Request::device_gesture(GestureRequest::Commit {
             key,
             sequence: 2,
             manual_edit: false,
@@ -2289,7 +2289,7 @@ fn unassigned_source_gesture_retires_with_source_deletion() {
     };
     run(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::DeviceParameter {
                 device,
@@ -2299,7 +2299,7 @@ fn unassigned_source_gesture_retires_with_source_deletion() {
     );
     let preview = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Change {
+        Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(2.0),
@@ -2321,7 +2321,7 @@ fn unassigned_source_gesture_retires_with_source_deletion() {
             .is_some_and(|reason| reason.contains("removed or replaced"))
     );
     service
-        .submit(Request::DeviceGesture(GestureRequest::Commit {
+        .submit(Request::device_gesture(GestureRequest::Commit {
             key,
             sequence: 2,
             manual_edit: false,
@@ -2420,7 +2420,7 @@ fn unassigned_operator_pair_preview_commit_cancel_and_history() {
     };
     let begun = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin { key, target }),
+        Request::device_gesture(GestureRequest::Begin { key, target }),
     );
     assert!(
         begun
@@ -2434,7 +2434,7 @@ fn unassigned_operator_pair_preview_commit_cancel_and_history() {
     };
     let preview = run(
         &service,
-        Request::DeviceGesture(GestureRequest::ChangePair {
+        Request::device_gesture(GestureRequest::ChangePair {
             key,
             sequence: 1,
             value,
@@ -2453,7 +2453,7 @@ fn unassigned_operator_pair_preview_commit_cancel_and_history() {
     );
     let committed = run(
         &service,
-        Request::DeviceGesture(GestureRequest::CommitPair {
+        Request::device_gesture(GestureRequest::CommitPair {
             key,
             sequence: 2,
             manual_edit: false,
@@ -2508,14 +2508,14 @@ fn unassigned_operator_pair_preview_commit_cancel_and_history() {
     };
     run(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key: cancel_key,
             target,
         }),
     );
     run(
         &service,
-        Request::DeviceGesture(GestureRequest::ChangePair {
+        Request::device_gesture(GestureRequest::ChangePair {
             key: cancel_key,
             sequence: 1,
             value: ParameterPairValue {
@@ -2526,7 +2526,7 @@ fn unassigned_operator_pair_preview_commit_cancel_and_history() {
     );
     let cancelled = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Cancel { key: cancel_key }),
+        Request::device_gesture(GestureRequest::Cancel { key: cancel_key }),
     );
     assert!(
         cancelled
@@ -2536,7 +2536,7 @@ fn unassigned_operator_pair_preview_commit_cancel_and_history() {
     );
     assert_eq!(cancelled.state.project, committed.state.project);
     service
-        .submit(Request::DeviceGesture(GestureRequest::CommitPair {
+        .submit(Request::device_gesture(GestureRequest::CommitPair {
             key: cancel_key,
             sequence: 2,
             manual_edit: false,
@@ -2575,7 +2575,7 @@ fn unassigned_operator_harmonic_snapshot_preview_commit_cancel_and_history() {
     };
     let begun = run(
         &service,
-        Request::DeviceGesture(GestureRequest::BeginSnapshot {
+        Request::device_gesture(GestureRequest::BeginSnapshot {
             key,
             device,
             snapshot: begin,
@@ -2589,7 +2589,7 @@ fn unassigned_operator_harmonic_snapshot_preview_commit_cancel_and_history() {
     );
     let preview = run(
         &service,
-        Request::DeviceGesture(GestureRequest::ChangeSnapshot {
+        Request::device_gesture(GestureRequest::ChangeSnapshot {
             touched_parameters: TouchedParameters::default(),
             key,
             sequence: 1,
@@ -2609,7 +2609,7 @@ fn unassigned_operator_harmonic_snapshot_preview_commit_cancel_and_history() {
     );
     let committed = run(
         &service,
-        Request::DeviceGesture(GestureRequest::CommitSnapshot {
+        Request::device_gesture(GestureRequest::CommitSnapshot {
             touched_parameters: TouchedParameters::default(),
             key,
             sequence: 2,
@@ -2658,7 +2658,7 @@ fn unassigned_operator_harmonic_snapshot_preview_commit_cancel_and_history() {
     };
     run(
         &service,
-        Request::DeviceGesture(GestureRequest::BeginSnapshot {
+        Request::device_gesture(GestureRequest::BeginSnapshot {
             key: cancel_key,
             device,
             snapshot: value,
@@ -2668,7 +2668,7 @@ fn unassigned_operator_harmonic_snapshot_preview_commit_cancel_and_history() {
     let changed = DeviceParameterSnapshot::new(&edited).unwrap();
     run(
         &service,
-        Request::DeviceGesture(GestureRequest::ChangeSnapshot {
+        Request::device_gesture(GestureRequest::ChangeSnapshot {
             touched_parameters: TouchedParameters::default(),
             key: cancel_key,
             sequence: 1,
@@ -2677,7 +2677,7 @@ fn unassigned_operator_harmonic_snapshot_preview_commit_cancel_and_history() {
     );
     let cancelled = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Cancel { key: cancel_key }),
+        Request::device_gesture(GestureRequest::Cancel { key: cancel_key }),
     );
     assert!(
         cancelled
@@ -2687,7 +2687,7 @@ fn unassigned_operator_harmonic_snapshot_preview_commit_cancel_and_history() {
     );
     assert_eq!(cancelled.state.project, committed.state.project);
     service
-        .submit(Request::DeviceGesture(GestureRequest::CommitSnapshot {
+        .submit(Request::device_gesture(GestureRequest::CommitSnapshot {
             touched_parameters: TouchedParameters::default(),
             key: cancel_key,
             sequence: 2,

@@ -51,12 +51,12 @@ fn group_fixture(verified: bool) -> (Service, Vec<TrackId>, GestureKey, Event) {
     };
     let began = send(
         &service,
-        Request::DeviceGesture(GestureRequest::BeginTrackGains { key, group }),
+        Request::device_gesture(GestureRequest::BeginTrackGains { key, group }),
     );
     assert!(began.gesture_ack.unwrap().accepted);
     let changed = send(
         &service,
-        Request::DeviceGesture(GestureRequest::Change {
+        Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(0.75),
@@ -108,7 +108,7 @@ fn grouped_verified_projection_checks_non_anchor_values_and_frozen_origins() {
     assert!(VerifiedTrackGainSource::capture(&changed, None).is_err());
     let cancelled = send(
         &service,
-        Request::DeviceGesture(GestureRequest::Cancel { key }),
+        Request::device_gesture(GestureRequest::Cancel { key }),
     );
     let terminal = VerifiedTrackGainSource::capture(&cancelled, Some((key, 1)))
         .unwrap()
@@ -140,7 +140,7 @@ fn group_commit_save_and_reopen_preserve_ordinary_gain_fields() {
     let (service, ids, key, _) = group_fixture(false);
     let committed = send(
         &service,
-        Request::DeviceGesture(GestureRequest::Commit {
+        Request::device_gesture(GestureRequest::Commit {
             key,
             sequence: 2,
             manual_edit: true,

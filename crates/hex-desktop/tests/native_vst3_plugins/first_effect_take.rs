@@ -117,7 +117,7 @@ fn records_first_raw_zero_effect_lane_without_mutating_the_base() {
     let send = |h: &mut ResidentHarness, client: &mut GestureClient| {
         let request = client.next_request().unwrap();
         client.mark_submitted();
-        h.service.submit(Request::DeviceGesture(request)).unwrap();
+        h.service.submit(Request::device_gesture(request)).unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         let event = loop {
             h.pump();

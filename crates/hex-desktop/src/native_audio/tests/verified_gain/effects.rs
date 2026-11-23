@@ -503,7 +503,7 @@ fn check_auto_pan(running: bool) {
                 value: ParameterValue::Float(0.1),
             },
         ] {
-            let event = h.run(Request::DeviceGesture(request));
+            let event = h.run(Request::device_gesture(request));
             assert!(
                 event.gesture_ack.as_ref().unwrap().accepted,
                 "{:?}",
@@ -522,7 +522,7 @@ fn check_auto_pan(running: bool) {
             );
             std::thread::sleep(Duration::from_millis(1));
         }
-        let event = h.run(Request::DeviceGesture(GestureRequest::Cancel { key }));
+        let event = h.run(Request::device_gesture(GestureRequest::Cancel { key }));
         assert!(event.gesture_ack.as_ref().unwrap().accepted);
         let until = Instant::now() + Duration::from_secs(3);
         loop {
@@ -551,7 +551,7 @@ fn check_auto_pan(running: bool) {
                 value: ParameterValue::Float(0.0),
             },
         ] {
-            let event = h.run(Request::DeviceGesture(request));
+            let event = h.run(Request::device_gesture(request));
             assert!(
                 event.gesture_ack.as_ref().unwrap().accepted,
                 "{:?}",
@@ -570,7 +570,7 @@ fn check_auto_pan(running: bool) {
             );
             std::thread::sleep(Duration::from_millis(1));
         }
-        let event = h.run(Request::DeviceGesture(GestureRequest::Cancel { key }));
+        let event = h.run(Request::device_gesture(GestureRequest::Cancel { key }));
         assert!(event.gesture_ack.as_ref().unwrap().accepted);
         let until = Instant::now() + Duration::from_secs(3);
         loop {

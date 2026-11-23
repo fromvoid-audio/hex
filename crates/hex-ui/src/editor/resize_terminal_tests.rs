@@ -146,7 +146,7 @@ fn terminal_fifo_counts_real_ordinary_device_and_tuning_completions(cx: &mut Tes
                     clip: f.clip,
                     name: "independent name".into(),
                 }),
-                1 => Request::DeviceGesture(hex_session::device_gesture::GestureRequest::Cancel {
+                1 => Request::device_gesture(hex_session::device_gesture::GestureRequest::Cancel {
                     key: hex_session::device_gesture::GestureKey {
                         generation: v.project_generation,
                         token: 901,

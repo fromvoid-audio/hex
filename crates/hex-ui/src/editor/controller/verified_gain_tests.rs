@@ -64,14 +64,14 @@ fn verified_preview_submission_waits_for_exact_view_without_canonical_promotion(
     };
     let began = request(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::TrackGain { track },
         }),
     );
     let mut changed = request(
         &service,
-        Request::DeviceGesture(GestureRequest::Change {
+        Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(0.25),

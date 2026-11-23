@@ -117,7 +117,7 @@ fn clip_move_worker_refuses_stale_or_unrelated_commands_without_history_changes(
     };
     run(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::TrackGain { track },
         }),
@@ -136,7 +136,7 @@ fn clip_move_worker_refuses_stale_or_unrelated_commands_without_history_changes(
     assert_eq!(refused.state.revision, placed.state.revision);
     run(
         &service,
-        Request::DeviceGesture(GestureRequest::Cancel { key }),
+        Request::device_gesture(GestureRequest::Cancel { key }),
     );
     // A same-revision control request may precede the captured move.
     run(

@@ -391,7 +391,7 @@ fn ready_vst3_preparation_waits_for_the_independent_eq_gesture_terminal() {
             token: 1,
         };
         let value = ParameterValue::Float(0.5);
-        let begin = submit(Request::DeviceGesture(GestureRequest::Begin {
+        let begin = submit(Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::DeviceParameter {
                 device,
@@ -403,7 +403,7 @@ fn ready_vst3_preparation_waits_for_the_independent_eq_gesture_terminal() {
             begin.plugin_effect_complete.is_empty(),
             "beginning the independent EQ gesture cancelled preparation"
         );
-        let changed = submit(Request::DeviceGesture(GestureRequest::Change {
+        let changed = submit(Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value,
@@ -419,7 +419,7 @@ fn ready_vst3_preparation_waits_for_the_independent_eq_gesture_terminal() {
         assert!(during.plugin_effect_complete.is_empty());
         assert_eq!(observed.plugin_preparations.load(Ordering::Acquire), 1);
 
-        let terminal = submit(Request::DeviceGesture(if cancelled {
+        let terminal = submit(Request::device_gesture(if cancelled {
             GestureRequest::Cancel { key }
         } else {
             GestureRequest::Commit {

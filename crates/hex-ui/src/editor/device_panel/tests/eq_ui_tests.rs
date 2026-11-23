@@ -342,7 +342,7 @@ fn eq_held_node_creation_clears_when_worker_retires_the_gesture(cx: &mut TestApp
     let mut retired = editor.read_with(cx, |view, _| {
         let key = view.device_gesture.snapshot().unwrap().key;
         view.service
-            .submit(Request::DeviceGesture(GestureRequest::Cancel { key }))
+            .submit(Request::device_gesture(GestureRequest::Cancel { key }))
             .unwrap();
         receive_service_event(&view.service)
     });

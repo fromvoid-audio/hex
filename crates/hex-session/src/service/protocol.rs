@@ -577,8 +577,6 @@ pub enum DeviceInsertOutcome {
 
 /// Bounded requests accepted by the control worker.
 #[derive(Debug)]
-// Fixed request storage is bounded by the 32-slot control FIFO.
-#[allow(clippy::large_enum_variant)]
 pub enum Request {
     /// Place an exact current-project asset using the captured import destination.
     /// Generation and revision must still match; offline, device-owned and
@@ -1000,7 +998,7 @@ pub enum Request {
         revision: u64,
         edit: DeviceAutomationControlEdit,
     },
-    DeviceGesture(GestureRequest),
+    DeviceGesture(Box<GestureRequest>),
     TuningGesture(TuningGestureRequest),
     TuningLibrary {
         project_generation: u64,
@@ -1251,6 +1249,11 @@ impl ControlledExport {
 }
 
 impl Request {
+    /// Box a control-side device gesture so ordinary requests stay compact.
+    pub fn device_gesture(gesture: GestureRequest) -> Self {
+        Self::DeviceGesture(Box::new(gesture))
+    }
+
     /// Exact cancellation carried by a browser or catalog insertion through
     /// gesture barriers, preparation, and callback installation.
     pub fn builtin_device_insert_control(&self) -> Option<&Arc<PluginEffectControl>> {
@@ -1576,5 +1579,20 @@ mod tests {
         assert_eq!(target.track(), Some(track));
         let new_track = SamplerLoadTarget::NewTrack { before_track: None };
         assert_eq!(new_track.track(), None);
+    }
+
+    #[test]
+    fn request_size_stays_compact_without_inline_gesture_bloat() {
+        assert!(
+            std::mem::size_of::<Request>() <= 512,
+            "Request grew to {} bytes (expected <= 512 bytes)",
+            std::mem::size_of::<Request>()
+        );
+        assert!(
+            std::mem::size_of::<Request>() < std::mem::size_of::<GestureRequest>(),
+            "Request ({} bytes) must remain smaller than inline GestureRequest ({} bytes)",
+            std::mem::size_of::<Request>(),
+            std::mem::size_of::<GestureRequest>()
+        );
     }
 }

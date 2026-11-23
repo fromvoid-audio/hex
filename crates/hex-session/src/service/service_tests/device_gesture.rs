@@ -145,7 +145,7 @@ fn canonical_instrument_requests_route_by_slot_and_preserve_identity_and_bypass(
         token: 1,
     };
     service
-        .submit(Request::DeviceGesture(
+        .submit(Request::device_gesture(
             crate::device_gesture::GestureRequest::Begin {
                 key: gesture_key,
                 target: crate::device_gesture::GestureTarget::DeviceParameter {
@@ -568,7 +568,7 @@ fn device_gesture_preview_is_noncanonical_and_commit_is_one_undo_step() {
         token: 1,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::DeviceParameter {
                 device,
@@ -582,7 +582,7 @@ fn device_gesture_preview_is_noncanonical_and_commit_is_one_undo_step() {
     assert_eq!(begun.state.revision, before.state.revision);
 
     service
-        .submit(Request::DeviceGesture(GestureRequest::Change {
+        .submit(Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(2.25),
@@ -617,7 +617,7 @@ fn device_gesture_preview_is_noncanonical_and_commit_is_one_undo_step() {
     );
 
     service
-        .submit(Request::DeviceGesture(GestureRequest::Commit {
+        .submit(Request::device_gesture(GestureRequest::Commit {
             manual_edit: false,
             key,
             sequence: 2,
@@ -815,7 +815,7 @@ fn operator_device_gesture_retargets_a_playing_feedback_note_and_commits_once() 
         token: 1,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::DeviceParameter {
                 device,
@@ -826,7 +826,7 @@ fn operator_device_gesture_retargets_a_playing_feedback_note_and_commits_once() 
     let begun = next_event(&service);
     assert!(begun.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
     service
-        .submit(Request::DeviceGesture(GestureRequest::Change {
+        .submit(Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(0.25),
@@ -872,7 +872,7 @@ fn operator_device_gesture_retargets_a_playing_feedback_note_and_commits_once() 
     assert_eq!(preview_playback.position(), baseline.position());
 
     service
-        .submit(Request::DeviceGesture(GestureRequest::Commit {
+        .submit(Request::device_gesture(GestureRequest::Commit {
             manual_edit: false,
             key,
             sequence: 2,
@@ -962,7 +962,7 @@ fn undo_barrier_finishes_active_gesture_before_undoing_it() {
         token: 1,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::DeviceParameter {
                 device,
@@ -972,7 +972,7 @@ fn undo_barrier_finishes_active_gesture_before_undoing_it() {
         .expect("begin gesture");
     next_event(&service);
     service
-        .submit(Request::DeviceGesture(GestureRequest::Change {
+        .submit(Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(2.0),
@@ -1032,7 +1032,7 @@ fn cancel_restores_latest_state_after_same_and_independent_parameter_edits() {
         token: 1,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::DeviceParameter {
                 device,
@@ -1042,7 +1042,7 @@ fn cancel_restores_latest_state_after_same_and_independent_parameter_edits() {
         .expect("begin gesture");
     next_event(&service);
     service
-        .submit(Request::DeviceGesture(GestureRequest::Change {
+        .submit(Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(2.0),
@@ -1088,7 +1088,7 @@ fn cancel_restores_latest_state_after_same_and_independent_parameter_edits() {
         ParameterValue::Float(2.5)
     );
     service
-        .submit(Request::DeviceGesture(GestureRequest::Cancel { key }))
+        .submit(Request::device_gesture(GestureRequest::Cancel { key }))
         .expect("cancel gesture");
     let canceled = next_event(&service);
     assert!(canceled.device_preview.is_none());
@@ -1157,7 +1157,7 @@ fn removing_gesture_target_cancels_only_its_preview_and_keeps_the_edit() {
         token: 1,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::DeviceParameter {
                 device,
@@ -1167,7 +1167,7 @@ fn removing_gesture_target_cancels_only_its_preview_and_keeps_the_edit() {
         .expect("begin");
     next_event(&service);
     service
-        .submit(Request::DeviceGesture(GestureRequest::Change {
+        .submit(Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(2.0),
@@ -1706,7 +1706,7 @@ fn native_device_drop_refuses_while_a_parameter_gesture_is_active() {
         token: 41,
     };
     service
-        .submit(Request::DeviceGesture(
+        .submit(Request::device_gesture(
             crate::device_gesture::GestureRequest::Begin {
                 key: gesture,
                 target: crate::device_gesture::GestureTarget::DeviceParameter {

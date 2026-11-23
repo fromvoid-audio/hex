@@ -69,7 +69,7 @@ impl State {
             && ready.sequence() == pending.terminal.sequence())
         .then(|| {
             QueuedRequest::continuation(
-                Request::DeviceGesture(pending.terminal),
+                Request::device_gesture(pending.terminal),
                 &AtomicU64::new(pending.request.document_intent),
             )
         })
@@ -115,7 +115,7 @@ impl State {
             return queued;
         }
         let continuation = QueuedRequest::continuation(
-            Request::DeviceGesture(terminal),
+            Request::device_gesture(terminal),
             &AtomicU64::new(queued.document_intent),
         );
         self.pending = Some(Pending {
