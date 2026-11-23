@@ -2105,10 +2105,10 @@ fn render_body(view: &mut EditorView, device: DeviceId, cx: &mut Context<EditorV
                             ("vst3-parameter-list", device.value()),
                             matched.len(),
                             move |range, _, app| {
-                                let visible: Vec<_> = range.clone().collect();
-                                let firsts: BTreeSet<_> = visible
-                                    .iter()
-                                    .map(|index| ((matched[*index] / PAGE_SIZE) * PAGE_SIZE) as u16)
+                                let firsts: BTreeSet<_> = range
+                                    .clone()
+                                    .filter_map(|index| matched.get(index))
+                                    .map(|row_index| ((row_index / PAGE_SIZE) * PAGE_SIZE) as u16)
                                     .collect();
                                 let _ = editor.update(app, |view, cx| {
                                     if let Some(panel) =

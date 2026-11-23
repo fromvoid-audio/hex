@@ -47,6 +47,7 @@ mod chain_window;
 mod effect_bus;
 pub(super) use effect_bus::{EffectBusOwner, select_main, selected_owner};
 mod compressor_panel;
+mod effect_preview;
 pub(super) use compressor_panel::sidechain::drop_track_key;
 mod eq8_panel;
 mod eq_automation;
