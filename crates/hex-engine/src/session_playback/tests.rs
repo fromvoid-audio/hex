@@ -14386,9 +14386,18 @@ fn mixed_streamed_resident_and_midi_compensation_case(
     };
     let expected = render(1);
     let actual = render(17);
-    assert_eq!(actual, expected);
+    assert_eq!(actual.0, expected.0, "batched and scalar PCM must match");
+    assert_eq!(
+        actual.2, expected.2,
+        "batched and scalar page requests must match"
+    );
+    assert_eq!((actual.3, actual.4), (expected.3, expected.4));
     assert!(actual.0.iter().flatten().any(|sample| *sample != 0.0));
-    assert!(actual.1.len() > 1);
+    assert!(
+        actual.1.len() > 1 && actual.1.len() <= expected.1.len(),
+        "batched compensated routing reads pages in chunks rather than exceeding frame-wise reads"
+    );
+    assert!(actual.1.iter().all(|key| expected.1.contains(key)));
     assert_eq!(actual.2.len(), 1);
     assert_eq!((actual.3, actual.4), (512, 8));
     (actual.0, revision.arrangement().main_latency_frames())

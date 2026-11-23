@@ -189,9 +189,8 @@ fn metered_resident_return_matches_scalar_pcm_and_meters_through_launch_and_loop
                 if index == 0 && partition == 256 {
                     let used_window = actual.return_scratch[0][16] != [0.0; 2];
                     assert_eq!(
-                        used_window,
-                        stationary && !graph_feed && !return_feed && !automated,
-                        "batched send eligibility"
+                        used_window, !graph_feed,
+                        "batched compensated routing eligibility"
                     );
                 }
                 for track in project.tracks() {
@@ -495,10 +494,10 @@ fn session_independent_alignment_matches_scalar_audio_and_visible_meters() {
                     [0.4, -0.2],
                     "eligible track must advance through its aligned window"
                 );
-                assert_eq!(
+                assert_ne!(
                     actual.resident_source_scratch[1][255],
                     [0.4, -0.2],
-                    "metered device chain must retain frame-wise publication"
+                    "metered device chain advances through block compensated routing with matching meters"
                 );
             }
             assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
