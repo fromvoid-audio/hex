@@ -665,16 +665,24 @@ impl EditorView {
         }) else {
             return true;
         };
-        match result.result {
-            Ok(hex_session::service::ResidentPublicationAcceptance::Submitted {
+        let worker_accepted = result.result.is_ok();
+        let completion = result.result.and_then(|accepted| match accepted {
+            hex_session::service::ResidentPublicationAcceptance::Submitted {
                 output_identity,
                 audio_revision,
-            }) if self
+            } if self
                 .audio
                 .as_ref()
                 .and_then(|audio| audio.control.output_identity())
-                == Some(output_identity) =>
+                == Some(output_identity)
+                && pending.native_output_identity == Some(output_identity) =>
             {
+                Ok(audio_revision)
+            }
+            _ => Err("arrangement seek output is no longer available".into()),
+        });
+        match completion {
+            Ok(audio_revision) => {
                 pending.stage = SeekStage::Published { audio_revision };
                 match pending.kind {
                     SeekKind::Section(_) => self.status = "section launch queued".into(),
@@ -693,15 +701,48 @@ impl EditorView {
                         == Some(FreshRuntimeCancellationResult::Busy);
                 }
             }
-            Ok(_) => {
-                self.prepared_seek = None;
-                self.error = Some("arrangement seek output is no longer available".into());
-            }
             Err(error) => {
                 let cancelled = pending.cancelled;
                 let recovery = pending.recovery_generation;
+                let request_id = pending.request_id;
+                let superseded = !cancelled
+                    && recovery.is_some()
+                    && self.project_generation == pending.project_generation
+                    && self
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.revision == pending.project_revision)
+                    && self.audio.as_ref().is_some_and(|audio| {
+                        audio.control.output_identity().is_some()
+                            && audio.control.status().is_some_and(|status| {
+                                !status.device_fault.load(Acquire)
+                                    && !status.render_fault.load(Acquire)
+                                    && !status.shutdown_complete.load(Acquire)
+                                    && (worker_accepted
+                                        || audio.control.output_identity()
+                                            != pending.native_output_identity
+                                        || status.applied_revision.load(Acquire)
+                                            > pending.fence.expected_active_revision())
+                            })
+                    });
                 self.prepared_seek = None;
-                if !cancelled {
+                if let Some(generation) = recovery.filter(|generation| {
+                    superseded && self.recovery.permits_seek(Some(*generation))
+                }) {
+                    if self.recovery.retry_prepared_seek(generation, request_id) {
+                        self.status = "restarting audio · updating playback position".into();
+                        self.error = None;
+                    } else {
+                        // A second advancing source still belongs to the healthy
+                        // output. End this attempt with an explicit cursor retry.
+                        self.clear_recovery();
+                        self.pending_recovery_generation = None;
+                        self.playback_settings.pending = None;
+                        self.deferred_play = None;
+                        self.status = "audio ready · playback position needs retry".into();
+                        self.error = Some("audio changed again · recovery cancelled · set playback position and retry play".into());
+                    }
+                } else if !cancelled {
                     if recovery.is_some() && self.recovery.permits_seek(recovery) {
                         self.fail_audio_recovery(error);
                     } else {

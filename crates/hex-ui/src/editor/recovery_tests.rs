@@ -14,7 +14,7 @@ use hex_session::service::{
 use std::sync::{
     Arc, Mutex,
     atomic::{
-        AtomicBool,
+        AtomicBool, AtomicUsize,
         Ordering::{AcqRel, Release},
     },
     mpsc::{SyncSender, TryRecvError, sync_channel},
@@ -886,6 +886,13 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
 // An already-open actual worker endpoint, without a second lifecycle implementation. The native
 // desktop tests own reopen/teardown; this fixture exercises UI recovery through the real Service
 // seek worker, ordinary resource book, callback and protected scalar observation channel.
+#[derive(Default)]
+struct SeekFaults {
+    remaining_advances: AtomicUsize,
+    fail: AtomicBool,
+    foreign_acceptance: AtomicBool,
+}
+
 struct Sink {
     output: hex_audio::WorkerPreparedOutput,
     events: SyncSender<EditorAudioEvent>,
@@ -894,6 +901,7 @@ struct Sink {
     held: Arc<Mutex<Option<EditorAudioEvent>>>,
     consume_next_inherited_candidate: Option<Arc<AtomicBool>>,
     reject_next_fresh: Arc<AtomicBool>,
+    seek_faults: Arc<SeekFaults>,
     cancel_next_fresh: Arc<AtomicBool>,
     cancellation_done: Arc<AtomicBool>,
     section_fixture: bool,
@@ -920,6 +928,7 @@ pub(in crate::editor) fn worker_fixture_sink(
         held: Arc::new(Mutex::new(None)),
         consume_next_inherited_candidate: Some(consume_next_inherited_candidate),
         reject_next_fresh: Arc::new(AtomicBool::new(false)),
+        seek_faults: Arc::default(),
         cancel_next_fresh: Arc::new(AtomicBool::new(false)),
         cancellation_done: Arc::new(AtomicBool::new(false)),
         section_fixture,
@@ -1435,13 +1444,77 @@ impl WorkerAudioSink for Sink {
     fn publish_resident(
         &mut self,
         mut playback: Playback,
-        _: Option<&hex_engine::native_device_resources::PreparedDeviceResources>,
+        resources: Option<&hex_engine::native_device_resources::PreparedDeviceResources>,
         observation: Arc<PreparedPlaybackObservation>,
         metadata: ResidentPublicationMetadata,
         policy: ResidentPublicationPolicy,
         _: usize,
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+        if let ResidentPublicationPolicy::FreshIfUnchanged(fence) = policy
+            && self.seek_faults.foreign_acceptance.swap(false, AcqRel)
+        {
+            return Ok(ResidentPublicationAcceptance::Submitted {
+                output_identity: fence.output_identity.checked_add(1).unwrap(),
+                audio_revision: fence.active_audio_revision.checked_add(1).unwrap(),
+            });
+        }
+        if matches!(policy, ResidentPublicationPolicy::FreshIfUnchanged(_))
+            && self.seek_faults.fail.swap(false, AcqRel)
+        {
+            return Err(ResidentPublicationRefusal {
+                kind: hex_session::service::ResidentPublicationFailure::Other,
+                playback,
+                error: "fixture recovery preparation failed".into(),
+            });
+        }
+        if matches!(policy, ResidentPublicationPolicy::FreshIfUnchanged(_))
+            && self
+                .seek_faults
+                .remaining_advances
+                .fetch_update(AcqRel, Acquire, |remaining| remaining.checked_sub(1))
+                .is_ok()
+        {
+            // The output finishes a same-project restoration after the UI captured
+            // its seek fence. Publish a real successor and let the callback apply it.
+            let replacement = Playback::try_from_prepared_with_device_resources(
+                Arc::clone(playback.prepared_revision().unwrap()),
+                resources.unwrap(),
+            )
+            .unwrap();
+            let replacement_observation =
+                Arc::new(replacement.prepare_observation_on_control().unwrap());
+            let mut replacement_metadata = metadata;
+            replacement_metadata.seek_request = None;
+            let ResidentPublicationAcceptance::Submitted { audio_revision, .. } = self
+                .publish_resident(
+                    replacement,
+                    resources,
+                    replacement_observation,
+                    replacement_metadata,
+                    ResidentPublicationPolicy::InstallFreshRuntime,
+                    0,
+                    admit,
+                )
+                .unwrap()
+            else {
+                panic!("successor must be submitted");
+            };
+            let deadline = crate::test_wait::hang_deadline();
+            while self
+                .output
+                .publication
+                .control()
+                .unwrap()
+                .status
+                .applied_revision
+                .load(Acquire)
+                != audio_revision
+            {
+                assert!(Instant::now() < deadline, "successor did not apply");
+                std::thread::yield_now();
+            }
+        }
         if matches!(policy, ResidentPublicationPolicy::InstallFreshRuntime)
             && self.reject_next_fresh.swap(false, AcqRel)
         {
@@ -1800,6 +1873,7 @@ fn second_limiter_while_playing_applies_without_stopping(cx: &mut gpui::TestAppC
             held: Arc::clone(&held),
             consume_next_inherited_candidate: None,
             reject_next_fresh: Arc::clone(&reject_next_fresh),
+            seek_faults: Arc::default(),
             cancel_next_fresh: Arc::clone(&cancel_next_fresh),
             cancellation_done: Arc::clone(&cancellation_done),
             section_fixture: false,
@@ -1972,6 +2046,45 @@ fn second_limiter_while_playing_applies_without_stopping(cx: &mut gpui::TestAppC
 fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
     cx: &mut gpui::TestAppContext,
 ) {
+    recovered_cursor(cx, RecoveryResult::Restored);
+}
+
+#[gpui::test]
+fn recovered_cursor_retains_latest_seek_through_superseded_preparation(
+    cx: &mut gpui::TestAppContext,
+) {
+    recovered_cursor(cx, RecoveryResult::Retargeted);
+}
+
+#[gpui::test]
+fn recovered_cursor_refuses_repeated_advances_without_retiring_a_healthy_output(
+    cx: &mut gpui::TestAppContext,
+) {
+    recovered_cursor(cx, RecoveryResult::AdvancedTwice);
+}
+
+#[gpui::test]
+fn recovered_cursor_reports_a_current_preparation_failure(cx: &mut gpui::TestAppContext) {
+    recovered_cursor(cx, RecoveryResult::Failed);
+}
+
+#[gpui::test]
+fn recovered_cursor_retries_a_success_for_another_output(cx: &mut gpui::TestAppContext) {
+    recovered_cursor(cx, RecoveryResult::ForeignAcceptance);
+}
+
+#[derive(Clone, Copy)]
+enum RecoveryResult {
+    Restored,
+    Retargeted,
+    AdvancedTwice,
+    Failed,
+    ForeignAcceptance,
+}
+
+fn recovered_cursor(cx: &mut gpui::TestAppContext, result: RecoveryResult) {
+    let retarget = matches!(result, RecoveryResult::Retargeted);
+    let recovery_position = if retarget { 193 } else { 129 };
     let _output_fixture_guard =
         crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
     let deadline = crate::test_wait::hang_deadline();
@@ -2010,6 +2123,15 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
     let hold = Arc::new(AtomicBool::new(false));
     let held = Arc::new(Mutex::new(None));
     let release = events.clone();
+    let seek_faults = Arc::new(SeekFaults {
+        remaining_advances: AtomicUsize::new(match result {
+            RecoveryResult::Restored | RecoveryResult::Retargeted => 1,
+            RecoveryResult::AdvancedTwice => 2,
+            RecoveryResult::Failed | RecoveryResult::ForeignAcceptance => 0,
+        }),
+        fail: AtomicBool::new(matches!(result, RecoveryResult::Failed)),
+        foreign_acceptance: AtomicBool::new(matches!(result, RecoveryResult::ForeignAcceptance)),
+    });
     let service = Service::with_audio_sink_and_native_reservation(
         16,
         8_000_000,
@@ -2022,6 +2144,7 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
             held: held.clone(),
             consume_next_inherited_candidate: None,
             reject_next_fresh: Arc::new(AtomicBool::new(false)),
+            seek_faults: Arc::clone(&seek_faults),
             cancel_next_fresh: Arc::new(AtomicBool::new(false)),
             cancellation_done: Arc::new(AtomicBool::new(false)),
             section_fixture: false,
@@ -2202,12 +2325,35 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
         assert_eq!(pending.recovery_generation, Some(generation));
         assert!(!pending.start_playing);
         assert!(pending.prepared_revision.is_none());
+        if retarget {
+            view.deferred_play = Some((
+                hex_engine::PlaybackAction::Transport(PlaybackCommand::PlayFromWithNoteChase {
+                    frame: 129,
+                    note_chase: hex_engine::NoteChase::On,
+                }),
+                None,
+                view.project_generation,
+            ));
+            view.request_seek(recovery_position);
+            assert_eq!(view.recovery.position(), Some(recovery_position));
+        }
     });
     let deadline = crate::test_wait::hang_deadline();
     loop {
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         let done = editor.update(cx, |view, cx| {
             view.tick(cx);
+            if !matches!(result, RecoveryResult::Failed) {
+                assert!(
+                    view.audio.is_some(),
+                    "healthy replacement retired: {:?}",
+                    view.error
+                );
+            }
+            assert!(
+                view.recovery.prepared_request().is_none() || view.prepared_seek.is_some(),
+                "recovery must retain or release its exact pending request"
+            );
             view.recovery.generation().is_none()
         });
         if done {
@@ -2216,22 +2362,55 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
         assert!(Instant::now() < deadline, "recovery did not finish");
         std::thread::yield_now();
     }
+    if matches!(
+        result,
+        RecoveryResult::AdvancedTwice | RecoveryResult::Failed
+    ) {
+        editor.update(cx, |view, _| {
+            let message = view.error.as_ref().unwrap().to_string();
+            match result {
+                RecoveryResult::AdvancedTwice => {
+                    assert!(message.contains("audio changed again"), "{message}");
+                    assert!(view.audio.is_some());
+                    assert!(view.pending_recovery_generation.is_none());
+                }
+                RecoveryResult::Failed => {
+                    assert!(
+                        message.contains("fixture recovery preparation failed"),
+                        "{message}"
+                    );
+                    assert!(view.audio.is_none());
+                }
+                _ => unreachable!(),
+            }
+            if let Some(mut audio) = view.audio.take() {
+                audio.control.close();
+            }
+            let old = std::mem::replace(&mut view.service, Service::new(48_000, 1, 0).unwrap());
+            drop(old);
+        });
+        backend.close();
+        std::fs::remove_file(path).unwrap();
+        return;
+    }
     editor.update(cx, |view, _| {
         assert!(view.error.is_none(), "{:?}", view.error);
         let audible = view.audible_playback.as_ref().unwrap();
         assert!(audible.seek_request_id.is_some());
         let audio = view.audio.as_mut().unwrap();
         let status = audio.control.status().unwrap();
-        assert_eq!(status.position.load(Relaxed), 129);
+        assert_eq!(status.position.load(Relaxed), recovery_position);
         assert!(!status.playing.load(Relaxed));
         assert_eq!(
             status.applied_revision.load(Acquire),
             audible.audio_revision
         );
-        audio
-            .control
-            .command_with_ticket(PlaybackCommand::Play)
-            .unwrap();
+        if !retarget {
+            audio
+                .control
+                .command_with_ticket(PlaybackCommand::Play)
+                .unwrap();
+        }
     });
     // Resume from a nonzero cursor ramps in (128 frames at 48 kHz, rate
     // scaled; 257 frames cover up to 96 kHz). The prerolled voice must sound
@@ -2259,7 +2438,7 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
         assert_eq!(
             view.recovery.prepared_request(),
             Some(request),
-            "user seek cannot replace recovery's exact request"
+            "new cursor intent must retain the in-flight request until its acknowledgement"
         );
     });
     // Apply the real graph while its protected metadata is withheld from the UI.

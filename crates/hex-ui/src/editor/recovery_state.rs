@@ -35,6 +35,8 @@ struct Attempt {
     restored: bool,
     seek_ticket: Option<u64>,
     seek_outcome: Option<hex_audio::prepared::ActionOutcome>,
+    seek_position: Option<u64>,
+    prepared_retry_used: bool,
     prepared_seek: Option<u64>,
     prepared_revision: Option<u64>,
     clip_play_start: Option<(AudioSourceContext, hex_project::ClipId)>,
@@ -109,6 +111,8 @@ impl RecoveryState {
             restored: false,
             seek_ticket: None,
             seek_outcome: None,
+            seek_position: None,
+            prepared_retry_used: false,
             prepared_seek: None,
             prepared_revision: None,
             clip_play_start: None,
@@ -123,6 +127,14 @@ impl RecoveryState {
 
     pub(super) fn position(&self) -> Option<u64> {
         self.active.as_ref().map(|attempt| attempt.position)
+    }
+
+    /// Retain the latest user cursor without replacing an admitted request's custody.
+    pub(super) fn retarget(&mut self, position: u64) {
+        if let Some(attempt) = self.active.as_mut() {
+            attempt.position = position;
+            attempt.prepared_retry_used = false;
+        }
     }
 
     pub(super) fn opened(&mut self, generation: u64) -> bool {
@@ -165,6 +177,7 @@ impl RecoveryState {
     pub(super) fn seeking(&mut self, ticket: u64) {
         if let Some(attempt) = self.active.as_mut() {
             attempt.seek_ticket = Some(ticket);
+            attempt.seek_position = Some(attempt.position);
             attempt.seek_outcome = None;
         }
     }
@@ -207,6 +220,23 @@ impl RecoveryState {
             return false;
         };
         attempt.prepared_seek = Some(request);
+        attempt.seek_position = Some(attempt.position);
+        true
+    }
+
+    /// An obsolete, unpublished preparation may be retried once for this cursor intent.
+    pub(super) fn retry_prepared_seek(&mut self, generation: u64, request: u64) -> bool {
+        let Some(attempt) = self.active.as_mut().filter(|attempt| {
+            attempt.generation == generation
+                && attempt.prepared_seek == Some(request)
+                && attempt.prepared_revision.is_none()
+                && !attempt.prepared_retry_used
+        }) else {
+            return false;
+        };
+        attempt.prepared_retry_used = true;
+        attempt.prepared_seek = None;
+        attempt.seek_position = None;
         true
     }
 
@@ -243,15 +273,12 @@ impl RecoveryState {
                 && attempt.restored
                 && graph_is_current
                 && !playing
-                && position == attempt.position
+                && Some(position) == attempt.seek_position
                 && audible.is_some_and(|(request, revision)| {
                     attempt.prepared_seek == Some(request) && revision == applied_revision
                 })
         });
-        if ready {
-            self.active = None;
-        }
-        ready
+        self.complete_cursor(ready)
     }
 
     pub(super) fn complete(
@@ -266,15 +293,12 @@ impl RecoveryState {
                 && attempt.restored
                 && graph_is_current
                 && !playing
-                && position == attempt.position
+                && Some(position) == attempt.seek_position
                 && attempt
                     .seek_ticket
                     .is_some_and(|ticket| consumed_ticket >= ticket)
         });
-        if ready {
-            self.active = None;
-        }
-        ready
+        self.complete_cursor(ready)
     }
 
     pub(super) fn complete_exact(
@@ -288,19 +312,39 @@ impl RecoveryState {
                 && attempt.restored
                 && graph_is_current
                 && !playing
-                && position == attempt.position
+                && Some(position) == attempt.seek_position
                 && attempt.seek_ticket.is_some()
                 && attempt.seek_outcome == Some(hex_audio::prepared::ActionOutcome::Applied)
         });
-        if ready {
-            self.active = None;
+        self.complete_cursor(ready)
+    }
+
+    fn complete_cursor(&mut self, ready: bool) -> bool {
+        if !ready {
+            return false;
         }
-        ready
+        let Some(attempt) = self.active.as_mut() else {
+            return false;
+        };
+        if attempt.seek_position != Some(attempt.position) {
+            // The old cursor is now acknowledged. The next tick may admit the
+            // newest requested position against the newly installed runtime.
+            attempt.seek_ticket = None;
+            attempt.seek_outcome = None;
+            attempt.seek_position = None;
+            attempt.prepared_seek = None;
+            attempt.prepared_revision = None;
+            return false;
+        }
+        self.active = None;
+        true
     }
 
     pub(super) fn stop(&mut self) {
         if let Some(attempt) = self.active.as_mut() {
             attempt.position = 0;
+            attempt.seek_position = None;
+            attempt.prepared_retry_used = false;
             attempt.seek_ticket = None;
             attempt.seek_outcome = None;
             attempt.prepared_seek = None;
