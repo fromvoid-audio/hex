@@ -1099,3 +1099,58 @@ fn replacing_project_retires_accepted_browser_paths(cx: &mut TestAppContext) {
         assert!(view.pending_browser_insertions.is_empty());
     });
 }
+
+#[gpui::test]
+fn queued_file_and_project_sample_keep_each_enter_taps_warp_setting(cx: &mut TestAppContext) {
+    let (handle, editor, _directory, path) = fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    let track = select_sample(&editor, visual);
+    visual.simulate_keystrokes("enter");
+    receive_worker(&editor, visual, false);
+    let (generation, revision, asset) = editor.read_with(visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        (
+            view.project_generation,
+            state.revision,
+            state.project.assets().next().unwrap().id(),
+        )
+    });
+    editor.update(visual, |view, cx| {
+        view.snap_grid = crate::editor::musical_time::SnapGrid::Off;
+        view.input_quantization = hex_project::InputQuantization::Off;
+        view.set_auto_warp_imports_for_test(false);
+        view.offline_cursor = 1_000;
+        view.insert_browser_audio(path.clone(), cx);
+        view.set_auto_warp_imports_for_test(true);
+        view.offline_cursor = 2_000;
+        view.insert_browser_audio(path.clone(), cx);
+        view.offline_cursor = 3_000;
+        view.insert_browser_project_sample(generation, revision, asset, cx);
+        view.set_auto_warp_imports_for_test(false);
+        view.offline_cursor = 4_000;
+        view.insert_browser_audio(path, cx);
+        assert_eq!(view.pending_browser_insertions.len(), 3);
+    });
+    receive_worker(&editor, visual, false);
+    editor.read_with(visual, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        let state = view.state.as_ref().unwrap();
+        let clips = state.project.track(track).unwrap().clips();
+        let settings: Vec<_> = clips
+            .iter()
+            .filter(|clip| clip.start() >= 1_000)
+            .map(|clip| {
+                (
+                    clip.start(),
+                    clip.audio_edit()
+                        .is_some_and(|edit| edit.domain.warp_enabled),
+                )
+            })
+            .collect();
+        assert_eq!(
+            settings,
+            vec![(1_000, false), (2_000, true), (3_000, true), (4_000, false)]
+        );
+        assert_eq!(state.revision, revision + 4);
+    });
+}
