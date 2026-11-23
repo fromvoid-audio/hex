@@ -1498,13 +1498,31 @@ pub(super) fn handle<'a>(
         Request::DeviceClipboard {
             action: DeviceClipboardAction::Copy { owner, selected },
             ..
-        } => match session.project().capture_devices(owner, &selected) {
-            Ok(captured) => {
-                device_clipboard = Some(Arc::new(captured));
-                status = Some("devices copied".into());
+        } => {
+            let cancellation = RequestCancellation::new(
+                Arc::clone(&session.shutdown),
+                Arc::clone(&document_intent),
+                request_document_intent,
+            );
+            match plugin_state_save::capture_devices_for_clipboard(
+                session.project(),
+                owner,
+                &selected,
+                hex_engine::AudioSourceContext {
+                    project_generation,
+                    editor_revision: revision,
+                },
+                &cancellation,
+                events.sampler_edit_audio(),
+                "device copy cancelled",
+            ) {
+                Ok(captured) => {
+                    device_clipboard = Some(Arc::new(captured));
+                    status = Some("devices copied".into());
+                }
+                Err(reason) => error = Some(reason),
             }
-            Err(reason) => error = Some(reason.to_string()),
-        },
+        }
 
         Request::DeviceClipboard { .. } => {
             error = Some("device clipboard request was not resolved".into())

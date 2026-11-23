@@ -142,16 +142,106 @@ pub(super) fn project_for_export_with_capture(
     project_with_captures(project.clone(), captures)
 }
 
+/// Freeze the selected devices from a temporary projection of their live
+/// plug-in state. Covers Track effects/instruments, Return effects, and Main
+/// effects (including descendants of any selected effect). The original
+/// canonical devices and their runtimes stay untouched if capture fails.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn capture_devices_for_clipboard(
+    project: &Project,
+    owner: hex_project::DeviceChainOwner,
+    selected: &hex_project::DeviceSelectionIds,
+    context: hex_engine::AudioSourceContext,
+    cancellation: &RequestCancellation,
+    audio: Option<&mut (dyn WorkerAudioSink + 'static)>,
+    cancelled_message: &'static str,
+) -> Result<hex_project::DeviceClipboard, String> {
+    let capture_devices = |project: &Project| {
+        project
+            .capture_devices(owner, selected)
+            .map_err(|error| error.to_string())
+    };
+    let Some(audio) = audio else {
+        return capture_devices(project);
+    };
+    let mut included_ids = std::collections::BTreeSet::new();
+    let mut devices = BTreeMap::new();
+    let mut collect_device =
+        |chain_owner: ProcessorChainOwner, device: &hex_project::Device, inherit_parent: bool| {
+            let selected_or_child = selected.ids().contains(&device.id())
+                || (inherit_parent
+                    && device
+                        .parent()
+                        .is_some_and(|parent| included_ids.contains(&parent)));
+            if selected_or_child {
+                included_ids.insert(device.id());
+                if device.state().type_id() == hex_plugin_state::TYPE_ID {
+                    devices.insert(device.id().value(), chain_owner);
+                }
+            }
+        };
+    match owner {
+        hex_project::DeviceChainOwner::Track(id) => {
+            let track = project.track(id).ok_or("device track no longer exists")?;
+            let chain_owner = ProcessorChainOwner::Track(id.value());
+            for node in track.ordered_device_chain() {
+                match node {
+                    hex_project::TrackDeviceRef::Instrument(device) => {
+                        collect_device(chain_owner, device, false);
+                    }
+                    hex_project::TrackDeviceRef::Effect(device) => {
+                        collect_device(chain_owner, device, true);
+                    }
+                }
+            }
+        }
+        hex_project::DeviceChainOwner::Return(id) => {
+            let track = project
+                .return_tracks()
+                .iter()
+                .find(|track| track.id() == id)
+                .ok_or("return no longer exists")?;
+            let chain_owner = ProcessorChainOwner::Return(id.value());
+            for device in track.devices() {
+                collect_device(chain_owner, device, true);
+            }
+        }
+        hex_project::DeviceChainOwner::Main => {
+            for device in project.main_devices() {
+                collect_device(ProcessorChainOwner::Main, device, true);
+            }
+        }
+    }
+    if selected.ids().iter().any(|id| !included_ids.contains(id)) {
+        return Err("selected device no longer belongs to the chain".into());
+    }
+    let Some(projected) = capture_filtered_plugin_projection(
+        project,
+        &devices,
+        context,
+        cancellation,
+        audio,
+        cancelled_message,
+        "captured vst3 device is outside the device selection",
+    )?
+    else {
+        return capture_devices(project);
+    };
+    capture_devices(&projected)
+}
+
 /// Freeze the selected tracks from a temporary projection of their live
 /// plug-in state. The original canonical track and its runtime stay owned by
 /// the existing edit transaction, including when capture or paste is refused.
-pub(super) fn capture_tracks_for_duplicate(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn capture_tracks_for_clipboard(
     project: &Project,
     tracks: &hex_project::TrackSelectionIds,
     without_clips: bool,
     context: hex_engine::AudioSourceContext,
     cancellation: &RequestCancellation,
     audio: Option<&mut (dyn WorkerAudioSink + 'static)>,
+    cancelled_message: &'static str,
 ) -> Result<hex_project::TrackClipboard, String> {
     let capture_tracks = |project: &Project| {
         project
@@ -175,35 +265,59 @@ pub(super) fn capture_tracks_for_duplicate(
             }
         }
     }
-    if devices.is_empty() {
+    let Some(projected) = capture_filtered_plugin_projection(
+        project,
+        &devices,
+        context,
+        cancellation,
+        audio,
+        cancelled_message,
+        "captured vst3 device is outside the track selection",
+    )?
+    else {
         return capture_tracks(project);
+    };
+    capture_tracks(&projected)
+}
+
+fn capture_filtered_plugin_projection(
+    project: &Project,
+    devices: &BTreeMap<u64, ProcessorChainOwner>,
+    context: hex_engine::AudioSourceContext,
+    cancellation: &RequestCancellation,
+    audio: &mut dyn WorkerAudioSink,
+    cancelled_message: &'static str,
+    outside_selection_message: &'static str,
+) -> Result<Option<Project>, String> {
+    if devices.is_empty() {
+        return Ok(None);
     }
     if cancellation.is_cancelled() {
-        return Err("track duplication cancelled".into());
+        return Err(cancelled_message.into());
     }
     let captures = audio.capture_plugin_states(PluginStateCaptureInput {
         project,
         context,
         cancellation,
         flush_idle_editor_input: false,
-        device_filter: Some(&devices),
+        device_filter: Some(devices),
     })?;
     if cancellation.is_cancelled() {
-        return Err("track duplication cancelled".into());
+        return Err(cancelled_message.into());
     }
     if captures.is_empty() {
-        return capture_tracks(project);
+        return Ok(None);
     }
     if captures
         .iter()
         .any(|capture| !devices.contains_key(&capture.device_id))
     {
-        return Err("captured vst3 device is outside the track selection".into());
+        return Err(outside_selection_message.into());
     }
     let projected = project_with_captures(project.clone(), captures)?
         .with_offline_assets(project.offline_assets())
         .map_err(|error| error.to_string())?;
-    capture_tracks(&projected)
+    Ok(Some(projected))
 }
 
 /// Refresh only the isolated graph's processors, using the actual live

@@ -2155,19 +2155,31 @@ pub(super) fn run_worker(
                 } else {
                     match action {
                         DeviceClipboardAction::Copy { .. } => None,
-                        DeviceClipboardAction::Cut { owner, selected } => Some(
-                            session
-                                .project()
-                                .capture_devices(*owner, selected)
-                                .map(|captured| {
-                                    cut_device_clipboard = Some(Arc::new(captured));
-                                    Command::RemoveDevices {
-                                        owner: *owner,
-                                        selected: selected.clone(),
-                                    }
-                                })
-                                .map_err(|e| e.to_string()),
-                        ),
+                        DeviceClipboardAction::Cut { owner, selected } => Some((|| {
+                            let cancellation = RequestCancellation::new(
+                                Arc::clone(&session.shutdown),
+                                Arc::clone(&document_intent),
+                                queued.document_intent,
+                            );
+                            let captured = plugin_state_save::capture_devices_for_clipboard(
+                                session.project(),
+                                *owner,
+                                selected,
+                                hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision,
+                                },
+                                &cancellation,
+                                events.sampler_edit_audio(),
+                                "device cut cancelled",
+                            )?;
+                            cut_device_clipboard = Some(Arc::new(captured));
+                            Ok(Command::RemoveDevices {
+                                owner: *owner,
+                                selected: selected.clone(),
+                            })
+                        })(
+                        )),
                         DeviceClipboardAction::Paste { owner, before } => Some(
                             device_clipboard
                                 .as_ref()
@@ -2185,17 +2197,30 @@ pub(super) fn run_worker(
                             selected,
                             destination,
                             before,
-                        } => Some(
-                            session
-                                .project()
-                                .capture_devices(*source, selected)
-                                .map(|clipboard| Command::PasteDevices {
-                                    clipboard: Arc::new(clipboard),
-                                    owner: *destination,
-                                    before: *before,
-                                })
-                                .map_err(|e| e.to_string()),
-                        ),
+                        } => Some((|| {
+                            let cancellation = RequestCancellation::new(
+                                Arc::clone(&session.shutdown),
+                                Arc::clone(&document_intent),
+                                queued.document_intent,
+                            );
+                            let clipboard = plugin_state_save::capture_devices_for_clipboard(
+                                session.project(),
+                                *source,
+                                selected,
+                                hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision,
+                                },
+                                &cancellation,
+                                events.sampler_edit_audio(),
+                                "device duplication cancelled",
+                            )?;
+                            Ok(Command::PasteDevices {
+                                clipboard: Arc::new(clipboard),
+                                owner: *destination,
+                                before: *before,
+                            })
+                        })()),
                     }
                 }
             }
@@ -2216,16 +2241,27 @@ pub(super) fn run_worker(
                 } else {
                     match action {
                         TrackClipboardAction::Copy(_) => None,
-                        TrackClipboardAction::Cut(tracks) => Some(
-                            session
-                                .project()
-                                .capture_tracks(tracks, false)
-                                .map(|captured| {
-                                    cut_clipboard = Some(Arc::new(captured));
-                                    Command::RemoveTracks(tracks.ids().to_vec())
-                                })
-                                .map_err(|e| e.to_string()),
-                        ),
+                        TrackClipboardAction::Cut(tracks) => Some((|| {
+                            let cancellation = RequestCancellation::new(
+                                Arc::clone(&session.shutdown),
+                                Arc::clone(&document_intent),
+                                queued.document_intent,
+                            );
+                            let captured = plugin_state_save::capture_tracks_for_clipboard(
+                                session.project(),
+                                tracks,
+                                false,
+                                hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision,
+                                },
+                                &cancellation,
+                                events.sampler_edit_audio(),
+                                "track cut cancelled",
+                            )?;
+                            cut_clipboard = Some(Arc::new(captured));
+                            Ok(Command::RemoveTracks(tracks.ids().to_vec()))
+                        })()),
                         TrackClipboardAction::Paste { before } => Some(
                             track_clipboard
                                 .as_ref()
@@ -2256,7 +2292,7 @@ pub(super) fn run_worker(
                                 Arc::clone(&document_intent),
                                 queued.document_intent,
                             );
-                            let clipboard = plugin_state_save::capture_tracks_for_duplicate(
+                            let clipboard = plugin_state_save::capture_tracks_for_clipboard(
                                 project,
                                 tracks,
                                 *without_clips,
@@ -2266,6 +2302,7 @@ pub(super) fn run_worker(
                                 },
                                 &cancellation,
                                 events.sampler_edit_audio(),
+                                "track duplication cancelled",
                             )?;
                             Ok(Command::PasteTracks {
                                 clipboard: Arc::new(clipboard),
