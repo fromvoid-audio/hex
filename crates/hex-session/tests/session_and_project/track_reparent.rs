@@ -156,7 +156,7 @@ fn explicit_empty_group_destination_is_atomic_and_history_safe() {
     };
     let begun = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::TrackGain { track: source },
         }),
@@ -164,7 +164,7 @@ fn explicit_empty_group_destination_is_atomic_and_history_safe() {
     assert!(begun.gesture_ack.unwrap().accepted);
     let draft = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Change {
+        Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(0.25),
@@ -190,7 +190,7 @@ fn explicit_empty_group_destination_is_atomic_and_history_safe() {
     assert!(
         run(
             &service,
-            Request::DeviceGesture(GestureRequest::Cancel { key })
+            Request::device_gesture(GestureRequest::Cancel { key })
         )
         .gesture_ack
         .unwrap()

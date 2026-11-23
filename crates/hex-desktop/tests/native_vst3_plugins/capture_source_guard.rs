@@ -217,7 +217,7 @@ fn pause_guard_case(after_install: bool, with_lane: bool, late: LateEdit) {
     let send = |h: &mut ResidentHarness, client: &mut GestureClient| {
         let request = client.next_request().unwrap();
         client.mark_submitted();
-        h.service.submit(Request::DeviceGesture(request)).unwrap();
+        h.service.submit(Request::device_gesture(request)).unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         let event = loop {
             h.pump();
@@ -292,7 +292,7 @@ fn pause_guard_case(after_install: bool, with_lane: bool, late: LateEdit) {
     };
     let request = client.next_request().unwrap();
     client.mark_submitted();
-    h.service.submit(Request::DeviceGesture(request)).unwrap();
+    h.service.submit(Request::device_gesture(request)).unwrap();
     let until = Instant::now() + Duration::from_secs(5);
     loop {
         if ready.try_recv().is_ok() {

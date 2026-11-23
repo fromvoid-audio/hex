@@ -343,14 +343,14 @@ fn stale_comparison_does_not_finalize_an_unrelated_live_draft() {
         token: 1,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::TrackGain { track },
         }))
         .unwrap();
     assert!(event(&service).gesture_ack.unwrap().accepted);
     service
-        .submit(Request::DeviceGesture(GestureRequest::Change {
+        .submit(Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(0.25),
@@ -376,7 +376,7 @@ fn stale_comparison_does_not_finalize_an_unrelated_live_draft() {
         "stale request must not commit the draft as a side effect"
     );
     service
-        .submit(Request::DeviceGesture(GestureRequest::Cancel { key }))
+        .submit(Request::device_gesture(GestureRequest::Cancel { key }))
         .unwrap();
     let cancelled = event(&service);
     assert!(cancelled.gesture_ack.unwrap().accepted);

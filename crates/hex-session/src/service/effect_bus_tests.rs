@@ -226,7 +226,7 @@ fn effect_bus_worker_refusal_does_not_finalize_an_unrelated_live_gesture() {
     };
     let begun = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::TrackGain {
                 track: before.project.tracks()[0].id(),
@@ -236,7 +236,7 @@ fn effect_bus_worker_refusal_does_not_finalize_an_unrelated_live_gesture() {
     assert!(begun.gesture_ack.unwrap().accepted);
     let changed = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Change {
+        Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(0.25),
@@ -257,7 +257,7 @@ fn effect_bus_worker_refusal_does_not_finalize_an_unrelated_live_gesture() {
     }
     let cancelled = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Cancel { key }),
+        Request::device_gesture(GestureRequest::Cancel { key }),
     );
     assert!(cancelled.gesture_ack.unwrap().accepted);
     assert_eq!(cancelled.state.project, before.project);

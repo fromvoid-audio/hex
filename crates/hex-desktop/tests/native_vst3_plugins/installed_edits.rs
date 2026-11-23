@@ -73,7 +73,7 @@ pub(super) fn query(
 fn send(h: &mut ResidentHarness, client: &mut GestureClient) -> Event {
     let request = client.next_request().unwrap();
     client.mark_submitted();
-    h.service.submit(Request::DeviceGesture(request)).unwrap();
+    h.service.submit(Request::device_gesture(request)).unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         h.pump();

@@ -199,6 +199,7 @@ pub(super) fn handle<'a>(
     let mut flow = ControlFlow::Continue(());
     match request {
         Request::DeviceGesture(gesture) => {
+            let gesture = *gesture;
             let independent_plugin_eq = device_gesture
                 .snapshot()
                 .filter(|active| active.key == gesture.key())

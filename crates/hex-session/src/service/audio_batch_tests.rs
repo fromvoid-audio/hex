@@ -351,7 +351,7 @@ fn worker_gesture_refusal_keeps_active_gesture_and_current_project() {
     .unwrap();
     let added = event(&s);
     let device = added.state.project.tracks()[0].devices()[0].id();
-    s.submit(Request::DeviceGesture(GestureRequest::Begin {
+    s.submit(Request::device_gesture(GestureRequest::Begin {
         key: crate::device_gesture::GestureKey {
             generation: 0,
             token: 77,

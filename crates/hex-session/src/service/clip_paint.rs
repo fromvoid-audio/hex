@@ -234,7 +234,7 @@ mod tests {
         };
         run(
             &service,
-            Request::DeviceGesture(GestureRequest::Begin {
+            Request::device_gesture(GestureRequest::Begin {
                 key,
                 target: GestureTarget::TrackGain { track },
             }),
@@ -244,7 +244,7 @@ mod tests {
         assert!(event.error.unwrap().contains("active gesture"));
         run(
             &service,
-            Request::DeviceGesture(GestureRequest::Cancel { key }),
+            Request::device_gesture(GestureRequest::Cancel { key }),
         );
         run(&service, Request::PaintMidiClip(intent(&before, track)));
     }

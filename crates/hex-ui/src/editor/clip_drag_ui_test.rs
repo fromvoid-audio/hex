@@ -4159,7 +4159,7 @@ fn rendered_move_real_refusal_retires_only_its_matching_fifo_terminal(cx: &mut T
             Arc::clone(&v.state.as_ref().unwrap().project),
             v.selection_intent_epoch,
         ));
-        assert!(v.enqueue(Request::DeviceGesture(
+        assert!(v.enqueue(Request::device_gesture(
             hex_session::device_gesture::GestureRequest::Cancel {
                 key: hex_session::device_gesture::GestureKey {
                     generation: v.project_generation,

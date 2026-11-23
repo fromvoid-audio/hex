@@ -2888,12 +2888,12 @@ fn held_vst3_preparation_accepts_eq_change(through_gesture: bool) {
             generation: request.context.project_generation,
             token: 1,
         };
-        let begin = h.run(Request::DeviceGesture(GestureRequest::Begin {
+        let begin = h.run(Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::DeviceParameter { device, parameter },
         }));
         assert!(begin.gesture_ack.unwrap().accepted);
-        let change = h.run(Request::DeviceGesture(GestureRequest::Change {
+        let change = h.run(Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value,
@@ -2908,7 +2908,7 @@ fn held_vst3_preparation_accepts_eq_change(through_gesture: bool) {
         assert_eq!(during.active_device_gesture.unwrap().key, key);
         assert!(during.plugin_effect_complete.is_empty());
         assert!(!h.plugin_progress.lock().unwrap().facts_attempt_from_session);
-        let terminal = h.run(Request::DeviceGesture(GestureRequest::Commit {
+        let terminal = h.run(Request::device_gesture(GestureRequest::Commit {
             key,
             sequence: 2,
             manual_edit: true,

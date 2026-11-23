@@ -1805,7 +1805,7 @@ fn save_requests_defer_during_pending_device_insert_while_a_gesture_is_active() 
         token: 1,
     };
     service
-        .submit(Request::DeviceGesture(GestureRequest::Begin {
+        .submit(Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::DeviceParameter {
                 device: first_device,
@@ -1818,7 +1818,7 @@ fn save_requests_defer_during_pending_device_insert_while_a_gesture_is_active() 
 
     let edited_gain = hex_lattice_contract::ParameterValue::Float(6.0);
     service
-        .submit(Request::DeviceGesture(GestureRequest::Change {
+        .submit(Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: edited_gain,
@@ -2180,7 +2180,7 @@ fn verified_streaming_with_vst3_supports_edit_compare_gesture_and_replacement_un
         generation: project_generation,
         token: 1,
     };
-    let begin = run(Request::DeviceGesture(
+    let begin = run(Request::device_gesture(
         crate::device_gesture::GestureRequest::Begin {
             key,
             target: crate::device_gesture::GestureTarget::DeviceParameter {
@@ -2190,7 +2190,7 @@ fn verified_streaming_with_vst3_supports_edit_compare_gesture_and_replacement_un
         },
     ));
     assert!(begin.gesture_ack.as_ref().unwrap().accepted);
-    let change = run(Request::DeviceGesture(
+    let change = run(Request::device_gesture(
         crate::device_gesture::GestureRequest::Change {
             key,
             sequence: 1,
@@ -2202,7 +2202,7 @@ fn verified_streaming_with_vst3_supports_edit_compare_gesture_and_replacement_un
         "{:?}",
         change.gesture_ack
     );
-    let commit = run(Request::DeviceGesture(
+    let commit = run(Request::device_gesture(
         crate::device_gesture::GestureRequest::Commit {
             key,
             sequence: 2,
@@ -2225,13 +2225,13 @@ fn verified_streaming_with_vst3_supports_edit_compare_gesture_and_replacement_un
         generation: project_generation,
         token: 2,
     };
-    let _ = run(Request::DeviceGesture(
+    let _ = run(Request::device_gesture(
         crate::device_gesture::GestureRequest::Begin {
             key: key2,
             target: crate::device_gesture::GestureTarget::TrackGain { track },
         },
     ));
-    let _ = run(Request::DeviceGesture(
+    let _ = run(Request::device_gesture(
         crate::device_gesture::GestureRequest::Change {
             key: key2,
             sequence: 1,

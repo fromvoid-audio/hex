@@ -270,7 +270,7 @@ fn reorder_track_worker_refuses_stale_targets_and_keeps_active_gesture_uncommitt
     };
     let begun = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Begin {
+        Request::device_gesture(GestureRequest::Begin {
             key,
             target: GestureTarget::TrackGain { track: first_id },
         }),
@@ -278,7 +278,7 @@ fn reorder_track_worker_refuses_stale_targets_and_keeps_active_gesture_uncommitt
     assert!(begun.gesture_ack.unwrap().accepted);
     let draft = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Change {
+        Request::device_gesture(GestureRequest::Change {
             key,
             sequence: 1,
             value: ParameterValue::Float(0.25),
@@ -321,7 +321,7 @@ fn reorder_track_worker_refuses_stale_targets_and_keeps_active_gesture_uncommitt
     }
     let canceled = run(
         &service,
-        Request::DeviceGesture(GestureRequest::Cancel { key }),
+        Request::device_gesture(GestureRequest::Cancel { key }),
     );
     assert!(canceled.gesture_ack.unwrap().accepted);
     assert_eq!(canceled.state.project, stable.project);
