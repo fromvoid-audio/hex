@@ -890,6 +890,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
 struct SeekFaults {
     remaining_advances: AtomicUsize,
     fail: AtomicBool,
+    foreign_acceptance: AtomicBool,
 }
 
 struct Sink {
@@ -1450,6 +1451,14 @@ impl WorkerAudioSink for Sink {
         _: usize,
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+        if let ResidentPublicationPolicy::FreshIfUnchanged(fence) = policy
+            && self.seek_faults.foreign_acceptance.swap(false, AcqRel)
+        {
+            return Ok(ResidentPublicationAcceptance::Submitted {
+                output_identity: fence.output_identity.checked_add(1).unwrap(),
+                audio_revision: fence.active_audio_revision.checked_add(1).unwrap(),
+            });
+        }
         if matches!(policy, ResidentPublicationPolicy::FreshIfUnchanged(_))
             && self.seek_faults.fail.swap(false, AcqRel)
         {
@@ -2059,12 +2068,18 @@ fn recovered_cursor_reports_a_current_preparation_failure(cx: &mut gpui::TestApp
     recovered_cursor(cx, RecoveryResult::Failed);
 }
 
+#[gpui::test]
+fn recovered_cursor_retries_a_success_for_another_output(cx: &mut gpui::TestAppContext) {
+    recovered_cursor(cx, RecoveryResult::ForeignAcceptance);
+}
+
 #[derive(Clone, Copy)]
 enum RecoveryResult {
     Restored,
     Retargeted,
     AdvancedTwice,
     Failed,
+    ForeignAcceptance,
 }
 
 fn recovered_cursor(cx: &mut gpui::TestAppContext, result: RecoveryResult) {
@@ -2112,9 +2127,10 @@ fn recovered_cursor(cx: &mut gpui::TestAppContext, result: RecoveryResult) {
         remaining_advances: AtomicUsize::new(match result {
             RecoveryResult::Restored | RecoveryResult::Retargeted => 1,
             RecoveryResult::AdvancedTwice => 2,
-            RecoveryResult::Failed => 0,
+            RecoveryResult::Failed | RecoveryResult::ForeignAcceptance => 0,
         }),
         fail: AtomicBool::new(matches!(result, RecoveryResult::Failed)),
+        foreign_acceptance: AtomicBool::new(matches!(result, RecoveryResult::ForeignAcceptance)),
     });
     let service = Service::with_audio_sink_and_native_reservation(
         16,
@@ -2334,6 +2350,10 @@ fn recovered_cursor(cx: &mut gpui::TestAppContext, result: RecoveryResult) {
                     view.error
                 );
             }
+            assert!(
+                view.recovery.prepared_request().is_none() || view.prepared_seek.is_some(),
+                "recovery must retain or release its exact pending request"
+            );
             view.recovery.generation().is_none()
         });
         if done {

@@ -665,16 +665,23 @@ impl EditorView {
         }) else {
             return true;
         };
-        match result.result {
-            Ok(hex_session::service::ResidentPublicationAcceptance::Submitted {
+        let worker_accepted = result.result.is_ok();
+        let completion = result.result.and_then(|accepted| match accepted {
+            hex_session::service::ResidentPublicationAcceptance::Submitted {
                 output_identity,
                 audio_revision,
-            }) if self
+            } if self
                 .audio
                 .as_ref()
                 .and_then(|audio| audio.control.output_identity())
                 == Some(output_identity) =>
             {
+                Ok(audio_revision)
+            }
+            _ => Err("arrangement seek output is no longer available".into()),
+        });
+        match completion {
+            Ok(audio_revision) => {
                 pending.stage = SeekStage::Published { audio_revision };
                 match pending.kind {
                     SeekKind::Section(_) => self.status = "section launch queued".into(),
@@ -693,10 +700,6 @@ impl EditorView {
                         == Some(FreshRuntimeCancellationResult::Busy);
                 }
             }
-            Ok(_) => {
-                self.prepared_seek = None;
-                self.error = Some("arrangement seek output is no longer available".into());
-            }
             Err(error) => {
                 let cancelled = pending.cancelled;
                 let recovery = pending.recovery_generation;
@@ -709,12 +712,16 @@ impl EditorView {
                         .as_ref()
                         .is_some_and(|state| state.revision == pending.project_revision)
                     && self.audio.as_ref().is_some_and(|audio| {
-                        audio.control.output_identity() == pending.native_output_identity
+                        audio.control.output_identity().is_some()
                             && audio.control.status().is_some_and(|status| {
                                 !status.device_fault.load(Acquire)
                                     && !status.render_fault.load(Acquire)
-                                    && status.applied_revision.load(Acquire)
-                                        > pending.fence.expected_active_revision()
+                                    && !status.shutdown_complete.load(Acquire)
+                                    && (worker_accepted
+                                        || audio.control.output_identity()
+                                            != pending.native_output_identity
+                                        || status.applied_revision.load(Acquire)
+                                            > pending.fence.expected_active_revision())
                             })
                     });
                 self.prepared_seek = None;

@@ -981,7 +981,9 @@ impl EditorView {
             .as_ref()
             .and_then(|audio| audio.control.status())
             .is_none_or(|status| {
-                status.device_fault.load(Relaxed) || status.render_fault.load(Relaxed)
+                status.device_fault.load(Relaxed)
+                    || status.render_fault.load(Relaxed)
+                    || status.shutdown_complete.load(Acquire)
             });
         if failed {
             self.fail_audio_recovery("audio output failed during recovery · retry available");
