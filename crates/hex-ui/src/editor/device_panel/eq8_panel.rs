@@ -56,6 +56,14 @@ pub(super) struct GraphControl {
     group_drag: Option<group::Drag>,
 }
 
+impl GraphControl {
+    pub(super) fn release_pointer_capture(&mut self, cx: &mut Context<EditorView>) {
+        self.entity
+            .update(cx, |graph, cx| graph.release_pointer_capture(cx));
+        self.group_drag = None;
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct ResponseCache {
     state: NativeDeviceState,

@@ -21,6 +21,12 @@ impl Panel {
     pub(super) fn cancel(&self, cx: &mut Context<EditorView>) {
         self.graph.update(cx, |graph, cx| graph.cancel(cx));
     }
+
+    pub(super) fn release_pointer_capture(&mut self, cx: &mut Context<EditorView>) {
+        self.graph
+            .update(cx, |graph, cx| graph.release_pointer_capture(cx));
+        self.gesture = None;
+    }
 }
 fn row() -> Div {
     div()
@@ -586,7 +592,7 @@ fn graph_event(
         .delay_panels
         .get(&device)
         .and_then(|p| p.gesture);
-    if !view.device_gesture.snapshot().is_some_and(|s|Some(s.key)==key&&matches!(s.target,GestureTarget::DeviceParameterPair{device:d,first:FREQUENCY,second:WIDTH} if d==device)){return;}
+    if !view.device_gesture.snapshot().is_some_and(|s|Some(s.key)==key&&matches!(s.target,GestureTarget::DeviceParameterPair{device:d,first:FREQUENCY,second:WIDTH} if d==device)) || view.device_gesture.has_pending_terminal() {return;}
     let result = match event.phase {
         ResponseGraphPhase::Change => view.change_device_pair_gesture(values),
         ResponseGraphPhase::Commit => view.finish_device_pair_gesture(values),

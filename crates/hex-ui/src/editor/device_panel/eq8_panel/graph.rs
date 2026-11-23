@@ -275,7 +275,7 @@ fn handle_graph_event(
     else {
         return;
     };
-    if target_device != device {
+    if target_device != device || view.device_gesture.has_pending_terminal() {
         return;
     }
     if event.phase == hex_widgets::ResponseGraphPhase::Cancel {
