@@ -1,0 +1,99 @@
+# release.toml — declarative release configuration for `ship`
+#
+# Quick usage:
+#   ship                                    # dry-run next patch release
+#   ship minor                              # dry-run next minor release
+#   ship -x                                 # bump patch, test, build, sign, tag, push, GitHub Release
+#   ship minor -x                           # bump minor and publish to GitHub
+#   ship --local -x                         # build & sign local .dmg + .zip into [dist].dir (no GitHub push)
+#   ship --local -x --dist ~/Desktop/hex    # write local release to a custom folder
+#
+# Note: Hex's existing immutable local release pipeline (`./release`) remains intact alongside this config.
+
+[project]
+name = "hex"
+tag_prefix = "v"
+
+[version]
+source = "cargo_workspace"
+path = "Cargo.toml"
+
+[dist]
+# Local distribution folder (overridable via --dist, SHIP_DIST_DIR, or .ship.local.toml)
+dir = "dist"
+per_version_dir = true
+
+[checks]
+# Runs before building or tagging. For a full repository CI gate, swap in:
+#   ["python3", "scripts/local-ci.py"]
+commands = [
+  ["python3", "scripts/check-architecture.py"],
+  ["cargo", "test", "--locked", "-p", "hex-desktop", "--bin", "hex-desktop"],
+]
+
+[build]
+commands = [
+  ["cargo", "build", "--release", "--locked", "-p", "hex-desktop", "--bin", "hex-desktop"],
+]
+
+[build.env]
+HEX_RELEASE_LABEL = "{version}"
+
+[macos.app]
+name = "hex.app"
+binary = "target/release/hex-desktop"
+executable_name = "hex"
+bundle_id = "org.portalsurfer.hex.dev"
+display_name = "hex"
+
+[macos.app.info_plist]
+NSHighResolutionCapable = true
+NSMicrophoneUsageDescription = "hex uses audio input to record audio into your project."
+
+[[macos.app.resources]]
+src = "assets/fonts/ioskeley-mono/OFL.txt"
+dest = "licenses/ioskeley-mono-OFL.txt"
+
+[[macos.app.resources]]
+src = "third_party/gpui/LICENSE-APACHE"
+dest = "licenses/gpui-LICENSE-APACHE"
+
+[[macos.app.resources]]
+src = "ATTRIBUTION.md"
+dest = "licenses/ATTRIBUTION.md"
+
+[macos.signing]
+enabled = true
+# Public certificate SHA-1 selector for macOS Keychain (never a secret).
+# Can also be overridden via SHIP_SIGNING_IDENTITY or gitignored .ship.local.toml.
+identity = "4EDF56A7ADD0B4786C2EEE23A50D61620BCE7E4E"
+identity_env = "SHIP_SIGNING_IDENTITY"
+team_id = "DKTKQ8U5T8"
+entitlements = "scripts/hex-release.entitlements.plist"
+hardened_runtime = true
+timestamp = true
+# Set to true once the Apple Developer agreement is renewed (uses macOS Keychain profile).
+notarize = false
+notary_profile = "capture-release"
+notary_profile_env = "SHIP_NOTARY_PROFILE"
+
+[package]
+formats = ["dmg", "zip"]
+name_template = "{name}-{version}-{os}-{arch}"
+dmg_volume_name = "hex {version}"
+checksums = true
+
+[git]
+require_clean = true
+branch = "main"
+commit_message = "release: {tag}"
+tag_message = "Release {tag}"
+push = true
+remote = "origin"
+
+[github]
+enabled = true
+repo = "fromvoid-audio/hex"
+title = "hex {tag}"
+draft = false
+generate_notes = true

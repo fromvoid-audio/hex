@@ -1,5 +1,7 @@
 /target/
 /artifacts/
+/dist/
+/.ship.local.toml
 /research/private/
 .DS_Store
 
