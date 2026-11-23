@@ -340,7 +340,7 @@ impl EditorView {
                     .px(px(4.0))
                     .text_xs()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(return_send_empty_label()),
+                    .child(theme::text(RETURN_SEND_EMPTY_TEXT)),
             );
         }
         for return_track in returns {
@@ -370,7 +370,7 @@ impl EditorView {
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .child(return_send_row_label(return_track.name())),
+                        .child(theme::text(return_send_row_text(return_track.name()))),
                 )
                 .child(super::device_panel::return_send_numeric_control(
                     self, cx, track_id, return_id, gain,
@@ -384,12 +384,10 @@ impl EditorView {
     }
 }
 
-fn return_send_empty_label() -> gpui::SharedString {
-    theme::text("no return tracks")
-}
+const RETURN_SEND_EMPTY_TEXT: &str = "no return tracks";
 
-fn return_send_row_label(name: &str) -> gpui::SharedString {
-    theme::text(hex_session::service::text::verbatim(name))
+fn return_send_row_text(name: &str) -> String {
+    hex_session::service::text::verbatim(name)
 }
 
 fn return_button(id: String, icon: &'static str, tooltip: &'static str) -> gpui::Stateful<Div> {
@@ -415,12 +413,15 @@ mod unit_tests {
 
     #[test]
     fn return_send_row_label_preserves_saved_return_capitalization() {
-        assert_eq!(return_send_row_label("FX A").as_ref(), "FX A");
+        assert_eq!(theme::text(return_send_row_text("FX A")).as_ref(), "FX A");
         assert_eq!(
-            return_send_row_label("PlateReverb_FX 2").as_ref(),
+            theme::text(return_send_row_text("PlateReverb_FX 2")).as_ref(),
             "PlateReverb_FX 2"
         );
-        assert_eq!(return_send_empty_label().as_ref(), "no return tracks");
+        assert_eq!(
+            theme::text(RETURN_SEND_EMPTY_TEXT).as_ref(),
+            "no return tracks"
+        );
     }
 }
 
