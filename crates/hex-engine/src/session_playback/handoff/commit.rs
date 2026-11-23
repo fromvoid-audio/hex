@@ -4500,6 +4500,7 @@ impl SessionPlayback {
             // Earlier stages only planned scratch state; these exact donor
             // ledgers, routes, revision and admitted envelopes are still intact.
             let loop_plan = if arrangement_loop_cut
+                && previous.playing
                 && carried_cut.is_none()
                 && arrangement_cut == previous.arrangement_frame
                 && arrangement_cut_pass == previous.arrangement_loop_pass
