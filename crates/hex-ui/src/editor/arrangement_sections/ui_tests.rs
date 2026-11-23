@@ -5345,7 +5345,11 @@ fn off_target_clip_release_does_not_block_section_loop_scope(cx: &mut TestAppCon
     let header_point = visual.debug_bounds(header_selector).unwrap().center();
     visual.simulate_mouse_down(header_point, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |v, _| assert!(v.pointer_down.is_some()));
-    visual.simulate_mouse_up(point(px(2.0), px(2.0)), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(
+        point(px(2.0), px(2.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
     visual.run_until_parked();
     editor.read_with(cx, |v, _| assert!(v.pointer_down.is_none()));
 

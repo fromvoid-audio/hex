@@ -2390,24 +2390,6 @@ pub(super) fn record_paused_republish_rejection(
     changed
 }
 
-pub(in crate::editor) fn clear_stale_playback_unavailable_error<
-    E: std::ops::Deref<Target = str>,
->(
-    error: &mut Option<E>,
-) -> bool {
-    let stale = error.as_deref().is_some_and(|message| {
-        matches!(
-            message,
-            "playback source is unavailable · cannot seek safely"
-                | "playback source is unavailable · retry playback when audio is ready"
-        )
-    });
-    if stale {
-        *error = None;
-    }
-    stale
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

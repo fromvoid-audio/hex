@@ -734,8 +734,7 @@ impl EditorView {
             }
         };
         if self.midi_audition.enabled && (start != old_start || pitch != old_pitch) {
-            let already_auditioned =
-                self.audition_midi_preview_bank(clip_id, &[(pitch, velocity)]);
+            let already_auditioned = self.audition_midi_preview_bank(clip_id, &[(pitch, velocity)]);
             self.submit_midi_drag_preview_with_audition(
                 clip_id,
                 super::midi_pending_drag::Frozen::Nudge,

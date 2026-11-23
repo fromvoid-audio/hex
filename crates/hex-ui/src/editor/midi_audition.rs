@@ -399,7 +399,8 @@ impl EditorView {
         {
             *revision = state.revision;
         }
-        match input.trigger_live_note_audition_on_control(&intent.notes[..intent.len], gate_frames) {
+        match input.trigger_live_note_audition_on_control(&intent.notes[..intent.len], gate_frames)
+        {
             Ok(()) => {
                 self.midi_audition.active = Some(Active {
                     intent,

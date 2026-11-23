@@ -220,7 +220,8 @@ impl EditorView {
         let mut audition_note = None;
         if let Some(g) = &mut self.midi_note_gesture {
             let prev_pitch = g.preview.pitch;
-            let updated = midi_drag::update_with_modifier(g, point[0], point[1], modifiers.platform);
+            let updated =
+                midi_drag::update_with_modifier(g, point[0], point[1], modifiers.platform);
             changed |= updated;
             if updated
                 && matches!(g.kind, GestureKind::Move { .. })
@@ -246,10 +247,12 @@ impl EditorView {
         if let Some(mut g) = self.midi_group_gesture.take() {
             let prev_pitch_delta = g.pitch_delta();
             let updated = g.update(point, modifiers.platform);
-            if updated && g.kind() == HitKind::Move && g.pitch_delta() != prev_pitch_delta {
-                if let Some((notes, len)) = g.preview_audition_bank() {
-                    let _ = self.audition_midi_preview_bank(clip, &notes[..len]);
-                }
+            if updated
+                && g.kind() == HitKind::Move
+                && g.pitch_delta() != prev_pitch_delta
+                && let Some((notes, len)) = g.preview_audition_bank()
+            {
+                let _ = self.audition_midi_preview_bank(clip, &notes[..len]);
             }
             if g.is_current(context)
                 && !g.is_noop()

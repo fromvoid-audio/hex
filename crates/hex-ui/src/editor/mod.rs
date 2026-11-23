@@ -2224,7 +2224,7 @@ impl EditorView {
                 } else if self.can_defer_toggle_play_for_inflight_publication() {
                     self.deferred_toggle_play = Some((start_frame, self.project_generation));
                     self.status = "applying audio update · playback starts when ready".into();
-                    controller::clear_stale_playback_unavailable_error(&mut self.error);
+                    user_errors::clear_stale_playback_unavailable_error(&mut self.error);
                     self.wake_poll();
                 } else {
                     self.error = Some("playback source is unavailable · cannot seek safely".into());
