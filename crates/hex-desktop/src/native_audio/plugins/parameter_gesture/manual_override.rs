@@ -72,6 +72,30 @@ impl LiveOverride {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AcceptedCommitRelease {
+    Wait,
+    ReleaseHold,
+    ClearDirectly,
+}
+
+fn accepted_commit_release(
+    binding_active: bool,
+    endpoint: Option<(bool, bool)>,
+    processed: bool,
+    playing: bool,
+) -> AcceptedCommitRelease {
+    if !binding_active || endpoint.is_none() {
+        return AcceptedCommitRelease::ClearDirectly;
+    }
+    let quiescent = endpoint.is_some_and(|(_, live)| !live);
+    if processed || quiescent || !playing {
+        AcceptedCommitRelease::ReleaseHold
+    } else {
+        AcceptedCommitRelease::Wait
+    }
+}
+
 impl Plugins {
     pub(in crate::native_audio) fn override_publication_source(
         &self,
@@ -105,6 +129,11 @@ impl Plugins {
         context: Option<AudioSourceContext>,
     ) {
         self.collect_parameter_observations();
+        let binding_active = self.parameter_gesture.as_ref().is_some_and(|gesture| {
+            self.sources.iter().any(|source| {
+                source.binding == gesture.binding && source.accepted && !source.retiring
+            })
+        });
         let Some(gesture) = self.parameter_gesture.as_mut() else {
             return;
         };
@@ -132,11 +161,21 @@ impl Plugins {
                     .and_then(|received| received.program)
                     .is_some_and(|actual| actual >= expected)
             });
-            let quiescent = control
-                .native_source_endpoint_status(gesture.binding)
-                .is_some_and(|(_, live)| !live);
-            if (processed || quiescent) && live.poll_release(control, gesture.binding) {
-                self.parameter_gesture = None;
+            let endpoint = control.native_source_endpoint_status(gesture.binding);
+            let playing = control
+                .status
+                .playing
+                .load(std::sync::atomic::Ordering::Acquire);
+            match accepted_commit_release(binding_active, endpoint, processed, playing) {
+                AcceptedCommitRelease::ClearDirectly => {
+                    self.parameter_gesture = None;
+                }
+                AcceptedCommitRelease::ReleaseHold => {
+                    if live.poll_release(control, gesture.binding) {
+                        self.parameter_gesture = None;
+                    }
+                }
+                AcceptedCommitRelease::Wait => {}
             }
             return;
         }
@@ -337,5 +376,181 @@ impl Gesture {
             }
             edits::poll_control(control);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepted_commit_release_clears_missing_retired_superseded_and_releases_on_pause() {
+        // Playing with active live endpoint and unprocessed revision waits.
+        assert_eq!(
+            accepted_commit_release(true, Some((true, true)), false, true),
+            AcceptedCommitRelease::Wait
+        );
+        // Once the audio quantum processes the new program revision, release hold.
+        assert_eq!(
+            accepted_commit_release(true, Some((true, true)), true, true),
+            AcceptedCommitRelease::ReleaseHold
+        );
+        // Endpoint no longer live (quiescent/degraded) releases hold.
+        assert_eq!(
+            accepted_commit_release(true, Some((true, false)), false, true),
+            AcceptedCommitRelease::ReleaseHold
+        );
+        // Paused transport (!playing) releases hold instead of stalling until resume.
+        assert_eq!(
+            accepted_commit_release(true, Some((true, true)), false, false),
+            AcceptedCommitRelease::ReleaseHold
+        );
+        // Stop (epoch renewal) leaves endpoint None -> clear directly (no deadlock).
+        assert_eq!(
+            accepted_commit_release(true, None, false, false),
+            AcceptedCommitRelease::ClearDirectly
+        );
+        assert_eq!(
+            accepted_commit_release(false, None, false, true),
+            AcceptedCommitRelease::ClearDirectly
+        );
+        // Device removal / superseding marks source retiring or removes it -> clear directly.
+        assert_eq!(
+            accepted_commit_release(false, Some((true, true)), false, true),
+            AcceptedCommitRelease::ClearDirectly
+        );
+    }
+
+    #[cfg(all(
+        target_os = "macos",
+        target_arch = "aarch64",
+        feature = "allocation-probe"
+    ))]
+    #[test]
+    fn poll_parameter_override_clears_accepted_commit_on_stop_removal_and_pause() {
+        let _serial = hex_audio::worker_fixture::serial_output();
+        let (mut output, backend) =
+            hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+        let control = output.publication.control().unwrap();
+        let context = AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 2,
+        };
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 4).unwrap();
+        let hex_project::Created::Device(device_id) = editor
+            .execute(hex_project::Command::InsertMainDevice {
+                before: None,
+                state: hex_engine::default_native_device_state(
+                    hex_engine::DeviceTypeId::from_static("hex.utility"),
+                )
+                .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("device");
+        };
+        let binding = Binding {
+            root: control.output_identity().unwrap_or(1),
+            instance: device_id.value(),
+            graph: 2,
+            epoch: 1,
+        };
+        let applied = AppliedAudioSource {
+            context,
+            audio_revision: 2,
+            output_identity: binding.root,
+        };
+        let make_gesture = || Gesture {
+            key: GestureKey {
+                generation: 1,
+                token: 1,
+            },
+            origin: PluginParameterOrigin {
+                context,
+                device: device_id,
+                parameter: 0,
+                page_first: 0,
+                metadata_revision: 1,
+                initial: PluginParameterValue::new(0.25).unwrap(),
+            },
+            binding,
+            output: binding.root,
+            steps: 0,
+            last: PluginParameterValue::new(0.5).unwrap(),
+            sequence: 1,
+            pending: None,
+            live: Some(LiveOverride::new(applied, 1, [1; 16], true, true, true)),
+            capture: None,
+            capture_sequenced: false,
+            last_input: None,
+            last_input_idle: false,
+            sequenced_capture: None,
+            before: None,
+            commit: Some((context, 1)),
+            next_program: Some(std::num::NonZeroU64::new(5).unwrap()),
+            commit_accepted: true,
+            capture_class: None,
+            deliveries: Vec::new(),
+            retired_delivery: None,
+            recording: false,
+            recording_base: None,
+            recorded_release: false,
+            recording_context: None,
+            recording_closed: false,
+            recording_interrupted: false,
+        };
+
+        // Case 1: Stop/epoch renewal or device removal (no active matching source / endpoint None).
+        let mut plugins = Plugins {
+            parameter_gesture: Some(make_gesture()),
+            ..Plugins::default()
+        };
+        plugins.poll_parameter_override(control, Some(context));
+        assert!(plugins.parameter_gesture.is_none());
+        assert!(plugins.idle());
+
+        // Case 2: Source still present in self.sources but marked retiring (removed/superseded).
+        plugins.sources.push(Source {
+            binding,
+            provider: None,
+            owner: ProcessorChainOwner::Main,
+            device: device_id.value(),
+            project_generation: 1,
+            operation: SourceOperation::Reopen,
+            authored: None,
+            accepted: false,
+            retiring: true,
+            queued: true,
+            observes_latency: false,
+            editor_open: false,
+            editor_transfer: false,
+            editor_open_on_insert: false,
+            edit_backlog: false,
+            edit_recovery: None,
+            open_editor_group: None,
+            editor_retirement: Default::default(),
+            pending_touch: None,
+            observed_latency_receipt: false,
+            attempts: 0,
+        });
+        plugins.parameter_gesture = Some(make_gesture());
+        plugins.poll_parameter_override(control, Some(context));
+        assert!(plugins.parameter_gesture.is_none());
+
+        // Case 3: Paused transport (!playing) with accepted source clears without stalling.
+        plugins.sources[0].accepted = true;
+        plugins.sources[0].retiring = false;
+        plugins.parameter_gesture = Some(make_gesture());
+        control
+            .status
+            .playing
+            .store(false, std::sync::atomic::Ordering::Release);
+        plugins.poll_parameter_override(control, Some(context));
+        assert!(plugins.parameter_gesture.is_none());
+        assert!(plugins.idle());
+
+        drop(backend);
+        output.publication.close();
     }
 }
