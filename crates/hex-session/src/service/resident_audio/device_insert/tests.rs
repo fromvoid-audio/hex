@@ -65,6 +65,8 @@ struct Fixture {
     pending_conversion: Option<PluginParameterConversionResult>,
     provide_stopped_power_fence: bool,
     observed_power_on: Vec<Option<ResidentPowerOn>>,
+    pending_publication: bool,
+    no_output: bool,
 }
 
 impl WorkerAudioSink for Arc<Mutex<Fixture>> {
@@ -157,13 +159,24 @@ impl WorkerAudioSink for Arc<Mutex<Fixture>> {
     }
 
     fn resident_publication_readiness(&mut self) -> ResidentPublicationReadiness {
-        self.lock()
-            .unwrap()
+        let fixture = self.lock().unwrap();
+        if fixture.no_output {
+            return ResidentPublicationReadiness::NoOutput;
+        }
+        fixture
             .active
             .map_or(ResidentPublicationReadiness::NoOutput, |submission| {
-                ResidentPublicationReadiness::Applied {
-                    submission,
-                    publication_in_flight: false,
+                if fixture.pending_publication {
+                    ResidentPublicationReadiness::Pending {
+                        submission,
+                        applied_revision: submission.audio_revision.saturating_sub(1),
+                        publication_in_flight: true,
+                    }
+                } else {
+                    ResidentPublicationReadiness::Applied {
+                        submission,
+                        publication_in_flight: false,
+                    }
                 }
             })
     }
@@ -194,7 +207,14 @@ impl WorkerAudioSink for Arc<Mutex<Fixture>> {
         &mut self,
         _: hex_engine::AudioSourceContext,
     ) -> Result<Option<ResidentRuntimeLoop>, String> {
-        Ok(self.lock().unwrap().active)
+        let fixture = self.lock().unwrap();
+        if fixture.no_output {
+            return Ok(None);
+        }
+        if fixture.pending_publication {
+            return Err("playback publication already pending".into());
+        }
+        Ok(fixture.active)
     }
 
     #[allow(clippy::result_large_err)]
@@ -239,6 +259,9 @@ impl WorkerAudioSink for Arc<Mutex<Fixture>> {
             });
         }
         let mut fixture = self.lock().unwrap();
+        if fixture.no_output && !matches!(policy, ResidentPublicationPolicy::DeviceInsert { .. }) {
+            return Ok(ResidentPublicationAcceptance::OfflineRetained);
+        }
         fixture.revision += 1;
         let observation = ResidentRuntimeLoop {
             output_identity: 51,
@@ -2336,6 +2359,349 @@ fn verified_streaming_with_vst3_supports_edit_compare_gesture_and_replacement_un
             .type_id(),
         hex_lattice_contract::DeviceTypeId::from_static("hex.utility")
     );
+}
+
+#[test]
+fn resident_device_graph_edits_and_history_defer_while_publication_is_pending() {
+    use crate::service::worker::defers_behind_resident_publication;
+    use hex_lattice_contract::DeviceTypeId;
+    use hex_project::{DeviceChainOwner, DeviceSelectionIds};
+
+    let utility = DeviceTypeId::from_static("hex.utility");
+    let utility_state = hex_engine::default_native_device_state(utility).unwrap();
+
+    // End-to-end: AddNativeDevice, InsertMainDevice, and Undo wait while
+    // readiness is Pending instead of failing with "playback publication already pending".
+    let (service, fixture, _) = service();
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "track".into(),
+        }))
+        .unwrap();
+    let added = receive(&service);
+    let track_id = added.state.project.tracks()[0].id();
+
+    fixture.lock().unwrap().pending_publication = true;
+    service
+        .submit(Request::AddNativeDevice {
+            track: track_id,
+            class: hex_engine::NativeDeviceClass::Effect,
+            type_id: Box::new(utility),
+            before: None,
+        })
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(15));
+    assert!(
+        service.events.try_recv().is_err(),
+        "AddNativeDevice must defer while resident publication is Pending"
+    );
+    fixture.lock().unwrap().pending_publication = false;
+    let pending = receive(&service);
+    assert!(pending.error.is_none(), "{:?}", pending.error);
+    assert!(!pending.request_complete);
+    let installed = install_candidate(&service, &fixture);
+    assert_eq!(
+        installed
+            .state
+            .project
+            .track(track_id)
+            .unwrap()
+            .devices()
+            .len(),
+        1
+    );
+    let device = installed.state.project.track(track_id).unwrap().devices()[0].id();
+    let selected = DeviceSelectionIds::new(&[device]).unwrap();
+
+    // Predicate covers all staged resident device-graph requests and Undo/Redo.
+    for deferred in [
+        Request::AddNativeDevice {
+            track: track_id,
+            class: hex_engine::NativeDeviceClass::Effect,
+            type_id: Box::new(utility),
+            before: None,
+        },
+        Request::InsertEffectBusDevice {
+            project_generation: 0,
+            revision: 0,
+            destination: crate::service::EffectBusDestination::Main,
+            class: hex_engine::NativeDeviceClass::Effect,
+            type_id: utility,
+            before: None,
+            control: None,
+        },
+        Request::InsertBrowserInstrumentTrack {
+            project_generation: 0,
+            revision: 0,
+            class: hex_engine::NativeDeviceClass::Instrument,
+            type_id: DeviceTypeId::from_static("hex.instrument.sine"),
+            new_track_gain: None,
+            control: None,
+        },
+        Request::ReplaceNativeDevice {
+            device,
+            class: hex_engine::NativeDeviceClass::Effect,
+            type_id: Box::new(utility),
+        },
+        Request::MoveTrackDevices {
+            project_generation: 0,
+            revision: 0,
+            source: track_id,
+            selected: selected.clone(),
+            destination: track_id,
+        },
+        Request::ReorderDevices {
+            project_generation: 0,
+            revision: 0,
+            owner: DeviceChainOwner::Track(track_id),
+            selected: selected.clone(),
+            before: None,
+        },
+        Request::DeviceClipboard {
+            project_generation: 0,
+            revision: 0,
+            action: DeviceClipboardAction::Cut {
+                owner: DeviceChainOwner::Track(track_id),
+                selected: selected.clone(),
+            },
+        },
+        Request::DeviceClipboard {
+            project_generation: 0,
+            revision: 0,
+            action: DeviceClipboardAction::Paste {
+                owner: DeviceChainOwner::Main,
+                before: None,
+            },
+        },
+        Request::DeviceClipboard {
+            project_generation: 0,
+            revision: 0,
+            action: DeviceClipboardAction::Duplicate {
+                source: DeviceChainOwner::Track(track_id),
+                selected: selected.clone(),
+                destination: DeviceChainOwner::Main,
+                before: None,
+            },
+        },
+        Request::Edit(Command::InsertMainDevice {
+            before: None,
+            state: utility_state.clone(),
+        }),
+        Request::Edit(Command::RemoveDevice(device)),
+        Request::Undo,
+        Request::Redo,
+    ] {
+        assert!(
+            defers_behind_resident_publication(&deferred),
+            "expected request to defer behind pending resident publication: {deferred:?}"
+        );
+    }
+    assert!(!defers_behind_resident_publication(
+        &Request::DeviceClipboard {
+            project_generation: 0,
+            revision: 0,
+            action: DeviceClipboardAction::Copy {
+                owner: DeviceChainOwner::Track(track_id),
+                selected,
+            },
+        }
+    ));
+
+    // Staged Edit (InsertMainDevice) also defers while Pending and commits once Applied.
+    fixture.lock().unwrap().pending_publication = true;
+    service
+        .submit(Request::Edit(Command::InsertMainDevice {
+            before: None,
+            state: utility_state,
+        }))
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(15));
+    assert!(
+        service.events.try_recv().is_err(),
+        "InsertMainDevice must defer while resident publication is Pending"
+    );
+    fixture.lock().unwrap().pending_publication = false;
+    let pending_main = receive(&service);
+    assert!(pending_main.error.is_none(), "{:?}", pending_main.error);
+    assert!(!pending_main.request_complete);
+    let installed_main = install_candidate(&service, &fixture);
+    assert_eq!(installed_main.state.project.main_devices().len(), 1);
+
+    // Undo also defers cleanly while Pending instead of failing.
+    fixture.lock().unwrap().pending_publication = true;
+    service.submit(Request::Undo).unwrap();
+    std::thread::sleep(Duration::from_millis(15));
+    assert!(
+        service.events.try_recv().is_err(),
+        "Undo must defer while resident publication is Pending"
+    );
+    fixture.lock().unwrap().pending_publication = false;
+    let undone = receive(&service);
+    assert!(undone.error.is_none(), "{:?}", undone.error);
+    assert!(undone.state.project.main_devices().is_empty());
+}
+
+#[test]
+fn resident_no_output_allows_native_inserts_and_main_vst3_bypass_offline() {
+    use hex_lattice_contract::DeviceTypeId;
+
+    let (service, fixture, _) = service();
+    fixture.lock().unwrap().no_output = true;
+    fixture.lock().unwrap().active = None;
+
+    let utility = DeviceTypeId::from_static("hex.utility");
+    let utility_state = hex_engine::default_native_device_state(utility).unwrap();
+    let sine = DeviceTypeId::from_static("hex.instrument.sine");
+    let sine_state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        sine,
+    )
+    .unwrap();
+    let vst3_state = hex_plugin_state::encode(hex_plugin_state::State {
+        identity: hex_plugin_state::Identity {
+            class: hex_plugin_state::ClassId::new([0x66; 16]).unwrap(),
+            binary: hex_plugin_state::BinaryIdentity {
+                executable_sha256: [0x77; 32],
+                info_sha256: [0x88; 32],
+            },
+        },
+        component: Some(b"main vst3"),
+        controller: None,
+    })
+    .unwrap();
+
+    // End-to-end offline inserts + sole Main VST3 bypass under NoOutput.
+    let run_offline = |request: Request| -> Event {
+        service.submit(request).unwrap();
+        let event = receive(&service);
+        assert!(
+            event.request_complete,
+            "NoOutput edit must commit synchronously offline"
+        );
+        assert!(
+            event.error.is_none(),
+            "unexpected NoOutput error: {:?}",
+            event.error
+        );
+        event
+    };
+
+    let e = run_offline(Request::Edit(Command::AddTrack {
+        name: "audio".into(),
+    }));
+    let track = e.state.project.tracks()[0].id();
+    let e = run_offline(Request::Edit(Command::AddMidiTrack {
+        name: "midi".into(),
+    }));
+    let midi = e.state.project.tracks()[1].id();
+    let e = run_offline(Request::Edit(Command::AddReturnTrack {
+        name: "return".into(),
+    }));
+    let bus = e.state.project.return_tracks()[0].id();
+
+    // Direct predicate checks under NoOutput.
+    {
+        let mut sink = Arc::clone(&fixture);
+        for command in [
+            Command::InsertDevice {
+                track,
+                before: None,
+                state: utility_state.clone(),
+            },
+            Command::InsertInstrument {
+                track: midi,
+                state: sine_state.clone(),
+            },
+            Command::LoadInstrument {
+                track: midi,
+                replacing: None,
+                state: sine_state.clone(),
+                device_name: "sine".into(),
+            },
+            Command::InsertMainDevice {
+                before: None,
+                state: utility_state.clone(),
+            },
+            Command::InsertReturnDevice {
+                return_track: bus,
+                before: None,
+                state: utility_state.clone(),
+            },
+            Command::InsertDefaultTrackWithDevice {
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Effect,
+                state: utility_state.clone(),
+                device_name: "utility".into(),
+            },
+        ] {
+            assert!(
+                !should_stage_resident_graph_edit(&command, &mut sink),
+                "NoOutput must not stage {command:?}"
+            );
+        }
+    }
+
+    let e = run_offline(Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: Box::new(utility),
+        before: None,
+    });
+    assert_eq!(e.state.project.track(track).unwrap().devices().len(), 1);
+
+    let e = run_offline(Request::LoadTrackCatalogDevice {
+        project_generation: 0,
+        revision: e.state.revision,
+        track,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: utility,
+        placement: crate::service::TrackCatalogPlacement::Insert { before: None },
+        control: Arc::new(PluginEffectControl::default()),
+    });
+    assert_eq!(e.state.project.track(track).unwrap().devices().len(), 2);
+
+    let e = run_offline(Request::Edit(Command::InsertInstrument {
+        track: midi,
+        state: sine_state,
+    }));
+    assert!(e.state.project.track(midi).unwrap().instrument().is_some());
+
+    let e = run_offline(Request::Edit(Command::InsertReturnDevice {
+        return_track: bus,
+        before: None,
+        state: utility_state.clone(),
+    }));
+    assert_eq!(e.state.project.return_tracks()[0].devices().len(), 1);
+
+    // Insert sole enabled Main VST3 offline, then toggle its bypass offline
+    // (must NOT fail with "running power off is unavailable for this source").
+    let e = run_offline(Request::Edit(Command::InsertMainDevice {
+        before: None,
+        state: vst3_state,
+    }));
+    let main_vst3 = e.state.project.main_devices()[0].id();
+    assert!(!e.state.project.device(main_vst3).unwrap().bypassed());
+    assert!(!stages_main_power_off(
+        &e.state.project,
+        &Command::ToggleDeviceBypass { device: main_vst3 },
+        &mut Arc::clone(&fixture),
+    ));
+    let bypassed = run_offline(Request::Edit(Command::ToggleDeviceBypass {
+        device: main_vst3,
+    }));
+    assert!(bypassed.state.project.device(main_vst3).unwrap().bypassed());
+
+    // InsertEffectBusDevice on Main also succeeds offline under NoOutput.
+    let e = run_offline(Request::InsertEffectBusDevice {
+        project_generation: 0,
+        revision: bypassed.state.revision,
+        destination: crate::service::EffectBusDestination::Main,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: utility,
+        before: None,
+        control: None,
+    });
+    assert_eq!(e.state.project.main_devices().len(), 2);
 }
 
 mod track_routes;
