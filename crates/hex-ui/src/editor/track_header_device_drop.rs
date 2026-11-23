@@ -63,6 +63,9 @@ impl EditorView {
                 type_id,
             } => {
                 let target = self.check_device_append_target(track, cx)?;
+                if target.is_group() {
+                    return Err("group tracks accept audio effects, not clips or instruments");
+                }
                 Ok(Some(Request::DropNativeDevice {
                     project_generation: generation,
                     revision: drag.revision,
@@ -158,6 +161,9 @@ impl EditorView {
     ) -> Result<Request, &'static str> {
         let target = self.check_device_append_target(track, cx)?;
         if class == NativeDeviceClass::Instrument {
+            if target.is_group() {
+                return Err("group tracks accept audio effects, not clips or instruments");
+            }
             if target.instrument().is_some() {
                 return Err(
                     "instrument slot is already occupied · header drop does not replace it",
@@ -301,5 +307,113 @@ impl EditorView {
                     cx.notify();
                 }),
             )
+    }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod tests {
+    use super::*;
+    use gpui::{TestAppContext, VisualTestContext};
+    use hex_lattice_contract::DeviceTypeId;
+    use hex_project::{Command, Created, Editor, Project, TrackSelectionIds};
+    use std::{cell::Cell, rc::Rc, sync::Arc};
+
+    #[gpui::test]
+    fn header_device_request_refuses_browser_native_instrument_on_group_track(
+        cx: &mut TestAppContext,
+    ) {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(ordinary) = editor
+            .execute(Command::AddTrack {
+                name: "ordinary".into(),
+            })
+            .unwrap()
+        else {
+            panic!("ordinary track");
+        };
+        let Created::Track(group) = editor
+            .execute(Command::GroupTracks {
+                tracks: TrackSelectionIds::new(&[ordinary]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group track");
+        };
+        let (handle, view) = crate::editor::rendered_test_fixture::editor_window(
+            cx,
+            editor.project().clone(),
+            Arc::default(),
+        );
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+
+        view.update(&mut visual, |view, cx| {
+            let generation = view.project_generation;
+            let revision = view.state.as_ref().unwrap().revision;
+            let inst_drag = NativeDeviceDrag {
+                project_generation: generation,
+                revision,
+                source: NativeDeviceDragSource::Browser {
+                    class: NativeDeviceClass::Instrument,
+                    type_id: DeviceTypeId::from_static("hex.instrument.sine"),
+                },
+                destination: Rc::new(Cell::new(None)),
+                return_destination: Rc::new(Cell::new(None)),
+            };
+            view.active_native_device_drag = Some(inst_drag.clone());
+
+            assert_eq!(
+                view.header_device_request(
+                    &inst_drag,
+                    generation,
+                    Some(revision),
+                    group,
+                    false,
+                    cx
+                )
+                .unwrap_err(),
+                "group tracks accept audio effects, not clips or instruments",
+                "group track header must reject browser native instruments on drag-over and drop"
+            );
+            assert!(
+                view.browser_device_append_request(
+                    group,
+                    NativeDeviceClass::Instrument,
+                    DeviceTypeId::from_static("hex.instrument.sine"),
+                    cx
+                )
+                .is_err()
+            );
+            assert!(
+                view.header_device_request(
+                    &inst_drag,
+                    generation,
+                    Some(revision),
+                    ordinary,
+                    false,
+                    cx
+                )
+                .is_ok(),
+                "ordinary track header must still accept browser native instruments"
+            );
+
+            let fx_drag = NativeDeviceDrag {
+                project_generation: generation,
+                revision,
+                source: NativeDeviceDragSource::Browser {
+                    class: NativeDeviceClass::Effect,
+                    type_id: DeviceTypeId::from_static("hex.utility"),
+                },
+                destination: Rc::new(Cell::new(None)),
+                return_destination: Rc::new(Cell::new(None)),
+            };
+            view.active_native_device_drag = Some(fx_drag.clone());
+            assert!(
+                view.header_device_request(&fx_drag, generation, Some(revision), group, false, cx)
+                    .is_ok(),
+                "group track header must still accept browser native effects"
+            );
+        });
     }
 }

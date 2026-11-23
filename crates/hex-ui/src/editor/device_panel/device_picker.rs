@@ -97,9 +97,19 @@ fn entries(view: &EditorView, owner: DevicePanelOwner, query: &str) -> (Vec<Entr
     }
     let mut rows = Vec::new();
     let mut errors = Vec::new();
+    let is_group_track = match owner {
+        DevicePanelOwner::Track(track) => view
+            .state
+            .as_ref()
+            .and_then(|state| state.project.track(track))
+            .is_some_and(hex_project::Track::is_group),
+        _ => false,
+    };
     let query = query.trim().to_lowercase();
     for class in [NativeDeviceClass::Effect, NativeDeviceClass::Instrument] {
-        if class == NativeDeviceClass::Instrument && !matches!(owner, DevicePanelOwner::Track(_)) {
+        if class == NativeDeviceClass::Instrument
+            && (!matches!(owner, DevicePanelOwner::Track(_)) || is_group_track)
+        {
             continue;
         }
         let cached = match class {
@@ -175,16 +185,23 @@ fn activate(
     };
     let request = match owner {
         DevicePanelOwner::Track(track) => {
-            let instrument = state
-                .project
-                .track(track)
+            let track_ref = state.project.track(track);
+            if class == NativeDeviceClass::Instrument
+                && track_ref.is_some_and(hex_project::Track::is_group)
+            {
+                return;
+            }
+            let instrument = track_ref
                 .and_then(|track| track.instrument())
                 .map(hex_project::Device::id);
             let placement = match (class, instrument) {
                 (NativeDeviceClass::Instrument, Some(device)) => {
                     TrackCatalogPlacement::ReplaceInstrument(device)
                 }
-                _ => TrackCatalogPlacement::Insert { before },
+                (NativeDeviceClass::Instrument, None) => {
+                    TrackCatalogPlacement::Insert { before: None }
+                }
+                (NativeDeviceClass::Effect, _) => TrackCatalogPlacement::Insert { before },
             };
             Request::LoadTrackCatalogDevice {
                 project_generation: view.project_generation,
