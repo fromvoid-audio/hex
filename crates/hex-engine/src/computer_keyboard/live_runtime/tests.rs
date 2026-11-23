@@ -462,12 +462,24 @@ fn reusable_chord_refuses_all_onsets_and_preserves_hardware_when_one_pitch_or_sl
             .map(|voice| voice.id)
             .collect();
         assert_eq!(voices_before.len(), held);
-        input
+        let trigger = input
             .trigger_live_note_audition_on_control(&[(67, 37), (68, 95)], 256)
             .unwrap();
         runtime.begin_block();
         runtime.render(&mut [[0.0; 2]; 16], None).unwrap();
+        assert!(
+            !input.live_note_audition_refused(trigger),
+            "speculative refusal must not publish"
+        );
+        runtime.rollback();
+        runtime.begin_block();
+        assert!(
+            !runtime.admits_live_chord(0, 1, true),
+            "two onsets need two event slots"
+        );
+        runtime.render(&mut [[0.0; 2]; 16], None).unwrap();
         runtime.commit();
+        assert!(input.live_note_audition_refused(trigger));
         assert_eq!(
             runtime
                 .primary
@@ -486,5 +498,20 @@ fn reusable_chord_refuses_all_onsets_and_preserves_hardware_when_one_pitch_or_sl
         );
         assert!(live.same_current_activation(activation));
         assert!(!input.is_cancelled() && !input.rejected());
+        let next = input
+            .trigger_live_note_audition_on_control(&[(67, 37)], 4)
+            .unwrap();
+        assert!(!input.live_note_audition_refused(next));
+        runtime.begin_block();
+        runtime.render(&mut [[0.0; 2]; 8], None).unwrap();
+        runtime.commit();
+        assert!(!input.live_note_audition_refused(next));
+        assert!(
+            runtime
+                .primary
+                .iter()
+                .flatten()
+                .any(|voice| voice.source == VoiceSource::Audition)
+        );
     }
 }

@@ -1507,9 +1507,24 @@ impl ComputerKeyboardRuntime {
             } else {
                 VoiceSource::Physical
             };
+            let event_capacity = self.mutable.as_ref().map_or(
+                2 * VOICES,
+                NativeInstrumentRuntimePair::max_events_per_block,
+            );
+            let refused_chord = self.scratch_audition_gate.starting()
+                && self
+                    .input
+                    .lease()
+                    .is_some_and(|input| input.has_live_audition())
+                && !self.admits_live_chord(len, event_capacity, snapshot_physical);
+            if refused_chord {
+                self.scratch_audition_gate.refuse();
+            }
             for voice in self.scratch.iter_mut().flatten() {
                 if (voice.source == VoiceSource::Audition
-                    || (snapshot_physical && voice.source == VoiceSource::Physical))
+                    || (snapshot_physical
+                        && !refused_chord
+                        && voice.source == VoiceSource::Physical))
                     && voice.gate.is_none()
                     && (voice.source != desired_source || self.desired[voice.key] != voice.token)
                 {
@@ -1522,7 +1537,8 @@ impl ComputerKeyboardRuntime {
                 }
             }
             for (key, token) in self.desired.into_iter().enumerate() {
-                if !snapshot_physical
+                if refused_chord
+                    || !snapshot_physical
                     || token == 0
                     || self.scratch_rejected_desired[key] == token
                     || self.scratch.iter().flatten().any(|voice| {
@@ -1546,10 +1562,6 @@ impl ComputerKeyboardRuntime {
                     continue;
                 }
                 let capacity = self.voice_capacity();
-                let event_capacity = self.mutable.as_ref().map_or(
-                    2 * VOICES,
-                    NativeInstrumentRuntimePair::max_events_per_block,
-                );
                 if self.scratch.iter().flatten().count() >= capacity || len >= event_capacity {
                     if shared_audition {
                         self.scratch_audition_gate.finish();
