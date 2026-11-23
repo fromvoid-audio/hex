@@ -177,6 +177,53 @@ fn rendered_ruler_case(cx: &mut TestAppContext, stateful: bool) {
 }
 
 #[gpui::test]
+fn rendered_note_editor_playhead_stays_visible_past_short_source_and_scope_inside_unlooped_clip(
+    cx: &mut TestAppContext,
+) {
+    let _guard = graph_layout_tests::status_fixture_guard();
+    let (mut visual, editor, _environment, clip) = fixture(cx);
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::SetMidiClipSource {
+            clip,
+            source_length: BeatTime::from_ratio(5, 4).unwrap(),
+            source_start: BeatTime::ZERO,
+            loop_start: BeatTime::ZERO,
+            loop_end: BeatTime::from_ratio(1, 2).unwrap(),
+            looping: false,
+            length: BeatTime::from_quarters(4).unwrap(),
+        })));
+    });
+    pump(&editor, &mut visual);
+    let (mut output, mut backend) =
+        held_pointer_tests::attach_actual_output(&editor, cx, &mut visual);
+    // Seek to 2.5 beats (60_000 frames at 120 bpm / 48 kHz): well past loop_end (0.5b)
+    // and source_length (1.25b), still inside the 4b Arrangement clip.
+    editor.update(cx, |view, _| view.request_seek(60_000));
+    let expected = BeatTime::from_ratio(5, 2).unwrap().raw();
+    let deadline = crate::test_wait::hang_deadline();
+    loop {
+        held_pointer_tests::pump_output(&editor, cx, &mut output, &mut backend);
+        visual.run_until_parked();
+        if editor.read_with(cx, |view, _| {
+            view.midi_playhead_source_beat() == Some(expected)
+        }) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "playhead past short source/scope never acknowledged: {:?}",
+            editor.read_with(cx, |v, _| v.error.clone())
+        );
+    }
+    assert_playhead(&mut visual, 2.5 / 4.0);
+    editor.update(cx, |view, _| {
+        view.audio.take();
+    });
+    backend.close();
+    drop(output);
+}
+
+#[gpui::test]
 fn rendered_console_cue_requires_active_clip_and_moves_only_accepted_source_cursor(
     cx: &mut TestAppContext,
 ) {

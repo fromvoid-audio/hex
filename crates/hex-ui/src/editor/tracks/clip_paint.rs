@@ -319,6 +319,7 @@ impl EditorView {
                 || self.audio_clip_controls.gain_preview(self).is_some()
                 || self.audio_clip_controls.has_play_start_preview()
                 || self.shows_audio_clip_loop_preview()
+                || self.shows_midi_clip_loop_preview()
                 || self.audio_event_editor.gesture.is_some()
                 || self.held_arrangement_event_clip().is_some();
 
@@ -491,9 +492,12 @@ impl EditorView {
                         }
                     }
                     crate::editor::arrangement_clip_index::IndexedClipKind::Midi(i) => {
-                        let Some(clip) = track.midi_clips().get(i) else {
+                        let Some(canonical_clip) = track.midi_clips().get(i) else {
                             continue;
                         };
+                        let scope_preview = self.midi_scope_display_clip(canonical_clip, state);
+                        let clip = scope_preview.as_ref();
+                        let has_scope = !std::ptr::eq(clip, canonical_clip);
                         let has_trim = self
                             .midi_trim_display(track_id, Some(clip.id()))
                             .is_some_and(|(orig, _)| orig.id() == clip.id());
@@ -502,7 +506,7 @@ impl EditorView {
                             .flatten()
                             .any(|(es, ee)| es < entry.end && ee > entry.start);
                         let has_rename = self.clip_name_is_editing(clip.id());
-                        if !(has_trim || has_exclusions || has_rename) {
+                        if !(has_scope || has_trim || has_exclusions || has_rename) {
                             continue;
                         }
                         excluded.push(clip.id());
@@ -553,7 +557,7 @@ impl EditorView {
                             }
                             continue;
                         }
-                        // For active MIDI rename or trim preview, mount just that one
+                        // For active MIDI rename, scope or trim preview, mount just that one
                         // clip's live header/shell overlay.
                         if has_rename {
                             let vis_start = entry.start.max(viewport.start);
@@ -585,6 +589,55 @@ impl EditorView {
                                     ))
                                     .into_any_element(),
                             );
+                        } else if has_scope {
+                            let tempo = state.project.tempo_map();
+                            if let (Ok(start), Some(end)) = (
+                                tempo.beat_to_frame(clip.start()),
+                                clip.start()
+                                    .raw()
+                                    .checked_add(clip.length().raw())
+                                    .and_then(|raw| {
+                                        tempo.beat_to_frame(BeatTime::from_raw(raw)).ok()
+                                    }),
+                            ) && end > start
+                            {
+                                let active = self.displayed_clip_active(clip.id(), clip.active());
+                                let selected_clip = self.clip_is_selected(clip.id());
+                                if let Some(fragment) = passive_midi_fragment(
+                                    self.drag_lanes
+                                        .get(&track_id)
+                                        .map_or(0.0, |lane| lane.width),
+                                    scale_factor,
+                                    theme::clip_activity_fill(
+                                        track.color(),
+                                        clip.flavor(),
+                                        selected_clip,
+                                        active,
+                                    ),
+                                    clip.id(),
+                                    clip.name(),
+                                    active,
+                                    |start, end, merge| {
+                                        self.loop_note_shapes(
+                                            &state.project,
+                                            clip,
+                                            start,
+                                            end,
+                                            merge,
+                                        )
+                                    },
+                                    (start, end),
+                                    (start, end),
+                                    viewport,
+                                    viewport_end,
+                                    grid,
+                                    "midi-clip-visual".into(),
+                                    self.track_body_height(track_id)
+                                        <= crate::editor::track_layout::HEADER_ONLY_HEIGHT,
+                                ) {
+                                    overlays.push(fragment.into_any_element());
+                                }
+                            }
                         } else if has_trim {
                             let vis_start = entry.start.max(viewport.start);
                             let vis_end = entry.end.min(viewport_end);
@@ -737,17 +790,36 @@ impl EditorView {
                 }
             }
         }
-        for clip in track.midi_clips() {
+        for canonical_clip in track.midi_clips() {
+            let scope_preview = self.midi_scope_display_clip(canonical_clip, state);
+            let clip = scope_preview.as_ref();
+            let has_scope = !std::ptr::eq(clip, canonical_clip);
             if hides_group_member(clip.id())
                 || (!is_committed_edit_view && !self.arrangement_clip_visible(clip.id()))
             {
                 continue;
             }
-            let Some(preview) = state.midi_preview.get(clip.id()) else {
-                continue;
+            let (start, end) = if has_scope {
+                let tempo = state.project.tempo_map();
+                let Ok(start) = tempo.beat_to_frame(clip.start()) else {
+                    continue;
+                };
+                let Some(end) = clip
+                    .start()
+                    .raw()
+                    .checked_add(clip.length().raw())
+                    .and_then(|raw| tempo.beat_to_frame(BeatTime::from_raw(raw)).ok())
+                else {
+                    continue;
+                };
+                (start, end)
+            } else {
+                let Some(preview) = state.midi_preview.get(clip.id()) else {
+                    continue;
+                };
+                (preview.frame_start, preview.frame_end)
             };
             let active = self.displayed_clip_active(clip.id(), clip.active());
-            let (start, end) = (preview.frame_start, preview.frame_end);
             if end <= start {
                 continue;
             }

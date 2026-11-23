@@ -82,9 +82,9 @@ impl EditorView {
                     .and_then(|id| self.pending_clip_loop_midi(id))
             })
             .or_else(|| {
-                self.midi_clip().map(|source| {
-                    SourceValues::from_source(source, 0, source.source_length().raw())
-                })
+                let state = self.state.as_ref()?;
+                let id = self.detail_clip_id()?;
+                SourceValues::for_clip(&state.project, id)
             });
         let Some(values) = values else {
             return div();

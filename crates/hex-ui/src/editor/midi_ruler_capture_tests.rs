@@ -53,7 +53,7 @@ fn open(cx: &mut TestAppContext, handle: Handle) -> Fixture {
                 source_start: hex_project::BeatTime::ZERO,
                 loop_start: hex_project::BeatTime::ONE,
                 loop_end: hex_project::BeatTime::from_quarters(3).unwrap(),
-                looping: false,
+                looping: handle != Handle::Start,
                 length: hex_project::BeatTime::from_quarters(4).unwrap(),
             }))
         )

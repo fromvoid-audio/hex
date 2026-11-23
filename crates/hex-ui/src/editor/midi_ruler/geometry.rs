@@ -15,6 +15,9 @@ pub(super) struct Context {
     // A forward one-shot Arrangement region begins at its start marker, so
     // the marker stays inside song time and before the region end.
     pub(super) play_start_region: bool,
+    // Arrangement clips align their unlooped scope bar with their Arrangement
+    // bounds; Session clips retain source-local markers.
+    pub(super) arrangement_scope: bool,
     pub(super) start: i128,
     pub(super) span: u64,
     pub(super) grid: MidiGrid,
@@ -29,13 +32,23 @@ impl Context {
         }
     }
     pub(super) fn valid(self) -> bool {
+        let scope_fits = (self.arrangement_scope && !self.values.looping)
+            || self.values.loop_end <= self.values.source_length;
+        let arrangement_fits = !self.arrangement_scope
+            || self.values.looping
+            || self
+                .values
+                .arrangement_start
+                .checked_add(self.values.loop_end.saturating_sub(self.values.loop_start))
+                .is_some();
         self.bounds.is_valid()
             && self.span > 0
             && self.start == super::super::midi_scene::clamp_start(self.start, self.span)
             && self.start.checked_add(i128::from(self.span)).is_some()
             && self.values.source_length > 0
             && self.values.loop_start < self.values.loop_end
-            && self.values.loop_end <= self.values.source_length
+            && scope_fits
+            && arrangement_fits
             && self.values.source_start < self.exclusive_end()
     }
     pub(super) fn x(self, beat: u64) -> Option<f32> {
@@ -133,13 +146,31 @@ impl Gesture {
                         as u64;
                 }
                 Handle::LoopStart => {
+                    let first = if self.context.arrangement_scope && !original.looping {
+                        original
+                            .loop_start
+                            .saturating_sub(original.arrangement_start)
+                    } else {
+                        0
+                    };
                     next.loop_start = clamp_loop_grid(
                         moved(original.loop_start),
-                        0,
+                        first,
                         original.loop_end - 1,
                         grid,
                         origin,
-                    )
+                    );
+                    if self.context.arrangement_scope
+                        && !original.looping
+                        && next.loop_start != original.loop_start
+                    {
+                        let shift = i128::from(next.loop_start) - i128::from(original.loop_start);
+                        next.arrangement_start =
+                            (i128::from(original.arrangement_start) + shift) as u64;
+                        next.arrangement_length = next.loop_end - next.loop_start;
+                        next.source_length = original.source_length.max(next.loop_end);
+                        next.source_start = next.loop_start;
+                    }
                 }
                 Handle::LoopEnd => {
                     let first = if original.looping {
@@ -147,29 +178,58 @@ impl Gesture {
                     } else {
                         original.loop_start + 1
                     };
-                    next.loop_end = clamp_loop_grid(
-                        moved(original.loop_end),
-                        first,
-                        original.source_length,
-                        grid,
-                        origin,
-                    );
+                    let last = if self.context.arrangement_scope && !original.looping {
+                        original
+                            .loop_start
+                            .saturating_add(u64::MAX - original.arrangement_start)
+                    } else {
+                        original.source_length
+                    };
+                    next.loop_end =
+                        clamp_loop_grid(moved(original.loop_end), first, last, grid, origin);
+                    if self.context.arrangement_scope
+                        && !original.looping
+                        && next.loop_end != original.loop_end
+                    {
+                        next.arrangement_length = next.loop_end - next.loop_start;
+                        next.source_length = original.source_length.max(next.loop_end);
+                    }
                 }
                 Handle::LoopBody => {
                     let length = original.loop_end - original.loop_start;
-                    let first = if original.looping {
-                        original.source_start.saturating_sub(length - 1)
+                    let (first, last) = if self.context.arrangement_scope && !original.looping {
+                        let first = original
+                            .loop_start
+                            .saturating_sub(original.arrangement_start);
+                        let max_shift =
+                            (u64::MAX - length).saturating_sub(original.arrangement_start);
+                        let last = original
+                            .loop_start
+                            .saturating_add(max_shift)
+                            .min(u64::MAX - length);
+                        (first, last)
                     } else {
-                        0
+                        let first = if original.looping {
+                            original.source_start.saturating_sub(length - 1)
+                        } else {
+                            0
+                        };
+                        (first, original.source_length - length)
                     };
-                    next.loop_start = clamp_loop_grid(
-                        moved(original.loop_start),
-                        first,
-                        original.source_length - length,
-                        grid,
-                        origin,
-                    );
+                    next.loop_start =
+                        clamp_loop_grid(moved(original.loop_start), first, last, grid, origin);
                     next.loop_end = next.loop_start + length;
+                    if self.context.arrangement_scope
+                        && !original.looping
+                        && next.loop_start != original.loop_start
+                    {
+                        let shift = i128::from(next.loop_start) - i128::from(original.loop_start);
+                        next.arrangement_start =
+                            (i128::from(original.arrangement_start) + shift) as u64;
+                        next.arrangement_length = length;
+                        next.source_length = original.source_length.max(next.loop_end);
+                        next.source_start = next.loop_start;
+                    }
                 }
             }
         }
@@ -212,6 +272,7 @@ pub(super) fn test_context() -> Context {
             4 * BeatTime::ONE.raw(),
         ),
         play_start_region: false,
+        arrangement_scope: false,
         start: 0,
         span: 4 * BeatTime::ONE.raw(),
         grid: MidiGrid::Sixteenth,
@@ -509,5 +570,62 @@ mod geometry_tests {
         let preview = g.preview;
         assert!(!g.update(f32::NAN, false));
         assert_eq!(g.preview, preview);
+    }
+
+    #[test]
+    fn unlooped_arrangement_scope_drag_updates_arrangement_bounds_past_source_length() {
+        let beat = hex_project::BeatTime::ONE.raw();
+        let base = context();
+        let c = Context {
+            arrangement_scope: true,
+            values: SourceValues {
+                arrangement_start: 4 * beat,
+                arrangement_length: 4 * beat,
+                source_length: beat,
+                source_start: 0,
+                loop_start: 0,
+                loop_end: 4 * beat,
+                looping: false,
+            },
+            span: 8 * beat,
+            ..base
+        };
+        assert!(c.valid());
+        let mut end = Gesture {
+            context: c,
+            down_x: 300.0,
+            handle: Handle::LoopEnd,
+            preview: c.values,
+        };
+        assert!(end.update(400.0, false));
+        assert_eq!(end.preview.loop_end, 6 * beat);
+        assert_eq!(end.preview.arrangement_length, 6 * beat);
+        assert_eq!(end.preview.source_length, 6 * beat);
+
+        let mut start = Gesture {
+            context: c,
+            down_x: 100.0,
+            handle: Handle::LoopStart,
+            preview: c.values,
+        };
+        assert!(start.update(150.0, false));
+        assert_eq!(start.preview.loop_start, beat);
+        assert_eq!(start.preview.arrangement_start, 5 * beat);
+        assert_eq!(start.preview.arrangement_length, 3 * beat);
+        assert_eq!(start.preview.source_start, beat);
+
+        let mut body = Gesture {
+            context: c,
+            down_x: 200.0,
+            handle: Handle::LoopBody,
+            preview: c.values,
+        };
+        assert!(body.update(250.0, false));
+        assert_eq!(
+            (body.preview.loop_start, body.preview.loop_end),
+            (beat, 5 * beat)
+        );
+        assert_eq!(body.preview.arrangement_start, 5 * beat);
+        assert_eq!(body.preview.arrangement_length, 4 * beat);
     }
 }

@@ -38,13 +38,13 @@ impl EditorView {
         {
             return;
         }
-        let source_values = super::midi_source_controls::SourceValues::from_source(
-            source,
-            arrangement.map_or(0, |clip| clip.start().raw()),
-            arrangement.map_or(source.source_length().raw(), |clip| {
-                clip.arrangement_length().raw()
-            }),
-        );
+        let Some(source_values) = self.state.as_ref().and_then(|state| {
+            super::midi_source_controls::SourceValues::for_clip(&state.project, clip_id)
+        }) else {
+            return;
+        };
+        let canonical_loop_end =
+            arrangement.map_or(source.loop_end().raw(), |c| c.loop_end().raw());
         let latest_note_end =
             if field == super::midi_source_controls::SourceField::SourceLength && direction < 0 {
                 source
@@ -57,8 +57,10 @@ impl EditorView {
                 0
             };
         let step = self.midi_snap_grid.movement_step();
-        let changed = match super::midi_source_controls::adjust(
+        let changed = match super::midi_source_controls::adjust_clip(
             source_values,
+            arrangement.is_some(),
+            canonical_loop_end,
             field,
             direction,
             step,
