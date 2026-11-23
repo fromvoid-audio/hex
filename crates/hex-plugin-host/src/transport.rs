@@ -1829,6 +1829,12 @@ impl Worker {
     pub fn completed_blocks(&self) -> u64 {
         self.sequence
     }
+    /// Observe already-published PCM work without consuming it. This acquire
+    /// snapshot grants no admission or exclusion against a later publication.
+    /// The original worker remains the only consumer.
+    pub fn has_queued_request(&self) -> bool {
+        self.requests.slots() != 0
+    }
     #[cfg(any(test, feature = "test-support"))]
     pub fn pending_requests_for_test(&self) -> usize {
         self.requests.slots()

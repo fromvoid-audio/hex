@@ -406,6 +406,8 @@ struct State {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     control_turn: u8,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pcm_since_routine_control: u8,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     parameter_change: parameter_change::Work,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     editor_started: Option<std::num::NonZeroU64>,
@@ -708,6 +710,8 @@ fn spawn_processor_with(
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         control_turn: 0,
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        pcm_since_routine_control: 0,
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         parameter_change: parameter_change::Work::default(),
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         editor_started: None,
@@ -954,6 +958,8 @@ fn transport_runner_with_setup(
                         }
                         break;
                     }
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    state.record_pcm_completion();
                     published.publish_blocks(state.worker.completed_blocks());
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     if let Some(deadline) = &mut deadline {
@@ -961,6 +967,8 @@ fn transport_runner_with_setup(
                     }
                 }
                 Ok(None) => {
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    state.record_empty_pcm_poll();
                     if published.offline.is_some() {
                         thread::park_timeout(OFFLINE_IDLE);
                     } else {

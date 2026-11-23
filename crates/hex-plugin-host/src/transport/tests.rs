@@ -1932,3 +1932,32 @@ fn callback_quantum_observation_timing() {
         elapsed.as_nanos() / BLOCKS as u128
     );
 }
+
+#[test]
+fn queued_request_snapshot_preserves_the_exact_pcm_and_allocates_nothing() {
+    let (control, mut callback, mut worker) = channel(BINDING, 4).unwrap();
+    let counts = allocation_counter::measure(|| {
+        assert!(!worker.has_queued_request());
+        callback
+            .stage(&[[0.25; 2]; 4], &[], &mut [[0.0; 2]; 4])
+            .unwrap();
+        callback.finish(true).unwrap();
+        assert!(worker.has_queued_request());
+        assert!(worker.has_queued_request());
+        let block = worker.receive().unwrap().unwrap();
+        assert_eq!(block.sequence, 0);
+        assert!(!worker.has_queued_request());
+        worker.complete(block).unwrap();
+        assert!(!worker.has_queued_request());
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    control.revoke();
+}
