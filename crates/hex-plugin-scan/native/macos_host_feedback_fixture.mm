@@ -1,10 +1,12 @@
 #import <AppKit/AppKit.h>
 #include "macos_host.hpp"
 #include <cassert>
+#include <chrono>
+#include <cstdio>
 using namespace Steinberg;
 using namespace Steinberg::Vst;
 using namespace hex_instance;
-class Controller final : public IEditController {
+class Controller : public IEditController {
 public:
     ParamValue value=0.25;
     uint32 setter_calls=0;
@@ -42,7 +44,63 @@ public:
     tresult PLUGIN_API setComponentHandler(IComponentHandler*) override { return kResultOk; }
     IPlugView* PLUGIN_API createView(FIDString) override { return nullptr; }
 };
+class LargeController final : public Controller {
+public:
+    bool reverse=false, duplicate_unit=false, changed_id=false;
+    int32 PLUGIN_API getParameterCount() override { return HOST_PARAMETER_COUNT; }
+    tresult PLUGIN_API getParameterInfo(int32 ordinal,ParameterInfo& info) override {
+        if(ordinal<0 || ordinal>=getParameterCount()) return kInvalidArgument;
+        const int32 id=reverse?getParameterCount()-1-ordinal:ordinal;
+        info={};
+        info.id=changed_id && id==17?getParameterCount():id;
+        info.unitId=duplicate_unit && id==17?16:id;
+        info.flags=ParameterInfo::kCanAutomate|ParameterInfo::kIsBypass;
+        return kResultOk;
+    }
+};
+
+static void large_metadata_refresh() {
+    // Benchmark the complete native control transaction, including SDK reads,
+    // descriptor hashing and publication. One warm-up precedes five timed pairs.
+    using Clock=std::chrono::steady_clock;
+    std::array<double,5> initial_ms{},reversed_ms{};
+    for(size_t trial=0;trial<=initial_ms.size();++trial) {
+        LargeController controller;
+        Host host;
+        const auto start=Clock::now();
+        assert(host.refresh_on_control(&controller).disposition==HostDisposition::Refreshed);
+        const auto loaded=Clock::now();
+        assert(host.beginEdit(7)==kResultOk && host.performEdit(7,0.75)==kResultOk);
+        assert(host.endEdit(7)==kResultOk);
+        const auto before=host.snapshot()->parameters[7];
+        assert(before.editor_sequence && before.feedback_floor);
+        controller.reverse=true;
+        const auto reverse_start=Clock::now();
+        assert(host.refresh_on_control(&controller).disposition==HostDisposition::Refreshed);
+        const auto refreshed=Clock::now();
+        const auto& retained=host.snapshot()->parameters[HOST_PARAMETER_COUNT-1-7];
+        assert(retained.info.id==7 && retained.editor_sequence==before.editor_sequence);
+        assert(retained.feedback_floor==before.feedback_floor);
+        const auto revision=host.snapshot()->revision;
+        controller.duplicate_unit=true;
+        assert(host.refresh_on_control(&controller).disposition==HostDisposition::InvalidMetadata);
+        controller.duplicate_unit=false;
+        controller.changed_id=true;
+        assert(host.refresh_on_control(&controller).disposition==HostDisposition::InvalidMetadata);
+        assert(host.snapshot()->revision==revision && retained.info.id==7);
+        if(trial) {
+            initial_ms[trial-1]=std::chrono::duration<double,std::milli>(loaded-start).count();
+            reversed_ms[trial-1]=std::chrono::duration<double,std::milli>(refreshed-reverse_start).count();
+        }
+    }
+    std::sort(initial_ms.begin(),initial_ms.end());
+    std::sort(reversed_ms.begin(),reversed_ms.end());
+    std::printf("8192 unique bypass units, median of five: initial %.3f ms, reversed %.3f ms\n",
+        initial_ms[2],reversed_ms[2]);
+}
+
 int main(int argc,char** argv) { @autoreleasepool {
+    if(argc==1 || !std::strcmp(argv[1],"large-metadata")) large_metadata_refresh();
     // Each scenario can also be run independently against an unfixed host.
     if(argc==1 || !std::strcmp(argv[1],"redundant-setter")) {
         Controller unchanged;

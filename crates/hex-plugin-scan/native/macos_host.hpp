@@ -24,6 +24,8 @@ struct ParameterSnapshot {
     // Rich strings belong to the main SDK lane. Allocate only the validated
     // count, retaining the previous inventory until a full refresh succeeds.
     std::unique_ptr<Parameter[]> parameters;
+    // Control-side enumeration indices in ID order. Rich descriptors retain SDK order.
+    std::unique_ptr<uint32[]> by_id;
     uint32 count=0;
     uint64 revision=0;
     std::array<unsigned char,32> descriptor_signature{};
@@ -203,11 +205,9 @@ class Host final : public IHostApplication, public IComponentHandler, public ICo
     static void compact_into(const ParameterSnapshot& source,ProcessingParameterSnapshot& result) {
         result.count=source.count;result.revision=source.revision;
         for(uint32 n=0;n<source.count;++n) {
-            const auto& parameter=source.parameters[n];
+            const auto& parameter=source.parameters[source.by_id[n]];
             result.parameters[n]={parameter.info.id,parameter.info.flags,parameter.info.stepCount};
         }
-        std::sort(result.parameters.begin(),result.parameters.begin()+result.count,
-            [](const auto& left,const auto& right) { return left.id<right.id; });
     }
     bool publish_processing_snapshot(const ProcessingParameterSnapshot& next) {
         for(auto& slot:processing_snapshots) {
@@ -738,10 +738,12 @@ private:
         if (valid) staged.count=static_cast<uint32>(total);
         if (staged.count) {
             staged.parameters.reset(new(std::nothrow) ParameterSnapshot::Parameter[staged.count]);
-            if(!staged.parameters) {
+            staged.by_id.reset(new(std::nothrow) uint32[staged.count]);
+            if(!staged.parameters || !staged.by_id) {
                 refuse(MetadataCapacity); result.disposition=HostDisposition::Capacity; return result;
             }
         }
+        uint32 bypass_count=0;
         for (uint32 i=0;valid && i<staged.count;++i) {
             auto& parameter=staged.parameters[i];
             valid=controller->getParameterInfo(static_cast<int32>(i),parameter.info)==kResultOk;
@@ -760,45 +762,46 @@ private:
                   info.defaultNormalizedValue>=0 && info.defaultNormalizedValue<=1;
             valid=valid && !((info.flags&ParameterInfo::kIsReadOnly) && (info.flags&ParameterInfo::kCanAutomate)) &&
                 (!(info.flags&ParameterInfo::kIsHidden) || (info.flags&ParameterInfo::kIsReadOnly));
-            // Multi-unit VST3 instruments (for example u-he Zebra3) expose one
-            // kIsBypass parameter per distinct unitId. Keep bypass unique per
-            // unit instead of rejecting distinct sub-unit bypasses.
-            if(info.flags&ParameterInfo::kIsBypass) {
-                for(uint32 prior=0;valid && prior<i;++prior)
-                    if((staged.parameters[prior].info.flags&ParameterInfo::kIsBypass) &&
-                       staged.parameters[prior].info.unitId==info.unitId)
-                        valid=false;
-            }
+            if(info.flags&ParameterInfo::kIsBypass) staged.by_id[bypass_count++]=i;
             if (valid) {
                 parameter.value=controller->getParamNormalized(info.id);
                 valid=std::isfinite(parameter.value) && parameter.value>=0 && parameter.value<=1;
-                if(i<metadata.count && metadata.parameters[i].info.id==info.id)
-                    {parameter.editor_sequence=metadata.parameters[i].editor_sequence;parameter.feedback_floor=metadata.parameters[i].feedback_floor;}
-                else for(uint32 prior=0;prior<metadata.count;++prior) if(metadata.parameters[prior].info.id==info.id) {
-                    parameter.editor_sequence=metadata.parameters[prior].editor_sequence;
-                    parameter.feedback_floor=metadata.parameters[prior].feedback_floor;break;
-                }
             }
         }
         if (metadata.revision && staged.count!=metadata.count) valid=false;
         if (recursive) { result.disposition=HostDisposition::Recursive; return result; }
+        // Reuse the staged index for bypass-unit validation before ordering it
+        // by ID. Both sorts are bounded by the validated inventory count.
+        if(valid && bypass_count>1) {
+            const auto unit=[&](uint32 index) { return staged.parameters[index].info.unitId; };
+            auto* begin=staged.by_id.get();
+            std::sort(begin,begin+bypass_count,[&](uint32 a,uint32 b) { return unit(a)<unit(b); });
+            valid=std::adjacent_find(begin,begin+bypass_count,[&](uint32 a,uint32 b) {
+                return unit(a)==unit(b);
+            })==begin+bypass_count;
+        }
+        if(valid && staged.count) {
+            auto* order=staged.by_id.get();
+            for(uint32 n=0;n<staged.count;++n) order[n]=n;
+            std::sort(order,order+staged.count,[&](uint32 a,uint32 b) {
+                return staged.parameters[a].info.id<staged.parameters[b].info.id;
+            });
+            for(uint32 n=0;valid && n<staged.count;++n) {
+                auto& current=staged.parameters[order[n]];
+                if(n && current.info.id==staged.parameters[order[n-1]].info.id) valid=false;
+                if(metadata.revision) {
+                    const auto& prior=metadata.parameters[metadata.by_id[n]];
+                    valid=valid && current.info.id==prior.info.id;
+                    current.editor_sequence=prior.editor_sequence;
+                    current.feedback_floor=prior.feedback_floor;
+                }
+            }
+        }
         if (!valid) { refuse(InvalidMetadata); result.disposition=HostDisposition::InvalidMetadata; return result; }
         staged.revision=metadata.revision+1;
         std::unique_ptr<ProcessingParameterSnapshot> next(new(std::nothrow) ProcessingParameterSnapshot{});
         if(!next) { refuse(MetadataCapacity); result.disposition=HostDisposition::Capacity; return result; }
         compact_into(staged,*next);
-        const auto same_id=[](const auto& left,const auto& right) { return left.id==right.id; };
-        const auto end=next->parameters.begin()+next->count;
-        bool valid_ids=std::adjacent_find(next->parameters.begin(),end,same_id)==end;
-        if (valid_ids && metadata.revision) {
-            std::unique_ptr<ProcessingParameterSnapshot> prior(new(std::nothrow) ProcessingParameterSnapshot{});
-            if(!prior) { refuse(MetadataCapacity); result.disposition=HostDisposition::Capacity; return result; }
-            compact_into(metadata,*prior);
-            valid_ids=std::equal(next->parameters.begin(),end,prior->parameters.begin(),same_id);
-        }
-        if (!valid_ids) {
-            refuse(InvalidMetadata); result.disposition=HostDisposition::InvalidMetadata; return result;
-        }
         if(!publish_processing_snapshot(*next)) {
             result.disposition=HostDisposition::Pending;return result;
         }
