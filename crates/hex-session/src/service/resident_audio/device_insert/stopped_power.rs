@@ -1,5 +1,26 @@
 //! Narrow command identity; the sink separately proves the installed stopped interval.
-use hex_project::{Command, Device, Project};
+use hex_project::{Command, Device, Editor, Project};
+
+pub(super) fn power_history_command(before: &Project, after: &Project) -> Option<Command> {
+    let candidate = if let [device] = before.main_devices()
+        && device.state().type_id() == hex_lattice_contract::VST3_DEVICE_TYPE_ID
+    {
+        Some(device)
+    } else {
+        crate::service::audio_sink::sole_hosted_return(before).map(|(_, device)| device)
+    }?;
+    let next = after.device(candidate.id())?;
+    if next.bypassed() == candidate.bypassed() {
+        return None;
+    }
+    let command = Command::SetDeviceBypass {
+        device: candidate.id(),
+        bypassed: next.bypassed(),
+    };
+    let mut check = Editor::new(before.clone(), 1).ok()?;
+    check.execute(command.clone()).ok()?;
+    (check.project() == after).then_some(command)
+}
 
 pub(super) fn eligible(project: &Project, command: &Command) -> bool {
     let [device] = project.main_devices() else {
@@ -272,5 +293,109 @@ mod tests {
             })
             .unwrap();
         assert!(running_return_power_on_target(editor.project(), &on).is_none());
+    }
+
+    #[test]
+    fn power_history_command_detects_sole_main_and_return_vst3_undo_and_redo() {
+        let vst3 = hex_lattice_contract::NativeDeviceState::new(
+            hex_lattice_contract::VST3_DEVICE_TYPE_ID,
+            1,
+            vec![7],
+        )
+        .unwrap();
+
+        // Main sole VST3: power off -> Undo (power on) -> Redo (power off).
+        let mut main_editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Device(main_device) = main_editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: vst3.clone(),
+            })
+            .unwrap()
+        else {
+            panic!("main vst3");
+        };
+        main_editor
+            .execute(Command::SetDeviceBypass {
+                device: main_device,
+                bypassed: true,
+            })
+            .unwrap();
+        assert!(matches!(
+            main_editor
+                .inspect_history(false, power_history_command)
+                .flatten(),
+            Some(Command::SetDeviceBypass {
+                device,
+                bypassed: false,
+            }) if device == main_device
+        ));
+        assert!(main_editor.undo());
+        assert!(matches!(
+            main_editor
+                .inspect_history(true, power_history_command)
+                .flatten(),
+            Some(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            }) if device == main_device
+        ));
+
+        // Return sole VST3: power off -> Undo (power on) -> Redo (power off).
+        let mut return_editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::ReturnTrack(bus) = return_editor
+            .execute(Command::AddReturnTrack { name: "fx".into() })
+            .unwrap()
+        else {
+            panic!("return bus");
+        };
+        let Created::Device(return_device) = return_editor
+            .execute(Command::InsertReturnDevice {
+                return_track: bus,
+                before: None,
+                state: vst3,
+            })
+            .unwrap()
+        else {
+            panic!("return vst3");
+        };
+        return_editor
+            .execute(Command::SetDeviceBypass {
+                device: return_device,
+                bypassed: true,
+            })
+            .unwrap();
+        assert!(matches!(
+            return_editor
+                .inspect_history(false, power_history_command)
+                .flatten(),
+            Some(Command::SetDeviceBypass {
+                device,
+                bypassed: false,
+            }) if device == return_device
+        ));
+        assert!(return_editor.undo());
+        assert!(matches!(
+            return_editor
+                .inspect_history(true, power_history_command)
+                .flatten(),
+            Some(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            }) if device == return_device
+        ));
+
+        // Unrelated edits (e.g. tempo) do not match power_history_command.
+        return_editor
+            .execute(Command::SetProjectTempo {
+                tempo: hex_project::Tempo::new(130_000_000).unwrap(),
+            })
+            .unwrap();
+        assert!(
+            return_editor
+                .inspect_history(false, power_history_command)
+                .flatten()
+                .is_none()
+        );
     }
 }

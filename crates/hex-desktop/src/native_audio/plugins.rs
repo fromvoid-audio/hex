@@ -1423,6 +1423,42 @@ impl Plugins {
         })
     }
 
+    fn re_enabling_without_worker(
+        preparing_edit: bool,
+        owner: ProcessorChainOwner,
+        device: u64,
+        next_bypassed: Option<bool>,
+        previously_powered_off: Option<NativeProcessorIdentity>,
+        previous_bypassed: Option<bool>,
+    ) -> bool {
+        preparing_edit
+            && next_bypassed == Some(false)
+            && (previously_powered_off.is_some_and(|identity| {
+                identity.owner() == owner && identity.device_id() == device
+            }) || previous_bypassed == Some(true))
+    }
+
+    fn effective_powering_on(
+        &self,
+        context: AudioSourceContext,
+        preparing_edit: bool,
+        previously_powered_off: Option<NativeProcessorIdentity>,
+        explicit_power_on: Option<(ProcessorChainOwner, u64)>,
+        device_bypassed: impl FnOnce(u64) -> Option<bool>,
+    ) -> Option<NativeProcessorIdentity> {
+        previously_powered_off.filter(|identity| {
+            explicit_power_on.is_some_and(|(owner, device)| {
+                identity.owner() == owner && identity.device_id() == device
+            }) || (preparing_edit
+                && device_bypassed(identity.device_id()) == Some(false)
+                && !self.has_accepted_effect_source(
+                    context,
+                    identity.owner(),
+                    identity.device_id(),
+                ))
+        })
+    }
+
     pub fn compile(
         &mut self,
         output: Option<&mut WorkerPreparedOutput>,
@@ -1499,11 +1535,20 @@ impl Plugins {
             )
             .map(Some);
         }
-        let powering_on = powered_off.filter(|identity| {
-            input.power_on().is_some_and(|intent| {
-                identity.owner() == intent.owner() && identity.device_id() == intent.device()
-            })
+        let previously_powered_off = powered_off.or_else(|| {
+            self.saved_off_document
+                .filter(|(generation, _)| *generation == input.context().project_generation)
+                .map(|(_, identity)| identity)
         });
+        let powering_on = self.effective_powering_on(
+            input.context(),
+            input.preparing_edit(),
+            previously_powered_off,
+            input
+                .power_on()
+                .map(|intent| (intent.owner(), intent.device())),
+            |device| input.plugin_device_bypassed(device),
+        );
         let mut output = output;
         let mut reorder = None;
         if input.preparing_edit() {
@@ -1557,6 +1602,19 @@ impl Plugins {
             if let Some(binding) = source {
                 bindings.push(binding);
                 return Ok(());
+            }
+            let previous_bypassed = desired
+                .filter(|source| source.context().project_generation == context.project_generation)
+                .and_then(|source| source.effect_preparation().plugin_device_bypassed(device));
+            if Self::re_enabling_without_worker(
+                input.preparing_edit(),
+                owner,
+                device,
+                input.plugin_device_bypassed(device),
+                previously_powered_off,
+                previous_bypassed,
+            ) {
+                return Err("original vst3 source unavailable for this device".into());
             }
             // A staged document can preserve unresolved state, as can later
             // edits retaining that same canonical device. This is never an
@@ -2556,5 +2614,88 @@ mod pool_reclamation_tests {
             plugins.sources.retain(|source| !source.retiring);
             assert_eq!(plugins.sources.len(), 0);
         }
+    }
+
+    #[test]
+    fn re_enabling_powered_off_main_or_return_without_worker_never_preserves_as_unavailable() {
+        let context = AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 4,
+        };
+        for owner in [ProcessorChainOwner::Main, ProcessorChainOwner::Return(3)] {
+            let identity = NativeProcessorIdentity::new(owner, 42).unwrap();
+            let plugins = Plugins {
+                saved_off_document: Some((1, identity)),
+                ..Plugins::default()
+            };
+
+            // Undo of power-off with power_on: None still triggers powering_on
+            // when no accepted worker exists and the device becomes enabled.
+            assert_eq!(
+                plugins.effective_powering_on(context, true, Some(identity), None, |_| Some(false)),
+                Some(identity)
+            );
+            // Staying bypassed does not power on.
+            assert_eq!(
+                plugins.effective_powering_on(context, true, Some(identity), None, |_| Some(true)),
+                None
+            );
+            // An enabled device transitioning bypassed true -> false or coming
+            // from PoweredOff without a worker must be refused rather than
+            // classified as a preserved UnavailableEffect.
+            assert!(Plugins::re_enabling_without_worker(
+                true,
+                owner,
+                42,
+                Some(false),
+                Some(identity),
+                Some(true),
+            ));
+            assert!(Plugins::re_enabling_without_worker(
+                true,
+                owner,
+                42,
+                Some(false),
+                None,
+                Some(true),
+            ));
+            // Unrelated edits on an already-enabled unavailable plugin remain
+            // preserved when it was neither PoweredOff nor bypassed before.
+            assert!(!Plugins::re_enabling_without_worker(
+                true,
+                owner,
+                42,
+                Some(false),
+                None,
+                Some(false),
+            ));
+            // Project Open (preparing_edit == false) still preserves unavailable plugins.
+            assert!(!Plugins::re_enabling_without_worker(
+                false,
+                owner,
+                42,
+                Some(false),
+                None,
+                Some(true),
+            ));
+        }
+
+        // Accepting a newly prepared edit worker clears saved_off_document.
+        let identity = NativeProcessorIdentity::new(ProcessorChainOwner::Main, 42).unwrap();
+        let mut plugins = Plugins {
+            saved_off_document: Some((1, identity)),
+            edit: Some(context),
+            ..Plugins::default()
+        };
+        let mut fresh = source_record(ProcessorChainOwner::Main, 42, 7, 1, 1);
+        fresh.accepted = false;
+        fresh.operation = SourceOperation::Edit {
+            context,
+            predecessor: None,
+        };
+        plugins.sources.push(fresh);
+        plugins.finish_edit(context, true);
+        assert!(plugins.saved_off_document.is_none());
+        assert!(plugins.sources[0].accepted && !plugins.sources[0].retiring);
     }
 }

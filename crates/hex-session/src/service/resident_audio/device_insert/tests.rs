@@ -63,6 +63,8 @@ struct Fixture {
     revision: u64,
     pending_parameters: Option<PluginParameterResult>,
     pending_conversion: Option<PluginParameterConversionResult>,
+    provide_stopped_power_fence: bool,
+    observed_power_on: Vec<Option<ResidentPowerOn>>,
 }
 
 impl WorkerAudioSink for Arc<Mutex<Fixture>> {
@@ -80,14 +82,74 @@ impl WorkerAudioSink for Arc<Mutex<Fixture>> {
 
     fn prepare_resident_effects(
         &mut self,
-        _: ResidentEffectPreparation<'_>,
+        input: ResidentEffectPreparation<'_>,
         prepare: &mut dyn FnMut(
             &hex_engine::AudioCandidateEffects<'_, '_>,
         ) -> Result<PreparedRevision, hex_engine::Invalid>,
     ) -> Result<Option<PreparedRevision>, String> {
-        hex_engine::AudioCandidateEffects::with_host_definitions(&[], prepare)
+        self.lock()
+            .unwrap()
+            .observed_power_on
+            .push(input.power_on());
+        let mut first_vst3 = None;
+        let _ = input.visit_plugin_devices(|dest, device_id, _| {
+            if first_vst3.is_none() {
+                first_vst3 = Some((dest.owner(), device_id));
+            }
+            Ok(())
+        });
+        if let Some((owner, device_id)) = first_vst3 {
+            hex_engine::AudioCandidateEffects::with_test_foreign_effect_program(
+                owner,
+                device_id,
+                hex_lattice_contract::ForeignProcessorBinding {
+                    root: 1,
+                    instance: device_id,
+                    graph: input.context().editor_revision.max(1),
+                    epoch: 1,
+                },
+                std::num::NonZeroU64::new(1).unwrap(),
+                0,
+                prepare,
+            )
             .map(Some)
             .map_err(|error| error.to_string())
+        } else {
+            hex_engine::AudioCandidateEffects::with_host_definitions(&[], prepare)
+                .map(Some)
+                .map_err(|error| error.to_string())
+        }
+    }
+
+    fn stopped_resident_power_fence(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+        _: u64,
+    ) -> Result<Option<ResidentFreshRuntimeFence>, String> {
+        let fixture = self.lock().unwrap();
+        if !fixture.provide_stopped_power_fence {
+            return Ok(None);
+        }
+        let active = fixture
+            .active
+            .filter(|active| active.source_context == Some(context));
+        Ok(active.map(|active| ResidentFreshRuntimeFence {
+            output_identity: active.output_identity,
+            active_audio_revision: active.audio_revision,
+            route_generation: 0,
+            admitted_command_ticket: 0,
+            output_fault_epoch: 0,
+            consumed_stop_generation: 1,
+        }))
+    }
+
+    fn stopped_resident_return_power_on_fence(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+        _: hex_engine::ProcessorChainOwner,
+        _: u64,
+    ) -> Result<Option<ResidentFreshRuntimeFence>, String> {
+        self.stopped_resident_power_fence(context, 0)
     }
 
     fn confirms_device_inserts(&self) -> bool {
@@ -1552,6 +1614,104 @@ fn read_only_observations_do_not_cancel_pending_or_confirmed_device_insert() {
     assert!(added.request_complete);
     assert_eq!(added.state.project.tracks().len(), 1);
     assert_eq!(added.state.project.tracks()[0].name(), "after");
+}
+
+#[test]
+fn undo_of_powered_off_main_and_return_vst3_routes_through_power_on_preparation() {
+    let vst3 = hex_lattice_contract::NativeDeviceState::new(
+        hex_lattice_contract::VST3_DEVICE_TYPE_ID,
+        1,
+        vec![9],
+    )
+    .unwrap();
+
+    for on_return in [false, true] {
+        let (service, fixture, _) = service();
+        let device = if on_return {
+            service
+                .submit(Request::Edit(Command::AddReturnTrack { name: "fx".into() }))
+                .unwrap();
+            let bus = match receive(&service).created {
+                Some(Created::ReturnTrack(bus)) => bus,
+                other => panic!("expected return track, got {other:?}"),
+            };
+            service
+                .submit(Request::Edit(Command::InsertReturnDevice {
+                    return_track: bus,
+                    before: None,
+                    state: vst3.clone(),
+                }))
+                .unwrap();
+            let event = receive(&service);
+            let event = if event.request_complete {
+                event
+            } else {
+                install_candidate(&service, &fixture)
+            };
+            match event.created {
+                Some(Created::Device(device)) => device,
+                other => panic!("expected return device, got {other:?}"),
+            }
+        } else {
+            service
+                .submit(Request::Edit(Command::InsertMainDevice {
+                    before: None,
+                    state: vst3.clone(),
+                }))
+                .unwrap();
+            let event = receive(&service);
+            let event = if event.request_complete {
+                event
+            } else {
+                install_candidate(&service, &fixture)
+            };
+            match event.created {
+                Some(Created::Device(device)) => device,
+                other => panic!("expected main device, got {other:?}"),
+            }
+        };
+
+        fixture.lock().unwrap().provide_stopped_power_fence = true;
+
+        // Power off the sole Main/Return VST3.
+        service
+            .submit(Request::Edit(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            }))
+            .unwrap();
+        let off = receive(&service);
+        let off = if off.request_complete {
+            off
+        } else {
+            install_candidate(&service, &fixture)
+        };
+        assert!(off.error.is_none(), "{:?}", off.error);
+        assert!(off.state.project.device(device).unwrap().bypassed());
+
+        fixture.lock().unwrap().observed_power_on.clear();
+
+        // Undo the power-off: must route through staged power-on preparation
+        // with an explicit ResidentPowerOn intent, never falling through with
+        // power_on: None.
+        service.submit(Request::Undo).unwrap();
+        let pending = receive(&service);
+        assert!(
+            !pending.request_complete,
+            "Undo power-on must stage via DeviceInsert receipt"
+        );
+        let undone = install_candidate(&service, &fixture);
+        assert!(undone.error.is_none(), "{:?}", undone.error);
+        assert!(!undone.state.project.device(device).unwrap().bypassed());
+        let power_ons = fixture.lock().unwrap().observed_power_on.clone();
+        assert!(
+            power_ons
+                .iter()
+                .flatten()
+                .any(|intent| intent.device() == device.value()),
+            "on_return={on_return}: Undo of powered-off VST3 must supply ResidentPowerOn, got {power_ons:?}"
+        );
+    }
 }
 
 mod track_routes;

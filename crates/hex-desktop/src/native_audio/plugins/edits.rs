@@ -373,6 +373,17 @@ impl Plugins {
         }
         if accepted {
             self.installed_removals_checked = None;
+            if let Some((generation, identity)) = self.saved_off_document
+                && self.sources.iter().any(|source| {
+                    source.accepted
+                        && !source.retiring
+                        && source.project_generation == generation
+                        && source.owner == identity.owner()
+                        && source.device == identity.device_id()
+                })
+            {
+                self.saved_off_document = None;
+            }
             // A newly restored version supersedes earlier instances of this
             // canonical device. History owns their opaque payloads, not their
             // live DSP state: epoch resume deliberately does not restore those
@@ -658,11 +669,18 @@ impl Plugins {
             metadata.selection()
         } else {
             // History can reintroduce the last device from a provider whose
-            // worker has already retired. Use the same exact lookup as Open.
+            // worker has already retired, or re-enable a device whose worker
+            // retired on power-off or opened saved-off. Use the same exact
+            // catalog lookup as Open.
             let previous = desired
                 .filter(|source| source.context().project_generation == context.project_generation)
                 .map(CanonicalAudioSourceSnapshot::effect_preparation);
+            let re_enabling = previous
+                .as_ref()
+                .is_some_and(|old| old.plugin_device_bypassed(device) == Some(true))
+                && input.plugin_device_bypassed(device) == Some(false);
             let reintroduced = powering_on
+                || re_enabling
                 || previous
                     .as_ref()
                     .is_some_and(|old| old.plugin_device_bypassed(device).is_none());
@@ -674,7 +692,7 @@ impl Plugins {
             catalog = match selected {
                 Ok(selected) => selected,
                 Err(reason) => {
-                    if powering_on {
+                    if powering_on || re_enabling {
                         return Err(reason);
                     }
                     let mut preserved = false;
