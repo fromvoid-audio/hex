@@ -1074,6 +1074,8 @@ impl EditorView {
         if let Some(status) = event.status {
             self.status = status;
             self.error = None;
+        } else if event.save_complete && event.error.is_some() && !save_confirmation_required {
+            self.status = "project was not saved".into();
         }
         if recovering_refused_time_copy {
             self.status = "restarting audio · time will be duplicated when ready".into();

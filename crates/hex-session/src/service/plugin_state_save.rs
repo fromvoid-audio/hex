@@ -103,13 +103,26 @@ pub(super) fn project_for_save_with_capture(
 ) -> Result<Project, String> {
     let project = super::recovery::project_for_save(session, media_base)?;
     let captures = match audio {
-        Some(audio) => audio.capture_plugin_states(PluginStateCaptureInput {
-            project: session.project(),
-            context,
-            cancellation,
-            flush_idle_editor_input: true,
-            device_filter: None,
-        })?,
+        Some(audio) => audio
+            .capture_plugin_states(PluginStateCaptureInput {
+                project: session.project(),
+                context,
+                cancellation,
+                flush_idle_editor_input: true,
+                device_filter: None,
+            })
+            .map_err(|error| match error.as_str() {
+                "native capture output is closing"
+                | "vst3 capture output is unavailable"
+                | "vst3 capture source is retiring" => {
+                    "vst3 state could not be captured · restart audio and retry save".into()
+                }
+                "vst3 state restoration is pending"
+                | "vst3 capture source preparation is pending" => {
+                    "vst3 state is being restored · retry save when audio is ready".into()
+                }
+                _ => error,
+            })?,
         None => Vec::new(),
     };
     if !captures.is_empty() && cancellation.is_cancelled() {
