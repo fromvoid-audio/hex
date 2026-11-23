@@ -149,7 +149,11 @@ impl ForeignProcessors for Borrowed {
         frames: &mut [Frame],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
-        if self.revoked || self.fail_at == Some(offset) {
+        if self.revoked
+            || self
+                .fail_at
+                .is_some_and(|at| at >= offset && at < offset + frames.len())
+        {
             return Err(DeviceContractError::ForeignProcessingFailed);
         }
         assert_eq!((node.owner, node.device_id), (self.owner, self.device));
@@ -160,17 +164,18 @@ impl ForeignProcessors for Borrowed {
             offset, self.next_offset,
             "physical callback segments stay contiguous"
         );
-        assert_eq!(
-            frames.len(),
-            1,
-            "the existing content-origin path remains authoritative"
+        assert!(
+            !frames.is_empty(),
+            "physical callback segments must be non-empty"
         );
-        assert_eq!(
-            clock
-                .and_then(|clock| clock.performance_frame_at_offset(0))
-                .is_some(),
-            self.processed >= self.initial_unstamped_frames
-        );
+        for i in 0..frames.len() {
+            assert_eq!(
+                clock
+                    .and_then(|clock| clock.performance_frame_at_offset(i))
+                    .is_some(),
+                self.processed + i >= self.initial_unstamped_frames
+            );
+        }
         self.next_offset += frames.len();
         self.processed += frames.len();
         for frame in frames {
@@ -210,15 +215,17 @@ fn delayed_effect_origins_keep_their_clock_through_successive_tempo_edits() {
             clock: Option<&dyn NativeInstrumentClock>,
         ) -> Result<(), DeviceContractError> {
             let clock = clock.unwrap();
-            if let Some(source) = clock.performance_frame_at_offset(0) {
-                self.origins.push((
-                    source,
-                    clock.arrangement_frame_at_offset(0).unwrap(),
-                    clock.tempo_micro_bpm_at_offset(0).unwrap(),
-                    clock.authored_clock_epoch_at_offset(0),
-                ));
-            } else {
-                assert_eq!(clock.authored_clock_epoch_at_offset(0), None);
+            for i in 0..frames.len() {
+                if let Some(source) = clock.performance_frame_at_offset(i) {
+                    self.origins.push((
+                        source,
+                        clock.arrangement_frame_at_offset(i).unwrap(),
+                        clock.tempo_micro_bpm_at_offset(i).unwrap(),
+                        clock.authored_clock_epoch_at_offset(i),
+                    ));
+                } else {
+                    assert_eq!(clock.authored_clock_epoch_at_offset(i), None);
+                }
             }
             self.effect
                 .process_segment(node, offset, frames, Some(clock))
@@ -614,7 +621,10 @@ fn foreign_export_applies_authored_parameter_values_to_audio(linear: bool) {
         BeatTime, DeviceAutomation, DeviceAutomationTarget,
     };
 
-    struct AutomatedEffect(Borrowed);
+    struct AutomatedEffect {
+        effect: Borrowed,
+        value: f32,
+    }
     impl ForeignProcessors for AutomatedEffect {
         fn process_segment(
             &mut self,
@@ -628,18 +638,25 @@ fn foreign_export_applies_authored_parameter_values_to_audio(linear: bool) {
                 .expect("prepared automation reaches the offline effect");
             assert_eq!(Some(program.binding), node.prepared.binding());
             let mut origins = [None; 8];
-            origins[0] = clock.and_then(|clock| clock.authored_arrangement_frame_at_offset(0));
+            for (i, slot) in origins.iter_mut().take(frames.len()).enumerate() {
+                *slot = clock.and_then(|clock| clock.authored_arrangement_frame_at_offset(i));
+            }
             let mut points = [hex_lattice_contract::ForeignParameterPoint::default(); 8];
             let count = program.program.render_quantum(&origins, &[], &mut points)?;
-            if count != 0 {
-                assert_eq!(points[0].id, 7);
-                frames[0] = frames[0].map(|sample| sample * points[0].normalized as f32);
+            let mut cursor = 0;
+            for (i, frame) in frames.iter_mut().enumerate() {
+                while cursor < count && usize::from(points[cursor].frame) <= i {
+                    assert_eq!(points[cursor].id, 7);
+                    self.value = points[cursor].normalized as f32;
+                    cursor += 1;
+                }
+                *frame = frame.map(|sample| sample * self.value);
             }
-            self.0.process_segment(node, offset, frames, clock)
+            self.effect.process_segment(node, offset, frames, clock)
         }
 
         fn reject_callback(&mut self) {
-            self.0.reject_callback();
+            self.effect.reject_callback();
         }
     }
 
@@ -704,9 +721,9 @@ fn foreign_export_applies_authored_parameter_values_to_audio(linear: bool) {
         SessionPlayback::new_finite_arrangement_bounce_with_foreign(revision, None, frames).unwrap()
     };
     bounce.apply(SessionPlaybackCommand::Play).unwrap();
-    let mut effect = AutomatedEffect(effect);
+    let mut effect = AutomatedEffect { effect, value: 0.5 };
     for block in output.chunks_mut(5) {
-        effect.0.next_offset = 0;
+        effect.effect.next_offset = 0;
         bounce
             .render_with_foreign_processors(block, None, None, None, &mut effect)
             .unwrap();
@@ -728,8 +745,9 @@ fn foreign_content_origin_routes_track_return_main_and_latency_preserving_bypass
                 runtime.apply(SessionPlaybackCommand::Play).unwrap();
                 let mut output = vec![[0.0; 2]; 88];
                 let mut taps = Vec::new();
-                let mut observe =
-                    |identity, phase, offset, _: &[Frame]| taps.push((identity, phase, offset));
+                let mut observe = |identity, phase, offset, frames: &[Frame]| {
+                    taps.push((identity, phase, offset, frames.len()))
+                };
                 for block in output.chunks_mut(5) {
                     foreign.next_offset = 0; // audio owner begins the next physical callback
                     let observer: Option<&mut crate::NodeSignalObserver<'_>> =
@@ -752,7 +770,9 @@ fn foreign_content_origin_routes_track_return_main_and_latency_preserving_bypass
                 assert_eq!(foreign.rejections, 0);
                 assert_eq!(foreign.processed, output.len());
                 if observed {
-                    assert_eq!(taps.len(), output.len() * 2);
+                    let observed_frames: usize = taps.iter().map(|(_, _, _, len)| *len).sum();
+                    assert_eq!(observed_frames, output.len() * 2);
+                    assert!(taps.iter().all(|(_, _, _, len)| *len > 0));
                 } else {
                     assert!(taps.is_empty());
                 }

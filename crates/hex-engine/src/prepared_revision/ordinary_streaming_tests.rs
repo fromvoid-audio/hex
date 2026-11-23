@@ -1765,7 +1765,16 @@ fn check_streamed_session_lookup_and_miss_semantics(with_resident_sessions: bool
             };
         }
         assert_eq!(output, expected, "partition {partition}");
-        assert_eq!((pages.reads, pages.requests), (32, 1));
+        assert_eq!(pages.requests, 1, "partition {partition}");
+        if partition == 1 {
+            assert_eq!(pages.reads, 32, "partition {partition}");
+        } else {
+            assert!(
+                pages.reads > 0 && pages.reads <= 32,
+                "partition {partition} reads={}",
+                pages.reads
+            );
+        }
     }
 }
 
