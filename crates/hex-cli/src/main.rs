@@ -17,6 +17,33 @@ use hex_project::{Command, Created, Editor, Project};
 use std::collections::BTreeMap;
 use std::{error::Error, path::Path};
 
+const USAGE: &str = "\
+usage: hex-cli <command> [args...]
+
+commands:
+  demo <new-output.wav>
+  edit-demo <new-output.wav>
+  render-wav <input.wav> <new-output.wav>
+  import-project <input.wav> <new-project.hex>
+  render-project <project.hex> <new-output.wav>
+  export-project <project.hex> <destination> <start-frame> <end-frame> [--tracks=ids|--returns=ids|--stems=track-ids] [--format=pcm16|pcm24|float32] [--overwrite]
+  recover-project <target.hex> <new-project.hex>
+  --help | -h | help";
+
+fn is_help_request(args: &[std::ffi::OsString]) -> bool {
+    args.len() == 1
+        && args[0]
+            .to_str()
+            .is_some_and(|arg| matches!(arg, "--help" | "-h" | "help"))
+}
+
+fn unknown_command_usage(command: Option<&std::ffi::OsStr>) -> String {
+    match command {
+        Some(command) => format!("unknown command: {}\n{USAGE}", command.to_string_lossy()),
+        None => USAGE.to_owned(),
+    }
+}
+
 fn main() {
     if let Err(error) = run() {
         // Error text carries case-sensitive paths; never lowercase it.
@@ -26,6 +53,10 @@ fn main() {
 }
 fn run() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if is_help_request(&args) {
+        println!("{USAGE}");
+        return Ok(());
+    }
     if args.first().is_some_and(|a| a == "recover-project") {
         if args.len() != 3 {
             return Err("usage: hex-cli recover-project <target.hex> <new-project.hex>".into());
@@ -53,8 +84,15 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         return import::render(Path::new(&args[1]), Path::new(&args[2]));
     }
-    if args.len() != 2 || (args[0] != "demo" && args[0] != "edit-demo") {
-        return Err("usage: cargo run -p hex-cli -- <demo|edit-demo> <new-output.wav>".into());
+    if args
+        .first()
+        .is_some_and(|a| a == "demo" || a == "edit-demo")
+    {
+        if args.len() != 2 {
+            return Err("usage: hex-cli <demo|edit-demo> <new-output.wav>".into());
+        }
+    } else {
+        return Err(unknown_command_usage(args.first().map(|a| a.as_os_str())).into());
     }
     let rate = 48_000;
     let tempo = Tempo::new(120.0)?;

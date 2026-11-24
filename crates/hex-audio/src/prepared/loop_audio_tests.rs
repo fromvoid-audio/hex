@@ -1700,8 +1700,10 @@ fn live_track_audio_engine_render_has_no_allocations_or_frees() {
         let counts = allocation_counter::measure(|| {
             result = playback.render_with_live_track_audio(
                 &mut output,
-                track,
-                &input,
+                hex_engine::session_playback::LiveTrackAudio {
+                    track,
+                    frames: &input,
+                },
                 None,
                 None,
                 None,

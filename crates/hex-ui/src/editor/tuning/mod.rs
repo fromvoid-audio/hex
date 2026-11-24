@@ -94,7 +94,7 @@ pub(super) struct TuningState {
     analysis_serial: u64,
     analysis_queued: Option<(u64, Scale, f32, u64)>,
     analysis: hex_tuning::analysis::Analysis,
-    root_shapes: [(usize, usize, f32); 3],
+    root_shapes: Vec<(usize, usize, f32)>,
     last_variations: Instant,
     pub(super) error: Option<String>,
     pub(super) slot: usize,
@@ -1131,20 +1131,7 @@ impl EditorView {
         let root_shapes = if self.tuning.analysis_pending {
             String::new()
         } else {
-            self.tuning
-                .root_shapes
-                .iter()
-                .map(|(a, b, score)| {
-                    format!(
-                        "{} · {} · {}  {:.3}",
-                        s.root_degree() + 1,
-                        a + 1,
-                        b + 1,
-                        score
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
+            format_root_shapes(s.root_degree(), &self.tuning.root_shapes)
         };
         let main = div()
             .id("tuning-plots-scroll")
@@ -1366,6 +1353,14 @@ mod snap_tests {
     }
 }
 
+fn format_root_shapes(root_degree: usize, shapes: &[(usize, usize, f32)]) -> String {
+    shapes
+        .iter()
+        .map(|(a, b, score)| format!("{} · {} · {}  {:.3}", root_degree + 1, a + 1, b + 1, score))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(all(test, not(feature = "ui-test-support")))]
 mod audition_level_unit_tests {
     use super::*;
@@ -1377,5 +1372,35 @@ mod audition_level_unit_tests {
         assert!((spec.step(0.5, -1.0, false).unwrap() - 0.49).abs() < 1e-12);
         assert!((spec.step(0.5, 1.0, true).unwrap() - 0.501).abs() < 1e-12);
         assert_eq!(spec.step(1.0, 1.0, false).unwrap(), 1.0);
+    }
+
+    #[test]
+    fn root_triads_display_lists_only_real_combinations() {
+        let mut three = hex_tuning::Scale::equal(3);
+        for (root, expected_prefix) in [(0, "1 · 2 · 3  "), (1, "2 · 1 · 3  "), (2, "3 · 1 · 2  ")]
+        {
+            three
+                .set_reference(three.root_key(), three.root_hz(), root)
+                .unwrap();
+            let shapes = hex_tuning::analysis::Analysis::new(three).root_shapes(three);
+            let rendered = format_root_shapes(three.root_degree(), &shapes);
+            let lines: Vec<_> = rendered.lines().collect();
+            assert_eq!(lines.len(), 1, "root={root}, rendered={rendered:?}");
+            assert!(
+                lines[0].starts_with(expected_prefix),
+                "root={root}, line={:?}",
+                lines[0]
+            );
+            assert!(!rendered.contains("1 · 1 · 1"));
+        }
+
+        let four = hex_tuning::Scale::equal(4);
+        let four_shapes = hex_tuning::analysis::Analysis::new(four).root_shapes(four);
+        assert_eq!(
+            format_root_shapes(four.root_degree(), &four_shapes)
+                .lines()
+                .count(),
+            3
+        );
     }
 }
