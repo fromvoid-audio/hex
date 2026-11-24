@@ -5207,3 +5207,169 @@ fn ordinary_file_removal_rollback(cancel: bool) {
     drop(control);
     finish(&mut retirement);
 }
+
+#[test]
+fn sixteen_aligned_streamed_tracks_cross_page_boundary_with_zero_starved_callbacks() {
+    use std::time::Duration;
+    const TRACKS: usize = 16;
+    const PAGES: u64 = 3;
+    const QUANTUM: usize = 256;
+    const PCM_SAMPLE: i16 = 1024;
+    let frames = PAGES * hex_engine::STREAM_PAGE_FRAMES as u64;
+
+    let mut editor =
+        hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 4).unwrap();
+    let mut wavs = Vec::with_capacity(TRACKS);
+    let mut definitions = Vec::with_capacity(TRACKS);
+    let mut metadata = Vec::with_capacity(TRACKS);
+    for idx in 0..TRACKS {
+        let hex_project::Created::Track(track) = editor
+            .execute(hex_project::Command::AddTrack {
+                name: format!("stream-{idx}"),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let wav = stream_fixture::Wav::with_samples(frames as u32, |_| PCM_SAMPLE);
+        let hex_project::Created::Asset(asset) = editor
+            .execute(hex_project::Command::AddAsset {
+                path: format!("stream-{idx}.wav").into(),
+                sample_rate: 48_000,
+                frames,
+            })
+            .unwrap()
+        else {
+            panic!("asset");
+        };
+        editor
+            .execute(hex_project::Command::PlaceClip {
+                track,
+                asset,
+                start: 0,
+                duration: frames,
+                source_offset: 0,
+                source_length: frames,
+                looping: false,
+            })
+            .unwrap();
+        let def = wav.definition(asset, 21);
+        metadata.push(def.metadata.clone());
+        definitions.push(def);
+        wavs.push(wav);
+    }
+
+    let store = ResidentDeviceAssets::default();
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_device_resource_publication_on_control(resource_limits())
+        .unwrap();
+    control
+        .configure_ordinary_streaming_on_control(
+            crate::AudioCandidateDomainReservation {
+                max_retained_data_bytes: 32 * 1024 * 1024,
+                max_construction_peak_data_bytes: 32 * 1024 * 1024,
+            },
+            63,
+            64 * 1024,
+        )
+        .unwrap();
+    let domain = control
+        .begin_audio_candidate_domain_preparation(
+            hex_stream::StreamConfig::with_pool_pages(64),
+            definitions,
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 63,
+            },
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match control
+            .poll_audio_candidate_domain_preparation(domain)
+            .unwrap()
+        {
+            crate::AudioCandidateDomainPreparationProgress::Ready => break,
+            crate::AudioCandidateDomainPreparationProgress::Verifying => {}
+            other => panic!("unexpected preparation: {other:?}"),
+        }
+        assert!(Instant::now() < deadline, "catalog did not seal");
+        std::thread::yield_now();
+    }
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    let revision = control
+        .publish_with_admission_and_source_on_control(
+            compile_sources(editor.project(), metadata, &store),
+            PublicationPolicy::InheritRuntime,
+            hex_engine::AudioSourceContext {
+                project_generation: 21,
+                editor_revision: 1,
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap_or_else(|_| panic!("16-track source publication"));
+
+    let mut output = [[0.0; 2]; QUANTUM];
+    while control.status.applied_revision.load(Acquire) != revision {
+        measured_render(&mut data, &mut output);
+        assert!(Instant::now() < deadline, "16-track graph did not install");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    control.command(PlaybackCommand::Play).unwrap();
+    while control.status.position.load(Acquire) == 0 {
+        measured_render(&mut data, &mut output);
+        assert!(
+            Instant::now() < deadline,
+            "initial 16-track play did not start"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let starved_after_start = control.status.stream_starved_callbacks.load(Relaxed);
+
+    // Pace 256-frame callbacks (~2 ms apart, tighter than real 5.33 ms @ 48 kHz)
+    // across both 4096-frame page boundaries (0->1 and 1->2).
+    let expected = [TRACKS as f32 * (f32::from(PCM_SAMPLE) / 32_768.0); 2];
+    while control.status.position.load(Acquire) < frames {
+        let remaining = (frames - control.status.position.load(Acquire)) as usize;
+        let block = remaining.min(QUANTUM);
+        measured_render(&mut data, &mut output[..block]);
+        for frame in &output[..block] {
+            assert!(
+                (frame[0] - expected[0]).abs() < 1e-3 && (frame[1] - expected[1]).abs() < 1e-3,
+                "unexpected 16-track sample {:?}, expected {:?}",
+                frame,
+                expected
+            );
+        }
+        assert!(Instant::now() < deadline, "16-track playback timed out");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+
+    assert_eq!(
+        control.status.stream_starved_callbacks.load(Relaxed) - starved_after_start,
+        0,
+        "16 aligned streamed tracks must cross STREAM_PAGE_FRAMES with zero starved callbacks"
+    );
+
+    assert!(control.retire_audio_candidate_domain(domain));
+    control.request_shutdown();
+    let shutdown_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        measured_render(&mut data, &mut output);
+        control.reclaim();
+        if let Some(report) = control.recover_audio_candidate_domain(domain) {
+            assert!(report.worker_joined && report.accounting_complete);
+            break;
+        }
+        assert!(Instant::now() < shutdown_deadline, "16-track reclamation");
+        std::thread::yield_now();
+    }
+    drop(wavs);
+    drop(data);
+    drop(errors);
+    drop(control);
+    finish(&mut retirement);
+}
