@@ -10,7 +10,6 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::Read,
-    os::unix::fs::MetadataExt,
     path::{Component, Path, PathBuf},
 };
 
@@ -116,7 +115,7 @@ pub fn relative_file(root: &Path, relative: &str) -> Result<PathBuf, ValidationE
     }
     let capacity =
         relative_path_capacity(root, relative).ok_or("discovery path allocation bound overflow")?;
-    let mut path = PathBuf::new();
+    let mut path = std::ffi::OsString::new();
     path.try_reserve_exact(capacity)
         .map_err(|_| "discovery path allocation refused")?;
     if path.capacity() != capacity {
@@ -127,14 +126,22 @@ pub fn relative_file(root: &Path, relative: &str) -> Result<PathBuf, ValidationE
         let Component::Normal(name) = component else {
             return Err("discovery path must stay inside its selected bundle".into());
         };
+        let bytes = path.as_encoded_bytes();
+        if bytes
+            .last()
+            .is_some_and(|&byte| !std::path::is_separator(char::from(byte)))
+        {
+            path.push(std::path::MAIN_SEPARATOR_STR);
+        }
         path.push(name);
         if path.capacity() != capacity {
             return Err("discovery path exceeded its allocation bound".into());
         }
-        let metadata = fs::symlink_metadata(&path).map_err(|source| ValidationError::Io {
-            context: "bundle member metadata failed",
-            source,
-        })?;
+        let metadata =
+            fs::symlink_metadata(Path::new(&path)).map_err(|source| ValidationError::Io {
+                context: "bundle member metadata failed",
+                source,
+            })?;
         if metadata.file_type().is_symlink()
             || (index + 1 != depth && !metadata.is_dir())
             || (index + 1 == depth && !metadata.is_file())
@@ -142,7 +149,7 @@ pub fn relative_file(root: &Path, relative: &str) -> Result<PathBuf, ValidationE
             return Err("linked or nonregular bundle member refused".into());
         }
     }
-    Ok(path)
+    Ok(PathBuf::from(path))
 }
 
 fn relative_path_capacity(root: &Path, relative: &str) -> Option<usize> {
@@ -221,6 +228,16 @@ fn module_identity(path: &Path) -> Result<(Image, [u8; 32]), ValidationError> {
         return Err("executable changed while opening".into());
     }
     let image = macho::inspect_file(&file, before.len())?;
+    #[cfg(not(unix))]
+    {
+        // Positioned reads on Windows can advance the synchronous file offset.
+        use std::io::{Seek, SeekFrom};
+        file.seek(SeekFrom::Start(0))
+            .map_err(|source| ValidationError::Io {
+                context: "executable rewind failed",
+                source,
+            })?;
+    }
     let digest = hash_executable(&mut file, before.len())?;
     if !same_executable(&before, &opened_metadata(&file)?)
         || !same_executable(&before, &path_metadata()?)
@@ -230,13 +247,33 @@ fn module_identity(path: &Path) -> Result<(Image, [u8; 32]), ValidationError> {
     Ok((image, digest))
 }
 
+#[cfg(unix)]
 fn same_executable(before: &fs::Metadata, current: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
     current.is_file()
         && before.dev() == current.dev()
         && before.ino() == current.ino()
         && before.len() == current.len()
         && (before.mtime(), before.mtime_nsec()) == (current.mtime(), current.mtime_nsec())
         && (before.ctime(), before.ctime_nsec()) == (current.ctime(), current.ctime_nsec())
+}
+
+#[cfg(not(unix))]
+fn same_executable(before: &fs::Metadata, current: &fs::Metadata) -> bool {
+    let same_modified = match (before.modified(), current.modified()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    };
+    #[cfg(windows)]
+    let same_windows_metadata = {
+        use std::os::windows::fs::MetadataExt;
+        before.creation_time() == current.creation_time()
+            && before.last_write_time() == current.last_write_time()
+            && before.file_attributes() == current.file_attributes()
+    };
+    #[cfg(not(windows))]
+    let same_windows_metadata = true;
+    current.is_file() && before.len() == current.len() && same_modified && same_windows_metadata
 }
 
 fn hash_executable(mut file: impl Read, mut remaining: u64) -> Result<[u8; 32], ValidationError> {
