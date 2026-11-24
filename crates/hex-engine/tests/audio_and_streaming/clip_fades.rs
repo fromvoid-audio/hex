@@ -429,23 +429,59 @@ fn transformed_musical_shaped_fades_keep_pcm_through_splits_and_tempo_changes() 
         .unwrap();
     let media = BTreeMap::from([(asset, Audio::new(48_000, vec![[0.5; 2]; 4800]).unwrap())]);
     let whole = compile::project(editor.project(), &media).unwrap();
+    let mut uncut = Renderer::new(&whole);
+    uncut.play();
+    let mut original = vec![[0.0; 2]; 6400];
+    uncut.render(&mut original).unwrap();
+    assert!(original[..100].iter().all(|frame| *frame == [0.0; 2]));
+    assert!(original[2000][0] > 0.1);
+
+    let mut dry = Editor::new(editor.project().clone(), 1).unwrap();
+    dry.execute(Command::SetClipFades {
+        clip,
+        fade_in: 0,
+        fade_out: 0,
+    })
+    .unwrap();
+    let source = compile::project(dry.project(), &media).unwrap();
+    let mut dry_renderer = Renderer::new(&source);
+    dry_renderer.play();
+    let mut expected = vec![[0.0; 2]; 6400];
+    dry_renderer.render(&mut expected).unwrap();
+
+    let left = ClipFade::new(2400, 0, 1800, 0)
+        .unwrap()
+        .with_shape(0, 0, 700, 0)
+        .unwrap()
+        .with_curve_positions(250, 500)
+        .unwrap();
+    let right = ClipFade::new(4000, 0, 0, 1600)
+        .unwrap()
+        .with_shape(0, 0, 0, -800)
+        .unwrap()
+        .with_curve_positions(500, 750)
+        .unwrap();
+    for (i, frame) in expected.iter_mut().enumerate() {
+        let gain = if i < 2400 {
+            left.gain_at(i as u64)
+        } else {
+            right.gain_at((i - 2400) as u64)
+        };
+        *frame = frame.map(|sample| sample * gain);
+    }
     editor
         .execute(Command::SplitClip { clip, frame: 2400 })
         .unwrap();
     let split = compile::project(editor.project(), &media).unwrap();
-    let mut expected = vec![[0.0; 2]; 6400];
-    let mut actual = expected.clone();
-    let mut whole = Renderer::new(&whole);
-    let mut split = Renderer::new(&split);
-    whole.play();
-    split.play();
-    whole.render(&mut expected).unwrap();
+    let mut renderer = Renderer::new(&split);
+    renderer.play();
+    let mut actual = vec![[0.0; 2]; expected.len()];
     for chunk in actual.chunks_mut(127) {
-        split.render(chunk).unwrap();
+        renderer.render(chunk).unwrap();
     }
-    assert_eq!(actual, expected);
-    assert!(actual[0..100].iter().all(|frame| *frame == [0.0; 2]));
-    assert!(actual[2000][0] > 0.1);
+    for (i, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        assert_eq!(*actual, expected, "musical split frame {i}");
+    }
 }
 
 #[test]

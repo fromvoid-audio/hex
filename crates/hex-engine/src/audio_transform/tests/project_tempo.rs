@@ -106,6 +106,30 @@ fn global_tempo_preserves_frozen_event_and_curved_fade_pcm_through_move_split_co
     assert_eq!(editor.project(), &previous);
     assert!(editor.redo());
     assert_eq!(editor.project(), &changed);
+    let mut dry = Editor::new(editor.project().clone(), 1).unwrap();
+    dry.execute(Command::SetClipFades {
+        clip,
+        fade_in: 0,
+        fade_out: 0,
+    })
+    .unwrap();
+    let mut split_pcm = render(&prepare(&dry, &media, &context), start, 12_000, 53);
+    let left = ClipFade::new(2001, 0, 500, 0)
+        .unwrap()
+        .with_shape(0, 0, 600, 0)
+        .unwrap();
+    let tail = ClipFade::new(9999, 0, 0, 1000)
+        .unwrap()
+        .with_shape(0, 0, 0, -500)
+        .unwrap();
+    for (i, frame) in split_pcm.iter_mut().enumerate() {
+        let gain = if i < 2001 {
+            left.gain_at(i as u64)
+        } else {
+            tail.gain_at((i - 2001) as u64)
+        };
+        *frame = frame.map(|sample| sample * gain);
+    }
     let Created::Clip(right) = editor
         .execute(Command::SplitClip {
             clip,
@@ -115,10 +139,13 @@ fn global_tempo_preserves_frozen_event_and_curved_fade_pcm_through_move_split_co
     else {
         panic!("split")
     };
-    assert_eq!(
-        render(&prepare(&editor, &media, &context), start, 12_000, 64),
-        before
-    );
+    for (i, (actual, expected)) in render(&prepare(&editor, &media, &context), start, 12_000, 64)
+        .iter()
+        .zip(&split_pcm)
+        .enumerate()
+    {
+        assert_eq!(actual, expected, "frozen split frame {i}");
+    }
     let Created::Clip(copied) = editor
         .execute(Command::CopyClipTo {
             clip: right,
@@ -133,7 +160,7 @@ fn global_tempo_preserves_frozen_event_and_curved_fade_pcm_through_move_split_co
     assert_eq!(length, 9999);
     assert_eq!(
         render(&prepare(&editor, &media, &context), 50_000, length, 63),
-        before[2001..]
+        split_pcm[2001..]
     );
 }
 
