@@ -4,8 +4,17 @@ use super::*;
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn stopped_save_capture_overflow_preserves_existing_file_and_retries_original() {
-    const CHILD: &str = "HEX_DESKTOP_STOPPED_SAVE_OVERFLOW_CHILD";
-    if std::env::var_os(CHILD).is_none() {
+    stopped_save_overflow_recovers("95", "HEX_DESKTOP_STOPPED_SAVE_OVERFLOW_CHILD");
+}
+
+#[test]
+#[ignore = "explicit original SDK helper/source receipts required"]
+fn stopped_save_prealloc_overflow_preserves_existing_file_and_retries_original() {
+    stopped_save_overflow_recovers("157", "HEX_DESKTOP_STOPPED_SAVE_PREALLOC_OVERFLOW_CHILD");
+}
+
+fn stopped_save_overflow_recovers(variant: &str, child_env: &str) {
+    if std::env::var_os(child_env).is_none() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -13,10 +22,10 @@ fn stopped_save_capture_overflow_preserves_existing_file_and_retries_original() 
                 "--ignored",
                 "--nocapture",
             ])
-            .env(CHILD, "1")
+            .env(child_env, "1")
             // Valid startup state, an oversized first fresh capture, then
             // normal capture on the same component.
-            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "95")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", variant)
             .output()
             .unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
