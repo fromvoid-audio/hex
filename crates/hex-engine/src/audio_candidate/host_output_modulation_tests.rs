@@ -369,6 +369,14 @@ fn host_gain_mapping_requires_a_closed_zero_latency_effect() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     for (state, expected) in [
         (UTILITY_DEFINITION.default_state().unwrap(), true),
+        (
+            hex_devices::eq::EQ_DEFINITION.default_state().unwrap(),
+            true,
+        ),
+        (
+            hex_devices::limiter::DEFINITION.default_state().unwrap(),
+            false,
+        ),
         (SATURATOR_DEFINITION.default_state().unwrap(), false),
     ] {
         let Created::Device(device) = editor
