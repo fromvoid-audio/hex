@@ -1,6 +1,19 @@
 //! Background export worker thread and export destination/extent guards.
 use crate::service::*;
 
+pub(crate) fn same_existing_file(left: &Path, right: &Path) -> bool {
+    let (Ok(left_metadata), Ok(right_metadata)) =
+        (std::fs::metadata(left), std::fs::metadata(right))
+    else {
+        return false;
+    };
+    same_media_file(&left_metadata, &right_metadata)
+        || matches!(
+            (std::fs::canonicalize(left), std::fs::canonicalize(right)),
+            (Ok(left_path), Ok(right_path)) if left_path == right_path
+        )
+}
+
 pub(crate) fn export_destination_is_original_media(
     project: &Project,
     destination: &Path,
