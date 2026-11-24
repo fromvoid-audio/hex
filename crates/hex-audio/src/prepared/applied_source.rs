@@ -84,6 +84,29 @@ impl Status {
                 .filter(|source| source.audio_revision == revision)
         })
     }
+    /// The ordinary source and epoch eligible for new live parameter input.
+    /// Priority Stop invalidates admission before the callback consumes it.
+    pub fn live_native_parameter_source(&self) -> Option<(AppliedAudioSource, u64)> {
+        self.native_parameter_source(true)
+    }
+    /// Current ordinary source at the requested transport state. Idle uses the
+    /// installed canonical graph observation. After ordinary graph return,
+    /// canonical preparation instead requires its held restore fence. Root
+    /// independently matches the exact native binding and state in either case.
+    pub fn native_parameter_source(&self, playing: bool) -> Option<(AppliedAudioSource, u64)> {
+        let epoch = self.transport_epoch.load(Acquire);
+        let source = if playing {
+            self.native_effect_source()?
+        } else {
+            self.recording_source()?
+        };
+        (self.playing.load(Acquire) == playing
+            && self.pending_stop_marker.load(Acquire) == 0
+            && self.applied_audio_source().is_none()
+            && !self.closing.load(Acquire)
+            && self.transport_epoch.load(Acquire) == epoch)
+            .then_some((source, epoch))
+    }
     /// Canonical source captured with the actual installed ordinary or eligible
     /// graph. This is correlation, not sink delivery or admission authority.
     pub fn recording_source(&self) -> Option<AppliedAudioSource> {
@@ -213,5 +236,39 @@ mod tests {
         status.applied_source.sequence.store(4, SeqCst);
         status.applied_source.publish(None);
         assert_eq!(status.applied_audio_source(), None);
+    }
+
+    #[test]
+    fn parameter_source_requires_exact_transport_mode_and_current_ordinary_graph() {
+        let status = Status::default();
+        let source = AppliedAudioSource {
+            context: hex_engine::AudioSourceContext {
+                project_generation: 3,
+                editor_revision: 7,
+            },
+            audio_revision: 9,
+            output_identity: 11,
+        };
+        status.recording_source.publish(Some(source));
+        status.applied_revision.store(9, Release);
+        status.transport_epoch.store(5, Release);
+        assert_eq!(status.native_parameter_source(false), Some((source, 5)));
+        assert_eq!(status.live_native_parameter_source(), None);
+        status.pending_stop_marker.store(1, Release);
+        assert_eq!(status.native_parameter_source(false), None);
+        status.pending_stop_marker.store(0, Release);
+        status.playing.store(true, Release);
+        status.ordinary_native_revision.store(9, Release);
+        assert_eq!(status.native_parameter_source(false), None);
+        assert_eq!(status.live_native_parameter_source(), Some((source, 5)));
+        status.closing.store(true, Release);
+        assert_eq!(status.live_native_parameter_source(), None);
+        status.closing.store(false, Release);
+        status.playing.store(false, Release);
+        status.applied_source.publish(Some(source));
+        assert_eq!(status.native_parameter_source(false), None);
+        status.applied_source.publish(None);
+        status.applied_revision.store(10, Release);
+        assert_eq!(status.native_parameter_source(false), None);
     }
 }

@@ -65,6 +65,10 @@ pub struct Control {
 pub struct PublicationControl {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) paused_notes: input_monitor::Control,
+    #[cfg_attr(
+        not(all(target_os = "macos", target_arch = "aarch64")),
+        allow(dead_code)
+    )]
     pub(super) foreign_parameter_delivery: Option<crate::foreign_parameter_delivery::Control>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) foreign_editor_delivery: Option<crate::foreign_parameter_delivery::editor::Control>,

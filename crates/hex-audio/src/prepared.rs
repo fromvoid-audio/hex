@@ -71,7 +71,6 @@ pub(crate) use native_effects::NativeEffectWindow;
 mod midi_recording;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod native_sources;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use hex_lattice::ProcessorInstanceIdentity as NativeProcessorIdentity;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use native_sources::{NativeParameterContinuationCapture, NativeParameterContinuationRequest};

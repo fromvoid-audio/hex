@@ -612,6 +612,7 @@ impl Reaper {
         }
     }
 
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     fn wait_for_blocks(&self, target: u64, timeout: Duration) -> Result<(), Fault> {
         if let Some(offline) = &self.completed.offline {
             let guard = offline.lock.lock().map_err(|_| Fault::Protocol)?;
