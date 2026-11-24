@@ -91,6 +91,192 @@ fn dragging_looping_audio_scope_body_keeps_arrangement_bounds(cx: &mut TestAppCo
 }
 
 #[gpui::test]
+fn narrow_audio_scope_prioritizes_body_at_center_and_keeps_distinguishable_edges(
+    cx: &mut TestAppContext,
+) {
+    let Fixture {
+        mut visual,
+        editor,
+        width,
+        clip,
+        ..
+    } = open(cx, true);
+    editor.update(&mut visual, |v, cx| {
+        v.set_audio_loop_grid(crate::editor::musical_time::SnapGrid::Off);
+        cx.notify();
+    });
+    visual.run_until_parked();
+
+    let total_frames = editor.read_with(&visual, |v, _| {
+        let root = v
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .clip(clip)
+            .unwrap()
+            .audio_event_root();
+        let (first, end) = editor_bounds(&root);
+        (end - first).max(1)
+    });
+    let ruler_px = f32::from(width);
+    let frames_for_px = |target_px: f32| -> u64 {
+        ((target_px / ruler_px) * (total_frames as f32))
+            .round()
+            .max(600.0) as u64
+    };
+
+    // Exercise actual rendered widths below, at, and just above 14 px (including the 600-frame
+    // ~3.5 px looping scope from the bug report), plus a non-looping narrow scope.
+    let cases = [
+        (600_u64, true, false),
+        (frames_for_px(10.0), true, false),
+        (frames_for_px(14.0), true, true),
+        (frames_for_px(16.0), true, true),
+        (frames_for_px(10.0), false, false),
+    ];
+
+    for (len_frames, looping, expect_distinguishable_edges) in cases {
+        let start_frame = 24_000_u64;
+        let end_frame = start_frame + len_frames;
+        editor.update(&mut visual, |v, cx| {
+            assert!(v.enqueue(Request::Edit(Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::ScopeRange {
+                    start: start_frame,
+                    end: end_frame,
+                    looping,
+                },
+            })));
+            cx.notify();
+        });
+        crate::editor::clip_drag_ui_test::pump_move(&editor, &mut visual);
+        visual.run_until_parked();
+
+        let body = visual.debug_bounds("audio-scope-body").unwrap();
+        let drawn_px = f32::from(body.size.width);
+        if len_frames == 600 {
+            assert!(
+                drawn_px < 6.0,
+                "600-frame scope should render narrower than 6 px, got {drawn_px}"
+            );
+        }
+
+        // Pressing the exact center of the narrow scope bar must capture Body and translate
+        // both endpoints equally, preserving canonical length after release.
+        let center = body.center();
+        let target = center + point(px(48.0), px(0.0));
+        visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
+        editor.read_with(&visual, |v, _| {
+            let g = v
+                .clip_loop
+                .audio_gesture
+                .as_ref()
+                .expect("center press captures gesture");
+            assert_eq!(
+                g.handle,
+                Handle::Body,
+                "center press at drawn width {drawn_px:.2} px should capture Body"
+            );
+        });
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        crate::editor::clip_drag_ui_test::pump_move(&editor, &mut visual);
+        visual.run_until_parked();
+
+        let moved = editor.read_with(&visual, |v, _| {
+            let root = v
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .clip(clip)
+                .unwrap()
+                .audio_event_root();
+            (root.view_start, root.view_end)
+        });
+        assert!(
+            moved.0 > start_frame,
+            "body drag at width {drawn_px:.2} px should translate start forward: {moved:?}"
+        );
+        assert_eq!(
+            moved.1 - moved.0,
+            len_frames,
+            "body drag at width {drawn_px:.2} px must preserve exact scope length"
+        );
+        assert_eq!(
+            moved.0 - start_frame,
+            moved.1 - end_frame,
+            "both endpoints must translate by the same amount"
+        );
+
+        // When there is room to distinguish edges, Start and End remain independently resizable.
+        if expect_distinguishable_edges {
+            let start_handle = visual.debug_bounds("audio-loop-start").unwrap().center();
+            let drag_left = start_handle + point(px(-24.0), px(0.0));
+            visual.simulate_mouse_down(start_handle, MouseButton::Left, Modifiers::default());
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(
+                    v.clip_loop.audio_gesture.as_ref().unwrap().handle,
+                    Handle::Start,
+                    "start edge should remain distinguishable at width {drawn_px:.2} px"
+                );
+            });
+            visual.simulate_mouse_move(drag_left, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            visual.simulate_mouse_up(drag_left, MouseButton::Left, Modifiers::default());
+            crate::editor::clip_drag_ui_test::pump_move(&editor, &mut visual);
+            visual.run_until_parked();
+
+            let after_start = editor.read_with(&visual, |v, _| {
+                let root = v
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .clip(clip)
+                    .unwrap()
+                    .audio_event_root();
+                (root.view_start, root.view_end)
+            });
+            assert!(after_start.0 < moved.0);
+            assert_eq!(after_start.1, moved.1);
+
+            let end_handle = visual.debug_bounds("audio-loop-end").unwrap().center();
+            let drag_right = end_handle + point(px(24.0), px(0.0));
+            visual.simulate_mouse_down(end_handle, MouseButton::Left, Modifiers::default());
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(
+                    v.clip_loop.audio_gesture.as_ref().unwrap().handle,
+                    Handle::End,
+                    "end edge should remain distinguishable at width {drawn_px:.2} px"
+                );
+            });
+            visual.simulate_mouse_move(drag_right, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            visual.simulate_mouse_up(drag_right, MouseButton::Left, Modifiers::default());
+            crate::editor::clip_drag_ui_test::pump_move(&editor, &mut visual);
+            visual.run_until_parked();
+
+            let after_end = editor.read_with(&visual, |v, _| {
+                let root = v
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .clip(clip)
+                    .unwrap()
+                    .audio_event_root();
+                (root.view_start, root.view_end)
+            });
+            assert_eq!(after_end.0, after_start.0);
+            assert!(after_end.1 > after_start.1);
+        }
+    }
+}
+
+#[gpui::test]
 fn returning_audio_scope_edge_inside_tolerance_restores_preview_and_skips_commit(
     cx: &mut TestAppContext,
 ) {
