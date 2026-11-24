@@ -9,16 +9,30 @@ pub(super) enum AdmissionStep {
 
 impl WorkerLoop {
     pub(super) fn admit_and_fence_request(&mut self, queued: QueuedRequest) -> AdmissionStep {
-        let seek_during_locator_recovery = self.core.pending_locator_seek_outcome.is_none()
-            && matches!(
-                self.core.pending_recovery_outcome.as_ref(),
-                Some((DeferredRecoveryKind::LocatorAdd, _))
-            )
-            && matches!(&queued.request, Request::ResidentArrangementSeek(_));
-        if let Some((kind, _)) = self.core.pending_recovery_outcome.as_ref()
-            && (self.core.pending_locator_seek_outcome.is_some()
-                || (!seek_during_locator_recovery
-                    && deferred_recovery_kind(&queued.request) != Some(*kind)))
+        let recovery_kind = self
+            .core
+            .pending_recovery_outcome
+            .as_ref()
+            .map(|(kind, _)| *kind);
+        let defer_outcome_until_recovery = self.core.pending_preview_or_seek_outcome.is_none()
+            && match (recovery_kind, &queued.request) {
+                (Some(DeferredRecoveryKind::LocatorAdd), Request::ResidentArrangementSeek(_)) => {
+                    true
+                }
+                (Some(DeferredRecoveryKind::TrackSwitch), Request::DeviceGesture(gesture)) => {
+                    matches!(gesture.as_ref(), GestureRequest::ChangePair { key, .. }
+                        if self.core.device_gesture.snapshot().is_some_and(|active| active.key == *key
+                            && matches!(active.target, crate::device_gesture::GestureTarget::DeviceParameterPair { .. })))
+                }
+                _ => false,
+            };
+        // A second switch can publish before disk completes even with one
+        // preview terminal between the switches. Other edits retain their fence.
+        if let Some(kind) = recovery_kind
+            && !defer_outcome_until_recovery
+            && (deferred_recovery_kind(&queued.request) != Some(kind)
+                || (self.core.pending_preview_or_seek_outcome.is_some()
+                    && kind != DeferredRecoveryKind::TrackSwitch))
             && !self.finish_pending_recovery()
         {
             return AdmissionStep::Shutdown;
@@ -336,7 +350,7 @@ impl WorkerLoop {
             request,
             RequestExecution {
                 meta: RequestMeta {
-                    seek_during_locator_recovery,
+                    defer_outcome_until_recovery,
                     save_correlation,
                     defaults_directory,
                     recording_barrier_completion,

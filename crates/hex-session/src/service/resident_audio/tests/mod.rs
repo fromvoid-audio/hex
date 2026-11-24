@@ -413,6 +413,19 @@ pub(in crate::service) fn fixture_sink() -> Box<dyn WorkerAudioSink> {
 
 #[test]
 fn held_checkpoint_allows_ordered_resident_mute_audio() {
+    check_held_checkpoint_mute(false, false);
+}
+
+#[test]
+fn paired_preview_preserves_switch_audio_and_ordered_recovery() {
+    check_held_checkpoint_mute(true, false);
+    check_held_checkpoint_mute(true, true);
+}
+
+fn check_held_checkpoint_mute(with_pair: bool, conflict: bool) {
+    use crate::device_gesture::{
+        GestureKey, GestureRequest, GestureTarget, ParameterId, ParameterPairValue, ParameterValue,
+    };
     use std::time::Instant;
     let files = sampler_export::tests::Files::new(false);
     let path = files.source();
@@ -436,6 +449,9 @@ fn held_checkpoint_allows_ordered_resident_mute_audio() {
     std::fs::write(path, bytes).unwrap();
     let journal = path.parent().unwrap().join("untitled.hex-journal");
     let observed = Arc::new(Observed::default());
+    if with_pair {
+        observed.auto_output_identity.store(1, Ordering::Release);
+    }
     let retained = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
         .checked_mul(2)
         .unwrap();
@@ -482,6 +498,34 @@ fn held_checkpoint_allows_ordered_resident_mute_audio() {
         })
         .unwrap();
     assert!(next().error.is_none());
+    let key = GestureKey {
+        generation: 0,
+        token: 1,
+    };
+    if with_pair {
+        service
+            .submit(Request::AddNativeDevice {
+                track,
+                class: hex_engine::NativeDeviceClass::Effect,
+                type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static("hex.eq8")),
+                before: None,
+            })
+            .unwrap();
+        let inserted = next();
+        assert!(inserted.error.is_none(), "{:?}", inserted.error);
+        let device = inserted.state.project.track(track).unwrap().devices()[0].id();
+        service
+            .submit(Request::device_gesture(GestureRequest::Begin {
+                key,
+                target: GestureTarget::DeviceParameterPair {
+                    device,
+                    first: ParameterId::new(18).unwrap(),
+                    second: ParameterId::new(19).unwrap(),
+                },
+            }))
+            .unwrap();
+        assert!(next().gesture_ack.unwrap().accepted);
+    }
     observed
         .render_for_switch_test
         .store(true, Ordering::Release);
@@ -493,6 +537,21 @@ fn held_checkpoint_allows_ordered_resident_mute_audio() {
         .unwrap();
     entered.recv_timeout(Duration::from_millis(500)).unwrap();
     let first = service.try_track_switch_view().unwrap();
+    if conflict {
+        std::fs::write(&journal, b"foreign journal").unwrap();
+    }
+    if with_pair {
+        service
+            .submit(Request::device_gesture(GestureRequest::ChangePair {
+                key,
+                sequence: 1,
+                value: ParameterPairValue {
+                    first: ParameterValue::Float(850.0),
+                    second: ParameterValue::Float(3.0),
+                },
+            }))
+            .unwrap();
+    }
     service
         .submit(Request::Edit(Command::ToggleMute(track)))
         .unwrap();
@@ -506,7 +565,6 @@ fn held_checkpoint_allows_ordered_resident_mute_audio() {
         }
         std::thread::yield_now();
     };
-    let until = Instant::now() + Duration::from_millis(300);
     let peaks = loop {
         let peaks = observed.switch_peaks.lock().unwrap().clone();
         if second
@@ -518,7 +576,25 @@ fn held_checkpoint_allows_ordered_resident_mute_audio() {
         }
         std::thread::yield_now();
     };
+    let preview_published = observed
+        .publications
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(metadata, _)| {
+            metadata.device_preview.is_some_and(|preview| {
+                preview.key == key
+                    && preview.sequence == 1
+                    && preview.canonical_revision == first.revision
+            })
+        });
+    let terminal_pending = service.try_event().is_err();
     release.send(()).unwrap();
+    assert!(terminal_pending);
+    assert!(
+        !with_pair || preview_published,
+        "paired preview must reach audio before checkpoint release"
+    );
     let second = second.expect("second mute must commit before checkpoint release");
     let muted = peaks
         .iter()
@@ -535,7 +611,47 @@ fn held_checkpoint_allows_ordered_resident_mute_audio() {
         unmuted > 0.01,
         "unmuted prepared graph must render audible signal, got {unmuted}"
     );
-    assert!(next().error.is_none() && next().error.is_none());
+    assert_eq!(second.previous_revision, first.revision);
+    assert!(
+        first
+            .tracks
+            .iter()
+            .any(|row| row.track == track && row.muted)
+    );
+    assert!(
+        second
+            .tracks
+            .iter()
+            .any(|row| row.track == track && !row.muted)
+    );
+    let first_terminal = next();
+    assert_eq!(first_terminal.state.revision, first.revision);
+    assert!(
+        first_terminal
+            .gesture_ack
+            .as_ref()
+            .is_none_or(|ack| ack.accepted && ack.sequence == 0)
+    );
+    assert_eq!(first_terminal.recovery_failure.is_some(), conflict);
+    if with_pair {
+        let change = next();
+        assert_eq!(change.state.revision, first.revision);
+        let ack = change.gesture_ack.unwrap();
+        assert!(ack.accepted && ack.key == key && ack.sequence == 1);
+        assert_eq!(change.recovery_failure.is_some(), conflict);
+    }
+    let second_terminal = next();
+    assert_eq!(second_terminal.state.revision, second.revision);
+    assert_eq!(second_terminal.recovery_failure.is_some(), conflict);
+    if conflict {
+        assert_eq!(std::fs::read(&journal).unwrap(), b"foreign journal");
+    } else {
+        assert!(first_terminal.error.is_none() && second_terminal.error.is_none());
+        assert_eq!(
+            hex_storage::load_journal(&journal).unwrap(),
+            *second_terminal.state.project
+        );
+    }
 }
 
 #[test]
