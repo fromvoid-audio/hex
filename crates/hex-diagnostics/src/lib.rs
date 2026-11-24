@@ -99,9 +99,23 @@ impl Category {
 const RECEIVE_INTERVAL: Duration = Duration::from_millis(50);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
-pub fn default_directory() -> Result<PathBuf, String> {
-    let home = env::var_os("HOME")
+fn default_directory_from(
+    home: Option<std::ffi::OsString>,
+    user_profile: Option<std::ffi::OsString>,
+) -> Result<PathBuf, String> {
+    let home = home
         .filter(|value| !value.is_empty())
+        .or_else(|| {
+            #[cfg(windows)]
+            {
+                user_profile.filter(|value| !value.is_empty())
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = user_profile;
+                None
+            }
+        })
         .ok_or_else(|| "home directory is unavailable".to_owned())?;
     let home = PathBuf::from(home);
     Ok(if cfg!(target_os = "macos") {
@@ -109,6 +123,10 @@ pub fn default_directory() -> Result<PathBuf, String> {
     } else {
         home.join(".local").join("state").join("hex").join("logs")
     })
+}
+
+pub fn default_directory() -> Result<PathBuf, String> {
+    default_directory_from(env::var_os("HOME"), env::var_os("USERPROFILE"))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
