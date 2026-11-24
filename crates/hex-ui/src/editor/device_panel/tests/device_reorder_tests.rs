@@ -606,26 +606,19 @@ fn option_drag_cancellation_keeps_the_chain_unchanged(cx: &mut TestAppContext) {
 #[gpui::test]
 fn option_drag_copy_applies_to_the_playing_callback(cx: &mut TestAppContext) {
     use std::sync::atomic::Ordering::Acquire;
-    let _guard = eq_ui_tests::graph_layout_tests::status_fixture_guard();
     cx.update(crate::editor::bind_editor_keys);
-    let (service, state, track, effect, _, _) = actor_utility_fixture();
-    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let (mut fixture, track, effect) = device_playback_fixture(cx);
+    let handle = fixture.handle;
+    let editor = fixture.editor.clone();
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());
     visual.simulate_resize(size(px(1500.0), px(800.0)));
     visual.run_until_parked();
-    editor.update(cx, |view, _| {
-        assert!(view.enqueue(Request::Edit(Command::RenameTrack {
-            track,
-            name: "copy drag ready".into()
-        })))
-    });
-    let (mut output, mut backend) =
-        eq_ui_tests::held_pointer_tests::attach_actual_output(&editor, cx, &mut visual);
+
     visual.simulate_keystrokes("space");
     let deadline = crate::test_wait::hang_deadline();
-    while !backend.status().unwrap().playing.load(Acquire) {
-        eq_ui_tests::held_pointer_tests::pump_output(&editor, cx, &mut output, &mut backend);
+    while !fixture.backend.status().unwrap().playing.load(Acquire) {
+        pump_device_playback(&mut fixture, cx);
         visual.run_until_parked();
         assert!(
             std::time::Instant::now() < deadline,
@@ -646,7 +639,7 @@ fn option_drag_copy_applies_to_the_playing_callback(cx: &mut TestAppContext) {
     visual.simulate_mouse_move(landing, MouseButton::Left, option);
     visual.simulate_mouse_up(landing, MouseButton::Left, option);
     loop {
-        eq_ui_tests::held_pointer_tests::pump_output(&editor, cx, &mut output, &mut backend);
+        pump_device_playback(&mut fixture, cx);
         visual.run_until_parked();
         let applied = editor.read_with(cx, |view, _| {
             view.state.as_ref().is_some_and(|state| {
@@ -657,7 +650,7 @@ fn option_drag_copy_applies_to_the_playing_callback(cx: &mut TestAppContext) {
                     && view.applied_project_revision() == Some(state.revision)
             })
         });
-        if applied && backend.status().unwrap().playing.load(Acquire) {
+        if applied && fixture.backend.status().unwrap().playing.load(Acquire) {
             break;
         }
         assert!(
@@ -666,4 +659,5 @@ fn option_drag_copy_applies_to_the_playing_callback(cx: &mut TestAppContext) {
             editor.read_with(cx, |view, _| view.error.clone())
         );
     }
+    fixture.finish(cx);
 }
