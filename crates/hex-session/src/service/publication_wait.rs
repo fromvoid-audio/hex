@@ -8,6 +8,52 @@ use std::time::{Duration, Instant};
 pub(super) const DEADLINE: Duration = Duration::from_millis(500);
 pub(super) const POLL: Duration = Duration::from_millis(2);
 
+/// The switch and its early display have already committed. A held EQ pair can
+/// rebase only after the exact canonical publication releases the output slot.
+/// The session worker polls the audio control owner; the callback never waits.
+pub(super) fn wait_for_switch_rebase(
+    audio: &mut dyn super::WorkerAudioSink,
+    expected: super::ResidentGraphSubmission,
+    cancelled: impl Fn() -> bool,
+) -> Result<(), super::SessionError> {
+    let start = Instant::now();
+    loop {
+        if cancelled() {
+            return Err(super::SessionError::Invalid(
+                "paired preview cancelled · source changed",
+            ));
+        }
+        let readiness = audio.resident_publication_readiness();
+        if expected.matches_applied(readiness) {
+            return Ok(());
+        }
+        match readiness {
+            ResidentPublicationReadiness::Pending { submission, .. }
+            | ResidentPublicationReadiness::Applied { submission, .. }
+                if expected.matches_runtime_loop(submission) => {}
+            ResidentPublicationReadiness::Refused { submission, .. }
+                if expected.matches_runtime_loop(submission) =>
+            {
+                return Err(super::SessionError::Invalid(
+                    "paired preview cancelled · track switch publication refused",
+                ));
+            }
+            _ => {
+                return Err(super::SessionError::Invalid(
+                    "paired preview cancelled · audio output changed",
+                ));
+            }
+        }
+        if start.elapsed() >= DEADLINE {
+            return Err(super::SessionError::Invalid(
+                "paired preview cancelled · audio publication timed out",
+            ));
+        }
+        audio.poll();
+        std::thread::sleep(POLL);
+    }
+}
+
 pub(super) enum Step {
     Ready(QueuedRequest),
     Waiting(Wait),

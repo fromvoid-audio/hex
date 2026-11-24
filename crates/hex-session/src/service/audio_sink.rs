@@ -791,14 +791,19 @@ pub struct PausedNoteGraph<'a> {
     pub cancellation: &'a super::RequestCancellation,
 }
 impl ResidentGraphSubmission {
+    pub(super) fn matches_runtime_loop(self, submission: ResidentRuntimeLoop) -> bool {
+        submission.output_identity == self.output_identity
+            && submission.audio_revision == self.audio_revision
+            && submission.source_context == Some(self.context)
+    }
+
     /// Compare with the callback's correlated publication observation. A pending
     /// successor is not a stable source for a stopped edit. The caller must still
     /// establish and hold the exact fence before using this as a predecessor.
     pub fn matches_applied(self, readiness: ResidentPublicationReadiness) -> bool {
         matches!(readiness, ResidentPublicationReadiness::Applied {
-            submission: ResidentRuntimeLoop { output_identity, audio_revision, source_context: Some(context), .. },
-            publication_in_flight: false,
-        } if output_identity == self.output_identity && audio_revision == self.audio_revision && context == self.context)
+            submission, publication_in_flight: false
+        } if self.matches_runtime_loop(submission))
     }
 
     /// Compare with the sink's latest publication observation to see whether
@@ -810,29 +815,9 @@ impl ResidentGraphSubmission {
         readiness: ResidentPublicationReadiness,
     ) -> bool {
         match readiness {
-            ResidentPublicationReadiness::Applied {
-                submission:
-                    ResidentRuntimeLoop {
-                        output_identity,
-                        audio_revision,
-                        source_context: Some(context),
-                        ..
-                    },
-                ..
-            }
-            | ResidentPublicationReadiness::Pending {
-                submission:
-                    ResidentRuntimeLoop {
-                        output_identity,
-                        audio_revision,
-                        source_context: Some(context),
-                        ..
-                    },
-                ..
-            } => {
-                output_identity == self.output_identity
-                    && audio_revision == self.audio_revision
-                    && context == self.context
+            ResidentPublicationReadiness::Applied { submission, .. }
+            | ResidentPublicationReadiness::Pending { submission, .. } => {
+                self.matches_runtime_loop(submission)
             }
             ResidentPublicationReadiness::Refused {
                 submission:
@@ -842,24 +827,9 @@ impl ResidentGraphSubmission {
                 applied_revision,
                 ..
             } => output_identity == self.output_identity && applied_revision == self.audio_revision,
-            ResidentPublicationReadiness::NoOutput
-            | ResidentPublicationReadiness::Idle { .. }
-            | ResidentPublicationReadiness::Applied {
-                submission:
-                    ResidentRuntimeLoop {
-                        source_context: None,
-                        ..
-                    },
-                ..
+            ResidentPublicationReadiness::NoOutput | ResidentPublicationReadiness::Idle { .. } => {
+                false
             }
-            | ResidentPublicationReadiness::Pending {
-                submission:
-                    ResidentRuntimeLoop {
-                        source_context: None,
-                        ..
-                    },
-                ..
-            } => false,
         }
     }
 }

@@ -42,15 +42,22 @@ pub(super) fn deferred_recovery_kind(request: &Request) -> Option<DeferredRecove
         Request::Edit(Command::AddArrangementLocator { .. }) => {
             Some(DeferredRecoveryKind::LocatorAdd)
         }
-        Request::Edit(
-            Command::Mute { .. }
+        Request::Edit(command) if is_track_switch(command) => {
+            Some(DeferredRecoveryKind::TrackSwitch)
+        }
+        _ => None,
+    }
+}
+
+fn is_track_switch(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Mute { .. }
             | Command::ToggleMute(_)
             | Command::ToggleTracksMute(_)
             | Command::ToggleSolo { .. }
-            | Command::ToggleSoloTracks { .. },
-        ) => Some(DeferredRecoveryKind::TrackSwitch),
-        _ => None,
-    }
+            | Command::ToggleSoloTracks { .. }
+    )
 }
 
 pub(super) fn is_section_copy(command: &Command) -> bool {
@@ -114,7 +121,8 @@ pub(in crate::service) fn defers_behind_resident_publication(request: &Request) 
                     | Command::ToggleDeviceBypass { .. }
                     | Command::SetDeviceBypass { .. }
                     | Command::ReplaceDeviceState { .. }
-            ) || resident_audio::device_insert::graph_edit_operation(command).is_some()
+            ) || is_track_switch(command)
+                || resident_audio::device_insert::graph_edit_operation(command).is_some()
                 || resident_audio::device_insert::resident_graph_edit_operation(command, false)
                     .is_some()
         }
