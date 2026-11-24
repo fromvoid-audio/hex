@@ -235,7 +235,28 @@ fn prefix_preserves_plain_and_edited_pcm_and_rewinds_available_media_first() {
         let old = e.project().clip(clip).unwrap();
         let compare_from = if case == 2 { old.start() as usize } else { 0 };
         let source_origin = old.start() - old.audio_edit().map_or(0, |edit| edit.view_start);
-        let original = render(&e, 4500);
+        // The two plain clips move their instance fade to the new edge. Read
+        // the original source with that fade removed so its old start does
+        // not silence the first available samples in our reference.
+        let expected = if case <= 1 {
+            let mut dry = Editor::new(e.project().clone(), 1).unwrap();
+            dry.execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+            let mut pcm = render(&dry, 4500);
+            let duration = old.start() + old.duration() - 3500;
+            let fade = ClipFade::new(duration, 0, 13, 17).unwrap();
+            for (age, frame) in pcm[3500..].iter_mut().take(duration as usize).enumerate() {
+                let gain = fade.gain_at(age as u64);
+                *frame = frame.map(|v| v * gain);
+            }
+            pcm
+        } else {
+            render(&e, 4500)
+        };
         e.execute(Command::TrimClipEdge {
             clip,
             edge: TrimEdge::Left,
@@ -247,7 +268,7 @@ fn prefix_preserves_plain_and_edited_pcm_and_rewinds_available_media_first() {
             let max = actual[compare_from..]
                 .iter()
                 .flatten()
-                .zip(original[compare_from..].iter().flatten())
+                .zip(expected[compare_from..].iter().flatten())
                 .map(|(a, b)| (a - b).abs())
                 .fold(0.0_f32, f32::max);
             // The plain renderer folds clip gain/fade into its read; a prepared
