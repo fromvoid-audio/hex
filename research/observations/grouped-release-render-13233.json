@@ -1,0 +1,45 @@
+{
+  "purpose": "Measure the optimized engine render cost for a compensated group with MIDI releases.",
+  "date": "2026-11-24",
+  "hardware": "Apple M5 Pro, macOS 26.6.2 (25G83), arm64",
+  "toolchain": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+  "harness": "crates/hex-engine/examples/profile_ringing_group.rs",
+  "harness_sha256": "f6536ede204c97a3fe3fcc72761600acc72eaa1db8fcaf209dff7969b9fc0e74",
+  "fixture_sha256": "66c8f46f6de8c85b6d8d080f5cea9e365aa1f6022147a107618fcedcc651fcaa",
+  "build": "cargo build --release --locked -p hex-engine --example profile_ringing_group",
+  "sources": {
+    "before": "86c12611a62b9caadeceaffbc2b6271f294b7abb",
+    "after": "5d55634978a768fb6faf0624258f3d12f00a2db3"
+  },
+  "binary_sha256": {
+    "before": "b7a4202d1ad03cd153c77e929b731d2595f80fe5e0954f7e4520b0085e5de00d",
+    "after": "a96a0f8ab08bb82ab0f54988bf9ec12e1b3e23ee8b8d400dc4f75f243fda202b"
+  },
+  "reproduction": "Build in independent empty target directories. Copy the identical example into the baseline checkout. Execute the release binaries in the order recorded below.",
+  "workload": "48 kHz stereo, eight MIDI tracks, four grouped. Saturator on the first child and Limiter on the group. Render 1024 frames and stop one grouped and one ungrouped track, leaving eight release voices. Time the next 256 frames using Instant on the calling thread.",
+  "sampling": "Five warmups followed by 40 timed renders per execution. Setup and PCM comparison are outside the timed interval.",
+  "runs": [
+    {
+      "revision": "before",
+      "p50_us": 329.46,
+      "p95_us": 445.29
+    },
+    {
+      "revision": "after",
+      "p50_us": 125.5,
+      "p95_us": 162.96
+    },
+    {
+      "revision": "after",
+      "p50_us": 94.5,
+      "p95_us": 102.17
+    },
+    {
+      "revision": "before",
+      "p50_us": 230.67,
+      "p95_us": 243.92
+    }
+  ],
+  "pcm": "Every timed block matched its single-frame partition reference bit for bit. Both revisions produced digest 74f1d969e2adfaf0.",
+  "limits": "Elapsed headless render time on a shared Mac. The comparison spans the intervening changes. It does not isolate an individual optimization or measure physical device timing."
+}
