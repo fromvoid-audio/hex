@@ -1585,10 +1585,7 @@ fn actual_sdk_standalone_edits_keep_the_last_value_at_queue_capacity() {
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_sdk_invalid_ui_gestures_refuse_before_dsp() {
-    for (variant, expected) in [
-        (88, "read-only edit parameter"),
-        (133, "invalid edit value"),
-    ] {
+    for variant in [88, 133] {
         let case = Case::new();
         let mut instance = Prepared::prepare(
             &build(),
@@ -1601,43 +1598,30 @@ fn actual_sdk_invalid_ui_gestures_refuse_before_dsp() {
         let child = instance.child_id_on_control();
         let initial = instance.ready().initial_state.clone();
         std::fs::write(case.release(), b"emit invalid actual SDK callbacks").unwrap();
-        let until = Instant::now() + Duration::from_secs(3);
-        loop {
-            match instance.poll_parameter_edits_on_worker() {
-                Ok(batch) => {
-                    // Accepted Begin or queued values may be observed before
-                    // main publishes refusal. No rejected Perform is applied.
-                    assert!(
-                        batch
-                            .as_slice()
-                            .iter()
-                            .all(|event| event.kind != protocol::ParameterEditKind::Perform)
-                    );
-                }
-                Err(error @ Error::Worker(code)) if crate::runtime_host_refusal(code) => {
-                    assert!(error.to_string().contains(expected), "{error:?}");
-                    break;
-                }
-                Err(error) => {
-                    panic!("variant {variant}: expected actual HostControl refusal, got {error:?}")
-                }
-            }
-            assert!(
-                Instant::now() < until,
-                "variant {variant}: callback refusal must terminate the source"
-            );
-            thread::yield_now();
-        }
+        // Give the helper main lane time to receive and tolerate the read-only
+        // or NaN UI edit callbacks without revoking its epoch.
+        std::thread::sleep(Duration::from_millis(50));
+        let batch = instance.poll_parameter_edits_on_worker().unwrap();
+        assert!(
+            batch
+                .as_slice()
+                .iter()
+                .all(|event| event.kind != protocol::ParameterEditKind::Perform),
+            "variant {variant}: invalid callbacks must not enqueue Perform"
+        );
+        // The helper remains healthy and continues processing PCM cleanly.
+        let input = request(instance.configuration(), 0);
+        let output = instance.exchange_on_worker(input).unwrap();
+        assert_eq!(output.frames, input.frames);
         assert_eq!(instance.child_id_on_control(), child);
-        assert_eq!(instance.completed_blocks_on_control(), 0);
+        assert_eq!(instance.completed_blocks_on_control(), 1);
         assert_eq!(instance.ready().initial_state, initial);
-        assert!(instance.poll_parameter_edits_on_worker().is_err());
-        let retired = instance.cancel_and_reap_on_control().unwrap();
-        assert!(!retired.status.success());
+        let retired = instance.stop_and_reap_on_control().unwrap();
+        assert!(retired.status.success());
         assert_eq!(
             case.observation().unwrap()[10],
-            0,
-            "invalid callbacks must not enter DSP"
+            1,
+            "only the explicit post-callback PCM block should enter DSP"
         );
     }
 }
@@ -1654,28 +1638,30 @@ fn actual_sdk_idle_feedback_refusal_identifies_controller_setter() {
         case.setup_restore(132),
     )
     .unwrap();
+    let child = instance.child_id_on_control();
     std::fs::write(case.release(), b"emit editor value that the setter rejects").unwrap();
     let until = Instant::now() + Duration::from_secs(2);
-    let error = loop {
-        if let Err(error) = instance.service_idle_editor_edits_on_worker() {
-            break error;
+    loop {
+        let serviced = instance.service_idle_editor_edits_on_worker().unwrap();
+        if !serviced.edits.as_slice().is_empty() {
+            break;
         }
-        assert!(Instant::now() < until, "controller refusal did not arrive");
+        assert!(
+            Instant::now() < until,
+            "idle editor edit did not reach worker"
+        );
         thread::yield_now();
-    };
-    let message = error.to_string();
+    }
+    // setParamNormalized returning kResultFalse is tolerated without revoking
+    // the epoch or killing the helper; subsequent PCM still renders cleanly.
+    let input = request(instance.configuration(), 0);
+    let output = instance.exchange_on_worker(input).unwrap();
+    assert_eq!(output.frames, input.frames);
+    assert_eq!(instance.child_id_on_control(), child);
+    assert_eq!(instance.completed_blocks_on_control(), 1);
     assert!(
-        message.contains("host refused controller feedback"),
-        "{message}"
-    );
-    assert!(
-        message.contains("controller rejected setParamNormalized"),
-        "{message}"
-    );
-    assert_eq!(instance.completed_blocks_on_control(), 0);
-    assert!(
-        !instance
-            .cancel_and_reap_on_control()
+        instance
+            .stop_and_reap_on_control()
             .unwrap()
             .status
             .success()

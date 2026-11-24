@@ -275,8 +275,10 @@ pub use storage::{NativeWorkerResourceBound, NativeWorkerStorage};
 
 // The callback carries just the original scope serial. Joining control
 // publishes the fixed prepared targets before releasing that serial.
+// Keep this enum `Copy` (no heap allocation on the callback/worker path).
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[derive(Clone, Copy)]
+#[allow(clippy::large_enum_variant)]
 enum EditorPlan {
     Single(hex_plugin_host::protocol::EditorTouchPlan),
     Group(hex_plugin_host::protocol::EditorTouchPlanSet),

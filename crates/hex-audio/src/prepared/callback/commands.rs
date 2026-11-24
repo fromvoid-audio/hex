@@ -2,6 +2,18 @@
 use crate::prepared::*;
 
 impl Callback {
+    /// Reuse the adapter's CPU-meter entry sample throughout every render chunk.
+    /// The callback owner is exclusive; returning also clears the stamp on early exits.
+    pub(crate) fn with_host_callback_entry(
+        &mut self,
+        start: Instant,
+        render: impl FnOnce(&mut Self),
+    ) {
+        let previous = self.host_callback_entry.replace(start);
+        render(self);
+        self.host_callback_entry = previous;
+    }
+
     pub fn begin_block(&mut self) {
         self.begin_block_inner();
         self.flush_stream_outcomes();
@@ -254,6 +266,7 @@ impl Callback {
             return;
         }
         let event = AudioDiagnosticEvent {
+            host_callback_entry: self.host_callback_entry,
             sequence: 0,
             output: self.candidate_root.root_id(),
             revision,
