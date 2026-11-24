@@ -86,6 +86,7 @@ impl GestureClient {
             token: self.next_token,
         };
         self.active = Some(plugin_snapshot(key, origin));
+        self.accepted_pair = None;
         self.pending_begin = Some(GestureRequest::BeginPlugin {
             key,
             origin,
@@ -206,6 +207,7 @@ impl GestureMachine {
                     creation_origin: None,
                     origin_parameters: None,
                     plugin_initial: Some(origin.initial),
+                    accepted_pair_preview: None,
                 });
                 self.last_key = Some(key);
             }
