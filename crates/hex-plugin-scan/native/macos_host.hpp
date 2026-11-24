@@ -14,7 +14,10 @@ namespace hex_instance {
 // Rich metadata lives in the helper. This bound admits large modular
 // instruments and controllers exposing full per-channel MIDI mappings.
 inline constexpr size_t HOST_PARAMETER_COUNT=8192;
-inline constexpr size_t HOST_FEEDBACK_COUNT=128;
+// Bounded controller-feedback storage accommodates a full input+output
+// parameter block (128 sparse + 1 dense input + 128 distinct outputs) plus
+// multi-slice / unconsumed-block headroom without heap allocation.
+inline constexpr size_t HOST_FEEDBACK_COUNT=512;
 inline constexpr size_t HOST_RESTART_COUNT=8;
 // A single native editor event can synchronously report a group of gestures.
 // Reserve the burst on main without changing PCM handoff or receipt sizes.

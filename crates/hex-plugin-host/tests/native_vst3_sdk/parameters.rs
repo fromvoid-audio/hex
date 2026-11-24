@@ -2015,3 +2015,121 @@ fn idle_and_ordinary_editor_input_is_not_replayed_as_opted_in_pcm() {
         );
     }
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_editor_input_with_full_128_distinct_outputs_keeps_worker_alive_and_syncs_controller() {
+    use crate::protocol::{ParameterEditKind, ParameterPageProgress, ParameterPageQuery};
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(159),
+    )
+    .unwrap();
+    let child = instance.child_id_on_control();
+    std::fs::write(
+        case.release(),
+        b"emit editor input with 128 distinct outputs",
+    )
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    let mut records = Vec::new();
+    loop {
+        let batch = instance.poll_parameter_edits_on_worker().unwrap();
+        records.extend_from_slice(batch.as_slice());
+        if batch.ready > 0 && !records.is_empty() {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "editor input callback did not arrive"
+        );
+        thread::yield_now();
+    }
+
+    // Block 0 receives 1 editor input (ID 7 -> 0.75 -> gain 3.0) and emits 128 distinct
+    // output IDs (1001..=1128). Must deliver expected PCM and keep the worker alive.
+    let first_input = request(instance.configuration(), 0);
+    let first_output = instance.exchange_on_worker(first_input).unwrap();
+    for (actual, original) in first_output.pcm[..8].iter().zip(first_input.pcm) {
+        assert_eq!(*actual, original.map(|sample| sample * 1.5));
+    }
+    assert_eq!(first_output.parameters.as_slice().len(), 128);
+    assert_eq!(instance.child_id_on_control(), child);
+
+    // Block 1 succeeds on the exact same worker with the updated gain applied cleanly.
+    let second_input = request(instance.configuration(), 1);
+    let second_output = instance.exchange_on_worker(second_input).unwrap();
+    for (actual, original) in second_output.pcm[..8].iter().zip(second_input.pcm) {
+        assert_eq!(*actual, original.map(|sample| sample * (3.0 * 0.625)));
+    }
+    assert_eq!(instance.child_id_on_control(), child);
+
+    let until = Instant::now() + Duration::from_secs(3);
+    while records.len() < 3 {
+        let batch = instance.poll_parameter_edits_on_worker().unwrap();
+        records.extend_from_slice(batch.as_slice());
+        assert!(
+            Instant::now() < until,
+            "editor gesture receipts did not complete"
+        );
+        thread::yield_now();
+    }
+    assert_eq!(records[0].kind, ParameterEditKind::Begin);
+    assert_eq!(records[1].kind, ParameterEditKind::Perform);
+    assert_eq!(records[1].normalized, 0.75);
+    assert_eq!(records[2].kind, ParameterEditKind::End);
+
+    // Verify the controller received the latest value for all 129 admitted IDs.
+    let mut seen = std::collections::BTreeMap::new();
+    let mut offset = 0_u16;
+    let mut revision = 0_u64;
+    while offset < 129 {
+        instance
+            .begin_parameter_page_on_worker(ParameterPageQuery {
+                first: offset,
+                revision,
+                ..ParameterPageQuery::default()
+            })
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        let page = loop {
+            match instance.poll_parameter_page_on_worker().unwrap() {
+                ParameterPageProgress::Page(page) => break page,
+                ParameterPageProgress::Pending => {
+                    assert!(Instant::now() < until, "controller feedback must settle");
+                    thread::sleep(Duration::from_millis(1));
+                }
+                other => panic!("unexpected page response: {other:?}"),
+            }
+        };
+        assert_eq!(page.total, 129);
+        assert!(!page.as_slice().is_empty());
+        revision = page.revision;
+        for entry in page.as_slice() {
+            seen.insert(entry.id, entry.normalized);
+        }
+        offset += page.as_slice().len() as u16;
+    }
+    assert_eq!(seen.len(), 129);
+    assert_eq!(seen.get(&7), Some(&0.75));
+    for n in 0_u32..128 {
+        let id = 1001 + n;
+        let expected = f64::from(n + 1) / 256.0;
+        assert_eq!(
+            seen.get(&id),
+            Some(&expected),
+            "controller value mismatch for output ID {id}"
+        );
+    }
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
