@@ -293,3 +293,212 @@ fn same_track_hosted_reorder_keeps_the_unchanged_dry_delay_and_stamps() {
         );
     }
 }
+
+#[test]
+fn hosted_track_effect_move_with_empty_third_track_cuts_and_undoes_live() {
+    use crate::playback::HostedTrackEffectMove;
+    use crate::session_playback::NativeRemovalProgress;
+    use hex_lattice_contract::ForeignProcessorBinding;
+
+    struct ScaleEffect {
+        binding: ForeignProcessorBinding,
+        gain: f32,
+    }
+    impl ForeignProcessors for ScaleEffect {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            assert_eq!(node.prepared.binding(), Some(self.binding));
+            for frame in frames {
+                frame[0] *= self.gain;
+                frame[1] *= self.gain;
+            }
+            Ok(())
+        }
+
+        fn reject_callback(&mut self) {
+            panic!("unexpected callback refusal");
+        }
+    }
+
+    const FRAMES: usize = 8192;
+    let mut project = fixture(&[&[], &[]], FRAMES);
+    let [donor, receiver] = *project.tracks.as_slice() else {
+        panic!("two resident audio rows");
+    };
+    let Created::Track(_empty_third) = project
+        .editor
+        .execute(Command::AddTrack {
+            name: "empty third".into(),
+        })
+        .unwrap()
+    else {
+        panic!("empty third track");
+    };
+    let donor_asset = project.editor.project().track(donor).unwrap().clips()[0].asset();
+    let receiver_asset = project.editor.project().track(receiver).unwrap().clips()[0].asset();
+    project.media.insert(
+        donor_asset,
+        Audio::new(48_000, vec![[0.25, 0.0]; FRAMES]).unwrap(),
+    );
+    project.media.insert(
+        receiver_asset,
+        Audio::new(48_000, vec![[0.0, 0.25]; FRAMES]).unwrap(),
+    );
+    let Created::Device(device) = project
+        .editor
+        .execute(Command::InsertDevice {
+            track: donor,
+            before: None,
+            state: NativeDeviceState::new(DeviceTypeId::from_static("hex.vst3"), 1, vec![19])
+                .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("hosted effect");
+    };
+
+    let prepare = |proj: &hex_project::Project,
+                   media: &std::collections::BTreeMap<hex_project::AssetId, Audio>,
+                   track_id: hex_project::TrackId,
+                   track_idx: usize,
+                   epoch: u64| {
+        let owner = ProcessorChainOwner::Track(track_id.value());
+        let identity = ProcessorInstanceIdentity::new(owner, device.value()).unwrap();
+        let effect = instruments::paired_effect(identity, epoch);
+        let definitions: [&dyn NativeDeviceDefinition; 1] = [&effect];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let prepared = PreparedRevision::prepare_with_effect_registry(
+            proj,
+            media,
+            Arc::new(SineTable::new()),
+            None,
+            &registry,
+        )
+        .unwrap();
+        let binding = prepared.arrangement().tracks()[track_idx]
+            .device_chain
+            .iter()
+            .find_map(|node| node.foreign_processor()?.binding())
+            .unwrap();
+        (SessionPlayback::new(Arc::new(prepared)).unwrap(), binding)
+    };
+
+    let (mut before, binding1) = prepare(project.editor.project(), &project.media, donor, 0, 1);
+    before.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut block = [[0.0; 2]; 256];
+    for _ in 0..3 {
+        before
+            .render_with_foreign_processors(
+                &mut block,
+                None,
+                None,
+                None,
+                &mut ScaleEffect {
+                    binding: binding1,
+                    gain: 2.0,
+                },
+            )
+            .unwrap();
+    }
+
+    // Move donor -> receiver with the empty third track present.
+    project
+        .editor
+        .execute(Command::MoveTrackDevices {
+            source: donor,
+            selected: hex_project::DeviceSelectionIds::new(&[device]).unwrap(),
+            destination: receiver,
+        })
+        .unwrap();
+    let (mut after_move, binding2) =
+        prepare(project.editor.project(), &project.media, receiver, 1, 2);
+    after_move.require_continuous_insert = true;
+    after_move.hosted_move = Some(HostedMoveRequest::Effect(HostedTrackEffectMove {
+        donor,
+        receiver,
+        device,
+        binding: binding2,
+    }));
+
+    assert_eq!(
+        after_move.advance_native_removal_from(&mut before),
+        Ok(NativeRemovalProgress::Fading)
+    );
+    // Render through the fade and 512-frame dry-alignment drain.
+    for _ in 0..4 {
+        before
+            .render_with_foreign_processors(
+                &mut block,
+                None,
+                None,
+                None,
+                &mut ScaleEffect {
+                    binding: binding1,
+                    gain: 2.0,
+                },
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        after_move.advance_native_removal_from(&mut before),
+        Ok(NativeRemovalProgress::Ready)
+    );
+    let cut_frame = before.performance_frame();
+    after_move.try_inherit_state_live_from(&mut before).unwrap();
+    assert_eq!(after_move.performance_frame(), cut_frame);
+    after_move
+        .render_with_foreign_processors(
+            &mut block,
+            None,
+            None,
+            None,
+            &mut ScaleEffect {
+                binding: binding2,
+                gain: 2.0,
+            },
+        )
+        .unwrap();
+
+    // Undo back to donor while playing with the empty third track still present.
+    assert!(project.editor.try_undo().unwrap());
+    let (mut after_undo, binding3) = prepare(project.editor.project(), &project.media, donor, 0, 3);
+    after_undo.require_continuous_insert = true;
+    after_undo.hosted_move = Some(HostedMoveRequest::Effect(HostedTrackEffectMove {
+        donor: receiver,
+        receiver: donor,
+        device,
+        binding: binding3,
+    }));
+    assert_eq!(
+        after_undo.advance_native_removal_from(&mut after_move),
+        Ok(NativeRemovalProgress::Fading)
+    );
+    for _ in 0..4 {
+        after_move
+            .render_with_foreign_processors(
+                &mut block,
+                None,
+                None,
+                None,
+                &mut ScaleEffect {
+                    binding: binding2,
+                    gain: 2.0,
+                },
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        after_undo.advance_native_removal_from(&mut after_move),
+        Ok(NativeRemovalProgress::Ready)
+    );
+    let undo_frame = after_move.performance_frame();
+    after_undo
+        .try_inherit_state_live_from(&mut after_move)
+        .unwrap();
+    assert_eq!(after_undo.performance_frame(), undo_frame);
+}
