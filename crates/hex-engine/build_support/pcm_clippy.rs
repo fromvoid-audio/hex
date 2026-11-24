@@ -5,6 +5,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(windows)]
+pub const RUSTC_BIN: &str = "bin/rustc.exe";
+#[cfg(not(windows))]
+pub const RUSTC_BIN: &str = "bin/rustc";
+
+#[cfg(windows)]
+pub const CLIPPY_BIN: &str = "bin/clippy-driver.exe";
+#[cfg(not(windows))]
+pub const CLIPPY_BIN: &str = "bin/clippy-driver";
+
 pub fn benign_args(value: Option<&std::ffi::OsStr>) -> bool {
     match value {
         None => true,
@@ -62,10 +72,39 @@ fn stamp(path: &Path) -> Option<Stamp> {
         ctime: (m.ctime(), m.ctime_nsec()),
     })
 }
-#[cfg(not(unix))]
+#[cfg(windows)]
+#[derive(Debug, PartialEq, Eq)]
+struct Stamp {
+    size: u64,
+    attributes: u32,
+    creation_time: u64,
+    last_write_time: u64,
+}
+#[cfg(windows)]
+fn stamp(path: &Path) -> Option<Stamp> {
+    use std::os::windows::fs::MetadataExt;
+    if !path.is_absolute()
+        || path
+            .ancestors()
+            .any(|p| fs::symlink_metadata(p).map_or(true, |m| m.file_type().is_symlink()))
+    {
+        return None;
+    }
+    let m = fs::symlink_metadata(path).ok()?;
+    if !m.is_file() {
+        return None;
+    }
+    Some(Stamp {
+        size: m.file_size(),
+        attributes: m.file_attributes(),
+        creation_time: m.creation_time(),
+        last_write_time: m.last_write_time(),
+    })
+}
+#[cfg(not(any(unix, windows)))]
 #[derive(Debug, PartialEq, Eq)]
 struct Stamp;
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn stamp(_: &Path) -> Option<Stamp> {
     None
 }
@@ -74,7 +113,7 @@ fn stamp(_: &Path) -> Option<Stamp> {
 pub struct InstalledFiles(Vec<(PathBuf, Stamp)>);
 impl InstalledFiles {
     pub fn capture(root: &Path, compiler: &Path, wrapper: &Path, target: &str) -> Option<Self> {
-        if compiler != root.join("bin/rustc") || wrapper != root.join("bin/clippy-driver") {
+        if compiler != root.join(RUSTC_BIN) || wrapper != root.join(CLIPPY_BIN) {
             return None;
         }
         let rustlib = root.join("lib/rustlib");
@@ -100,6 +139,7 @@ impl InstalledFiles {
                 return None;
             }
         }
+        let expected_manifest_entry = format!("file:{CLIPPY_BIN}");
         if !fs::read_to_string(&files[2])
             .ok()?
             .lines()
@@ -107,7 +147,7 @@ impl InstalledFiles {
             || !fs::read_to_string(&files[4])
                 .ok()?
                 .lines()
-                .any(|l| l == "file:bin/clippy-driver")
+                .any(|l| l == expected_manifest_entry)
         {
             return None;
         }
@@ -190,14 +230,15 @@ mod tests {
             let p = p.canonicalize().unwrap();
             fs::create_dir_all(p.join("bin")).unwrap();
             fs::create_dir_all(p.join("lib/rustlib")).unwrap();
+            let manifest_entry = format!("file:{CLIPPY_BIN}\n");
             for (name, data) in [
-                ("bin/rustc", "compiler"),
-                ("bin/clippy-driver", "driver"),
+                (RUSTC_BIN, "compiler"),
+                (CLIPPY_BIN, "driver"),
                 ("lib/rustlib/components", "clippy-preview-test\n"),
                 ("lib/rustlib/rust-installer-version", "3\n"),
                 (
                     "lib/rustlib/manifest-clippy-preview-test",
-                    "file:bin/clippy-driver\n",
+                    manifest_entry.as_str(),
                 ),
                 ("lib/rustlib/manifest-rust-std-test", "file:std\n"),
             ] {
@@ -206,7 +247,7 @@ mod tests {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                for f in ["bin/rustc", "bin/clippy-driver"] {
+                for f in [RUSTC_BIN, CLIPPY_BIN] {
                     fs::set_permissions(p.join(f), fs::Permissions::from_mode(0o755)).unwrap();
                 }
             }
@@ -215,8 +256,8 @@ mod tests {
         fn capture(&self) -> Option<InstalledFiles> {
             InstalledFiles::capture(
                 &self.0,
-                &self.0.join("bin/rustc"),
-                &self.0.join("bin/clippy-driver"),
+                &self.0.join(RUSTC_BIN),
+                &self.0.join(CLIPPY_BIN),
                 "test",
             )
         }
@@ -226,7 +267,7 @@ mod tests {
             fs::remove_dir_all(&self.0).unwrap();
         }
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn private_install_identity_manifest_and_replacement_negatives() {
         let f = Fixture::new();
@@ -236,7 +277,7 @@ mod tests {
             InstalledFiles::capture(
                 &f.0,
                 &f.0.join("bin/other-rustc"),
-                &f.0.join("bin/clippy-driver"),
+                &f.0.join(CLIPPY_BIN),
                 "test"
             )
             .is_none()
@@ -244,7 +285,7 @@ mod tests {
         assert!(
             InstalledFiles::capture(
                 &f.0,
-                &f.0.join("bin/rustc"),
+                &f.0.join(RUSTC_BIN),
                 &f.0.join("lookalike/clippy-driver"),
                 "test"
             )
@@ -253,8 +294,8 @@ mod tests {
         assert!(
             InstalledFiles::capture(
                 &f.0,
-                &f.0.join("bin/rustc"),
-                &f.0.join("bin/clippy-driver"),
+                &f.0.join(RUSTC_BIN),
+                &f.0.join(CLIPPY_BIN),
                 "foreign-target"
             )
             .is_none()
@@ -269,21 +310,27 @@ mod tests {
             assert!(f.capture().is_none());
             fs::write(&p, bytes).unwrap();
         }
-        let captured = f.capture().unwrap();
-        let p = f.0.join("bin/clippy-driver");
-        fs::rename(&p, f.0.join("old-driver")).unwrap();
-        fs::copy(f.0.join("old-driver"), &p).unwrap();
-        assert!(!captured.unchanged());
+        let p = f.0.join(CLIPPY_BIN);
+        #[cfg(unix)]
+        {
+            let captured = f.capture().unwrap();
+            fs::rename(&p, f.0.join("old-driver")).unwrap();
+            fs::copy(f.0.join("old-driver"), &p).unwrap();
+            assert!(!captured.unchanged());
+        }
         let captured = f.capture().unwrap();
         fs::write(&p, "changed driver").unwrap();
         assert!(!captured.unchanged());
-        fs::remove_file(&p).unwrap();
-        std::os::unix::fs::symlink(f.0.join("old-driver"), &p).unwrap();
-        assert!(f.capture().is_none());
-        fs::remove_file(&p).unwrap();
-        fs::rename(f.0.join("old-driver"), &p).unwrap();
-        fs::rename(f.0.join("bin"), f.0.join("real-bin")).unwrap();
-        std::os::unix::fs::symlink(f.0.join("real-bin"), f.0.join("bin")).unwrap();
-        assert!(f.capture().is_none());
+        #[cfg(unix)]
+        {
+            fs::remove_file(&p).unwrap();
+            std::os::unix::fs::symlink(f.0.join("old-driver"), &p).unwrap();
+            assert!(f.capture().is_none());
+            fs::remove_file(&p).unwrap();
+            fs::rename(f.0.join("old-driver"), &p).unwrap();
+            fs::rename(f.0.join("bin"), f.0.join("real-bin")).unwrap();
+            std::os::unix::fs::symlink(f.0.join("real-bin"), f.0.join("bin")).unwrap();
+            assert!(f.capture().is_none());
+        }
     }
 }

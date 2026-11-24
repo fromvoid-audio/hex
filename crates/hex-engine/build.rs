@@ -51,7 +51,7 @@ fn ordinary_install(root: &Path, target: &str, evidence: &mut String) -> bool {
     let Ok(manifest) = fs::read_to_string(manifest) else {
         return false;
     };
-    let compiler = root.join("bin/rustc");
+    let compiler = root.join(pcm_clippy::RUSTC_BIN);
     evidence.push_str(&format!("sysroot compiler path: {compiler:?}\n"));
     compiler.is_file()
         && installer.trim() == "3"
@@ -150,7 +150,11 @@ fn main() {
             if let Some(wrapper) = env::var_os("RUSTC_WORKSPACE_WRAPPER").filter(|s| !s.is_empty()) {
                 let wrapper = PathBuf::from(wrapper);
                 // Watch missing/repaired installation entries too, before qualification.
-                for path in [root.join("bin/clippy-driver"), root.join("lib/rustlib").join(format!("manifest-clippy-preview-{target}"))] {
+                for path in [
+                    root.join(pcm_clippy::CLIPPY_BIN),
+                    root.join("lib/rustlib")
+                        .join(format!("manifest-clippy-preview-{target}")),
+                ] {
                     println!("cargo:rerun-if-changed={}", path.display());
                 }
                 let files = pcm_clippy::InstalledFiles::capture(root, compiler, &wrapper, &target)

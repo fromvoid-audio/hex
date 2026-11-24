@@ -57,6 +57,11 @@ pub(crate) fn native_layout_known() -> bool {
             target_env = "gnu"
         )),
         Some("aarch64-apple-darwin") => cfg!(all(target_arch = "aarch64", target_os = "macos")),
+        Some("x86_64-pc-windows-msvc") => cfg!(all(
+            target_arch = "x86_64",
+            target_os = "windows",
+            target_env = "msvc"
+        )),
         _ => false,
     };
     native
