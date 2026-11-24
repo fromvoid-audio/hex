@@ -11,6 +11,16 @@ mod vst3_tests;
 
 static NEXT_TEST: AtomicU64 = AtomicU64::new(0);
 
+/// Read exact on-disk bytes through the writer's own locked handle so checks
+/// work identically under Windows mandatory locks and Unix advisory locks.
+fn writer_bytes(writer: &mut DraftWriter) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    writer.file.seek(SeekFrom::Start(0)).unwrap();
+    writer.file.read_to_end(&mut bytes).unwrap();
+    writer.file.seek(SeekFrom::End(0)).unwrap();
+    bytes
+}
+
 #[test]
 fn journal_record_hash_matches_legacy_digest() {
     // SHA-256 of a zero chain followed by bytes 0 through 63, generated with
@@ -254,11 +264,11 @@ fn append_validation_is_atomic_and_terminal_clocks_use_actual_order() {
     let path = dir.path();
     let (source, target, provenance) = fixture();
     let mut writer = DraftWriter::create_new(&path, &source, target, provenance).unwrap();
-    let initial_bytes = fs::read(&path).unwrap();
+    let initial_bytes = writer_bytes(&mut writer);
     let mut invalid = event(1);
     invalid.sequence = event(0).sequence;
     assert!(writer.append(&[event(0), invalid]).is_err());
-    assert_eq!(fs::read(&path).unwrap(), initial_bytes);
+    assert_eq!(writer_bytes(&mut writer), initial_bytes);
     assert_eq!(writer.progress(), DraftProgress::default());
     assert!(writer.append(&[event(0); 65]).is_err());
     writer.append(&[event(0), event(1)]).unwrap();
@@ -315,7 +325,7 @@ fn partial_write_and_sync_failure_are_sticky_and_keep_recoverable_prefix() {
         assert_eq!(writer.durable_prefix_identity(), acknowledged);
         assert!(writer.append(&[event(2)]).is_err());
         assert!(writer.finish(DraftTerminal::Interrupted).is_err());
-        let failed_bytes = fs::read(&path).unwrap();
+        let failed_bytes = writer_bytes(&mut writer);
         drop(writer);
         let mut reader = open(&path);
         assert!(reader.matches_prefix(empty_identity).unwrap());
@@ -496,14 +506,14 @@ fn locking_collision_publication_failure_and_drop_preserve_original_files() {
     let dir = TestDir::new();
     let path = dir.path();
     let (source, target, provenance) = fixture();
-    let writer = DraftWriter::create_new(&path, &source, target, provenance).unwrap();
+    let mut writer = DraftWriter::create_new(&path, &source, target, provenance).unwrap();
     assert!(
         DraftReader::open(&path, limits()).is_err(),
         "exclusive writer excludes shared readers"
     );
-    let original = fs::read(&path).unwrap();
+    let original = writer_bytes(&mut writer);
     assert!(DraftWriter::create_new(&path, &source, target, provenance).is_err());
-    assert_eq!(fs::read(&path).unwrap(), original);
+    assert_eq!(writer_bytes(&mut writer), original);
     drop(writer);
     let reader = open(&path);
     let second = open(&path);
@@ -681,22 +691,29 @@ fn page_reads_recheck_integrity_after_open_and_refuse_partial_output() {
     let offset = reader.records.records_start + RECORD_BYTES as u64 + 40;
     let mut external = OpenOptions::new().write(true).open(&path).unwrap();
     external.seek(SeekFrom::Start(offset)).unwrap();
-    external
-        .write_all(&u64::from(0.75_f32.to_bits()).to_le_bytes())
-        .unwrap();
-    external.sync_all().unwrap();
-    let damaged = fs::read(&path).unwrap();
-    let mut page = [None; 2];
-    assert!(
-        reader.read_events(0, &mut page).is_err(),
-        "a reader must not expose data changed after validation"
-    );
-    assert_eq!(page, [None; 2]);
-    assert_eq!(
-        fs::read(&path).unwrap(),
-        damaged,
-        "read failure preserves original bytes"
-    );
+    let payload = u64::from(0.75_f32.to_bits()).to_le_bytes();
+    if cfg!(windows) {
+        // Windows shared locks are mandatory: an external handle cannot overwrite locked bytes.
+        assert!(external.write_all(&payload).is_err());
+        let mut page = [None; 2];
+        assert_eq!(reader.read_events(0, &mut page).unwrap(), 2);
+        assert_eq!(page, [Some(event(0)), Some(event(1))]);
+    } else {
+        external.write_all(&payload).unwrap();
+        external.sync_all().unwrap();
+        let damaged = fs::read(&path).unwrap();
+        let mut page = [None; 2];
+        assert!(
+            reader.read_events(0, &mut page).is_err(),
+            "a reader must not expose data changed after validation"
+        );
+        assert_eq!(page, [None; 2]);
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            damaged,
+            "read failure preserves original bytes"
+        );
+    }
 }
 
 #[test]

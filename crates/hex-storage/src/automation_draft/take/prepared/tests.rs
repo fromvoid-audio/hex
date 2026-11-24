@@ -290,25 +290,35 @@ fn lean_source_keeps_identity_and_refuses_post_transfer_record_damage() {
     external
         .seek(SeekFrom::Start(records + 64 * 96 + 40))
         .unwrap();
-    external
-        .write_all(&u64::from(0.9_f32.to_bits()).to_le_bytes())
-        .unwrap();
-    external.sync_all().unwrap();
-    let damaged = fs::read(&path).unwrap();
+    let payload = u64::from(0.9_f32.to_bits()).to_le_bytes();
     let destination = Arc::new(prepared.captured_tempo_map().clone());
     let mut output = [Some(AutomationValue::new(0.5).unwrap()); 512];
-    assert!(
-        prepared
-            .read_projected_values_on_control(destination, 0, &mut output)
-            .is_err()
-    );
-    assert!(output.iter().all(Option::is_none));
-    assert_eq!(
-        prepared.content_identity(),
-        identity,
-        "damage cannot silently restamp the verified identity"
-    );
-    assert_eq!(fs::read(&path).unwrap(), damaged);
+    if cfg!(windows) {
+        assert!(external.write_all(&payload).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert!(
+            prepared
+                .read_projected_values_on_control(destination, 0, &mut output)
+                .is_ok()
+        );
+        assert_eq!(prepared.content_identity(), identity);
+    } else {
+        external.write_all(&payload).unwrap();
+        external.sync_all().unwrap();
+        let damaged = fs::read(&path).unwrap();
+        assert!(
+            prepared
+                .read_projected_values_on_control(destination, 0, &mut output)
+                .is_err()
+        );
+        assert!(output.iter().all(Option::is_none));
+        assert_eq!(
+            prepared.content_identity(),
+            identity,
+            "damage cannot silently restamp the verified identity"
+        );
+        assert_eq!(fs::read(&path).unwrap(), damaged);
+    }
 }
 
 #[test]

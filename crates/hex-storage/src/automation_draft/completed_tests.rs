@@ -307,20 +307,26 @@ fn completed_predecessor_queries_preserve_ties_and_page_boundaries_without_an_in
     let bytes = fs::read(&path).unwrap();
     let records_start = PREFIX_BYTES as u64 + u64_at(&bytes, 16) + u64_at(&bytes, 24) + 32;
     let mut external = OpenOptions::new().write(true).open(&path).unwrap();
-    for ordinal in 0..events.len() as u64 {
-        external
-            .seek(SeekFrom::Start(
-                records_start + ordinal * RECORD_BYTES as u64 + 40,
-            ))
-            .unwrap();
-        external
-            .write_all(&u64::from(0.7_f32.to_bits()).to_le_bytes())
-            .unwrap();
+    let payload = u64::from(0.7_f32.to_bits()).to_le_bytes();
+    if cfg!(windows) {
+        external.seek(SeekFrom::Start(records_start + 40)).unwrap();
+        assert!(external.write_all(&payload).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(completed.read_events(60, &mut page).unwrap(), 10);
+    } else {
+        for ordinal in 0..events.len() as u64 {
+            external
+                .seek(SeekFrom::Start(
+                    records_start + ordinal * RECORD_BYTES as u64 + 40,
+                ))
+                .unwrap();
+            external.write_all(&payload).unwrap();
+        }
+        external.sync_all().unwrap();
+        let damaged = fs::read(&path).unwrap();
+        assert!(completed.event_at_or_before(u64::MAX).is_err());
+        assert!(completed.read_events(60, &mut page).is_err());
+        assert!(page.iter().all(Option::is_none));
+        assert_eq!(fs::read(&path).unwrap(), damaged);
     }
-    external.sync_all().unwrap();
-    let damaged = fs::read(&path).unwrap();
-    assert!(completed.event_at_or_before(u64::MAX).is_err());
-    assert!(completed.read_events(60, &mut page).is_err());
-    assert!(page.iter().all(Option::is_none));
-    assert_eq!(fs::read(&path).unwrap(), damaged);
 }
