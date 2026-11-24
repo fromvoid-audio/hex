@@ -1,4 +1,5 @@
 use super::*;
+use crate::editor::worker_ui_fixture::{self, WorkerUiFixture};
 use gpui::{
     AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px, size,
 };
@@ -649,25 +650,71 @@ fn device_keyboard_copy_cut_paste_operates_on_selected_group(cx: &mut TestAppCon
     });
 }
 
+fn device_playback_fixture(cx: &mut TestAppContext) -> (WorkerUiFixture, TrackId, DeviceId) {
+    let insert = Command::InsertTrackWithDevice {
+        name: "device track".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().unwrap(),
+    };
+    let mut project = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
+    let Created::Track(track) = project.execute(insert.clone()).unwrap() else {
+        panic!("expected an instrument track");
+    };
+    let fixture = worker_ui_fixture::open_with_section_support(
+        cx,
+        vec![
+            insert,
+            Command::InsertDevice {
+                track,
+                before: None,
+                state: hex_engine::default_native_device_state(
+                    hex_devices::utility::UTILITY_TYPE_ID,
+                )
+                .unwrap(),
+            },
+        ],
+        false,
+        true,
+    );
+    let (track, device) = fixture.editor.update(cx, |view, cx| {
+        assert!(
+            view.normal_start_source().is_some(),
+            "worker must install its captured source"
+        );
+        let track = &view.state.as_ref().unwrap().project.tracks()[0];
+        let ids = (track.id(), track.devices()[0].id());
+        view.selected_track = Some(ids.0);
+        view.device_panel_active = true;
+        view.clip_view_open = true;
+        view.mode = crate::editor::EditorMode::Session;
+        cx.notify();
+        ids
+    });
+    (fixture, track, device)
+}
+
+fn pump_device_playback(fixture: &mut WorkerUiFixture, cx: &mut TestAppContext) {
+    fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    fixture.editor.update(cx, |view, cx| {
+        if view.tick(cx) {
+            cx.notify();
+        }
+    });
+}
+
 #[gpui::test]
 fn device_paste_during_playback_applies_to_actual_callback(cx: &mut TestAppContext) {
     use std::sync::atomic::Ordering::Acquire;
-    let _guard = eq_ui_tests::graph_layout_tests::status_fixture_guard();
     cx.update(crate::editor::bind_editor_keys);
-    let (service, state, track, device, _, _) = actor_utility_fixture();
-    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let (mut fixture, track, device) = device_playback_fixture(cx);
+    let handle = fixture.handle;
+    let editor = fixture.editor.clone();
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());
     visual.simulate_resize(size(px(1500.0), px(800.0)));
     visual.run_until_parked();
-    editor.update(cx, |view, _| {
-        assert!(view.enqueue(Request::Edit(Command::RenameTrack {
-            track,
-            name: "device paste ready".into()
-        })))
-    });
-    let (mut output, mut backend) =
-        eq_ui_tests::held_pointer_tests::attach_actual_output(&editor, cx, &mut visual);
+
     let title = visual
         .debug_bounds(Box::leak(
             format!("device-drag-title-{}", device.value()).into_boxed_str(),
@@ -677,8 +724,8 @@ fn device_paste_during_playback_applies_to_actual_callback(cx: &mut TestAppConte
     visual.simulate_click(title, Modifiers::default());
     visual.simulate_keystrokes("space");
     let deadline = crate::test_wait::hang_deadline();
-    while !backend.status().unwrap().playing.load(Acquire) {
-        eq_ui_tests::held_pointer_tests::pump_output(&editor, cx, &mut output, &mut backend);
+    while !fixture.backend.status().unwrap().playing.load(Acquire) {
+        pump_device_playback(&mut fixture, cx);
         visual.run_until_parked();
         assert!(
             std::time::Instant::now() < deadline,
@@ -687,7 +734,7 @@ fn device_paste_during_playback_applies_to_actual_callback(cx: &mut TestAppConte
     }
     visual.simulate_keystrokes("cmd-c");
     loop {
-        eq_ui_tests::held_pointer_tests::pump_output(&editor, cx, &mut output, &mut backend);
+        pump_device_playback(&mut fixture, cx);
         visual.run_until_parked();
         if editor.read_with(cx, |view, _| {
             view.worker_requests_pending == 0 && view.pending_requests.is_empty()
@@ -701,7 +748,7 @@ fn device_paste_during_playback_applies_to_actual_callback(cx: &mut TestAppConte
     }
     visual.simulate_keystrokes("cmd-v");
     loop {
-        eq_ui_tests::held_pointer_tests::pump_output(&editor, cx, &mut output, &mut backend);
+        pump_device_playback(&mut fixture, cx);
         visual.run_until_parked();
         let applied = editor.read_with(cx, |view, _| {
             view.state.as_ref().is_some_and(|state| {
@@ -712,7 +759,7 @@ fn device_paste_during_playback_applies_to_actual_callback(cx: &mut TestAppConte
                     && view.applied_project_revision() == Some(state.revision)
             })
         });
-        if applied && backend.status().unwrap().playing.load(Acquire) {
+        if applied && fixture.backend.status().unwrap().playing.load(Acquire) {
             break;
         }
         assert!(
@@ -721,6 +768,7 @@ fn device_paste_during_playback_applies_to_actual_callback(cx: &mut TestAppConte
             editor.read_with(cx, |view, _| view.error.clone())
         );
     }
+    fixture.finish(cx);
 }
 
 #[gpui::test]
