@@ -49,8 +49,8 @@ pub(super) enum LatencyRebuild {
     },
 }
 
-/// A live canonical edit refused by the callback (`SessionRuntime` or
-/// `ForeignTailSourcePaused`) cannot install while playback continues. Track
+/// A live canonical edit refused by a held Arrangement gate, a session runtime
+/// conflict, or a paused foreign tail can leave audio on the prior graph. Track
 /// the exact refused revision so pausing republishes it once (or marks it
 /// exhausted when already paused) instead of stranding playback on an older
 /// graph.
