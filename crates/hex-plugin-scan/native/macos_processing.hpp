@@ -188,15 +188,28 @@ inline void clear_disjoint_outputs(const ProcessingConfiguration& c,ProcessData&
     }
     data.outputs[0].silenceFlags=0;
 }
-inline bool finite_outputs(const ProcessingConfiguration& c,const ProcessData& data) {
+inline bool finite_outputs(const ProcessingConfiguration& c,ProcessData& data) {
+    if (c.output_enabled && data.numOutputs && data.outputs) {
+        data.outputs[0].silenceFlags&=(uint64_t(1)<<c.output_channels)-1;
+    }
     if (!bus_buffers(data.outputs,data.numOutputs,c.output_channels,c.output_enabled)) return false;
     if (!c.output_enabled || !data.numOutputs) return true;
-    for (int32 channel=0;channel<c.output_channels;++channel)
+    for (int32 channel=0;channel<c.output_channels;++channel) {
+        auto* samples=data.outputs[0].channelBuffers32[channel];
+        const uint64_t silence_bit=uint64_t(1)<<channel;
+        bool has_nonzero=false;
         for (int32 frame=0;frame<data.numSamples;++frame) {
-            const auto value=data.outputs[0].channelBuffers32[channel][frame];
-            if (!std::isfinite(value) || ((data.outputs[0].silenceFlags&(uint64_t(1)<<channel)) && value!=0))
-                return false;
+            const auto value=samples[frame];
+            if (!std::isfinite(value)) {
+                samples[frame]=0.0f;
+            } else if (value!=0.0f) {
+                has_nonzero=true;
+            }
         }
+        if (has_nonzero && (data.outputs[0].silenceFlags&silence_bit)) {
+            data.outputs[0].silenceFlags&=~silence_bit;
+        }
+    }
     return true;
 }
 } // namespace hex_instance

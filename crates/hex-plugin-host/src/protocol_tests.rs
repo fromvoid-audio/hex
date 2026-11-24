@@ -1182,7 +1182,7 @@ fn recovery_edit_receipts_keep_exact_prefix_and_versioned_ordinal() {
     for end in 0..body.len() {
         assert!(recovery_edits(&body[..end], &config, 2, 3, (0, 0)).is_err());
     }
-    for offset in [2, 10, 18, 26, 34, 42, 50, 58, 60, 62] {
+    for offset in [2, 10, 18, 26, 34, 42, 50, 59, 60, 62] {
         let mut bad = body.clone();
         bad[offset] ^= 128;
         assert!(recovery_edits(&bad, &config, 2, 3, (0, 0)).is_err());
@@ -1267,9 +1267,12 @@ fn edit_receipts_bind_source_prefix_operation_order_and_gesture_without_coalesci
     assert_eq!(result.as_slice()[1].kind, ParameterEditKind::Perform);
     assert_eq!(result.as_slice()[1].id, 0);
     let mut backlogged = body.clone();
-    backlogged[58..60].copy_from_slice(&72_u16.to_le_bytes());
+    backlogged[58..60].copy_from_slice(&288_u16.to_le_bytes());
     let backlog = parameter_edits(&backlogged, &config, 2, 3, (0, 0)).unwrap();
-    assert_eq!(backlog.pending, 72);
+    assert_eq!(backlog.pending, 288);
+    let mut overflow_pending = body.clone();
+    overflow_pending[58..60].copy_from_slice(&289_u16.to_le_bytes());
+    assert!(parameter_edits(&overflow_pending, &config, 2, 3, (0, 0)).is_err());
     for end in 0..body.len() {
         assert!(parameter_edits(&body[..end], &config, 2, 3, (0, 0)).is_err());
     }
@@ -1278,9 +1281,8 @@ fn edit_receipts_bind_source_prefix_operation_order_and_gesture_without_coalesci
         (34, 1),
         (42, 15),
         (50, 2),
-        (58, 73),
         (60, 1),
-        (62, 9),
+        (62, (MAX_PARAMETER_EDITS + 1) as u8),
         (64, 0),
         (72, 0),
         (92, 7),
