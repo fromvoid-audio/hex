@@ -1,6 +1,15 @@
 //! Readiness belongs to the new control's counters, never an old stream's tickets.
 use hex_engine::AudioSourceContext;
+use hex_session::device_gesture::{GestureKey, GestureSnapshot};
 use hex_session::service::Request;
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct StrandedGestureRecovery {
+    pub(super) key: GestureKey,
+    pub(super) reconcilable: Option<GestureSnapshot>,
+    pub(super) had_stranded_commit: bool,
+    pub(super) is_plugin: bool,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DeferredEditKind {
@@ -20,6 +29,7 @@ pub(super) struct DeferredGraphEdit {
     pub(super) kind: DeferredEditKind,
     pub(super) context: AudioSourceContext,
     pub(super) request: Box<Request>,
+    pub(super) stranded_gesture: Option<StrandedGestureRecovery>,
 }
 #[derive(Default)]
 pub(super) struct RecoveryState {
@@ -92,6 +102,13 @@ impl RecoveryState {
         self.deferred_edit
             .as_ref()
             .is_some_and(|edit| edit.kind == DeferredEditKind::LoopRegion)
+    }
+
+    pub(super) fn holds_stranded_gesture_for(&self, key: GestureKey) -> bool {
+        self.deferred_edit.as_ref().is_some_and(|edit| {
+            edit.stranded_gesture
+                .is_some_and(|stranded| stranded.key == key)
+        })
     }
 
     pub(super) fn begin(&mut self, position: u64) -> Result<u64, &'static str> {

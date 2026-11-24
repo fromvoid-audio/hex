@@ -937,10 +937,9 @@ impl EditorView {
             if self.acknowledge_device_gesture_with_snapshot(ack, event.active_device_gesture) {
                 matched_scroll_ack = Some(ack);
             }
-        } else if let Some(reason) = event
-            .gesture_ack
-            .as_ref()
-            .and_then(|ack| ack.reason.as_ref())
+        } else if let Some(ack) = event.gesture_ack.as_ref()
+            && let Some(reason) = ack.reason.as_ref()
+            && !self.recovery.holds_stranded_gesture_for(ack.key)
         {
             self.error = Some(reason.clone().into());
         }
