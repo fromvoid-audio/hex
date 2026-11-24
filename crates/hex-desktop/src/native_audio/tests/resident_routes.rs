@@ -365,12 +365,7 @@ fn resource_free_library_import_and_audible_comparison_publish_native_graphs() {
         before: None,
         state: hex_engine::default_native_device_state_for_class(
             hex_engine::NativeDeviceClass::Effect,
-            hex_engine::native_device_catalog_for_class(hex_engine::NativeDeviceClass::Effect)
-                .unwrap()
-                .into_iter()
-                .find(|entry| entry.name == "utility")
-                .unwrap()
-                .type_id,
+            hex_engine::DeviceTypeId::from_static("hex.utility"),
         )
         .unwrap(),
     }));
