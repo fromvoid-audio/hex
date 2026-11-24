@@ -124,19 +124,81 @@ impl Plugins {
         )
     }
 
+    /// Maximum queued stale Space bytes drained from one ineligible editor socket per poll.
+    const MAX_STALE_TRANSPORT_SPACE_DRAIN: usize = 64;
+
+    fn transport_space_eligible(&self, source: &Source, generation: u64) -> bool {
+        self.transport_space
+            && source.project_generation == generation
+            && source.accepted
+            && !source.retiring
+            && source.editor_open
+    }
+
+    fn drain_transport_space_with(binding: Binding, take: &mut impl FnMut(Binding) -> bool) {
+        for _ in 0..Self::MAX_STALE_TRANSPORT_SPACE_DRAIN {
+            if !take(binding) {
+                break;
+            }
+        }
+    }
+
+    /// Consume at most one transport Space shortcut from an accepted, open editor
+    /// in `generation`.
+    ///
+    /// Close policy: once an editor is closed (or while opening/reopening before
+    /// the helper confirms it is open), retiring, unaccepted, or in another
+    /// project generation, any unread bytes on its source-lifetime socket are
+    /// drained and discarded so reopening the editor cannot replay an earlier
+    /// keypress.
     pub(in crate::native_audio) fn take_transport_space(
         &self,
         control: &hex_audio::prepared::PublicationControl,
         generation: u64,
     ) -> bool {
-        self.transport_space
-            && self.sources.iter().any(|source| {
-                source.project_generation == generation
-                    && source.accepted
-                    && !source.retiring
-                    && (source.editor_open || self.editor_holds(source.binding))
-                    && control.take_native_source_transport_space(source.binding)
-            })
+        self.take_transport_space_with(generation, |binding| {
+            control.take_native_source_transport_space(binding)
+        })
+    }
+
+    pub(in crate::native_audio) fn drain_ineligible_transport_space(
+        &self,
+        control: &hex_audio::prepared::PublicationControl,
+        generation: u64,
+    ) {
+        self.drain_ineligible_transport_space_with(generation, |binding| {
+            control.take_native_source_transport_space(binding)
+        });
+    }
+
+    fn take_transport_space_with(
+        &self,
+        generation: u64,
+        mut take: impl FnMut(Binding) -> bool,
+    ) -> bool {
+        let mut triggered = false;
+        for source in &self.sources {
+            if self.transport_space_eligible(source, generation) {
+                if !triggered && take(source.binding) {
+                    triggered = true;
+                }
+            } else {
+                Self::drain_transport_space_with(source.binding, &mut take);
+            }
+        }
+        triggered
+    }
+
+    fn drain_ineligible_transport_space_with(
+        &self,
+        generation: u64,
+        mut take: impl FnMut(Binding) -> bool,
+    ) {
+        for source in &self.sources {
+            if !self.transport_space_eligible(source, generation) {
+                Self::drain_transport_space_with(source.binding, &mut take);
+            }
+        }
     }
 
     fn editor_successor(&self, binding: Binding) -> Option<Binding> {
@@ -369,6 +431,16 @@ impl Plugins {
         };
         let (binding, generation, action) = (*binding, *generation, *action);
         self.finish_editor_action(binding, generation, action, result, current);
+        if self
+            .sources
+            .iter()
+            .find(|source| source.binding == binding)
+            .is_some_and(|source| !source.editor_open)
+        {
+            Self::drain_transport_space_with(binding, &mut |b| {
+                control.take_native_source_transport_space(b)
+            });
+        }
     }
 
     fn finish_editor_action(
@@ -848,6 +920,114 @@ mod tests {
                 .open_editor_devices(context.project_generation)
                 .next(),
             None
+        );
+    }
+
+    #[test]
+    fn closed_and_reopened_editor_discards_stale_transport_space_and_accepts_fresh_press() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
+
+        let (mut helper_tx, parent_rx) = UnixStream::pair().expect("unix stream pair");
+        parent_rx
+            .set_nonblocking(true)
+            .expect("nonblocking shortcut receiver");
+        let rx = &parent_rx;
+        let read_socket = |expected: Binding| {
+            move |binding: Binding| {
+                if binding != expected {
+                    return false;
+                }
+                let mut byte = [0_u8; 1];
+                (&*rx).read(&mut byte).ok() == Some(1) && byte == [1]
+            }
+        };
+
+        let context = AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 4,
+        };
+        let binding = Binding {
+            root: 1,
+            instance: 7,
+            graph: context.editor_revision,
+            epoch: 1,
+        };
+
+        let mut plugins = Plugins {
+            transport_space: true,
+            ..Plugins::default()
+        };
+        let mut active = source(binding, context, true);
+        active.accepted = true;
+        plugins.sources.push(active);
+
+        // 1. User presses Space while open, then closes the editor before desktop drains.
+        helper_tx.write_all(&[1]).expect("queue pre-close space");
+        plugins.finish_editor_action(
+            binding,
+            context.project_generation,
+            EditorAction::Observe,
+            Ok(PluginEditorState::Closed),
+            Some(context),
+        );
+        assert!(!plugins.sources[0].editor_open);
+        assert!(
+            !plugins.take_transport_space_with(context.project_generation, read_socket(binding)),
+            "closed editor must discard pre-close Space and emit zero toggles"
+        );
+
+        // 2. Reopening (both pending and confirmed open) without a new keypress emits zero toggles.
+        plugins.queue_editor(binding, context.project_generation, EditorAction::Open);
+        assert!(plugins.editor_holds(binding));
+        assert!(
+            !plugins.take_transport_space_with(context.project_generation, read_socket(binding)),
+            "pending reopen must not replay earlier Space"
+        );
+        // Even a late byte arriving before Open completes is discarded rather than replayed.
+        helper_tx.write_all(&[1, 1]).expect("queue pre-open bytes");
+        assert!(
+            !plugins.take_transport_space_with(context.project_generation, read_socket(binding)),
+            "pending reopen must drain bytes queued while still closed"
+        );
+        plugins.finish_editor_action(
+            binding,
+            context.project_generation,
+            EditorAction::Open,
+            Ok(PluginEditorState::Open),
+            Some(context),
+        );
+        assert!(plugins.sources[0].editor_open);
+        assert!(
+            !plugins.take_transport_space_with(context.project_generation, read_socket(binding)),
+            "reopened editor without a new keypress must emit zero toggles"
+        );
+
+        // 3. A fresh Space press in the reopened editor toggles exactly once.
+        helper_tx.write_all(&[1]).expect("queue fresh space");
+        assert!(
+            plugins.take_transport_space_with(context.project_generation, read_socket(binding)),
+            "fresh Space press in reopened editor must toggle once"
+        );
+        assert!(
+            !plugins.take_transport_space_with(context.project_generation, read_socket(binding)),
+            "second poll without another press must not toggle again"
+        );
+
+        // 4. Previous project generation cannot toggle current transport and drains stale bytes.
+        helper_tx.write_all(&[1]).expect("queue old-gen space");
+        assert!(
+            !plugins
+                .take_transport_space_with(context.project_generation + 1, read_socket(binding)),
+            "previous project generation must not toggle current transport"
+        );
+
+        // 5. Retiring device cannot toggle current transport and drains stale bytes.
+        plugins.sources[0].retiring = true;
+        helper_tx.write_all(&[1]).expect("queue retiring space");
+        assert!(
+            !plugins.take_transport_space_with(context.project_generation, read_socket(binding)),
+            "retired device must not toggle current transport"
         );
     }
 }

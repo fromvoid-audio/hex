@@ -3201,17 +3201,23 @@ impl WorkerAudioSink for NativeAudioSink {
                 }
                 self.plugins.poll(&mut output, self.desired.as_deref());
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                if self.pending_plugin_transport.is_none()
-                    && let Some(desired) = self.desired.as_deref()
+                if let Some(desired) = self.desired.as_deref()
                     && let Some(control) = output.publication.control()
                 {
                     let project_generation = desired.context().project_generation;
-                    if self
-                        .plugins
-                        .take_transport_space(control, project_generation)
-                    {
-                        self.pending_plugin_transport =
-                            Some(EditorAudioEvent::PluginTransportToggle { project_generation });
+                    if self.pending_plugin_transport.is_none() {
+                        if self
+                            .plugins
+                            .take_transport_space(control, project_generation)
+                        {
+                            self.pending_plugin_transport =
+                                Some(EditorAudioEvent::PluginTransportToggle {
+                                    project_generation,
+                                });
+                        }
+                    } else {
+                        self.plugins
+                            .drain_ineligible_transport_space(control, project_generation);
                     }
                 }
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
