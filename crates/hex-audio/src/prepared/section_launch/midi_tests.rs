@@ -258,7 +258,7 @@ fn section_jump_releases_original_note_and_stages_destination_at_physical_offset
         );
         let _take = observe.then(|| control.sample_recording.start(1, &[], true).unwrap());
         render(&mut callback);
-        let next = worker.receive().unwrap().unwrap();
+        let mut next = worker.receive().unwrap().unwrap();
         let [release, onset, end] = next.events.as_slice() else {
             panic!(
                 "outgoing release followed by destination gate, got {:?}",
@@ -278,6 +278,19 @@ fn section_jump_releases_original_note_and_stages_destination_at_physical_offset
         );
         assert_eq!(control.status.applied_revision.load(Acquire), 2);
         assert_eq!(control.reclaim(), 1);
+        let destination_timing = if offset == 0 {
+            assert!(next.timing_changes.as_slice().is_empty());
+            next.timing.unwrap()
+        } else {
+            let [cut] = next.timing_changes.as_slice() else {
+                panic!("one input clock cut at the quantized section jump")
+            };
+            assert_eq!(cut.frame, offset);
+            cut.timing
+        };
+        assert_eq!(destination_timing.arrangement_frame, 96_000);
+        // The plugin consumes input clock changes while processing the block.
+        next.timing_changes = Default::default();
         worker.complete(next).unwrap();
         keys.set_key(0, None).unwrap();
         render(&mut callback);
