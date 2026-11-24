@@ -974,13 +974,7 @@ impl NativeEffectCallback {
         // The original joining worker retains processor parameter observations
         // for control queries; the native helper mirrors them to its controller.
         // Receiving that feedback here must not revoke an otherwise valid epoch.
-        let playing =
-            if node.prepared.is_instrument_profile() || node.automation.is_some() || lane.is_some()
-            {
-                clock.and_then(|clock| clock.transport_is_running())
-            } else {
-                None
-            };
+        let playing = clock.and_then(|clock| clock.transport_is_running());
         let timing = SegmentTiming {
             playing,
             at: |index| {
@@ -993,7 +987,7 @@ impl NativeEffectCallback {
                     {
                         true
                     } else {
-                        playing.or_else(|| clock.transport_is_running())?
+                        playing?
                     },
                     arrangement_beat_raw: clock.arrangement_beat_at_offset(index),
                     tempo_micro_bpm: clock
