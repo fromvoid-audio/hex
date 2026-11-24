@@ -732,7 +732,7 @@ fn leading_musical_once_requires_its_saved_format_and_round_trips_complete_state
 
 #[test]
 fn silent_left_prefix_keeps_complete_state_through_history_and_current_storage() {
-    for once in [false, true] {
+    for (once, author_after_cycle) in [(false, false), (true, false), (true, true)] {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
         let Created::Imported { track, clip, .. } = editor
             .execute(Command::ImportAudioTrack {
@@ -752,12 +752,12 @@ fn silent_left_prefix_keeps_complete_state_through_history_and_current_storage()
                 start: 4000,
             })
             .unwrap();
-        editor
-            .execute(Command::SetClipFadeEnvelope {
-                clip,
-                fade: hex_project::ClipFade::new(128, 0, 13, 17).unwrap(),
-            })
-            .unwrap();
+        let fade = hex_project::ClipFade::new(128, 0, 13, 17).unwrap();
+        if !author_after_cycle {
+            editor
+                .execute(Command::SetClipFadeEnvelope { clip, fade })
+                .unwrap();
+        }
         if once {
             editor
                 .execute(Command::ResizeAudioClipView {
@@ -770,6 +770,11 @@ fn silent_left_prefix_keeps_complete_state_through_history_and_current_storage()
                 })
                 .unwrap();
         }
+        if author_after_cycle {
+            editor
+                .execute(Command::SetClipFadeEnvelope { clip, fade })
+                .unwrap();
+        }
         let before = editor.project().clone();
         editor
             .execute(Command::TrimClipEdge {
@@ -780,21 +785,29 @@ fn silent_left_prefix_keeps_complete_state_through_history_and_current_storage()
             .unwrap();
         let changed = editor.project().clone();
         let bytes = hex_storage::encode(&changed).unwrap();
-        assert_eq!(hex_storage::decode(&bytes).unwrap(), changed);
-        assert_eq!(
-            changed
-                .clip(clip)
+        let reopened = hex_storage::decode(&bytes).unwrap();
+        assert_eq!(reopened, changed);
+        let placed = reopened.clip(clip).unwrap();
+        assert_eq!(placed.start(), 3500);
+        assert_eq!(placed.audio_events().events[0].start, 500);
+        let domain = &placed.audio_edit().unwrap().domain;
+        if once && !author_after_cycle {
+            // Creating the read cycle captured the existing fade into its source.
+            assert_eq!(
+                domain.fade_clock,
+                hex_project::AudioClipFadeClock::LegacyRoot
+            );
+            assert_eq!(domain.fade_start, 500);
+            assert_eq!(domain.fade, fade);
+        } else {
+            let projected = placed
+                .projected_outer_fade(reopened.tempo_map())
                 .unwrap()
-                .audio_edit()
-                .unwrap()
-                .domain
-                .fade_start,
-            500
-        );
-        assert_eq!(
-            changed.clip(clip).unwrap().audio_events().events[0].start,
-            500
-        );
+                .unwrap();
+            let expected = hex_project::ClipFade::new(placed.duration(), 0, 13, 17).unwrap();
+            assert_eq!(domain.fade_start, 0);
+            assert_eq!(projected.frame_playback_envelope().unwrap(), expected);
+        }
         assert!(editor.undo());
         assert_eq!(editor.project(), &before);
         assert!(editor.redo());
