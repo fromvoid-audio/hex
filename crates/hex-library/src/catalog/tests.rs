@@ -461,12 +461,21 @@ fn records_round_trip_version_one_caches_load_and_corrupt_caches_are_preserved()
     assert!(fingerprint(&loaded, &kick).is_some());
 
     // A version 1 cache (paths only) still loads; records come from the next scan.
-    let raw = kick.as_os_str().as_encoded_bytes();
+    #[cfg(windows)]
+    let raw: Vec<u8> = {
+        use std::os::windows::ffi::OsStrExt;
+        kick.as_os_str()
+            .encode_wide()
+            .flat_map(u16::to_le_bytes)
+            .collect()
+    };
+    #[cfg(not(windows))]
+    let raw = kick.as_os_str().as_encoded_bytes().to_vec();
     let mut version_one = b"hexsmp1".to_vec();
     version_one.push(fs::read(&db).unwrap()[7]);
     version_one.extend_from_slice(&1_u32.to_le_bytes());
     version_one.extend_from_slice(&(raw.len() as u32).to_le_bytes());
-    version_one.extend_from_slice(raw);
+    version_one.extend_from_slice(&raw);
     fs::write(&db, &version_one).unwrap();
     let old = SampleCatalog::load(&db).unwrap();
     assert_eq!(old.entries(), scan.catalog.entries());
