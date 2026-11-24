@@ -88,6 +88,13 @@ fn good() -> Vec<u8> {
 }
 #[test]
 fn descriptors_are_owned_metadata_unknown_features_not_capabilities() {
+    if hex_clap_scan::platform() == "unsupported" {
+        assert_eq!(
+            decode_packet(&good(), 7).unwrap_err(),
+            "clap source/platform/API refused"
+        );
+        return;
+    }
     let d = decode_packet(&good(), 7).unwrap();
     assert_eq!(d.api, [1, 2, 10]);
     assert_eq!(d.descriptors[0].id, "org.hex.original");
@@ -131,7 +138,11 @@ fn all_truncation_header_length_version_request_api_source_and_trailing_refuse()
         (
             12 + fixture.descriptor_api.unwrap(),
             2,
-            "descriptor api refused",
+            if hex_clap_scan::platform() == "unsupported" {
+                "clap source/platform/API refused"
+            } else {
+                "descriptor api refused"
+            },
         ),
     ] {
         let mut bad = bytes.clone();
@@ -165,9 +176,14 @@ fn duplicate_blank_utf8_and_capacity_fields_refuse() {
     assert!(decode_packet(&packet(payload("id", b"name", &[&[b'x'; 129]], 1)), 7).is_err());
     let mut fixture = payload_for(hex_clap_scan::platform(), "id", b"name", &[], 0);
     fixture.bytes[fixture.count..fixture.count + 4].copy_from_slice(&1025u32.to_le_bytes());
+    let expected = if hex_clap_scan::platform() == "unsupported" {
+        "clap source/platform/API refused"
+    } else {
+        "clap descriptor count refused"
+    };
     assert_eq!(
         decode_packet(&packet(fixture.bytes), 7).unwrap_err(),
-        "clap descriptor count refused"
+        expected
     );
 }
 #[test]
@@ -213,6 +229,13 @@ fn both_platform_count_api_and_string_locations_and_foreign_tag_refusal() {
 
 #[test]
 fn failed_attempt_retains_previous_descriptor_and_error() {
+    if hex_clap_scan::platform() == "unsupported" {
+        assert_eq!(
+            decode_packet(&good(), 7).unwrap_err(),
+            "clap source/platform/API refused"
+        );
+        return;
+    }
     let discovery = decode_packet(&good(), 7).unwrap();
     let prior = ValidRecord {
         module: "good".into(),

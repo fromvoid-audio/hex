@@ -131,6 +131,10 @@ pub struct DarwinReceipt {
     pub modules: Vec<Module>,
     pub runtimes: BTreeMap<String, RuntimeIdentity>,
 }
+fn is_darwin_absolute(path: &str) -> bool {
+    path.starts_with('/') && !path.contains('\0')
+}
+
 impl DarwinReceipt {
     pub fn validate(&self) -> Result<(), String> {
         if self.version != 2
@@ -144,13 +148,13 @@ impl DarwinReceipt {
                 .source_tree
                 .bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            || !Path::new(&self.fixture_root).is_absolute()
+            || !is_darwin_absolute(&self.fixture_root)
             || self.fixture_root.len() > 4096
-            || !Path::new(&self.compiler).is_absolute()
+            || !is_darwin_absolute(&self.compiler)
             || self.compiler.len() > 4096
             || self.compiler_version.is_empty()
             || self.compiler_version.len() > 1024
-            || !Path::new(&self.apple_sdk_path).is_absolute()
+            || !is_darwin_absolute(&self.apple_sdk_path)
             || self.apple_sdk_path.len() > 4096
             || self.apple_sdk_version.is_empty()
             || self.apple_sdk_version.len() > 64

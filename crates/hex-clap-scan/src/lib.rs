@@ -238,7 +238,7 @@ pub fn decode_packet(bytes: &[u8], request: u64) -> Result<Discovery, String> {
     let sdk = d.text(40)?;
     let platform_id = d.text(32)?;
     let api = [d.u32()?, d.u32()?, d.u32()?];
-    if sdk != SDK || platform_id != platform() || api[0] != 1 {
+    if sdk != SDK || platform() == "unsupported" || platform_id != platform() || api[0] != 1 {
         return Err("clap source/platform/API refused".into());
     }
     let count = d.u32()? as usize;
