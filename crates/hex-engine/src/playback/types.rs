@@ -334,6 +334,7 @@ pub enum PlaybackHandoffRejection {
     ForeignTailSourcePaused = 15,
     DeviceInsertNeedsConfirmation = 16,
     TempoCutMissed = 17,
+    HeldArrangementGateChanged = 18,
 }
 
 impl PlaybackHandoffRejection {
@@ -352,6 +353,9 @@ impl PlaybackHandoffRejection {
                 crate::SessionPlaybackError::SourceHistoryUnavailable
                 | crate::SessionPlaybackError::DetachedReceiverHistoryUnavailable,
             ) => Self::SourceHistoryUnavailable,
+            PlaybackHandoffError::Session(
+                crate::SessionPlaybackError::HeldArrangementGateChanged,
+            ) => Self::HeldArrangementGateChanged,
             PlaybackHandoffError::Session(crate::SessionPlaybackError::CandidateAlreadyUsed) => {
                 Self::SessionRuntime
             }
@@ -393,6 +397,7 @@ impl PlaybackHandoffRejection {
             15 => Some(Self::ForeignTailSourcePaused),
             16 => Some(Self::DeviceInsertNeedsConfirmation),
             17 => Some(Self::TempoCutMissed),
+            18 => Some(Self::HeldArrangementGateChanged),
             _ => None,
         }
     }
@@ -433,6 +438,9 @@ impl PlaybackHandoffRejection {
             }
             Self::DeviceInsertNeedsConfirmation => {
                 "device insertion needs confirmation before interrupting playback"
+            }
+            Self::HeldArrangementGateChanged => {
+                "a held arrangement note changed · retry after the original note ends"
             }
             Self::TempoCutMissed => {
                 "scheduled tempo edit missed its cut · previous audio continues"
