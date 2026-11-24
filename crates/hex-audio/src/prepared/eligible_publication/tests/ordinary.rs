@@ -5210,6 +5210,7 @@ fn ordinary_file_removal_rollback(cancel: bool) {
 
 #[test]
 fn sixteen_aligned_streamed_tracks_cross_page_boundary_with_zero_starved_callbacks() {
+    let _serial = serial();
     use std::time::Duration;
     const TRACKS: usize = 16;
     const PAGES: u64 = 3;
