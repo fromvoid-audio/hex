@@ -270,7 +270,11 @@ fn abrupt_worker_process_exit_recovers_the_acknowledged_mixed_project() {
     let directory = Temp::new();
     wav(&directory.0.join("OriginalCase.wav"), 8);
     let status = std::process::Command::new(std::env::current_exe().expect("test binary"))
-        .args(["--exact", "crash_worker_child", "--nocapture"])
+        .args([
+            "--exact",
+            "project_recovery::crash_worker_child",
+            "--nocapture",
+        ])
         .env("HEX_RECOVERY_WORKER_FIXTURE", &directory.0)
         .status()
         .expect("child worker process");
