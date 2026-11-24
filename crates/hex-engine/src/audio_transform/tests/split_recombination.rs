@@ -45,20 +45,52 @@ fn split_recombines_with_root_pitch_phase_envelope_fades_and_tempo(mode: Option<
             })
             .unwrap();
     }
-    let length = editor.project().clip(clip).unwrap().duration() as usize;
-    let unsplit = prepare(&editor, &media, &context);
-    let expected = render(&unsplit, 0, length, 127);
-    editor
-        .execute(Command::SplitClip { clip, frame: 3_137 })
+    let cut = 3_137;
+    let length = editor.project().clip(clip).unwrap().duration();
+    // Pitch, source gain, phase and warp stay on the continuous processing
+    // root. The split creates two destination-clock fades above that signal.
+    let mut neutral = Editor::new(editor.project().clone(), 1).unwrap();
+    neutral
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
         .unwrap();
+    let prepared_root = prepare(&neutral, &media, &context);
+    let mut expected = render(&prepared_root, 0, length as usize, 127);
+    let left = hex_project::ClipFade::new(cut, 0, 997, 0).unwrap();
+    let right = hex_project::ClipFade::new(length - cut, 0, 0, 1_601).unwrap();
+    for (index, frame) in expected.iter_mut().enumerate() {
+        let index = index as u64;
+        let gain = if index < cut {
+            left.gain_at(index)
+        } else {
+            right.gain_at(index - cut)
+        };
+        *frame = frame.map(|sample| sample * gain);
+    }
+    let Created::Clip(tail) = editor
+        .execute(Command::SplitClip { clip, frame: cut })
+        .unwrap()
+    else {
+        panic!("split must create a right clip")
+    };
+    assert_eq!(editor.project().clip(clip).unwrap().retained_fade(), left);
+    assert_eq!(editor.project().clip(tail).unwrap().retained_fade(), right);
+    let hits_before = context.cache_hits();
     let split = prepare(&editor, &media, &context);
-    assert_eq!(render(&split, 0, length, 257), expected, "{mode:?}");
-    assert_eq!(
-        render(&split, 3_117, 509, 31),
-        expected[3_117..3_626],
-        "random seek {mode:?}"
-    );
-    assert!(context.cache_hits() >= 2);
+    for (start, count, block) in [(0, length as usize, 257), (3_117, 509, 31)] {
+        let actual = render(&split, start, count, block);
+        for (offset, frame) in actual.iter().enumerate() {
+            let index = start as usize + offset;
+            assert_eq!(
+                *frame, expected[index],
+                "{mode:?} frame {index}, seek {start}"
+            );
+        }
+    }
+    assert!(context.cache_hits() >= hits_before + 2);
 }
 
 #[test]
