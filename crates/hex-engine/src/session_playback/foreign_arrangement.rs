@@ -1093,7 +1093,7 @@ fn validate_held_gates(
         })
         .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
     if unmatched.contains(&true) {
-        return Err(INCOMPATIBLE_HANDOFF);
+        return Err(SessionPlaybackError::HeldArrangementGateChanged);
     }
     Ok(())
 }

@@ -195,6 +195,9 @@ pub enum SessionPlaybackError {
     MutableInstrumentRuntime,
     /// Existing authored and live voices leave insufficient room for the launch.
     SharedSourceVoiceCapacity,
+    /// A retained hosted Arrangement note lost its authored occurrence or deadline.
+    /// The predecessor still owns delivery of its original NoteOff.
+    HeldArrangementGateChanged,
     MutableInstrumentDiagnostic(&'static str),
     MutableInstrumentEvents,
     MutableInstrumentLoopDensity,
@@ -253,6 +256,9 @@ impl SessionPlaybackError {
             }
             Self::SharedSourceVoiceCapacity => {
                 "shared source voice capacity is full · release notes or wait for tails, then retry"
+            }
+            Self::HeldArrangementGateChanged => {
+                crate::PlaybackHandoffRejection::HeldArrangementGateChanged.message()
             }
             Self::MutableInstrumentDiagnostic(message) => message,
             Self::MutableInstrumentEvents => {
