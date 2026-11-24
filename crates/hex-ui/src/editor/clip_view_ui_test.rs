@@ -462,49 +462,30 @@ fn explicit_clip_and_track_focus_switch_detail_without_changing_pane_visibility(
 fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     cx: &mut TestAppContext,
 ) {
-    let (base, track, _, _) = clip_drag_ui_test::midi_project();
-    let catalog = hex_engine::native_device_catalog().expect("built-in catalog");
-    let entry = catalog.first().expect("registered utility");
-    let device_state =
-        hex_engine::default_native_device_state(entry.type_id).expect("valid default state");
-    let mut editor = hex_project::Editor::new(base, 16).expect("project editor");
-    editor
-        .execute(Command::InsertInstrument {
+    use super::device_panel::tests::{
+        actor_editor_window, actor_native_effect_fixture, pump_until, receive_service_event,
+    };
+    let catalog = hex_engine::native_device_catalog().unwrap();
+    let entry = catalog
+        .iter()
+        .find(|entry| entry.type_id == hex_devices::utility::UTILITY_TYPE_ID)
+        .unwrap();
+    let (service, _, track, device_id) = actor_native_effect_fixture(entry.type_id);
+    service
+        .submit(hex_session::service::Request::AddNativeDevice {
             track,
-            state: hex_project::default_instrument_state().unwrap(),
-        })
-        .expect("explicit instrument card fixture");
-    editor
-        .execute(Command::InsertDevice {
-            track,
+            class: hex_engine::NativeDeviceClass::Effect,
+            type_id: Box::new(entry.type_id),
             before: None,
-            state: device_state.clone(),
         })
-        .expect("insert utility");
-    editor
-        .execute(Command::InsertDevice {
-            track,
-            before: None,
-            state: device_state,
-        })
-        .expect("insert second utility");
-    let project = editor.project().clone();
-    let project_track = project.track(track).unwrap();
-    let instrument_id = project_track
-        .instrument()
-        .expect("new track has canonical sine instrument")
-        .id();
-    let devices = project_track.devices();
-    let device_id = devices[0].id();
-    let second_device_id = devices[1].id();
+        .unwrap();
+    let event = receive_service_event(&service);
+    assert!(event.error.is_none());
+    let project_track = event.state.project.track(track).unwrap();
+    let instrument_id = project_track.instrument().unwrap().id();
+    let second_device_id = project_track.devices()[1].id();
     let parameter_id = entry.parameters[0].id;
-    let mut committed_edit =
-        hex_project::Editor::new(project.clone(), 16).expect("valid device panel project");
-    committed_edit
-        .execute(Command::RemoveDevice(device_id))
-        .expect("remove utility from committed project");
-    let project_after_remove = Arc::new(committed_edit.project().clone());
-    let (handle, editor) = clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    let (handle, editor) = actor_editor_window(cx, service, event.state, track);
     editor.update(cx, |view, cx| {
         view.selected_track = Some(track);
         view.device_panel_active = false;
@@ -666,6 +647,13 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
         assert!(view.active_native_device_drag.is_none());
     });
 
+    pump_until(&editor, cx, |view| !view.edit_pending());
+    visual.run_until_parked();
+    let effect_before_menu = visual
+        .debug_bounds(Box::leak(
+            format!("effect-device-{}", device_id.value()).into_boxed_str(),
+        ))
+        .unwrap();
     let panel_before_menu = visual.debug_bounds("device-panel").expect("device panel");
     let chain_before_menu = visual
         .debug_bounds("device-chain-scroll")
@@ -695,7 +683,7 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     assert_eq!(panel_before_menu, panel_with_menu);
     assert_eq!(chain_before_menu, chain_with_menu);
     assert_eq!(instrument_card, instrument_with_menu);
-    assert_eq!(effect_card, effect_with_menu);
+    assert_eq!(effect_before_menu, effect_with_menu);
     let add_utility_selector = Box::leak(
         format!("add-native-effect-{}", entry.type_id.as_str().unwrap()).into_boxed_str(),
     );
@@ -714,11 +702,15 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
         );
     });
 
+    pump_until(&editor, cx, |view| !view.edit_pending());
+    visual.run_until_parked();
     let sine =
         hex_engine::native_device_catalog_for_class(hex_engine::NativeDeviceClass::Instrument)
             .expect("instrument catalog")
             .into_iter()
-            .next()
+            .find(|entry| {
+                entry.type_id == hex_engine::DeviceTypeId::from_static("hex.instrument.sine")
+            })
             .expect("registered sine instrument");
     let replace =
         Box::leak(format!("instrument-replace-{}", instrument_id.value()).into_boxed_str());
@@ -729,13 +721,21 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     visual.simulate_mouse_down(click_point, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(click_point, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
+    let search_type = sine.type_id.as_str().unwrap();
+    visual.simulate_input(search_type);
+    visual.run_until_parked();
     let add_sine = Box::leak(
         format!("add-native-instrument-{}", sine.type_id.as_str().unwrap()).into_boxed_str(),
     );
     let add_sine = visual
         .debug_bounds(add_sine)
         .expect("registered sine replace action");
-    let click_point = point(add_sine.center().x, add_sine.center().y);
+    let list = visual.debug_bounds("device-picker-list").unwrap();
+    assert!(
+        list.contains(&add_sine.center()),
+        "instrument result must be inside the visible list: {add_sine:?} in {list:?}"
+    );
+    let click_point = add_sine.center();
     visual.simulate_mouse_down(click_point, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(click_point, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
@@ -751,6 +751,8 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
         );
     });
 
+    pump_until(&editor, cx, |view| !view.edit_pending());
+    visual.run_until_parked();
     let bypass_selector =
         Box::leak(format!("device-bypass-{}", device_id.value()).into_boxed_str());
     let bypass = visual.debug_bounds(bypass_selector).expect("bypass action");
@@ -765,6 +767,8 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
         ));
     });
 
+    pump_until(&editor, cx, |view| !view.edit_pending());
+    visual.run_until_parked();
     let remove_selector =
         Box::leak(format!("device-remove-{}", device_id.value()).into_boxed_str());
     let remove = visual
@@ -776,25 +780,15 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     visual.run_until_parked();
     // The test editor only records commands. Apply the committed removal to its
     // view snapshot so the next render no longer contains this device.
-    editor.update(cx, |view, cx| {
-        let previous = view.state.as_ref().expect("initial view state");
-        view.state = Some(Arc::new(ViewState {
-            canonical_audio_source: None,
-            comparison_audio: None,
-            project: Arc::clone(&project_after_remove),
-            waveforms: previous.waveforms.clone(),
-            source_overviews: previous.source_overviews.clone(),
-            audio_clip_waveforms: std::collections::BTreeMap::new(),
-            midi_preview: Arc::clone(&previous.midi_preview),
-            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
-            timeline_frames: previous.timeline_frames,
-            can_undo: true,
-            can_redo: previous.can_redo,
-            revision: previous.revision + 1,
-            unsaved: true,
-            document_path: previous.document_path.clone(),
-        }));
-        cx.notify();
+    pump_until(&editor, cx, |view| {
+        !view.edit_pending()
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device_id)
+                .is_none()
     });
     visual.run_until_parked();
     assert!(
