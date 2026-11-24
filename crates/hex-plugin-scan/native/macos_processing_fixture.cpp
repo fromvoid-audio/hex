@@ -934,7 +934,7 @@ public:
             (request.processMode!=kRealtime && request.processMode!=kOffline) ||
             (request.symbolicSampleSize!=kSample32 && !(mode==2 && request.symbolicSampleSize==kSample64)) ||
             request.maxSamplesPerBlock<1 || request.maxSamplesPerBlock>256 ||
-            (request.sampleRate!=44100 && request.sampleRate!=48000 && request.sampleRate!=96000)) return kResultFalse;
+            (request.sampleRate!=44100 && request.sampleRate!=48000 && request.sampleRate!=88200 && request.sampleRate!=96000)) return kResultFalse;
         ++observed.setups;
         sample_rate=request.sampleRate;maximum=request.maxSamplesPerBlock;precision=request.symbolicSampleSize;
         process_mode=request.processMode;

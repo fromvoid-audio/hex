@@ -1,9 +1,11 @@
 //! Worker-side scheduling for the existing active native PCM transport.
-//! Deadline priority is borrowed while audio is in flight and restored for
-//! control work, idle polling, and retirement. The device callback is uninvolved.
+//! Deadline priority is borrowed while audio is in flight and restored
+//! non-fatally when idle, on heavy non-routine control turns, and on retirement.
+//! Routine periodic control polls keep the active transport policy intact.
+//! The device callback is uninvolved.
 
 use cpal::platform::CoreAudioWorkerTimeConstraint;
-use hex_plugin_host::Error;
+use std::io::Write as _;
 use std::time::{Duration, Instant};
 
 use super::{Processor, State};
@@ -19,7 +21,10 @@ pub(super) struct Deadline {
 impl Deadline {
     fn policy_window(period: Duration) -> (Duration, Duration, Duration) {
         let constraint = period.mul_f64(0.75).min(Duration::from_millis(4));
-        let computation = Duration::from_millis(1).min(constraint / 2);
+        let computation = period
+            .mul_f64(0.35)
+            .min(Duration::from_millis(1))
+            .min(constraint / 2);
         // Retain deadline priority across transient multi-quantum gaps (up to
         // the six-quantum concealment bound and QUIET_TRANSPORT window) so a
         // brief hiccup does not demote the transport worker mid-stream.
@@ -53,12 +58,11 @@ impl Deadline {
 
     // A stall can outlast the live window while audio is queued. Check for
     // input at the current priority before treating that gap as idle.
-    pub(super) fn after_empty_poll(&mut self, now: Instant) -> Result<(), Error> {
+    pub(super) fn after_empty_poll(&mut self, now: Instant) {
         if self.live_until.is_none_or(|until| now >= until) {
             self.live_until = None;
-            self.leave()?;
+            self.leave();
         }
-        Ok(())
     }
 
     pub(super) fn enter(&mut self) {
@@ -74,19 +78,26 @@ impl Deadline {
         }
     }
 
-    pub(super) fn leave(&mut self) -> Result<(), Error> {
+    /// Restore standard thread policy non-fatally. A kernel refusal logs a
+    /// diagnostic warning and disables further policy churn on this thread
+    /// without revoking or killing the running VST3 plugin.
+    pub(super) fn leave(&mut self) {
         if self.active {
-            self.policy.leave().map_err(|error| {
-                Error::IoAt(
-                    "native transport deadline restoration",
-                    std::io::Error::other(error),
-                )
-            })?;
-            self.active = false;
-            // A successful Mach restore is sufficient. macOS can refuse a
-            // later pthread QoS request on a manually scheduled thread.
+            let result = self.policy.leave().map_err(|error| error.to_string());
+            self.finish_leave(result);
         }
-        Ok(())
+    }
+
+    fn finish_leave(&mut self, result: Result<(), String>) {
+        self.active = false;
+        if let Err(error) = result {
+            self.refused = true;
+            self.live_until = None;
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "vst3 worker warning: native transport deadline leave failed: {error}"
+            );
+        }
     }
 }
 
@@ -125,10 +136,10 @@ mod tests {
         // within that period keeps the worker ready for the next request.
         deadline.replied();
         let expires = deadline.live_until.unwrap();
-        deadline.after_empty_poll(expires - period).unwrap();
+        deadline.after_empty_poll(expires - period);
         assert!(deadline.active);
 
-        deadline.after_empty_poll(expires).unwrap();
+        deadline.after_empty_poll(expires);
         assert!(
             !deadline.active,
             "an expired empty poll must restore priority"
@@ -137,41 +148,74 @@ mod tests {
     }
 
     #[test]
-    fn policy_window_covers_concealment_gaps_and_respects_mach_bounds() {
-        for period in [
-            Duration::from_millis(4),
-            Duration::from_micros(5_333),
-            Duration::from_micros(5_805),
-            Duration::from_millis(8),
-        ] {
-            let (computation, constraint, interval) = Deadline::policy_window(period);
-            assert!(computation >= Duration::from_micros(500));
-            assert!(computation <= constraint / 2);
-            assert!(constraint <= period);
-            assert!(interval >= super::super::QUIET_TRANSPORT);
-            assert!(interval >= period * 8);
-            let mut deadline = Deadline {
-                policy: CoreAudioWorkerTimeConstraint::for_current_thread(
-                    period,
-                    computation,
-                    constraint,
-                )
-                .unwrap(),
-                interval,
-                live_until: None,
-                active: false,
-                refused: false,
-            };
-            deadline.enter();
-            assert!(deadline.active);
-            deadline.replied();
-            let expires = deadline.live_until.unwrap();
-            // A three-quantum transient gap (~17.4 ms at 44.1 kHz / 256) must
-            // keep deadline priority instead of demoting mid-stream.
-            deadline.after_empty_poll(expires - period * 5).unwrap();
-            assert!(deadline.active);
-            deadline.after_empty_poll(expires).unwrap();
-            assert!(!deadline.active);
+    fn policy_window_covers_all_low_latency_rates_and_quanta_and_respects_mach_bounds() {
+        for sample_rate in [44_100.0_f64, 48_000.0, 88_200.0, 96_000.0] {
+            for quantum in [64_u16, 128, 256] {
+                let period = Duration::from_secs_f64(f64::from(quantum) / sample_rate);
+                let (computation, constraint, interval) = Deadline::policy_window(period);
+                assert!(
+                    computation >= Duration::from_micros(50),
+                    "{sample_rate} Hz @ {quantum}: computation {computation:?} below Mach minimum"
+                );
+                assert!(computation <= constraint / 2);
+                assert!(constraint <= period);
+                assert!(interval >= super::super::QUIET_TRANSPORT);
+                assert!(interval >= period * 8);
+                let mut deadline = Deadline {
+                    policy: CoreAudioWorkerTimeConstraint::for_current_thread(
+                        period,
+                        computation,
+                        constraint,
+                    )
+                    .unwrap_or_else(|e| panic!("{sample_rate} Hz @ {quantum}: {e}")),
+                    interval,
+                    live_until: None,
+                    active: false,
+                    refused: false,
+                };
+                deadline.enter();
+                assert!(
+                    deadline.active,
+                    "{sample_rate} Hz @ {quantum}: Mach RT policy enter refused"
+                );
+                deadline.replied();
+                let expires = deadline.live_until.unwrap();
+                // Transient multi-quantum gap keeps deadline priority instead of demoting mid-stream.
+                deadline.after_empty_poll(expires - period * 5);
+                assert!(deadline.active);
+                deadline.after_empty_poll(expires);
+                assert!(!deadline.active);
+                assert!(!deadline.refused);
+            }
         }
+    }
+
+    #[test]
+    fn failed_policy_restoration_is_non_fatal_and_disables_further_churn() {
+        let period = Duration::from_micros(2_667);
+        let (computation, constraint, interval) = Deadline::policy_window(period);
+        let mut deadline = Deadline {
+            policy: CoreAudioWorkerTimeConstraint::for_current_thread(
+                period,
+                computation,
+                constraint,
+            )
+            .unwrap(),
+            interval,
+            live_until: Some(Instant::now() + interval),
+            active: true,
+            refused: false,
+        };
+        deadline.finish_leave(Err("simulated non-KERN_SUCCESS policy restore".into()));
+        assert!(!deadline.active);
+        assert!(deadline.refused);
+        assert!(deadline.live_until.is_none());
+        // Subsequent enter/replied/after_empty_poll remain no-ops without panicking or failing.
+        deadline.enter();
+        assert!(!deadline.active);
+        deadline.replied();
+        assert!(deadline.live_until.is_none());
+        deadline.after_empty_poll(Instant::now());
+        assert!(!deadline.active);
     }
 }

@@ -975,14 +975,8 @@ fn transport_runner_with_setup(
                     } else {
                         let now = Instant::now();
                         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                        if let Some(deadline) = &mut deadline
-                            && let Err(error) = deadline.after_empty_poll(now)
-                        {
-                            state.worker.revoke();
-                            state.report_native_failure(&published, "deadline", &error);
-                            state.native_error = Some(error);
-                            fault = Some(Fault::Protocol);
-                            break;
+                        if let Some(deadline) = &mut deadline {
+                            deadline.after_empty_poll(now);
                         }
                         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                         if matches!(state.processor, Some(Processor::Native(_))) {
@@ -1018,9 +1012,8 @@ fn transport_runner_with_setup(
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             if let Err(error) = state.advance_native_control(&published, || {
                 if let Some(deadline) = &mut deadline {
-                    deadline.leave()?;
+                    deadline.leave();
                 }
-                Ok(())
             }) {
                 let refused = matches!(error, hex_plugin_host::Error::Cancelled);
                 state.worker.revoke();

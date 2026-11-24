@@ -15,6 +15,13 @@ use crate::protocol::Configuration;
 // using high-QoS ordinary scheduling.
 pub const MAX_DEADLINE_PAIRS: usize = 32;
 
+// Supported low-latency hardware periods admitted for Mach time-constraint
+// scheduling (500 us..=12 ms: covers 44.1/48/88.2/96 kHz at 64/128/256 frames
+// and 44.1/48 kHz at 512 frames, while keeping Mach's minimum computation
+// budget well within bounds).
+const MIN_DEADLINE_PERIOD: Duration = Duration::from_micros(500);
+const MAX_DEADLINE_PERIOD: Duration = Duration::from_millis(12);
+
 // Only the scalar count is shared between child owners.
 static RESERVED_PAIRS: AtomicUsize = AtomicUsize::new(0);
 
@@ -26,7 +33,7 @@ impl Permit {
     pub(super) fn reserve(config: &Configuration) -> Option<Self> {
         let period =
             Duration::try_from_secs_f64(f64::from(config.quantum) / config.sample_rate).ok()?;
-        if !(Duration::from_millis(4)..=Duration::from_millis(8)).contains(&period) {
+        if !(MIN_DEADLINE_PERIOD..=MAX_DEADLINE_PERIOD).contains(&period) {
             return None;
         }
         RESERVED_PAIRS
@@ -48,6 +55,9 @@ impl Drop for Permit {
 mod tests {
     use super::*;
     use hex_lattice_contract::ForeignProcessorBinding as Binding;
+    use std::sync::Mutex;
+
+    static PERMIT_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn config(quantum: u16, sample_rate: f64) -> Configuration {
         Configuration {
@@ -76,6 +86,7 @@ mod tests {
 
     #[test]
     fn permits_admit_up_to_cap_and_release_on_drop() {
+        let _serial = PERMIT_TEST_LOCK.lock().unwrap();
         let cfg = config(256, 44_100.0);
         let baseline = RESERVED_PAIRS.load(Relaxed);
         let available = MAX_DEADLINE_PAIRS.saturating_sub(baseline);
@@ -96,8 +107,26 @@ mod tests {
     }
 
     #[test]
+    fn permits_admit_all_supported_low_latency_rates_and_quanta() {
+        let _serial = PERMIT_TEST_LOCK.lock().unwrap();
+        for sample_rate in [44_100.0, 48_000.0, 88_200.0, 96_000.0] {
+            for quantum in [64_u16, 128, 256] {
+                let permit = Permit::reserve(&config(quantum, sample_rate));
+                assert!(
+                    permit.is_some(),
+                    "expected RT deadline permit for {sample_rate} Hz @ {quantum} frames"
+                );
+            }
+        }
+        assert!(Permit::reserve(&config(512, 48_000.0)).is_some());
+        assert!(Permit::reserve(&config(512, 44_100.0)).is_some());
+    }
+
+    #[test]
     fn permits_reject_periods_outside_qualified_window() {
-        assert!(Permit::reserve(&config(64, 48_000.0)).is_none());
+        let _serial = PERMIT_TEST_LOCK.lock().unwrap();
+        assert!(Permit::reserve(&config(16, 96_000.0)).is_none());
         assert!(Permit::reserve(&config(256, 16_000.0)).is_none());
+        assert!(Permit::reserve(&config(1024, 44_100.0)).is_none());
     }
 }

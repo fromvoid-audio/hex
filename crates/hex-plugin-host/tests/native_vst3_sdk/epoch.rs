@@ -137,6 +137,69 @@ fn live_deadline_preserves_pcm_across_idle_and_same_child_quiescence() {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn live_deadline_admits_all_low_latency_rates_and_quanta_through_control_polls() {
+    let build = build();
+    let case = Case::new();
+    for (sample_rate, quantum) in [
+        (44_100.0, 64_u16),
+        (44_100.0, 256),
+        (48_000.0, 64),
+        (48_000.0, 128),
+        (88_200.0, 128),
+        (96_000.0, 256),
+    ] {
+        let mut options = options();
+        options.preparation.sample_rate = sample_rate;
+        options.preparation.quantum = quantum;
+        let mut instance = Pending::prepare_with_restore(
+            &build,
+            source().with_live_audio_deadline(true),
+            options.preparation,
+            None,
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup(0),
+        )
+        .unwrap()
+        .complete_on_control(Some(options.presentation))
+        .unwrap();
+        assert!(
+            instance.deadline_period_on_worker().is_some(),
+            "expected RT deadline period for {sample_rate} Hz @ {quantum} frames"
+        );
+
+        let first = request(instance.configuration(), 0);
+        let first_out = instance.exchange_on_worker(first).unwrap();
+        assert_eq!(first_out.frames, quantum);
+
+        // Periodic control poll (editor visibility) interleaved mid-stream must
+        // keep the plugin live without demoting/revoking its epoch.
+        instance
+            .begin_controller_request_on_worker(crate::protocol::ControllerRequest::EditorVisibility)
+            .unwrap();
+        let until = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            match instance.poll_parameter_page_on_worker().unwrap() {
+                crate::protocol::ParameterPageProgress::Editor(_) => break,
+                crate::protocol::ParameterPageProgress::Pending => {}
+                other => panic!("unexpected editor visibility reply: {other:?}"),
+            }
+            assert!(std::time::Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        let second = request(instance.configuration(), 1);
+        let second_out = instance.exchange_on_worker(second).unwrap();
+        assert_eq!(second_out.frames, quantum);
+
+        let retired = instance.stop_and_reap_on_control().unwrap();
+        assert!(retired.status.success());
+        let terminal = retired.terminal.unwrap();
+        assert_eq!((terminal.blocks, terminal.frames), (2, u64::from(quantum) * 2));
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn explicit_quiescent_reactivation_refreshes_latency_without_recreating_or_restoring() {
     let case = Case::new();
     let selected = source();
