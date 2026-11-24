@@ -568,6 +568,7 @@ public:
         return host?host->editor_admission_sequence_on_worker():0;
     }
     uint64 editor_frontier_on_worker() const { return host?host->editor_frontier_on_worker():0; }
+    uint64 value_restart_frontier_on_worker() const { return host?host->value_restart_frontier_on_worker():0; }
     void complete_parameter_edit() { if(host) host->complete_parameter_edit(); }
     uint32 host_refusals() const { return host?host->refusal_flags():0; }
     void observe_latency_restarts() { if(host) host->observe_latency_restarts(); }

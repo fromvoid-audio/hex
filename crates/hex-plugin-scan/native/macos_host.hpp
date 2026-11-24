@@ -177,6 +177,10 @@ class Host final : public IHostApplication, public IComponentHandler, public ICo
     // Main publishes accepted editor edits; the worker samples this frontier
     // before a host-authored SDK exchange. No controller pointer crosses lanes.
     std::atomic<uint64> editor_frontier{0};
+    // Main-only fence for kParamValuesChanged restarts; worker samples the
+    // matching atomic frontier before DSP so post-invalidation feedback applies.
+    uint64 value_restart_floor=0;
+    std::atomic<uint64> value_restart_frontier{0};
     // Editor admission also orders gesture and group boundaries. DSP feedback
     // retains its separate fence for the last meaningful value transition.
     std::atomic<uint64> editor_admission_sequence{0};
@@ -654,6 +658,11 @@ public:
         if(refresh) {
             requests[(first+count)%requests.size()]={ordinal,0,0,static_cast<ParamID>(refresh),Restart};
             ++count;++restart_count;
+            if(refresh & kParamValuesChanged) {
+                value_restart_floor=ordinal;
+                value_restart_frontier.store(ordinal,std::memory_order_release);
+                editor_frontier.store(ordinal,std::memory_order_release);
+            }
         }
         if(flags & kLatencyChanged) pending_latency_restart.store(ordinal,std::memory_order_release);
         return kResultOk;
@@ -885,6 +894,7 @@ public:
             // back to its controller. A deferred controller still needs this
             // value even when the processor finishes before End.
             const auto& parameter=metadata.parameters[index];
+            if(value_restart_floor>value.editor_sequence) continue;
             const bool current_native=value.editor_input && parameter.editor_sequence==value.editor_sequence;
             bool editing=false;
             for(size_t i=0;i<active_tokens.size();++i)
@@ -936,6 +946,7 @@ public:
         return editor_admission_sequence.load(std::memory_order_acquire);
     }
     uint64 editor_frontier_on_worker() const { return editor_frontier.load(std::memory_order_acquire); }
+    uint64 value_restart_frontier_on_worker() const { return value_restart_frontier.load(std::memory_order_acquire); }
     void complete_parameter_edit() { pending_edits.fetch_sub(1,std::memory_order_acq_rel); }
     void stop_accepting() {
         if (![NSThread isMainThread]) { refuse(WrongThread); return; }

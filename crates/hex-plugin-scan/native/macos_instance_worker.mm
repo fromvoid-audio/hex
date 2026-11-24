@@ -620,11 +620,12 @@ int main(int argc,char** argv) {
                     // Authored host input resumes ordinary processor feedback.
                     // Inventory refreshes
                     // preserve the sorted ID set, including across epochs.
-                    const auto feedback_sequence=[&](ParamID id,std::optional<uint64> input,bool editor_input=false) -> std::optional<FeedbackOrigin> {
+                    const auto feedback_sequence=[&](ParamID id,std::optional<uint64> input,bool editor_input=false,uint64 restart_floor=0) -> std::optional<FeedbackOrigin> {
                         const auto* info=processing_parameters.find(id);
                         if(!info) return std::nullopt;
                         auto& sequence=feedback_sequences[info-processing_parameters.parameters.data()];
                         if(input) sequence={*input,editor_input};
+                        else if(restart_floor>sequence.sequence) sequence={restart_floor,false};
                         return sequence;
                     };
                     const auto conflicts_with_prior_cohort=[&](const hex_instance::EditEvent& event) {
@@ -729,7 +730,7 @@ int main(int argc,char** argv) {
                         }
                         return !remaining_group;
                     };
-                    const auto mirror_flushed_parameters=[&](hex_instance::ParameterFeedback& feedback,uint64 host_frontier) {
+                    const auto mirror_flushed_parameters=[&](hex_instance::ParameterFeedback& feedback,uint64 host_frontier,uint64 restart_frontier) {
                         // A zero-frame flush has no timeline ordering between
                         // input and output. Keep the value from a native Perform
                         // for its own controller. The processor may report its
@@ -743,7 +744,7 @@ int main(int argc,char** argv) {
                                 if(!is_input && editor_sequence) continue;
                                 const auto sequence=feedback_sequence(point.id,is_input?
                                     std::optional<uint64>{editor_sequence?editor_sequence:host_frontier}:std::nullopt,
-                                    is_input && editor_sequence);
+                                    is_input && editor_sequence,restart_frontier);
                                 if(!sequence) return false;
                                 if(!is_input && sequence->editor_input) continue;
                                 if(!feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) return false;
@@ -765,11 +766,12 @@ int main(int argc,char** argv) {
                             flush.inputParameterChanges=&parameter_input;flush.outputParameterChanges=&parameter_output;
                             phase.store(2,std::memory_order_release);
                             const auto host_frontier=instance.editor_frontier_on_worker();
+                            const auto restart_frontier=instance.value_restart_frontier_on_worker();
                             const auto result=instance.flush_idle(flush);
                             const bool input_returned=parameter_input.end_sdk(),output_returned=parameter_output.end_sdk();
                             if(!input_returned || !output_returned) {error(channel,&*config,Processing);std::_Exit(Processing);}
                             if(result!=hex_instance::FlushResult::Applied) return false;
-                            if(!mirror_flushed_parameters(parameter_feedback,host_frontier)) return false;
+                            if(!mirror_flushed_parameters(parameter_feedback,host_frontier,restart_frontier)) return false;
                             instance.publish_parameter_feedback(parameter_feedback);
                         }
                         for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
@@ -811,12 +813,13 @@ int main(int argc,char** argv) {
                         flush.inputParameterChanges=parameter_input.size()?&parameter_input:nullptr;flush.outputParameterChanges=&parameter_output;
                         phase.store(2,std::memory_order_release);
                         const auto host_frontier=expected.value_or(instance.editor_frontier_on_worker());
+                        const auto restart_frontier=instance.value_restart_frontier_on_worker();
                         const auto result=idle?instance.flush_idle(flush):instance.flush_stopped(flush);
                         const bool input_returned=parameter_input.end_sdk(),output_returned=parameter_output.end_sdk();
                         if(!input_returned || !output_returned) { error(channel,&*config,Processing);std::_Exit(Processing); }
                         if(result!=hex_instance::FlushResult::Applied && result!=hex_instance::FlushResult::Empty) return Processing;
                         flushed_values={};
-                        if(!mirror_flushed_parameters(flushed_values,host_frontier)) return ProtocolFailure;
+                        if(!mirror_flushed_parameters(flushed_values,host_frontier,restart_frontier)) return ProtocolFailure;
                         for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
                         return acknowledge(result==hex_instance::FlushResult::Applied?1:0);
                     };
@@ -930,13 +933,14 @@ int main(int argc,char** argv) {
                         release.numSamples=1;release.processContext=&stopped;
                         release.inputEvents=&input_notes;
                         release.inputParameterChanges=nullptr;release.outputParameterChanges=&parameter_output;
+                        const auto restart_frontier=instance.value_restart_frontier_on_worker();
                         const bool processed=instance.process(release);
                         const bool parameters_returned=parameter_output.end_sdk(), notes_returned=input_notes.end();
                         if(!processed || !parameters_returned || !notes_returned) return false;
                         for(size_t index=0;index<parameter_output.size();++index) {
                             hex_instance::ParameterPoint point{};
                             if(!parameter_output.point(index,point)) return false;
-                            const auto sequence=feedback_sequence(point.id,std::nullopt);
+                            const auto sequence=feedback_sequence(point.id,std::nullopt,false,restart_frontier);
                             if(!sequence) return false;
                             if(sequence->editor_input) continue;
                             if(!parameter_feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) return false;
@@ -1214,6 +1218,7 @@ int main(int argc,char** argv) {
                             window.processContext=slice?&packet.timing_changes[slice-1].context:(packet.context?&*packet.context:nullptr);
                             window.numSamples=width;phase.store(2,std::memory_order_release);
                             const auto host_frontier=instance.editor_frontier_on_worker();
+                            const auto restart_frontier=instance.value_restart_frontier_on_worker();
 #if defined(HEX_ORIGINAL_SLICE_CLOCK_OBSERVATION)
                             const bool observed_slice=slice_clock.begin(*config,blocks,frames,slice,first,static_cast<size_t>(width));
 #endif
@@ -1250,7 +1255,7 @@ int main(int argc,char** argv) {
                                     input_sequence=editor_sequence?editor_sequence:host_frontier;
                                     editor_input=editor_sequence!=0;
                                 }
-                                const auto sequence=feedback_sequence(point.id,input_sequence,editor_input);
+                                const auto sequence=feedback_sequence(point.id,input_sequence,editor_input,restart_frontier);
                                 if(!sequence) {valid=false;break;}
                                 if(!use_input && sequence->editor_input) continue;
                                 if(!parameter_feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) valid=false;
