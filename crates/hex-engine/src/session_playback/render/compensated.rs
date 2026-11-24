@@ -1736,10 +1736,6 @@ impl SessionPlayback {
                 .iter()
                 .flatten()
                 .any(|tail| tail.output_active && tail.return_id().is_none())
-            || self
-                .native_parameter_state
-                .as_deref()
-                .is_some_and(|state| state.processing.is_some())
             || self.revision.gain_recording_track().is_some()
             || self
                 .route_scratch
@@ -2013,7 +2009,9 @@ impl SessionPlayback {
                             },
                             index,
                             generator,
-                            None,
+                            self.native_parameter_state
+                                .as_deref_mut()
+                                .and_then(|state| state.processing.as_mut()),
                         )?;
                     }
 
@@ -2097,7 +2095,15 @@ impl SessionPlayback {
                             delay: 0,
                         };
                         self.source_effects
-                            .process_with_live_input(index, generator, &clock, frame_offset, None)
+                            .process_with_live_input(
+                                index,
+                                generator,
+                                &clock,
+                                frame_offset,
+                                self.native_parameter_state
+                                    .as_deref_mut()
+                                    .and_then(|state| state.processing.as_mut()),
+                            )
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     }
 
@@ -2140,6 +2146,9 @@ impl SessionPlayback {
                                     &mut key_buf,
                                     foreign,
                                     observer,
+                                    self.native_parameter_state
+                                        .as_deref_mut()
+                                        .and_then(|state| state.processing.as_mut()),
                                 )
                                 .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                         }
@@ -2185,6 +2194,9 @@ impl SessionPlayback {
                                     &mut key_buf,
                                     foreign,
                                     observer,
+                                    self.native_parameter_state
+                                        .as_deref_mut()
+                                        .and_then(|state| state.processing.as_mut()),
                                 )
                                 .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                         }
@@ -2292,6 +2304,9 @@ impl SessionPlayback {
                                 &mut key_buf,
                                 foreign,
                                 observer,
+                                self.native_parameter_state
+                                    .as_deref_mut()
+                                    .and_then(|state| state.processing.as_mut()),
                             )
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     }
@@ -2402,6 +2417,9 @@ impl SessionPlayback {
                 &mut key_buf,
                 foreign,
                 observer,
+                self.native_parameter_state
+                    .as_deref_mut()
+                    .and_then(|state| state.processing.as_mut()),
             )
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         for stamp in stamps {
