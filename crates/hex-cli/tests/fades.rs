@@ -94,7 +94,7 @@ fn assert_stereo_pcm(wav: &[u8], expected: &[i16]) {
 }
 
 #[test]
-fn saved_fade_endpoints_and_recursive_splits_export_identical_pcm() {
+fn saved_exports_follow_corner_anchored_fades_through_recursive_splits_and_history() {
     for shaped in [false, true] {
         let fixture = Fixture::new(13);
         let (mut editor, clip) = fixture.editor(13);
@@ -146,17 +146,29 @@ fn saved_fade_endpoints_and_recursive_splits_export_identical_pcm() {
         else {
             panic!("split creates tail");
         };
+        // The one-frame left fragment has no fade-in interval. The last
+        // three frames carry the entire fade-out, with the original curve.
+        let mut expected_split = [8192; 13];
+        expected_split[11] = if shaped { 6142 } else { 4096 };
+        expected_split[12] = 0;
+        let three_frame_tail = fixture.render(editor.project(), "three-frame-tail");
+        assert_stereo_pcm(&three_frame_tail, &expected_split);
+
         editor
             .execute(Command::SplitClip {
                 clip: tail,
                 frame: 11,
             })
             .unwrap();
-        assert_eq!(fixture.render(editor.project(), "split"), original);
+        // A fresh cut is neutral. The remaining two-frame fade-out runs
+        // from full amplitude to zero for either curve.
+        expected_split[11] = 8192;
+        let two_frame_tail = fixture.render(editor.project(), "split");
+        assert_stereo_pcm(&two_frame_tail, &expected_split);
         assert!(editor.try_undo().unwrap());
-        assert_eq!(fixture.render(editor.project(), "undo"), original);
+        assert_eq!(fixture.render(editor.project(), "undo"), three_frame_tail);
         assert!(editor.try_redo().unwrap());
-        assert_eq!(fixture.render(editor.project(), "redo"), original);
+        assert_eq!(fixture.render(editor.project(), "redo"), two_frame_tail);
     }
 }
 
