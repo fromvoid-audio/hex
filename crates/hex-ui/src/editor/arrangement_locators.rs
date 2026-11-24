@@ -880,12 +880,12 @@ impl EditorView {
             self.request_quantized_locator_launch(frame, quantization);
             return;
         }
-        let command = hex_engine::PlaybackCommand::PlayFrom(frame);
-        #[cfg(test)]
-        {
-            self.last_transport_command = Some(command);
+        if let Some(source) = self.normal_start_source() {
+            // An immediate marker click can jump an already-playing transport.
+            self.queue_applied_source_play(frame, source, true);
+        } else {
+            self.queue_normal_play(frame);
         }
-        self.queue_audio_command(command);
     }
 
     pub(super) fn locator_lines(
@@ -2374,7 +2374,7 @@ mod tests {
         use hex_engine::{LaunchQuantization, PlaybackCommand};
 
         let region = hex_project::LoopRegion::new(0, 96_000, true).unwrap();
-        let mut fixture = super::super::worker_ui_fixture::open(
+        let mut fixture = super::super::worker_ui_fixture::open_with_section_support(
             cx,
             vec![
                 Command::SetLoopRegion {
@@ -2385,7 +2385,32 @@ mod tests {
                 Command::AddArrangementLocator { frame: 23_960 },
                 Command::AddArrangementLocator { frame: 48_000 },
             ],
+            false,
+            true,
         );
+        fixture.editor.update(cx, |view, cx| {
+            hex_preferences::save_playback_preferences(
+                view.playback_settings.path.as_ref().unwrap(),
+                hex_preferences::PlaybackPreferences {
+                    note_chase: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            view.playback_settings.loading = true;
+            view.start_playback_preferences_load(cx);
+        });
+        let deadline = crate::test_wait::hang_deadline();
+        while fixture
+            .editor
+            .read_with(cx, |view, _| view.playback_settings.loading)
+        {
+            cx.run_until_parked();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "saved playback settings load"
+            );
+        }
         let mut visual = VisualTestContext::from_window(fixture.handle, cx);
         let [first, second] = fixture.editor.update(&mut visual, |view, cx| {
             view.session_quantization = LaunchQuantization::Quarter;
@@ -2406,7 +2431,10 @@ mod tests {
             view.tick(cx);
             assert_eq!(
                 view.last_transport_command,
-                Some(PlaybackCommand::PlayFrom(23_960))
+                Some(PlaybackCommand::PlayFromWithNoteChase {
+                    frame: 23_960,
+                    note_chase: hex_engine::NoteChase::Off
+                })
             );
             assert!(view.prepared_seek.is_none());
             assert!(view.audio_status().unwrap().playing.load(Acquire));
@@ -2416,6 +2444,7 @@ mod tests {
         click_locator(&mut visual, second);
         fixture.editor.update(&mut visual, |view, _| {
             let seek = view.prepared_seek.as_ref().expect("queued locator seek");
+            assert_eq!(seek.note_chase, hex_engine::NoteChase::Off);
             assert!(matches!(
                 seek.kind,
                 SeekKind::Locator(LaunchQuantization::Quarter)
@@ -2466,8 +2495,21 @@ mod tests {
             assert!(view.prepared_seek.is_none(), "none uses ordinary playback");
             assert_eq!(
                 view.last_transport_command,
-                Some(PlaybackCommand::PlayFrom(23_960))
+                Some(PlaybackCommand::PlayFromWithNoteChase {
+                    frame: 23_960,
+                    note_chase: hex_engine::NoteChase::Off
+                })
             );
+        });
+        // A running PlayFrom continues the old clock for the 128-frame
+        // transport fade at 48 kHz, then advances from the clicked marker.
+        fixture.backend.render(&mut [[0.0; 2]; 16]).unwrap();
+        fixture.editor.read_with(&visual, |view, _| {
+            assert_eq!(view.audio_status().unwrap().position.load(Acquire), 48_017);
+        });
+        fixture.backend.render(&mut [[0.0; 2]; 128]).unwrap();
+        fixture.editor.read_with(&visual, |view, _| {
+            assert_eq!(view.audio_status().unwrap().position.load(Acquire), 23_976);
         });
         drop(visual);
         fixture.finish(cx);
@@ -2699,9 +2741,10 @@ mod tests {
         visual.simulate_mouse_down(marker, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(marker, MouseButton::Left, Modifiers::default());
         editor.update(&mut visual, |view, _| {
+            assert!(view.last_transport_command.is_none());
             assert_eq!(
-                view.last_transport_command,
-                Some(hex_engine::PlaybackCommand::PlayFrom(cursor_frame))
+                view.error.as_deref(),
+                Some("playback source is unavailable · retry playback when audio is ready")
             );
             view.error = None;
             view.snap_grid = SnapGrid::Quarter;
