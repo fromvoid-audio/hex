@@ -125,6 +125,7 @@ constexpr int stopped_editor_echo_variant=150;
 constexpr int stopped_bus_refusal_effect=151, stopped_bus_refusal_instrument=152;
 constexpr int multiple_aux_inputs_variant=153, multiple_aux_main_input_variant=154,
     multiple_aux_mismatch_variant=155, multiple_aux_excess_variant=156;
+constexpr int component_prealloc_overflow_variant=157, controller_prealloc_overflow_variant=158;
 static bool held_parameter_input(int variant) {
     return variant==144 || variant==held_instrument_variant || grouped_editor(variant);
 }
@@ -405,6 +406,14 @@ public:
         if(fault==96 && restoration.controller_get==2) {
             std::vector<unsigned char> huge(512*1024);return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
         }
+        if(fault==controller_prealloc_overflow_variant && restoration.controller_get==2) {
+            ISizeableStream* sized=nullptr;
+            if (stream->queryInterface(INLINE_UID_OF(ISizeableStream),reinterpret_cast<void**>(&sized))!=kResultOk || !sized)
+                return kResultFalse;
+            const auto result=sized->setStreamSize((512*1024-96-32)+1);
+            sized->release();
+            return result;
+        }
         // Original sensitivity fixture: an edit admitted during a live SDK
         // state read must not let that pre-edit component snapshot escape.
         if(fault==90 && restoration.controller_get>1 && !edits_sent) {
@@ -682,6 +691,14 @@ public:
         if(restoration.component_get>1) {
             if(fault==95 && restoration.component_get==2) {
                 std::vector<unsigned char> huge(512*1024);return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
+            }
+            if(fault==component_prealloc_overflow_variant && restoration.component_get==2) {
+                ISizeableStream* sized=nullptr;
+                if (stream->queryInterface(INLINE_UID_OF(ISizeableStream),reinterpret_cast<void**>(&sized))!=kResultOk || !sized)
+                    return kResultFalse;
+                const auto result=sized->setStreamSize((512*1024-96)+1);
+                sized->release();
+                return result;
             }
             if(fault==97 && restoration.component_get==2) {
                 std::vector<unsigned char> huge(512*1024);
@@ -1251,7 +1268,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>multiple_aux_excess_variant) return false;next_fault=value;
+        if (value>controller_prealloc_overflow_variant) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);
