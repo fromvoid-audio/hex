@@ -1294,12 +1294,18 @@ mod tests {
             first.len(),
             "only the first pass paints as quads"
         );
-        assert!(
-            visual
-                .debug_bounds(Box::leak(
-                    format!("clip-note-tiles-{}", id.value()).into_boxed_str(),
-                ))
-                .is_some()
+        // Zoom back to the original notes. The lane must stop painting cached repeats.
+        let first_end = first.iter().map(|&(_, end, _)| end).max().unwrap();
+        let before_zoom = painted(&mut visual);
+        publish(&mut visual, &view, None, start, first_end - start);
+        assert_eq!(
+            painted(&mut visual),
+            before_zoom,
+            "first pass has no repeat tiles"
+        );
+        assert_eq!(
+            crate::editor::midi_thumbnail::rendered_notes(&mut visual, id, false).len(),
+            first.len(),
         );
     }
 
