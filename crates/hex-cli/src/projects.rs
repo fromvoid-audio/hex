@@ -39,6 +39,73 @@ pub fn import_project(input: &Path, output: &Path) -> Result<(), Box<dyn Error>>
     Ok(())
 }
 
+fn project_base_dir(input: &Path) -> &Path {
+    input
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+#[cfg(unix)]
+fn same_file_metadata(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(not(unix))]
+fn same_file_metadata(_left: &std::fs::Metadata, _right: &std::fs::Metadata) -> bool {
+    false
+}
+
+fn same_existing_file(left: &Path, right: &Path) -> bool {
+    let (Ok(left_metadata), Ok(right_metadata)) =
+        (std::fs::metadata(left), std::fs::metadata(right))
+    else {
+        return false;
+    };
+    same_file_metadata(&left_metadata, &right_metadata)
+        || matches!(
+            (std::fs::canonicalize(left), std::fs::canonicalize(right)),
+            (Ok(left_path), Ok(right_path)) if left_path == right_path
+        )
+}
+
+fn refuse_protected_destination(
+    input_project: &Path,
+    project: &Project,
+    destination: &Path,
+) -> Result<(), Box<dyn Error>> {
+    if input_project == destination || same_existing_file(input_project, destination) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "export destination conflicts with input project {}",
+                input_project.display()
+            ),
+        )
+        .into());
+    }
+    let project_dir = project_base_dir(input_project);
+    for asset in project.assets() {
+        let source_path = if asset.path().is_absolute() {
+            asset.path().to_path_buf()
+        } else {
+            project_dir.join(asset.path())
+        };
+        if source_path == destination || same_existing_file(&source_path, destination) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "export destination conflicts with source media {}",
+                    source_path.display()
+                ),
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
 fn load_arrangement(
     input: &Path,
 ) -> Result<(Project, BTreeMap<hex_project::AssetId, Audio>), Box<dyn Error>> {
@@ -58,11 +125,13 @@ fn load_arrangement(
     for clip in project.tracks().iter().flat_map(|track| track.clips()) {
         referenced_assets.extend(clip.referenced_assets());
     }
+    for cell in project.session_cells() {
+        if let hex_project::SessionCellContent::Audio(clip) = cell.content() {
+            referenced_assets.insert(clip.asset());
+        }
+    }
 
-    let project_dir = input
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
+    let project_dir = project_base_dir(input);
     let mut media_bank: BTreeMap<_, Audio> = BTreeMap::new();
     let mut decoded_frames = 0_u64;
     for asset_id in referenced_assets {
@@ -229,7 +298,10 @@ pub fn export_project(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>>
             return Err("unknown or repeated export option".into());
         }
     }
-    let (project, media) = load_arrangement(Path::new(&args[1]))?;
+    let input_path = Path::new(&args[1]);
+    let path = Path::new(&args[2]);
+    let (project, media) = load_arrangement(input_path)?;
+    refuse_protected_destination(input_path, &project, path)?;
     let signal = if let Some(scope) = scope {
         let (kind, list) = scope.split_once('=').ok_or("invalid export scope")?;
         let ids: Vec<u64> = list.split(',').map(str::parse).collect::<Result<_, _>>()?;
@@ -286,7 +358,6 @@ pub fn export_project(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>>
         hex_export::ExportSignal::Main
     };
     let prepared = prepare(&project, &media)?;
-    let path = Path::new(&args[2]);
     // --overwrite consents to replacing an existing file; an absent target is
     // still published create-new, matching the UI's confirmed save.
     let publication = if overwrite {
