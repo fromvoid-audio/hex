@@ -7,6 +7,23 @@ pub(crate) fn command_for_snapshot(
     session: &Session,
     snapshot: GestureSnapshot,
 ) -> Result<Command, SessionError> {
+    if matches!(snapshot.target, GestureTarget::PluginParameter { .. }) {
+        return Err(SessionError::Invalid(
+            "plugin parameter commit requires original host capture",
+        ));
+    }
+    reconcile_command_for_project(session.project(), snapshot)?
+        .ok_or(SessionError::Invalid("snapshot parameters are missing"))
+}
+
+/// Turn a released, project-reconcilable gesture snapshot into its ordinary
+/// canonical command against an authoritative `Project`. Returns `Ok(None)`
+/// for host-owned plug-in gestures that cannot be reconstructed without live
+/// host capture.
+pub fn reconcile_command_for_project(
+    project: &Project,
+    snapshot: GestureSnapshot,
+) -> Result<Option<Command>, SessionError> {
     if let Some(group) = snapshot.track_gains {
         if snapshot.target
             != (GestureTarget::TrackGains {
@@ -19,47 +36,48 @@ pub(crate) fn command_for_snapshot(
             return Err(SessionError::Invalid("selected gain cohort target changed"));
         }
         return group
-            .command(session.project(), track_gain_value(snapshot.value)?)
+            .command(project, track_gain_value(snapshot.value)?)
+            .map(Some)
             .map_err(SessionError::from);
     }
     if let Some(creation) = snapshot.creation {
         let GestureTarget::EqNodeCreation { device } = snapshot.target else {
             return Err(SessionError::Invalid("eq creation target changed"));
         };
-        return creation.command(session, device, snapshot.sequence);
+        return creation
+            .command_for_project(project, device, snapshot.sequence)
+            .map(Some);
     }
     if snapshot.parameters.is_some() {
-        return existing_device_command(session.project(), snapshot);
+        return existing_device_command(project, snapshot).map(Some);
     }
     match snapshot.target {
-        GestureTarget::PluginParameter { .. } => Err(SessionError::Invalid(
-            "plugin parameter commit requires original host capture",
-        )),
-        GestureTarget::TrackGain { track } => Ok(Command::Gain {
+        GestureTarget::PluginParameter { .. } => Ok(None),
+        GestureTarget::TrackGain { track } => Ok(Some(Command::Gain {
             track,
             gain: track_gain_value(snapshot.value)?,
-        }),
-        GestureTarget::MainGain => Ok(Command::MasterGain {
+        })),
+        GestureTarget::MainGain => Ok(Some(Command::MasterGain {
             gain: mix_value(snapshot.value, 0.0, 2.0)?,
-        }),
-        GestureTarget::TrackBalance { track } => Ok(Command::Balance {
+        })),
+        GestureTarget::TrackBalance { track } => Ok(Some(Command::Balance {
             track,
             balance: mix_value(snapshot.value, -1.0, 1.0)?,
-        }),
-        GestureTarget::ReturnGain { return_track } => Ok(Command::ReturnGain {
+        })),
+        GestureTarget::ReturnGain { return_track } => Ok(Some(Command::ReturnGain {
             return_track,
             gain: mix_value(snapshot.value, 0.0, 2.0)?,
-        }),
+        })),
         GestureTarget::ReturnSend {
             track,
             return_track,
-        } => Ok(Command::SetReturnSend {
+        } => Ok(Some(Command::SetReturnSend {
             track,
             return_track,
             gain: send_gain(snapshot.value)?,
-        }),
+        })),
         GestureTarget::DeviceParameter { .. } | GestureTarget::DeviceParameterPair { .. } => {
-            existing_device_command(session.project(), snapshot)
+            existing_device_command(project, snapshot).map(Some)
         }
         GestureTarget::TrackGains { .. }
         | GestureTarget::DeviceParameterSnapshot { .. }

@@ -2037,6 +2037,15 @@ pub(super) fn request(value: &Request) -> Description {
         } => {
             describe!("save_project_as"; ["path_redacted_bytes" => path.as_os_str().len(), "extension_added" => extension_added]; omitted="")
         }
+        Request::SaveCommittedParameterCopy {
+            path,
+            revision,
+            key,
+            sequence,
+            ..
+        } => {
+            describe!("save_committed_parameter_copy"; ["project_generation" => key.generation, "revision" => revision, "gesture_token" => key.token, "sequence" => sequence, "path_redacted_bytes" => path.as_os_str().len()]; omitted="reply")
+        }
         Request::SaveCurrent => describe!("save_current"; []; omitted=""),
         Request::SaveCurrentWithFormatUpgrade {
             project_generation,

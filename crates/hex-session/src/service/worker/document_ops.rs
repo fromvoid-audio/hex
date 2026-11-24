@@ -2,6 +2,8 @@
 use super::*;
 use std::ops::ControlFlow;
 
+mod committed_copy;
+
 pub(crate) struct DocumentHandle {
     pub(crate) path: PathBuf,
     pub(crate) token: FileToken,
@@ -1025,6 +1027,19 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
             }
         }
 
+        Request::SaveCommittedParameterCopy {
+            path,
+            revision,
+            key,
+            sequence,
+            reply,
+        } => {
+            let result = committed_copy::save(ctx, path, revision, key, sequence);
+            if let Err(reason) = &result {
+                ctx.outcome.error = Some(reason.clone());
+            }
+            let _ = reply.try_send(result);
+        }
         request @ (Request::SaveNew(_) | Request::SaveProjectAs { .. }) => {
             ctx.outcome.save_complete = true;
             let (path, folder_layout) = match request {

@@ -232,6 +232,7 @@ impl WorkerLoop {
                     | Request::ImportDeviceAsset { .. }
                     | Request::SaveNew(_)
                     | Request::SaveProjectAs { .. }
+                    | Request::SaveCommittedParameterCopy { .. }
                     | Request::SaveCurrent
                     | Request::SaveCurrentWithFormatUpgrade { .. }
                     | Request::Export(_)
@@ -334,6 +335,9 @@ impl WorkerLoop {
                     path: path.clone(),
                     result: Err(reason.clone().into()),
                 });
+            }
+            if let Request::SaveCommittedParameterCopy { reply, .. } = &request {
+                let _ = reply.try_send(Err(reason.clone()));
             }
             if let Request::PreparePausedInputMonitor { reply, .. } = &request {
                 let _ = reply.try_send(Err(reason.clone()));
@@ -545,6 +549,7 @@ impl WorkerLoop {
                 | Request::RestartRecovery(..)
                 | Request::SaveCurrent
                 | Request::SaveCurrentWithFormatUpgrade { .. }
+                | Request::SaveCommittedParameterCopy { .. }
                 | Request::SaveNew(..)
                 | Request::SaveProjectAs { .. }
                 | Request::TuningLibrary { .. }
