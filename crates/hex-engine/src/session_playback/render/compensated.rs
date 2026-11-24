@@ -1776,7 +1776,7 @@ impl SessionPlayback {
         frame_offset: usize,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut dyn CaptureSink>,
-        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+        inputs: RenderBlockInputs<'_>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         let count = output.len();
@@ -1918,6 +1918,10 @@ impl SessionPlayback {
                         SourceStage::audio(self.browser_audition.voices.for_track(route.id)),
                     )?;
 
+                    if let Some(input) = inputs.live_audio.filter(|input| input.track == route.id) {
+                        add_main_track(audio, &input.frames[frame_offset..frame_offset + count]);
+                    }
+
                     if has_generator {
                         generator.fill([0.0; 2]);
                     }
@@ -1965,7 +1969,7 @@ impl SessionPlayback {
                                     self.revision.session(),
                                     self.midi_admission.as_ref(),
                                 ),
-                                sources,
+                                sources: inputs.sources,
                                 routes: &self.route_scratch,
                                 runtimes: &mut self.mutable_instruments,
                                 onsets: &mut self.mutable_onsets,

@@ -916,6 +916,36 @@ fn block_compensated_route_matches_scalar_with_sidechain_group_return_and_main_l
     for size in [256, 256, 73, 512, 19, 256] {
         assert_eq!(render(&mut batched, size), render(&mut scalar, size));
     }
+    // Monitor each side of the keyed/group routes across internal loop splits.
+    // The device tap exposes the actual DSP slice size, even for identical PCM.
+    let input: Vec<Frame> = (0..512)
+        .map(|i| [i as f32 / 1024.0, -(i as f32) / 2048.0])
+        .collect();
+    for track in [f.tracks[0], f.tracks[1], group] {
+        let monitored = |runtime: &mut SessionPlayback| {
+            let mut out = vec![[0.0; 2]; input.len()];
+            let mut max_slice = 0;
+            runtime
+                .render_with_live_track_audio(
+                    &mut out,
+                    LiveTrackAudio {
+                        track,
+                        frames: &input,
+                    },
+                    None,
+                    Some(&mut |_, _, _, frames| max_slice = max_slice.max(frames.len())),
+                    None,
+                    &mut hex_lattice::RefuseForeign,
+                )
+                .unwrap();
+            (out, max_slice)
+        };
+        let (actual, batch_size) = monitored(&mut batched);
+        let (expected, scalar_size) = monitored(&mut scalar);
+        assert_eq!(actual, expected);
+        assert!(batch_size > 1);
+        assert_eq!(scalar_size, 1);
+    }
     assert_eq!(batched.arrangement_frame, scalar.arrangement_frame);
     for runtime in [&mut batched, &mut scalar] {
         runtime.apply(SessionPlaybackCommand::Seek(61)).unwrap();
