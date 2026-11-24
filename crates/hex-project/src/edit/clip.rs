@@ -427,7 +427,8 @@ pub(crate) fn cuts_silent_tail(clip: &Clip, frame: u64) -> bool {
             .is_some_and(|offset| offset >= clip.source_length && offset < clip.duration)
 }
 
-/// Crop one retained interval through the existing typed split law.
+/// Retain the processed source within one interval. A legacy root fade belongs
+/// to the source read by section edits and grouping, including later repeats.
 pub(crate) fn retained_audio_fragment(
     victim: &Clip,
     start: u64,
@@ -443,6 +444,21 @@ pub(crate) fn retained_audio_fragment(
         return Err(Invalid(
             "retained audio interval is outside its source clip",
         ));
+    }
+    if victim.audio_edit().is_some_and(|edit| {
+        edit.domain.fade_clock == crate::AudioClipFadeClock::LegacyRoot
+            && !edit.domain.fade.is_neutral()
+    }) {
+        let mut fragment = if start > victim.start {
+            crate::audio_edit::trim_view(victim, crate::TrimEdge::Left, start, tempo)?
+        } else {
+            victim.clone()
+        };
+        if end < original_end {
+            fragment = crate::audio_edit::trim_view(&fragment, crate::TrimEdge::Right, end, tempo)?;
+        }
+        fragment.id = id;
+        return Ok(fragment);
     }
     // A raw one-shot can outlive its audible source. Its silent suffix cannot
     // be represented by advancing a raw source offset past that interval; crop
