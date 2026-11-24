@@ -17,7 +17,7 @@ pub fn decide(observed: Observation<'_>) -> Result<(), &'static str> {
     if observed.host != observed.target
         || !matches!(
             observed.target,
-            "x86_64-unknown-linux-gnu" | "aarch64-apple-darwin"
+            "x86_64-unknown-linux-gnu" | "aarch64-apple-darwin" | "x86_64-pc-windows-msvc"
         )
     {
         return Err("unsupported_or_cross_target");
@@ -55,7 +55,11 @@ mod tests {
     }
     #[test]
     fn ordinary_native_supported_and_every_unsupported_input_refuses() {
-        for target in ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"] {
+        for target in [
+            "x86_64-unknown-linux-gnu",
+            "aarch64-apple-darwin",
+            "x86_64-pc-windows-msvc",
+        ] {
             let metadata = format!("release: 1.94.0\ncommit-hash: {COMMIT}\nhost: {target}\n");
             assert!(check(&metadata, target, target, true, false).is_ok());
             assert!(check(&metadata, target, target, false, false).is_err());
