@@ -2,7 +2,7 @@
 //! not authored automation, a canonical edit, or final host audio acceptance.
 use super::*;
 use std::num::NonZeroU64;
-pub const MAX_PARAMETER_EDITS: usize = 8;
+pub const MAX_PARAMETER_EDITS: usize = 32;
 
 /// Effective editor input at frame zero of one successful SDK quantum.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -166,9 +166,9 @@ impl EditorRestorations {
     }
 }
 
-// Native main-thread FIFO plus the eight worker handoff slots. Completed
+// Native main-thread FIFO (256) plus the 32 worker handoff slots. Completed
 // receipts are tracked separately and do not count toward pending callbacks.
-const MAX_PENDING_PARAMETER_EDITS: u16 = 72;
+const MAX_PENDING_PARAMETER_EDITS: u16 = 288;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ParameterEditKind {
     #[default]

@@ -14,7 +14,7 @@
 namespace hex_instance {
 using namespace Steinberg;
 using namespace Steinberg::Vst;
-inline constexpr size_t HOST_MESSAGE_COUNT=16;
+inline constexpr size_t HOST_MESSAGE_COUNT=64;
 inline constexpr size_t HOST_ATTRIBUTE_COUNT=16;
 inline constexpr size_t HOST_IDENTIFIER_BYTES=64;
 inline constexpr size_t HOST_TEXT_UNITS=256;
@@ -35,6 +35,7 @@ template<typename Char> bool text_length(const Char* value,size_t maximum,size_t
 struct HostMessageDiagnostics {
     std::atomic<uint64_t> messages{0}, binary_attempts{0}, binary_writes{0}, binary_oversize{0};
     std::atomic<uint64_t> binary_reads{0}, binary_misses{0}, wrong_thread_reads{0};
+    std::atomic<uint64_t> pool_exhausted{0}, processing_thread_messages{0};
     std::atomic<uint32> max_binary_bytes{0};
 
     void note_binary_write_attempt(uint32 bytes) {

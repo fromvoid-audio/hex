@@ -60,14 +60,15 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
                 reached=true; changed.notify_all(); changed.wait(lock,[&] { return resume; });
                 if(e.scenario==13 || e.scenario==15) {
                     lock.unlock();e.edit_order=1;
+                    constexpr int wave_size=static_cast<int>(hex_instance::HOST_EDIT_COUNT);
                     for(int wave=0;wave<2;++wave) {
-                        for(int n=0;n<8;++n) {
+                        for(int n=0;n<wave_size;++n) {
                             hex_instance::EditEvent event{};
                             if(!instance.peek_parameter_edit(event)) {e.edit_order=0;continue;}
                             instance.consume_parameter_edit();++e.edit_count;
-                            const uint64 expected=2+static_cast<uint64>(wave*8+n);
-                            const uint32 kind=n==0?hex_instance::Begin:(n==7?hex_instance::End:hex_instance::Perform);
-                            if(event.sequence!=expected || event.gesture!=2+static_cast<uint64>(wave*8) ||
+                            const uint64 expected=2+static_cast<uint64>(wave*wave_size+n);
+                            const uint32 kind=n==0?hex_instance::Begin:(n==wave_size-1?hex_instance::End:hex_instance::Perform);
+                            if(event.sequence!=expected || event.gesture!=2+static_cast<uint64>(wave*wave_size) ||
                                 event.id!=static_cast<uint32>(wave?11:7) || event.kind!=kind ||
                                 (kind==hex_instance::Perform && event.normalized!=0.75)) e.edit_order=0;
                         }
@@ -103,13 +104,14 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
         background.join();
     }
     else if(e.scenario==13 || e.scenario==15) {
+        constexpr int wave_size=static_cast<int>(hex_instance::HOST_EDIT_COUNT);
         const auto wave=[&](uint32 id) {
             bool ok=edit(1,id,0)==kResultOk;
-            for(int n=0;n<6;++n) ok=edit(2,id,0.75)==kResultOk && ok;
+            for(int n=0;n<wave_size-2;++n) ok=edit(2,id,0.75)==kResultOk && ok;
             return edit(3,id,0)==kResultOk && ok;
         };
         e.callback=wave(7)?kResultOk:kResultFalse;
-        for(int n=0;n<8;++n) if(instance.dispatch_host_callbacks().disposition==hex_instance::HostDisposition::EditQueued) ++e.enqueued;
+        for(int n=0;n<wave_size;++n) if(instance.dispatch_host_callbacks().disposition==hex_instance::HostDisposition::EditQueued) ++e.enqueued;
         e.callback=wave(11) && e.callback==kResultOk?kResultOk:kResultFalse;
         if(e.scenario==15) {
             // The actual SDK controller has admitted two complete gestures.
@@ -119,12 +121,12 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
             e.message=instance.pending_parameter_edits();
         }
         const auto pending=instance.dispatch_host_callbacks();
-        e.edit_backpressure=pending.disposition==hex_instance::HostDisposition::Pending && pending.sequence==10;
+        e.edit_backpressure=pending.disposition==hex_instance::HostDisposition::Pending && pending.sequence==static_cast<uint64>(2+wave_size);
         {
             std::unique_lock<std::mutex> lock(mutex);resume=true;changed.notify_all();
             changed.wait(lock,[&]{return edits_drained;});
         }
-        for(int n=0;n<8;++n) if(instance.dispatch_host_callbacks().disposition==hex_instance::HostDisposition::EditQueued) ++e.enqueued;
+        for(int n=0;n<wave_size;++n) if(instance.dispatch_host_callbacks().disposition==hex_instance::HostDisposition::EditQueued) ++e.enqueued;
         {std::lock_guard<std::mutex> lock(mutex);second_ready=true;changed.notify_all();}
     }
     for (int n=0;n<8;++n) {
@@ -144,18 +146,19 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
     // Scenario zero exercises accepted, oversized, missing and off-lane
     // binary calls while PCM is active. Scenario 14 uses the disabled path.
     const bool diagnostics=e.scenario==0?
-        trace && trace->messages==18 && trace->binary_attempts==5 && trace->binary_writes==3 &&
+        trace && trace->messages==66 && trace->binary_attempts==5 && trace->binary_writes==3 &&
         trace->max_binary_bytes==32769 && trace->binary_oversize==1 && trace->binary_reads==3 &&
-        trace->binary_misses==1 && trace->wrong_thread_reads==3:
+        trace->binary_misses==1 && trace->wrong_thread_reads==3 && trace->pool_exhausted==1:
         trace && trace->messages==0 && trace->binary_attempts==0 && trace->binary_reads==0;
     e.closed=instance.close(); lifecycle_evidence.closed=e.closed;
     int observation[135]{};
     const int size=observe(observation,135);
     if (size>=7) e.violations=observation[0];
+    constexpr int expected_total_edits=static_cast<int>(hex_instance::HOST_EDIT_COUNT*2);
     return diagnostics && e.pcm && e.violations==0 &&
         ((e.scenario!=13 && e.scenario!=15) ||
-            (e.edit_count==16 && e.edit_order && e.edit_backpressure && e.enqueued==16 && e.callback==kResultOk)) &&
-        (e.scenario!=15 || (e.known && e.unknown==kResultFalse && e.message==16 && !e.refusals));
+            (e.edit_count==expected_total_edits && e.edit_order && e.edit_backpressure && e.enqueued==expected_total_edits && e.callback==kResultOk)) &&
+        (e.scenario!=15 || (e.known && e.unknown==kResultFalse && e.message==expected_total_edits && !e.refusals));
 }
 static void print_host() {
     const auto& e=host_evidence;

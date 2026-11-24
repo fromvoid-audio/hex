@@ -2,6 +2,7 @@
 use crate::prepared::*;
 
 pub struct Callback {
+    pub(in crate::prepared) host_callback_entry: Option<Instant>,
     pub(in crate::prepared) diagnostics: audio_diagnostics::TraceWriter,
     pub(in crate::prepared) action_writer: Option<action_outcomes::Writer>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -201,6 +202,7 @@ pub(crate) fn channel_with_interface(
         },
         Callback {
             diagnostics: trace_writer,
+            host_callback_entry: None,
             action_writer: None,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             native_sources: crate::candidate_custody::NativeEndpointBank::new().map_err(Invalid)?,

@@ -4,6 +4,7 @@
 #include "pluginterfaces/vst/ivsteditcontroller.h"
 #include "pluginterfaces/vst/ivsthostapplication.h"
 #include <CommonCrypto/CommonDigest.h>
+#include <os/log.h>
 #include <algorithm>
 #include <limits>
 #include <memory>
@@ -21,7 +22,7 @@ inline constexpr size_t HOST_FEEDBACK_COUNT=512;
 inline constexpr size_t HOST_RESTART_COUNT=8;
 // A single native editor event can synchronously report a group of gestures.
 // Reserve the burst on main without changing PCM handoff or receipt sizes.
-inline constexpr size_t HOST_REQUEST_COUNT=64;
+inline constexpr size_t HOST_REQUEST_COUNT=256;
 inline constexpr size_t HOST_PRIOR_STEP_COUNT=4;
 inline bool supports_authored_parameter_flags(int32 flags) {
     constexpr uint32 supported=ParameterInfo::kCanAutomate|ParameterInfo::kIsWrapAround|
@@ -140,7 +141,7 @@ struct ParameterFeedback {
         values[count++]=next;return true;
     }
 };
-inline constexpr size_t HOST_EDIT_COUNT=8;
+inline constexpr size_t HOST_EDIT_COUNT=32;
 enum EditKind : uint32 { Restart=0, Begin=1, Perform=2, End=3, GroupBegin=4, GroupEnd=5, GroupAborted=6 };
 inline bool is_group_marker(uint32 kind) { return kind>=GroupBegin && kind<=GroupAborted; }
 // sequence orders all main callbacks. gesture names the exact Begin sequence;
@@ -184,9 +185,9 @@ enum HostRefusal : uint32 { WrongThread=1, UnknownRestart=2, GraphControlRequire
 // that gesture. A standalone value can supersede another complete standalone
 // edit. Explicit gesture boundaries and restart records are never replaced.
 class Host final : public IHostApplication, public IComponentHandler, public IComponentHandler2 {
-    std::atomic<uint32> references{1}, refusals{0};
+    std::atomic<uint32> references{1}, refusals{0}, tolerated_diagnostics{0};
     HostMessageDiagnostics message_trace{};
-    std::array<HostMessage,HOST_MESSAGE_COUNT> messages{};
+    std::unique_ptr<std::array<HostMessage,HOST_MESSAGE_COUNT>> messages;
     std::array<EditEvent,HOST_REQUEST_COUNT> requests{};
     std::array<EditEvent,HOST_EDIT_COUNT> edits{};
     std::atomic<uint64> edits_read{0},edits_written{0};
@@ -278,13 +279,15 @@ class Host final : public IHostApplication, public IComponentHandler, public ICo
 public:
     static constexpr int32 supported_restarts=kParamValuesChanged|kParamTitlesChanged;
     explicit Host(bool trace_messages=false,bool editor_groups=false)
-        : advertises_editor_groups(editor_groups) {
-        for (auto& message:messages)
+        : messages(new(std::nothrow) std::array<HostMessage,HOST_MESSAGE_COUNT>{}),
+          advertises_editor_groups(editor_groups) {
+        if (messages) for (auto& message:*messages)
             message.bind(static_cast<IHostApplication*>(this),trace_messages?&message_trace:nullptr);
     }
     const HostMessageDiagnostics& message_diagnostics() const { return message_trace; }
     uint32 reference_count() const { return references.load(); }
     uint32 refusal_flags() const { return refusals.load(); }
+    uint32 tolerated_flags() const { return tolerated_diagnostics.load(std::memory_order_relaxed); }
     // Do not invent an End or split an atomic group. The caller retains the
     // original source if closing the editor leaves an open gesture/cohort.
     // Normal dispatch, feedback and latency observations stay live.
@@ -380,23 +383,25 @@ public:
     tresult PLUGIN_API createInstance(TUID cid,TUID iid,void** out) override {
         if (!out) return kInvalidArgument;
         *out=nullptr;
-        const bool message=same(cid,INLINE_UID_OF(IMessage)) && same(iid,INLINE_UID_OF(IMessage));
-        if (![NSThread isMainThread]) {
-            const auto processing=processing_thread.load(std::memory_order_acquire);
-            if(!message || (processing && pthread_equal(processing,pthread_self()))) {
-                refuse(WrongThread); return kResultFalse;
-            }
-        }
-        if (!accepting) { refuse(Retiring); return kResultFalse; }
         if (!cid || !iid) return kInvalidArgument;
+        const bool message=same(cid,INLINE_UID_OF(IMessage)) && same(iid,INLINE_UID_OF(IMessage));
         const bool attributes=same(cid,INLINE_UID_OF(IAttributeList)) && same(iid,INLINE_UID_OF(IAttributeList));
         if (!message && !attributes) return kNoInterface;
-        for (auto& slot:messages) if (slot.acquire(attributes)) {
+        if (!accepting) return kResultFalse;
+        if (![NSThread isMainThread]) {
+            const auto processing=processing_thread.load(std::memory_order_acquire);
+            if (processing && pthread_equal(processing,pthread_self())) {
+                message_trace.processing_thread_messages.fetch_add(1,std::memory_order_relaxed);
+            }
+        }
+        if (messages) for (auto& slot:*messages) if (slot.acquire(attributes)) {
             *out=attributes?static_cast<void*>(static_cast<IAttributeList*>(&slot)):
                             static_cast<void*>(static_cast<IMessage*>(&slot));
             return kResultOk;
         }
-        refuse(MessagePoolFull); return kOutOfMemory;
+        message_trace.pool_exhausted.fetch_add(1,std::memory_order_relaxed);
+        tolerated_diagnostics.fetch_or(MessagePoolFull,std::memory_order_relaxed);
+        return kOutOfMemory;
     }
     tresult PLUGIN_API beginEdit(ParamID id) override { return admit_grouped_edit(id,Begin,0); }
     tresult PLUGIN_API performEdit(ParamID id,ParamValue value) override { return admit_grouped_edit(id,Perform,value); }
@@ -563,12 +568,16 @@ private:
     tresult admit_standalone_edit(ParameterSnapshot::Parameter& info,ParamValue value) {
         constexpr size_t records=3;
         if(sequence>std::numeric_limits<uint64>::max()-records-(cohort?1:0)) {
-            refuse_editor_edit(QueueFull);return kResultFalse;
+            tolerated_diagnostics.fetch_or(QueueFull,std::memory_order_relaxed);
+            return kResultFalse;
         }
         // Some controllers send a valid value without beginEdit. Present it
         // as a complete one-shot gesture to the existing DSP/receipt path.
         const auto id=info.info.id;
-        if(!cohort_room(records) || !track_cohort_value(info)) {refuse_editor_edit(QueueFull);return kResultFalse;}
+        if(!cohort_room(records) || !track_cohort_value(info)) {
+            tolerated_diagnostics.fetch_or(QueueFull,std::memory_order_relaxed);
+            return kResultFalse;
+        }
         const bool has_room=make_edit_room(records);
         if(!has_room && !replace_standalone_edit(id)) return kResultFalse;
         const auto gesture=sequence+1;
@@ -585,30 +594,49 @@ private:
     }
     tresult admit_edit(ParamID id,uint32 kind,ParamValue value) {
         if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
-        if(!accepting) {refuse(Retiring);return kResultFalse;}
+        if(!accepting) return kResultFalse;
         if(editor_admission_closed() && !applying_saved_state) return kResultFalse;
         if(dispatching) {recursive=true;refuse(RecursiveRestart);return kResultFalse;}
-        const bool valid_value=kind!=Perform || (std::isfinite(value) && value>=0 && value<=1);
-        if(applying_saved_state && id<=0x7FFFFFFFu && valid_value) return kResultOk;
+        if(kind==Perform) {
+            if(!std::isfinite(value)) {
+                tolerated_diagnostics.fetch_or(InvalidEdit|InvalidEditValue,std::memory_order_relaxed);
+                return kInvalidArgument;
+            }
+            value=std::clamp(value,0.0,1.0);
+        }
+        if(applying_saved_state && id<=0x7FFFFFFFu) return kResultOk;
         if(editor_admission_closed()) return kResultFalse;
         ParameterSnapshot::Parameter* info=nullptr;
-        for(uint32 n=0;n<metadata.count;++n) if(metadata.parameters[n].info.id==id) info=&metadata.parameters[n];
-        if(!info) {refuse_editor_edit(InvalidEdit|UnknownEditParameter);return kInvalidArgument;}
-        if(kind!=End && (info->info.flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden))) {
-            refuse_editor_edit(InvalidEdit|ReadOnlyEditParameter);return kInvalidArgument;
+        if(const auto found=metadata.index_for_id(id)) info=&metadata.parameters[*found];
+        // Commercial VST3s routinely emit beginEdit/performEdit/endEdit for
+        // internal, hidden, or read-only UI parameters. Tolerate them as
+        // benign no-ops without latching a fatal HostRefusal.
+        if(!info) {
+            tolerated_diagnostics.fetch_or(UnknownEditParameter,std::memory_order_relaxed);
+            return kResultOk;
         }
-        if(!valid_value) {refuse_editor_edit(InvalidEdit|InvalidEditValue);return kInvalidArgument;}
+        if(info->info.flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden)) {
+            tolerated_diagnostics.fetch_or(ReadOnlyEditParameter,std::memory_order_relaxed);
+            return kResultOk;
+        }
         size_t active=active_tokens.size(),vacant=active_tokens.size();
         for(size_t n=0;n<active_tokens.size();++n) {
             if(active_tokens[n] && active_ids[n]==id) active=n;
             if(!active_tokens[n]) vacant=n;
         }
-        if(kind==Begin && active!=active_tokens.size()) {refuse_editor_edit(InvalidEdit|DuplicateEditBegin);return kResultFalse;}
+        if(kind==Begin && active!=active_tokens.size()) {
+            tolerated_diagnostics.fetch_or(DuplicateEditBegin,std::memory_order_relaxed);
+            return kResultOk;
+        }
         if(kind!=Begin && active==active_tokens.size()) {
             if(kind==Perform) return admit_standalone_edit(*info,value);
-            refuse_editor_edit(InvalidEdit|MissingEndBegin);return kResultFalse;
+            tolerated_diagnostics.fetch_or(MissingEndBegin,std::memory_order_relaxed);
+            return kResultOk;
         }
-        if(sequence>=std::numeric_limits<uint64>::max()-(cohort?1:0)) {refuse_editor_edit(QueueFull);return kResultFalse;}
+        if(sequence>=std::numeric_limits<uint64>::max()-(cohort?1:0)) {
+            tolerated_diagnostics.fetch_or(QueueFull,std::memory_order_relaxed);
+            return kResultFalse;
+        }
         const auto next=sequence+1;
         const auto gesture=kind==Begin?next:active_tokens[active];
         const bool grouped=kind==Begin?cohort!=0:active_grouped[active];
@@ -616,11 +644,26 @@ private:
         // Reserve one slot for each admitted gesture's End. A new Begin
         // consumes a record and adds a reservation. End spends its own.
         const auto available=requests.size()-count-end_reservations();
-        if(kind!=Begin && !remember_cohort_gesture(gesture)) {refuse_editor_edit(QueueFull);return kResultFalse;}
-        if(kind==Begin && (vacant==active_tokens.size() || !make_edit_room(2))) return kResultFalse;
-        if(kind!=Perform && !cohort_room(1)) {refuse_editor_edit(QueueFull);return kResultFalse;}
-        if(kind==Begin && !remember_cohort_gesture(gesture)) {refuse_editor_edit(QueueFull);return kResultFalse;}
-        if(kind==Perform && !track_cohort_value(*info)) {refuse_editor_edit(QueueFull);return kResultFalse;}
+        if(kind!=Begin && !remember_cohort_gesture(gesture)) {
+            tolerated_diagnostics.fetch_or(QueueFull,std::memory_order_relaxed);
+            return kResultFalse;
+        }
+        if(kind==Begin && (vacant==active_tokens.size() || !make_edit_room(2))) {
+            tolerated_diagnostics.fetch_or(QueueFull,std::memory_order_relaxed);
+            return kResultFalse;
+        }
+        if(kind!=Perform && !cohort_room(1)) {
+            tolerated_diagnostics.fetch_or(QueueFull,std::memory_order_relaxed);
+            return kResultFalse;
+        }
+        if(kind==Begin && !remember_cohort_gesture(gesture)) {
+            tolerated_diagnostics.fetch_or(QueueFull,std::memory_order_relaxed);
+            return kResultFalse;
+        }
+        if(kind==Perform && !track_cohort_value(*info)) {
+            tolerated_diagnostics.fetch_or(QueueFull,std::memory_order_relaxed);
+            return kResultFalse;
+        }
         if(kind==Perform && (!available || !cohort_room(1))) {
             if(replace_queued_perform(event)) {
                 info->editor_sequence=next;
@@ -629,7 +672,10 @@ private:
                 editor_admission_sequence.store(next,std::memory_order_release);
                 return kResultOk;
             }
-            if(!cohort_room(1) || !make_edit_room(1)) {refuse_editor_edit(QueueFull);return kResultFalse;}
+            if(!cohort_room(1) || !make_edit_room(1)) {
+                tolerated_diagnostics.fetch_or(QueueFull,std::memory_order_relaxed);
+                return kResultFalse;
+            }
         }
         requests[(first+count)%requests.size()]=event;
         ++count;sequence=next;pending_edits.fetch_add(1,std::memory_order_release);
@@ -651,11 +697,11 @@ private:
 public:
     tresult PLUGIN_API restartComponent(int32 flags) override {
         if (![NSThread isMainThread]) { refuse(WrongThread); return kResultFalse; }
-        if (!accepting) { refuse(Retiring); return kResultFalse; }
+        if (!accepting) return kResultFalse;
         const bool latency_enabled=observes_latency_restarts.load(std::memory_order_acquire);
         // A setter may report changed latency while applying host feedback.
         // This records intent only. Metadata getter recursion still refuses.
-        if (dispatching && !(applying_feedback && latency_enabled && (flags & kLatencyChanged))) {
+        if (dispatching && !(applying_feedback && (flags & kLatencyChanged))) {
             recursive=true; refuse(RecursiveRestart); return kResultFalse;
         }
         const uint32 bits=static_cast<uint32>(flags);
@@ -666,38 +712,83 @@ public:
         if (applying_saved_state) flags &= ~kParamIDMappingChanged;
         if (!flags) return kResultOk;
         if(cohort) {
-            poison_cohort();refuse(UnsupportedCapability);return kResultFalse;
+            poison_cohort();
+            tolerated_diagnostics.fetch_or(UnsupportedCapability,std::memory_order_relaxed);
+            return kResultFalse;
         }
-        // Hex does not implement VST3 IMidiMapping; treat kMidiCCAssignmentChanged
-        // as nonterminal without raising a sticky HostRefusal, while preserving
-        // combined supported refresh bits and graph-sensitive restart checks.
-        const bool midi_cc_mapping=(flags & kMidiCCAssignmentChanged)!=0;
-        flags &= ~kMidiCCAssignmentChanged;
-        if (!flags) return midi_cc_mapping?kNotImplemented:kResultOk;
-        const auto supported=supported_restarts |
-            (latency_enabled?kLatencyChanged:0);
-        if (flags & ~supported) {
-            constexpr int32 graph=kReloadComponent|kIoChanged|kLatencyChanged|kPrefetchableSupportChanged|
-                                  kRoutingInfoChanged|kParamIDMappingChanged;
-            refuse(flags & graph?GraphControlRequired:UnsupportedCapability);
-            return kNotImplemented;
+        // Benign commercial VST3 capability notifications that Hex does not
+        // track directly never latch a fatal HostRefusal.
+        constexpr int32 benign_ignored=kMidiCCAssignmentChanged|kPrefetchableSupportChanged|
+                                       kRoutingInfoChanged|kNoteExpressionChanged;
+        const int32 ignored_bits=flags & benign_ignored;
+        flags &= ~benign_ignored;
+        if (ignored_bits) {
+            tolerated_diagnostics.fetch_or(UnsupportedCapability,std::memory_order_relaxed);
+            static const auto log=os_log_create("org.portalsurfer.hex.vst3","host");
+            os_log(log,"vst3 restartComponent ignoring benign flags=0x%x",static_cast<unsigned>(ignored_bits));
+        }
+        // Commercial VST3s emit structural restart flags during preset loads,
+        // oversampling toggles, and mode switches. Schedule a controlled
+        // parameter resync and log diagnostics instead of killing the helper.
+        constexpr int32 structural_flags=kReloadComponent|kIoChanged|kParamIDMappingChanged;
+        const int32 structural_bits=flags & structural_flags;
+        flags &= ~structural_flags;
+        if (structural_bits) {
+            tolerated_diagnostics.fetch_or(GraphControlRequired,std::memory_order_relaxed);
+            static const auto log=os_log_create("org.portalsurfer.hex.vst3","host");
+            os_log(log,"vst3 restartComponent structural flags=0x%x; scheduling parameter resync",
+                static_cast<unsigned>(structural_bits));
+            flags |= kParamValuesChanged|kParamTitlesChanged;
+        }
+        const bool latency_changed=(flags & kLatencyChanged)!=0;
+        flags &= ~kLatencyChanged;
+        if (latency_changed && !latency_enabled) {
+            tolerated_diagnostics.fetch_or(GraphControlRequired,std::memory_order_relaxed);
+            static const auto log=os_log_create("org.portalsurfer.hex.vst3","host");
+            os_log(log,"vst3 restartComponent startup kLatencyChanged tolerated");
         }
         const auto refresh=flags & supported_restarts;
-        if ((refresh && (count+end_reservations()==requests.size() || restart_count==HOST_RESTART_COUNT)) ||
-            sequence>=std::numeric_limits<uint64>::max()-(cohort?1:0)) {
-            refuse(QueueFull); return kResultFalse;
+        const int32 unhandled=flags & ~supported_restarts;
+        if (unhandled) {
+            tolerated_diagnostics.fetch_or(UnsupportedCapability,std::memory_order_relaxed);
+        }
+        if (!refresh && !latency_changed) {
+            return (ignored_bits || unhandled)?kNotImplemented:kResultOk;
+        }
+        if (sequence>=std::numeric_limits<uint64>::max()-(cohort?1:0)) {
+            tolerated_diagnostics.fetch_or(QueueFull,std::memory_order_relaxed);
+            return kResultFalse;
         }
         const auto ordinal=++sequence;
         if(refresh) {
-            requests[(first+count)%requests.size()]={ordinal,0,0,static_cast<ParamID>(refresh),Restart};
-            ++count;++restart_count;
+            if (count+end_reservations()>=requests.size() || restart_count>=HOST_RESTART_COUNT) {
+                // Coalesce burst restart notifications into the newest queued
+                // Restart record instead of dropping or killing the helper.
+                bool coalesced=false;
+                for (size_t n=count;n>0;--n) {
+                    auto& existing=requests[(first+n-1)%requests.size()];
+                    if (existing.kind==Restart) {
+                        existing.id |= static_cast<ParamID>(refresh);
+                        existing.sequence=ordinal;
+                        coalesced=true;
+                        break;
+                    }
+                }
+                if (!coalesced) {
+                    tolerated_diagnostics.fetch_or(QueueFull,std::memory_order_relaxed);
+                    return kResultFalse;
+                }
+            } else {
+                requests[(first+count)%requests.size()]={ordinal,0,0,static_cast<ParamID>(refresh),Restart};
+                ++count;++restart_count;
+            }
             if(refresh & kParamValuesChanged) {
                 value_restart_floor=ordinal;
                 value_restart_frontier.store(ordinal,std::memory_order_release);
                 editor_frontier.store(ordinal,std::memory_order_release);
             }
         }
-        if(flags & kLatencyChanged) pending_latency_restart.store(ordinal,std::memory_order_release);
+        if(latency_changed && latency_enabled) pending_latency_restart.store(ordinal,std::memory_order_release);
         return kResultOk;
     }
     // At most one request and HOST_PARAMETER_COUNT value reads per call.
@@ -760,10 +851,10 @@ private:
         for(uint32 n=0;n<metadata.count;++n) {
             const auto value=controller.getParamNormalized(metadata.parameters[n].info.id);
             if(recursive) {result.disposition=HostDisposition::Recursive;return result;}
-            if(!std::isfinite(value) || value<0 || value>1) {
+            if(!std::isfinite(value)) {
                 refuse(InvalidMetadata);result.disposition=HostDisposition::InvalidMetadata;return result;
             }
-            values[n]=value;
+            values[n]=std::clamp(value,0.0,1.0);
         }
         for(uint32 n=0;n<metadata.count;++n) metadata.parameters[n].value=values[n];
         result.metadata_revision=++metadata.revision;
@@ -811,15 +902,20 @@ private:
                 info.defaultNormalizedValue=0;
                 info.flags|=ParameterInfo::kIsHidden|ParameterInfo::kIsReadOnly;
             }
+            // Commercial VST3s routinely expose kIsHidden without kIsReadOnly,
+            // or combine kIsReadOnly with kCanAutomate. Normalize read-only
+            // parameters to non-automatable and accept hidden parameters
+            // without killing the helper.
+            if(info.flags&ParameterInfo::kIsReadOnly) info.flags&=~ParameterInfo::kCanAutomate;
+            if(std::isfinite(info.defaultNormalizedValue))
+                info.defaultNormalizedValue=std::clamp(info.defaultNormalizedValue,0.0,1.0);
             valid=valid_text(info.title) && valid_text(info.shortTitle) && valid_text(info.units) &&
-                  info.id<=0x7FFFFFFFu && info.stepCount>=0 && std::isfinite(info.defaultNormalizedValue) &&
-                  info.defaultNormalizedValue>=0 && info.defaultNormalizedValue<=1;
-            valid=valid && !((info.flags&ParameterInfo::kIsReadOnly) && (info.flags&ParameterInfo::kCanAutomate)) &&
-                (!(info.flags&ParameterInfo::kIsHidden) || (info.flags&ParameterInfo::kIsReadOnly));
+                  info.id<=0x7FFFFFFFu && info.stepCount>=0 && std::isfinite(info.defaultNormalizedValue);
             if(info.flags&ParameterInfo::kIsBypass) staged.by_id[bypass_count++]=i;
             if (valid) {
-                parameter.value=controller->getParamNormalized(info.id);
-                valid=std::isfinite(parameter.value) && parameter.value>=0 && parameter.value<=1;
+                const auto raw_value=controller->getParamNormalized(info.id);
+                valid=std::isfinite(raw_value);
+                if (valid) parameter.value=std::clamp(raw_value,0.0,1.0);
             }
         }
         if (metadata.revision && staged.count!=metadata.count) valid=false;
@@ -947,14 +1043,22 @@ public:
                 applying_feedback=true;
                 const auto updated=controller->setParamNormalized(value.id,value.normalized);
                 applying_feedback=false;
-                if(updated!=kResultOk) {refuse(FeedbackSetterRefused);return false;}
+                if(updated!=kResultOk) {
+                    tolerated_diagnostics.fetch_or(FeedbackSetterRefused,std::memory_order_relaxed);
+                    if(updated!=kResultFalse && updated!=kNotImplemented) {
+                        static const auto log=os_log_create("org.portalsurfer.hex.vst3","host");
+                        os_log(log,"vst3 setParamNormalized id=%u returned %d",
+                            static_cast<unsigned>(value.id),static_cast<int>(updated));
+                    }
+                }
                 normalized=controller->getParamNormalized(value.id);
             }
-            if(!std::isfinite(normalized) || normalized<0 || normalized>1) {
-                refuse(FeedbackValueInvalid);return false;
-            }
             if(recursive) return false;
-            observations[observed++]={index,normalized};
+            if(!std::isfinite(normalized)) {
+                tolerated_diagnostics.fetch_or(FeedbackValueInvalid,std::memory_order_relaxed);
+                continue;
+            }
+            observations[observed++]={index,std::clamp(normalized,0.0,1.0)};
         }
         for(uint32 n=0;n<observed;++n)
             metadata.parameters[observations[n].index].value=observations[n].normalized;
@@ -992,9 +1096,10 @@ public:
         active_tokens.fill(0);pending_edits.store(0,std::memory_order_release);
     }
 };
-// Include retained large attributes plus one replacement allocation in each
-// concurrently leased message. The small message pool is inline in Host.
-static_assert(sizeof(Host)+2*HOST_MESSAGE_COUNT*HOST_BINARY_BYTES+
-    2*HOST_PARAMETER_COUNT*sizeof(ParameterSnapshot::Parameter)<16*1024*1024,
-    "native host, binary attributes and both inventories stay below sixteen MiB");
+// Include the bounded message pool, retained large attributes plus one
+// replacement allocation in each concurrently leased message, and both inventories.
+static_assert(sizeof(Host)+HOST_MESSAGE_COUNT*sizeof(HostMessage)+
+    2*HOST_MESSAGE_COUNT*HOST_BINARY_BYTES+
+    2*HOST_PARAMETER_COUNT*sizeof(ParameterSnapshot::Parameter)<24*1024*1024,
+    "native host, message pool, binary attributes and both inventories stay below twenty-four MiB");
 } // namespace hex_instance

@@ -11,14 +11,18 @@ fn audio_diagnostics_preserve_pcm_commands_and_callback_bounds_when_full() {
             .unwrap();
         control.command(PlaybackCommand::Play).unwrap();
         let mut pcm = vec![[0.0; 2]; 512];
+        let host_entry = Instant::now();
         let measured = allocation_counter::measure(|| {
-            callback.begin_block();
-            callback.render(&mut pcm).unwrap();
-            // Deliberately stop draining: trace pressure must never delay
-            // music/Stop or allocate/free, even beyond the ring capacity.
-            for _ in 0..audio_diagnostics::TRACE_CAPACITY + 10 {
-                callback.trace_callback_timing(100, 1_000, 512, Some(1_200));
-            }
+            callback.with_host_callback_entry(host_entry, |callback| {
+                for chunk in pcm.chunks_mut(256) {
+                    callback.begin_block();
+                    callback.render(chunk).unwrap();
+                }
+                // Trace pressure must never delay music/Stop or allocate/free.
+                for _ in 0..audio_diagnostics::TRACE_CAPACITY + 10 {
+                    callback.trace_callback_timing(100, 1_000, 512, Some(1_200));
+                }
+            });
         });
         assert_eq!(
             (
@@ -35,6 +39,11 @@ fn audio_diagnostics_preserve_pcm_commands_and_callback_bounds_when_full() {
             assert!(control.status.audio_diagnostics_dropped() > 0);
             let events: Vec<_> = std::iter::from_fn(|| control.take_audio_diagnostic()).collect();
             assert_eq!(events.len(), audio_diagnostics::TRACE_CAPACITY);
+            assert!(
+                events
+                    .iter()
+                    .all(|e| e.host_callback_entry == Some(host_entry))
+            );
             assert!(
                 events
                     .windows(2)
@@ -77,8 +86,12 @@ fn audio_diagnostics_preserve_pcm_commands_and_callback_bounds_when_full() {
         );
         assert!(!control.status.playing.load(Acquire));
         assert!(
-            std::iter::from_fn(|| control.take_audio_diagnostic())
-                .any(|event| matches!(event.kind, AudioDiagnosticKind::PriorityStop { .. }))
+            std::iter::from_fn(|| control.take_audio_diagnostic()).any(|event| matches!(
+                event.kind,
+                AudioDiagnosticKind::PriorityStop { .. }
+            ) && event
+                .host_callback_entry
+                .is_none())
         );
 
         control.request_shutdown();

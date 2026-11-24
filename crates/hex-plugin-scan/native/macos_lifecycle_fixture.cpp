@@ -146,7 +146,8 @@ public:
                 TUID id{}; std::memcpy(id,INLINE_UID_OF(IMessage),sizeof(TUID));
                 IMessage* message=nullptr;
                 processing_message_result=app->createInstance(id,id,reinterpret_cast<void**>(&message));
-                if (message) { ++observation.violations; message->release(); }
+                if (!message) ++observation.violations;
+                else message->release();
                 app->release();
             }
         }
@@ -370,7 +371,7 @@ extern "C" __attribute__((visibility("default"))) int HexHostMessages(int retain
         ok=ok && wrong_thread_refused;
         message->release();
     }
-    std::array<IMessage*,16> live{};
+    std::array<IMessage*,64> live{};
     for (auto& item:live) ok=(host->createInstance(message_id,message_id,reinterpret_cast<void**>(&item))==kResultOk && item) && ok;
     IMessage* excess=nullptr;
     ok=host->createInstance(message_id,message_id,reinterpret_cast<void**>(&excess))!=kResultOk && !excess && ok;

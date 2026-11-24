@@ -745,4 +745,58 @@ int main() {
         host.invalidate();
         [window release];
     }
+    // EditorWindow::close() tolerates view->removed() != kResultOk and
+    // view->setFrame(nullptr) != kResultOk without quarantining or failing.
+    {
+        class NonOkCloseView final : public IPlugView {
+            std::atomic<uint32> refs{1};
+            tresult removed_result;
+        public:
+            int removed_calls=0, unset_frame_calls=0;
+            explicit NonOkCloseView(tresult result):removed_result(result) {}
+            tresult PLUGIN_API queryInterface(const TUID,void** out) override {
+                if(out) *out=nullptr;
+                return kNoInterface;
+            }
+            uint32 PLUGIN_API addRef() override { return ++refs; }
+            uint32 PLUGIN_API release() override {
+                const auto left=--refs;
+                if(!left) delete this;
+                return left;
+            }
+            tresult PLUGIN_API isPlatformTypeSupported(FIDString type) override {
+                return type && !std::strcmp(type,kPlatformTypeNSView)?kResultOk:kResultFalse;
+            }
+            tresult PLUGIN_API attached(void*,FIDString) override { return kResultOk; }
+            tresult PLUGIN_API removed() override { ++removed_calls; return removed_result; }
+            tresult PLUGIN_API onWheel(float) override { return kNotImplemented; }
+            tresult PLUGIN_API onKeyDown(char16,int16,int16) override { return kResultFalse; }
+            tresult PLUGIN_API onKeyUp(char16,int16,int16) override { return kResultFalse; }
+            tresult PLUGIN_API getSize(ViewRect* rect) override {
+                if(!rect) return kInvalidArgument;
+                *rect=ViewRect(0,0,320,200);
+                return kResultOk;
+            }
+            tresult PLUGIN_API onFocus(TBool) override { return kResultOk; }
+            tresult PLUGIN_API setFrame(IPlugFrame* f) override {
+                if(!f) { ++unset_frame_calls; return kNotImplemented; }
+                return kResultOk;
+            }
+            tresult PLUGIN_API canResize() override { return kResultFalse; }
+            tresult PLUGIN_API checkSizeConstraint(ViewRect*) override { return kResultFalse; }
+            tresult PLUGIN_API onSize(ViewRect*) override { return kResultOk; }
+        };
+        for(tresult result : {kResultFalse, kNotImplemented}) {
+            EditorWindow editor(0);
+            auto* view=new NonOkCloseView(result);
+            view->addRef(); // keep test handle alive to inspect counters
+            const auto opened=editor.open(view,false);
+            assert(opened && *opened==EditorState::Open);
+            assert(editor.close());
+            assert(!editor.is_open());
+            assert(view->removed_calls==1);
+            assert(view->unset_frame_calls==1);
+            view->release();
+        }
+    }
 }

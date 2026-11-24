@@ -135,6 +135,8 @@ impl AudioDiagnosticKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioDiagnosticEvent {
     pub sequence: u64,
+    /// Entry of the enclosing native host callback. Headless events have no entry.
+    pub host_callback_entry: Option<std::time::Instant>,
     pub output: u64,
     pub revision: u64,
     pub context: Option<AudioSourceContext>,
@@ -213,6 +215,7 @@ mod tests {
         let dropped = AtomicU64::new(0);
         let cause = PlaybackHandoffError::RuntimeFenceChanged;
         let event = AudioDiagnosticEvent {
+            host_callback_entry: None,
             sequence: 0,
             output: 7,
             revision: 315,
