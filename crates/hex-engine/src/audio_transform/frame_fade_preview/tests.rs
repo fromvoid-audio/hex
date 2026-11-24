@@ -156,7 +156,7 @@ fn grouped_frame_queries_track_sparse_and_cropped_reflected_repeat_pcm() {
 
     let context = AudioTransformPreparation::default();
     for directed in [false, true] {
-        let (group, uncropped_tail) = if directed {
+        let (group, expected_tail) = if directed {
             for command in [
                 Command::ResizeAudioClipView {
                     clip: group,
@@ -168,7 +168,28 @@ fn grouped_frame_queries_track_sparse_and_cropped_reflected_repeat_pcm() {
             ] {
                 editor.execute(command).unwrap();
             }
-            let pcm = render(&prepare(&editor, &media, &context), 73, 19_800 - 73, 127);
+            // Render the reflected group without its two outer gain stages.
+            // The retained right clip has a neutral cut edge and its original
+            // 191-frame fade-out at the far corner.
+            let group_gain = editor.project().clip(group).unwrap().gain().linear();
+            let mut dry = Editor::new(editor.project().clone(), 1).unwrap();
+            dry.execute(Command::SetClipFades {
+                clip: group,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+            dry.execute(Command::SetAudioClipGain {
+                clip: group,
+                millidb: 0,
+            })
+            .unwrap();
+            let fade = ClipFade::new(19_800 - 73, 0, 0, 191).unwrap();
+            let mut pcm = render(&prepare(&dry, &media, &context), 73, 19_800 - 73, 137);
+            for (offset, frame) in pcm.iter_mut().enumerate() {
+                let gain = fade.gain_at(offset as u64);
+                *frame = frame.map(|sample| sample * gain * group_gain);
+            }
             let Created::Clip(tail) = editor
                 .execute(Command::SplitClip {
                     clip: group,
@@ -198,8 +219,10 @@ fn grouped_frame_queries_track_sparse_and_cropped_reflected_repeat_pcm() {
         assert_eq!(view.sparse.is_some(), !directed);
         let sources = view.event_sources.as_ref().unwrap();
         let pcm = render(&prepared, clip.start(), clip.duration() as usize, 127);
-        if let Some(uncropped_tail) = uncropped_tail {
-            assert_eq!(pcm, uncropped_tail);
+        if let Some(expected_tail) = expected_tail {
+            for (offset, (actual, expected)) in pcm.iter().zip(expected_tail).enumerate() {
+                assert_eq!(*actual, expected, "cropped reflected group at {offset}");
+            }
         }
         let mut saw_silence = false;
         let mut heard = [false; 2];
