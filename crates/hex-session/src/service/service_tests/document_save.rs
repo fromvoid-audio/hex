@@ -422,6 +422,11 @@ fn save_and_export_barriers_finalize_latest_parameter_value() {
         .expect("save baseline");
     let saved = next_event(&service);
     assert!(saved.error.is_none());
+    service
+        .submit(Request::Edit(Command::ToggleMute(track)))
+        .unwrap();
+    let committed = next_event(&service);
+    assert!(committed.state.unsaved && committed.error.is_none());
     let key = GestureKey {
         generation: 0,
         token: 1,
@@ -448,7 +453,7 @@ fn save_and_export_barriers_finalize_latest_parameter_value() {
     let stale = SaveCorrelation {
         request_id: 1,
         project_generation: 0,
-        revision: saved.state.revision + 1,
+        revision: committed.state.revision + 1,
     };
     service
         .submit_correlated_save(Request::SaveCurrent, stale)
@@ -458,14 +463,48 @@ fn save_and_export_barriers_finalize_latest_parameter_value() {
     assert_eq!(refused.save_correlation, Some(stale));
     assert!(!refused.gesture_protocol_ack);
     assert!(refused.active_device_gesture.is_some());
-    assert_eq!(refused.state.revision, saved.state.revision);
+    assert_eq!(refused.state.revision, committed.state.revision);
+    assert_eq!(std::fs::read(&path).unwrap(), prior_file);
+    let copy_to = |destination, revision, sequence| {
+        let (reply, receipt) = std::sync::mpsc::sync_channel(1);
+        service
+            .submit(Request::SaveCommittedParameterCopy {
+                path: destination,
+                revision,
+                key,
+                sequence,
+                reply,
+            })
+            .unwrap();
+        let event = next_event(&service);
+        assert!(!event.save_complete && !event.gesture_protocol_ack && event.state.unsaved);
+        assert_eq!(event.active_device_gesture, refused.active_device_gesture);
+        assert_eq!(event.state.project, committed.state.project);
+        assert_eq!(event.state.revision, committed.state.revision);
+        assert_eq!(event.state.document_path, saved.state.document_path);
+        assert_eq!(
+            (event.state.can_undo, event.state.can_redo),
+            (committed.state.can_undo, committed.state.can_redo)
+        );
+        let result = receipt.try_recv().unwrap();
+        assert_eq!(result.as_ref().err(), event.error.as_ref());
+        result
+    };
+    let destination = directory.0.join("committed.hex");
+    assert!(copy_to(destination.clone(), committed.state.revision + 1, 1).is_err());
+    assert!(copy_to(destination.clone(), committed.state.revision, 2).is_err());
+    assert!(!destination.exists() && !directory.0.join("committed").exists());
+    assert!(copy_to(path.clone(), committed.state.revision, 1).is_err());
+    let copy = copy_to(destination.clone(), committed.state.revision, 1).unwrap();
+    assert_eq!(hex_storage::load(&copy).unwrap(), *committed.state.project);
+    assert!(copy_to(copy.clone(), committed.state.revision, 1).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), prior_file);
     service.submit(Request::SaveCurrent).expect("save barrier");
     let saved_gesture = next_event(&service);
     assert!(saved_gesture.error.is_none());
     assert!(saved_gesture.save_complete);
     assert!(saved_gesture.gesture_protocol_ack);
-    assert_eq!(saved_gesture.state.revision, saved.state.revision + 1);
+    assert_eq!(saved_gesture.state.revision, committed.state.revision + 1);
     assert!(!saved_gesture.state.unsaved);
     service
         .submit(Request::Open(path.clone()))

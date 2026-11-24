@@ -361,6 +361,64 @@ fn save_capture_refusal_preserves_existing_file_dirty_state_and_new_destination(
     service.submit(Request::SaveNew(new.clone())).unwrap();
     assert!(event(&service).error.is_some());
     assert!(!new.exists());
+    // A committed copy must consult the same capture owner even when the
+    // identified built-in preview itself needs no vendor bytes.
+    service
+        .submit(Request::AddNativeDevice {
+            track: authored.state.project.tracks()[0].id(),
+            class: hex_engine::NativeDeviceClass::Effect,
+            type_id: Box::new(hex_lattice_contract::DeviceTypeId::new("hex.utility").unwrap()),
+            before: None,
+        })
+        .unwrap();
+    let added = event(&service);
+    assert!(added.error.is_none(), "{:?}", added.error);
+    let device = added.state.project.tracks()[0].devices()[0].id();
+    let key = crate::device_gesture::GestureKey {
+        generation: 0,
+        token: 1,
+    };
+    service
+        .submit(Request::device_gesture(GestureRequest::Begin {
+            key,
+            target: crate::device_gesture::GestureTarget::DeviceParameter {
+                device,
+                parameter: hex_lattice_contract::ParameterId::new(1).unwrap(),
+            },
+        }))
+        .unwrap();
+    assert!(event(&service).error.is_none());
+    service
+        .submit(Request::device_gesture(GestureRequest::Change {
+            key,
+            sequence: 1,
+            value: hex_lattice_contract::ParameterValue::Float(2.0),
+        }))
+        .unwrap();
+    let preview = event(&service);
+    assert!(preview.active_device_gesture.is_some());
+    let (reply, receipt) = std::sync::mpsc::sync_channel(1);
+    service
+        .submit(Request::SaveCommittedParameterCopy {
+            path: new.clone(),
+            revision: preview.state.revision,
+            key,
+            sequence: 1,
+            reply,
+        })
+        .unwrap();
+    let copy_refused = event(&service);
+    assert_eq!(
+        receipt.try_recv().unwrap().unwrap_err(),
+        refused.error.unwrap()
+    );
+    assert_eq!(
+        copy_refused.active_device_gesture,
+        preview.active_device_gesture
+    );
+    assert!(copy_refused.state.unsaved && !copy_refused.save_complete);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert!(!new.exists() && !folder.join("refused").exists());
     fail.store(false, Ordering::Release);
     service.submit(Request::SaveCurrent).unwrap();
     let saved = event(&service);

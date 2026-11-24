@@ -1183,6 +1183,16 @@ pub enum Request {
         path: PathBuf,
         extension_added: bool,
     },
+    /// Save the canonical project to a new destination with the matching built-in
+    /// parameter preview excluded. The reply carries the published path or refusal.
+    /// This never rebinds the current document or completes an ordinary save.
+    SaveCommittedParameterCopy {
+        path: PathBuf,
+        revision: u64,
+        key: crate::device_gesture::GestureKey,
+        sequence: u64,
+        reply: SyncSender<Result<PathBuf, String>>,
+    },
     SaveCurrent,
     /// Explicit user consent to lose older-reader compatibility through a schema
     /// upgrade or document growth. Bound to the selected document and project
