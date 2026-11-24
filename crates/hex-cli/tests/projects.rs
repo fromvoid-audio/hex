@@ -1010,3 +1010,150 @@ fn export_project_overwrite_refuses_input_project_and_source_media_including_ali
     let recovery_path = directory.path().join(recovery_line.trim());
     assert_eq!(fs::read(&recovery_path).unwrap(), unrelated_before);
 }
+
+#[test]
+fn render_and_export_arrangement_with_distinct_session_only_audio_asset_from_outside_project_dir() {
+    let project_dir = TempDir::new();
+    let caller_dir = TempDir::new();
+    let media_dir = project_dir.path().join("media");
+    fs::create_dir_all(&media_dir).unwrap();
+
+    let arrangement_wav = media_dir.join("arrangement.wav");
+    fs::write(&arrangement_wav, wav(&[12_000; 128])).unwrap();
+    let session_wav = media_dir.join("session_only.wav");
+    fs::write(&session_wav, wav(&[-6_000; 128])).unwrap();
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { track, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "audio".into(),
+            path: PathBuf::from("media/arrangement.wav"),
+            sample_rate: 48_000,
+            frames: 128,
+        })
+        .unwrap()
+    else {
+        panic!("expected imported audio track");
+    };
+    let baseline_project = project_dir.path().join("without-session.hex");
+    hex_storage::save_new(&baseline_project, editor.project()).unwrap();
+
+    let Created::Asset(session_asset) = editor
+        .execute(Command::AddAsset {
+            path: PathBuf::from("media/session_only.wav"),
+            sample_rate: 48_000,
+            frames: 128,
+        })
+        .unwrap()
+    else {
+        panic!("expected session asset");
+    };
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene {
+            name: "scene 1".into(),
+        })
+        .unwrap()
+    else {
+        panic!("expected created scene");
+    };
+    editor
+        .execute(Command::CreateSessionAudioClip {
+            track,
+            scene,
+            name: "session clip".into(),
+            asset: session_asset,
+            source_start: 0,
+            source_end: 128,
+        })
+        .unwrap();
+    let session_project = project_dir.path().join("with-session.hex");
+    hex_storage::save_new(&session_project, editor.project()).unwrap();
+
+    let baseline_str = baseline_project.to_string_lossy().into_owned();
+    let session_str = session_project.to_string_lossy().into_owned();
+
+    // Invoke both render-project and export-project from outside the project directory.
+    let render_base = caller_dir.path().join("render-base.wav");
+    let render_session = caller_dir.path().join("render-session.wav");
+    let export_base = caller_dir.path().join("export-base.wav");
+    let export_session = caller_dir.path().join("export-session.wav");
+
+    for (args, label) in [
+        (
+            vec![
+                "render-project",
+                &baseline_str,
+                render_base.to_str().unwrap(),
+            ],
+            "render-project without session cell",
+        ),
+        (
+            vec![
+                "render-project",
+                &session_str,
+                render_session.to_str().unwrap(),
+            ],
+            "render-project with session cell",
+        ),
+        (
+            vec![
+                "export-project",
+                &baseline_str,
+                export_base.to_str().unwrap(),
+                "0",
+                "128",
+            ],
+            "export-project without session cell",
+        ),
+        (
+            vec![
+                "export-project",
+                &session_str,
+                export_session.to_str().unwrap(),
+                "0",
+                "128",
+            ],
+            "export-project with session cell",
+        ),
+    ] {
+        let output = run(caller_dir.path(), &args);
+        assert!(
+            output.status.success(),
+            "{label} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    assert_eq!(
+        fs::read(&render_base).unwrap(),
+        fs::read(&render_session).unwrap()
+    );
+    assert_eq!(
+        fs::read(&export_base).unwrap(),
+        fs::read(&export_session).unwrap()
+    );
+
+    // Missing Arrangement media still fails clearly without publishing output.
+    fs::remove_file(&arrangement_wav).unwrap();
+    let missing_render = caller_dir.path().join("missing-render.wav");
+    let missing_export = caller_dir.path().join("missing-export.wav");
+    for args in [
+        vec![
+            "render-project",
+            &session_str,
+            missing_render.to_str().unwrap(),
+        ],
+        vec![
+            "export-project",
+            &session_str,
+            missing_export.to_str().unwrap(),
+            "0",
+            "128",
+        ],
+    ] {
+        let output = run(caller_dir.path(), &args);
+        assert!(!output.status.success());
+    }
+    assert!(!missing_render.exists());
+    assert!(!missing_export.exists());
+}
