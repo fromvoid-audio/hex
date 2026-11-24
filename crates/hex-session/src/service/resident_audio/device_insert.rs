@@ -97,10 +97,20 @@ pub(in crate::service) enum Operation {
     ResidentMoveHistory,
     VerifiedGroupHistory,
     HostedClipboard,
+    HostedClipRange,
     Tempo,
 }
 
 impl Operation {
+    pub(in crate::service) fn edit_name(self) -> &'static str {
+        match self {
+            Self::HostedClipRange => "clip activation",
+            Self::Tempo => "tempo edit",
+            _ if self.device() == Some(GraphEditOperation::MoveTrack) => "track move",
+            _ => "device edit",
+        }
+    }
+
     pub(in crate::service) fn installed_status(self) -> &'static str {
         match self {
             Self::Device(GraphEditOperation::InsertDevice) | Self::HostedClipboard => {
@@ -115,6 +125,7 @@ impl Operation {
             Self::HostedHistory(_) | Self::ResidentMoveHistory | Self::VerifiedGroupHistory => {
                 "history committed"
             }
+            Self::HostedClipRange => "clip activation applied",
             Self::Tempo => "tempo applied",
         }
     }
@@ -125,7 +136,7 @@ impl Operation {
             Self::ResidentMoveHistory => Some(GraphEditOperation::MoveDevice),
             Self::VerifiedGroupHistory => Some(GraphEditOperation::MoveTrack),
             Self::HostedClipboard => Some(GraphEditOperation::InsertDevice),
-            Self::Tempo => None,
+            Self::HostedClipRange | Self::Tempo => None,
         }
     }
 }
@@ -617,13 +628,38 @@ pub(in crate::service) fn graph_edit_operation(command: &Command) -> Option<Grap
 /// its native effect binding path. With no output, retain ordinary clipboard
 /// preparation and publish the canonical source when an output opens.
 pub(in crate::service) fn should_stage_resident_graph_edit(
+    project: &Project,
     command: &Command,
     sink: &mut dyn WorkerAudioSink,
 ) -> bool {
     sink.confirms_device_inserts()
         && sink.resident_publication_readiness() != ResidentPublicationReadiness::NoOutput
         && (graph_edit_operation(command) == Some(GraphEditOperation::InsertDevice)
-            || resident_graph_edit_operation(command, false).is_some())
+            || staged_resident_operation(project, command, false).is_some())
+}
+
+/// A range edit on a hosted instrument can remove or split a gate that is
+/// still sounding. Commit the edit only after the callback installs its graph
+/// so a refusal preserves the project and the original note owner.
+fn staged_resident_operation(
+    project: &Project,
+    command: &Command,
+    proposal: bool,
+) -> Option<Operation> {
+    if let Command::SetTimeRangeActive { range, .. } = command
+        && range.tracks().iter().any(|id| {
+            project
+                .track(*id)
+                .and_then(|track| track.instrument())
+                .is_some_and(|device| {
+                    device.state().type_id()
+                        == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
+                })
+        })
+    {
+        return Some(Operation::HostedClipRange);
+    }
+    resident_graph_edit_operation(command, proposal).map(Operation::Device)
 }
 
 pub(in crate::service) fn stages_main_power_off(
@@ -1556,25 +1592,32 @@ impl Session {
                     || power_on.is_some()
                     || running_power_off.is_some()
                 {
-                    GraphEditOperation::PowerDevice
+                    Operation::Device(GraphEditOperation::PowerDevice)
                 } else if plugin.is_some() {
-                    match &command {
+                    Operation::Device(match &command {
                         Command::ReplaceTrackInstrument { .. }
                         | Command::ReplaceTrackDevice { .. }
                         | Command::ReplaceMainDevice { .. }
                         | Command::ReplaceReturnDevice { .. } => GraphEditOperation::ReplaceDevice,
                         _ => GraphEditOperation::InsertDevice,
-                    }
+                    })
                 } else {
-                    resident_graph_edit_operation(&command, proposal_control.is_some())
-                        .ok_or(SessionError::Invalid("unsupported staged graph edit"))?
+                    staged_resident_operation(
+                        session.project(),
+                        &command,
+                        proposal_control.is_some(),
+                    )
+                    .ok_or(SessionError::Invalid("unsupported staged graph edit"))?
                 };
                 let edit = session.editor.stage_edit(command)?;
                 if (matches!(
                     operation,
-                    GraphEditOperation::MoveDevice
-                        | GraphEditOperation::MoveTrack
-                        | GraphEditOperation::PowerDevice
+                    Operation::HostedClipRange
+                        | Operation::Device(
+                            GraphEditOperation::MoveDevice
+                                | GraphEditOperation::MoveTrack
+                                | GraphEditOperation::PowerDevice
+                        )
                 ) || proposal_control.is_some())
                     && edit.project() == session.project()
                 {
@@ -1582,7 +1625,7 @@ impl Session {
                 }
                 Ok(Some(StagedResidentChange {
                     edit: StagedChange::Command(edit),
-                    operation: Operation::Device(operation),
+                    operation,
                     hosted_instrument_move,
                     reorder_track,
                 }))
@@ -1848,6 +1891,8 @@ impl Session {
                 .ok_or(SessionError::Invalid(
                     if matches!(operation, Operation::Device(GraphEditOperation::MoveTrack)) {
                         "track move needs the current installed audio graph"
+                    } else if matches!(operation, Operation::HostedClipRange) {
+                        "clip activation needs the current installed audio graph"
                     } else {
                         "device edit needs the current installed audio graph"
                     },

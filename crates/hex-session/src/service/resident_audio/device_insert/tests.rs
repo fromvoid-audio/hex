@@ -2635,7 +2635,7 @@ fn resident_no_output_allows_native_inserts_and_main_vst3_bypass_offline() {
             },
         ] {
             assert!(
-                !should_stage_resident_graph_edit(&command, &mut sink),
+                !should_stage_resident_graph_edit(&e.state.project, &command, &mut sink),
                 "NoOutput must not stage {command:?}"
             );
         }

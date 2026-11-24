@@ -667,13 +667,7 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                     break 'device_insert;
                 }
                 let operation = pending.operation;
-                let edit_name = if operation.device() == Some(GraphEditOperation::MoveTrack) {
-                    "track move"
-                } else if operation.device().is_some() {
-                    "device edit"
-                } else {
-                    "tempo edit"
-                };
+                let edit_name = operation.edit_name();
                 let Some(submission) = pending.submission() else {
                     ctx.outcome.device_insert_proposal = pending.proposal_control.take();
                     if let Some(attempt) = pending.verified_attempt()
@@ -766,9 +760,7 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                         if was_offered
                             || ctx.outcome.device_insert_proposal.as_ref().is_some_and(|control| control.is_cancelled())
                         {
-                            ctx.outcome.status = Some(if operation.device() == Some(GraphEditOperation::MoveTrack) {
-                                "track move cancelled"
-                            } else { "device edit cancelled" }.into());
+                            ctx.outcome.status = Some(format!("{edit_name} cancelled"));
                         } else {
                             ctx.outcome.error = Some(
                                 format!("{edit_name} cancelled before installation"),
@@ -778,9 +770,7 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                     }
                     DeviceInsertAudioState::Expired => {
                         ctx.outcome.error =
-                            Some(if operation.device() == Some(GraphEditOperation::MoveTrack) {
-                                "track move timed out before installation"
-                            } else { "device edit timed out before installation" }.into());
+                            Some(format!("{edit_name} timed out before installation"));
                         DeviceInsertOutcome::Expired
                     }
                     DeviceInsertAudioState::Pending | DeviceInsertAudioState::Applying => {
