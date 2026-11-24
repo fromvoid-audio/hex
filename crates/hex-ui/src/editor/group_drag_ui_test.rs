@@ -1197,6 +1197,23 @@ fn copied_mixed_group_selects_actual_worker_births_then_next_drag_moves_only_cop
             .clips()[0]
             .id()
     });
+    let duration = editor.read_with(&visual, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .clip(audio)
+            .unwrap()
+            .duration()
+    });
+    let authored = hex_project::ClipFade::new(duration, 0, 320, 640).unwrap();
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::SetClipFadeEnvelope {
+            clip: audio,
+            fade: authored
+        })));
+    });
+    pump(&editor, &mut visual);
     // MIDI is born first in row order, then its NoteId, then the copied Audio
     // ClipId: the actual response range contains a note hole.
     let originals = [midi, audio];
@@ -1239,7 +1256,12 @@ fn copied_mixed_group_selects_actual_worker_births_then_next_drag_moves_only_cop
         assert_eq!(prefix.source_length(), prefix.duration());
         assert_eq!(prefix.source_offset(), old_audio.source_offset());
         assert_eq!(prefix.asset(), old_audio.asset());
-        assert_eq!(prefix.fade(), old_audio.fade());
+        assert_eq!(new_audio.fade(), authored);
+        // Overwrite keeps the outer fade-in and starts neutral at the new cut.
+        assert_eq!(
+            prefix.fade(),
+            hex_project::ClipFade::new(prefix.duration(), 0, 320, 0).unwrap()
+        );
         let new_midi = ids.iter().find_map(|id| p.midi_clip(*id)).unwrap();
         let old_midi = before.midi_clip(midi).unwrap();
         let prefix = p.midi_clip(midi).unwrap();
