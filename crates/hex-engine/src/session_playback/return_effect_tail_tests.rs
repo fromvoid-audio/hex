@@ -1207,6 +1207,83 @@ fn compensated_return_tail_matches_scalar_through_completion() {
 }
 
 #[test]
+fn flat_detached_track_tail_keeps_compensated_blocks_and_its_original_track_capture() {
+    use crate::signal_graph::tests::{fixture, prepare};
+    use hex_project::{Command, Created};
+
+    let mut f = fixture(&[&[3]], 64);
+    let track = f.tracks[0];
+    let Created::ReturnTrack(bus) = f
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "send".into(),
+        })
+        .unwrap()
+    else {
+        panic!("Return")
+    };
+    f.editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 0.5,
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    let render = |scalar| {
+        let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        if scalar {
+            playback.resident_source_scratch.clear();
+        }
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut [[0.0; 2]; 256]).unwrap();
+        playback.tail_groups[0] = Some(active_tail_chain(
+            bus,
+            1,
+            4,
+            std::mem::size_of::<HoldRuntime>(),
+        ));
+        playback.tail_track_ids[0] = Some(track);
+        playback.tail_mixes[0] = crate::PreparedTrackMix::new(0.5, 0.25, false).unwrap();
+        playback.tail_output_active[0] = true;
+        let mut first = [[0.0; 2]; 2];
+        let mut width = 0;
+        playback
+            .render_with_node_signal_observer(
+                &mut first,
+                Some(&mut |_, _, _, frames| width = width.max(frames.len())),
+            )
+            .unwrap();
+        assert_eq!(width, if scalar { 1 } else { 2 });
+        assert!(playback.tail_output_active[0]);
+        let mut main = [[0.0; 2]; 257];
+        let mut track_tap = main;
+        let mut return_tap = main;
+        let plan = playback
+            .output_capture_plan(
+                &[OutputCaptureId::Track(track), OutputCaptureId::Return(bus)],
+                main.len(),
+            )
+            .unwrap();
+        let mut buffers = [&mut track_tap[..], &mut return_tap[..]];
+        let mut capture = OutputCapture::new(&plan, &mut buffers);
+        playback
+            .render_with_capture(&mut main, &mut capture)
+            .unwrap();
+        assert!(track_tap[..2].iter().all(|f| *f != [0.0; 2]));
+        assert!(track_tap[2..].iter().all(|f| *f == [0.0; 2]));
+        assert_eq!(return_tap, [[0.0; 2]; 257]);
+        assert_eq!(main, track_tap);
+        assert!(!playback.tail_output_active[0]);
+        (
+            first.map(|f| f.map(f32::to_bits)),
+            main.map(|f| f.map(f32::to_bits)),
+        )
+    };
+    assert_eq!(render(false), render(true));
+}
+
+#[test]
 fn seek_resets_return_tail_state() {
     let project = prepared_return_project(true, 1.0);
     let return_id = project.return_tracks()[0].id();
