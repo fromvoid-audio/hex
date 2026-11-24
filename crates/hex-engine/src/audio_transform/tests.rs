@@ -1678,18 +1678,20 @@ fn endpoint_only_fades_on_unedited_streams_preserve_silence_splits_and_seeks() {
             asset,
             crate::compile::PreparedAudioSource::Streamed(metadata),
         )]);
-        let mut expected = vec![[0.25, -0.5]; 8000];
-        expected[..start as usize].fill([0.0; 2]);
-        expected[8000 - end as usize..].fill([0.0; 2]);
         let mut pages = Pages {
             key,
             frames: media[&asset].frames(),
         };
         for split in [false, true] {
+            let mut expected = vec![[0.25, -0.5]; 8000];
             if split {
+                // Explicit cuts anchor zero-width handles to the new clip corners.
                 editor
                     .execute(Command::SplitClip { clip, frame: 2000 })
                     .unwrap();
+            } else {
+                expected[..start as usize].fill([0.0; 2]);
+                expected[8000 - end as usize..].fill([0.0; 2]);
             }
             let streamed =
                 crate::compile::project_with_prepared_audio_sources(editor.project(), &sources, 1)
@@ -1705,10 +1707,12 @@ fn endpoint_only_fades_on_unedited_streams_preserve_silence_splits_and_seeks() {
                     actual, expected,
                     "endpoints={start}/{end}, split={split}, block={block}"
                 );
-                renderer.seek(800);
-                let mut seek = vec![[0.0; 2]; 3000];
-                renderer.render_with_pages(&mut seek, &mut pages).unwrap();
-                assert_eq!(seek, expected[800..3800]);
+                for range in [800..3800, 6700..8000] {
+                    renderer.seek(range.start as u64);
+                    let mut sought = vec![[0.0; 2]; range.len()];
+                    renderer.render_with_pages(&mut sought, &mut pages).unwrap();
+                    assert_eq!(sought, expected[range]);
+                }
             }
         }
     }
