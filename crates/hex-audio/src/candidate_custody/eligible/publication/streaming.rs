@@ -5,6 +5,7 @@ use hex_engine::StreamResourceExtent;
 mod actions;
 mod demand;
 mod ordinary;
+mod page_fade;
 mod prewarm;
 mod view;
 pub(crate) use actions::StageAction;
@@ -31,6 +32,7 @@ struct PendingAction {
     ticket: u64,
 }
 pub(super) struct Workspace {
+    page_fade: page_fade::PageFade,
     handoff_diagnostic: Option<hex_engine::PlaybackHandoffError>,
     pub(super) source_changed: bool,
     pub(super) read_failed: bool,
@@ -72,6 +74,7 @@ impl Workspace {
             source_changed: false,
             read_failed: false,
             capacity_conflict: false,
+            page_fade: Default::default(),
             capacity_attempts: 0,
             candidate_capacity_attempts: 0,
             candidate_frame_limit: 256,
@@ -107,6 +110,7 @@ impl Workspace {
                 .all(|rows| rows.len() <= self.limit && rows.capacity() >= self.limit)
     }
     pub(super) fn clear(&mut self) {
+        self.page_fade = Default::default();
         self.handoff_diagnostic = None;
         self.source_changed = false;
         self.read_failed = false;
