@@ -1257,10 +1257,10 @@ fn device_comparison_metadata_recovery_error_preserves_real_pending_and_applied_
 }
 
 fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
-    let _output_fixture_guard =
-        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
+    use super::eq_ui_tests::graph_layout_tests;
     use crate::editor::audio_admission::{AdmissionState, ProjectRevision};
     use std::sync::atomic::Ordering::Acquire;
+    let _output_fixture_guard = graph_layout_tests::status_fixture_guard();
     let directory = Directory::new();
     let service = if recovery_error {
         // A real worker-owned checkpoint failure, after a successful model edit.
@@ -1312,27 +1312,31 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         .prepared_revision()
         .unwrap()
         .clone();
-    let deadline = crate::test_wait::hang_deadline();
-    let (mut output, mut backend) = loop {
-        match hex_audio::worker_fixture::open(48_000) {
-            Ok(output) => break output,
-            Err(error)
-                if error == "audio output is open or still shutting down"
-                    && std::time::Instant::now() < deadline =>
-            {
-                std::thread::yield_now()
-            }
-            Err(error) => panic!("private control: {error}"),
-        }
-    };
-    let client = output.take_client().unwrap();
-    let audio_revision = output
-        .publication
-        .control()
-        .unwrap()
-        .publish(initial.playback.take().unwrap())
+    let (mut output, mut backend) = graph_layout_tests::headless_status_output();
+    let control = output.publication.control().unwrap();
+    control
+        .configure_device_resource_publication_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 256,
+                root_rows: 128,
+                max_retained_bytes: 32_000_000,
+                max_construction_peak_bytes: 32_000_000,
+            },
+        )
         .unwrap();
+    let audio_revision = control
+        .publish_with_admission_and_source_on_control(
+            initial.playback.take().unwrap(),
+            hex_audio::prepared::PublicationPolicy::InheritRuntime,
+            source.context(),
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    let client = output.take_client().unwrap();
     let (_handle, editor) = directory.window(cx, service, state.clone(), track, None);
+    cx.run_until_parked();
+    assert!(editor.read_with(cx, |view, _| !view.playback_settings.loading));
     editor.update(cx, |view, _| {
         view.audio = Some(crate::editor_backend::EditorAudio {
             control: client,
@@ -1506,6 +1510,9 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         backend.status().unwrap().applied_revision.load(Acquire),
         audio_revision
     );
+    let applied_source = backend.status().unwrap().recording_source().unwrap();
+    assert_eq!(applied_source.context, source.context());
+    assert_eq!(applied_source.audio_revision, audio_revision);
     editor.update(cx, |view, cx| {
         view.tick(cx);
         assert!(
