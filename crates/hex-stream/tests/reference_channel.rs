@@ -2916,10 +2916,12 @@ fn exercise_granular_worker(
     // Advancing demand while an outcome is held cancels that outcome after
     // the full result queue is drained. Already queued outcomes carry the old
     // epoch and must be fenced by the consumer.
+    let held_key = foreign;
     key.epoch += 1;
     epoch.store(key.epoch, Ordering::Release);
     foreign.epoch = key.epoch;
     let old_outcome = results.pop().expect("first outcome remains queued");
+    assert_eq!(old_outcome.key, held_key);
     assert_ne!(old_outcome.key.epoch, key.epoch);
     let GranularWorkerResult::Failed { frames, .. } = old_outcome.result else {
         panic!("expected queued foreign-source failure")
@@ -2936,6 +2938,7 @@ fn exercise_granular_worker(
         );
         thread::yield_now();
     };
+    assert_eq!(old_held.key, held_key);
     let GranularWorkerResult::Cancelled { frames: held_page } = old_held.result else {
         panic!("stale held outcome was not cancelled")
     };
