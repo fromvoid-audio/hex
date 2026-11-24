@@ -16,6 +16,26 @@ enum TailDestination {
     },
 }
 
+/// Delayed stage clocks read either the already-pushed current stamp or an
+/// upcoming window before it advances the retained history.
+pub(super) enum MainTailClock<'a> {
+    Timeline(&'a dyn hex_lattice::NativeInstrumentClock),
+    Current(&'a crate::signal_graph::SignalRuntime),
+    Window(
+        &'a crate::signal_graph::SignalRuntime,
+        &'a [Option<crate::compensation::TransportStamp>],
+    ),
+}
+
+impl<'a> MainTailClock<'a> {
+    pub(super) fn current(
+        runtime: Option<&'a crate::signal_graph::SignalRuntime>,
+        clock: &'a dyn hex_lattice::NativeInstrumentClock,
+    ) -> Self {
+        runtime.map_or(Self::Timeline(clock), Self::Current)
+    }
+}
+
 pub(super) struct ReturnEffectTail {
     pub(super) chain: NativeRuntimeChain,
     destination: TailDestination,
@@ -208,8 +228,7 @@ impl ReturnEffectTailBank {
     pub(super) fn render_main_chunk(
         &mut self,
         output: &mut [Frame],
-        compensation: Option<&crate::signal_graph::SignalRuntime>,
-        clock: &dyn hex_lattice::NativeInstrumentClock,
+        clocks: MainTailClock<'_>,
         frame_offset: usize,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
@@ -237,41 +256,44 @@ impl ReturnEffectTailBank {
                             .ok_or(SessionPlaybackError::DeviceRuntime)?,
                     )
                     .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-                if let Some(compensation) = compensation {
-                    if frames.len() != 1 {
-                        return Err(SessionPlaybackError::DeviceRuntime);
+                let mut process =
+                    |input: &dyn hex_lattice::NativeInstrumentClock,
+                     output: Option<&dyn hex_lattice::NativeInstrumentClock>| {
+                        tail.chain.process_range_with_foreign(
+                            entry..entry + 1,
+                            frames,
+                            frame_offset,
+                            Some(input),
+                            output,
+                            foreign,
+                        )
+                    };
+                match clocks {
+                    MainTailClock::Current(runtime) => {
+                        if output.len() != 1 {
+                            return Err(SessionPlaybackError::DeviceRuntime);
+                        }
+                        let origin = |delay| {
+                            crate::signal_graph::OriginClock(
+                                runtime.delays.stamp_at_delay_ref(delay),
+                            )
+                        };
+                        process(&origin(arrival), Some(&origin(output_arrival)))
                     }
-                    let input_stamp = compensation.delays.stamp_at_delay_ref(arrival);
-                    let origin = crate::signal_graph::OriginClock(input_stamp);
-                    let output_origin =
-                        crate::signal_graph::OriginClock(if arrival == output_arrival {
-                            input_stamp
-                        } else {
-                            compensation.delays.stamp_at_delay_ref(output_arrival)
-                        });
-                    tail.chain.process_range_with_foreign(
-                        entry..entry + 1,
-                        frames,
-                        frame_offset,
-                        Some(&origin),
-                        Some(&output_origin),
-                        foreign,
-                    )
-                } else {
-                    if arrival != 0 {
-                        return Err(SessionPlaybackError::DeviceRuntime);
+                    MainTailClock::Window(runtime, stamps) => {
+                        let origin = |delay| crate::compensation::OriginWindow {
+                            history: &runtime.delays,
+                            incoming: stamps,
+                            delay,
+                        };
+                        process(&origin(arrival), Some(&origin(output_arrival)))
                     }
-                    // Frozen tail controls do not consume automation clocks.
-                    // Without retained stamps only coincident output is known.
-                    let output_origin = (output_arrival == 0).then_some(clock);
-                    tail.chain.process_range_with_foreign(
-                        entry..entry + 1,
-                        frames,
-                        frame_offset,
-                        Some(clock),
-                        output_origin,
-                        foreign,
-                    )
+                    MainTailClock::Timeline(clock) => {
+                        if arrival != 0 {
+                            return Err(SessionPlaybackError::DeviceRuntime);
+                        }
+                        process(clock, (output_arrival == 0).then_some(clock))
+                    }
                 }
                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 arrival = output_arrival;
