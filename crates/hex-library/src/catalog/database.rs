@@ -311,7 +311,7 @@ fn decode_path(bytes: &[u8]) -> io::Result<std::path::PathBuf> {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStringExt;
-        if bytes.len() % 2 != 0 {
+        if !bytes.len().is_multiple_of(2) {
             return Err(invalid());
         }
         let units: Vec<_> = bytes
