@@ -278,6 +278,7 @@ fn render_stems_with_resources_and_hook(
             })?;
     }
     drop(writers);
+    #[cfg(unix)]
     File::open(&staging.path)
         .and_then(|file| file.sync_all())
         .map_err(|source| ExportError::Io {
@@ -289,9 +290,11 @@ fn render_stems_with_resources_and_hook(
         pages.finish(control)?;
     }
     control.begin_publication()?;
-    publication::rename_exclusive(&staging.path, path).map_err(|source| ExportError::Io {
-        operation: "publish the stem batch without replacement",
-        source,
+    publication::rename_directory_exclusive(&staging.path, path).map_err(|source| {
+        ExportError::Io {
+            operation: "publish the stem batch without replacement",
+            source,
+        }
     })?;
     staging.published = true;
     #[cfg(unix)]

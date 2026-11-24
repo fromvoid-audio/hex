@@ -280,7 +280,123 @@ pub(super) fn rename_exclusive(_: &Path, _: &Path) -> io::Result<()> {
         "atomic exclusive publication is unsupported on this platform",
     ))
 }
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+
+/// Atomically claim an absent `destination` directory and publish `staging`'s
+/// stem files without replacing any existing file or directory.
+pub(super) fn rename_directory_exclusive(staging: &Path, destination: &Path) -> io::Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        rename_exclusive(staging, destination)
+    }
+    #[cfg(windows)]
+    {
+        publish_directory_exclusive_windows(staging, destination)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        let _ = (staging, destination);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "atomic exclusive publication is unsupported on this platform",
+        ))
+    }
+}
+
+#[cfg(windows)]
+fn publish_directory_exclusive_windows(staging: &Path, destination: &Path) -> io::Result<()> {
+    const MAX_ENTRIES: usize = 4096;
+    let meta = fs::symlink_metadata(staging)?;
+    if !meta.is_dir() || meta.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "staged stem batch must be a real directory",
+        ));
+    }
+    let mut files = Vec::new();
+    for entry in fs::read_dir(staging)? {
+        if files.len() >= MAX_ENTRIES {
+            return Err(io::Error::other("staged stem batch entry bound exceeded"));
+        }
+        let entry = entry?;
+        let path = entry.path();
+        let kind = fs::symlink_metadata(&path)?.file_type();
+        if kind.is_symlink() || !kind.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "staged stem batch must contain only regular files",
+            ));
+        }
+        files.push(entry.file_name());
+    }
+    // `create_dir` atomically refuses any existing file, symlink, or directory.
+    fs::create_dir(destination)?;
+    let mut staged_to_unlink = Vec::with_capacity(files.len());
+    for name in &files {
+        let src = staging.join(name);
+        let dst = destination.join(name);
+        let published = publish_new(&src, &dst).map_err(|error| match error {
+            NewPublicationError::BeforeCopy(e) | NewPublicationError::IncompleteCopy(e) => e,
+        })?;
+        if published.staging_remains() {
+            staged_to_unlink.push(src);
+        }
+    }
+    for path in staged_to_unlink {
+        let _ = fs::remove_file(path);
+    }
+    let _ = fs::remove_dir(staging);
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(super) fn exchange(source: &Path, destination: &Path) -> io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_BACKUP: AtomicU64 = AtomicU64::new(0);
+
+    let src_meta = fs::symlink_metadata(source)?;
+    let dst_meta = fs::symlink_metadata(destination)?;
+    if src_meta.file_type().is_symlink()
+        || !src_meta.is_file()
+        || dst_meta.file_type().is_symlink()
+        || !dst_meta.is_file()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "exchange requires two existing regular files",
+        ));
+    }
+    let parent = destination
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut backup = None;
+    for _ in 0..32 {
+        let serial = NEXT_BACKUP.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(".hex-exchange-{}-{serial}.tmp", std::process::id()));
+        match fs::hard_link(destination, &candidate) {
+            Ok(()) => {
+                backup = Some(candidate);
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    let backup = backup.ok_or_else(|| {
+        io::Error::other("could not reserve a sibling backup link for confirmed overwrite")
+    })?;
+    if let Err(error) = fs::rename(source, destination) {
+        let _ = fs::remove_file(&backup);
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(&backup, source) {
+        let _ = fs::remove_file(&backup);
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub(super) fn exchange(_: &Path, _: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -296,6 +412,7 @@ pub(super) mod simulate {
     #[derive(Clone, Copy)]
     pub(crate) enum Volume {
         /// Hard links fail with this raw errno; exclusive rename works.
+        #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
         NoHardLinks(i32),
         /// Neither hard links nor exclusive rename (copy fallback).
         NoAtomicCreate,
@@ -359,5 +476,75 @@ pub(super) mod simulate {
             Volume::NoHardLinks(_) => None,
             Volume::NoAtomicCreate => Some(unsupported()),
         }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::simulate::{Volume, volume};
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    struct Dir(PathBuf);
+    impl Dir {
+        fn new() -> Self {
+            let id = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir()
+                .join(format!("hex-export-pub-win-{}-{id}", std::process::id()));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn windows_publish_new_directory_exclusive_and_exchange_preserve_data() {
+        let dir = Dir::new();
+        // Copy fallback when hard links are unavailable.
+        {
+            let _guard = volume(Volume::NoAtomicCreate);
+            let staged = dir.0.join(".staged.wav");
+            let dst = dir.0.join("copied.wav");
+            fs::write(&staged, b"new-wav").unwrap();
+            assert_eq!(publish_new(&staged, &dst).unwrap(), Published::Copied);
+            assert_eq!(fs::read(&dst).unwrap(), b"new-wav");
+            assert!(publish_new(&staged, &dst).is_err());
+        }
+        // Directory exclusive publication refuses existing file, empty dir, and non-empty dir.
+        let stage_dir = dir.0.join(".stage-stems");
+        fs::create_dir(&stage_dir).unwrap();
+        fs::write(stage_dir.join("01-Track.wav"), b"stem-data").unwrap();
+        let existing_file = dir.0.join("existing-file");
+        fs::write(&existing_file, b"keep-file").unwrap();
+        assert!(rename_directory_exclusive(&stage_dir, &existing_file).is_err());
+        assert_eq!(fs::read(&existing_file).unwrap(), b"keep-file");
+
+        let existing_dir = dir.0.join("existing-dir");
+        fs::create_dir(&existing_dir).unwrap();
+        assert!(rename_directory_exclusive(&stage_dir, &existing_dir).is_err());
+
+        let target_dir = dir.0.join("published-stems");
+        rename_directory_exclusive(&stage_dir, &target_dir).unwrap();
+        assert!(!stage_dir.exists());
+        assert_eq!(
+            fs::read(target_dir.join("01-Track.wav")).unwrap(),
+            b"stem-data"
+        );
+
+        // Confirmed exchange swaps source and destination and preserves displaced bytes at source.
+        let old = dir.0.join("mix.wav");
+        let staged = dir.0.join(".stage-mix.tmp");
+        fs::write(&old, b"previous-mix").unwrap();
+        fs::write(&staged, b"replacement-mix").unwrap();
+        let consent = OverwriteConsent::inspect(&old).unwrap();
+        replace_staged(&staged, &old, &consent, || {}).unwrap();
+        assert_eq!(fs::read(&old).unwrap(), b"replacement-mix");
+        assert_eq!(fs::read(&staged).unwrap(), b"previous-mix");
     }
 }
