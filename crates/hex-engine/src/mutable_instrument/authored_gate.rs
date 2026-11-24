@@ -72,6 +72,7 @@ impl TryFrom<AuthoredGate> for hex_lattice::ForeignNote {
             velocity: gate.velocity,
             on: gate.on,
             note_id: Some(id),
+            is_live: false,
         })
     }
 }

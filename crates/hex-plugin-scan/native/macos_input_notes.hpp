@@ -24,6 +24,7 @@ struct InputNote {
     uint8 velocity=0;
     bool on=false;
     int32 note_id=-1;
+    bool is_live=false;
 };
 
 // Owned by the serialized processing lane. The host's authored and live
@@ -102,6 +103,7 @@ public:
             const auto& note=notes[first+index];
             auto& event=events[index];
             event={};event.sampleOffset=note.offset-start_frame;
+            if(note.is_live) event.flags|=Event::kIsLive;
             if(has_music) {
                 event.ppqPosition=advance_music
                     ?context->projectTimeMusic+

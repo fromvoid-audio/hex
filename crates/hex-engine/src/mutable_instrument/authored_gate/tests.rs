@@ -74,6 +74,7 @@ fn foreign_gates_keep_channel_and_identity_across_segment_boundaries() {
             },
             |gate| {
                 let note = ForeignNote::try_from(gate)?;
+                assert!(!note.is_live);
                 events.push((
                     note.frame,
                     note.channel,

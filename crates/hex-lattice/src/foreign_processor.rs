@@ -657,6 +657,9 @@ pub struct ForeignNote {
     pub on: bool,
     /// Graph-assigned identity shared by this occurrence's on/off pair.
     pub note_id: Option<std::num::NonZeroU32>,
+    /// True for live monitored hardware or computer-keyboard input; false for
+    /// sequenced clip playback.
+    pub is_live: bool,
 }
 
 /// Unique borrowed view of the host's already retained foreign endpoints.

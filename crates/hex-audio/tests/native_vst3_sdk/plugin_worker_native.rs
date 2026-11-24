@@ -125,6 +125,7 @@ fn native_instrument_keeps_note_state_after_one_late_reply() {
         bytes: [0x90, 60, 100],
         len: 3,
         note_id: std::num::NonZeroU32::new(1),
+        is_live: false,
     };
     let off = MidiEvent {
         bytes: [0x80, 60, 0],

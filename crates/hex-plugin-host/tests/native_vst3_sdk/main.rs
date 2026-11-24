@@ -496,12 +496,14 @@ fn original_instrument_slice_clock_is_exact_and_published_only_after_join() {
                 bytes: [0x90, 60, 127],
                 len: 3,
                 note_id: None,
+                is_live: false,
             },
             MidiEvent {
                 frame: 3,
                 bytes: [0x80, 60, 0],
                 len: 3,
                 note_id: None,
+                is_live: false,
             },
         ];
         callback.begin_physical_callback(8).unwrap();

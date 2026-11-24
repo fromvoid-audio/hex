@@ -471,6 +471,7 @@ fn sample_timeline_latency_and_midi_survive_physical_callback_partitions() {
                     bytes: [0x90, 60, 100],
                     len: 3,
                     note_id: None,
+                    is_live: false,
                 })
                 .collect();
             let mut output = vec![[99.0; 2]; size];
@@ -806,6 +807,7 @@ fn consumer_rejects_each_identity_field_and_nonfinite_or_invalid_events() {
                     bytes: [0x90, 60, 1],
                     len: 3,
                     note_id: None,
+                    is_live: false,
                 })
                 .unwrap(),
             9 => reply
@@ -815,6 +817,7 @@ fn consumer_rejects_each_identity_field_and_nonfinite_or_invalid_events() {
                     bytes: [0xf0, 0, 0],
                     len: 3,
                     note_id: None,
+                    is_live: false,
                 })
                 .unwrap(),
             _ => unreachable!(),
@@ -931,6 +934,7 @@ fn bounded_input_validation_and_queue_independent_stop() {
                         bytes: [0x90, 200, 0],
                         len: 3,
                         note_id: None,
+                        is_live: false,
                     }],
                     &mut output,
                 )
@@ -1090,6 +1094,7 @@ fn graph_segments_preserve_physical_pcm_event_timeline_and_one_final_dispatch() 
             bytes: [0x90, 61, 127],
             len: 3,
             note_id: None,
+            is_live: false,
         };
         let mut expected = vec![[9.0; 2]; size];
         let whole_events = whole.stage(&input, &[event], &mut expected).unwrap();
@@ -1210,6 +1215,7 @@ fn segmenting_does_not_multiply_the_physical_callback_event_budget() {
         bytes: [0x90, 60, 127],
         len: 3,
         note_id: None,
+        is_live: false,
     };
     callback.begin_physical_callback(8).unwrap();
     callback
@@ -1275,6 +1281,7 @@ fn stopped_partial_quantum_dispatches_play_context_before_the_coincident_note() 
         bytes: [0x90, 60, 100],
         len: 3,
         note_id: std::num::NonZeroU32::new(42),
+        is_live: false,
     };
     // Keep the pair's control lease alive across both callback transactions.
     let (_control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
@@ -1590,6 +1597,7 @@ fn dense_identified_notes_cross_callback_and_wire_without_expanding_replies() {
         bytes: [0x92, 60, 127],
         len: 3,
         note_id: std::num::NonZeroU32::new(index as u32 + 1),
+        is_live: false,
     });
     let mut stage = || {
         callback.begin_physical_callback(8).unwrap();

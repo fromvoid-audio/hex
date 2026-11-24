@@ -57,6 +57,7 @@ impl Gate {
             velocity,
             on,
             note_id: Some(self.id),
+            is_live: true,
         }
     }
 }
@@ -251,7 +252,7 @@ mod tests {
         }
         batch.commit(Some(&input));
         assert_eq!(events.len(), NOTE_BUDGET);
-        assert!(events.iter().all(|event| event.on));
+        assert!(events.iter().all(|event| event.on && event.is_live));
         assert_eq!(
             queue.snapshot().unwrap().events(),
             &[off, LiveNoteEvent::AllNotesOff]
@@ -269,7 +270,7 @@ mod tests {
         batch.commit(Some(&input));
         assert!(queue.snapshot().unwrap().is_empty());
         assert!(!gates.held());
-        assert!(events.iter().all(|event| !event.on));
+        assert!(events.iter().all(|event| !event.on && event.is_live));
         assert_eq!(events[0].velocity, 11);
         assert_eq!(
             events.iter().map(|event| event.note_id).collect::<Vec<_>>(),

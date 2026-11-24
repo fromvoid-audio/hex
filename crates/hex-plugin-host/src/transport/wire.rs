@@ -195,6 +195,7 @@ fn write_with_parameters(
         packet[offset..offset + 2].copy_from_slice(&event.frame.to_le_bytes());
         packet[offset + 2] = event.len;
         packet[offset + 3..offset + 6].copy_from_slice(&event.bytes);
+        packet[offset + 6] = u8::from(event.is_live);
         offset += 8;
         if version >= 3 {
             let id = event.note_id.map_or(0, std::num::NonZeroU32::get);
@@ -380,9 +381,10 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
     for _ in 0..count {
         let mut bytes = [0_u8; 8];
         reader.read_exact(&mut bytes)?;
-        if bytes[6..].iter().any(|b| *b != 0) {
+        if bytes[6] > 1 || bytes[7] != 0 {
             return Err(invalid());
         }
+        let is_live = bytes[6] != 0;
         let note_id = if version >= 3 {
             let mut id = [0_u8; 4];
             reader.read_exact(&mut id)?;
@@ -397,6 +399,7 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
                 len: bytes[2],
                 bytes: [bytes[3], bytes[4], bytes[5]],
                 note_id,
+                is_live,
             })
             .map_err(|_| invalid())?;
     }
@@ -467,6 +470,7 @@ mod tests {
             bytes: [0x90, 60, 100],
             len: 3,
             note_id: std::num::NonZeroU32::new(123),
+            is_live: false,
         };
         let point = ParameterPoint {
             frame: 2,
@@ -565,7 +569,10 @@ mod tests {
             },
             8,
         );
-        for (frame, note_id) in [(1, std::num::NonZeroU32::new(70_001)), (4, None)] {
+        for (frame, note_id, is_live) in [
+            (1, std::num::NonZeroU32::new(70_001), true),
+            (4, None, false),
+        ] {
             block
                 .events
                 .push(MidiEvent {
@@ -573,6 +580,7 @@ mod tests {
                     bytes: [0x90, 60, 100],
                     len: 3,
                     note_id,
+                    is_live,
                 })
                 .unwrap();
         }
@@ -592,9 +600,14 @@ mod tests {
         assert_eq!(decoded.parameters, block.parameters);
 
         let event_start = HEADER_BYTES + 8 * 8;
+        assert_eq!(packet[event_start + 6], 1);
+        assert_eq!(packet[event_start + 12 + 6], 0);
         for end in event_start..packet.len() {
             assert!(read(&mut &packet[..end]).is_err(), "truncation {end}");
         }
+        let mut bad_flag = packet.clone();
+        bad_flag[event_start + 6] = 2;
+        assert!(read(&mut bad_flag.as_slice()).is_err());
         let mut malformed = packet.clone();
         malformed[event_start + 8..event_start + 12]
             .copy_from_slice(&0x8000_0000_u32.to_le_bytes());
@@ -622,6 +635,7 @@ mod tests {
                 bytes: [0x90, 64, 100],
                 len: 3,
                 note_id: None,
+                is_live: false,
             })
             .unwrap();
         let mut bytes = Vec::new();

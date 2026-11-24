@@ -54,6 +54,7 @@ fn actual_foreign_instrument_notes_follow_accepted_callback_segments() {
         velocity: 127,
         on: true,
         note_id: std::num::NonZeroU32::new(70_001),
+        is_live: false,
     };
     let second_on = ForeignNote {
         frame: 3,
@@ -501,6 +502,7 @@ fn actual_unautomated_instrument_and_effect_receive_sdk_loop_wrap_origins() {
                 velocity: 127,
                 on: true,
                 note_id: std::num::NonZeroU32::new(41),
+                is_live: false,
             };
             let note_on_cut = ForeignNote {
                 frame: 0,
@@ -509,6 +511,7 @@ fn actual_unautomated_instrument_and_effect_receive_sdk_loop_wrap_origins() {
                 velocity: 127,
                 on: true,
                 note_id: std::num::NonZeroU32::new(42),
+                is_live: false,
             };
             let note_off_pre = ForeignNote {
                 frame: 2,
@@ -788,6 +791,7 @@ fn actual_vst3_note_events_carry_sample_accurate_ppq_position() {
                 velocity: if on { 127 } else { 0 },
                 on,
                 note_id: std::num::NonZeroU32::new(id),
+                is_live: false,
             };
             let wait_for = |worker: &crate::plugin_worker::NativeWorker, blocks: u64| {
                 let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -900,6 +904,132 @@ fn actual_vst3_note_events_carry_sample_accurate_ppq_position() {
             let retirement = worker.retire_on_control().unwrap();
             assert!(retirement.failure.is_none() && retirement.native.status.success());
             assert_eq!(retirement.native.terminal.unwrap().blocks, 5);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+#[ignore = "requires explicit source-bound original SDK receipts"]
+fn actual_vst3_live_notes_set_k_is_live_and_sequenced_notes_leave_it_clear() {
+    const NAME: &str = "plugin_effects::callbacks::tests::actual_vst3_live_notes_set_k_is_live_and_sequenced_notes_leave_it_clear";
+    const CHILD: &str = "HEX_NOTE_LIVE_SDK_TEST_CHILD";
+    const K_NOTE_ON: i64 = 0;
+    const K_NOTE_OFF: i64 = 1;
+    const K_IS_LIVE: i64 = 1;
+
+    if std::env::var_os(CHILD).is_none() {
+        let trace_path =
+            std::env::temp_dir().join(format!("hex-note-live-{}.bin", std::process::id()));
+        let _ = std::fs::remove_file(&trace_path);
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--ignored"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "115")
+            .env("HEX_ORIGINAL_EVENT_TRACE", &trace_path)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let bytes = std::fs::read(&trace_path).unwrap();
+        let _ = std::fs::remove_file(&trace_path);
+        let words: Vec<i64> = bytes
+            .chunks_exact(8)
+            .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        let count = words[0] as usize;
+        assert_eq!(count, 8, "expected 8 recorded SDK note events: {words:?}");
+        let ev = |idx: usize| -> (i64, i64, i64, i64, i64) {
+            let b = 1 + idx * 6;
+            (words[b], words[b + 1], words[b + 2], words[b + 3], words[b + 4])
+        };
+        // Quantum 0: monitored live press + release (kIsLive) interleaved with sequenced press.
+        assert_eq!(ev(0), (K_NOTE_ON, 0, 60, 201, K_IS_LIVE));
+        assert_eq!(ev(1), (K_NOTE_OFF, 3, 60, 201, K_IS_LIVE));
+        // Quantum 1: computer-keyboard live press + release (kIsLive).
+        assert_eq!(ev(2), (K_NOTE_ON, 1, 60, 202, K_IS_LIVE));
+        assert_eq!(ev(3), (K_NOTE_OFF, 5, 60, 202, K_IS_LIVE));
+        // Quantum 2: overlapping sequenced clip notes sharing pitch 60 leave kIsLive clear
+        // and retain matching note IDs and exact sample offsets.
+        assert_eq!(ev(4), (K_NOTE_ON, 1, 60, 301, 0));
+        assert_eq!(ev(5), (K_NOTE_ON, 3, 60, 302, 0));
+        assert_eq!(ev(6), (K_NOTE_OFF, 5, 60, 301, 0));
+        assert_eq!(ev(7), (K_NOTE_OFF, 7, 60, 302, 0));
+        return;
+    }
+
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let binding = Binding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 31,
+            };
+            let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 2).unwrap();
+            let source = crate::plugin_worker::native_tests::original_instance_with_inputs(binding, 0);
+            let effect = NativeEffect::prepare_on_control(identity, source).unwrap();
+            let facts = Facts {
+                identity,
+                state: effect.configuration().clone(),
+                prepared: effect.prepared(),
+            };
+            let (mut workers, mut endpoints) =
+                NativeEffectCallbacks::from_effects_on_control(vec![effect]).unwrap();
+            let worker = &mut workers[0];
+
+            let note = |frame: u16, on: bool, id: u32, is_live: bool| ForeignNote {
+                frame,
+                channel: 2,
+                pitch: 60,
+                velocity: if on { 127 } else { 0 },
+                on,
+                note_id: std::num::NonZeroU32::new(id),
+                is_live,
+            };
+            let wait_for = |worker: &crate::plugin_worker::NativeWorker, blocks: u64| {
+                let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                while worker.published_blocks_on_control() < blocks {
+                    assert!(std::time::Instant::now() < until, "native PCM completion");
+                    std::thread::yield_now();
+                }
+            };
+
+            let batches: [&[ForeignNote]; 3] = [
+                &[note(0, true, 201, true), note(3, false, 201, true)],
+                &[note(1, true, 202, true), note(5, false, 202, true)],
+                &[
+                    note(1, true, 301, false),
+                    note(3, true, 302, false),
+                    note(5, false, 301, false),
+                    note(7, false, 302, false),
+                ],
+            ];
+            for (idx, notes) in batches.into_iter().enumerate() {
+                let mut out = [[0.0_f32; 2]; 8];
+                let mut run = || {
+                    endpoints.begin_host_callback(8).unwrap();
+                    endpoints
+                        .process_segment_with_notes(facts.node(), 0, &mut out, &[], notes, None)
+                        .unwrap();
+                    endpoints.finish_host_callback(true).unwrap();
+                };
+                #[cfg(feature = "allocation-probe")]
+                assert_eq!(allocations_during(&mut run), [0; 4]);
+                #[cfg(not(feature = "allocation-probe"))]
+                run();
+                wait_for(worker, 1 + idx as u64);
+            }
+
+            let retirement = worker.retire_on_control().unwrap();
+            assert!(retirement.failure.is_none() && retirement.native.status.success());
+            assert_eq!(retirement.native.terminal.unwrap().blocks, 3);
         })
         .unwrap()
         .join()

@@ -665,6 +665,7 @@ fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
             bytes: [0x90, 60, 100],
             len: 3,
             note_id: None,
+            is_live: false,
         })
         .unwrap();
     assert!(config.validate_block(&event, 0).is_err());
@@ -684,6 +685,7 @@ fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
             bytes: [0xb0, 64, 127],
             len: 3,
             note_id: None,
+            is_live: false,
         })
         .unwrap();
     assert!(instrument.validate_block(&event, 0).is_err());

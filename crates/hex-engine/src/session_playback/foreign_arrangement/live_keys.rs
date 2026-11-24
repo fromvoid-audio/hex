@@ -108,6 +108,49 @@ impl Key {
             velocity: if on { (self.word >> 8) as u8 } else { 0 },
             on,
             note_id: Some(self.id),
+            is_live: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::computer_keyboard::ComputerKeyboardInput;
+    use std::sync::Arc;
+
+    #[test]
+    fn computer_keyboard_audition_press_and_release_carry_is_live() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::Track(track) = editor
+            .execute(hex_project::Command::AddMidiTrack {
+                name: "midi".into(),
+            })
+            .unwrap()
+        else {
+            panic!("expected a MIDI track");
+        };
+        let input = Input {
+            track,
+            root: Arc::new(ComputerKeyboardInput::default()),
+            detached: false,
+        };
+        let mut keys = Gates::default();
+        let mut events = Vec::new();
+        let mut next_id = 0;
+
+        input.root.set_key(0, Some((60, 100, 1))).unwrap();
+        keys.stage(Some(&input), &mut next_id, &mut events).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].on && events[0].is_live && events[0].pitch == 60);
+        let press_id = events[0].note_id;
+
+        events.clear();
+        input.root.set_key(0, None).unwrap();
+        keys.stage(Some(&input), &mut next_id, &mut events).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(!events[0].on && events[0].is_live && events[0].pitch == 60);
+        assert_eq!(events[0].note_id, press_id);
     }
 }
