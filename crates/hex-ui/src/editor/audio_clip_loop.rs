@@ -220,7 +220,7 @@ impl EditorView {
                     }
                 }
             }
-        } else if g.handle == Handle::Body {
+        } else {
             g.preview = (g.root.view_start, g.root.view_end);
         }
         let changed = g.preview != previous;
