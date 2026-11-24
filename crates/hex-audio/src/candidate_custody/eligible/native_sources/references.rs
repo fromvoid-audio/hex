@@ -122,23 +122,19 @@ impl Bank {
     }
 }
 
-#[cfg(all(
-    test,
-    feature = "vst3-sdk-tests",
-    target_os = "macos",
-    target_arch = "aarch64"
-))]
-impl CandidateRoot {
-    /// Delegate to the actual reference fence without retaining a graph.
-    pub(crate) fn check_native_borrow_nodes_for_test(
-        &self,
-        nodes: &[hex_lattice::PreparedRuntimeInstance],
-    ) -> Result<(), &'static str> {
-        let work = lock(&self.0.eligible.work);
-        let bank = lock(&self.0.eligible.bank);
-        bank.sources
-            .references_for_nodes(nodes.iter(), &work.sources)
-            .map(|_| ())
-            .map_err(NativeReferenceFailure::message)
+crate::include_vst3_sdk_tests! {
+    impl CandidateRoot {
+        /// Delegate to the actual reference fence without retaining a graph.
+        pub(crate) fn check_native_borrow_nodes_for_test(
+            &self,
+            nodes: &[hex_lattice::PreparedRuntimeInstance],
+        ) -> Result<(), &'static str> {
+            let work = lock(&self.0.eligible.work);
+            let bank = lock(&self.0.eligible.bank);
+            bank.sources
+                .references_for_nodes(nodes.iter(), &work.sources)
+                .map(|_| ())
+                .map_err(NativeReferenceFailure::message)
+        }
     }
 }

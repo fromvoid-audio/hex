@@ -17,30 +17,30 @@ impl NativeEndpointBank {
             .callback()
             .transport_fault_for_test()
     }
-    #[cfg(all(test, feature = "vst3-sdk-tests"))]
-    pub(crate) fn test_pending_requests(&self, binding: Binding) -> Option<usize> {
-        Some(
+    crate::include_vst3_sdk_tests! {
+        pub(crate) fn test_pending_requests(&self, binding: Binding) -> Option<usize> {
+            Some(
+                self.entries
+                    .iter()
+                    .flatten()
+                    .find(|entry| entry.0.binding == binding)?
+                    .0
+                    .callback
+                    .as_ref()?
+                    .callback()
+                    .pending_requests_for_test(),
+            )
+        }
+        pub(crate) fn test_committed_frames(&self, binding: Binding) -> Option<u64> {
             self.entries
                 .iter()
                 .flatten()
-                .find(|entry| entry.0.binding == binding)?
+                .find(|e| e.0.binding == binding)?
                 .0
                 .callback
-                .as_ref()?
-                .callback()
-                .pending_requests_for_test(),
-        )
-    }
-    #[cfg(all(test, feature = "vst3-sdk-tests"))]
-    pub(crate) fn test_committed_frames(&self, binding: Binding) -> Option<u64> {
-        self.entries
-            .iter()
-            .flatten()
-            .find(|e| e.0.binding == binding)?
-            .0
-            .callback
-            .as_ref()
-            .map(NativeEffectEntry::committed_frames_for_test)
+                .as_ref()
+                .map(NativeEffectEntry::committed_frames_for_test)
+        }
     }
     pub(crate) fn quantum_frames(&self) -> Option<usize> {
         self.routing[..self.routing_len]
