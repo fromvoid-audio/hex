@@ -27,6 +27,7 @@ pub(crate) fn sum(values: impl IntoIterator<Item = usize>) -> Option<usize> {
 pub struct EndpointData {
     pub cache: AllocationData,
     pub pending: AllocationData,
+    pub prefetch_keys: AllocationData,
     pub source_keys: AllocationData,
     pub held_returns: AllocationData,
 }
@@ -35,6 +36,7 @@ impl EndpointData {
         sum([
             self.cache.bytes()?,
             self.pending.bytes()?,
+            self.prefetch_keys.bytes()?,
             self.source_keys.bytes()?,
             self.held_returns.bytes()?,
         ])
