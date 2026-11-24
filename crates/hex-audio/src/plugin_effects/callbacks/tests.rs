@@ -144,6 +144,229 @@ fn actual_foreign_instrument_notes_follow_accepted_callback_segments() {
     assert!(retirement.failure.is_none() && retirement.native.status.success());
     assert_eq!(retirement.native.terminal.unwrap().blocks, 4);
 }
+
+#[test]
+#[ignore = "requires explicit source-bound original SDK receipts"]
+fn actual_unautomated_effect_delivers_in_block_and_boundary_transport_transitions_to_sdk() {
+    const NAME: &str = "plugin_effects::callbacks::tests::actual_unautomated_effect_delivers_in_block_and_boundary_transport_transitions_to_sdk";
+    const CHILD: &str = "HEX_UNA_EFFECT_TIMING_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--ignored"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "126")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+
+    #[derive(Clone, Copy)]
+    struct FixtureClock {
+        frame: u64,
+        playing: bool,
+        beat: Option<u64>,
+        tempo: Option<u32>,
+        meter: Option<(u8, u8)>,
+        cycle: Option<(u64, u64)>,
+    }
+    impl hex_lattice::NativeInstrumentClock for FixtureClock {
+        fn beat_at_offset(&self, _: usize) -> Option<u64> {
+            None
+        }
+        fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+            self.frame.checked_add(offset as u64)
+        }
+        fn arrangement_beat_at_offset(&self, _: usize) -> Option<u64> {
+            self.beat
+        }
+        fn tempo_micro_bpm_at_offset(&self, _: usize) -> Option<u32> {
+            self.tempo
+        }
+        fn transport_is_running(&self) -> Option<bool> {
+            Some(self.playing)
+        }
+        fn arrangement_meter_at_offset(&self, _: usize) -> Option<(u8, u8)> {
+            self.meter
+        }
+        fn arrangement_cycle_at_offset(&self, _: usize) -> Option<(u64, u64)> {
+            self.cycle
+        }
+    }
+
+    // Matches variant 126's exact ProcessContext assertions for SDK blocks 1..=4.
+    let block1_playing = FixtureClock {
+        frame: 48_000,
+        playing: true,
+        beat: Some(5 << 31),
+        tempo: Some(123_125_000),
+        meter: None,
+        cycle: None,
+    };
+    let block2_paused = FixtureClock {
+        frame: 0,
+        playing: false,
+        beat: None,
+        tempo: None,
+        meter: None,
+        cycle: None,
+    };
+    let block3_playing = FixtureClock {
+        frame: 30_000,
+        playing: true,
+        beat: None,
+        tempo: None,
+        meter: Some((7, 8)),
+        cycle: Some((5 << 30, 11 << 31)),
+    };
+    let block4_paused = FixtureClock {
+        frame: 0,
+        playing: false,
+        beat: None,
+        tempo: None,
+        meter: Some((3, 4)),
+        cycle: None,
+    };
+    let block5_paused = FixtureClock {
+        frame: 0,
+        playing: false,
+        beat: None,
+        tempo: None,
+        meter: None,
+        cycle: Some((1 << 63, (1 << 63) + 1)),
+    };
+
+    enum Quantum {
+        Whole(Option<FixtureClock>),
+        Split(FixtureClock, FixtureClock),
+    }
+
+    let cases: [(&str, [Quantum; 6], [[f32; 8]; 4]); 2] = [
+        (
+            "running_to_paused_in_block_then_boundary_transitions",
+            [
+                Quantum::Whole(None),
+                Quantum::Split(block1_playing, block2_paused),
+                Quantum::Whole(Some(block3_playing)),
+                Quantum::Whole(Some(block4_paused)),
+                Quantum::Whole(Some(block5_paused)),
+                Quantum::Whole(None),
+            ],
+            [
+                [0.5; 8],
+                [0.625, 0.625, 0.625, 0.625, 0.75, 0.75, 0.75, 0.75],
+                [0.875; 8],
+                [1.0; 8],
+            ],
+        ),
+        (
+            "boundary_then_paused_to_running_in_block_then_boundary",
+            [
+                Quantum::Whole(None),
+                Quantum::Whole(Some(block1_playing)),
+                Quantum::Split(block2_paused, block3_playing),
+                Quantum::Whole(Some(block4_paused)),
+                Quantum::Whole(Some(block5_paused)),
+                Quantum::Whole(None),
+            ],
+            [
+                [0.5; 8],
+                [0.625; 8],
+                [0.75, 0.75, 0.75, 0.75, 0.875, 0.875, 0.875, 0.875],
+                [1.0; 8],
+            ],
+        ),
+    ];
+
+    let run_case = |index: usize, label: &str, quanta: [Quantum; 6], expected_gains: [[f32; 8]; 4]| {
+        let binding = Binding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 10 + index as u64,
+        };
+        let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 2).unwrap();
+        let source = crate::plugin_worker::native_tests::original_instance_for_binding(binding);
+        let effect = NativeEffect::prepare_on_control(identity, source).unwrap();
+        let facts = Facts {
+            identity,
+            state: effect.configuration().clone(),
+            prepared: effect.prepared(),
+        };
+        assert!(!facts.prepared.is_instrument_profile());
+        let (mut workers, mut endpoints) =
+            NativeEffectCallbacks::from_effects_on_control(vec![effect]).unwrap();
+        let worker = &mut workers[0];
+
+        let mut received = Vec::new();
+        for (quantum_index, quantum) in quanta.into_iter().enumerate() {
+            let mut output = [[0.25_f32; 2]; 8];
+            let mut run = || match quantum {
+                Quantum::Whole(clock) => {
+                    endpoints.begin_host_callback(8).unwrap();
+                    endpoints
+                        .process_segment(
+                            facts.node(),
+                            0,
+                            &mut output,
+                            clock.as_ref().map(|c| c as &dyn hex_lattice::NativeInstrumentClock),
+                        )
+                        .unwrap();
+                    endpoints.finish_host_callback(true).unwrap();
+                }
+                Quantum::Split(first, second) => {
+                    endpoints.begin_host_callback(4).unwrap();
+                    endpoints
+                        .process_segment(facts.node(), 0, &mut output[..4], Some(&first))
+                        .unwrap();
+                    endpoints.finish_host_callback(true).unwrap();
+                    endpoints.begin_host_callback(4).unwrap();
+                    endpoints
+                        .process_segment(facts.node(), 0, &mut output[4..], Some(&second))
+                        .unwrap();
+                    endpoints.finish_host_callback(true).unwrap();
+                }
+            };
+            #[cfg(feature = "allocation-probe")]
+            assert_eq!(allocations_during(&mut run), [0; 4]);
+            #[cfg(not(feature = "allocation-probe"))]
+            run();
+            received.push(output);
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while worker.published_blocks_on_control() <= quantum_index as u64 {
+                assert!(
+                    std::time::Instant::now() < until,
+                    "{label}: native PCM completion at quantum {quantum_index}"
+                );
+                std::thread::yield_now();
+            }
+        }
+        for (q, gains) in expected_gains.into_iter().enumerate() {
+            let expected = gains.map(|gain| [gain * 0.25; 2]);
+            assert_eq!(received[q + 2], expected, "{label}: quantum {q}");
+        }
+        let retirement = worker.retire_on_control().unwrap();
+        assert!(
+            retirement.failure.is_none() && retirement.native.status.success(),
+            "{label}: retirement failed: {:?}",
+            retirement.failure
+        );
+        assert_eq!(retirement.native.terminal.unwrap().blocks, 6, "{label}");
+    };
+    for (index, (label, quanta, expected_gains)) in cases.into_iter().enumerate() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || run_case(index, label, quanta, expected_gains))
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+}
 }
 
 /// Copied graph facts for one endpoint, so a node can be built while the
@@ -312,7 +535,7 @@ fn worker_quanta_use_their_first_aligned_clock_even_across_split_callbacks() {
     callback(2, Some(&Clock(100, true)));
     assert!(endpoint.worker.receive().unwrap().is_none());
     callback(4, Some(&Clock(500, false)));
-    let first = endpoint.worker.receive().unwrap().unwrap();
+    let mut first = endpoint.worker.receive().unwrap().unwrap();
     assert_eq!(
         first.timing,
         Some(ProcessTiming {
@@ -324,6 +547,21 @@ fn worker_quanta_use_their_first_aligned_clock_even_across_split_callbacks() {
             cycle_beats_raw: Some((0, 4 << 32)),
         })
     );
+    assert_eq!(
+        first.timing_changes.as_slice(),
+        &[hex_plugin_host::transport::TimingChange {
+            frame: 2,
+            timing: ProcessTiming {
+                arrangement_frame: 500,
+                playing: false,
+                arrangement_beat_raw: Some(500 << 32),
+                tempo_micro_bpm: std::num::NonZeroU32::new(123_125_000),
+                meter: Some((7, 8)),
+                cycle_beats_raw: Some((0, 4 << 32)),
+            },
+        }]
+    );
+    first.timing_changes = Default::default();
     endpoint.worker.complete(first).unwrap();
     callback(2, None);
     let second = endpoint.worker.receive().unwrap().unwrap();
@@ -338,6 +576,126 @@ fn worker_quanta_use_their_first_aligned_clock_even_across_split_callbacks() {
             cycle_beats_raw: None,
         })
     );
+}
+
+#[test]
+fn unautomated_effect_records_in_block_and_boundary_transport_transitions() {
+    use hex_plugin_host::transport::{ProcessTiming, TimingChange};
+
+    struct Clock(u64, bool);
+    impl hex_lattice::NativeInstrumentClock for Clock {
+        fn beat_at_offset(&self, _: usize) -> Option<u64> {
+            None
+        }
+        fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+            Some(self.0 + offset as u64)
+        }
+        fn transport_is_running(&self) -> Option<bool> {
+            Some(self.1)
+        }
+    }
+
+    let (mut callbacks, mut endpoints) = endpoints();
+    let endpoint = &mut endpoints[0];
+    let node = endpoint.facts.node();
+    assert!(node.automation.is_none());
+    assert!(!node.prepared.is_instrument_profile());
+
+    let mut callback = |frames: usize, clock: &Clock| {
+        let mut output = [[0.25; 2]; QUANTUM];
+        assert_eq!(
+            allocations_during(|| {
+                callbacks.begin_host_callback(frames).unwrap();
+                callbacks
+                    .process_segment(node, 0, &mut output[..frames], Some(clock))
+                    .unwrap();
+                callbacks.finish_host_callback(true).unwrap();
+            }),
+            [0; 4]
+        );
+    };
+
+    // running -> paused inside a 4-frame quantum at sample offset 2.
+    callback(2, &Clock(100, true));
+    assert!(endpoint.worker.receive().unwrap().is_none());
+    callback(2, &Clock(102, false));
+    let mut running_to_paused = endpoint.worker.receive().unwrap().unwrap();
+    assert_eq!(
+        running_to_paused.timing,
+        Some(ProcessTiming {
+            arrangement_frame: 100,
+            playing: true,
+            ..Default::default()
+        })
+    );
+    assert_eq!(
+        running_to_paused.timing_changes.as_slice(),
+        &[TimingChange {
+            frame: 2,
+            timing: ProcessTiming {
+                arrangement_frame: 102,
+                playing: false,
+                ..Default::default()
+            },
+        }]
+    );
+    running_to_paused.timing_changes = Default::default();
+    endpoint.worker.complete(running_to_paused).unwrap();
+
+    // paused -> running inside a 4-frame quantum at sample offset 2.
+    callback(2, &Clock(104, false));
+    assert!(endpoint.worker.receive().unwrap().is_none());
+    callback(2, &Clock(106, true));
+    let mut paused_to_running = endpoint.worker.receive().unwrap().unwrap();
+    assert_eq!(
+        paused_to_running.timing,
+        Some(ProcessTiming {
+            arrangement_frame: 104,
+            playing: false,
+            ..Default::default()
+        })
+    );
+    assert_eq!(
+        paused_to_running.timing_changes.as_slice(),
+        &[TimingChange {
+            frame: 2,
+            timing: ProcessTiming {
+                arrangement_frame: 106,
+                playing: true,
+                ..Default::default()
+            },
+        }]
+    );
+    paused_to_running.timing_changes = Default::default();
+    endpoint.worker.complete(paused_to_running).unwrap();
+
+    // Exact block-boundary transitions (running -> paused, then paused -> running)
+    // update the initial timing without emitting unnecessary timing_changes splits.
+    callback(4, &Clock(108, false));
+    let boundary_pause = endpoint.worker.receive().unwrap().unwrap();
+    assert_eq!(
+        boundary_pause.timing,
+        Some(ProcessTiming {
+            arrangement_frame: 108,
+            playing: false,
+            ..Default::default()
+        })
+    );
+    assert!(boundary_pause.timing_changes.as_slice().is_empty());
+    endpoint.worker.complete(boundary_pause).unwrap();
+
+    callback(4, &Clock(112, true));
+    let boundary_play = endpoint.worker.receive().unwrap().unwrap();
+    assert_eq!(
+        boundary_play.timing,
+        Some(ProcessTiming {
+            arrangement_frame: 112,
+            playing: true,
+            ..Default::default()
+        })
+    );
+    assert!(boundary_play.timing_changes.as_slice().is_empty());
+    endpoint.worker.complete(boundary_play).unwrap();
 }
 
 #[test]
