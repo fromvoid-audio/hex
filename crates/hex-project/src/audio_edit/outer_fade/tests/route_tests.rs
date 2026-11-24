@@ -94,6 +94,32 @@ fn split_reanchors_outer_fade_at_corners_for_retained_one_shots_and_repeated_pla
 }
 
 #[test]
+fn retained_section_fragments_keep_frame_and_musical_fade_age_across_a_prefix() {
+    for musical in [false, true] {
+        let (mut clip, tempo) = one_shot(30_000);
+        Arc::make_mut(&mut clip.audio_edit_mut().unwrap().domain).fade_start = 600;
+        if musical {
+            clip.audio_edit_mut()
+                .unwrap()
+                .anchor(30_000, &tempo)
+                .unwrap();
+            crate::audio_edit::project_clip(&mut clip, &tempo).unwrap();
+        }
+        for offset in [300, 1_200] {
+            let part = crate::edit::retained_audio_fragment(
+                &clip,
+                clip.start() + offset,
+                clip.start() + clip.duration() - 200,
+                ClipId(200),
+                &tempo,
+            )
+            .unwrap();
+            assert_retained_samples(&clip, &part, &tempo);
+        }
+    }
+}
+
+#[test]
 fn frame_prefix_rewinds_a_split_with_corner_anchored_outer_fade() {
     let (clip, tempo) = one_shot(30_000);
     let (_, right) = crate::clip_fade_split::split(&clip, 31_200, ClipId(200), &tempo).unwrap();
