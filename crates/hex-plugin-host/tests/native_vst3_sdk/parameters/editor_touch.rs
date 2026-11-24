@@ -58,6 +58,7 @@ fn actual_editor_takeover_restores_reading_and_unlaned_values_without_cutting_no
                         bytes: [status, 60, 64],
                         len: 3,
                         note_id: None,
+                        is_live: false,
                     })
                     .unwrap();
             }
@@ -625,6 +626,7 @@ fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
                         bytes: [status, 60, 64],
                         len: 3,
                         note_id: None,
+                        is_live: false,
                     })
                     .unwrap();
             }

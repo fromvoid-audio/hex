@@ -333,6 +333,8 @@ pub struct MidiEvent {
     pub len: u8,
     /// An optional scheduled note identity, bound to one native epoch.
     pub note_id: Option<std::num::NonZeroU32>,
+    /// True for monitored live input (VST3 `Event::kIsLive`); false for sequenced playback.
+    pub is_live: bool,
 }
 impl MidiEvent {
     fn valid(self, frames: usize) -> bool {
@@ -350,6 +352,7 @@ impl MidiEvent {
             && self.note_id.is_none_or(|id| {
                 matches!(self.bytes[0] & 0xf0, 0x80 | 0x90) && i32::try_from(id.get()).is_ok()
             })
+            && (!self.is_live || matches!(self.bytes[0] & 0xf0, 0x80 | 0x90))
     }
 }
 

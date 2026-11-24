@@ -129,6 +129,7 @@ fn first_programme_preserves_the_open_empty_quantum_and_starts_at_the_next_bound
                 bytes: [0x92, 60, 100],
                 len: 3,
                 note_id: std::num::NonZeroU32::new(1),
+                is_live: false,
             };
             let input = [[0.25, -0.5]; 8];
             let mut output = [[9.0; 2]; 8];

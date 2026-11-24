@@ -994,6 +994,7 @@ impl NativeEffectCallback {
                             bytes: [status | note.channel, note.pitch, note.velocity],
                             len: 3,
                             note_id: note.note_id,
+                            is_live: note.is_live,
                         })
                         .is_err()
                 {
