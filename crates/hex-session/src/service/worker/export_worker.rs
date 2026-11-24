@@ -2,16 +2,7 @@
 use crate::service::*;
 
 pub(crate) fn same_existing_file(left: &Path, right: &Path) -> bool {
-    let (Ok(left_metadata), Ok(right_metadata)) =
-        (std::fs::metadata(left), std::fs::metadata(right))
-    else {
-        return false;
-    };
-    same_media_file(&left_metadata, &right_metadata)
-        || matches!(
-            (std::fs::canonicalize(left), std::fs::canonicalize(right)),
-            (Ok(left_path), Ok(right_path)) if left_path == right_path
-        )
+    hex_storage::same_existing_file(left, right)
 }
 
 pub(crate) fn export_destination_is_original_media(
@@ -19,10 +10,9 @@ pub(crate) fn export_destination_is_original_media(
     destination: &Path,
     base: Option<&Path>,
 ) -> bool {
-    let Ok(destination_metadata) = std::fs::metadata(destination) else {
+    if std::fs::metadata(destination).is_err() {
         return false;
-    };
-    let destination_path = std::fs::canonicalize(destination).ok();
+    }
     project.assets().any(|asset| {
         let source = asset.path();
         let source = if source.is_absolute() {
@@ -30,26 +20,8 @@ pub(crate) fn export_destination_is_original_media(
         } else {
             base.unwrap_or(Path::new(".")).join(source)
         };
-        let Ok(source_metadata) = std::fs::metadata(&source) else {
-            return false;
-        };
-        same_media_file(&source_metadata, &destination_metadata)
-            || destination_path.as_ref().is_some_and(|destination| {
-                std::fs::canonicalize(&source).is_ok_and(|source| &source == destination)
-            })
+        hex_storage::same_existing_file(&source, destination)
     })
-}
-
-#[cfg(unix)]
-fn same_media_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    left.dev() == right.dev() && left.ino() == right.ino()
-}
-
-#[cfg(not(unix))]
-fn same_media_file(_left: &std::fs::Metadata, _right: &std::fs::Metadata) -> bool {
-    // The native VST hosting boundary currently supports macOS only.
-    false
 }
 
 pub(crate) fn latest_timeline_content_end(project: &Project) -> u64 {
