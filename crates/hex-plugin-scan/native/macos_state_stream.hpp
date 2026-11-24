@@ -89,6 +89,7 @@ public:
             overflow_bytes=std::max(overflow_bytes,static_cast<uint32_t>(std::min(observed,static_cast<size_t>(std::numeric_limits<uint32_t>::max()))));
             return Steinberg::kInvalidArgument;
         }
+        if (position>length) std::fill(bytes.begin()+length,bytes.begin()+position,0);
         if (count) std::memcpy(bytes.data()+position,buffer,static_cast<size_t>(count));
         position+=static_cast<size_t>(count);length=std::max(length,position);
         if (done) *done=count;return Steinberg::kResultOk;
@@ -132,6 +133,7 @@ public:
         }
         const auto target=static_cast<size_t>(requested);
         if (target>length) std::fill(bytes.begin()+length,bytes.begin()+target,0);
+        else if (target<length) std::fill(bytes.begin()+target,bytes.begin()+length,0);
         length=target;position=std::min(position,length);return Steinberg::kResultOk;
     }
 };
