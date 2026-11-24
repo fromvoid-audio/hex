@@ -166,9 +166,10 @@ impl Hosting {
 }
 
 impl CanonicalBasesCapture {
-    #[cfg(all(test, feature = "vst3-sdk-tests"))]
-    pub(crate) fn awaiting_processing_approval(&self) -> bool {
-        matches!(self.phase, Phase::Verify)
+    crate::include_vst3_sdk_tests! {
+        pub(crate) fn awaiting_processing_approval(&self) -> bool {
+            matches!(self.phase, Phase::Verify)
+        }
     }
     pub fn retained_control_metadata_bytes(&self) -> Option<usize> {
         std::mem::size_of::<Self>().checked_add(
