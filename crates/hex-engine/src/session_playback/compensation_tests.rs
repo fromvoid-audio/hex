@@ -2801,6 +2801,98 @@ fn operator_sync_companions_preserve_pcm_through_compensated_startup_and_partiti
 }
 
 #[test]
+fn clocked_main_and_detached_suffix_match_single_frames_across_loop_wraps() {
+    use crate::signal_graph::tests::state;
+    use hex_project::{Command, Created};
+
+    for delays in [&[][..], &[1][..]] {
+        let mut f = fixture(&[delays], 64);
+        f.editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: 64,
+                enabled: true,
+            })
+            .unwrap();
+        f.editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: state(2).unwrap(),
+            })
+            .unwrap();
+        let Created::Device(last) = f
+            .editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: state(5).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("Main delay")
+        };
+        let revision = prepare(&f).unwrap();
+        let mut blocked = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut scalar = SessionPlayback::new(revision).unwrap();
+        for runtime in [&mut blocked, &mut scalar] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        }
+        let compare = |blocked: &mut SessionPlayback, scalar: &mut SessionPlayback, count| {
+            let mut actual = vec![[0.0; 2]; count];
+            let mut expected = actual.clone();
+            let mut width = 0;
+            let mut first_width = None;
+            blocked
+                .render_with_node_signal_observer(
+                    &mut actual,
+                    Some(&mut |node, _, _, frames| {
+                        if node.owner == hex_lattice::ProcessorChainOwner::Main {
+                            first_width.get_or_insert(frames.len());
+                            width = width.max(frames.len());
+                        }
+                    }),
+                )
+                .unwrap();
+            for frame in &mut expected {
+                scalar.render(std::slice::from_mut(frame)).unwrap();
+            }
+            assert_eq!(actual, expected);
+            assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+            assert!(width > 1, "serial Main processed only single frames");
+            first_width.unwrap()
+        };
+        // Cross a wrap with an impulse still in the old five-frame stage.
+        compare(&mut blocked, &mut scalar, 67);
+        f.editor.execute(Command::RemoveDevice(last)).unwrap();
+        let replacement = prepare(&f).unwrap();
+        let inherit = |old: &mut SessionPlayback| {
+            let mut next = SessionPlayback::new(Arc::clone(&replacement)).unwrap();
+            next.try_inherit_state_from(old).unwrap();
+            assert!(
+                next.return_effect_tails
+                    .slots()
+                    .iter()
+                    .flatten()
+                    .any(|slot| slot.output_active)
+            );
+            next
+        };
+        let mut next = inherit(&mut blocked);
+        let mut reference = inherit(&mut scalar);
+        assert!(
+            compare(&mut next, &mut reference, 257) > 1,
+            "detached suffix forced a scalar first slice"
+        );
+        assert!(
+            next.return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .all(|slot| !slot.output_active)
+        );
+    }
+}
+
+#[test]
 fn main_removal_and_serial_replacement_keep_old_larger_stamp_horizon_and_pending_pcm() {
     use crate::signal_graph::tests::state;
     use hex_project::{Command, Created};

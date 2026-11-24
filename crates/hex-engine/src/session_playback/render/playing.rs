@@ -480,10 +480,31 @@ impl SessionPlayback {
                     route.current_first_frame = false;
                 }
             }
-            if self.compensation.is_some() && !upstream_frame_routing {
-                // Only Main needs delayed content clocks. Keep upstream work
-                // batched, then advance the existing stamp/Main/tail owners in
-                // exactly the original sample order, inside this transaction.
+            if !upstream_frame_routing
+                && chunk_frames > 1
+                && self.compensation.as_ref().is_some_and(|runtime| {
+                    runtime.delays.running_stamp_streak() >= runtime.horizon()
+                })
+            {
+                let window = &mut stamps[..chunk_frames];
+                self.fill_compensated_stamps(
+                    performance_frame,
+                    arrangement_frame,
+                    arrangement_loop_pass,
+                    window,
+                )?;
+                self.render_compensated_main_block(
+                    &mut output[output_offset..chunk_end],
+                    output_offset,
+                    window,
+                    &mut [[0.0; 2]; 256],
+                    foreign,
+                    observer,
+                    external,
+                )?;
+            } else if self.compensation.is_some() && !upstream_frame_routing {
+                // During pre-roll each stage must silence frames whose content
+                // origin has not yet arrived. Upstream processing stays batched.
                 for index in output_offset..chunk_end {
                     let advance = (index - output_offset) as u64;
                     let performance = performance_frame
@@ -517,8 +538,7 @@ impl SessionPlayback {
                     );
                     self.return_effect_tails.render_main_chunk(
                         &mut output[index..index + 1],
-                        self.compensation.as_ref(),
-                        &clock,
+                        MainTailClock::current(self.compensation.as_ref(), &clock),
                         index,
                         foreign,
                     )?;
@@ -568,8 +588,7 @@ impl SessionPlayback {
                 );
                 self.return_effect_tails.render_main_chunk(
                     &mut output[output_offset..chunk_end],
-                    self.compensation.as_ref(),
-                    &tail_clock,
+                    MainTailClock::current(self.compensation.as_ref(), &tail_clock),
                     output_offset,
                     foreign,
                 )?;
