@@ -954,3 +954,59 @@ fn block_compensated_route_matches_scalar_with_sidechain_group_return_and_main_l
         assert_eq!(render(&mut batched, size), render(&mut scalar, size));
     }
 }
+
+#[test]
+fn monitored_keyboard_blocks_match_scalar_press_and_release() {
+    use crate::{
+        computer_keyboard::ComputerKeyboardInput,
+        playback::{Playback, PlaybackCommand},
+    };
+    use hex_lattice_contract::NativeDeviceMetadata;
+    use hex_project::Command;
+
+    for instrument in [
+        hex_project::default_instrument_state().unwrap(),
+        hex_devices::fm4::device::FM4_DEFINITION
+            .default_state()
+            .unwrap(),
+    ] {
+        let mut f = fixture(&[&[7], &[]], 2048);
+        let track = f.tracks[1];
+        f.editor
+            .execute(Command::InsertInstrument {
+                track,
+                state: instrument,
+            })
+            .unwrap();
+        let revision = crate::signal_graph::tests::prepare(&f).unwrap();
+        let run = |scalar: bool| {
+            let mut playback = Playback::from_prepared(Arc::clone(&revision));
+            let keys = Arc::new(ComputerKeyboardInput::default());
+            playback
+                .prepare_computer_keyboard(f.editor.project(), track, Arc::clone(&keys))
+                .unwrap();
+            playback.apply(PlaybackCommand::Play);
+            playback.render(&mut [[0.0; 2]; 32]).unwrap();
+            let mut pcm = [[0.0; 2]; 514];
+            for (key, frames) in [Some((60, 100, 1)), None]
+                .into_iter()
+                .zip(pcm.chunks_mut(257))
+            {
+                keys.set_key(0, key).unwrap();
+                let mut max_slice = 0;
+                for chunk in frames.chunks_mut(if scalar { 1 } else { 257 }) {
+                    playback
+                        .render_with_node_signal_observer(
+                            chunk,
+                            Some(&mut |_, _, _, slice| max_slice = max_slice.max(slice.len())),
+                        )
+                        .unwrap();
+                }
+                assert_eq!(max_slice > 1, !scalar);
+                assert!(frames.iter().flatten().any(|x| x.abs() > 1e-6));
+            }
+            pcm.map(|frame| frame.map(f32::to_bits))
+        };
+        assert_eq!(run(false), run(true));
+    }
+}

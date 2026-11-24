@@ -1250,17 +1250,7 @@ impl SessionPlayback {
                                 )?;
                             }
                             if self.source_input_receiver() == Some(index) {
-                                let authored = self
-                                    .revision
-                                    .source_routing()
-                                    .contributors(index)
-                                    .iter()
-                                    .try_fold(0usize, |sum, &contributor| {
-                                        sum.checked_add(
-                                            self.source_voice_envelope(usize::from(contributor)),
-                                        )
-                                    })
-                                    .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                                let authored = self.authored_source_voices(index)?;
                                 source_live::render_source_live_input(
                                     &self.revision,
                                     self.computer_keyboard.as_mut().map(Box::as_mut),
@@ -1728,7 +1718,6 @@ impl SessionPlayback {
             || !self.playing
             || self.resident_source_scratch.len() != self.route_scratch.len()
             || self.resident_source_scratch.is_empty()
-            || self.computer_keyboard.is_some()
             || !self.current_sampler_keyboards.is_empty()
             || self.current_sampler_console
             || !self.browser_audition.is_idle()
@@ -1829,6 +1818,7 @@ impl SessionPlayback {
         let mut key_buf = [[0.0; 2]; 256];
         let mut send_buf = [[0.0; 2]; 256];
 
+        let source_input_receiver = self.source_input_receiver();
         for order in 0..owner_count {
             let owner = self
                 .compensation
@@ -1884,7 +1874,12 @@ impl SessionPlayback {
                     let remaining = &self.release_scratch[first_release..];
                     let releases = &remaining[..remaining
                         .partition_point(|entry| entry.location.track_index() == index)];
-                    let has_generator = !releases.is_empty()
+                    let keyboard_track = self.computer_keyboard.as_ref().is_some_and(|keyboard| {
+                        !keyboard.is_source_input() && keyboard.track() == route.id
+                    });
+                    let has_generator = keyboard_track
+                        || source_input_receiver == Some(index)
+                        || !releases.is_empty()
                         || has_analytic_source
                         || has_mutable_instrument
                         || has_foreign_instrument
@@ -1961,6 +1956,24 @@ impl SessionPlayback {
                         )?;
                     }
 
+                    if source_input_receiver == Some(index) {
+                        let authored = self.authored_source_voices(index)?;
+                        source_live::render_source_live_input(
+                            &self.revision,
+                            self.computer_keyboard.as_deref_mut(),
+                            self.mutable_instruments[index].as_mut(),
+                            &mut self.mutable_onsets,
+                            &mut self.mutable_events,
+                            authored,
+                            performance_frame,
+                            generator,
+                            &timing,
+                            true,
+                            None,
+                            self.pending_shared_live,
+                        )?;
+                    }
+
                     if has_mutable_instrument {
                         render_mutable_instrument_chunk(
                             MutableInstrumentChunkContext {
@@ -2011,6 +2024,19 @@ impl SessionPlayback {
                             true,
                             &mut generator[..frames],
                         )?;
+                    }
+
+                    if let Some(keyboard) = self
+                        .computer_keyboard
+                        .as_deref_mut()
+                        .filter(|_| keyboard_track)
+                    {
+                        let clock = keyboard
+                            .musical_clock(&timing, performance_frame, true)
+                            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                        keyboard
+                            .render(generator, Some(&clock))
+                            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     }
 
                     if has_foreign_instrument {

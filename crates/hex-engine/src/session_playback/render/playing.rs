@@ -197,6 +197,9 @@ impl SessionPlayback {
                     block_count =
                         block_count.min(usize::try_from(until_wrap).unwrap_or(usize::MAX));
                 }
+                if let Some(keyboard) = self.computer_keyboard.as_ref() {
+                    block_count = keyboard.source_input_span(block_count);
+                }
                 if self.can_block_compensated_route(block_count) {
                     let chunk_end = output_offset
                         .checked_add(block_count)
