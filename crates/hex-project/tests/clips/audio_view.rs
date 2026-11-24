@@ -1649,7 +1649,7 @@ fn session_audio_binding_keeps_ordinary_copy_and_refuses_unrepresented_placement
 }
 
 #[test]
-fn review_phase_fade_uses_actual_root_origin_before_and_after_tempo_edit() {
+fn phased_instance_fade_keeps_its_destination_clock_through_tempo_edits_and_history() {
     for phase in [0, Q / 2] {
         let (mut setup, clip) = beat_fixture();
         setup
@@ -1677,52 +1677,25 @@ fn review_phase_fade_uses_actual_root_origin_before_and_after_tempo_edit() {
         let check = |project: &Project| {
             let c = project.clip(clip).unwrap();
             let edit = c.audio_edit().unwrap();
-            let projection = AudioViewProjection::new(c, project.tempo_map()).unwrap();
-            let expected_origin = projection.root_origin() + i128::from(edit.domain.fade_start);
-            let delta = i128::from(3 * Q - edit.domain.fade_start);
-            let age = u64::try_from(
-                hex_project::audio_projection_frame(&authored, expected_origin + delta).unwrap()
-                    - hex_project::audio_projection_frame(&authored, expected_origin).unwrap(),
-            )
-            .unwrap();
-            let frame = edit.root_frame_at(3 * Q, project.tempo_map()).unwrap();
-            let actual = edit
-                .projected_fade(project.tempo_map())
+            let projection = c
+                .projected_outer_fade(project.tempo_map())
                 .unwrap()
-                .gain_at(frame)
                 .unwrap();
-            let expected = fade.gain_at(age);
-            eprintln!(
-                "phase={phase} root={} fade_start={} anchor={} stored={} age={age} gain={actual} expected={expected}",
-                projection.root_origin(),
-                edit.domain.fade_start,
-                expected_origin,
-                edit.domain
-                    .fade_projection
-                    .as_ref()
-                    .unwrap()
-                    .origin_beat_raw
-            );
-            assert!(
-                (actual - expected).abs() < 1e-6,
-                "actual projected envelope age phase={phase}"
-            );
-            assert_eq!(
-                edit.domain
-                    .fade_projection
-                    .as_ref()
-                    .unwrap()
-                    .origin_beat_raw,
-                expected_origin
-            );
-            assert_eq!(
-                edit.domain
-                    .fade_projection
-                    .as_ref()
-                    .unwrap()
-                    .local_start_raw,
-                edit.domain.fade_start
-            );
+            let author = edit.domain.fade_projection.as_ref().unwrap();
+            assert_eq!(author.tempo, authored);
+            assert_eq!(author.origin_beat_raw, i128::from(Q));
+            assert_eq!(author.local_start_raw, 0);
+            let start = authored.beat_to_frame(beat(Q)).unwrap();
+            for elapsed in [0, Q / 4, Q / 2, Q, 2 * Q] {
+                let position = beat(Q + elapsed);
+                let frame = project.tempo_map().beat_to_frame(position).unwrap();
+                let age = authored.beat_to_frame(position).unwrap() - start;
+                assert_eq!(
+                    projection.domain_position_at_frame(frame).unwrap(),
+                    Some(age)
+                );
+                assert_eq!(projection.gain_at(frame).unwrap(), fade.gain_at(age));
+            }
             assert_eq!(edit.placement.unwrap().cycle_phase, phase);
         };
         check(e.project());
@@ -2609,55 +2582,63 @@ fn leading_musical_once_keeps_the_cropped_read_across_a_tempo_change() {
 }
 
 #[test]
-fn clip_loop_markers_define_arrangement_gate_in_both_clocks() {
-    for (mut editor, id, first, last, expected) in [
-        {
-            let (e, id) = frame_fixture(AudioViewMode::Repeat);
-            (e, id, 24_000, 40_000, (12_000, 28_000))
-        },
-        {
-            let (e, id) = beat_fixture();
-            (e, id, 3 * Q, 4 * Q, (48_000, 72_000))
-        },
-        {
-            let (mut e, id) = beat_fixture();
-            e.execute(Command::SetProjectTempo {
-                tempo: Tempo::new(60_000_000).unwrap(),
-            })
-            .unwrap();
-            (e, id, 3 * Q, 4 * Q, (72_000, 96_000))
-        },
-    ] {
-        let before = editor.project().snapshot();
-        // Scope position uses its own gate anchor, independent of read phase.
-        // Freezing retains the old processing map while the new 60-bpm project
-        // map moves the musical clip onset 24_000 frames later.
-        editor
-            .execute(Command::ResizeAudioClipView {
-                clip: id,
-                operation: AudioViewResizeOperation::ScopeRange {
-                    start: first,
-                    end: last,
-                    looping: true,
-                },
-            })
-            .unwrap();
-        let next = editor.project().clip(id).unwrap();
-        assert_eq!((next.start(), next.start() + next.duration()), expected);
-        let projection = AudioViewProjection::new(next, editor.project().tempo_map()).unwrap();
-        assert_eq!(
-            projection.root_position_for_frame(next.start()).unwrap(),
-            Some(first)
-        );
-        let after = editor.project().snapshot();
-        assert_eq!(
-            Project::from_snapshot(after.clone()).unwrap().snapshot(),
-            after
-        );
-        assert!(editor.undo());
-        assert_eq!(editor.project().snapshot(), before);
-        assert!(editor.redo());
-        assert_eq!(editor.project().snapshot(), after);
+fn scope_changes_keep_active_repeat_bounds_and_place_new_loops_in_both_clocks() {
+    for mode in [AudioViewMode::Once, AudioViewMode::Repeat] {
+        for (mut editor, id, first, last, new_loop_bounds) in [
+            {
+                let (e, id) = frame_fixture(mode);
+                (e, id, 24_000, 40_000, (12_000, 28_000))
+            },
+            {
+                let (e, id) = beat_fixture_in(mode);
+                (e, id, 3 * Q, 4 * Q, (48_000, 72_000))
+            },
+            {
+                let (mut e, id) = beat_fixture_in(mode);
+                e.execute(Command::SetProjectTempo {
+                    tempo: Tempo::new(60_000_000).unwrap(),
+                })
+                .unwrap();
+                (e, id, 3 * Q, 4 * Q, (72_000, 96_000))
+            },
+        ] {
+            let before = editor.project().snapshot();
+            let old = editor.project().clip(id).unwrap();
+            let expected = if mode == AudioViewMode::Repeat {
+                (old.start(), old.start() + old.duration())
+            } else {
+                new_loop_bounds
+            };
+            editor
+                .execute(Command::ResizeAudioClipView {
+                    clip: id,
+                    operation: AudioViewResizeOperation::ScopeRange {
+                        start: first,
+                        end: last,
+                        looping: true,
+                    },
+                })
+                .unwrap();
+            let next = editor.project().clip(id).unwrap();
+            assert_eq!((next.start(), next.start() + next.duration()), expected);
+            let edit = next.audio_edit().unwrap();
+            assert_eq!((edit.view_start, edit.view_end), (first, last));
+            assert_eq!(edit.placement.unwrap().mode, AudioViewMode::Repeat);
+            let projection = AudioViewProjection::new(next, editor.project().tempo_map()).unwrap();
+            assert_eq!(
+                projection.root_position_for_frame(next.start()).unwrap(),
+                Some(first)
+            );
+            let after = editor.project().snapshot();
+            assert_eq!(
+                Project::from_snapshot(after.clone()).unwrap().snapshot(),
+                after
+            );
+            assert!(editor.undo());
+            assert_eq!(editor.project().snapshot(), before);
+            assert!(editor.redo());
+            assert_eq!(editor.project().snapshot(), after);
+        }
     }
 }
 
