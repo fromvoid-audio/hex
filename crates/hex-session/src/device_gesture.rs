@@ -15,6 +15,7 @@ mod group_tests;
 mod manual_tests;
 #[cfg(test)]
 mod snapshot_tests;
+pub use preparation::reconcile_command_for_project;
 pub(crate) use preparation::{command_for_snapshot, existing_device_command, manual_device_edit};
 
 pub use hex_lattice_contract::{
@@ -297,6 +298,7 @@ pub struct GestureClient {
     in_flight: Option<GestureRequest>,
     submitted: bool,
     recovery_pending: bool,
+    stranded_commit: Option<GestureRequest>,
     pending_begin: Option<GestureRequest>,
     latest_change: Option<GestureRequest>,
     terminal: Option<GestureRequest>,
@@ -360,6 +362,7 @@ impl GestureClient {
         });
         self.origin_parameters = None;
         self.accepted_pair = None;
+        self.stranded_commit = None;
         self.pending_begin = Some(GestureRequest::Begin { key, target });
         Ok(key)
     }
@@ -428,6 +431,7 @@ impl GestureClient {
         });
         self.origin_parameters = None;
         self.accepted_pair = None;
+        self.stranded_commit = None;
         self.pending_begin = Some(GestureRequest::Begin { key, target });
         Ok(key)
     }
@@ -507,6 +511,7 @@ impl GestureClient {
         } else {
             self.latest_change = Some(request);
         }
+        self.stranded_commit = None;
         Ok(active.sequence)
     }
 
@@ -530,6 +535,7 @@ impl GestureClient {
         snapshot.sequence = snapshot.sequence.saturating_add(1).max(1);
         snapshot.value = value;
         snapshot.secondary_value = None;
+        self.stranded_commit = None;
         self.latest_change = Some(GestureRequest::Change {
             key: snapshot.key,
             sequence: snapshot.sequence,
@@ -568,6 +574,7 @@ impl GestureClient {
         snapshot.sequence = snapshot.sequence.saturating_add(1).max(1);
         snapshot.value = value.first;
         snapshot.secondary_value = Some(value.second);
+        self.stranded_commit = None;
         self.latest_change = Some(GestureRequest::ChangePair {
             key: snapshot.key,
             sequence: snapshot.sequence,
@@ -596,6 +603,7 @@ impl GestureClient {
         snapshot.sequence = snapshot.sequence.saturating_add(1).max(1);
         snapshot.value = value;
         snapshot.secondary_value = None;
+        self.stranded_commit = None;
         self.latest_change = None;
         self.terminal = Some(GestureRequest::Commit {
             manual_edit: snapshot.manual_edit,
@@ -621,6 +629,7 @@ impl GestureClient {
         snapshot.sequence = snapshot.sequence.saturating_add(1).max(1);
         snapshot.value = value.first;
         snapshot.secondary_value = Some(value.second);
+        self.stranded_commit = None;
         self.latest_change = None;
         self.terminal = Some(GestureRequest::CommitPair {
             manual_edit: snapshot.manual_edit,
@@ -638,6 +647,7 @@ impl GestureClient {
         let Some(snapshot) = self.active else {
             return Err("no device gesture is active");
         };
+        self.stranded_commit = None;
         self.latest_change = None;
         self.terminal = Some(GestureRequest::Cancel { key: snapshot.key });
         Ok(())
@@ -690,6 +700,7 @@ impl GestureClient {
         self.origin_parameters = None;
         self.accepted_pair = None;
         self.recovery_pending = false;
+        self.stranded_commit = None;
         self.active = None;
         self.in_flight = None;
         self.submitted = false;
@@ -771,16 +782,19 @@ impl GestureClient {
             self.latest_change = None;
             self.terminal = None;
             self.recovery_pending = true;
+            self.stranded_commit = (request.phase() == GesturePhase::Commit).then_some(request);
             return true;
         }
         if !ack.accepted && ack.phase == GesturePhase::Begin {
             self.active = None;
             self.accepted_pair = None;
+            self.stranded_commit = None;
             self.pending_begin = None;
             self.latest_change = None;
             self.terminal = None;
         } else if matches!(ack.phase, GesturePhase::Commit | GesturePhase::Cancel) {
             self.recovery_pending = false;
+            self.stranded_commit = None;
             self.active = None;
             self.accepted_pair = None;
             self.latest_change = None;
@@ -793,6 +807,92 @@ impl GestureClient {
     /// A refused native terminal left an audible overlay which needs retry or Cancel.
     pub fn is_recovery_pending(&self) -> bool {
         self.recovery_pending
+    }
+
+    /// True when any Begin, Change, or terminal gesture request is queued or in flight.
+    pub fn has_pending_requests(&self) -> bool {
+        self.in_flight.is_some()
+            || self.pending_begin.is_some()
+            || self.latest_change.is_some()
+            || self.terminal.is_some()
+    }
+
+    /// True when a released `Commit*` was refused with a retained overlay and
+    /// has not been superseded by another drag change or explicit `Cancel`.
+    pub fn has_stranded_commit(&self) -> bool {
+        self.recovery_pending && self.stranded_commit.is_some()
+    }
+
+    /// Exact released commit intent retained when a terminal Commit was refused
+    /// with an audible overlay. Returns `None` when no commit is stranded or when
+    /// a Cancel was refused instead.
+    pub fn reconcilable_snapshot(&self) -> Option<GestureSnapshot> {
+        if !self.recovery_pending {
+            return None;
+        }
+        let mut snapshot = self.active?;
+        let commit = self.stranded_commit?;
+        if commit.key() != snapshot.key {
+            return None;
+        }
+        match commit {
+            GestureRequest::Commit {
+                sequence,
+                manual_edit,
+                value,
+                ..
+            } => {
+                snapshot.sequence = sequence;
+                snapshot.manual_edit |= manual_edit;
+                snapshot.value = value;
+                Some(snapshot)
+            }
+            GestureRequest::CommitPair {
+                sequence,
+                manual_edit,
+                value,
+                ..
+            } => {
+                snapshot.sequence = sequence;
+                snapshot.manual_edit |= manual_edit;
+                snapshot.value = value.first;
+                snapshot.secondary_value = Some(value.second);
+                Some(snapshot)
+            }
+            GestureRequest::CommitSnapshot {
+                touched_parameters,
+                sequence,
+                snapshot: parameters,
+                ..
+            } => {
+                snapshot.sequence = sequence;
+                let _ = snapshot
+                    .touched_parameters
+                    .merge(touched_parameters, parameters);
+                snapshot.manual_edit |= !snapshot.touched_parameters.is_empty();
+                snapshot.parameters = Some(parameters);
+                Some(snapshot)
+            }
+            GestureRequest::CommitEqCreation {
+                sequence,
+                snapshot: creation,
+                ..
+            } => {
+                snapshot.sequence = sequence;
+                snapshot.manual_edit = true;
+                snapshot.creation = Some(creation);
+                Some(snapshot)
+            }
+            GestureRequest::CommitPlugin {
+                sequence, value, ..
+            } => {
+                snapshot.sequence = sequence;
+                snapshot.manual_edit = true;
+                snapshot.plugin_value = Some(value);
+                Some(snapshot)
+            }
+            _ => None,
+        }
     }
 
     /// Borrowed cohort query: visible faders avoid copying the bounded control
@@ -961,6 +1061,139 @@ mod client_tests {
             assert!(!client.is_recovery_pending());
             assert!(client.begin(7, target, ParameterValue::Float(1.0)).is_ok());
         }
+    }
+
+    #[test]
+    fn stranded_commit_overlays_released_pair_values_while_refused_cancel_stays_unreconciled() {
+        let mut session = Session::new(48_000, 4, 0).unwrap();
+        let (track, _) = session
+            .command_prepared_revision(
+                hex_project::Command::AddTrack {
+                    name: "eq-track".into(),
+                },
+                None,
+            )
+            .unwrap();
+        let hex_project::Created::Track(track) = track else {
+            unreachable!();
+        };
+        let mut eq = hex_engine::eq::EqState::decode(
+            &hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.eq")).unwrap(),
+        )
+        .unwrap();
+        let node_id = if let Some(first_node) = eq.nodes.first() {
+            first_node.id
+        } else {
+            let id = hex_engine::eq::NodeId::new(1).unwrap();
+            eq.add(hex_engine::eq::Node::new(id, 100.0, 0.0, 0).unwrap())
+                .unwrap();
+            id
+        };
+        let state = eq.encode().unwrap();
+        let (created, _) = session
+            .command_prepared_revision(
+                hex_project::Command::InsertDevice {
+                    track,
+                    before: None,
+                    state,
+                },
+                None,
+            )
+            .unwrap();
+        let hex_project::Created::Device(device) = created else {
+            unreachable!();
+        };
+        let first = node_id
+            .parameter(hex_engine::eq::NodeParameter::Frequency)
+            .unwrap();
+        let second = node_id
+            .parameter(hex_engine::eq::NodeParameter::Gain)
+            .unwrap();
+        let mut client = GestureClient::default();
+        client
+            .begin_pair(
+                7,
+                device,
+                first,
+                second,
+                ParameterPairValue {
+                    first: ParameterValue::Float(100.0),
+                    second: ParameterValue::Float(0.0),
+                },
+            )
+            .unwrap();
+        let begin = client.next_request().unwrap();
+        assert!(client.acknowledge(&ack(begin, true)));
+        client
+            .change_pair(ParameterPairValue {
+                first: ParameterValue::Float(320.0),
+                second: ParameterValue::Float(3.5),
+            })
+            .unwrap();
+        let change = client.next_request().unwrap();
+        assert!(client.acknowledge(&ack(change, true)));
+        let accepted = client.snapshot().unwrap();
+        assert!(!client.has_stranded_commit());
+        assert!(client.reconcilable_snapshot().is_none());
+
+        client
+            .finish_pair(ParameterPairValue {
+                first: ParameterValue::Float(480.0),
+                second: ParameterValue::Float(-4.5),
+            })
+            .unwrap();
+        let commit = client.next_request().unwrap();
+        client.mark_submitted();
+        let mut refused = ack(commit, false);
+        refused.preview_retained = true;
+        assert!(client.acknowledge_with_snapshot(&refused, Some(accepted)));
+        assert!(client.is_recovery_pending());
+        assert!(!client.has_pending_requests());
+        assert!(client.has_stranded_commit());
+
+        let reconcilable = client
+            .reconcilable_snapshot()
+            .expect("released pair values must survive refused CommitPair");
+        assert_eq!(reconcilable.value, ParameterValue::Float(480.0));
+        assert_eq!(
+            reconcilable.secondary_value,
+            Some(ParameterValue::Float(-4.5))
+        );
+        assert!(reconcilable.manual_edit);
+        let command = reconcile_command_for_project(session.project(), reconcilable)
+            .unwrap()
+            .expect("native EQ pair must produce canonical command");
+        session.command_prepared_revision(command, None).unwrap();
+        let decoded =
+            hex_engine::eq::EqState::decode(session.project().device(device).unwrap().state())
+                .unwrap();
+        assert!((decoded.nodes[0].frequency_hz - 480.0).abs() < 1e-3);
+        assert!((decoded.nodes[0].gain_db - (-4.5)).abs() < 1e-3);
+
+        // An explicit Cancel refused with preview_retained clears stranded_commit.
+        client.cancel().unwrap();
+        let cancel = client.next_request().unwrap();
+        client.mark_submitted();
+        let mut cancel_refused = ack(cancel, false);
+        cancel_refused.preview_retained = true;
+        assert!(client.acknowledge_with_snapshot(&cancel_refused, Some(accepted)));
+        assert!(client.is_recovery_pending());
+        assert!(!client.has_stranded_commit());
+        assert!(client.reconcilable_snapshot().is_none());
+
+        // Host-owned PluginParameter snapshots return Ok(None) so callers account for them.
+        let mut plugin_snapshot = reconcilable;
+        plugin_snapshot.target = GestureTarget::PluginParameter {
+            device,
+            parameter: 0,
+        };
+        plugin_snapshot.secondary_value = None;
+        plugin_snapshot.plugin_value = Some(PluginParameterValue::new(0.5).unwrap());
+        assert!(
+            reconcile_command_for_project(session.project(), plugin_snapshot)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
