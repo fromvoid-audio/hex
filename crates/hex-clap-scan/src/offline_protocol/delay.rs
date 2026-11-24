@@ -402,14 +402,21 @@ mod tests {
     fn bounded_framing_identity_and_all_truncations() {
         let req = fresh();
         let p = response(&req);
-        assert!(decode_delay(&p, &req, &"a".repeat(64)).is_ok());
-        for n in 0..p.len() {
-            assert!(decode_delay(&p[..n], &req, &"a".repeat(64)).is_err());
+        if crate::platform() == "unsupported" {
+            assert_eq!(
+                decode_delay(&p, &req, &"a".repeat(64)).unwrap_err(),
+                "offline identity/capability refused"
+            );
+        } else {
+            assert!(decode_delay(&p, &req, &"a".repeat(64)).is_ok());
+            for n in 0..p.len() {
+                assert!(decode_delay(&p[..n], &req, &"a".repeat(64)).is_err());
+            }
+            let mut extra = p.clone();
+            extra.push(0);
+            assert!(decode_delay(&extra, &req, &"a".repeat(64)).is_err());
+            assert!(decode_delay(&p, &req, &"b".repeat(64)).is_err());
         }
-        let mut extra = p.clone();
-        extra.push(0);
-        assert!(decode_delay(&extra, &req, &"a".repeat(64)).is_err());
-        assert!(decode_delay(&p, &req, &"b".repeat(64)).is_err());
         let encoded = req.encode_bound(&"a".repeat(64)).unwrap();
         assert_eq!(&encoded[..8], b"HCOFFQ03");
     }
@@ -449,36 +456,38 @@ mod tests {
                 );
             }
         }
-        let fixture = response_for(&req, crate::platform());
-        for at in [
-            fixture.profile,
-            fixture.owner_version,
-            fixture.module,
-            fixture.demand,
-            fixture.demand + 4,
-            fixture.demand + 8,
-            fixture.demand + 12,
-            fixture.demand + 16,
-        ] {
-            let mut bad = fixture.bytes.clone();
-            bad[at] = if at == fixture.profile || at == fixture.module {
-                b'z'
-            } else {
-                bad[at] ^ 0xff
-            };
-            assert_eq!(
-                decode_delay(&bad, &req, &"a".repeat(64)).unwrap_err(),
-                "finite-delay response owner/demand refused"
-            );
-        }
-        for sample in 0..2 {
-            let mut bad = fixture.bytes.clone();
-            let at = fixture.pcm + sample * 4;
-            bad[at..at + 4].copy_from_slice(&f32::NAN.to_le_bytes());
-            assert_eq!(
-                decode_delay(&bad, &req, &"a".repeat(64)).unwrap_err(),
-                "non-finite processed PCM refused"
-            );
+        if crate::platform() != "unsupported" {
+            let fixture = response_for(&req, crate::platform());
+            for at in [
+                fixture.profile,
+                fixture.owner_version,
+                fixture.module,
+                fixture.demand,
+                fixture.demand + 4,
+                fixture.demand + 8,
+                fixture.demand + 12,
+                fixture.demand + 16,
+            ] {
+                let mut bad = fixture.bytes.clone();
+                bad[at] = if at == fixture.profile || at == fixture.module {
+                    b'z'
+                } else {
+                    bad[at] ^ 0xff
+                };
+                assert_eq!(
+                    decode_delay(&bad, &req, &"a".repeat(64)).unwrap_err(),
+                    "finite-delay response owner/demand refused"
+                );
+            }
+            for sample in 0..2 {
+                let mut bad = fixture.bytes.clone();
+                let at = fixture.pcm + sample * 4;
+                bad[at..at + 4].copy_from_slice(&f32::NAN.to_le_bytes());
+                assert_eq!(
+                    decode_delay(&bad, &req, &"a".repeat(64)).unwrap_err(),
+                    "non-finite processed PCM refused"
+                );
+            }
         }
         let unsupported = response_for(&req, "unsupported");
         assert_eq!(

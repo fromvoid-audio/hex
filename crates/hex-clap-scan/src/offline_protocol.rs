@@ -178,6 +178,7 @@ fn decode_record(
     let tail = r.u32()?;
     // This protocol is explicitly the original zero-latency stereo fixture profile.
     if sdk != SDK
+        || crate::platform() == "unsupported"
         || platform != crate::platform()
         || plugin_id != expected_id
         || sample_rate != request.sample_rate

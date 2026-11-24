@@ -100,6 +100,13 @@ fn packet() -> Vec<u8> {
 #[test]
 fn owned_response_and_every_truncation_refusal() {
     let b = packet();
+    if hex_clap_scan::platform() == "unsupported" {
+        assert_eq!(
+            decode(&b, &request()).unwrap_err(),
+            "offline identity/capability refused"
+        );
+        return;
+    }
     let r = decode(&b, &request()).unwrap();
     assert_eq!(r.left, vec![1.0; 4]);
     assert_eq!(r.parameters[0].max, 2.0);
@@ -114,6 +121,13 @@ fn owned_response_and_every_truncation_refusal() {
 fn response_identity_clock_capability_pcm_status_refuse() {
     let fixture = packet_for(hex_clap_scan::platform());
     let b = fixture.bytes;
+    if hex_clap_scan::platform() == "unsupported" {
+        assert_eq!(
+            decode(&b, &request()).unwrap_err(),
+            "offline identity/capability refused"
+        );
+        return;
+    }
     assert!(decode(&b, &request()).is_ok());
     for at in fixture.reject_offsets {
         let mut bad = b.clone();
@@ -244,7 +258,12 @@ fn strict_json_and_impossible_sleep_skip_refuse() {
     let fixture = packet_for(hex_clap_scan::platform());
     let mut b = fixture.bytes;
     b[fixture.status..fixture.status + 4].copy_from_slice(&5u32.to_le_bytes());
-    assert_eq!(decode(&b, &r).unwrap_err(), "invalid sleep skip refused");
+    let expected = if hex_clap_scan::platform() == "unsupported" {
+        "offline identity/capability refused"
+    } else {
+        "invalid sleep skip refused"
+    };
+    assert_eq!(decode(&b, &r).unwrap_err(), expected);
 }
 
 use hex_clap_scan::offline_protocol::{
@@ -376,6 +395,13 @@ fn midi_packet() -> Vec<u8> {
 #[test]
 fn midi_owned_profile_and_all_response_truncations_refuse() {
     let b = midi_packet();
+    if hex_clap_scan::platform() == "unsupported" {
+        assert_eq!(
+            decode_midi(&b, &midi_request(), &"0".repeat(64)).unwrap_err(),
+            "offline identity/capability refused"
+        );
+        return;
+    }
     let r = decode_midi(&b, &midi_request(), &"0".repeat(64)).unwrap();
     assert_eq!(r.events[0].value, 2.0);
     assert_eq!(r.final_gain, 0.5);
@@ -393,6 +419,13 @@ fn midi_owned_profile_and_all_response_truncations_refuse() {
 #[test]
 fn midi_response_profile_owner_port_abi_flags_clock_value_refuse() {
     let fixture = midi_packet_for(hex_clap_scan::platform());
+    if hex_clap_scan::platform() == "unsupported" {
+        assert_eq!(
+            decode_midi(&fixture.bytes, &midi_request(), &"0".repeat(64)).unwrap_err(),
+            "offline identity/capability refused"
+        );
+        return;
+    }
     let positions = [
         (fixture.profile, "MIDI state owner/profile refused"),
         (fixture.owner, "MIDI state owner/profile refused"),
@@ -540,9 +573,14 @@ fn midi_combined_capacity_does_not_double_and_output_order_bounds_refuse() {
     }
     let len = b.len() - 12;
     b[8..12].copy_from_slice(&(len as u32).to_le_bytes());
+    let expected = if hex_clap_scan::platform() == "unsupported" {
+        "offline identity/capability refused"
+    } else {
+        "MIDI block output capacity refused"
+    };
     assert_eq!(
         decode_midi(&b, &midi_request(), &"0".repeat(64)).unwrap_err(),
-        "MIDI block output capacity refused"
+        expected
     );
 }
 

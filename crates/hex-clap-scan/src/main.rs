@@ -38,7 +38,10 @@ fn main() -> ! {
 fn main() {
     macos_scan::scan();
 }
-#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), test))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(test, any(target_os = "linux", target_os = "macos"))
+))]
 mod macos_scan;
 #[cfg(not(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))))]
 fn main() {

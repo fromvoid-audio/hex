@@ -166,7 +166,10 @@ fn main() {
 fn main() {
     macos_gain::gain();
 }
-#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), test))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(test, any(target_os = "linux", target_os = "macos"))
+))]
 #[path = "../macos_gain.rs"]
 mod macos_gain;
 #[cfg(not(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))))]
