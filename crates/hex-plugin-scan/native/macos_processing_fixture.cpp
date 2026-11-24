@@ -63,6 +63,38 @@ struct ContextTrace {
         if (std::fclose(output)==0 && written) std::rename(pending.c_str(),path);
     }
 } context_trace;
+struct EventTrace {
+    static constexpr size_t capacity=32;
+    std::atomic<size_t> count{0};
+    // Per event: type, sampleOffset, pitch, noteId, flags, ppqPosition bits.
+    std::array<std::atomic<int64_t>,capacity*6> entries{};
+    void record(const Event& event) {
+        const auto slot=count.fetch_add(1,std::memory_order_relaxed);
+        if (slot>=capacity) return;
+        const size_t base=slot*6;
+        const bool on=event.type==Event::kNoteOnEvent;
+        entries[base].store(event.type,std::memory_order_relaxed);
+        entries[base+1].store(event.sampleOffset,std::memory_order_relaxed);
+        entries[base+2].store(on?event.noteOn.pitch:event.noteOff.pitch,std::memory_order_relaxed);
+        entries[base+3].store(on?event.noteOn.noteId:event.noteOff.noteId,std::memory_order_relaxed);
+        entries[base+4].store(event.flags,std::memory_order_relaxed);
+        int64_t ppq_bits=0;
+        std::memcpy(&ppq_bits,&event.ppqPosition,sizeof(ppq_bits));
+        entries[base+5].store(ppq_bits,std::memory_order_relaxed);
+    }
+    void publish(const char* path) const {
+        if (!path || std::strlen(path)>4096) return;
+        const auto recorded=std::min(count.load(std::memory_order_relaxed),capacity);
+        std::array<int64_t,1+capacity*6> values{};
+        values[0]=static_cast<int64_t>(recorded);
+        for (size_t i=0;i<recorded*6;++i) values[1+i]=entries[i].load(std::memory_order_relaxed);
+        const auto pending=std::string(path)+".next";
+        auto* output=std::fopen(pending.c_str(),"wb");if (!output) return;
+        const size_t total=1+recorded*6;
+        const bool written=std::fwrite(values.data(),sizeof(int64_t),total,output)==total;
+        if (std::fclose(output)==0 && written) std::rename(pending.c_str(),path);
+    }
+} event_trace;
 int next_mode=0,next_fault=HEX_INSTANCE_VARIANT;
 bool control() { const bool valid=pthread_main_np()!=0; if (!valid) ++observed.violations; return valid; }
 const TUID processing_id={0x48,0x45,0x58,0x50,1,2,3,4,5,6,7,8,9,10,11,12};
@@ -126,6 +158,7 @@ static void trace(int stage,int factory_refs=-1) {
         restoration.controller_created,restoration.controller_terminated,restoration.controller_destroyed};
     publish_trace(std::getenv("HEX_ORIGINAL_RESTORE_TRACE"),restored,15);
     if (pthread_main_np()) context_trace.publish(std::getenv("HEX_ORIGINAL_CONTEXT_TRACE"));
+    if (pthread_main_np()) event_trace.publish(std::getenv("HEX_ORIGINAL_EVENT_TRACE"));
 }
 static void fault_hang(int stage) {
     trace(stage);
@@ -1147,6 +1180,7 @@ public:
         for (int32 frame=0;frame<data.numSamples;++frame) {
             while (next_event<event_count && event.sampleOffset==frame) {
                 if (event.busIndex!=0) return kResultFalse;
+                event_trace.record(event);
                 const bool on=event.type==Event::kNoteOnEvent;
                 if ((!on && event.type!=Event::kNoteOffEvent) ||
                     (on?event.noteOn.channel:event.noteOff.channel)!=(fault==127?0:2) ||

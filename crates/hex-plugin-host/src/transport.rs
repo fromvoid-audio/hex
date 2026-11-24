@@ -1593,7 +1593,9 @@ impl Callback {
                     let expected = prior
                         .arrangement_frame
                         .checked_add(i64::from(offset as u16 - prior_frame));
-                    if expected != Some(change.arrangement_frame) {
+                    if expected != Some(change.arrangement_frame)
+                        || prior.tempo_micro_bpm != change.tempo_micro_bpm
+                    {
                         stage.state.input.add_timing_change(offset as u16, change)?;
                     }
                 }

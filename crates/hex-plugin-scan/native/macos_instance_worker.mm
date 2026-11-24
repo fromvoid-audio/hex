@@ -1201,9 +1201,10 @@ int main(int argc,char** argv) {
                             const size_t first_note=next_note;
                             while(next_note<packet.note_count && static_cast<size_t>(packet.notes[next_note].offset)<end)
                                 ++next_note;
+                            auto* slice_context=slice?&packet.timing_changes[slice-1].context:(packet.context?&*packet.context:nullptr);
                             if(!parameter_input.begin_sdk() || !parameter_output.begin_sdk() ||
                                 (event_channels && !input_notes.begin(packet.notes,next_note-first_note,
-                                    first_note,static_cast<int32_t>(first)))) {
+                                    first_note,static_cast<int32_t>(first),slice_context))) {
                                 error(channel,&*config,Processing);std::_Exit(Processing);
                             }
                             float* slice_inputs[]={left.data()+first,right.data()+first};
@@ -1215,7 +1216,7 @@ int main(int argc,char** argv) {
                             window.inputParameterChanges=parameter_input.size()?&parameter_input:nullptr;
                             window.outputParameterChanges=&parameter_output;
                             window.inputEvents=event_channels?&input_notes:nullptr;
-                            window.processContext=slice?&packet.timing_changes[slice-1].context:(packet.context?&*packet.context:nullptr);
+                            window.processContext=slice_context;
                             window.numSamples=width;phase.store(2,std::memory_order_release);
                             const auto host_frontier=instance.editor_frontier_on_worker();
                             const auto restart_frontier=instance.value_restart_frontier_on_worker();

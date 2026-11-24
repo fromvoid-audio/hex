@@ -1,9 +1,11 @@
 // A borrowed read-only SDK event list on the isolated processing lane.
 #pragma once
 #include "pluginterfaces/vst/ivstevents.h"
+#include "pluginterfaces/vst/ivstprocesscontext.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <thread>
@@ -75,15 +77,37 @@ class InputNotes final : public IEventList {
         return false;
     }
 public:
+    // Populate Event::ppqPosition from the active slice's ProcessContext:
+    // - When kProjectTimeMusicValid is set and playing with a valid positive
+    //   tempo and sample rate, advance by sampleOffset from projectTimeMusic.
+    // - When kProjectTimeMusicValid is set while stopped/paused or without a
+    //   valid tempo/sample rate, report projectTimeMusic at the slice origin.
+    // - When no project musical clock is available (null context or
+    //   kProjectTimeMusicValid clear), leave ppqPosition at 0.0.
     bool begin(const std::array<InputNote,INPUT_NOTE_COUNT>& notes,size_t length,
-               size_t first=0,int32 start_frame=0) {
+               size_t first=0,int32 start_frame=0,const ProcessContext* context=nullptr) {
         if(active || refused.load() || references.load()!=1 || first>notes.size() ||
             length>notes.size()-first) return false;
+        const bool has_music=context &&
+            (context->state&ProcessContext::kProjectTimeMusicValid) &&
+            std::isfinite(context->projectTimeMusic);
+        const bool advance_music=has_music &&
+            (context->state&ProcessContext::kPlaying) &&
+            (context->state&ProcessContext::kTempoValid) &&
+            std::isfinite(context->tempo) && context->tempo>0.0 &&
+            std::isfinite(context->sampleRate) && context->sampleRate>0.0;
+        const double sample_denom=advance_music?60.0*context->sampleRate:0.0;
         count=length;
         for(size_t index=0;index<count;++index) {
             const auto& note=notes[first+index];
             auto& event=events[index];
             event={};event.sampleOffset=note.offset-start_frame;
+            if(has_music) {
+                event.ppqPosition=advance_music
+                    ?context->projectTimeMusic+
+                        (static_cast<double>(event.sampleOffset)*context->tempo)/sample_denom
+                    :context->projectTimeMusic;
+            }
             // A byte-only MIDI message retains the SDK's absent note ID.
             const auto velocity=note.velocity/127.0f;
             if(note.on) {
