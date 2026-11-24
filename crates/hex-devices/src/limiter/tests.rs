@@ -816,7 +816,12 @@ fn invalid_rates_and_nonfinite_pcm_are_contained() {
 #[cfg(not(debug_assertions))]
 #[ignore = "run explicitly with --release --ignored --nocapture"]
 fn optimized_transaction_throughput() {
-    for (rate, mode, routing, block) in [(48000, 0, 0, 256), (192000, 2, 1, 64)] {
+    for (rate, mode, routing, block) in [
+        (48000, 0, 0, 256),
+        (48000, 2, 0, 256),
+        (48000, 2, 1, 256),
+        (192000, 2, 1, 64),
+    ] {
         let f = factory(
             rate,
             &[

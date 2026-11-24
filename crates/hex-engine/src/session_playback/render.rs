@@ -10,6 +10,7 @@ mod route_chunk;
 mod shared_source;
 mod source_live;
 use super::capture::CaptureSink;
+use super::return_effect_tails::MainTailClock;
 use super::{commands::transition_captures, *};
 use crate::compile::PreparedAudioSource;
 use crate::{MediaPages, MidiTiming, StreamedPageSpan, render_streamed_page_span};

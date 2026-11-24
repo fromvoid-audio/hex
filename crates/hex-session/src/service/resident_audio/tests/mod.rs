@@ -52,6 +52,9 @@ struct Observed {
     plugin_terminals: Mutex<Vec<(Arc<PluginEffectControl>, bool)>>,
     cancel_at_admission: Mutex<Option<Arc<PluginEffectControl>>>,
     cancel_after_admission: Mutex<Option<Arc<PluginEffectControl>>>,
+    readiness: Mutex<Option<ResidentPublicationReadiness>>,
+    auto_output_identity: std::sync::atomic::AtomicU64,
+    next_audio_revision: std::sync::atomic::AtomicU64,
 }
 struct OfflineSink {
     observed: Arc<Observed>,
@@ -110,6 +113,13 @@ impl WorkerAudioSink for OfflineSink {
     }
     fn resident_publication_enabled(&self) -> bool {
         true
+    }
+    fn resident_publication_readiness(&mut self) -> ResidentPublicationReadiness {
+        self.observed
+            .readiness
+            .lock()
+            .unwrap()
+            .unwrap_or(ResidentPublicationReadiness::NoOutput)
     }
     fn confirm_source_effect_publication(
         &mut self,
@@ -246,7 +256,34 @@ impl WorkerAudioSink for OfflineSink {
                             audio_revision,
                         }
                     }
-                    None => ResidentPublicationAcceptance::OfflineRetained,
+                    None => {
+                        let output_identity =
+                            self.observed.auto_output_identity.load(Ordering::Acquire);
+                        if output_identity != 0 {
+                            let audio_revision = self
+                                .observed
+                                .next_audio_revision
+                                .fetch_add(1, Ordering::AcqRel)
+                                + 1;
+                            *self.observed.readiness.lock().unwrap() =
+                                Some(ResidentPublicationReadiness::Applied {
+                                    submission: ResidentRuntimeLoop {
+                                        source_origin: ResidentSourceOrigin::Unknown,
+                                        output_identity,
+                                        audio_revision,
+                                        source_context: Some(metadata.context),
+                                        section_loop: None,
+                                    },
+                                    publication_in_flight: false,
+                                });
+                            ResidentPublicationAcceptance::Submitted {
+                                output_identity,
+                                audio_revision,
+                            }
+                        } else {
+                            ResidentPublicationAcceptance::OfflineRetained
+                        }
+                    }
                 })
             }
             Err(error) => Err(ResidentPublicationRefusal {
@@ -2196,4 +2233,323 @@ fn check_locator_checkpoint_seek(stale: bool, cancelled: bool, conflict: bool, s
         assert!(replacement.project_replaced);
         assert!(replacement.state.project.arrangement_locators().is_empty());
     }
+}
+
+#[test]
+fn resident_paired_drag_skips_unchanged_publications_handles_retry_lost_output_and_interleaved_solo_mute()
+ {
+    use crate::device_gesture::{
+        GestureClient, GestureRequest, ParameterPairValue, ParameterValue,
+    };
+    use hex_lattice_contract::{DeviceTypeId, ParameterId};
+
+    let observed = Arc::new(Observed::default());
+    observed.auto_output_identity.store(1, Ordering::Release);
+    let sink = OfflineSink {
+        observed: Arc::clone(&observed),
+        pending: None,
+    };
+    let retained = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES * 2;
+    let mut service = Service::with_audio_sink_and_native_reservation(
+        16,
+        1024,
+        None,
+        Box::new(sink),
+        crate::ResidentNativeReservation {
+            storage: hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 64,
+                root_rows: 64,
+                max_retained_bytes: retained,
+                max_construction_peak_bytes: retained
+                    + hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+            },
+            max_scan_frames: 1024,
+        },
+    )
+    .unwrap();
+    let next = || {
+        service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .expect("service event")
+    };
+    let _initial = next();
+
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "eq track".into(),
+        }))
+        .unwrap();
+    let track_event = next();
+    let track = track_event.state.project.tracks()[0].id();
+
+    let eq8 = DeviceTypeId::new("hex.eq8").unwrap();
+    service
+        .submit(Request::AddNativeDevice {
+            track,
+            class: hex_engine::NativeDeviceClass::Effect,
+            type_id: Box::new(eq8),
+            before: None,
+        })
+        .unwrap();
+    let dev_event = next();
+    let device = dev_event.state.project.tracks()[0].devices()[0].id();
+    let original_state = dev_event
+        .state
+        .project
+        .device(device)
+        .unwrap()
+        .state()
+        .clone();
+    let first = ParameterId::new(18).unwrap();
+    let second = ParameterId::new(19).unwrap();
+    let initial_pair = ParameterPairValue {
+        first: hex_engine::native_device_parameter(&original_state, first).unwrap(),
+        second: hex_engine::native_device_parameter(&original_state, second).unwrap(),
+    };
+    let pair_a = ParameterPairValue {
+        first: ParameterValue::Float(635.8688),
+        second: ParameterValue::Float(-9.05508),
+    };
+    let pair_b = ParameterPairValue {
+        first: ParameterValue::Float(1_400.0),
+        second: ParameterValue::Float(4.5),
+    };
+
+    let mut client = GestureClient::default();
+    let key = client
+        .begin_pair(0, device, first, second, initial_pair)
+        .unwrap();
+    let begin_req = client.next_request().unwrap();
+    client.mark_submitted();
+    service.submit(Request::device_gesture(begin_req)).unwrap();
+    let begin_ev = next();
+    assert!(begin_ev.gesture_ack.as_ref().unwrap().accepted);
+    assert!(client.acknowledge(begin_ev.gesture_ack.as_ref().unwrap()));
+
+    let pubs_before = observed.publications.lock().unwrap().len();
+    let preps_before = observed.effect_compilations.load(Ordering::Acquire);
+
+    // First ChangePair prepares and publishes exactly once.
+    client.change_pair(pair_a).unwrap();
+    let first_change = client.next_request().unwrap();
+    client.mark_submitted();
+    service
+        .submit(Request::device_gesture(first_change))
+        .unwrap();
+    let first_ev = next();
+    assert!(first_ev.gesture_ack.as_ref().unwrap().accepted);
+    assert!(client.acknowledge(first_ev.gesture_ack.as_ref().unwrap()));
+    assert_eq!(observed.publications.lock().unwrap().len(), pubs_before + 1);
+    assert_eq!(
+        observed.effect_compilations.load(Ordering::Acquire),
+        preps_before + 1
+    );
+
+    // Client burst of identical pointer samples queues zero requests and zero publications.
+    for _ in 0..15 {
+        client.change_pair(pair_a).unwrap();
+        assert_eq!(client.next_request(), None);
+    }
+    assert_eq!(observed.publications.lock().unwrap().len(), pubs_before + 1);
+    assert_eq!(
+        observed.effect_compilations.load(Ordering::Acquire),
+        preps_before + 1
+    );
+
+    // Direct worker duplicate ChangePair burst also produces zero preparations/publications.
+    for seq in 2..=6 {
+        service
+            .submit(Request::device_gesture(GestureRequest::ChangePair {
+                key,
+                sequence: seq,
+                value: pair_a,
+            }))
+            .unwrap();
+        let dup_ev = next();
+        let ack = dup_ev.gesture_ack.as_ref().unwrap();
+        assert!(ack.accepted);
+        assert_eq!(ack.sequence, seq);
+        assert_eq!(
+            dup_ev.device_preview.as_ref().unwrap().identity.sequence,
+            1,
+            "unchanged worker skip preserves the actual published audio preview identity"
+        );
+    }
+    assert_eq!(observed.publications.lock().unwrap().len(), pubs_before + 1);
+    assert_eq!(
+        observed.effect_compilations.load(Ordering::Acquire),
+        preps_before + 1
+    );
+
+    // Interleave unchanged-value drag samples with Solo and Mute: no queued preview backlog.
+    for _ in 0..10 {
+        client.change_pair(pair_a).unwrap();
+        assert_eq!(client.next_request(), None);
+    }
+    service
+        .submit(Request::Edit(Command::ToggleSolo {
+            track,
+            exclusive: true,
+        }))
+        .unwrap();
+    let solo_ev = next();
+    assert!(solo_ev.error.is_none());
+    assert!(solo_ev.state.project.track(track).unwrap().soloed());
+    assert!(solo_ev.device_preview.is_some());
+    assert_eq!(
+        solo_ev
+            .device_preview
+            .as_ref()
+            .unwrap()
+            .identity
+            .canonical_revision,
+        solo_ev.state.revision
+    );
+
+    for _ in 0..10 {
+        client.change_pair(pair_a).unwrap();
+        assert_eq!(client.next_request(), None);
+    }
+    service
+        .submit(Request::Edit(Command::ToggleMute(track)))
+        .unwrap();
+    let mute_ev = next();
+    assert!(mute_ev.error.is_none());
+    assert!(mute_ev.state.project.track(track).unwrap().muted());
+    assert!(mute_ev.device_preview.is_some());
+
+    // After Solo/Mute rebase, an unchanged direct ChangePair at the rebased revision still skips.
+    let pubs_after_switches = observed.publications.lock().unwrap().len();
+    let preps_after_switches = observed.effect_compilations.load(Ordering::Acquire);
+    service
+        .submit(Request::device_gesture(GestureRequest::ChangePair {
+            key,
+            sequence: 7,
+            value: pair_a,
+        }))
+        .unwrap();
+    let post_rebase_dup = next();
+    assert!(post_rebase_dup.gesture_ack.as_ref().unwrap().accepted);
+    assert_eq!(
+        observed.publications.lock().unwrap().len(),
+        pubs_after_switches
+    );
+    assert_eq!(
+        observed.effect_compilations.load(Ordering::Acquire),
+        preps_after_switches
+    );
+
+    // Refused callback readiness forces retry preparation and publication for the same pair.
+    *observed.readiness.lock().unwrap() = Some(ResidentPublicationReadiness::Refused {
+        submission: ResidentRuntimeLoop {
+            source_origin: ResidentSourceOrigin::Unknown,
+            output_identity: 1,
+            audio_revision: 999,
+            source_context: Some(hex_engine::AudioSourceContext {
+                project_generation: 0,
+                editor_revision: mute_ev.state.revision,
+            }),
+            section_loop: None,
+        },
+        applied_revision: 1,
+        publication_in_flight: false,
+    });
+    service
+        .submit(Request::device_gesture(GestureRequest::ChangePair {
+            key,
+            sequence: 8,
+            value: pair_a,
+        }))
+        .unwrap();
+    let retry_ev = next();
+    assert!(retry_ev.gesture_ack.as_ref().unwrap().accepted);
+    assert_eq!(
+        observed.publications.lock().unwrap().len(),
+        pubs_after_switches + 1
+    );
+    assert_eq!(
+        observed.effect_compilations.load(Ordering::Acquire),
+        preps_after_switches + 1
+    );
+
+    // Lost/replaced audio output forces preparation and publication onto the new output.
+    observed.auto_output_identity.store(2, Ordering::Release);
+    *observed.readiness.lock().unwrap() = Some(ResidentPublicationReadiness::Idle {
+        output_identity: 2,
+        applied_revision: 0,
+        publication_in_flight: false,
+    });
+    service
+        .submit(Request::device_gesture(GestureRequest::ChangePair {
+            key,
+            sequence: 9,
+            value: pair_a,
+        }))
+        .unwrap();
+    let new_output_ev = next();
+    assert!(new_output_ev.gesture_ack.as_ref().unwrap().accepted);
+    assert_eq!(
+        observed.publications.lock().unwrap().len(),
+        pubs_after_switches + 2
+    );
+    assert_eq!(
+        observed.effect_compilations.load(Ordering::Acquire),
+        preps_after_switches + 2
+    );
+
+    // Changed value prepares/publishes and CommitPair settles canonical state & Undo/Redo.
+    service
+        .submit(Request::device_gesture(GestureRequest::ChangePair {
+            key,
+            sequence: 10,
+            value: pair_b,
+        }))
+        .unwrap();
+    let changed_ev = next();
+    assert!(changed_ev.gesture_ack.as_ref().unwrap().accepted);
+    assert_eq!(
+        observed.publications.lock().unwrap().len(),
+        pubs_after_switches + 3
+    );
+
+    service
+        .submit(Request::device_gesture(GestureRequest::CommitPair {
+            key,
+            sequence: 11,
+            manual_edit: true,
+            value: pair_b,
+        }))
+        .unwrap();
+    let commit_ev = next();
+    assert!(commit_ev.gesture_ack.as_ref().unwrap().accepted);
+    let committed_state = commit_ev.state.project.device(device).unwrap().state();
+    assert_eq!(
+        hex_engine::native_device_parameter(committed_state, first).unwrap(),
+        pair_b.first
+    );
+    assert_eq!(
+        hex_engine::native_device_parameter(committed_state, second).unwrap(),
+        pair_b.second
+    );
+
+    service.submit(Request::Undo).unwrap();
+    let undo_ev = next();
+    assert_eq!(
+        undo_ev.state.project.device(device).unwrap().state(),
+        &original_state
+    );
+    service.submit(Request::Redo).unwrap();
+    let redo_ev = next();
+    assert_eq!(
+        hex_engine::native_device_parameter(
+            redo_ev.state.project.device(device).unwrap().state(),
+            first,
+        )
+        .unwrap(),
+        pair_b.first
+    );
+
+    service.shutdown(crate::test_wait::HANG_BOUND).unwrap();
 }

@@ -106,6 +106,30 @@ fn global_tempo_preserves_frozen_event_and_curved_fade_pcm_through_move_split_co
     assert_eq!(editor.project(), &previous);
     assert!(editor.redo());
     assert_eq!(editor.project(), &changed);
+    let mut dry = Editor::new(editor.project().clone(), 1).unwrap();
+    dry.execute(Command::SetClipFades {
+        clip,
+        fade_in: 0,
+        fade_out: 0,
+    })
+    .unwrap();
+    let mut split_pcm = render(&prepare(&dry, &media, &context), start, 12_000, 53);
+    let left = ClipFade::new(2001, 0, 500, 0)
+        .unwrap()
+        .with_shape(0, 0, 600, 0)
+        .unwrap();
+    let tail = ClipFade::new(9999, 0, 0, 1000)
+        .unwrap()
+        .with_shape(0, 0, 0, -500)
+        .unwrap();
+    for (i, frame) in split_pcm.iter_mut().enumerate() {
+        let gain = if i < 2001 {
+            left.gain_at(i as u64)
+        } else {
+            tail.gain_at((i - 2001) as u64)
+        };
+        *frame = frame.map(|sample| sample * gain);
+    }
     let Created::Clip(right) = editor
         .execute(Command::SplitClip {
             clip,
@@ -115,10 +139,13 @@ fn global_tempo_preserves_frozen_event_and_curved_fade_pcm_through_move_split_co
     else {
         panic!("split")
     };
-    assert_eq!(
-        render(&prepare(&editor, &media, &context), start, 12_000, 64),
-        before
-    );
+    for (i, (actual, expected)) in render(&prepare(&editor, &media, &context), start, 12_000, 64)
+        .iter()
+        .zip(&split_pcm)
+        .enumerate()
+    {
+        assert_eq!(actual, expected, "frozen split frame {i}");
+    }
     let Created::Clip(copied) = editor
         .execute(Command::CopyClipTo {
             clip: right,
@@ -133,12 +160,12 @@ fn global_tempo_preserves_frozen_event_and_curved_fade_pcm_through_move_split_co
     assert_eq!(length, 9999);
     assert_eq!(
         render(&prepare(&editor, &media, &context), 50_000, length, 63),
-        before[2001..]
+        split_pcm[2001..]
     );
 }
 
 #[test]
-fn faster_global_tempo_crops_adjacent_audio_without_changing_retained_prefix_pcm() {
+fn faster_global_tempo_crops_adjacent_audio_with_retained_source_and_corner_fades() {
     for repeated_frozen_root in [false, true] {
         let (mut editor, first, media) = fixture(repeated_frozen_root);
         let track = editor.project().tracks()[0].id();
@@ -225,7 +252,20 @@ fn faster_global_tempo_crops_adjacent_audio_without_changing_retained_prefix_pcm
         }
         let before = editor.project().clone();
         let context = AudioTransformPreparation::default();
-        let original = prepare(&editor, &media, &context);
+        let mut reference = Editor::new(before.clone(), 4).unwrap();
+        // The first clip alone has a fade. A captured processing-root fade
+        // reads with the repeated source. A placed fade reads in song time.
+        if !repeated_frozen_root {
+            reference
+                .execute(Command::SetClipFades {
+                    clip: first,
+                    fade_in: 0,
+                    fade_out: 0,
+                })
+                .unwrap();
+        }
+        let original = prepare(&reference, &media, &AudioTransformPreparation::default());
+        let _before_tempo_change = prepare(&editor, &media, &context);
         editor
             .execute(Command::SetProjectTempo {
                 tempo: Tempo::new(333_333_333).unwrap(),
@@ -248,7 +288,21 @@ fn faster_global_tempo_crops_adjacent_audio_without_changing_retained_prefix_pcm
                 8_000
             };
             assert_eq!(current.duration(), expected_length);
-            let expected = render(&original, old.start(), expected_length as usize, 31);
+            let mut expected = render(&original, old.start(), expected_length as usize, 31);
+            if id == first && !repeated_frozen_root {
+                let authored = old.retained_fade();
+                let fade = ClipFade::new(
+                    expected_length,
+                    0,
+                    authored.fade_in().min(expected_length),
+                    authored.fade_out().min(expected_length),
+                )
+                .unwrap();
+                for (index, frame) in expected.iter_mut().enumerate() {
+                    let gain = fade.gain_at(index as u64);
+                    *frame = frame.map(|v| v * gain);
+                }
+            }
             if index == 1 {
                 assert!(expected[..1_000].iter().any(|frame| *frame != [0.0; 2]));
                 assert!(expected[1_000..].iter().all(|frame| *frame == [0.0; 2]));

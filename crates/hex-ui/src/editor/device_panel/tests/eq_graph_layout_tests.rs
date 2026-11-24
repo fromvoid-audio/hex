@@ -1399,9 +1399,10 @@ fn eq_production_rail_screenshot_sizes_keep_controls_disjoint_and_slope_popup_op
             format!("device-{}-parameter-{}{suffix}", device.value(), id.value()).into_boxed_str(),
         ) as &'static str
     };
-    // 1314x426 is also tested as a deliberately short viewport stress case;
-    // the actual production minimum is 960x600, not inferred from a cropped image.
+    // The editor's minimum is 880 × 540. The shorter screenshot viewport
+    // exercises geometry even when only part of the device is visible.
     for (width, height) in [
+        (880.0, 540.0),
         (960.0, 600.0),
         (1314.0, 426.0),
         (1314.0, 600.0),
@@ -1445,7 +1446,10 @@ fn eq_production_rail_screenshot_sizes_keep_controls_disjoint_and_slope_popup_op
                 ))
                 .unwrap();
             assert!(
-                row.left() >= sidebar.left() && row.right() <= sidebar.right(),
+                row.left() >= sidebar.left()
+                    && row.right() <= sidebar.right()
+                    && row.top() >= sidebar.top()
+                    && row.bottom() <= sidebar.bottom(),
                 "complete row within sidebar: {row:?} / {sidebar:?}"
             );
             let input = visual.debug_bounds(parameter_name(id, "")).unwrap();
@@ -1467,15 +1471,8 @@ fn eq_production_rail_screenshot_sizes_keep_controls_disjoint_and_slope_popup_op
             }
             rows.push(row);
         }
-        if height < 600.0 {
-            // This is deliberately outside the actual WindowOptions minimum.
-            // A screenshot crop is not evidence of a 426 logical-pixel app
-            // window. Retain the bounds check, but do not claim offscreen input
-            // is operable or weaken the supported-window assertions below.
-            assert!(sidebar.bottom() > px(height));
-            eprintln!(
-                "UNSUPPORTED viewport stress {width}x{height}: below production 960x600 minimum; cropped rail geometry is disjoint, input/visual acceptance not established"
-            );
+        assert!(sidebar.top() < px(height) && sidebar.bottom() > px(0.0));
+        if height < 540.0 {
             continue;
         }
         let slope = node
@@ -1519,6 +1516,12 @@ fn eq_production_rail_screenshot_sizes_keep_controls_disjoint_and_slope_popup_op
                 .is_none()
         );
         editor.read_with(cx, |view, _| assert_eq!(read(view, device), before));
+        if width == 880.0 {
+            choose_option(&mut visual, device, slope, 3);
+            pump_until(&editor, cx, |view| {
+                settled(view) && read(view, device).nodes[0].slope == 3
+            });
+        }
     }
 }
 

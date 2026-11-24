@@ -968,23 +968,15 @@ fn projected_fade_samples_match_prepared_pcm_after_crop_and_tempo_change() {
     let context = isolated(256_000, 128_000, 4);
     let prepared = prepare(&editor, &media, &context);
     let clip = editor.project().clip(tail).unwrap();
-    let edit = clip.audio_edit().unwrap();
-    let projection = edit.projected_fade(editor.project().tempo_map()).unwrap();
-    let view = prepared
-        .arrangement()
-        .audio_clip_views()
-        .iter()
-        .find(|v| v.clip == tail)
+    let projection = clip
+        .projected_outer_fade(editor.project().tempo_map())
+        .unwrap()
         .unwrap();
-    for index in (0..view.length).step_by(31) {
-        let actual = view.audio.frames()[(view.offset + index) as usize];
-        let expected = projection.gain_at(view.offset + index).unwrap();
-        assert_eq!(actual, [expected, -expected]);
+    let pcm = render(&prepared, clip.start(), clip.duration() as usize, 127);
+    for (offset, actual) in pcm.into_iter().enumerate() {
+        let expected = projection.gain_at(clip.start() + offset as u64).unwrap();
+        assert_eq!(actual, [expected, -expected], "sample {offset}");
     }
-    assert_eq!(
-        projection.gain_at(8_267).unwrap(),
-        edit.domain.fade.gain_at(7_200)
-    );
 }
 
 #[test]
@@ -1490,6 +1482,7 @@ fn shaped_outer_fades_follow_moved_event_output_coordinates_and_recursive_splits
     expected[2000..4000].copy_from_slice(&baseline[2000..4000]);
     expected[4000..6000].copy_from_slice(&baseline[0..2000]);
     expected[6000..8000].copy_from_slice(&baseline[6000..8000]);
+    let moved = expected.clone();
     for (index, frame) in expected.iter_mut().enumerate() {
         let gain = fade.gain_at(index as u64);
         frame[0] *= gain;
@@ -1510,6 +1503,28 @@ fn shaped_outer_fades_follow_moved_event_output_coordinates_and_recursive_splits
             frame: 6500,
         })
         .unwrap();
+    // Each cut discards its interior handle. The last piece is shorter
+    // than its surviving fade-out, so the ramp spans that entire piece.
+    let first_fade = ClipFade::new(5100, 0, 2300, 0)
+        .unwrap()
+        .with_shape(0, 0, 600, 0)
+        .unwrap();
+    let last_fade = ClipFade::new(1500, 0, 0, 1500)
+        .unwrap()
+        .with_shape(0, 0, 0, -500)
+        .unwrap();
+    let expected: Vec<_> = moved
+        .into_iter()
+        .enumerate()
+        .map(|(frame, pcm)| {
+            let gain = match frame {
+                0..5100 => first_fade.gain_at(frame as u64),
+                5100..6500 => 1.0,
+                _ => last_fade.gain_at((frame - 6500) as u64),
+            };
+            pcm.map(|sample| sample * gain)
+        })
+        .collect();
     assert_eq!(
         render(&prepare(&editor, &media, &context), 0, 8000, 127),
         expected
@@ -1686,18 +1701,20 @@ fn endpoint_only_fades_on_unedited_streams_preserve_silence_splits_and_seeks() {
             asset,
             crate::compile::PreparedAudioSource::Streamed(metadata),
         )]);
-        let mut expected = vec![[0.25, -0.5]; 8000];
-        expected[..start as usize].fill([0.0; 2]);
-        expected[8000 - end as usize..].fill([0.0; 2]);
         let mut pages = Pages {
             key,
             frames: media[&asset].frames(),
         };
         for split in [false, true] {
+            let mut expected = vec![[0.25, -0.5]; 8000];
             if split {
+                // Explicit cuts anchor zero-width handles to the new clip corners.
                 editor
                     .execute(Command::SplitClip { clip, frame: 2000 })
                     .unwrap();
+            } else {
+                expected[..start as usize].fill([0.0; 2]);
+                expected[8000 - end as usize..].fill([0.0; 2]);
             }
             let streamed =
                 crate::compile::project_with_prepared_audio_sources(editor.project(), &sources, 1)
@@ -1713,10 +1730,12 @@ fn endpoint_only_fades_on_unedited_streams_preserve_silence_splits_and_seeks() {
                     actual, expected,
                     "endpoints={start}/{end}, split={split}, block={block}"
                 );
-                renderer.seek(800);
-                let mut seek = vec![[0.0; 2]; 3000];
-                renderer.render_with_pages(&mut seek, &mut pages).unwrap();
-                assert_eq!(seek, expected[800..3800]);
+                for range in [800..3800, 6700..8000] {
+                    renderer.seek(range.start as u64);
+                    let mut sought = vec![[0.0; 2]; range.len()];
+                    renderer.render_with_pages(&mut sought, &mut pages).unwrap();
+                    assert_eq!(sought, expected[range]);
+                }
             }
         }
     }

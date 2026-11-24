@@ -5,6 +5,10 @@ use hex_engine::{
 use hex_project::{ClipFade, Command, Created, Editor, Project};
 use std::collections::BTreeMap;
 
+const SOURCE: [f32; 11] = [
+    0.25, 0.5, 0.75, -0.5, 0.125, -0.25, 0.625, -0.75, 0.375, 0.875, -0.125,
+];
+
 fn fixture(
     cuts: &[u64],
     looping: bool,
@@ -96,12 +100,8 @@ fn fixture_with(
         })
         .unwrap();
     let mut pcm_frames = vec![[0.0, 0.0]; 13];
-    pcm_frames[0] = [0.0, 0.0];
-    for (index, value) in [0.25, 0.5, 0.75, 0.25, 0.5, 0.75, 0.25, 0.5, 0.75, 0.25, 0.5]
-        .into_iter()
-        .enumerate()
-    {
-        pcm_frames[index + 1] = [value, value];
+    for (frame, sample) in pcm_frames[1..].iter_mut().zip(SOURCE) {
+        *frame = [sample; 2];
     }
     let pcm = Audio::new(48_000, pcm_frames).unwrap();
     let media = BTreeMap::from([(editor.project().assets().next().unwrap().id(), pcm)]);
@@ -109,23 +109,52 @@ fn fixture_with(
     (compiled, fade)
 }
 
-fn whole_render(project: &hex_engine::Project) -> Vec<Frame> {
-    let mut renderer = Renderer::new(project);
-    renderer.play();
-    let mut frames = [[0.0; 2]; 11];
-    renderer.render(&mut frames).unwrap();
-    frames.to_vec()
+/// The source keeps its original phase across every cut. Only the first
+/// part has an incoming fade and only the last has an outgoing fade.
+fn expected_cut_pcm(cuts: &[u64], looping: bool, original: ClipFade) -> Vec<Frame> {
+    let mut expected = Vec::new();
+    let mut start = 0;
+    let end = SOURCE.len() as u64;
+    for stop in cuts.iter().copied().chain([end]) {
+        let length = stop - start;
+        let fade = ClipFade::new(
+            length,
+            0,
+            if start == 0 {
+                original.fade_in().min(length)
+            } else {
+                0
+            },
+            if stop == end {
+                original.fade_out().min(length)
+            } else {
+                0
+            },
+        )
+        .unwrap()
+        .with_shape(0, 0, original.in_curve(), original.out_curve())
+        .unwrap()
+        .with_curve_positions(original.in_position(), original.out_position())
+        .unwrap()
+        .with_curve_laws(original.curve_laws());
+        for position in start..stop {
+            let index = if looping { position % 3 } else { position };
+            expected.push([SOURCE[index as usize] * fade.gain_at(position - start); 2]);
+        }
+        start = stop;
+    }
+    expected
 }
 
 #[test]
-fn compiled_split_keeps_source_fade_samples_and_neutral_legacy_constructors() {
-    let (whole, _) = fixture(&[], false, (2, 9));
-    let (split, _) = fixture(&[4], false, (2, 9));
-    assert_eq!(whole_render(&whole), whole_render(&split));
-
-    let (whole_loop, _) = fixture(&[], true, (2, 9));
-    let (split_loop, _) = fixture(&[4], true, (2, 9));
-    assert_eq!(whole_render(&whole_loop), whole_render(&split_loop));
+fn compiled_split_anchors_exterior_fades_and_keeps_legacy_constructors_neutral() {
+    for looping in [false, true] {
+        let (split, fade) = fixture(&[4], looping, (2, 9));
+        assert_eq!(
+            render_in_blocks(&split, 11),
+            expected_cut_pcm(&[4], looping, fade)
+        );
+    }
 
     let audio = Audio::new(48_000, vec![[1.0, -1.0]; 4]).unwrap();
     let neutral = hex_engine::Clip::region(audio, 0, 4, 0, 4, false).unwrap();
@@ -152,7 +181,7 @@ fn render_in_blocks(project: &hex_engine::Project, block: usize) -> Vec<Frame> {
 }
 
 #[test]
-fn cuts_through_fades_move_ramps_inside_parts_and_keep_pcm_at_every_block_size() {
+fn cuts_through_fades_anchor_surviving_ramps_at_every_block_size() {
     let shaped = ClipFade::new(11, 0, 4, 3)
         .unwrap()
         .with_shape(1, 1, 600, -400)
@@ -162,25 +191,16 @@ fn cuts_through_fades_move_ramps_inside_parts_and_keep_pcm_at_every_block_size()
     let overlapping = ClipFade::new(11, 0, 8, 7).unwrap();
     let smooth = shaped.with_curve_laws([ClipFade::DEFAULT_S_CURVE; 2]);
     for envelope in [None, Some(shaped), Some(overlapping), Some(smooth)] {
-        let (whole, _) = fixture_with(&[], false, (0, 11), envelope);
-        let expected = render_in_blocks(&whole, 11);
         // Inside each ramp, on a ramp boundary, between ramps and on silence.
         for cut in [1, 2, 4, 5, 6, 8, 10] {
-            let (split, _) = fixture_with(&[cut], false, (0, 11), envelope);
+            let (split, fade) = fixture_with(&[cut], false, (0, 11), envelope);
+            let expected = expected_cut_pcm(&[cut], false, fade);
             for block in [1, 2, 3, 11] {
-                let actual = render_in_blocks(&split, block);
-                for (frame, (a, e)) in actual.iter().zip(&expected).enumerate() {
-                    for channel in 0..2 {
-                        // Overlapping ramps multiply once per factor (f32).
-                        assert!(
-                            (a[channel] - e[channel]).abs() <= 1e-6,
-                            "{envelope:?} cut {cut} block {block} frame {frame}: {a:?} {e:?}"
-                        );
-                    }
-                }
-                if envelope != Some(overlapping) {
-                    assert_eq!(actual, expected, "{envelope:?} cut {cut} block {block}");
-                }
+                assert_eq!(
+                    render_in_blocks(&split, block),
+                    expected,
+                    "{envelope:?} cut {cut} block {block}"
+                );
             }
         }
     }
@@ -189,9 +209,11 @@ fn cuts_through_fades_move_ramps_inside_parts_and_keep_pcm_at_every_block_size()
 #[test]
 fn selected_range_edges_preserve_loop_phase_and_fade_pcm() {
     for looping in [false, true] {
-        let (whole, _) = fixture(&[], looping, (2, 9));
-        let (split, _) = fixture(&[3, 8], looping, (2, 9));
-        assert_eq!(whole_render(&whole), whole_render(&split));
+        let (split, fade) = fixture(&[3, 8], looping, (2, 9));
+        assert_eq!(
+            render_in_blocks(&split, 11),
+            expected_cut_pcm(&[3, 8], looping, fade)
+        );
     }
 }
 
@@ -259,23 +281,29 @@ fn resetting_phase_preserves_fade_and_restores_neutral_source_order() {
 }
 
 #[test]
-fn split_source_phase_and_inherited_fade_survive_project_loop_seek_and_partitions() {
-    let (whole, _) = fixture(&[], true, (2, 9));
-    let (split, _) = fixture(&[4], true, (2, 9));
+fn split_source_phase_and_corner_fades_survive_project_loop_seek_and_partitions() {
+    let (split, fade) = fixture(&[4], true, (2, 9));
+    let timeline = expected_cut_pcm(&[4], true, fade);
     for seek in [0, 3, 4, 8] {
-        let mut expected = Playback::new(whole.clone());
-        let mut actual = Playback::new(split.clone());
-        for playback in [&mut expected, &mut actual] {
-            playback.apply(PlaybackCommand::Seek(seek));
+        let mut position = seek;
+        let expected: [Frame; 37] = std::array::from_fn(|_| {
+            let frame = timeline[position];
+            position += 1;
+            if position == 9 {
+                position = 2;
+            }
+            frame
+        });
+        for block in [3, 37] {
+            let mut playback = Playback::new(split.clone());
+            playback.apply(PlaybackCommand::Seek(seek as u64));
             playback.apply(PlaybackCommand::Play);
+            let mut actual = [[0.0; 2]; 37];
+            for chunk in actual.chunks_mut(block) {
+                playback.render(chunk).unwrap();
+            }
+            assert_eq!(actual, expected, "seek {seek}, block {block}");
         }
-        let mut whole_frames = [[0.0; 2]; 37];
-        let mut split_frames = whole_frames;
-        expected.render(&mut whole_frames).unwrap();
-        for block in split_frames.chunks_mut(3) {
-            actual.render(block).unwrap();
-        }
-        assert_eq!(split_frames, whole_frames, "seek {seek}");
     }
 }
 
@@ -401,23 +429,59 @@ fn transformed_musical_shaped_fades_keep_pcm_through_splits_and_tempo_changes() 
         .unwrap();
     let media = BTreeMap::from([(asset, Audio::new(48_000, vec![[0.5; 2]; 4800]).unwrap())]);
     let whole = compile::project(editor.project(), &media).unwrap();
+    let mut uncut = Renderer::new(&whole);
+    uncut.play();
+    let mut original = vec![[0.0; 2]; 6400];
+    uncut.render(&mut original).unwrap();
+    assert!(original[..100].iter().all(|frame| *frame == [0.0; 2]));
+    assert!(original[2000][0] > 0.1);
+
+    let mut dry = Editor::new(editor.project().clone(), 1).unwrap();
+    dry.execute(Command::SetClipFades {
+        clip,
+        fade_in: 0,
+        fade_out: 0,
+    })
+    .unwrap();
+    let source = compile::project(dry.project(), &media).unwrap();
+    let mut dry_renderer = Renderer::new(&source);
+    dry_renderer.play();
+    let mut expected = vec![[0.0; 2]; 6400];
+    dry_renderer.render(&mut expected).unwrap();
+
+    let left = ClipFade::new(2400, 0, 1800, 0)
+        .unwrap()
+        .with_shape(0, 0, 700, 0)
+        .unwrap()
+        .with_curve_positions(250, 500)
+        .unwrap();
+    let right = ClipFade::new(4000, 0, 0, 1600)
+        .unwrap()
+        .with_shape(0, 0, 0, -800)
+        .unwrap()
+        .with_curve_positions(500, 750)
+        .unwrap();
+    for (i, frame) in expected.iter_mut().enumerate() {
+        let gain = if i < 2400 {
+            left.gain_at(i as u64)
+        } else {
+            right.gain_at((i - 2400) as u64)
+        };
+        *frame = frame.map(|sample| sample * gain);
+    }
     editor
         .execute(Command::SplitClip { clip, frame: 2400 })
         .unwrap();
     let split = compile::project(editor.project(), &media).unwrap();
-    let mut expected = vec![[0.0; 2]; 6400];
-    let mut actual = expected.clone();
-    let mut whole = Renderer::new(&whole);
-    let mut split = Renderer::new(&split);
-    whole.play();
-    split.play();
-    whole.render(&mut expected).unwrap();
+    let mut renderer = Renderer::new(&split);
+    renderer.play();
+    let mut actual = vec![[0.0; 2]; expected.len()];
     for chunk in actual.chunks_mut(127) {
-        split.render(chunk).unwrap();
+        renderer.render(chunk).unwrap();
     }
-    assert_eq!(actual, expected);
-    assert!(actual[0..100].iter().all(|frame| *frame == [0.0; 2]));
-    assert!(actual[2000][0] > 0.1);
+    for (i, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        assert_eq!(*actual, expected, "musical split frame {i}");
+    }
 }
 
 #[test]

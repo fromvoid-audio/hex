@@ -694,7 +694,14 @@ fn outer_audio_placements_section_edits_are_atomic_and_retain_history() {
         hex_project::AudioViewMode::Once,
         hex_project::AudioViewMode::Repeat,
     ] {
-        let (seed, a, c) = fixture();
+        let (mut seed, a, c) = fixture();
+        let clip_id = seed.project().tracks()[0].clips()[0].id();
+        seed.execute(Command::SetClipFades {
+            clip: clip_id,
+            fade_in: 997,
+            fade_out: 1601,
+        })
+        .unwrap();
         let clip = seed.project().tracks()[0].clips()[0].clone();
         let mut edit = clip.audio_event_root();
         edit.view_start = 271;
@@ -732,6 +739,14 @@ fn outer_audio_placements_section_edits_are_atomic_and_retain_history() {
             assert_eq!(e.project().snapshot(), before);
             assert!(!e.can_undo());
             e.execute(command).unwrap();
+            for part in e.project().tracks()[0].clips() {
+                let retained = part.audio_edit().unwrap();
+                assert_eq!(
+                    retained.domain.fade_clock,
+                    hex_project::AudioClipFadeClock::LegacyRoot
+                );
+                assert_eq!(retained.domain.fade, clip.retained_fade());
+            }
             let after = e.project().snapshot();
             assert_ne!(after, before);
             assert_eq!(

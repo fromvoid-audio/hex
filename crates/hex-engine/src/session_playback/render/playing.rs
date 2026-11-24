@@ -181,7 +181,6 @@ impl SessionPlayback {
                 .is_some_and(|runtime| runtime.graph.needs_upstream_frame_routing());
             if upstream_frame_routing
                 && resident_source_index == resident_source_end
-                && live_audio.is_none()
                 && scalar.is_none()
             {
                 let mut block_count = (output.len() - output_offset).min(256);
@@ -198,11 +197,15 @@ impl SessionPlayback {
                     block_count =
                         block_count.min(usize::try_from(until_wrap).unwrap_or(usize::MAX));
                 }
+                if let Some(keyboard) = self.computer_keyboard.as_ref() {
+                    block_count = keyboard.source_input_span(block_count);
+                }
                 if self.can_block_compensated_route(block_count) {
                     let chunk_end = output_offset
                         .checked_add(block_count)
                         .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-                    self.render_compensated_route_block(
+                    let mut tail_scratch = std::mem::take(&mut self.grouped_tail_scratch);
+                    let rendered = self.render_compensated_route_block(
                         performance_frame,
                         arrangement_frame,
                         arrangement_loop_pass,
@@ -211,9 +214,12 @@ impl SessionPlayback {
                         output_offset,
                         observer,
                         capture,
-                        sources,
+                        inputs,
                         foreign,
-                    )?;
+                        &mut tail_scratch,
+                    );
+                    self.grouped_tail_scratch = tail_scratch;
+                    rendered?;
                     let chunk = u64::try_from(block_count)
                         .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
                     performance_frame = performance_frame
@@ -229,6 +235,8 @@ impl SessionPlayback {
                             arrangement_loop_pass,
                         )?;
                     }
+                    self.release_scratch
+                        .retain(|entry| entry.end_frame() > performance_frame);
                     output_offset = chunk_end;
                     continue;
                 }
@@ -476,10 +484,31 @@ impl SessionPlayback {
                     route.current_first_frame = false;
                 }
             }
-            if self.compensation.is_some() && !upstream_frame_routing {
-                // Only Main needs delayed content clocks. Keep upstream work
-                // batched, then advance the existing stamp/Main/tail owners in
-                // exactly the original sample order, inside this transaction.
+            if !upstream_frame_routing
+                && chunk_frames > 1
+                && self.compensation.as_ref().is_some_and(|runtime| {
+                    runtime.delays.running_stamp_streak() >= runtime.horizon()
+                })
+            {
+                let window = &mut stamps[..chunk_frames];
+                self.fill_compensated_stamps(
+                    performance_frame,
+                    arrangement_frame,
+                    arrangement_loop_pass,
+                    window,
+                )?;
+                self.render_compensated_main_block(
+                    &mut output[output_offset..chunk_end],
+                    output_offset,
+                    window,
+                    &mut [[0.0; 2]; 256],
+                    foreign,
+                    observer,
+                    external,
+                )?;
+            } else if self.compensation.is_some() && !upstream_frame_routing {
+                // During pre-roll each stage must silence frames whose content
+                // origin has not yet arrived. Upstream processing stays batched.
                 for index in output_offset..chunk_end {
                     let advance = (index - output_offset) as u64;
                     let performance = performance_frame
@@ -513,8 +542,7 @@ impl SessionPlayback {
                     );
                     self.return_effect_tails.render_main_chunk(
                         &mut output[index..index + 1],
-                        self.compensation.as_ref(),
-                        &clock,
+                        MainTailClock::current(self.compensation.as_ref(), &clock),
                         index,
                         foreign,
                     )?;
@@ -564,8 +592,7 @@ impl SessionPlayback {
                 );
                 self.return_effect_tails.render_main_chunk(
                     &mut output[output_offset..chunk_end],
-                    self.compensation.as_ref(),
-                    &tail_clock,
+                    MainTailClock::current(self.compensation.as_ref(), &tail_clock),
                     output_offset,
                     foreign,
                 )?;

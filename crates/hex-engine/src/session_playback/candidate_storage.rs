@@ -57,6 +57,7 @@ impl SessionPlayback {
             main_chain,
             return_scratch,
             resident_source_scratch,
+            grouped_tail_scratch,
             meter_cells,
             return_effect_tails,
             mutable_instruments,
@@ -179,6 +180,7 @@ impl SessionPlayback {
         l.vec(return_chains)?;
         l.vec(return_scratch)?;
         l.vec(resident_source_scratch)?;
+        l.vec(grouped_tail_scratch)?;
         l.vec(meter_cells)?;
         return_effect_tails.visit_empty_candidate_storage(l)?;
         l.vec(mutable_instruments)?;
@@ -295,21 +297,20 @@ fn chain_storage<'a>(
             return Err(AudioStorageError::UnsupportedGraph);
         }
         modulation::visit(&entry, prepared, chain, index, l)?;
-        if let Some((primary, scratch)) = entry.runtime_pair::<hex_devices::reverb::ReverbRuntime>()
-        {
-            for (runtime, object_tag, ring_tag) in [
-                (primary, "runtime-primary", "reverb-primary-ring"),
-                (scratch, "runtime-scratch", "reverb-scratch-ring"),
+        if let Some(reverb) = entry.owned_runtime::<hex_devices::reverb::ReverbRuntime>() {
+            let storage = reverb
+                .control_storage()
+                .ok_or(AudioStorageError::UnknownStorage)?;
+            l.bytes(
+                Owner::exclusive(chain),
+                Location("runtime-primary", index),
+                storage.inline_bytes,
+            )?;
+            for (heap_bytes, ring_tag) in [
+                (storage.committed_heap_bytes, "reverb-primary-ring"),
+                (storage.scratch_heap_bytes, "reverb-scratch-ring"),
             ] {
-                let storage = runtime
-                    .control_storage()
-                    .ok_or(AudioStorageError::UnknownStorage)?;
-                l.bytes(
-                    Owner::exclusive(chain),
-                    Location(object_tag, index),
-                    storage.inline_bytes,
-                )?;
-                for (ring, bytes) in storage.heap_bytes.into_iter().enumerate() {
+                for (ring, bytes) in heap_bytes.into_iter().enumerate() {
                     let key = index
                         .checked_mul(hex_devices::reverb::RUNTIME_HEAP_ALLOCATIONS)
                         .and_then(|n| n.checked_add(ring))

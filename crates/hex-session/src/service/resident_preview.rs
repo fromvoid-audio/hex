@@ -125,6 +125,34 @@ pub(super) fn device_operation(
         GesturePreparation::Plugin(operation) => plugin_parameter::operation(
             session, operation, context, current, preview, sink, admission,
         ),
+        GesturePreparation::UnchangedPairPreview(draft) => {
+            if preview_owner_unchanged(
+                current.as_ref(),
+                preview.as_ref(),
+                context,
+                draft.key,
+                sink.resident_publication_readiness(),
+            ) {
+                return Ok(None);
+            }
+            let identity = Identity::Device(DevicePreviewIdentity {
+                project_generation: context.project_generation,
+                canonical_revision: context.editor_revision,
+                key: draft.key,
+                sequence: draft.sequence,
+            });
+            prepare_preview(
+                session,
+                command_for_snapshot(session, draft)?,
+                identity,
+                context,
+                current,
+                preview,
+                sink,
+                admission,
+                None,
+            )
+        }
         GesturePreparation::Preview(draft) => {
             let identity = Identity::Device(DevicePreviewIdentity {
                 project_generation: context.project_generation,
@@ -422,6 +450,56 @@ pub(super) fn publish_inputs(
     overlay.snapshot.inputs = accepted;
     Ok(hint)
 }
+fn preview_owner_unchanged(
+    current: Option<&resident_audio::Snapshot>,
+    preview: Option<&Preview>,
+    context: hex_engine::AudioSourceContext,
+    key: crate::device_gesture::GestureKey,
+    readiness: ResidentPublicationReadiness,
+) -> bool {
+    let (Some(canonical), Some(existing)) = (current, preview) else {
+        return false;
+    };
+    if canonical.prepared_context != context || existing.snapshot.prepared_context != context {
+        return false;
+    }
+    if existing.snapshot.inputs.version != canonical.inputs.version
+        || !existing.snapshot.inputs.same_selection(&canonical.inputs)
+    {
+        return false;
+    }
+    let Some(identity) = existing.device_identity() else {
+        return false;
+    };
+    if identity.project_generation != context.project_generation
+        || identity.canonical_revision != context.editor_revision
+        || identity.key != key
+    {
+        return false;
+    }
+    match (existing.snapshot.submission, readiness) {
+        (None, ResidentPublicationReadiness::NoOutput) => true,
+        (
+            Some(submitted),
+            ResidentPublicationReadiness::Applied {
+                submission: live,
+                publication_in_flight: false,
+            },
+        )
+        | (
+            Some(submitted),
+            ResidentPublicationReadiness::Pending {
+                submission: live, ..
+            },
+        ) => {
+            live.output_identity == submitted.output_identity
+                && live.audio_revision == submitted.audio_revision
+                && live.source_context == Some(context)
+        }
+        _ => false,
+    }
+}
+
 fn with_preview<'a>(
     admission: sampler_export::Admission<'a>,
     preview: Option<&'a Preview>,

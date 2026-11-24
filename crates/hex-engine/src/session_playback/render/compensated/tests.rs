@@ -743,8 +743,11 @@ fn resident_alignment_matches_scalar_automation_capture_seek_and_rollback() {
     }
 }
 
-#[test]
-fn block_compensated_route_matches_scalar_with_sidechain_group_return_and_main_limiter() {
+fn grouped_sidechain_fixture() -> (
+    crate::signal_graph::tests::Fixture,
+    hex_project::TrackId,
+    hex_project::DeviceId,
+) {
     use hex_lattice_contract::DeviceTypeId;
     use hex_project::{Command, Created, TrackSelectionIds};
 
@@ -848,6 +851,12 @@ fn block_compensated_route_matches_scalar_with_sidechain_group_return_and_main_l
         })
         .unwrap();
 
+    (f, group, comp_id)
+}
+
+#[test]
+fn block_compensated_route_matches_scalar_with_sidechain_group_return_and_main_limiter() {
+    let (f, group, _) = grouped_sidechain_fixture();
     let revision = Arc::new(
         PreparedRevision::prepare(
             f.editor.project(),
@@ -916,11 +925,177 @@ fn block_compensated_route_matches_scalar_with_sidechain_group_return_and_main_l
     for size in [256, 256, 73, 512, 19, 256] {
         assert_eq!(render(&mut batched, size), render(&mut scalar, size));
     }
+    // Monitor each side of the keyed/group routes across internal loop splits.
+    // The device tap exposes the actual DSP slice size, even for identical PCM.
+    let input: Vec<Frame> = (0..512)
+        .map(|i| [i as f32 / 1024.0, -(i as f32) / 2048.0])
+        .collect();
+    for track in [f.tracks[0], f.tracks[1], group] {
+        let monitored = |runtime: &mut SessionPlayback| {
+            let mut out = vec![[0.0; 2]; input.len()];
+            let mut max_slice = 0;
+            runtime
+                .render_with_live_track_audio(
+                    &mut out,
+                    LiveTrackAudio {
+                        track,
+                        frames: &input,
+                    },
+                    None,
+                    Some(&mut |_, _, _, frames| max_slice = max_slice.max(frames.len())),
+                    None,
+                    &mut hex_lattice::RefuseForeign,
+                )
+                .unwrap();
+            (out, max_slice)
+        };
+        let (actual, batch_size) = monitored(&mut batched);
+        let (expected, scalar_size) = monitored(&mut scalar);
+        assert_eq!(actual, expected);
+        assert!(batch_size > 1);
+        assert_eq!(scalar_size, 1);
+    }
     assert_eq!(batched.arrangement_frame, scalar.arrangement_frame);
     for runtime in [&mut batched, &mut scalar] {
         runtime.apply(SessionPlaybackCommand::Seek(61)).unwrap();
     }
     for size in [64, 256, 256] {
         assert_eq!(render(&mut batched, size), render(&mut scalar, size));
+    }
+}
+
+#[test]
+fn monitored_keyboard_blocks_match_scalar_press_and_release() {
+    use crate::{
+        computer_keyboard::ComputerKeyboardInput,
+        playback::{Playback, PlaybackCommand},
+    };
+    use hex_lattice_contract::NativeDeviceMetadata;
+    use hex_project::Command;
+
+    for instrument in [
+        hex_project::default_instrument_state().unwrap(),
+        hex_devices::fm4::device::FM4_DEFINITION
+            .default_state()
+            .unwrap(),
+    ] {
+        let mut f = fixture(&[&[7], &[]], 2048);
+        let track = f.tracks[1];
+        f.editor
+            .execute(Command::InsertInstrument {
+                track,
+                state: instrument,
+            })
+            .unwrap();
+        let revision = crate::signal_graph::tests::prepare(&f).unwrap();
+        let run = |scalar: bool| {
+            let mut playback = Playback::from_prepared(Arc::clone(&revision));
+            let keys = Arc::new(ComputerKeyboardInput::default());
+            playback
+                .prepare_computer_keyboard(f.editor.project(), track, Arc::clone(&keys))
+                .unwrap();
+            playback.apply(PlaybackCommand::Play);
+            playback.render(&mut [[0.0; 2]; 32]).unwrap();
+            let mut pcm = [[0.0; 2]; 514];
+            for (key, frames) in [Some((60, 100, 1)), None]
+                .into_iter()
+                .zip(pcm.chunks_mut(257))
+            {
+                keys.set_key(0, key).unwrap();
+                let mut max_slice = 0;
+                for chunk in frames.chunks_mut(if scalar { 1 } else { 257 }) {
+                    playback
+                        .render_with_node_signal_observer(
+                            chunk,
+                            Some(&mut |_, _, _, slice| max_slice = max_slice.max(slice.len())),
+                        )
+                        .unwrap();
+                }
+                assert_eq!(max_slice > 1, !scalar);
+                assert!(frames.iter().flatten().any(|x| x.abs() > 1e-6));
+            }
+            pcm.map(|frame| frame.map(f32::to_bits))
+        };
+        assert_eq!(run(false), run(true));
+    }
+}
+
+#[test]
+fn compensated_parameter_gestures_match_scalar_pcm_and_receipts() {
+    use hex_lattice::{NativeTransientOperation, NativeTransientValue};
+    use hex_lattice_contract::{DeviceAutomationTarget, DeviceTypeId, HostGain};
+
+    let (mut f, group, keyed) = grouped_sidechain_fixture();
+    let ret = f.editor.project().return_tracks()[0].id();
+    let hex_project::Created::Device(bus) = f
+        .editor
+        .execute(hex_project::Command::InsertReturnDevice {
+            return_track: ret,
+            before: None,
+            state: crate::default_native_device_state(DeviceTypeId::from_static("hex.utility"))
+                .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("expected a return effect")
+    };
+    let group_effect = f.editor.project().track(group).unwrap().devices()[0].id();
+    let main = f.editor.project().main_devices()[0].id();
+    let gain = HostGain::from_db(-6.0).unwrap();
+    for device in [keyed, group_effect, bus, main] {
+        for (target, value) in [
+            (
+                DeviceAutomationTarget::HostInputGain,
+                NativeTransientValue::HostInputGain(gain),
+            ),
+            (
+                DeviceAutomationTarget::HostOutputGain,
+                NativeTransientValue::HostOutputGain(gain),
+            ),
+        ] {
+            let revision = Arc::new(
+                PreparedRevision::prepare_for_native_parameter_input(
+                    f.editor.project(),
+                    &f.media,
+                    Arc::new(crate::SineTable::new()),
+                    None,
+                    device,
+                    target,
+                )
+                .unwrap(),
+            );
+            let mut block = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+            let mut scalar = SessionPlayback::new(revision).unwrap();
+            scalar.resident_source_scratch.clear();
+            for playback in [&mut block, &mut scalar] {
+                playback.apply(SessionPlaybackCommand::Play).unwrap();
+                playback.render(&mut [[0.0; 2]; 768]).unwrap();
+            }
+            for operation in [
+                NativeTransientOperation::Set(value),
+                NativeTransientOperation::Clear(target),
+            ] {
+                let render = |playback: &mut SessionPlayback| {
+                    playback.set_native_parameter_input(operation).unwrap();
+                    let mut pcm = [[0.0; 2]; 257];
+                    let mut max_slice = 0;
+                    playback
+                        .render_with_node_signal_observer(
+                            &mut pcm,
+                            Some(&mut |_, _, _, frames| max_slice = max_slice.max(frames.len())),
+                        )
+                        .unwrap();
+                    let receipt = playback.take_native_parameter_application().unwrap();
+                    assert_eq!(receipt.operation, operation);
+                    (pcm.map(|f| f.map(f32::to_bits)), receipt, max_slice)
+                };
+                let (actual, receipt, width) = render(&mut block);
+                let (expected, oracle_receipt, scalar_width) = render(&mut scalar);
+                assert_eq!(actual, expected, "{device:?} {target:?}");
+                assert_eq!(receipt, oracle_receipt);
+                assert_eq!(scalar_width, 1);
+                assert!(width > 1);
+            }
+        }
     }
 }

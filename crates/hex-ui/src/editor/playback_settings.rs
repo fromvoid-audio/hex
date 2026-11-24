@@ -145,8 +145,12 @@ impl EditorView {
             }
         }
         let Some(source) = source else {
-            self.error =
-                Some("playback source is unavailable · retry playback when audio is ready".into());
+            let message = if matches!(start, Start::Session { .. }) && self.audio.is_none() {
+                "session playback requires an audio output"
+            } else {
+                "playback source is unavailable · retry playback when audio is ready"
+            };
+            self.error = Some(message.into());
             return;
         };
         let pending = PendingStart {
@@ -216,7 +220,7 @@ impl EditorView {
                     && self.recovery.generation().is_none()
                     && (self.normal_start_source() == Some(source)
                         || self.section_copy_play_source() == Some(source)
-                        || self.committed_locator_seek_source_is_current(source))
+                        || self.locator_play_source() == Some(source))
             }
             Start::Prepared { intent, .. } => match intent.kind {
                 super::arrangement_seek::SeekKind::CommittedLocator {

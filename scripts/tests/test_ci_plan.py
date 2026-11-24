@@ -2401,7 +2401,10 @@ class BaseAdvanceCarryTests(unittest.TestCase):
 
     @contextmanager
     def carry_fixture(self):
-        with tempfile.TemporaryDirectory() as directory:
+        # These fabricated receipts represent ordinary, reusable work. Explicit
+        # native refusal cases supply their own opt-ins inside this fixture.
+        native_inputs = plan.python_tests.native_acceptance_inputs(os.environ)
+        with patch.dict(os.environ, dict.fromkeys(native_inputs, "")), tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             git = self.repository(root)
             base = git("rev-parse", "HEAD")
@@ -3228,7 +3231,7 @@ class ModuleScopeTests(unittest.TestCase):
             {owner: ["editor::", "output_meter::logic::", "output_meter::tests::",
                      "section_surface::focus::geometry::",
                      "section_surface::focus::tests::theme_hatch_style_produces_bounded_visible_segments",
-                     "section_surface::geometry::"]})
+                     "section_surface::geometry::", "vertical_scrollbar::geometry::"]})
         disk = "editor::disk_overload::"
         self.assertEqual(plan.module_test_filters(
             root, ["crates/hex-ui/src/editor/disk_overload.rs"], inventory, [owner]),
@@ -3349,7 +3352,7 @@ class ModuleScopeTests(unittest.TestCase):
                                   "editor::browser::random_rank::",
                                   "editor::browser::samples::state::",
                                   "editor::browser::scan::",
-                                  "editor::browser::scrollbar_geometry::",
+                                  "editor::browser::scrollbar::",
                                   "editor::browser::tree::state::",
                                   "editor::browser::ui_test::all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refresh",
                                   "editor::browser::ui_test::browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candidate",
@@ -3468,14 +3471,12 @@ class ModuleScopeTests(unittest.TestCase):
                                   "log_viewer::copy_tests::filtered_excerpt_reports_empty_limits_and_failed_clipboard_confirmation",
                                   "log_viewer::filter::",
                                   "log_viewer::presentation::",
-                                  "log_viewer::scrollbar::geometry::",
-                                  "log_viewer::scrollbar::tests::native_scrollbar_tracks_wheel_outside_release_escape_and_preserves_selection_copy",
-                                  "log_viewer::scrollbar::tests::page_refresh_resize_and_deactivation_retire_old_scroll_captures",
+                                  "log_viewer::scrollbar::",
                                   "log_viewer::tests::long_log_rows_stay_within_their_visual_bounds",
                                   "log_viewer::tests::rapid_filter_changes_install_only_the_latest_result",
                                   "log_viewer::tests::severity_badges_keep_rows_readable_and_copy_original_records",
                                   "output_meter::logic::", "output_meter::tests::", "section_surface::geometry::",
-                                  "theme::"]})
+                                  "theme::", "vertical_scrollbar::geometry::"]})
         meter_consumer = "editor::track_meters::tests::steady_state_meter_ticks_reuse_the_staging_buffers"
         self.assertTrue(any(meter_consumer.startswith(selected) for selected in
                             plan.module_test_filters(root, ["crates/hex-ui/tests/unit_editor_logic.rs"],
@@ -6074,7 +6075,7 @@ class ModuleScopeTests(unittest.TestCase):
                          {owner: ["editor::", "output_meter::logic::", "output_meter::tests::",
                                   "section_surface::focus::geometry::",
                                   "section_surface::focus::tests::theme_hatch_style_produces_bounded_visible_segments",
-                                  "section_surface::geometry::"]})
+                                  "section_surface::geometry::", "vertical_scrollbar::geometry::"]})
         action_cases = (
             "editor::controller::session_action_unit_tests::close_prompt_allows_only_owned_duplicate_continuations",
             "editor::controller::session_action_unit_tests::launch_and_transport_actions_have_explicit_play_intents",
@@ -6428,7 +6429,7 @@ class ModuleScopeTests(unittest.TestCase):
                          {owner: ["editor::", "output_meter::logic::", "output_meter::tests::",
                                   "section_surface::focus::geometry::",
                                   "section_surface::focus::tests::theme_hatch_style_produces_bounded_visible_segments",
-                                  "section_surface::geometry::"]})
+                                  "section_surface::geometry::", "vertical_scrollbar::geometry::"]})
         boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
                     "single_run": {owner: "ui-test-support"}, "module_filters": names}
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
@@ -6530,10 +6531,6 @@ class ModuleScopeTests(unittest.TestCase):
                 "editor::browser::ui_test::random_ui_tests::random_button_and_r_reveal_offscreen_audio_and_share_auto_audition",
                 "editor::browser::ui_test::random_ui_tests::random_pick_obeys_all_search_projection_and_empty_results_leave_playback_unchanged",
             )),
-            ("scrollbar", "scrollbar_geometry", (
-                "editor::browser::ui_test::scrollbar_ui_tests::browser_thumb_tracks_wheel_and_drag_without_selection_or_audition",
-                "editor::browser::ui_test::scrollbar_ui_tests::browser_thumb_recomputes_after_filter_and_resize_and_retires_capture",
-            )),
         )
         for runtime, helper, consumers in controls:
             unit = f"editor::browser::{helper}::"
@@ -6552,8 +6549,7 @@ class ModuleScopeTests(unittest.TestCase):
                     for consumer in consumers:
                         self.assertIn(consumer, steps["ui-feature-tests"].argv)
 
-        consumer_paths = ("browser_ui_test.rs", "browser_random_ui_test.rs",
-                          "browser_scrollbar_ui_test.rs")
+        consumer_paths = ("browser_ui_test.rs", "browser_random_ui_test.rs")
         for path, (_, helper, _) in zip(consumer_paths, controls):
             path = "crates/hex-ui/src/editor/" + path
             with self.subTest(path=path):
@@ -8143,46 +8139,36 @@ class ModuleScopeTests(unittest.TestCase):
                     step_ids,
                 )
 
-    def test_log_viewer_scrollbar_geometry_selects_nested_unit_and_real_consumers(self):
+    def test_shared_scrollbar_geometry_selects_unit_and_rendered_consumers(self):
         root = SCRIPTS.parent
         owner = "hex-ui"
         inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
                       "features": {"ui-test-support": [], "ui-unit-tier": []},
                       "dependencies": [], "targets": [{"kind": ["lib"]}]}]
-        unit = "log_viewer::scrollbar::geometry::"
-        consumers = [
+        unit = "vertical_scrollbar::geometry::"
+        consumers = (
             "log_viewer::scrollbar::tests::native_scrollbar_tracks_wheel_outside_release_escape_and_preserves_selection_copy",
             "log_viewer::scrollbar::tests::page_refresh_resize_and_deactivation_retire_old_scroll_captures",
-        ]
-        geometry_path = "crates/hex-ui/src/log_viewer/scrollbar/geometry.rs"
-        parent_path = "crates/hex-ui/src/log_viewer/scrollbar.rs"
-        consumer_path = "crates/hex-ui/src/log_viewer/scrollbar_tests.rs"
-        modules = plan.module_paths(root / "crates/hex-ui/src")
-        self.assertEqual(modules[(root / geometry_path).resolve()], "log_viewer::scrollbar::geometry")
-        self.assertEqual(modules[(root / parent_path).resolve()], "log_viewer::scrollbar")
-        self.assertEqual(modules[(root / consumer_path).resolve()], "log_viewer::scrollbar::tests")
-        for path in (geometry_path, parent_path, consumer_path):
-            names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
-            self.assertTrue(any(unit.startswith(selected) for selected in names))
-            if path == parent_path:
-                self.assertIn("log_viewer::scrollbar::", names)
-            self.assertNotIn("log_viewer::", names)
-            for consumer in consumers:
-                self.assertTrue(any(consumer.startswith(selected) for selected in names))
-            boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
-                        "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
-                        "module_filters": {owner: names}}
-            steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
-                                      "boundary": boundary, "cargo_inventory": inventory,
-                                      "paths": [path]})
-            unit_step = next(step for step in steps if "unit_editor_logic" in step.argv)
-            self.assertTrue(any(unit.startswith(selected) for selected in unit_step.argv))
-            if path == parent_path:
-                self.assertIn("log_viewer::scrollbar::", unit_step.argv)
-            self.assertTrue(unit_step.requires_tests)
-            feature = next(step for step in steps if step.step_id == "ui-feature-tests")
-            for consumer in consumers:
-                self.assertTrue(any(consumer.startswith(selected) for selected in feature.argv))
+            "editor::browser::ui_test::scrollbar_ui_tests::browser_thumb_tracks_wheel_and_drag_without_selection_or_audition",
+            "editor::browser::ui_test::scrollbar_ui_tests::browser_thumb_recomputes_after_filter_and_resize_and_retires_capture",
+        )
+        for source in ("vertical_scrollbar.rs", "vertical_scrollbar/geometry.rs",
+                       "log_viewer/scrollbar.rs", "log_viewer/scrollbar_tests.rs",
+                       "editor/browser/scrollbar.rs", "editor/browser_scrollbar_ui_test.rs"):
+            path = "crates/hex-ui/src/" + source
+            with self.subTest(source=source):
+                boundary = plan.boundary_selection(root, [path], inventory, [owner])
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                unit_step = steps["ui-unit-unit_editor_logic"]
+                self.assertTrue(unit_step.requires_tests)
+                self.assertTrue(any(unit.startswith(arg) for arg in unit_step.argv))
+                feature = steps["ui-feature-tests"]
+                relevant = (consumers if source.startswith("vertical_scrollbar") else
+                            consumers[:2] if source.startswith("log_viewer") else consumers[2:])
+                for consumer in relevant:
+                    self.assertTrue(any(consumer.startswith(arg) for arg in feature.argv), consumer)
 
     def test_log_viewer_filter_selects_unit_and_copy_consumers(self):
         root = SCRIPTS.parent
@@ -8249,7 +8235,7 @@ class ModuleScopeTests(unittest.TestCase):
             names = plan.module_test_filters(root, [path], inventory, [owner])[owner]
             self.assertTrue(any(unit.startswith(selected) for selected in names))
             if path == parent_path:
-                self.assertEqual(names, ["log_viewer::"])
+                self.assertEqual(names, ["log_viewer::", "vertical_scrollbar::geometry::"])
             else:
                 self.assertNotIn("log_viewer::", names)
             for consumer in consumers:

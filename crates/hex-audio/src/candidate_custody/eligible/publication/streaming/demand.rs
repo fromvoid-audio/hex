@@ -781,6 +781,7 @@ impl StateView<'_> {
     ) {
         self.cancel_stream_pending(domains);
         if let Some(workspace) = self.streaming.as_mut() {
+            workspace.page_fade = Default::default();
             for token in self.domain_refs.into_iter().flatten() {
                 if let Some(stamp) = workspace.active[token.slot].take()
                     && let Ok(pages) = envelope(domains, token)
@@ -853,6 +854,17 @@ impl ActiveView<'_> {
     pub(crate) fn clear_stream_roles(&mut self, domains: &mut [Option<DomainEnvelope>; 2]) {
         self.state.clear_stream_roles(domains);
     }
+    fn silence_stream_suffix(&mut self, output: &mut [hex_engine::Frame], waiting_for_pages: bool) {
+        output.fill([0.0; 2]);
+        if let Some(workspace) = self.state.streaming.as_mut() {
+            if waiting_for_pages {
+                workspace.page_fade.apply(output, true);
+            } else {
+                workspace.page_fade = Default::default();
+            }
+        }
+    }
+
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn render_streamed(
         &mut self,
@@ -887,6 +899,9 @@ impl ActiveView<'_> {
     ) -> StreamOutcome {
         if let Some(workspace) = self.state.streaming.as_mut() {
             workspace.capacity_conflict = false;
+            if pending_play || workspace.pending_action.is_some() {
+                workspace.page_fade = Default::default();
+            }
         }
         let mut request = StreamInstall {
             domains,
@@ -905,7 +920,7 @@ impl ActiveView<'_> {
             }
             super::actions::ActionResolution::Ready(None) => (None, None),
             super::actions::ActionResolution::Pending => {
-                output.fill([0.0; 2]);
+                self.silence_stream_suffix(output, false);
                 return StreamOutcome {
                     progress: StreamProgress::Buffering {
                         committed_frames: 0,
@@ -990,7 +1005,10 @@ impl ActiveView<'_> {
                     if refused {
                         self.state.cancel_stream_pending(domains);
                     }
-                    output[committed..].fill([0.0; 2]);
+                    self.silence_stream_suffix(
+                        &mut output[committed..],
+                        !refused && !pending_play && !source_changed && !read_failed,
+                    );
                     return StreamOutcome {
                         progress: StreamProgress::Buffering {
                             committed_frames: committed,
@@ -1009,7 +1027,7 @@ impl ActiveView<'_> {
             let mut promotions = match self.state.prepare_stream_commit(domains) {
                 Ok(promotions) => promotions,
                 Err(_) => {
-                    output[committed..].fill([0.0; 2]);
+                    self.silence_stream_suffix(&mut output[committed..], false);
                     return StreamOutcome {
                         progress: StreamProgress::Buffering {
                             committed_frames: committed,
@@ -1039,7 +1057,7 @@ impl ActiveView<'_> {
                             .map_err(|_| hex_engine::Invalid("ready stream Play refused"))
                     });
                 if let Err(error) = play {
-                    output[committed..].fill([0.0; 2]);
+                    self.silence_stream_suffix(&mut output[committed..], false);
                     return StreamOutcome {
                         progress: StreamProgress::Buffering {
                             committed_frames: committed,
@@ -1068,7 +1086,7 @@ impl ActiveView<'_> {
                 window.frames
             };
             if rendered_frames == 0 {
-                output[committed..].fill([0.0; 2]);
+                self.silence_stream_suffix(&mut output[committed..], false);
             } else {
                 let (left, right) = promotions.split_at_mut(1);
                 let mut pages = PagePair {
@@ -1122,7 +1140,7 @@ impl ActiveView<'_> {
                         }
                     });
                 if let Err(error) = rendered {
-                    output[committed..].fill([0.0; 2]);
+                    self.silence_stream_suffix(&mut output[committed..], false);
                     return StreamOutcome {
                         progress: StreamProgress::Buffering {
                             committed_frames: committed,
@@ -1136,6 +1154,15 @@ impl ActiveView<'_> {
                         action_applied,
                         activated,
                     };
+                }
+                if let Some(workspace) = self.state.streaming.as_mut() {
+                    if window.frames != 0 {
+                        workspace
+                            .page_fade
+                            .apply(&mut output[committed..committed + rendered_frames], false);
+                    } else {
+                        workspace.page_fade = Default::default();
+                    }
                 }
                 committed += rendered_frames;
             }

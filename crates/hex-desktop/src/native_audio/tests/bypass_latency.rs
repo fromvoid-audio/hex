@@ -34,9 +34,10 @@ fn live_zero_tail_devices_bypass_without_a_step_in_the_actual_callback() {
             .as_mut()
             .unwrap()
             .control
-            .command(PlaybackCommand::PlayFrom(0))
+            .command(PlaybackCommand::PlayFrom(4096))
             .unwrap();
-        for _ in 0..16 {
+        let fresh_wet = h.render();
+        for _ in 1..16 {
             h.render();
         }
         let before = h.render();
@@ -78,11 +79,29 @@ fn live_zero_tail_devices_bypass_without_a_step_in_the_actual_callback() {
                 .load(std::sync::atomic::Ordering::Acquire)
                 > first_revision
         );
-        assert!(
-            (resumed[0][0] - dry).abs() < 0.01,
-            "{kind}: resumed {}",
-            resumed[0][0]
-        );
+        assert_zero_latency_restart(&resumed, &fresh_wet, [0.25; 2], 0, kind);
+    }
+}
+
+// These fixtures play constant PCM inside the clip. At 48 kHz, the
+// half-millisecond cold ramp reaches the independent wet render at frame 24.
+fn assert_zero_latency_restart(
+    resumed: &[[f32; 2]; 64],
+    fresh_wet: &[[f32; 2]; 64],
+    dry: [f32; 2],
+    elapsed: usize,
+    kind: &str,
+) {
+    for (index, (actual, fresh)) in resumed.iter().zip(fresh_wet).enumerate() {
+        let mix = (elapsed + index + 1).min(24) as f32 / 24.0;
+        for lane in 0..2 {
+            let expected = dry[lane] + (fresh[lane] - dry[lane]) * mix;
+            assert!(
+                (actual[lane] - expected).abs() < 1e-5,
+                "{kind} frame {index} lane {lane}: {} != {expected}",
+                actual[lane]
+            );
+        }
     }
 }
 
@@ -168,8 +187,11 @@ fn live_short_latency_bypass(kind: &'static str) {
         (applied, _) = h.applied(applied);
         let control = &mut h.audio.as_mut().unwrap().control;
         let output_identity = control.output_identity();
-        control.command(PlaybackCommand::PlayFrom(0)).unwrap();
-        for _ in 0..16 {
+        // Use steady source PCM from inside the clip. Capture the first enabled
+        // five blocks as the wet reference for a later fresh DSP restart.
+        control.command(PlaybackCommand::PlayFrom(4096)).unwrap();
+        let fresh_wet: [_; 5] = std::array::from_fn(|_| h.render());
+        for _ in fresh_wet.len()..16 {
             h.render();
         }
         let wet = h.render()[63][0];
@@ -183,33 +205,66 @@ fn live_short_latency_bypass(kind: &'static str) {
             );
         }
         let mut previous = wet;
-        for (bypassed, blocks) in [(true, 1), (false, 1), (true, 5), (false, 5)] {
+        for (bypassed, blocks, cold_reference) in [
+            (true, 1, None),
+            (false, 1, None),
+            (true, 5, None),
+            (false, fresh_wet.len(), Some(&fresh_wet)),
+        ] {
             let status = h.audio.as_ref().unwrap().status().unwrap();
             let cut = status.performance_frame.load(Acquire);
             h.run(Request::Edit(Command::SetDeviceBypass { device, bypassed }));
-            for _ in 0..blocks {
-                for frame in h.render() {
-                    assert!(
-                        (frame[0] - previous).abs() < 0.01,
-                        "{kind}/{owner}, bypassed={bypassed}: {previous} -> {frame:?}"
-                    );
+            assert_eq!(
+                h.audio
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .unwrap()
+                    .performance_frame
+                    .load(Acquire),
+                cut,
+                "worker request must not skip callback frames"
+            );
+            for block_index in 0..blocks {
+                let block = h.render();
+                for (index, frame) in block.iter().enumerate() {
+                    if let Some(wet) = cold_reference {
+                        // All three processors use the same eleven-frame oversampling
+                        // delay. The cold start holds dry through that delay, then
+                        // blends fresh wet PCM over 0.5 ms (24 frames at 48 kHz).
+                        let elapsed = block_index * block.len() + index + 1;
+                        let mix = elapsed.saturating_sub(11).min(24) as f32 / 24.0;
+                        for lane in 0..2 {
+                            let expected = dry + (wet[block_index][index][lane] - dry) * mix;
+                            assert!(
+                                (frame[lane] - expected).abs() < 1e-5,
+                                "{kind}/{owner} frame={index} lane={lane} actual={} expected={expected} wet={} dry={dry}",
+                                frame[lane],
+                                wet[block_index][index][lane]
+                            );
+                        }
+                    } else {
+                        assert!(
+                            (frame[0] - previous).abs() < 0.01,
+                            "{kind}/{owner}, bypassed={bypassed}: {previous} -> {frame:?}"
+                        );
+                    }
                     previous = frame[0];
                 }
             }
             let audio = h.audio.as_ref().unwrap();
             let status = audio.status().unwrap();
-            assert_eq!(status.performance_frame.load(Acquire), cut + 64 * blocks);
+            assert_eq!(
+                status.performance_frame.load(Acquire),
+                cut + 64 * blocks as u64
+            );
             assert_eq!(audio.control.output_identity(), output_identity);
             assert!(status.applied_revision.load(Acquire) > applied);
             applied = status.applied_revision.load(Acquire);
-            // Rattle's noise/filter envelope evolves on a DC source. Its
-            // enabled waveform is checked against uninterrupted PCM by the
-            // shared callback oracle; do not assert a stationary wet sample.
-            if blocks == 5 && (bypassed || kind != "hex.rattle") {
-                let target = if bypassed { dry } else { wet };
+            if bypassed && blocks == 5 {
                 assert!(
-                    (previous - target).abs() < 1e-3,
-                    "{kind}/{owner}: {previous} != {target}"
+                    (previous - dry).abs() < 1e-3,
+                    "{kind}/{owner}: dry={previous}"
                 );
             }
         }
@@ -416,9 +471,10 @@ fn check_filter_bypass(owner: usize, dc: bool, bass: bool, muted: bool, automate
         .as_mut()
         .unwrap()
         .control
-        .command(PlaybackCommand::PlayFrom(0))
+        .command(PlaybackCommand::PlayFrom(4096))
         .unwrap();
-    for _ in 0..16 {
+    let fresh_wet: [_; 5] = std::array::from_fn(|_| h.render());
+    for _ in fresh_wet.len()..16 {
         h.render();
     }
     let smooth = |previous: [f32; 2], frames: &[[f32; 2]]| {
@@ -462,11 +518,12 @@ fn check_filter_bypass(owner: usize, dc: bool, bass: bool, muted: bool, automate
         device,
         false,
     );
-    smooth(previous, &resumed);
+    let dry = [0.25 * factor, -0.125 * factor];
+    assert_zero_latency_restart(&resumed, &fresh_wet[0], dry, 0, "hex.utility");
     previous = resumed[63];
-    for _ in 0..4 {
+    for (block, fresh) in fresh_wet.iter().enumerate().skip(1) {
         let frames = h.render();
-        smooth(previous, &frames);
+        assert_zero_latency_restart(&frames, fresh, dry, block * frames.len(), "hex.utility");
         previous = frames[63];
     }
     assert!(

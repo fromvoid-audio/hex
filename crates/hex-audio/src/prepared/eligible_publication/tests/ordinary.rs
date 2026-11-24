@@ -94,6 +94,39 @@ pub(super) fn measured_render(
     );
 }
 
+// These readiness fixtures render identical left and right channels. Keep an
+// exact PCM oracle for both the committed source and the short output-only
+// bridge. Each checked window starts with a settled signal or a settled hold.
+fn assert_stream_window(
+    output: &[Frame],
+    committed: usize,
+    previous: Frame,
+    recovering: bool,
+    source: impl Fn(usize) -> f32,
+) {
+    let interpolate = |from: f32, to: f32, index: usize| {
+        let gain = (index + 1).min(64) as f32 / 64.0;
+        from * (1.0 - gain) + to * gain
+    };
+    let mut last = previous;
+    for (index, frame) in output[..committed].iter().enumerate() {
+        let value = source(index);
+        last = if recovering {
+            previous.map(|from| interpolate(from, value, index))
+        } else {
+            [value; 2]
+        };
+        assert_eq!(*frame, last, "committed frame {index}");
+    }
+    for (index, frame) in output[committed..].iter().enumerate() {
+        assert_eq!(
+            *frame,
+            last.map(|from| interpolate(from, 0.0, index)),
+            "held frame {index}"
+        );
+    }
+}
+
 #[test]
 fn streamed_retained_restart_under_live_fence_keeps_audio_and_cursor() {
     use hex_project::{Command, Created, Editor, Project, TrackDeviceSlot};
@@ -2169,7 +2202,7 @@ fn pending_replacement_case(
         control.status.position.load(Acquire),
         hex_engine::STREAM_PAGE_FRAMES as u64
     );
-    let mut output = [[0.0; 2]; 256];
+    let mut output = [warmup[warmup.len() - 1]; 256];
 
     #[cfg(feature = "stream-test-support")]
     if _oversized {
@@ -2530,7 +2563,11 @@ fn pending_replacement_case(
         let boundary = if _cross_page { 3968 } else { 4096 };
         // Exercise A1 once so it can remain resident after returning to A0.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut previous = output[255];
+        let mut recovering = false;
         while control.status.position.load(Acquire) == 4096 {
+            previous = output[255];
+            recovering = control.status.stream_buffering.load(Acquire);
             measured_render(&mut data, &mut output);
             assert!(
                 std::time::Instant::now() < deadline,
@@ -2539,7 +2576,7 @@ fn pending_replacement_case(
             std::thread::yield_now();
         }
         assert_eq!(control.status.position.load(Acquire), 4352);
-        assert_eq!(output, [[0.25; 2]; 256], "baseline A1 PCM");
+        assert_stream_window(&output, 256, previous, recovering, |_| 0.25);
         control
             .command(PlaybackCommand::Seek(boundary - 256))
             .unwrap();
@@ -2730,8 +2767,10 @@ fn pending_replacement_case(
     if _oversized {
         let mut large = vec![[0.0; 2]; hex_engine::STREAM_PAGE_FRAMES * 2 + 1];
         let mut total_committed = 0;
+        let mut previous = output[255];
         for _ in 0..8 {
             let before = control.status.position.load(Acquire);
+            let recovering = control.status.stream_buffering.load(Acquire);
             measured_render(&mut data, &mut large);
             let committed = if control.status.stream_buffering.load(Acquire) {
                 usize::try_from(control.status.stream_committed_frames.load(Acquire)).unwrap()
@@ -2743,9 +2782,8 @@ fn pending_replacement_case(
                 control.status.position.load(Acquire),
                 before + committed as u64
             );
-            for (index, frame) in large.iter().enumerate() {
-                assert_eq!(*frame, [if index < committed { 0.25 } else { 0.0 }; 2]);
-            }
+            assert_stream_window(&large, committed, previous, recovering, |_| 0.25);
+            previous = *large.last().unwrap();
             total_committed += committed;
             std::thread::yield_now();
         }
@@ -2778,6 +2816,9 @@ fn pending_replacement_case(
     let render_checked = |data: &mut _, output: &mut [Frame; 256]| {
         let before = control.status.position.load(Acquire);
         let performance_before = control.status.performance_frame.load(Acquire);
+        let previous = output[255];
+        let recovering = control.status.stream_buffering.load(Acquire);
+        let previous_revision = control.status.applied_revision.load(Acquire);
         measured_render(data, output);
         let after = control.status.position.load(Acquire);
         let performance_after = control.status.performance_frame.load(Acquire);
@@ -2805,26 +2846,22 @@ fn pending_replacement_case(
             assert_eq!(revision, b_revision);
             0.5
         };
-        for (index, frame) in output.iter().enumerate() {
-            let position = (before + index as u64) % frames;
-            let remaining = frames - position;
-            let seam_gain = if looping && remaining <= 128 {
-                (remaining - 1) as f32 / 127.0
-            } else {
-                1.0
-            };
-            assert_eq!(
-                *frame,
-                [if index < committed {
-                    expected * seam_gain
+        assert_stream_window(
+            output,
+            committed,
+            previous,
+            recovering && revision == previous_revision,
+            |index| {
+                let position = (before + index as u64) % frames;
+                let remaining = frames - position;
+                let seam_gain = if looping && remaining <= 128 {
+                    (remaining - 1) as f32 / 127.0
                 } else {
-                    0.0
-                }; 2],
-                "before={before} after={after} committed={committed} index={index} revision={revision} buffering={} pending={}",
-                control.status.stream_buffering.load(Acquire),
-                control.status.publication_pending.load(Acquire),
-            );
-        }
+                    1.0
+                };
+                expected * seam_gain
+            },
+        );
     };
     #[cfg(feature = "stream-test-support")]
     if let Some((baseline, long_baseline)) = loop_baseline {
@@ -3440,7 +3477,13 @@ fn candidate_two_domain_capacity_case(action: TwoDomainAfterPressure) {
         );
         std::thread::yield_now();
     }
+    let mut previous = output[127];
+    let mut recovering = false;
     while control.status.position.load(Acquire) == 3968 {
+        recovering = control.status.stream_buffering.load(Acquire);
+        if recovering {
+            previous = output[255];
+        }
         measured_render(&mut data, &mut output);
         assert!(
             std::time::Instant::now() < deadline,
@@ -3449,7 +3492,7 @@ fn candidate_two_domain_capacity_case(action: TwoDomainAfterPressure) {
         std::thread::yield_now();
     }
     assert_eq!(control.status.position.load(Acquire), 4224);
-    assert_eq!(output, [[0.5; 2]; 256]);
+    assert_stream_window(&output, 256, previous, recovering, |_| 0.5);
     control.command(PlaybackCommand::Seek(3840)).unwrap();
     while control.status.position.load(Acquire) != 3968 {
         measured_render(&mut data, &mut output[..128]);
@@ -3795,13 +3838,14 @@ fn partial_domain_readiness_case(replace_while_stalled: bool) {
     };
     let mut result = (false, false);
     for _ in 0..256 {
+        let previous = output[255];
         measured_render(&mut data, &mut output);
         assert!(control.status.stream_buffering.load(Acquire));
         assert_eq!(
             control.status.position.load(Acquire),
             hex_engine::STREAM_PAGE_FRAMES as u64
         );
-        assert_eq!(output, [[0.0; 2]; 256]);
+        assert_stream_window(&output, 0, previous, false, |_| 0.0);
         result = observed(&mut data);
         if result.0 {
             break;
@@ -4088,18 +4132,6 @@ fn prepared_audio_domain_gate(action: GatedPageAction) {
     }
     control.command(PlaybackCommand::Play).unwrap();
     let mut heard = false;
-    loop {
-        measured_render(&mut data, &mut output);
-        heard |= output.contains(&[0.25; 2]);
-        if entered.try_recv().is_ok() {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "later page not requested"
-        );
-        std::thread::yield_now();
-    }
     while control.status.position.load(Acquire) < hex_engine::STREAM_PAGE_FRAMES as u64 {
         measured_render(&mut data, &mut output);
         heard |= output.contains(&[0.25; 2]);
@@ -4111,14 +4143,27 @@ fn prepared_audio_domain_gate(action: GatedPageAction) {
     }
     assert!(heard);
     assert_eq!(control.status.applied_revision.load(Acquire), revision);
-    measured_render(&mut data, &mut output);
+    let held_position = control.status.position.load(Acquire);
+    let last = output[255];
+    assert_eq!(last, [0.25; 2]);
+    measured_render(&mut data, &mut output[..8]);
     assert!(control.status.stream_buffering.load(Acquire));
-    assert_eq!(output, [[0.0; 2]; 256]);
+    assert!(output[0][0] > 0.0 && output[0][0] <= last[0]);
+    let partial = output[7][0];
+    assert!(partial > 0.0 && partial < output[0][0]);
+    measured_render(&mut data, &mut output);
+    assert!(output[0][0] > 0.0 && output[0][0] < partial);
+    assert!(output.windows(2).all(|pair| pair[1][0] <= pair[0][0]));
+    assert_eq!(output[255], [0.0; 2]);
+    assert_eq!(control.status.position.load(Acquire), held_position);
     // The held page starved audible playback: the published count rises (#4074).
     let starved = control.status.stream_starved_callbacks.load(Relaxed);
     assert!(starved > 0, "mid-play page hold was not counted");
     measured_render(&mut data, &mut output);
     assert!(control.status.stream_starved_callbacks.load(Relaxed) > starved);
+    entered
+        .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+        .expect("later page was requested");
     if action == GatedPageAction::ScopePause {
         let mut editor = hex_project::Editor::new(project, 4).unwrap();
         editor
@@ -4340,7 +4385,10 @@ fn prepared_audio_domain_gate(action: GatedPageAction) {
         release.send(()).unwrap();
         loop {
             measured_render(&mut data, &mut output);
-            if output.iter().all(|frame| *frame == [0.25; 2]) {
+            if control.status.position.load(Acquire) > held_position {
+                assert!(output[0][0] > 0.0 && output[0][0] < 0.25);
+                assert!(output.windows(2).all(|pair| pair[1][0] >= pair[0][0]));
+                assert_eq!(output[255], [0.25; 2]);
                 break;
             }
             assert!(
@@ -5154,6 +5202,173 @@ fn ordinary_file_removal_rollback(cancel: bool) {
         std::thread::yield_now();
     }
     assert_eq!(control.unreturned_resident_graphs_on_control(), Some(0));
+    drop(data);
+    drop(errors);
+    drop(control);
+    finish(&mut retirement);
+}
+
+#[test]
+fn sixteen_aligned_streamed_tracks_cross_page_boundary_with_zero_starved_callbacks() {
+    let _serial = serial();
+    use std::time::Duration;
+    const TRACKS: usize = 16;
+    const PAGES: u64 = 3;
+    const QUANTUM: usize = 256;
+    const PCM_SAMPLE: i16 = 1024;
+    let frames = PAGES * hex_engine::STREAM_PAGE_FRAMES as u64;
+
+    let mut editor =
+        hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 4).unwrap();
+    let mut wavs = Vec::with_capacity(TRACKS);
+    let mut definitions = Vec::with_capacity(TRACKS);
+    let mut metadata = Vec::with_capacity(TRACKS);
+    for idx in 0..TRACKS {
+        let hex_project::Created::Track(track) = editor
+            .execute(hex_project::Command::AddTrack {
+                name: format!("stream-{idx}"),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let wav = stream_fixture::Wav::with_samples(frames as u32, |_| PCM_SAMPLE);
+        let hex_project::Created::Asset(asset) = editor
+            .execute(hex_project::Command::AddAsset {
+                path: format!("stream-{idx}.wav").into(),
+                sample_rate: 48_000,
+                frames,
+            })
+            .unwrap()
+        else {
+            panic!("asset");
+        };
+        editor
+            .execute(hex_project::Command::PlaceClip {
+                track,
+                asset,
+                start: 0,
+                duration: frames,
+                source_offset: 0,
+                source_length: frames,
+                looping: false,
+            })
+            .unwrap();
+        let def = wav.definition(asset, 21);
+        metadata.push(def.metadata.clone());
+        definitions.push(def);
+        wavs.push(wav);
+    }
+
+    let store = ResidentDeviceAssets::default();
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_device_resource_publication_on_control(resource_limits())
+        .unwrap();
+    control
+        .configure_ordinary_streaming_on_control(
+            crate::AudioCandidateDomainReservation {
+                max_retained_data_bytes: 32 * 1024 * 1024,
+                max_construction_peak_data_bytes: 32 * 1024 * 1024,
+            },
+            63,
+            64 * 1024,
+        )
+        .unwrap();
+    let domain = control
+        .begin_audio_candidate_domain_preparation(
+            hex_stream::StreamConfig::with_pool_pages(64),
+            definitions,
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 63,
+            },
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match control
+            .poll_audio_candidate_domain_preparation(domain)
+            .unwrap()
+        {
+            crate::AudioCandidateDomainPreparationProgress::Ready => break,
+            crate::AudioCandidateDomainPreparationProgress::Verifying => {}
+            other => panic!("unexpected preparation: {other:?}"),
+        }
+        assert!(Instant::now() < deadline, "catalog did not seal");
+        std::thread::yield_now();
+    }
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    let revision = control
+        .publish_with_admission_and_source_on_control(
+            compile_sources(editor.project(), metadata, &store),
+            PublicationPolicy::InheritRuntime,
+            hex_engine::AudioSourceContext {
+                project_generation: 21,
+                editor_revision: 1,
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap_or_else(|_| panic!("16-track source publication"));
+
+    let mut output = [[0.0; 2]; QUANTUM];
+    while control.status.applied_revision.load(Acquire) != revision {
+        measured_render(&mut data, &mut output);
+        assert!(Instant::now() < deadline, "16-track graph did not install");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    control.command(PlaybackCommand::Play).unwrap();
+    while control.status.position.load(Acquire) == 0 {
+        measured_render(&mut data, &mut output);
+        assert!(
+            Instant::now() < deadline,
+            "initial 16-track play did not start"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let starved_after_start = control.status.stream_starved_callbacks.load(Relaxed);
+
+    // Pace 256-frame callbacks (~2 ms apart, tighter than real 5.33 ms @ 48 kHz)
+    // across both 4096-frame page boundaries (0->1 and 1->2).
+    let expected = [TRACKS as f32 * (f32::from(PCM_SAMPLE) / 32_768.0); 2];
+    while control.status.position.load(Acquire) < frames {
+        let remaining = (frames - control.status.position.load(Acquire)) as usize;
+        let block = remaining.min(QUANTUM);
+        measured_render(&mut data, &mut output[..block]);
+        for frame in &output[..block] {
+            assert!(
+                (frame[0] - expected[0]).abs() < 1e-3 && (frame[1] - expected[1]).abs() < 1e-3,
+                "unexpected 16-track sample {:?}, expected {:?}",
+                frame,
+                expected
+            );
+        }
+        assert!(Instant::now() < deadline, "16-track playback timed out");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+
+    assert_eq!(
+        control.status.stream_starved_callbacks.load(Relaxed) - starved_after_start,
+        0,
+        "16 aligned streamed tracks must cross STREAM_PAGE_FRAMES with zero starved callbacks"
+    );
+
+    assert!(control.retire_audio_candidate_domain(domain));
+    control.request_shutdown();
+    let shutdown_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        measured_render(&mut data, &mut output);
+        control.reclaim();
+        if let Some(report) = control.recover_audio_candidate_domain(domain) {
+            assert!(report.worker_joined && report.accounting_complete);
+            break;
+        }
+        assert!(Instant::now() < shutdown_deadline, "16-track reclamation");
+        std::thread::yield_now();
+    }
+    drop(wavs);
     drop(data);
     drop(errors);
     drop(control);

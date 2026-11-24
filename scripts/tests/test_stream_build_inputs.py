@@ -42,7 +42,7 @@ class StreamBuildInputsTests(unittest.TestCase):
             runner = ci.LocalCiRunner(compiler, mode="component", run_id="observer", env=env, min_free_bytes=0,
                                       steps=(ci.Step("compile", ("cargo", "build", "--offline", "--locked")),))
             self.assertEqual(runner.run(), 0, runner.summary)
-            home = root / "cargo-home"
+            home = root / "profile" / ".cargo"
             registry = home / "registry/src/fixture/rtrb-0.3.4/src"
             registry.mkdir(parents=True)
             actual_home = Path(os.environ.get("CARGO_HOME", str(Path.home() / ".cargo")))
@@ -67,6 +67,11 @@ class StreamBuildInputsTests(unittest.TestCase):
             marker = "cargo:rustc-cfg=hex_stream_rtrb_source_observation_matches"
             self.assertIn(marker, observe())
             self.assertIn(marker, observe(guarded=False))
+            profiles = {"HOME": str(home.parent), "USERPROFILE": str(root / "unused")}
+            self.assertIn(marker, observe(changes={**profiles, "CARGO_HOME": ""}))
+            self.assertNotIn(marker, observe(changes={**profiles, "CARGO_HOME": str(root / "other-cargo")}))
+            profile_only = observe(changes={"CARGO_HOME": "", "HOME": "", "USERPROFILE": str(home.parent)})
+            self.assertEqual(marker in profile_only, os.name == "nt")
             missing = "cargo:rerun-if-changed=" + str(home / "config.toml")
             self.assertNotIn(missing, observe())
             self.assertNotIn(missing, observe(guarded=False))

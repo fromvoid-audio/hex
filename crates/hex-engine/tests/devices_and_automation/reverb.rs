@@ -2,7 +2,8 @@
 use hex_devices::reverb::{REVERB_DEFINITION, parameter};
 use hex_engine::{Audio, PlaybackCommand, PreparedRevision, SineTable, playback::Playback};
 use hex_lattice::{
-    DevicePreparationContext, EMPTY_DEVICE_RESOURCES, NativeDeviceDefinition, TuningTable,
+    DevicePreparationContext, EMPTY_DEVICE_RESOURCES, NativeDeviceDefinition,
+    PreparedProcessorFactory, TuningTable,
 };
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use hex_project::{Command, Created, Editor, Project};
@@ -187,8 +188,8 @@ fn reverb_host_loop_continues_tank_while_seek_and_stop_reset_it() {
         host.apply(PlaybackCommand::Play);
         let actual = render(&mut host, 12_000);
         let state = editor.project().device(device).unwrap().state();
-        let prepared = REVERB_DEFINITION
-            .prepare_processor(
+        let Some(PreparedProcessorFactory::Owned(prepared)) = REVERB_DEFINITION
+            .prepare_runtime_factory(
                 state,
                 &DevicePreparationContext {
                     sample_rate: 48_000,
@@ -197,8 +198,10 @@ fn reverb_host_loop_continues_tank_while_seek_and_stop_reset_it() {
                 },
             )
             .unwrap()
-            .unwrap();
-        let mut provider = prepared.create_runtime();
+        else {
+            panic!("reverb must prepare an owned runtime");
+        };
+        let mut provider = prepared.create_runtime().unwrap();
         // Loop starts keep their full transient. The input is silent at
         // each loop end, so the end envelope cannot change these impulses.
         // One uninterrupted provider runtime independently checks that the
@@ -208,7 +211,11 @@ fn reverb_host_loop_continues_tank_while_seek_and_stop_reset_it() {
         for i in [0, 5000, 10000] {
             expected[i] = impulse(i);
         }
-        provider.process_block(&mut expected, &EMPTY_DEVICE_RESOURCES);
+        for block in expected.chunks_mut(127) {
+            provider.begin_block();
+            provider.process_block(block, &EMPTY_DEVICE_RESOURCES);
+            provider.commit_block();
+        }
         if on_return {
             for i in [0, 5000, 10000] {
                 expected[i][0] += impulse(i)[0];

@@ -118,20 +118,17 @@ fn main_delay_power_declicks_and_undo_restarts_with_fresh_history() {
                 .all(|sample| (*sample - expected_level).abs() < 0.002),
             "bypass={bypassed} did not settle to {expected_level}: {settled:?}"
         );
-        let end = if bypassed {
-            assert!(frames[cut + 239..].iter().all(|frame| *frame == [0.25; 2]));
-            frames.len()
-        } else {
-            // Undo powers on immediately. After the same-signal de-click and
-            // before the new 10 ms echo, old feedback cannot fill the gap.
-            assert_eq!(frames[cut + 239..cut + 480], [[0.0; 2]; 241]);
+        if !bypassed {
+            // The fresh delay's first 10 ms echo follows the completed cold ramp.
+            assert_cold_power_on_to_silence(&frames[..cut + 480], cut, 0.0);
             assert_eq!(frames[cut + 480], [0.25; 2]);
-            cut + 480
-        };
+            continue;
+        }
+        assert!(frames[cut + 239..].iter().all(|frame| *frame == [0.25; 2]));
         let mut last = previous;
         let mut max_step = 0.0_f32;
         let mut largest_transition = (0, 0, 0.0, 0.0);
-        for (offset, &frame) in frames[..end].iter().enumerate() {
+        for (offset, &frame) in frames.iter().enumerate() {
             for lane in 0..2 {
                 let step = (frame[lane] - last[lane]).abs();
                 if step > max_step {

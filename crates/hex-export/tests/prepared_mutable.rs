@@ -3,7 +3,7 @@
 use hex_engine::{
     Audio, LaunchQuantization, NativeDeviceClass, PreparedRevision, SessionPlayback,
     SessionPlaybackCommand, SessionPlaybackError, SineTable, default_native_device_state_for_class,
-    native_device_catalog_for_class, patch_native_device_parameter_for_class,
+    patch_native_device_parameter_for_class,
 };
 use hex_lattice::{
     MutableInstrumentRuntime, NativeInstrumentDefinition, NativeInstrumentEvent,
@@ -342,14 +342,11 @@ fn mutable_state() -> NativeDeviceState {
 }
 
 fn gain_state(gain: f32) -> NativeDeviceState {
-    let type_id = native_device_catalog_for_class(NativeDeviceClass::Effect)
-        .expect("effect catalog")
-        .into_iter()
-        .find(|entry| entry.name == "utility")
-        .expect("utility catalog entry")
-        .type_id;
-    let defaults = default_native_device_state_for_class(NativeDeviceClass::Effect, type_id)
-        .expect("utility defaults");
+    let defaults = default_native_device_state_for_class(
+        NativeDeviceClass::Effect,
+        DeviceTypeId::from_static("hex.utility"),
+    )
+    .expect("utility defaults");
     patch_native_device_parameter_for_class(
         NativeDeviceClass::Effect,
         &defaults,

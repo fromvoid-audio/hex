@@ -26,19 +26,10 @@ fn main() {
         .filter(|p| !p.is_empty())
         .map(PathBuf::from)
         .or_else(|| {
-            env::var_os("HOME")
-                .filter(|p| !p.is_empty())
-                .or_else(|| {
-                    #[cfg(windows)]
-                    {
-                        env::var_os("USERPROFILE").filter(|p| !p.is_empty())
-                    }
-                    #[cfg(not(windows))]
-                    {
-                        None
-                    }
-                })
-                .map(|p| PathBuf::from(p).join(".cargo"))
+            let home = env::var_os("HOME").filter(|p| !p.is_empty());
+            #[cfg(windows)]
+            let home = home.or_else(|| env::var_os("USERPROFILE").filter(|p| !p.is_empty()));
+            home.map(|p| PathBuf::from(p).join(".cargo"))
         });
     let Some(source) = cargo_home.map(|p| p.join("registry/src")) else {
         return;

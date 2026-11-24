@@ -1,8 +1,7 @@
-//! Shared compensated/typed-route path. Upstream latency and typed audio routes
-//! normally use single-frame routing. Independent resident audio tracks can
-//! batch native stages, faders and alignment. Serial Main-only latency retains batched upstream
-//! rendering; its stamps, Main processors and retained tails still advance one
-//! sample at a time through the same compensation owner.
+//! Compensated track, Return and Main routing. Once the transport history is
+//! warm, current processors and retained bus tails read their delayed clocks
+//! from the same upcoming block before its stamps enter the history ring.
+//! Pre-roll and sources requiring frame routing use the scalar path.
 use super::*;
 use crate::compensation::{OriginWindow, TransportStamp};
 
@@ -909,7 +908,7 @@ impl SessionPlayback {
         })
     }
 
-    fn fill_compensated_stamps(
+    pub(super) fn fill_compensated_stamps(
         &self,
         performance_frame: u64,
         arrangement_frame: u64,
@@ -1250,17 +1249,7 @@ impl SessionPlayback {
                                 )?;
                             }
                             if self.source_input_receiver() == Some(index) {
-                                let authored = self
-                                    .revision
-                                    .source_routing()
-                                    .contributors(index)
-                                    .iter()
-                                    .try_fold(0usize, |sum, &contributor| {
-                                        sum.checked_add(
-                                            self.source_voice_envelope(usize::from(contributor)),
-                                        )
-                                    })
-                                    .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                                let authored = self.authored_source_voices(index)?;
                                 source_live::render_source_live_input(
                                     &self.revision,
                                     self.computer_keyboard.as_mut().map(Box::as_mut),
@@ -1713,35 +1702,37 @@ impl SessionPlayback {
         Ok(())
     }
 
-    /// Steady-state block execution for compensated flat graphs (including
+    fn has_grouped_detached_tails(&self) -> bool {
+        self.compensation
+            .as_ref()
+            .is_some_and(|runtime| runtime.graph.has_group_outputs())
+            && (self.detached_tail_group_limit != 0
+                || self
+                    .release_scratch
+                    .last()
+                    .is_some_and(|entry| entry.location.track_index() >= self.route_scratch.len()))
+    }
+
+    /// Steady-state block execution for compensated graphs (including
     /// sidechains, return buses, native effects, VST3 effects/instruments,
     /// Samplers, automation, metering and observers).
     ///
-    /// Requires the transport stamp ring to already hold `max_latency_frames()`
+    /// Requires the transport stamp ring to hold its retained horizon of
     /// consecutive running frames so every stage's `OriginWindow` is populated
-    /// and running across the entire chunk `[0..count]`. Startup pre-roll and
-    /// transitional/tail/live-input states keep the per-frame kernel.
+    /// and running across the entire chunk `[0..count]`. Startup pre-roll
+    /// retains the per-frame kernel. Track-owned MIDI releases
+    /// are summed into their generators before source effects.
     pub(super) fn can_block_compensated_route(&self, count: usize) -> bool {
         if count <= 1
             || count > 256
             || !self.playing
             || self.resident_source_scratch.len() != self.route_scratch.len()
             || self.resident_source_scratch.is_empty()
-            || self.computer_keyboard.is_some()
             || !self.current_sampler_keyboards.is_empty()
             || self.current_sampler_console
             || !self.browser_audition.is_idle()
-            || !self.release_scratch.is_empty()
             || !self.suppression_scratch.is_empty()
             || self.analytic_continuations.iter().any(Option::is_some)
-            || self.tail_output_scratch.iter().any(|active| *active)
-            || self.tail_groups.iter().any(Option::is_some)
-            || self.tail_mutable_instruments.iter().any(Option::is_some)
-            || self.return_effect_tails.slots().iter().any(Option::is_some)
-            || self
-                .native_parameter_state
-                .as_deref()
-                .is_some_and(|state| state.processing.is_some())
             || self.revision.gain_recording_track().is_some()
             || self
                 .route_scratch
@@ -1758,7 +1749,7 @@ impl SessionPlayback {
         {
             return false;
         }
-        compensation.delays.running_stamp_streak() >= compensation.graph.plan.max_latency_frames()
+        compensation.delays.running_stamp_streak() >= compensation.horizon()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1772,8 +1763,9 @@ impl SessionPlayback {
         frame_offset: usize,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut dyn CaptureSink>,
-        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+        inputs: RenderBlockInputs<'_>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
+        tail_scratch: &mut [[Frame; 256]],
     ) -> Result<(), SessionPlaybackError> {
         let count = output.len();
         if count == 0 || count > 256 {
@@ -1787,6 +1779,36 @@ impl SessionPlayback {
             &mut stamps[..count],
         )?;
         let stamps = &stamps[..count];
+        for scratch in &mut self.return_scratch {
+            scratch[..count].fill([0.0; 2]);
+        }
+        let (detached, detached_sends) = if self.has_grouped_detached_tails() {
+            let cells = self.route_scratch.len() * count;
+            let planes = tail_scratch
+                .as_flattened_mut()
+                .get_mut(..2 * cells)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            let (output_plane, send_plane) = planes.split_at_mut(cells);
+            output_plane.fill([0.0; 2]);
+            let mut sends = self.has_tail_route_sends.then_some(send_plane);
+            if let Some(plane) = sends.as_deref_mut() {
+                plane.fill([0.0; 2]);
+            }
+            self.render_detached_tails(
+                performance_frame,
+                output,
+                frame_offset,
+                capture,
+                DetachedTailRouting {
+                    routed: Some(output_plane),
+                    routed_sends: sends.as_deref_mut(),
+                },
+                foreign,
+            )?;
+            (Some(output_plane), sends)
+        } else {
+            (None, None)
+        };
         let region = self.active_loop_region();
         let loop_fade = self
             .active_loop_region_at(arrangement_frame)
@@ -1797,9 +1819,6 @@ impl SessionPlayback {
                 )
             });
         let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
-        for scratch in &mut self.return_scratch {
-            scratch[..count].fill([0.0; 2]);
-        }
         let owner_count = self
             .compensation
             .as_ref()
@@ -1825,6 +1844,7 @@ impl SessionPlayback {
         let mut key_buf = [[0.0; 2]; 256];
         let mut send_buf = [[0.0; 2]; 256];
 
+        let source_input_receiver = self.source_input_receiver();
         for order in 0..owner_count {
             let owner = self
                 .compensation
@@ -1872,7 +1892,21 @@ impl SessionPlayback {
                         || has_midi_source
                         || self.revision.source_routing().is_shared(index)
                         || !matches!(route.owner, RouteOwner::Arrangement);
-                    let has_generator = has_analytic_source
+                    // Release entries are sorted by track, tail group and voice order.
+                    // The graph visits tracks in topological rather than index order.
+                    let first_release = self
+                        .release_scratch
+                        .partition_point(|entry| entry.location.track_index() < index);
+                    let remaining = &self.release_scratch[first_release..];
+                    let releases = &remaining[..remaining
+                        .partition_point(|entry| entry.location.track_index() == index)];
+                    let keyboard_track = self.computer_keyboard.as_ref().is_some_and(|keyboard| {
+                        !keyboard.is_source_input() && keyboard.track() == route.id
+                    });
+                    let has_generator = keyboard_track
+                        || source_input_receiver == Some(index)
+                        || !releases.is_empty()
+                        || has_analytic_source
                         || has_mutable_instrument
                         || has_foreign_instrument
                         || has_source_effects;
@@ -1904,6 +1938,10 @@ impl SessionPlayback {
                         pages.as_deref_mut(),
                         SourceStage::audio(self.browser_audition.voices.for_track(route.id)),
                     )?;
+
+                    if let Some(input) = inputs.live_audio.filter(|input| input.track == route.id) {
+                        add_main_track(audio, &input.frames[frame_offset..frame_offset + count]);
+                    }
 
                     if has_generator {
                         generator.fill([0.0; 2]);
@@ -1944,6 +1982,24 @@ impl SessionPlayback {
                         )?;
                     }
 
+                    if source_input_receiver == Some(index) {
+                        let authored = self.authored_source_voices(index)?;
+                        source_live::render_source_live_input(
+                            &self.revision,
+                            self.computer_keyboard.as_deref_mut(),
+                            self.mutable_instruments[index].as_mut(),
+                            &mut self.mutable_onsets,
+                            &mut self.mutable_events,
+                            authored,
+                            performance_frame,
+                            generator,
+                            &timing,
+                            true,
+                            None,
+                            self.pending_shared_live,
+                        )?;
+                    }
+
                     if has_mutable_instrument {
                         render_mutable_instrument_chunk(
                             MutableInstrumentChunkContext {
@@ -1952,7 +2008,7 @@ impl SessionPlayback {
                                     self.revision.session(),
                                     self.midi_admission.as_ref(),
                                 ),
-                                sources,
+                                sources: inputs.sources,
                                 routes: &self.route_scratch,
                                 runtimes: &mut self.mutable_instruments,
                                 onsets: &mut self.mutable_onsets,
@@ -1978,8 +2034,37 @@ impl SessionPlayback {
                             },
                             index,
                             generator,
-                            None,
+                            self.native_parameter_state
+                                .as_deref_mut()
+                                .and_then(|state| state.processing.as_mut()),
                         )?;
+                    }
+
+                    for release in releases {
+                        let remaining = release.end_frame().saturating_sub(performance_frame);
+                        let frames = count.min(usize::try_from(remaining).unwrap_or(usize::MAX));
+                        render_release_raw(
+                            release,
+                            self.revision.arrangement().shared_contexts(),
+                            &self.retained_contexts,
+                            &self.analytic_continuations,
+                            performance_frame,
+                            true,
+                            &mut generator[..frames],
+                        )?;
+                    }
+
+                    if let Some(keyboard) = self
+                        .computer_keyboard
+                        .as_deref_mut()
+                        .filter(|_| keyboard_track)
+                    {
+                        let clock = keyboard
+                            .musical_clock(&timing, performance_frame, true)
+                            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                        keyboard
+                            .render(generator, Some(&clock))
+                            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     }
 
                     if has_foreign_instrument {
@@ -2035,7 +2120,15 @@ impl SessionPlayback {
                             delay: 0,
                         };
                         self.source_effects
-                            .process_with_live_input(index, generator, &clock, frame_offset, None)
+                            .process_with_live_input(
+                                index,
+                                generator,
+                                &clock,
+                                frame_offset,
+                                self.native_parameter_state
+                                    .as_deref_mut()
+                                    .and_then(|state| state.processing.as_mut()),
+                            )
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     }
 
@@ -2078,6 +2171,10 @@ impl SessionPlayback {
                                     &mut key_buf,
                                     foreign,
                                     observer,
+                                    self.native_parameter_state
+                                        .as_deref_mut()
+                                        .and_then(|state| state.processing.as_mut()),
+                                    None,
                                 )
                                 .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                         }
@@ -2123,6 +2220,10 @@ impl SessionPlayback {
                                     &mut key_buf,
                                     foreign,
                                     observer,
+                                    self.native_parameter_state
+                                        .as_deref_mut()
+                                        .and_then(|state| state.processing.as_mut()),
+                                    None,
                                 )
                                 .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                         }
@@ -2179,11 +2280,21 @@ impl SessionPlayback {
                     }
                     self.resident_source_scratch[index][..count].copy_from_slice(audio);
 
-                    for send_index in 0..compensation.graph.tracks[index].sends.len() {
+                    let sends = &compensation.graph.tracks[index].sends;
+                    let send_audio = if let Some(tails) = &detached_sends
+                        && !sends.is_empty()
+                    {
+                        generator.copy_from_slice(audio);
+                        add_main_track(generator, &tails[index * count..(index + 1) * count]);
+                        &*generator
+                    } else {
+                        &*audio
+                    };
+                    for send_index in 0..sends.len() {
                         let send = &compensation.graph.tracks[index].sends[send_index];
                         let (target, gain, edge) = (send.target, send.gain, send.edge);
                         let buf = &mut send_buf[..count];
-                        for (dst, &src) in buf.iter_mut().zip(audio.iter()) {
+                        for (dst, &src) in buf.iter_mut().zip(send_audio) {
                             *dst = [src[0] * gain, src[1] * gain];
                         }
                         compensation
@@ -2196,6 +2307,9 @@ impl SessionPlayback {
                     {
                         let routed = &mut send_buf[..count];
                         routed.copy_from_slice(audio);
+                        if let Some(tails) = &detached {
+                            add_main_track(routed, &tails[index * count..(index + 1) * count]);
+                        }
                         compensation
                             .edge_block(edge, routed)
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
@@ -2230,6 +2344,10 @@ impl SessionPlayback {
                                 &mut key_buf,
                                 foreign,
                                 observer,
+                                self.native_parameter_state
+                                    .as_deref_mut()
+                                    .and_then(|state| state.processing.as_mut()),
+                                None,
                             )
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     }
@@ -2306,6 +2424,9 @@ impl SessionPlayback {
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
             let routed = &mut audio_buf[..count];
             routed.copy_from_slice(&self.resident_source_scratch[index][..count]);
+            if let Some(tails) = &detached {
+                add_main_track(routed, &tails[index * count..(index + 1) * count]);
+            }
             compensation
                 .edge_block(edge, routed)
                 .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
@@ -2323,6 +2444,47 @@ impl SessionPlayback {
             add_main_track(output, &scratch[..count]);
         }
 
+        // The handoff keeps flat detached track output post-fader. It joins
+        // Main after current Returns and keeps its original track capture.
+        if self
+            .compensation
+            .as_ref()
+            .is_some_and(|runtime| !runtime.graph.has_group_outputs())
+        {
+            self.render_detached_tails(
+                performance_frame,
+                output,
+                frame_offset,
+                capture,
+                DetachedTailRouting::UNROUTED,
+                foreign,
+            )?;
+        }
+        self.return_effect_tails
+            .render_chunk(output, frame_offset, capture, foreign)?;
+
+        self.render_compensated_main_block(
+            output,
+            frame_offset,
+            stamps,
+            &mut key_buf,
+            foreign,
+            observer,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn render_compensated_main_block(
+        &mut self,
+        output: &mut [Frame],
+        frame_offset: usize,
+        stamps: &[Option<TransportStamp>],
+        key_buf: &mut [Frame; 256],
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+        external: Option<&dyn hex_lattice::NativeExternalAutomationSet>,
+    ) -> Result<(), SessionPlaybackError> {
         let compensation = self
             .compensation
             .as_mut()
@@ -2334,11 +2496,22 @@ impl SessionPlayback {
                 frame_offset,
                 stamps,
                 &self.resident_source_scratch,
-                &mut key_buf,
+                key_buf,
                 foreign,
                 observer,
+                self.native_parameter_state
+                    .as_deref_mut()
+                    .and_then(|state| state.processing.as_mut()),
+                external,
             )
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+        self.return_effect_tails.render_main_chunk(
+            output,
+            MainTailClock::Window(compensation, stamps),
+            frame_offset,
+            foreign,
+        )?;
+        // Both current Main and any retained suffix read the same history.
         for stamp in stamps {
             let stamp = stamp.ok_or(SessionPlaybackError::DeviceRuntime)?;
             compensation

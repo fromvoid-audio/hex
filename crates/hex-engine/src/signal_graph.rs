@@ -1100,6 +1100,16 @@ impl SignalGraph {
             .all(|track| track.audio_feeds.is_empty() && track.printed_merge.is_none())
             && self.returns.iter().all(|bus| bus.audio_feeds.is_empty())
     }
+    /// Reserve a default-output plane and a separately authorized send plane
+    /// only for grouped graphs that can use block routing.
+    pub(crate) fn grouped_tail_windows(&self) -> usize {
+        if self.has_group_outputs() && self.supports_block_compensated_routing() {
+            self.tracks.len() * 2
+        } else {
+            0
+        }
+    }
+
     pub(crate) fn resident_main_alignment(&self, index: usize) -> Option<(usize, u32)> {
         let track = self.tracks.get(index)?;
         let TrackOutput::Main { edge } = track.output else {
@@ -2643,7 +2653,7 @@ impl SignalRuntime {
             planned.input_arrival_frames,
             planned.output_arrival_frames,
             foreign,
-            key,
+            key.as_ref().map(std::slice::from_ref),
             observer,
         )?;
         if output_stamp.is_none() {
@@ -2665,6 +2675,8 @@ impl SignalRuntime {
         key_buf: &mut [Frame; 256],
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+        input: Option<&mut crate::native_parameter_input::Processing>,
+        external: Option<&dyn hex_lattice::NativeExternalAutomationSet>,
     ) -> Result<(), Invalid> {
         let count = frames.len();
         let has_key = if let Some(stage) = self.graph.key_stages.get(node).copied().flatten() {
@@ -2689,52 +2701,21 @@ impl SignalRuntime {
             incoming: stamps,
             delay: planned.output_arrival_frames,
         };
-        let mut observe = |owner, device, kind, phase, frame_offset, samples: &[Frame]| {
-            if let Some(observer) = observer.as_mut() {
-                observer(
-                    crate::PostNodeIdentity::new(owner, device, kind),
-                    phase,
-                    frame_offset,
-                    samples,
-                );
-            }
-        };
-        if has_key {
-            let block = hex_lattice::StereoAuxiliaryBlock::new(
-                frames,
-                Some(&key_buf[..count]),
-                &mut [],
-                count,
-            )
-            .map_err(|_| Invalid("sidechain auxiliary block is invalid"))?;
-            chain
-                .process_auxiliary_stage_with_context(
-                    index,
-                    block,
-                    hex_lattice::StageProcessContext::new(
-                        offset,
-                        Some(&input_clock),
-                        Some(&output_clock),
-                    ),
-                    &mut observe,
-                )
-                .map_err(|_| Invalid("native effect processing failed"))?;
-        } else {
-            chain
-                .process_range_tapped_with_context(
-                    index..index + 1,
-                    frames,
-                    hex_lattice::StageProcessContext::new(
-                        offset,
-                        Some(&input_clock),
-                        Some(&output_clock),
-                    )
-                    .with_foreign(foreign),
-                    &mut observe,
-                )
-                .map_err(|_| Invalid("native effect processing failed"))?;
-        }
-        Ok(())
+        crate::native_parameter_input::process_range_with_key(
+            input,
+            external,
+            chain,
+            index..index + 1,
+            frames,
+            offset,
+            Some(&input_clock),
+            Some(&output_clock),
+            planned.input_arrival_frames,
+            planned.output_arrival_frames,
+            foreign,
+            has_key.then_some(&key_buf[..count]),
+            observer,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2748,6 +2729,8 @@ impl SignalRuntime {
         key_buf: &mut [Frame; 256],
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+        mut input: Option<&mut crate::native_parameter_input::Processing>,
+        external: Option<&dyn hex_lattice::NativeExternalAutomationSet>,
     ) -> Result<(), Invalid> {
         if chain.len() != self.graph.main_devices.len() {
             return Err(Invalid("main content-origin plan does not match runtime"));
@@ -2755,7 +2738,18 @@ impl SignalRuntime {
         for index in 0..self.graph.main_devices.len() {
             let node = self.graph.main_devices[index];
             self.process_effect_stage_block(
-                node, index, chain, frames, offset, stamps, key_taps, key_buf, foreign, observer,
+                node,
+                index,
+                chain,
+                frames,
+                offset,
+                stamps,
+                key_taps,
+                key_buf,
+                foreign,
+                observer,
+                input.as_deref_mut(),
+                external,
             )?;
         }
         Ok(())

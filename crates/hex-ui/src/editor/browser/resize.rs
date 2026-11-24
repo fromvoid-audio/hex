@@ -1,7 +1,7 @@
 //! Browser-owned sizing policy on the shared Window pointer lease. Outer sizing
 //! remains panel-relative/absolute; sidebar sizing keeps its collapse hysteresis.
 //! Cancellation retains the last width. No canonical edit or pending ACK is owned.
-use super::{EditorView, clamped_panel_width};
+use super::EditorView;
 use gpui::{
     Context, CursorStyle, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Window,
 };
@@ -81,7 +81,7 @@ impl EditorView {
                             let x = f32::from(position.x);
                             match divider {
                                 Divider::Outer => {
-                                    view.browser.width = clamped_panel_width(
+                                    view.browser.width = view.clamped_browser_width(
                                         view.browser.layout.base_width_for_total(
                                             x - hex_widgets::PANEL_FRAME_INSET,
                                         ),
@@ -89,7 +89,8 @@ impl EditorView {
                                     )
                                 }
                                 Divider::Sidebar => {
-                                    let width = clamped_panel_width(view.browser.width, available);
+                                    let width =
+                                        view.clamped_browser_width(view.browser.width, available);
                                     view.browser.layout.update_sidebar_resize(x, width);
                                 }
                             }

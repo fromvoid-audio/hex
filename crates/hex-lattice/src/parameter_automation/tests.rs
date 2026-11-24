@@ -1129,6 +1129,11 @@ fn armed_provider_clear_is_processed_and_late_refusal_discards_observation() {
             fail_loud,
         )))),
     };
+    // This provider supports warm bypass and continues to receive parameter
+    // changes while its audio output stays dry.
+    let mut bypassed = make(1, armed.clone(), false);
+    bypassed.bypassed = true;
+    let mut warm = NativeRuntimeChain::new_prepared(vec![bypassed]).unwrap();
     let mut chain = NativeRuntimeChain::new_prepared(vec![
         make(1, armed, false),
         make(2, program(descriptor(), semantics()), true),
@@ -1152,6 +1157,43 @@ fn armed_provider_clear_is_processed_and_late_refusal_discards_observation() {
             &mut |_, _, _, _, _, _| {},
         )
     };
+    for (operation, expected) in [
+        (context.input.operation, 5.0),
+        (
+            NativeTransientOperation::Clear(DeviceAutomationTarget::Parameter(descriptor().id)),
+            2.0,
+        ),
+    ] {
+        let mut observation = NativeTransientProcessing::new(NativeTransientInput {
+            identity,
+            operation,
+        });
+        assert!(warm.validate_transient_input(observation.input).unwrap());
+        warm.begin_block();
+        let mut dry = [[0.25, -0.5]; 2];
+        warm.process_range_tapped_with_context(
+            0..1,
+            &mut dry,
+            StageProcessContext::new(4, None, None).with_transient(Some(&mut observation)),
+            &mut |_, _, _, _, _, _| {},
+        )
+        .unwrap();
+        assert_eq!(dry, [[0.25, -0.5]; 2]);
+        assert_eq!(
+            observation.applied,
+            Some(NativeTransientApplication {
+                identity,
+                operation,
+                offset: 4
+            })
+        );
+        warm.commit_block();
+        let entry = warm.storage_view().entries().next().unwrap();
+        assert_eq!(
+            entry.runtime_pair::<Runtime>().unwrap().0.effective,
+            expected
+        );
+    }
     chain.begin_block();
     let mut loud = [[5.0; 2]];
     assert!(process(&mut chain, &mut loud, Some(&mut context)).is_err());
