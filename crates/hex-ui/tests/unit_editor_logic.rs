@@ -17,5 +17,7 @@ mod test_wait;
 #[path = "editor_logic_unit/log_viewer.rs"]
 mod log_viewer;
 
-#[path = "../src/vertical_scrollbar/geometry.rs"]
-mod vertical_scrollbar_geometry;
+#[path = "../src/vertical_scrollbar"]
+mod vertical_scrollbar {
+    mod geometry;
+}
