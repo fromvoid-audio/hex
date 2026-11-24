@@ -127,6 +127,7 @@ constexpr int multiple_aux_inputs_variant=153, multiple_aux_main_input_variant=1
     multiple_aux_mismatch_variant=155, multiple_aux_excess_variant=156;
 constexpr int component_prealloc_overflow_variant=157, controller_prealloc_overflow_variant=158;
 constexpr int full_output_with_editor_input_variant=159;
+constexpr int split_slice_65_outputs_variant=160;
 static bool held_parameter_input(int variant) {
     return variant==144 || variant==held_instrument_variant || grouped_editor(variant);
 }
@@ -156,7 +157,8 @@ class RestoreController final : public IEditController {
     const int fault=next_fault;
     const int32 inventory_size=fault==grouped_instrument_variant?3:
         (fault==full_output_with_editor_input_variant?129:
-        ((saturated_editor_drag(fault) || mixed_parameter_input(fault))?2:parameter_inventory_size()));
+        (fault==split_slice_65_outputs_variant?66:
+        ((saturated_editor_drag(fault) || mixed_parameter_input(fault))?2:parameter_inventory_size())));
     FUnknown* context=nullptr;
     IComponentHandler* handler=nullptr;
     float component_gain=0;uint32 scroll=7;
@@ -488,7 +490,9 @@ public:
     ParamValue PLUGIN_API getParamNormalized(ParamID id) override {
         if(control() && context && (saturated_editor_drag(fault) || mixed_parameter_input(fault)) && id==drag_axis_id) return drag_axis;
         if(control() && context && fault==grouped_instrument_variant && id==independent_id) return independent;
-        if(control() && context && fault==full_output_with_editor_input_variant && id>=1001 && id<1129)
+        if(control() && context &&
+           (fault==full_output_with_editor_input_variant || fault==split_slice_65_outputs_variant) &&
+           id>=1001 && id<static_cast<ParamID>(1000+inventory_size))
             return extra_outputs[static_cast<size_t>(id-1001)];
         if(control() && context && id>1000 && id<static_cast<ParamID>(1000+inventory_size)) return 0.25;
         if (!control() || !context || id!=parameter_id(fault)) {++observed.violations;return 0;}
@@ -546,7 +550,8 @@ public:
         if(fault==135 && edits_sent && value!=0.875 && value!=0.5) return kResultFalse;
         if((saturated_editor_drag(fault) || mixed_parameter_input(fault)) && id==drag_axis_id) {drag_axis=value;return kResultOk;}
         if(fault==grouped_instrument_variant && id==independent_id) {independent=value;return kResultOk;}
-        if(fault==full_output_with_editor_input_variant && id>=1001 && id<1129) {
+        if((fault==full_output_with_editor_input_variant || fault==split_slice_65_outputs_variant) &&
+           id>=1001 && id<static_cast<ParamID>(1000+inventory_size)) {
             extra_outputs[static_cast<size_t>(id-1001)]=value;return kResultOk;
         }
         if(id!=parameter_id(fault)) return kInvalidArgument;
@@ -1173,7 +1178,17 @@ public:
         }
         // Emit an old processor observation one quantum after the edit that
         // caused it, with no parameter input in that second quantum.
-        if(fault==full_output_with_editor_input_variant && point_count) {
+        if(fault==split_slice_65_outputs_variant) {
+            if(data.outputParameterChanges) {
+                const double base=(block%2==0)?0.25:0.5;
+                for(uint32 n=0;n<65;++n) {
+                    int32 index=-1;
+                    auto* queue=data.outputParameterChanges->addParameterData(1001+n,index);
+                    const double emitted=base+static_cast<double>(n+1)/512.0;
+                    if(!queue || queue->addPoint(data.numSamples-1,emitted,index)!=kResultOk) return kResultFalse;
+                }
+            }
+        } else if(fault==full_output_with_editor_input_variant && point_count) {
             gain.store(static_cast<float>(current_gain));
             if(data.outputParameterChanges) {
                 for(uint32 n=0;n<128;++n) {
@@ -1290,7 +1305,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>full_output_with_editor_input_variant) return false;next_fault=value;
+        if (value>split_slice_65_outputs_variant) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

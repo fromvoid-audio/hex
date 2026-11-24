@@ -2133,3 +2133,84 @@ fn actual_editor_input_with_full_128_distinct_outputs_keeps_worker_alive_and_syn
             .success()
     );
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_split_block_with_65_outputs_per_slice_delivers_pcm_and_continues_on_same_worker() {
+    use crate::transport::{ProcessTiming, SegmentTiming, channel};
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(160),
+    )
+    .unwrap();
+    let child = instance.child_id_on_control();
+    let binding = instance.configuration().binding;
+    let (_control, mut callback, mut worker) = channel(binding, 8).unwrap();
+
+    let mut first_pcm = [[0.0_f32; 2]; 8];
+    for (i, frame) in first_pcm.iter_mut().enumerate() {
+        *frame = [(i + 1) as f32 / 16.0, -((i + 2) as f32) / 32.0];
+    }
+    callback.begin_physical_callback(8).unwrap();
+    for (offset, origin, playing) in [(0, 0_i64, true), (4, 4_i64, false)] {
+        let mut out = [[0.0_f32; 2]; 4];
+        callback
+            .stage_segment_with_timing(
+                offset,
+                &first_pcm[offset..offset + 4],
+                &[],
+                &[],
+                &mut out,
+                SegmentTiming {
+                    playing: Some(playing),
+                    at: |i| {
+                        Some(ProcessTiming {
+                            playing,
+                            arrangement_frame: origin + i as i64,
+                            ..Default::default()
+                        })
+                    },
+                },
+            )
+            .unwrap();
+    }
+    callback.finish(true).unwrap();
+    let split_request = worker.receive_request().unwrap().unwrap().block;
+    assert_eq!(split_request.timing_changes.as_slice().len(), 1);
+    assert_eq!(split_request.timing_changes.as_slice()[0].frame, 4);
+
+    // Block 0 invokes two 4-frame SDK slices, each emitting the same 65 parameter IDs
+    // (130 total output points). PCM and coalesced output feedback must succeed cleanly.
+    let split_reply = instance.exchange_timed_on_worker(split_request).unwrap();
+    for (i, (actual, original)) in split_reply.block.pcm[..8].iter().zip(first_pcm).enumerate() {
+        let multiplier = if i < 4 { 0.5_f32 } else { 0.625_f32 };
+        assert_eq!(*actual, original.map(|sample| sample * multiplier));
+    }
+    assert_eq!(split_reply.block.parameters.as_slice().len(), 65);
+    for (n, point) in split_reply.block.parameters.as_slice().iter().enumerate() {
+        assert_eq!(point.frame, 7);
+        assert_eq!(point.id, 1001 + n as u32);
+        assert_eq!(point.normalized, 0.5 + f64::from(n as u32 + 1) / 512.0);
+    }
+    assert_eq!(instance.child_id_on_control(), child);
+
+    // Following quantum processes cleanly on the exact same worker.
+    let next_input = request(instance.configuration(), 1);
+    let next_reply = instance.exchange_on_worker(next_input).unwrap();
+    for (actual, original) in next_reply.pcm[..8].iter().zip(next_input.pcm) {
+        assert_eq!(*actual, original.map(|sample| sample * 0.75));
+    }
+    assert_eq!(next_reply.parameters.as_slice().len(), 65);
+    assert_eq!(instance.child_id_on_control(), child);
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
