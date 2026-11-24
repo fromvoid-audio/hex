@@ -292,7 +292,9 @@ fn native_reverb_case(grouped: bool) {
             b_boxes = active.runtime().unwrap().test_track_boxes(track).unwrap();
         })
     }));
-    assert!(b_boxes.0.is_some() && b_boxes.1.is_some());
+    // OwnedProcessorRuntime keeps committed and speculative rings inside one
+    // exclusive Box, whose identity moves intact into the detached tail below.
+    assert!(b_boxes.0.is_none() && b_boxes.1.is_some());
     control.reclaim();
     // B's parameter replacement copies A's histories rather than moving its
     // origins. Reclaim schedules asynchronous cleanup; recover A on control
