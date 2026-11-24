@@ -1,5 +1,6 @@
 //! Request enqueueing, seek/zoom/pan, session launch, metronome, paused republish, latency rebuild and stop transport.
 use super::*;
+use crate::editor::TogglePlayTarget;
 
 impl EditorView {
     pub(in crate::editor) fn enqueue(&mut self, request: Request) -> bool {
@@ -1541,29 +1542,77 @@ impl EditorView {
                 changed = true;
             }
         }
-        if let Some((frame, generation)) = self.deferred_toggle_play {
-            if generation != self.project_generation
-                || self.opening_project
-                || self.close_prompt_open
-            {
-                self.deferred_toggle_play = None;
-                changed = true;
-            } else if self.normal_start_source().is_some()
-                && (self.document_audio_mode == hex_session::DocumentAudioMode::Resident
-                    || self.current_seek_requires_preroll().is_some())
-            {
-                self.deferred_toggle_play = None;
-                self.queue_normal_play(frame);
-                changed = true;
-            } else if !self.can_defer_toggle_play_for_inflight_publication() {
-                self.deferred_toggle_play = None;
-                if self.error.is_none() {
-                    self.error = Some("playback source is unavailable · cannot seek safely".into());
-                }
-                changed = true;
-            }
+        self.tick_deferred_toggle_play() || changed
+    }
+
+    fn tick_deferred_toggle_play(&mut self) -> bool {
+        let Some(intent) = self.deferred_toggle_play else {
+            return false;
+        };
+        if intent.generation != self.project_generation
+            || self.opening_project
+            || self.close_prompt_open
+        {
+            self.deferred_toggle_play = None;
+            return true;
         }
-        changed
+        let output = self
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.control.output_identity());
+        let mut source = self.normal_start_source();
+        match intent.target {
+            TogglePlayTarget::DeviceProposal { output: expected } => {
+                if output == Some(expected) && self.pending_plugin_effect.is_some() {
+                    return false;
+                }
+                self.deferred_toggle_play = None;
+                return true;
+            }
+            TogglePlayTarget::CommittedDevice {
+                output: expected,
+                revision,
+                audio_revision,
+            } => {
+                if output != Some(expected)
+                    || self
+                        .state
+                        .as_ref()
+                        .is_none_or(|state| state.revision != revision)
+                {
+                    self.deferred_toggle_play = None;
+                    return true;
+                }
+                source = source.filter(|source| {
+                    source.context.editor_revision == revision
+                        && audio_revision.is_none_or(|revision| source.audio_revision == revision)
+                });
+            }
+            TogglePlayTarget::Publication => {}
+        }
+        if let Some(source) = source
+            && (self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+                || self.current_seek_requires_preroll().is_some())
+        {
+            if matches!(intent.target, TogglePlayTarget::Publication) {
+                self.queue_normal_play(intent.frame);
+            } else {
+                self.queue_normal_start(crate::editor::playback_settings::Start::Source {
+                    frame: intent.frame,
+                    source,
+                    allow_playing: false,
+                });
+            }
+            return true;
+        }
+        if self.can_defer_toggle_play_for_inflight_publication() {
+            return false;
+        }
+        self.deferred_toggle_play = None;
+        if self.error.is_none() {
+            self.error = Some("playback source is unavailable · cannot seek safely".into());
+        }
+        true
     }
 
     pub(in crate::editor) fn paused_republish_waiting_for_current(&self) -> bool {
