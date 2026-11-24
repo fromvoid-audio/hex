@@ -1,5 +1,6 @@
 #import <AppKit/AppKit.h>
 #include "macos_host.hpp"
+#include "macos_parameters.hpp"
 #include <cassert>
 #include <chrono>
 #include <cstdio>
@@ -47,6 +48,11 @@ public:
 class LargeController final : public Controller {
 public:
     bool reverse=false, duplicate_unit=false, changed_id=false;
+    std::array<ParamValue,HOST_PARAMETER_COUNT> values=[] {
+        std::array<ParamValue,HOST_PARAMETER_COUNT> init{};
+        init.fill(0.25);
+        return init;
+    }();
     int32 PLUGIN_API getParameterCount() override { return HOST_PARAMETER_COUNT; }
     tresult PLUGIN_API getParameterInfo(int32 ordinal,ParameterInfo& info) override {
         if(ordinal<0 || ordinal>=getParameterCount()) return kInvalidArgument;
@@ -55,6 +61,15 @@ public:
         info.id=changed_id && id==17?getParameterCount():id;
         info.unitId=duplicate_unit && id==17?16:id;
         info.flags=ParameterInfo::kCanAutomate|ParameterInfo::kIsBypass;
+        return kResultOk;
+    }
+    ParamValue PLUGIN_API getParamNormalized(ParamID id) override {
+        return id<HOST_PARAMETER_COUNT?values[id]:0.0;
+    }
+    tresult PLUGIN_API setParamNormalized(ParamID id,ParamValue v) override {
+        if(id>=HOST_PARAMETER_COUNT) return kInvalidArgument;
+        ++setter_calls;
+        values[id]=v;
         return kResultOk;
     }
 };
@@ -160,6 +175,75 @@ int main(int argc,char** argv) { @autoreleasepool {
         assert(host.restartComponent(kParamValuesChanged)==kResultOk);
         assert(host.dispatch(&controller).disposition==HostDisposition::Recursive);
         assert(host.snapshot()->revision==valid_revision && host.snapshot()->parameters[0].value==0.75);
+    }
+    if(argc==1 || !std::strcmp(argv[1],"combined-feedback-capacity")) {
+        LargeController large;
+        Host host;
+        assert(host.refresh_on_control(&large).disposition==HostDisposition::Refreshed);
+
+        // Existing single-direction 128-point limit still rejects a 129th output ID
+        // with sticky refusal.
+        ParameterChanges overflow_output;
+        assert(overflow_output.reset(64,true) && overflow_output.begin_sdk());
+        for(ParamID id=0;id<PARAMETER_POINT_COUNT;++id) {
+            int32 idx=-1;
+            auto* queue=overflow_output.addParameterData(id,idx);
+            assert(queue && queue->addPoint(32,static_cast<ParamValue>(id+1)/256.0,idx)==kResultOk);
+        }
+        {
+            int32 idx=-1;
+            assert(overflow_output.addParameterData(201,idx)==nullptr);
+        }
+        assert(!overflow_output.end_sdk());
+        assert(!overflow_output.reset(64,true));
+
+        // 1 valid input (ID 200) + 128 distinct valid outputs (IDs 0..127) must fit in
+        // bounded ParameterFeedback and synchronize all 129 latest values to the controller,
+        // while malformed output points remain individually rejected.
+        ParameterChanges input, output;
+        assert(input.reset(64,false) && output.reset(64,true));
+        assert(input.input(200,0,0.75));
+        assert(input.begin_sdk() && output.begin_sdk());
+        for(ParamID id=0;id<PARAMETER_POINT_COUNT;++id) {
+            int32 idx=-1;
+            auto* queue=output.addParameterData(id,idx);
+            assert(queue);
+            if(id==0) {
+                assert(queue->addPoint(0,std::numeric_limits<ParamValue>::quiet_NaN(),idx)==kResultFalse);
+                assert(queue->addPoint(0,-0.25,idx)==kResultFalse);
+                assert(queue->addPoint(0,1.25,idx)==kResultFalse);
+            }
+            assert(queue->addPoint(32,static_cast<ParamValue>(id+1)/256.0,idx)==kResultOk);
+        }
+        assert(input.end_sdk() && output.end_sdk());
+        assert(input.size()==1 && output.size()==PARAMETER_POINT_COUNT);
+
+        ParameterFeedback feedback;
+        ParameterPoint pt{};
+        assert(input.point(0,pt) && feedback.put(pt.id,pt.normalized));
+        for(size_t n=0;n<output.size();++n) {
+            assert(output.point(n,pt));
+            assert(feedback.put(pt.id,pt.normalized));
+        }
+        // Invalid IDs / out-of-range values are rejected by ParameterFeedback::put.
+        assert(!feedback.put(0x80000000u,0.5));
+        assert(!feedback.put(202,std::numeric_limits<ParamValue>::quiet_NaN()));
+        assert(!feedback.put(202,-0.1));
+        assert(!feedback.put(202,1.1));
+        assert(feedback.count==PARAMETER_POINT_COUNT+1);
+        assert(host.publish_parameter_feedback(feedback) && feedback.count==0);
+        assert(host.synchronize_parameter_feedback(&large));
+        assert(large.values[200]==0.75);
+        for(ParamID id=0;id<PARAMETER_POINT_COUNT;++id) {
+            assert(large.values[id]==static_cast<ParamValue>(id+1)/256.0);
+        }
+
+        // Overlapping ID appearing in both input and output coalesces to the latest value.
+        assert(feedback.put(200,0.125) && feedback.put(200,0.875));
+        assert(feedback.count==1 && feedback.at(0).id==200 && feedback.at(0).normalized==0.875);
+        assert(host.publish_parameter_feedback(feedback));
+        assert(host.synchronize_parameter_feedback(&large));
+        assert(large.values[200]==0.875);
     }
     if(argc>1) return 0;
     Controller controller;

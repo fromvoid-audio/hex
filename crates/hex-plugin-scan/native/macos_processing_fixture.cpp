@@ -126,6 +126,7 @@ constexpr int stopped_bus_refusal_effect=151, stopped_bus_refusal_instrument=152
 constexpr int multiple_aux_inputs_variant=153, multiple_aux_main_input_variant=154,
     multiple_aux_mismatch_variant=155, multiple_aux_excess_variant=156;
 constexpr int component_prealloc_overflow_variant=157, controller_prealloc_overflow_variant=158;
+constexpr int full_output_with_editor_input_variant=159;
 static bool held_parameter_input(int variant) {
     return variant==144 || variant==held_instrument_variant || grouped_editor(variant);
 }
@@ -154,11 +155,17 @@ class RestoreController final : public IEditController {
     std::atomic<uint32> refs{1};
     const int fault=next_fault;
     const int32 inventory_size=fault==grouped_instrument_variant?3:
-        ((saturated_editor_drag(fault) || mixed_parameter_input(fault))?2:parameter_inventory_size());
+        (fault==full_output_with_editor_input_variant?129:
+        ((saturated_editor_drag(fault) || mixed_parameter_input(fault))?2:parameter_inventory_size()));
     FUnknown* context=nullptr;
     IComponentHandler* handler=nullptr;
     float component_gain=0;uint32 scroll=7;
     ParamValue drag_axis=0.25,independent=0.25;
+    std::array<ParamValue,128> extra_outputs=[] {
+        std::array<ParamValue,128> values{};
+        values.fill(0.25);
+        return values;
+    }();
     CFRunLoopTimerRef edit_timer=nullptr;bool edits_sent=false,first_group_end_sent=false,ordinary_sent=false;
     void grouped_edit_tick() {
         const auto* pattern=std::getenv("HEX_ORIGINAL_GROUPED_EDITOR_PATTERN");
@@ -344,7 +351,7 @@ public:
         if (!control() || !context || (value && handler)) return kResultFalse;
         if(value)value->addRef();if(handler)handler->release();handler=value;
         if(fault==104 || fault==105 || fault==118 || fault==119) latency_handler=handler;
-        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=135) || fault==141 || fault==142 || fault==touched_automation_variant || fault==stopped_editor_echo_variant || grouped_editor(fault) ||
+        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=135) || fault==141 || fault==142 || fault==touched_automation_variant || fault==stopped_editor_echo_variant || fault==full_output_with_editor_input_variant || grouped_editor(fault) ||
             (fault==held_instrument_variant && std::getenv("HEX_ORIGINAL_EDITOR_TOUCH")))) {
             CFRunLoopTimerContext timer_context{};timer_context.info=this;
             edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
@@ -481,6 +488,8 @@ public:
     ParamValue PLUGIN_API getParamNormalized(ParamID id) override {
         if(control() && context && (saturated_editor_drag(fault) || mixed_parameter_input(fault)) && id==drag_axis_id) return drag_axis;
         if(control() && context && fault==grouped_instrument_variant && id==independent_id) return independent;
+        if(control() && context && fault==full_output_with_editor_input_variant && id>=1001 && id<1129)
+            return extra_outputs[static_cast<size_t>(id-1001)];
         if(control() && context && id>1000 && id<static_cast<ParamID>(1000+inventory_size)) return 0.25;
         if (!control() || !context || id!=parameter_id(fault)) {++observed.violations;return 0;}
         ++restoration.value_reads;trace(19);
@@ -537,6 +546,9 @@ public:
         if(fault==135 && edits_sent && value!=0.875 && value!=0.5) return kResultFalse;
         if((saturated_editor_drag(fault) || mixed_parameter_input(fault)) && id==drag_axis_id) {drag_axis=value;return kResultOk;}
         if(fault==grouped_instrument_variant && id==independent_id) {independent=value;return kResultOk;}
+        if(fault==full_output_with_editor_input_variant && id>=1001 && id<1129) {
+            extra_outputs[static_cast<size_t>(id-1001)]=value;return kResultOk;
+        }
         if(id!=parameter_id(fault)) return kInvalidArgument;
         if(fault==76 && observed.flushes.load()) return kResultFalse;
         component_gain=static_cast<float>(parameter_value(fault,value)*4.0);
@@ -1161,7 +1173,17 @@ public:
         }
         // Emit an old processor observation one quantum after the edit that
         // caused it, with no parameter input in that second quantum.
-        if(point_count || fault==83 || fault==84 || fault==stopped_editor_echo_variant || (fault==135 && block==1)) {
+        if(fault==full_output_with_editor_input_variant && point_count) {
+            gain.store(static_cast<float>(current_gain));
+            if(data.outputParameterChanges) {
+                for(uint32 n=0;n<128;++n) {
+                    int32 index=-1;
+                    auto* queue=data.outputParameterChanges->addParameterData(1001+n,index);
+                    const double emitted=static_cast<double>(n+1)/256.0;
+                    if(!queue || queue->addPoint(data.numSamples-1,emitted,index)!=kResultOk) return kResultFalse;
+                }
+            }
+        } else if(point_count || fault==83 || fault==84 || fault==stopped_editor_echo_variant || (fault==135 && block==1)) {
             gain.store(static_cast<float>(current_gain));
             if(data.outputParameterChanges && fault!=78) {
                 int32 index=-1;const ParamID id=parameter_id(fault);
@@ -1268,7 +1290,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>controller_prealloc_overflow_variant) return false;next_fault=value;
+        if (value>full_output_with_editor_input_variant) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);
