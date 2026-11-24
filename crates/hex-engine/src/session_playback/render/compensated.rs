@@ -1,8 +1,7 @@
-//! Shared compensated/typed-route path. Upstream latency and typed audio routes
-//! normally use single-frame routing. Independent resident audio tracks can
-//! batch native stages, faders and alignment. Serial Main-only latency retains batched upstream
-//! rendering; its stamps, Main processors and retained tails still advance one
-//! sample at a time through the same compensation owner.
+//! Compensated track, Return and Main routing. Once the transport history is
+//! warm, current processors and retained bus tails read their delayed clocks
+//! from the same upcoming block before its stamps enter the history ring.
+//! Pre-roll and sources requiring frame routing use the scalar path.
 use super::*;
 use crate::compensation::{OriginWindow, TransportStamp};
 
@@ -909,7 +908,7 @@ impl SessionPlayback {
         })
     }
 
-    fn fill_compensated_stamps(
+    pub(super) fn fill_compensated_stamps(
         &self,
         performance_frame: u64,
         arrangement_frame: u64,
@@ -1707,10 +1706,10 @@ impl SessionPlayback {
     /// sidechains, return buses, native effects, VST3 effects/instruments,
     /// Samplers, automation, metering and observers).
     ///
-    /// Requires the transport stamp ring to already hold `max_latency_frames()`
+    /// Requires the transport stamp ring to hold its retained horizon of
     /// consecutive running frames so every stage's `OriginWindow` is populated
     /// and running across the entire chunk `[0..count]`. Startup pre-roll and
-    /// detached track and Main tails retain the per-frame kernel. Track-owned MIDI releases
+    /// detached track tails retain the per-frame kernel. Track-owned MIDI releases
     /// are summed into their generators before source effects.
     pub(super) fn can_block_compensated_route(&self, count: usize) -> bool {
         if count <= 1
@@ -1730,12 +1729,6 @@ impl SessionPlayback {
             || self.tail_output_scratch.iter().any(|active| *active)
             || self.tail_groups.iter().any(Option::is_some)
             || self.tail_mutable_instruments.iter().any(Option::is_some)
-            || self
-                .return_effect_tails
-                .slots()
-                .iter()
-                .flatten()
-                .any(|tail| tail.output_active && tail.return_id().is_none())
             || self.revision.gain_recording_track().is_some()
             || self
                 .route_scratch
@@ -1752,7 +1745,7 @@ impl SessionPlayback {
         {
             return false;
         }
-        compensation.delays.running_stamp_streak() >= compensation.graph.plan.max_latency_frames()
+        compensation.delays.running_stamp_streak() >= compensation.horizon()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2149,6 +2142,7 @@ impl SessionPlayback {
                                     self.native_parameter_state
                                         .as_deref_mut()
                                         .and_then(|state| state.processing.as_mut()),
+                                    None,
                                 )
                                 .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                         }
@@ -2197,6 +2191,7 @@ impl SessionPlayback {
                                     self.native_parameter_state
                                         .as_deref_mut()
                                         .and_then(|state| state.processing.as_mut()),
+                                    None,
                                 )
                                 .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                         }
@@ -2307,6 +2302,7 @@ impl SessionPlayback {
                                 self.native_parameter_state
                                     .as_deref_mut()
                                     .and_then(|state| state.processing.as_mut()),
+                                None,
                             )
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     }
@@ -2403,6 +2399,28 @@ impl SessionPlayback {
         self.return_effect_tails
             .render_chunk(output, frame_offset, capture, foreign)?;
 
+        self.render_compensated_main_block(
+            output,
+            frame_offset,
+            stamps,
+            &mut key_buf,
+            foreign,
+            observer,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn render_compensated_main_block(
+        &mut self,
+        output: &mut [Frame],
+        frame_offset: usize,
+        stamps: &[Option<TransportStamp>],
+        key_buf: &mut [Frame; 256],
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+        external: Option<&dyn hex_lattice::NativeExternalAutomationSet>,
+    ) -> Result<(), SessionPlaybackError> {
         let compensation = self
             .compensation
             .as_mut()
@@ -2414,14 +2432,22 @@ impl SessionPlayback {
                 frame_offset,
                 stamps,
                 &self.resident_source_scratch,
-                &mut key_buf,
+                key_buf,
                 foreign,
                 observer,
                 self.native_parameter_state
                     .as_deref_mut()
                     .and_then(|state| state.processing.as_mut()),
+                external,
             )
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+        self.return_effect_tails.render_main_chunk(
+            output,
+            MainTailClock::Window(compensation, stamps),
+            frame_offset,
+            foreign,
+        )?;
+        // Both current Main and any retained suffix read the same history.
         for stamp in stamps {
             let stamp = stamp.ok_or(SessionPlaybackError::DeviceRuntime)?;
             compensation
