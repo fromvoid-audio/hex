@@ -2214,3 +2214,82 @@ fn actual_split_block_with_65_outputs_per_slice_delivers_pcm_and_continues_on_sa
             .success()
     );
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_midi_cc_assignment_restart_keeps_active_stream_alive_and_refreshes_combined_values() {
+    use crate::protocol::{ParameterPageProgress, ParameterPageQuery};
+    for (variant, expected_value) in [(161_u32, 0.25_f64), (162_u32, 0.75_f64)] {
+        let case = Case::new();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup_restore(variant),
+        )
+        .unwrap();
+        let child = instance.child_id_on_control();
+        let before = request(instance.configuration(), 0);
+        instance.exchange_on_worker(before).unwrap();
+
+        std::fs::write(case.release(), b"emit midi cc restart").unwrap();
+        let until = Instant::now() + Duration::from_secs(3);
+        if variant == 161 {
+            loop {
+                if case.observation().is_some_and(|obs| obs[0] == 25) {
+                    break;
+                }
+                assert!(
+                    Instant::now() < until,
+                    "fixture did not emit MIDI CC restart for variant {variant}"
+                );
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        // Wait until the main lane dispatches the notification and verify controller state.
+        let until = Instant::now() + Duration::from_secs(3);
+        let entry = loop {
+            instance
+                .begin_parameter_page_on_worker(ParameterPageQuery::default())
+                .unwrap();
+            let page = loop {
+                match instance.poll_parameter_page_on_worker().unwrap() {
+                    ParameterPageProgress::Page(page) => break page,
+                    ParameterPageProgress::Pending => {
+                        assert!(Instant::now() < until, "controller page did not settle");
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    other => panic!("unexpected page response: {other:?}"),
+                }
+            };
+            let entry = page.as_slice()[0];
+            if entry.normalized == expected_value {
+                break entry;
+            }
+            assert!(
+                Instant::now() < until,
+                "expected value {expected_value}, got {}",
+                entry.normalized
+            );
+            thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(entry.normalized, expected_value);
+
+        // Next PCM exchange completes cleanly on the exact same instance.
+        let after = request(instance.configuration(), 1);
+        let reply = instance.exchange_on_worker(after).unwrap();
+        for (actual, original) in reply.pcm[..8].iter().zip(after.pcm) {
+            assert_eq!(*actual, original.map(|sample| sample * 0.625));
+        }
+        assert_eq!(instance.child_id_on_control(), child);
+        assert!(
+            instance
+                .stop_and_reap_on_control()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+}

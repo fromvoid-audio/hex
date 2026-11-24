@@ -86,7 +86,7 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
         e.message=messages(0); action(1,0); action(5,0);
     } else if (e.scenario==1) {
         e.unknown=action(0,1<<24); e.graph=action(0,kIoChanged|kLatencyChanged);
-        e.known=action(0,kMidiCCAssignmentChanged);
+        e.known=action(0,kNoteExpressionChanged);
     } else if (e.scenario==2) {
         action(1,0);
         for (int n=0;n<8;++n) if (action(0,hex_instance::Host::supported_restarts)==kResultOk) ++e.enqueued;
