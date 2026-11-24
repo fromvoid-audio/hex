@@ -313,7 +313,8 @@ impl EditorView {
         self.track_layout
             .available_width
             .map_or(MAX_HEADER_WIDTH, |width| {
-                (width - MIN_LANE_WIDTH).clamp(TRACK_HEADER_WIDTH, MAX_HEADER_WIDTH)
+                (width - self.timeline_leading_buffer_width() - MIN_LANE_WIDTH)
+                    .clamp(TRACK_HEADER_WIDTH, MAX_HEADER_WIDTH)
             })
     }
     pub(super) fn capture_vertical_fit(&mut self) -> Option<VerticalFitSnapshot> {
