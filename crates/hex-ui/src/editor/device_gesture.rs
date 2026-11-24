@@ -338,6 +338,7 @@ impl EditorView {
                 if effects.save_refused {
                     self.saving_project = false;
                     self.cancel_open_after_save();
+                    self.offer_committed_copy();
                 }
                 if effects.export_refused {
                     // Deferred exports have not been submitted to Service, so
@@ -439,6 +440,11 @@ impl EditorView {
         &mut self,
         request: &mut Option<Request>,
     ) -> Option<bool> {
+        // This source-bound copy explicitly excludes the parked overlay. The
+        // deferred mutating commands retain their original order and custody.
+        if matches!(request, Some(Request::SaveCommittedParameterCopy { .. })) {
+            return None;
+        }
         if self.device_gesture_barriers.is_empty() && !self.device_gesture.has_pending_terminal() {
             return None;
         }

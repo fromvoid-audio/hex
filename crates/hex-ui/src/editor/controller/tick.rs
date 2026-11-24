@@ -321,6 +321,7 @@ impl EditorView {
         visible_change |= self.tick_time_gesture_autoscroll(now);
         visible_change |= self.tick_clip_gesture_autoscroll(now, cx);
         visible_change |= self.tick_track_reorder(now);
+        visible_change |= self.poll_committed_copy();
         visible_change |= self.tick_edit_cursor(now);
         let project_edit_pending = self.edit_pending();
         visible_change |= self.tick_project_spectrum(cx);
