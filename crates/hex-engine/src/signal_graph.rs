@@ -2666,6 +2666,7 @@ impl SignalRuntime {
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         input: Option<&mut crate::native_parameter_input::Processing>,
+        external: Option<&dyn hex_lattice::NativeExternalAutomationSet>,
     ) -> Result<(), Invalid> {
         let count = frames.len();
         let has_key = if let Some(stage) = self.graph.key_stages.get(node).copied().flatten() {
@@ -2692,7 +2693,7 @@ impl SignalRuntime {
         };
         crate::native_parameter_input::process_range_with_key(
             input,
-            None,
+            external,
             chain,
             index..index + 1,
             frames,
@@ -2719,6 +2720,7 @@ impl SignalRuntime {
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         mut input: Option<&mut crate::native_parameter_input::Processing>,
+        external: Option<&dyn hex_lattice::NativeExternalAutomationSet>,
     ) -> Result<(), Invalid> {
         if chain.len() != self.graph.main_devices.len() {
             return Err(Invalid("main content-origin plan does not match runtime"));
@@ -2737,6 +2739,7 @@ impl SignalRuntime {
                 foreign,
                 observer,
                 input.as_deref_mut(),
+                external,
             )?;
         }
         Ok(())

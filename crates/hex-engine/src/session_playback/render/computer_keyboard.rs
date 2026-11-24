@@ -53,8 +53,7 @@ impl SessionPlayback {
         for (index, chunk) in output.chunks_mut(step).enumerate() {
             self.return_effect_tails.render_main_chunk(
                 chunk,
-                self.compensation.as_ref(),
-                &clock,
+                MainTailClock::current(self.compensation.as_ref(), &clock),
                 index * step,
                 foreign,
             )?;
@@ -218,8 +217,7 @@ impl SessionPlayback {
                 if drain_edit_tails {
                     self.return_effect_tails.render_main_chunk(
                         chunk,
-                        self.compensation.as_ref(),
-                        &tail_clock,
+                        MainTailClock::current(self.compensation.as_ref(), &tail_clock),
                         offset,
                         foreign,
                     )?;
@@ -479,8 +477,7 @@ impl SessionPlayback {
                 for (index, chunk) in output.chunks_mut(256).enumerate() {
                     self.return_effect_tails.render_main_chunk(
                         chunk,
-                        None,
-                        &main_clock,
+                        MainTailClock::Timeline(&main_clock),
                         index * 256,
                         foreign,
                     )?;
