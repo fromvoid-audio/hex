@@ -14,6 +14,22 @@ macro_rules! include_vst3_sdk_tests {
 }
 pub(crate) use include_vst3_sdk_tests;
 
+pub(crate) fn retry_pending_push<T: Copy>(
+    pending: &mut Option<T>,
+    producer: &mut rtrb::Producer<T>,
+) -> bool {
+    let Some(command) = *pending else {
+        return true;
+    };
+    match producer.push(command) {
+        Ok(()) => {
+            *pending = None;
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 pub mod audio_diagnostics;
 pub mod cpu_meter;
 mod device;
