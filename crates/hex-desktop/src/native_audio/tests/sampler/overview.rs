@@ -268,10 +268,7 @@ pub(super) fn fresh(
             loop_start,
             loop_end,
         );
-        let play = visual
-            .debug_bounds("play or pause · space · right-click for history playback")
-            .unwrap()
-            .center();
+        let play = visual.debug_bounds(PLAY_BUTTON).unwrap().center();
         visual.simulate_click(play, Modifiers::default());
         visual.run_until_parked();
         let mut output = [[0.0; 2]; 64];

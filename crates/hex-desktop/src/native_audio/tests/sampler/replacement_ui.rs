@@ -223,10 +223,7 @@ pub(super) fn exercise(
         }
     }
     // A880/project16k/original12k/transpose-12 => .75 original frames per output.
-    let play = visual
-        .debug_bounds("play or pause · space · right-click for history playback")
-        .unwrap()
-        .center();
+    let play = visual.debug_bounds(PLAY_BUTTON).unwrap().center();
     visual.simulate_click(play, Modifiers::default());
     visual.run_until_parked();
     let mut output = [[0.0; 2]; 64];
@@ -317,10 +314,7 @@ pub(super) fn exercise(
     assert_eq!(reopened.asset, changed.asset);
     assert_eq!(reopened.overviews.len(), 2);
     assert!(reopened.original_source.is_some());
-    let play = visual
-        .debug_bounds("play or pause · space · right-click for history playback")
-        .unwrap()
-        .center();
+    let play = visual.debug_bounds(PLAY_BUTTON).unwrap().center();
     visual.simulate_click(play, Modifiers::default());
     visual.run_until_parked();
     {
