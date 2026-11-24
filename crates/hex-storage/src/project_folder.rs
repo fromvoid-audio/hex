@@ -191,6 +191,7 @@ impl NewFolder {
 }
 
 fn reserve_stage(parent: &Path) -> io::Result<PathBuf> {
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     {

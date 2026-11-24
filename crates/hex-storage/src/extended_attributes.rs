@@ -35,6 +35,7 @@ pub struct MetadataWarning {
 
 /// Allocation and work bounds for one copy.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 pub(crate) struct Limits {
     pub(crate) list_bytes: usize,
     pub(crate) attribute_bytes: usize,
