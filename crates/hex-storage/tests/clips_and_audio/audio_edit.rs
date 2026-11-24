@@ -81,13 +81,20 @@ fn musical_root_crop_warp_envelope_and_frozen_fade_roundtrip_and_malformed_bound
         .unwrap();
     let json = hex_storage::encode(editor.project()).unwrap();
     let mut value: serde_json::Value = serde_json::from_slice(&json).unwrap();
-    // Warped content renders with the v2 warp resampler.
-    assert_eq!(value["version"], hex_storage::WARP_RESAMPLER_SCHEMA_VERSION);
+    // Destination fades wrap the carrier that records the v2 warp resampler.
+    assert_eq!(
+        value["version"],
+        hex_storage::OUTER_CLIP_FADE_SCHEMA_VERSION
+    );
+    assert_eq!(
+        value["base"]["version"],
+        hex_storage::WARP_RESAMPLER_SCHEMA_VERSION
+    );
     assert_eq!(hex_storage::decode(&json).unwrap(), *editor.project());
     let text = String::from_utf8(json).unwrap();
     assert!(text.contains("complex_pro"));
     // Canonical validation rejects inverted crop data rather than losing transform semantics.
-    let edit = &mut value["audio_clip_state"][0]["audio_edit"];
+    let edit = &mut value["base"]["audio_clip_state"][0]["audio_edit"];
     assert!(edit.is_object(), "canonical audio edit field is present");
     {
         edit["view_end"] = serde_json::json!(0);
@@ -193,35 +200,47 @@ fn current_shapes_preserve_events_appearance_names_and_strict_validation() {
         assert_eq!(hex_storage::decode(&bytes).unwrap(), *editor.project());
         assert!(hex_storage::encode_schema22(editor.project()).is_err());
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        for mutation in [0, 1, 2, 3, 4, 5, 6] {
+        assert_eq!(
+            value["version"],
+            hex_storage::OUTER_CLIP_FADE_SCHEMA_VERSION
+        );
+        assert!(
+            value["fades"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty())
+        );
+        assert!(value["base"]["audio_event_state"].is_array());
+        for mutation in 0..7 {
             let mut bad = value.clone();
             match mutation {
                 0 => {
-                    bad.as_object_mut().unwrap().remove("fade_shapes");
+                    bad.as_object_mut().unwrap().remove("fades");
                 }
-                1 => bad["fade_shapes"][0]["in_curve"] = 1001.into(),
-                2 => bad["fade_shapes"][0]["in_start"] = u64::MAX.into(),
-                3 => bad["fade_shapes"][0]["clip"] = 999_999.into(),
+                1 => bad["fades"][0]["fade"]["curve"]["bends"][0] = 1001.into(),
+                2 => bad["fades"][0]["fade"]["curve"]["in_start"] = u64::MAX.into(),
+                3 => bad["fades"][0]["clip"] = 999_999.into(),
+                4 => {
+                    let first = bad["fades"][0].clone();
+                    bad["fades"].as_array_mut().unwrap().push(first);
+                }
                 5 => {
-                    bad.as_object_mut().unwrap().remove("audio_event_state");
+                    bad["base"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("audio_event_state");
                 }
-                6 => {
-                    bad["fade_shapes"] = serde_json::Value::Null;
-                }
-                _ => {
-                    let first = bad["fade_shapes"][0].clone();
-                    bad["fade_shapes"].as_array_mut().unwrap().push(first);
-                }
+                _ => bad["fades"] = serde_json::Value::Null,
             }
             assert!(
                 hex_storage::decode(&serde_json::to_vec(&bad).unwrap()).is_err(),
                 "mutation {mutation}"
             );
         }
-        assert_eq!(value["version"], hex_storage::CURRENT_SCHEMA_VERSION);
-        let raw = String::from_utf8(bytes.clone()).unwrap();
-        for key in ["fade_shapes", "audio_event_state"] {
-            let duplicate = format!("{{\"{key}\":[],{}", &raw[1..]);
+        let raw = std::str::from_utf8(&bytes).unwrap();
+        for key in ["fades", "audio_event_state"] {
+            let field = format!("\"{key}\":");
+            assert_eq!(raw.matches(&field).count(), 1);
+            let duplicate = raw.replacen(&field, &format!("{field}[],{field}"), 1);
             assert!(
                 hex_storage::decode(duplicate.as_bytes()).is_err(),
                 "duplicate {key} cannot be hidden by adaptation"
