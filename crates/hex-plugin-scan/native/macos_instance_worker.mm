@@ -40,9 +40,10 @@ public:
     WorkerDeadline(const wire::Config& config,bool enabled) {
         if(!enabled) return;
         const double period_ns=1e9*config.maximum/config.rate;
-        // Only admit the hardware periods under qualification. In particular,
-        // the scheduler's minimum computation budget must fit this interval.
-        if(period_ns<4e6 || period_ns>8e6) return;
+        // Admit all supported low-latency hardware periods (500 us..=12 ms:
+        // 44.1/48/88.2/96 kHz at 64/128/256 frames and 44.1/48 kHz at 512
+        // frames) while keeping Mach's minimum computation budget within bounds.
+        if(period_ns<500'000.0 || period_ns>12'000'000.0) return;
         mach_timebase_info_data_t clock{};
         if(mach_timebase_info(&clock)!=KERN_SUCCESS || !clock.numer || !clock.denom) return;
         const double ticks_per_ns=static_cast<double>(clock.denom)/clock.numer;
@@ -75,38 +76,41 @@ public:
 
     void end_stream() { live_until_={}; }
 
-    bool before_read(int channel) {
-        if(idle_.count()==0) return true;
+    void before_read(int channel) {
+        if(idle_.count()==0) return;
         auto now=std::chrono::steady_clock::now();
-        if(live_until_<=now) return leave();
-        // Control packets run at ordinary priority. If one completes inside
-        // the current PCM interval, resume the remaining wait for audio.
+        if(live_until_<=now) { leave(); return; }
         enter();
-        if(!active_) return true;
+        if(!active_) return;
         while(true) {
             now=std::chrono::steady_clock::now();
-            if(live_until_<=now) return leave();
+            if(live_until_<=now) { leave(); return; }
             const auto wait=std::chrono::ceil<std::chrono::milliseconds>(live_until_-now);
             pollfd input{channel,POLLIN,0};
             const int ready=::poll(&input,1,static_cast<int>(wait.count()));
-            if(ready>0 && (input.revents&POLLIN)) return true;
+            if(ready>0 && (input.revents&POLLIN)) return;
             if(ready<0 && errno==EINTR) continue;
-            return leave();
+            leave();
+            return;
         }
     }
 
-    bool leave() {
-        if(!active_) return true;
+    void leave() {
+        if(!active_) return;
         thread_standard_policy_data_t standard{};
         const auto thread=pthread_mach_thread_np(pthread_self());
-        if(thread_policy_set(thread,THREAD_STANDARD_POLICY,
-            reinterpret_cast<thread_policy_t>(&standard),THREAD_STANDARD_POLICY_COUNT)!=KERN_SUCCESS)
-            return false;
+        const auto kr=thread_policy_set(thread,THREAD_STANDARD_POLICY,
+            reinterpret_cast<thread_policy_t>(&standard),THREAD_STANDARD_POLICY_COUNT);
         active_=false;
+        if(kr!=KERN_SUCCESS) {
+            static const auto log=os_log_create("org.portalsurfer.hex.vst3","deadline");
+            os_log_error(log,"vst3 worker deadline leave failed kern_return=%d",static_cast<int>(kr));
+            idle_={};
+            return;
+        }
         // Best-effort QoS restore so non-deadline standby and resume wakeups
         // stay off background/efficiency throttling when the OS permits it.
         (void)pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED,0);
-        return true;
     }
 };
 
@@ -959,10 +963,9 @@ int main(int argc,char** argv) {
                     WorkerDeadline deadline(*config,try_worker_deadline);
                     while(started && (!worker_failure.load() || live_stage.load(std::memory_order_acquire)==LiveFailed || page_stage.load(std::memory_order_acquire)==PageFailed)) {
                         phase.store(1,std::memory_order_release); // receiving a complete frame
-                        if(!deadline.before_read(channel)) {worker_failure.store(Processing);break;}
+                        deadline.before_read(channel);
                         const auto received=packet.read(channel,*config,blocks,frames);
-                        if(received!=1 && !deadline.leave()) {worker_failure.store(Processing);break;}
-                        if(received==2 || received==3) deadline.end_stream();
+                        if(received==2 || received==3) { deadline.end_stream(); deadline.leave(); }
                         if(worker_failure.load()) break;
                         // A late End is not DSP work. Retire its pending
                         // custody even when the next request is save capture;
@@ -1326,10 +1329,7 @@ int main(int argc,char** argv) {
                             if(nonzero_input) diagnostic_nonzero_input_blocks.fetch_add(1,std::memory_order_relaxed);
                         }
                     }
-                    if(!deadline.leave()) {
-                        error(channel,&*config,Processing);
-                        std::_Exit(Processing);
-                    }
+                    deadline.leave();
                     if(worker_failure.load()) error(channel,&*config,worker_failure.load());
                     // Never stop/deactivate/unload beneath a main-lane capture,
                     // even on malformed PCM, EOF or a foreign processing fault.
