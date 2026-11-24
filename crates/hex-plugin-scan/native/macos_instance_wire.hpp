@@ -233,6 +233,8 @@ struct Packet {
     size_t note_count=0;
     size_t parameter_count=0;
     size_t reply_parameter_count=0,timing_change_count=0;
+    bool reply_parameters_coalesced=false;
+    std::array<hex_instance::ParameterPoint,hex_instance::PARAMETER_POINT_COUNT> reply_parameters{};
     std::array<TimingChange,timing_change_limit> timing_changes{};
     std::optional<Steinberg::Vst::ProcessContext> context;
     std::optional<hex_instance::EditorTouchPlanSet> editor_touch;
@@ -262,6 +264,8 @@ struct Packet {
         const bool pcm=!std::memcmp(p,"HXVB",4),flush=!std::memcmp(p,"HXVF",4);
         const auto wire_version=number(p+4,2);
         const bool guarded_flush=flush && wire_version==3;
+        reply_parameter_count=0;
+        reply_parameters_coalesced=false;
         expected_editor_admission.reset();
         constexpr uint64_t authored_bit=0x8000;
         authored_parameters=pcm && (wire_version&authored_bit);
@@ -491,12 +495,55 @@ struct Packet {
         }
         return true;
     }
+    // Bounded copied reply for output parameter feedback across one or more
+    // SDK slices in a quantum. While total points stay within the fixed 128-point
+    // wire budget (including 64+64 across two slices), every point is preserved
+    // verbatim with its slice-adjusted sample offset. If a later slice exceeds
+    // the 128-point wire budget, coalesce superseded earlier points by ParamID
+    // (preserving chronological offset order) and retain at most the 128 latest
+    // observations so multi-slice DSP output never terminates PCM delivery.
     bool append_parameter_reply(size_t offset,const hex_instance::ParameterChanges& output) {
-        if(output.size()>parameters.size()-reply_parameter_count) return false;
+        const auto compact_by_id=[&] {
+            size_t kept=0;
+            for(size_t i=0;i<reply_parameter_count;++i) {
+                bool superseded=false;
+                for(size_t j=i+1;j<reply_parameter_count;++j) {
+                    if(reply_parameters[j].id==reply_parameters[i].id) { superseded=true;break; }
+                }
+                if(!superseded) reply_parameters[kept++]=reply_parameters[i];
+            }
+            reply_parameter_count=kept;
+        };
+        const auto erase_id=[&](uint32_t id) {
+            size_t kept=0;
+            for(size_t i=0;i<reply_parameter_count;++i) {
+                if(reply_parameters[i].id!=id) reply_parameters[kept++]=reply_parameters[i];
+            }
+            reply_parameter_count=kept;
+        };
         for(size_t n=0;n<output.size();++n) {
             hex_instance::ParameterPoint value{};if(!output.point(n,value)) return false;
+            if(value.offset<0 || offset>static_cast<size_t>(frames) ||
+               static_cast<size_t>(value.offset)>=static_cast<size_t>(frames)-offset) return false;
             value.offset+=static_cast<int32_t>(offset);
-            auto* point=bytes.data()+header_size+frames*8+reply_parameter_count++*16;
+            if(reply_parameters_coalesced) {
+                erase_id(value.id);
+            } else if(reply_parameter_count==reply_parameters.size()) {
+                reply_parameters_coalesced=true;
+                compact_by_id();
+                erase_id(value.id);
+            }
+            if(reply_parameter_count==reply_parameters.size()) {
+                // More than 128 distinct IDs across multiple slices: drop the oldest
+                // entry to keep the latest bounded 128 observations in offset order.
+                for(size_t i=1;i<reply_parameter_count;++i) reply_parameters[i-1]=reply_parameters[i];
+                --reply_parameter_count;
+            }
+            reply_parameters[reply_parameter_count++]=value;
+        }
+        for(size_t n=0;n<reply_parameter_count;++n) {
+            const auto& value=reply_parameters[n];
+            auto* point=bytes.data()+header_size+frames*8+n*16;
             point[0]=static_cast<uint8_t>(value.offset);point[1]=static_cast<uint8_t>(value.offset>>8);
             point[2]=point[3]=0;
             for(size_t byte=0;byte<4;++byte) point[4+byte]=static_cast<uint8_t>(value.id>>(byte*8));
