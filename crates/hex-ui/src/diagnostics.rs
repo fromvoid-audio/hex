@@ -191,6 +191,43 @@ pub(crate) fn record_ui_install(cx: &App, revision: u64, install: std::time::Dur
     }
 }
 
+/// Observe a visible Arrangement button during GPUI paint. Its element state
+/// remembers only the previous visible value, for this window and generation.
+/// The first paint establishes a baseline. Physical presentation is separate.
+pub(crate) fn track_switch_paint(
+    generation: u64,
+    revision: u64,
+    track: hex_project::TrackId,
+    switch: &'static str,
+    value: bool,
+) -> gpui::Canvas<()> {
+    use gpui::Styled;
+    gpui::canvas(
+        |_, _, _| (),
+        move |bounds, (), window, cx| {
+            if !bounds.intersects(&window.content_mask().bounds) {
+                return;
+            }
+            let changed = window.with_global_id((switch, track.value()).into(), |id, window| {
+                window.with_element_state(id, |before: Option<(u64, bool)>, _| {
+                    (before == Some((generation, !value)), (generation, value))
+                })
+            });
+            if changed
+                && let Some(config) = cx.try_global::<SessionDiagnostics>()
+                && config.action_observer.is_some()
+                && let Ok(handle) = &config.handle
+            {
+                let _ = handle.record_typed(Level::Debug, Category::Ui, &format!(
+                    "action_diag v=1 stage=track_switch_painted generation={generation} revision={revision} track={} switch={switch} value={value}", track.value()
+                ));
+            }
+        },
+    )
+    .absolute()
+    .inset_0()
+}
+
 /// Selection counts and focus flags that route `g`; no names or project content.
 pub(crate) fn record_group_selection(cx: &App, route: &str) {
     if let Some(Ok(handle)) = cx
