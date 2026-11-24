@@ -533,7 +533,7 @@ mod tests {
         cx.run_until_parked();
         assert!(cx.did_prompt_for_new_path());
         cx.simulate_new_path_selection(|directory| {
-            assert_eq!(directory, super::user_home_directory().unwrap());
+            assert_eq!(directory, crate::editor::user_home_directory().unwrap());
             None
         });
         cx.run_until_parked();

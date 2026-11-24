@@ -41,7 +41,7 @@ REVIEWED_MODULES = frozenset({
 SHARED_TESTS = (
     "test_ci_plan.ScopeTests.test_current_review_native_build_environment_variants_are_semantic",
     "test_ci_plan.ScopeTests.test_review_target_directory_is_ownership_not_semantic_config",
-    "test_ci_plan.ScopeTests.test_known_scopes_keep_prose_and_all_dev_reverse_dependencies",
+    "test_ci_plan.ScopeTests.test_known_scopes_keep_prose_and_direct_dev_reverse_dependencies",
     "test_ci_plan.ScopeTests.test_high_risk_unknown_and_mixed_cannot_be_scoped_away",
     "test_ci_plan.ScopeTests.test_immutable_rename_deletion_untracked_and_prose_digest",
     "test_ci_plan.ScopeTests.test_profiles_preserve_default_and_feature_configurations",

@@ -434,6 +434,7 @@ UI_DEFAULT_LIB_UNIT_CFG = '#[cfg(all(test, not(feature = "ui-test-support")))]'
 REVIEWED_EQUIVALENT_FEATURE_CFGS: dict[tuple[str, str], str] = {
     ("hex-ui", "src/editor/clip_boundary.rs"): '#[cfg(not(any(test, feature = "ui-test-support")))]',
     ("hex-ui", "src/editor/trim/geometry.rs"): '#[cfg(all(test, any(feature = "ui-unit-tier", not(feature = "ui-test-support"))))]',
+    ("hex-ui", "src/vertical_scrollbar/geometry.rs"): '#[cfg(all(test, any(feature = "ui-unit-tier", not(feature = "ui-test-support"))))]',
     ("hex-session", "src/service/resident_audio/tests/native_automation_recording.rs"): '#[cfg(not(feature = "recording-fault-test-support"))]',
     ("hex-desktop", "tests/native_vst3_plugins/instruments.rs"): '#[cfg(not(feature = "recording-fault-test-support"))]',
     ("hex-stream", "tests/reference_channel.rs"): '#[cfg(not(feature = "test-support"))]',
@@ -617,13 +618,12 @@ TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
 UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
                    "log_viewer::presentation::": "unit_editor_logic",
                    "log_viewer::filter::": "unit_editor_logic",
-                   "log_viewer::scrollbar::geometry::": "unit_editor_logic",
+                   "vertical_scrollbar::geometry::": "unit_editor_logic",
                    "editor::console_track_page::": "unit_editor_logic",
                    "editor::time_move_preview::intervals::tests::": "unit_editor_logic",
                    "editor::browser::geometry::": "unit_editor_logic",
                    "editor::browser::audition_geometry::": "unit_editor_logic",
                    "editor::browser::random_rank::": "unit_editor_logic",
-                   "editor::browser::scrollbar_geometry::": "unit_editor_logic",
                    "editor::browser::samples::state::": "unit_editor_logic",
                    "editor::browser::scan::": "unit_editor_logic",
                    "editor::group_overview::model::": "unit_editor_logic",
@@ -864,7 +864,6 @@ UI_MODULE_TEST_DEPENDENCIES = {
     ),
     "editor::browser::audition::": ("editor::browser::audition_geometry::",),
     "editor::browser::random::": ("editor::browser::random_rank::",),
-    "editor::browser::scrollbar::": ("editor::browser::scrollbar_geometry::",),
     "editor::controller::publication::publication_unit_tests::": (CONTROLLER_PUBLICATION_UNIT,),
     "editor::controller::project_replacement_tests::": (CONTROLLER_PUBLICATION_UNIT,),
     "editor::controller::verified_gain_tests::": (CONTROLLER_PUBLICATION_UNIT,),
@@ -949,7 +948,7 @@ UI_PREFIX_COHORTS = [{"editor::device_panel::utility_panel::tests::",
                     {"editor::browser::random_rank::",
                      "editor::browser::ui_test::random_ui_tests::random_button_and_r_reveal_offscreen_audio_and_share_auto_audition",
                      "editor::browser::ui_test::random_ui_tests::random_pick_obeys_all_search_projection_and_empty_results_leave_playback_unchanged"},
-                    {"editor::browser::scrollbar_geometry::",
+                    {"editor::browser::scrollbar::",
                      "editor::browser::ui_test::scrollbar_ui_tests::browser_thumb_tracks_wheel_and_drag_without_selection_or_audition",
                      "editor::browser::ui_test::scrollbar_ui_tests::browser_thumb_recomputes_after_filter_and_resize_and_retires_capture"},
                     {"editor::browser::geometry::",
@@ -1073,7 +1072,7 @@ UI_PREFIX_COHORTS = [{"editor::device_panel::utility_panel::tests::",
                      "editor::track_clipboard_ui_test::console_fold_hides_cells_navigation_and_invalidates_column_frame",
                      "editor::track_meters::selection::",
                      "editor::track_meters::tests::steady_state_meter_ticks_reuse_the_staging_buffers"},
-                    {"log_viewer::scrollbar::geometry::",
+                    {"log_viewer::scrollbar::",
                      "log_viewer::scrollbar::tests::native_scrollbar_tracks_wheel_outside_release_escape_and_preserves_selection_copy",
                      "log_viewer::scrollbar::tests::page_refresh_resize_and_deactivation_retire_old_scroll_captures"},
                     {"log_viewer::filter::",
@@ -1421,6 +1420,10 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
         if owner in whole:
             continue
         if owner == "hex-ui":
+            scrollbar_users = ("editor::browser::scrollbar::", "log_viewer::scrollbar::")
+            scrollbar_geometry = "vertical_scrollbar::geometry::"
+            if any(scrollbar_geometry.startswith(name) for name in names):
+                names.update(scrollbar_users)
             # Bounded cohort expansion (at most 2 passes across direct pairs and
             # cohorts, never an unbounded fixed-point closure). Cross-boundary
             # consumers such as viewport.rs are added explicitly below so they
@@ -1443,6 +1446,11 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                         names.update(cohort)
                 if len(names) == before:
                     break
+            # Either UI surface uses the shared geometry. Keep the other
+            # surface independent unless the shared implementation changed.
+            if any(user.startswith(name) or name.startswith(user)
+                   for user in scrollbar_users for name in names):
+                names.add(scrollbar_geometry)
             # Direct viewport consumers stay explicit without expanding the
             # unrelated waveform overview/browser/sampler or full arrangement cohorts.
             if "crates/hex-ui/src/editor/viewport.rs" in executable:
