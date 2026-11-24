@@ -33,6 +33,8 @@ mod paused_monitor;
 pub(super) use paused_monitor::{
     PREPARATION_TIMEOUT, PausedEffects, PausedMonitorPreparation, paused_monitor_busy,
 };
+
+pub(crate) type DegradedChange = (u64, u64, Vec<(u64, String)>);
 mod power_off;
 mod reopen;
 mod retiring_editor;
@@ -258,7 +260,7 @@ pub(crate) struct Plugins {
     edit: Option<AudioSourceContext>,
     pub(crate) catalog: Option<std::path::PathBuf>,
     degraded: degraded::DegradedReport<Binding>,
-    degraded_changed: Option<(u64, u64, Vec<(u64, String)>)>,
+    degraded_changed: Option<DegradedChange>,
     diagnostics: Option<hex_diagnostics::DiagnosticsHandle>,
     parameter_poll: parameter_touches::PollSchedule,
     retiring_poll: usize,
@@ -383,7 +385,7 @@ impl Plugins {
     }
     /// The newest changed degraded vst3 device set (with lowercase failure reasons),
     /// project generation and output, once.
-    pub fn take_degraded_change(&mut self) -> Option<(u64, u64, Vec<(u64, String)>)> {
+    pub fn take_degraded_change(&mut self) -> Option<DegradedChange> {
         self.degraded_changed.take()
     }
 

@@ -220,7 +220,10 @@ mod tests {
             (10, 1, Some((true, true)), None),
             (20, 2, Some((true, true)), None),
         ];
-        assert_eq!(report.observe(7, healthy, Some(&[1, 2])), Some(vec![]));
+        assert_eq!(
+            report.observe(7, healthy.clone(), Some(&[1, 2])),
+            Some(vec![])
+        );
         assert_eq!(
             report.observe(7, healthy, Some(&[1, 2])),
             None,
@@ -239,7 +242,7 @@ mod tests {
             (40, 4, None, None),
         ];
         assert_eq!(
-            report.observe(7, faulted, Some(&[1, 2, 3, 4])),
+            report.observe(7, faulted.clone(), Some(&[1, 2, 3, 4])),
             Some(vec![(2, "vst3 helper exited".to_owned())])
         );
         assert!(report.is_binding_degraded(7, 20));

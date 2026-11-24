@@ -1056,8 +1056,8 @@ fn degraded_worker_recovers(
     if !stop_first {
         client.stop();
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        client.status().unwrap().device_fault.store(true, Release);
     }
+    client.status().unwrap().device_fault.store(true, Release);
 
     let (_, editor) = super::super::clip_drag_ui_test::editor_window(
         cx,
@@ -3727,6 +3727,10 @@ fn stranded_released_pair_drag_recovers_solo_and_mute_while_playing_and_paused(
         // not trigger audio recovery; drain its worker reply before testing
         // degraded recovery failure.
         editor.update(&mut app, |v, _| {
+            v.audio_status()
+                .unwrap()
+                .render_fault
+                .store(false, std::sync::atomic::Ordering::Release);
             v.degraded_plugins = Default::default();
             v.toggle_solo(track, false);
             assert!(v.recovery.generation().is_none());
@@ -3936,21 +3940,29 @@ fn save_offers_a_committed_copy_without_retrying_a_stranded_pair(app: &mut gpui:
                 app.run_until_parked();
                 std::thread::yield_now();
             }
+            // Drive the receipt here. The normal poll also handles audio and
+            // session events, either of which can replace the status text.
+            editor.update(app, |v, _| v.poll_cadence = Default::default());
             let destination = files.root().join("copy.hex");
             app.simulate_new_path_selection(|_| Some(destination));
-            let deadline = crate::test_wait::hang_deadline();
-            loop {
-                app.run_until_parked();
-                editor.update(app, |v, cx| {
-                    v.tick(cx);
-                    cx.notify();
-                });
-                if editor.read_with(app, |v, _| v.status.contains("committed copy saved")) {
-                    break;
+            app.run_until_parked();
+            editor.update(app, |v, _| {
+                assert_eq!(v.status, "saving committed copy", "{:?}", v.error);
+                let deadline = Instant::now() + std::time::Duration::from_secs(2);
+                while !v.poll_committed_copy() {
+                    assert!(
+                        Instant::now() < deadline,
+                        "session did not return the copy receipt"
+                    );
+                    std::thread::yield_now();
                 }
-                assert!(Instant::now() < deadline, "missing real copy receipt");
-                std::thread::yield_now();
-            }
+                assert!(v.error.is_none(), "{:?}", v.error);
+                assert!(
+                    v.status.starts_with("committed copy saved · "),
+                    "{}",
+                    v.status
+                );
+            });
             assert_eq!(
                 hex_storage::load(files.root().join("copy").join("copy.hex")).unwrap(),
                 *committed
@@ -4008,9 +4020,9 @@ fn single_degraded_vst3_isolates_unrelated_edits_and_stop_from_teardown(
                 track,
                 balance: -0.25,
             }),
-            Request::Edit(Command::LoopRegion {
+            Request::Edit(Command::SetLoopRegion {
                 start: 0,
-                length: 48_000,
+                end: 48_000,
                 enabled: true,
             }),
             Request::Edit(Command::AddTrack {
@@ -4072,7 +4084,7 @@ fn single_degraded_vst3_isolates_unrelated_edits_and_stop_from_teardown(
 
         // Pressing Stop with a single degraded VST3 uses RestoreStoppedPlayback
         // rather than tearing down the audio output.
-        v.stop_transport(true);
+        v.stop();
         assert!(v.recovery.generation().is_none());
         assert!(v.pending_restart_request.is_none());
         assert!(

@@ -111,14 +111,46 @@ impl WorkerAudioSink for OfflineSink {
         // Real registered compiler/resource tests now traverse the same
         // borrowed host-facts hook. This fixture supplies builtins only;
         // native instance/endpoint admission remains a desktop test.
-        self.observed
+        let revision = self
+            .observed
             .effect_compilations
-            .fetch_add(1, Ordering::Release);
+            .fetch_add(1, Ordering::Release) as u64
+            + 1;
         self.observed
             .reloaded_devices
             .lock()
             .unwrap()
             .push(input.reload_plugin_device());
+        if let Some((owner, device_id)) = input.project.tracks().iter().find_map(|track| {
+            track
+                .devices()
+                .iter()
+                .find(|device| {
+                    device.state().type_id() == hex_lattice_contract::VST3_DEVICE_TYPE_ID
+                })
+                .map(|device| {
+                    (
+                        hex_engine::ProcessorChainOwner::Track(track.id().value()),
+                        device.id().value(),
+                    )
+                })
+        }) {
+            return hex_engine::AudioCandidateEffects::with_test_foreign_effect_program(
+                owner,
+                device_id,
+                hex_lattice_contract::ForeignProcessorBinding {
+                    root: 1,
+                    instance: device_id,
+                    graph: 1,
+                    epoch: 1,
+                },
+                std::num::NonZeroU64::new(revision).unwrap(),
+                7,
+                prepare,
+            )
+            .map(Some)
+            .map_err(|error| error.to_string());
+        }
         hex_engine::AudioCandidateEffects::with_host_definitions(&[], prepare)
             .map(Some)
             .map_err(|error| error.to_string())
@@ -707,7 +739,7 @@ fn native_automation_arm_and_disarm_publish_without_editing_canonical_history() 
 fn range_copy_reports_source_refusal_only_before_commit() {
     let observed = Arc::new(Observed::default());
     let retained = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES * 2;
-    let mut service = Service::with_audio_sink_and_native_reservation(
+    let service = Service::with_audio_sink_and_native_reservation(
         16,
         1024,
         None,
@@ -863,7 +895,7 @@ fn range_copy_reports_source_refusal_only_before_commit() {
 fn project_sample_placement_publishes_or_refuses_before_commit() {
     let observed = Arc::new(Observed::default());
     let retained = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES * 2;
-    let mut service = Service::with_audio_sink_and_native_reservation(
+    let service = Service::with_audio_sink_and_native_reservation(
         16,
         1024,
         None,
@@ -2644,11 +2676,17 @@ fn reload_plugin_request_recompiles_canonical_state_for_single_device_only() {
         .submit(Request::Edit(Command::AddTrack { name: "vst".into() }))
         .unwrap();
     let track = next().state.project.tracks()[0].id();
-    let vst3_state = NativeDeviceState::new(
-        hex_lattice_contract::DeviceTypeId::from_static("hex.vst3"),
-        1,
-        vec![1, 2, 3, 4],
-    )
+    let vst3_state = hex_plugin_state::encode(hex_plugin_state::State {
+        identity: hex_plugin_state::Identity {
+            class: hex_plugin_state::ClassId::new([0x42; 16]).unwrap(),
+            binary: hex_plugin_state::BinaryIdentity {
+                executable_sha256: [1; 32],
+                info_sha256: [2; 32],
+            },
+        },
+        component: Some(b"vst3-component"),
+        controller: Some(b"vst3-controller"),
+    })
     .unwrap();
     service
         .submit(Request::Edit(Command::InsertDevice {
@@ -2658,6 +2696,7 @@ fn reload_plugin_request_recompiles_canonical_state_for_single_device_only() {
         }))
         .unwrap();
     let inserted = next();
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
     let vst3_device = inserted.state.project.track(track).unwrap().devices()[0].id();
     let utility_state = hex_engine::default_native_device_state(
         hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
@@ -2671,6 +2710,7 @@ fn reload_plugin_request_recompiles_canonical_state_for_single_device_only() {
         }))
         .unwrap();
     let after_utility = next();
+    assert!(after_utility.error.is_none(), "{:?}", after_utility.error);
     let utility_device = after_utility.state.project.track(track).unwrap().devices()[1].id();
     let revision_before = after_utility.state.revision;
 
@@ -2711,13 +2751,7 @@ fn reload_plugin_request_recompiles_canonical_state_for_single_device_only() {
         *observed.reloaded_devices.lock().unwrap(),
         vec![Some(vst3_device.value())]
     );
-    let (_, policy) = observed
-        .publications
-        .lock()
-        .unwrap()
-        .last()
-        .unwrap()
-        .clone();
+    let (_, policy) = *observed.publications.lock().unwrap().last().unwrap();
     assert!(matches!(policy, ResidentPublicationPolicy::InheritRuntime));
 
     // Bypassed / powered-off VST3 refuses reload cleanly.
@@ -2726,7 +2760,16 @@ fn reload_plugin_request_recompiles_canonical_state_for_single_device_only() {
             device: vst3_device,
         }))
         .unwrap();
-    let _bypassed = next();
+    let bypassed = next();
+    assert!(bypassed.error.is_none(), "{:?}", bypassed.error);
+    assert!(
+        bypassed
+            .state
+            .project
+            .device(vst3_device)
+            .unwrap()
+            .bypassed()
+    );
     service
         .submit(Request::ReloadPlugin {
             project_generation: 0,
