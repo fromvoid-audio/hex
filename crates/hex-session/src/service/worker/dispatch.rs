@@ -60,7 +60,7 @@ impl WorkerLoop {
             mut plugin_recording,
             recording_barrier,
             pending_recovery_outcome,
-            pending_locator_seek_outcome,
+            pending_preview_or_seek_outcome,
             pending_export_events,
         } = core;
         let save_correlation = exec.meta.save_correlation;
@@ -763,7 +763,7 @@ impl WorkerLoop {
                 plugin_recording,
                 recording_barrier,
                 pending_recovery_outcome,
-                pending_locator_seek_outcome,
+                pending_preview_or_seek_outcome,
                 pending_export_events,
             },
         };

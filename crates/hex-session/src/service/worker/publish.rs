@@ -3,7 +3,7 @@ use super::*;
 
 struct PendingDelivery {
     outcome: audio_sink::PendingOutcome,
-    seek_during_locator_recovery: bool,
+    defer_outcome_until_recovery: bool,
     stage_recovery: Option<DeferredRecoveryKind>,
     defer_recovery: Option<DeferredRecoveryKind>,
     export_job: Option<ExportJob>,
@@ -23,7 +23,7 @@ impl WorkerLoop {
         exec: RequestExecution,
     ) -> Option<PendingDelivery> {
         let RequestMeta {
-            seek_during_locator_recovery,
+            defer_outcome_until_recovery,
             save_correlation,
             defaults_directory: _,
             recording_barrier_completion: _,
@@ -554,7 +554,7 @@ impl WorkerLoop {
         };
         if self.core.pending_recovery_outcome.is_some()
             && stage_recovery.is_none()
-            && !seek_during_locator_recovery
+            && !defer_outcome_until_recovery
             && !self.finish_pending_recovery()
         {
             return None;
@@ -595,7 +595,7 @@ impl WorkerLoop {
         let project_generation = *project_generation;
         let mut defer_recovery = None;
         if stage_recovery.is_none()
-            && !seek_during_locator_recovery
+            && !defer_outcome_until_recovery
             && let Some(untitled_path) = recovery.as_deref()
         {
             let journal_result = if let Some(kind) = eligible {
@@ -1054,7 +1054,7 @@ impl WorkerLoop {
         });
         Some(PendingDelivery {
             outcome,
-            seek_during_locator_recovery,
+            defer_outcome_until_recovery,
             stage_recovery,
             defer_recovery,
             export_job,
@@ -1065,14 +1065,14 @@ impl WorkerLoop {
     fn deliver_outcome_and_exports(&mut self, pending: PendingDelivery) -> bool {
         let PendingDelivery {
             mut outcome,
-            seek_during_locator_recovery,
+            defer_outcome_until_recovery,
             stage_recovery,
             defer_recovery,
             export_job,
             export_completion,
         } = pending;
-        if seek_during_locator_recovery {
-            self.core.pending_locator_seek_outcome = Some(outcome);
+        if defer_outcome_until_recovery {
+            self.core.pending_preview_or_seek_outcome = Some(outcome);
         } else if let Some(kind) = stage_recovery {
             // Acknowledge this committed source before waiting for the older
             // checkpoint, while retaining both ordered terminals on control.
@@ -1100,6 +1100,7 @@ impl WorkerLoop {
                         );
                         previous
                     });
+            let preview = self.take_preview_or_seek_outcome();
             let started = std::time::Instant::now();
             let result = if let Some(untitled_path) = self.core.recovery.as_deref() {
                 self.core
@@ -1118,10 +1119,10 @@ impl WorkerLoop {
             // Admit this already committed edit before delivering the older
             // terminal. If its consumer has closed, dropping the tracker joins
             // the admitted checkpoint instead of abandoning this edit.
-            if let Some(previous) = previous
-                && !self.deliver_outcome(previous)
-            {
-                return false;
+            for pending in previous.into_iter().chain(preview) {
+                if !self.deliver_outcome(pending) {
+                    return false;
+                }
             }
             match result {
                 Ok(true) => self.core.pending_recovery_outcome = Some((kind, outcome)),
