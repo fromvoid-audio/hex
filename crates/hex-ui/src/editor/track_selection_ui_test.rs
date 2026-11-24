@@ -772,7 +772,13 @@ fn track_switch_clicks_paint_before_the_terminal_and_solo_preserves_selection(
             std::thread::yield_now();
         }
     }
-    cx.update(super::bind_editor_keys);
+    let files = super::test_environment::Environment::new().unwrap();
+    let mut log = hex_diagnostics::SessionLog::start(files.root().join("logs")).unwrap();
+    cx.update(|cx| {
+        super::bind_editor_keys(cx);
+        crate::diagnostics::install_session_log(cx, Ok(log.handle()));
+        crate::diagnostics::install_action_diagnostics(cx, true);
+    });
     let service = Service::new(48_000, 16, 64).unwrap();
     let _ = next(&service);
     let mut state = None;
@@ -857,6 +863,7 @@ fn track_switch_clicks_paint_before_the_terminal_and_solo_preserves_selection(
         }
         assert_eq!(state.revision, revision);
     });
+    log.handle().record("before first solo terminal").unwrap();
     flush(&editor, cx);
     check([true, false, true], cx);
     editor.read_with(cx, |view, _| {
@@ -927,6 +934,9 @@ fn track_switch_clicks_paint_before_the_terminal_and_solo_preserves_selection(
             assert_eq!(track.muted(), !muted, "terminal has not been installed");
             assert_eq!(view.displayed_track_switches(track), (muted, true));
         });
+        if mode == super::EditorMode::Arrangement {
+            log.handle().record("before first mute terminal").unwrap();
+        }
         flush(&editor, cx);
         visual.run_until_parked();
         assert_eq!(visual.rendered_background(selector), Some(after));
@@ -934,4 +944,57 @@ fn track_switch_clicks_paint_before_the_terminal_and_solo_preserves_selection(
             assert!(view.track_switch_observation.is_none())
         });
     }
+    // Repaint a real value transition after disabling the optional observer.
+    editor.update(&mut visual, |view, cx| {
+        view.set_mode(super::EditorMode::Arrangement);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    cx.update(|cx| crate::diagnostics::install_action_diagnostics(cx, false));
+    log.handle().record("paint diagnostics disabled").unwrap();
+    let mute_button = bounds(&mut visual, "track-mute", tracks[0]);
+    visual.simulate_click(mute_button.center(), Modifiers::default());
+    flush(&editor, cx);
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(tracks[0])
+                .unwrap()
+                .muted()
+        );
+    });
+    log.shutdown().unwrap();
+    let records = std::fs::read_to_string(log.path()).unwrap();
+    let generation = editor.read_with(cx, |view, _| view.project_generation);
+    let before_solo = records.split_once("before first solo terminal").unwrap().0;
+    for track in [tracks[0], tracks[2]] {
+        let record = format!(
+            "stage=track_switch_painted generation={generation} revision={} track={} switch=solo value=true",
+            revision + 1,
+            track.value()
+        );
+        assert_eq!(
+            before_solo.matches(&record).count(),
+            1,
+            "first visible solo paint"
+        );
+        assert_eq!(
+            records.matches(&record).count(),
+            1,
+            "unchanged canonical repaint"
+        );
+    }
+    let disabled = records.split_once("paint diagnostics disabled").unwrap().1;
+    assert!(!disabled.contains("stage=track_switch_painted"));
+    let before_mute = records.split_once("before first mute terminal").unwrap().0;
+    let mute = format!("track={} switch=mute value=true", tracks[0].value());
+    assert_eq!(
+        before_mute.matches(&mute).count(),
+        1,
+        "first visible mute paint"
+    );
 }
