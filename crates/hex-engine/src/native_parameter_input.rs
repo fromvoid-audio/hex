@@ -54,7 +54,7 @@ pub(crate) fn process_range_with_key(
     input_arrival: u32,
     output_arrival: u32,
     foreign: &mut dyn ForeignProcessors,
-    key: Option<Frame>,
+    key: Option<&[Frame]>,
     observer: &mut Option<&mut NodeSignalObserver<'_>>,
 ) -> Result<(), Invalid> {
     if let Some(input) = input {
@@ -101,7 +101,7 @@ fn dispatch_stage(
     foreign: &mut dyn ForeignProcessors,
     transient: Option<&mut NativeTransientProcessing>,
     external: Option<&dyn hex_lattice::NativeExternalAutomationSet>,
-    key: Option<Frame>,
+    key: Option<&[Frame]>,
     observer: &mut Option<&mut NodeSignalObserver<'_>>,
 ) -> Result<(), hex_lattice_contract::DeviceContractError> {
     let mut observe = |owner, device, kind, phase, offset, frames: &[Frame]| {
@@ -118,13 +118,9 @@ fn dispatch_stage(
         if range.len() != 1 {
             return Err(hex_lattice_contract::DeviceContractError::InvalidDescriptor);
         }
-        let block = hex_lattice::StereoAuxiliaryBlock::new(
-            frames,
-            Some(std::slice::from_ref(&key)),
-            &mut [],
-            1,
-        )
-        .map_err(|_| hex_lattice_contract::DeviceContractError::InvalidDescriptor)?;
+        let count = frames.len();
+        let block = hex_lattice::StereoAuxiliaryBlock::new(frames, Some(key), &mut [], count)
+            .map_err(|_| hex_lattice_contract::DeviceContractError::InvalidDescriptor)?;
         chain.process_auxiliary_stage_with_context(
             range.start,
             block,
@@ -314,7 +310,7 @@ impl Processing {
         input_arrival: u32,
         output_arrival: u32,
         foreign: &mut dyn ForeignProcessors,
-        key: Option<Frame>,
+        key: Option<&[Frame]>,
         observer: &mut Option<&mut NodeSignalObserver<'_>>,
     ) -> Result<(), Invalid> {
         let (origin, arrival) =
