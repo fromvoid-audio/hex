@@ -775,6 +775,26 @@ impl EditorView {
         {
             self.retain_session_track_proposal_page(proposal);
         }
+        if let Some(intent) = self.deferred_toggle_play.as_mut()
+            && let TogglePlayTarget::DeviceProposal { output } = intent.target
+            && terminal.accepted
+            && !event.project_replaced
+            && event.device_insert_complete.as_ref().is_none_or(|done| {
+                done.outcome == hex_session::service::DeviceInsertOutcome::Installed
+                    && done.submission.output_identity == output
+                    && done.submission.context.project_generation == intent.generation
+                    && done.submission.context.editor_revision == event.state.revision
+            })
+        {
+            intent.target = TogglePlayTarget::CommittedDevice {
+                output,
+                revision: event.state.revision,
+                audio_revision: event
+                    .device_insert_complete
+                    .as_ref()
+                    .map(|done| done.submission.audio_revision),
+            };
+        }
         self.retire_plugin_effect(&terminal.control, terminal.accepted, event.error.as_deref());
     }
 
@@ -818,13 +838,21 @@ impl EditorView {
         installed: bool,
         error: Option<&str>,
     ) -> bool {
-        Self::settle_device_proposal(
+        let settled = Self::settle_device_proposal(
             &mut self.pending_plugin_effect,
             &mut self.failed_plugin_proposal,
             control,
             installed,
             error,
-        )
+        );
+        if settled
+            && self.deferred_toggle_play.is_some_and(|intent| {
+                matches!(intent.target, TogglePlayTarget::DeviceProposal { .. })
+            })
+        {
+            self.deferred_toggle_play = None;
+        }
+        settled
     }
 
     pub(super) fn settle_device_proposal(

@@ -441,6 +441,8 @@ fn variable_rows_keep_scroll_anchor_and_reset_measurements_for_reused_project_id
     });
     visual.run_until_parked();
     let anchor = bounds(&mut visual, "arrangement-track-header", tracks[12]);
+    let anchor_offset =
+        anchor.origin.y - visual.debug_bounds("arrangement-content").unwrap().origin.y;
     let handle = bounds(&mut visual, "track-height-resize", tracks[12]).center();
     drag(&mut visual, handle, point(handle.x, handle.y + px(60.0)));
     let resized = bounds(&mut visual, "arrangement-track-header", tracks[12]);
@@ -457,7 +459,9 @@ fn variable_rows_keep_scroll_anchor_and_reset_measurements_for_reused_project_id
     visual.simulate_resize(size(px(1_200.0), px(800.0)));
     visual.run_until_parked();
     let resized_window = bounds(&mut visual, "arrangement-track-header", tracks[12]);
-    assert_eq!(resized_window.origin.y, anchor.origin.y);
+    // The toolbar wraps at this width and moves the entire Arrangement.
+    let viewport = visual.debug_bounds("arrangement-content").unwrap();
+    assert_eq!(resized_window.origin.y - viewport.origin.y, anchor_offset);
     editor.read_with(&visual, |view, _| {
         let total = tracks.iter().map(|id| view.track_height(*id)).sum::<f32>();
         let height = view.arrangement_bounds.unwrap().height;
@@ -512,6 +516,25 @@ fn empty_project_main_header_width_handle_uses_current_window_limit(cx: &mut Tes
     editor.read_with(&visual, |view, _| {
         assert!(view.last_enqueued_edit.is_none())
     });
+    let browser_width = visual
+        .debug_bounds("resize-browser-hit-region")
+        .unwrap()
+        .size
+        .width;
+    editor.update(&mut visual, |view, cx| {
+        view.mode = super::EditorMode::Session;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        visual
+            .debug_bounds("resize-browser-hit-region")
+            .unwrap()
+            .size
+            .width,
+        browser_width + px(super::arrangement::LEADING_BUFFER_WIDTH),
+        "Session retains the browser space used by the Arrangement gutter"
+    );
 }
 
 #[gpui::test]

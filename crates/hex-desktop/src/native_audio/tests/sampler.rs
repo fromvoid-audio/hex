@@ -22,6 +22,9 @@ mod keyboard;
 mod live_release;
 use hex_project::{BeatTime, Command, Created};
 
+#[cfg(feature = "ui-test-support")]
+const PLAY_BUTTON: &str = "play or pause · space · right-click for playback options";
+
 /// The sampler's prepared ~2 ms declick release floor at this fixture's
 /// 16 kHz output (#4087): no note-off releases in fewer frames.
 const RELEASE_FLOOR_FRAMES: usize = 32;
@@ -1864,21 +1867,21 @@ fn sampler_bypass_keeps_held_note_continuous_in_the_actual_callback() {
 }
 
 #[test]
-fn long_sampler_release_survives_immediate_reenable() {
-    long_sampler_release(false, 0.0);
+fn sampler_power_cycle_starts_fresh_with_a_long_release() {
+    scheduled_sampler_power_cycle(false, 0.0);
 }
 
 #[test]
-fn long_sampler_release_through_post_utility_survives_immediate_reenable() {
-    long_sampler_release(true, 0.0);
+fn sampler_power_cycle_starts_fresh_through_post_utility() {
+    scheduled_sampler_power_cycle(true, 0.0);
 }
 
 #[test]
-fn long_sampler_release_through_non_neutral_utility_survives_immediate_reenable() {
-    long_sampler_release(true, -6.0);
+fn sampler_power_cycle_starts_fresh_through_non_neutral_utility() {
+    scheduled_sampler_power_cycle(true, -6.0);
 }
 
-fn long_sampler_release(post_utility: bool, gain_db: f32) {
+fn scheduled_sampler_power_cycle(post_utility: bool, gain_db: f32) {
     use super::resident_preview::ResidentHarness;
     let _native = native_fixture();
     let files = Files::new();
@@ -1962,9 +1965,16 @@ fn long_sampler_release(post_utility: bool, gain_db: f32) {
         velocity: 127,
     }));
     (applied, _) = h.applied(applied);
+    let fresh_start = BeatTime::from_raw(BeatTime::ONE.raw() / 6);
+    let onset = placed
+        .state
+        .project
+        .tempo_map()
+        .beat_to_frame(fresh_start)
+        .unwrap();
     h.run(Request::Edit(Command::AddMidiNote {
         clip,
-        start: BeatTime::from_raw(BeatTime::ONE.raw() / 6),
+        start: fresh_start,
         duration: BeatTime::from_raw(BeatTime::ONE.raw() / 32),
         pitch: 60,
         channel: 0,
@@ -1981,7 +1991,12 @@ fn long_sampler_release(post_utility: bool, gain_db: f32) {
         h.render();
     }
     let before = h.render();
-    assert!(before[63][0].abs() > 0.01, "held note must be audible");
+    let level = 0.25 * 10.0_f32.powf(gain_db / 20.0);
+    assert!(
+        before[63]
+            .iter()
+            .all(|sample| (sample - level).abs() < 1e-5)
+    );
     let toggled = h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
     assert!(toggled.error.is_none());
     let after = h.render();
@@ -2002,9 +2017,20 @@ fn long_sampler_release(post_utility: bool, gain_db: f32) {
         before[63],
         after[0]
     );
-    let mut halfway = after;
-    for _ in 0..35 {
-        halfway = h.render();
+    let mut disabled = after;
+    for block in 0..36 {
+        for (offset, frame) in disabled.iter().enumerate() {
+            let remaining = 240usize.saturating_sub(block * 64 + offset);
+            let expected = level * remaining as f32 / 240.0;
+            assert!(
+                frame.iter().all(|sample| (sample - expected).abs() < 1e-5),
+                "power-off frame {}: {frame:?}, expected {expected}",
+                block * 64 + offset
+            );
+        }
+        if block < 35 {
+            disabled = h.render();
+        }
     }
     let status = h.audio.as_ref().unwrap().status().unwrap();
     let cut = status
@@ -2016,11 +2042,9 @@ fn long_sampler_release(post_utility: bool, gain_db: f32) {
     let enabled = h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
     assert!(enabled.error.is_none(), "{:?}", enabled.error);
     let resumed = h.render();
-    assert!(
-        (resumed[0][0] - halfway[63][0]).abs() < 0.01,
-        "sampler reenable: {:?} -> {:?}",
-        halfway[63],
-        resumed[0]
+    assert_eq!(
+        resumed, [[0.0; 2]; 64],
+        "power-on must not chase the held note"
     );
     let status = h.audio.as_ref().unwrap().status().unwrap();
     assert_eq!(
@@ -2034,22 +2058,48 @@ fn long_sampler_release(post_utility: bool, gain_db: f32) {
             .applied_revision
             .load(std::sync::atomic::Ordering::Acquire)
             > bypass_revision,
-        "reenable must reach the next callback while the release is audible"
+        "reenable must reach the next callback"
     );
     h.applied(bypass_revision);
+    let position = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .position
+        .load(std::sync::atomic::Ordering::Acquire);
+    let until_onset = usize::try_from(onset.checked_sub(position).unwrap()).unwrap();
+    assert!(until_onset > 0);
     let mut release = Vec::new();
     for _ in 0..140 {
         release.extend_from_slice(&h.render());
     }
     assert!(
-        release
+        release[..until_onset]
             .iter()
-            .any(|frame| frame[0] > 0.3 * 10.0_f32.powf(gain_db / 20.0)),
-        "a future note must sound while the original release continues"
+            .all(|frame| *frame == [0.0; 2]),
+        "old note must stay silent up to the scheduled onset"
+    );
+    let fresh = &release[until_onset..];
+    assert!(
+        fresh[128..256]
+            .iter()
+            .flatten()
+            .all(|sample| (sample - level).abs() < 1e-5),
+        "only one fresh note should reach the expected post-device level"
     );
     assert!(
-        release[..200].iter().any(|frame| frame[0].abs() > 0.01),
-        "original release must continue"
+        fresh
+            .iter()
+            .flatten()
+            .all(|sample| sample.abs() <= level + 1e-5)
+    );
+    assert!(
+        fresh[1024]
+            .iter()
+            .all(|sample| *sample > 0.0 && *sample < level),
+        "the fresh note must enter its own 100 ms release"
     );
     assert!(
         release[release.len() - 64..]

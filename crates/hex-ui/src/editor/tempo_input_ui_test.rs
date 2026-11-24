@@ -1,6 +1,8 @@
 use super::*;
 use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
 
+const PLAY_BUTTON: &str = "play or pause · space · right-click for playback options";
+
 pub(super) fn begin(visual: &mut VisualTestContext) {
     visual.run_until_parked();
     let bounds = visual.debug_bounds("project-tempo-value").unwrap();
@@ -30,13 +32,7 @@ fn project_tempo_layout_is_first_compact_and_keeps_neighbors_at_supported_widths
             let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
             let tempo = visual.debug_bounds("project-tempo-field").unwrap();
             let tuning = visual.debug_bounds("project tuning · cmd+alt+t").unwrap();
-            let play = visual
-                .debug_bounds(if mode == EditorMode::Arrangement {
-                    "play or pause · space · right-click for history playback"
-                } else {
-                    "play or pause · space"
-                })
-                .unwrap();
+            let play = visual.debug_bounds(PLAY_BUTTON).unwrap();
             let output = visual.debug_bounds("audio output status").unwrap();
             assert!(tempo.left() >= toolbar.left() + px(crate::theme::TITLEBAR_LEADING_INSET));
             assert!(tempo.size.width <= px(82.0));
@@ -276,18 +272,24 @@ fn project_tempo_blur_commits_valid_text_and_invalid_blur_releases_editor_shortc
 
 #[gpui::test]
 fn playback_vector_controls_follow_actual_transport_status(cx: &mut TestAppContext) {
-    use crate::editor::device_panel::tests::eq_ui_tests::{graph_layout_tests, held_pointer_tests};
-    use crate::editor::midi_canvas::creation_tests::fixture;
+    use std::sync::atomic::Ordering::Acquire;
     use std::time::Instant;
 
-    let _guard = graph_layout_tests::status_fixture_guard();
-    let (mut visual, editor, _environment, _) = fixture(cx);
-    let (mut output, mut backend) =
-        held_pointer_tests::attach_actual_output(&editor, cx, &mut visual);
+    cx.update(bind_editor_keys);
+    let mut fixture = worker_ui_fixture::open_with_section_support(
+        cx,
+        vec![hex_project::Command::AddTrack {
+            name: "transport".into(),
+        }],
+        false,
+        true,
+    );
+    let editor = fixture.editor.clone();
+    let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+    visual.simulate_resize(size(px(1280.0), px(720.0)));
     visual.run_until_parked();
-    let play = visual
-        .debug_bounds("play or pause · space · right-click for history playback")
-        .unwrap();
+    editor.read_with(cx, |view, _| assert!(view.normal_start_source().is_some()));
+    let play = visual.debug_bounds(PLAY_BUTTON).unwrap();
     let stop = visual.debug_bounds("stop · escape").unwrap();
     assert!(
         !visual
@@ -342,13 +344,19 @@ fn playback_vector_controls_follow_actual_transport_status(cx: &mut TestAppConte
         visual.simulate_click(button.center(), Modifiers::default());
         let deadline = crate::test_wait::hang_deadline();
         loop {
-            held_pointer_tests::pump_output(&editor, cx, &mut output, &mut backend);
+            fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            editor.update(cx, |view, cx| {
+                if view.tick(cx) {
+                    cx.notify();
+                }
+                assert!(
+                    view.error.is_none(),
+                    "transport action failed: {:?}",
+                    view.error
+                );
+            });
             visual.run_until_parked();
-            if editor.read_with(cx, |view, _| {
-                view.audio_status().is_some_and(|status| {
-                    status.playing.load(std::sync::atomic::Ordering::Acquire) == playing
-                })
-            }) {
+            if fixture.backend.status().unwrap().playing.load(Acquire) == playing {
                 break;
             }
             assert!(
@@ -365,12 +373,10 @@ fn playback_vector_controls_follow_actual_transport_status(cx: &mut TestAppConte
         };
         assert!(!visual.rendered_monochrome_colors(shown).is_empty());
         assert!(visual.debug_bounds(hidden).is_none());
-        assert_eq!(
-            visual.debug_bounds("play or pause · space · right-click for history playback"),
-            Some(play)
-        );
+        assert_eq!(visual.debug_bounds(PLAY_BUTTON), Some(play));
         assert_eq!(visual.debug_bounds("stop · escape"), Some(stop));
     }
+    fixture.finish(cx);
 }
 
 #[gpui::test]

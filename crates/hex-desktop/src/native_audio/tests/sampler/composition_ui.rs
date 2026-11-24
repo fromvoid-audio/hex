@@ -263,10 +263,7 @@ fn pcm(
     cx.background_executor
         .advance_clock(Duration::from_millis(16));
     visual.run_until_parked();
-    click(
-        visual,
-        "play or pause · space · right-click for history playback",
-    );
+    click(visual, PLAY_BUTTON);
     cx.background_executor
         .advance_clock(Duration::from_millis(16));
     visual.run_until_parked();

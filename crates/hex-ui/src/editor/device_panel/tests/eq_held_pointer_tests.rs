@@ -336,10 +336,53 @@ fn eq_held_node_space_starts_applied_preview_without_seek_worker_or_release(
     cx: &mut TestAppContext,
 ) {
     use std::sync::atomic::Ordering::Acquire;
-    let _output_guard = graph_layout_tests::status_fixture_guard();
-    let (handle, editor, _environment, device) = held_node_window(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    let (mut output, mut backend) = attach_actual_output(&editor, cx, &mut visual);
+    cx.update(crate::editor::bind_editor_keys);
+    let mut fixture = crate::editor::worker_ui_fixture::open_with_section_support(
+        cx,
+        vec![Command::InsertTrackWithDevice {
+            name: "held EQ".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Effect,
+            state: EqState::default().encode().unwrap(),
+        }],
+        false,
+        true,
+    );
+    let editor = fixture.editor.clone();
+    let device = editor.update(cx, |view, cx| {
+        assert!(
+            view.normal_start_source().is_some(),
+            "canonical callback source"
+        );
+        let track = &view.state.as_ref().unwrap().project.tracks()[0];
+        let device = track.devices()[0].id();
+        view.selected_track = Some(track.id());
+        view.device_panel_active = true;
+        view.clip_view_open = true;
+        view.mode = crate::editor::EditorMode::Arrangement;
+        cx.notify();
+        device
+    });
+    let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.simulate_resize(size(px(1500.0), px(800.0)));
+    visual.run_until_parked();
+    let start = plot(&mut visual, device, 0.5, 0.5);
+    eq_double_click(&mut visual, start);
+    let deadline = crate::test_wait::hang_deadline();
+    while !editor.read_with(cx, |view, _| {
+        settled(view)
+            && read(view, device).nodes.len() == 1
+            && view.normal_start_source().is_some()
+            && view.applied_project_revision() == Some(view.state.as_ref().unwrap().revision)
+    }) {
+        pump_device_playback(&mut fixture, cx);
+        visual.run_until_parked();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "authored EQ node did not apply"
+        );
+    }
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.current_seek_requires_preroll(),
@@ -349,7 +392,7 @@ fn eq_held_node_space_starts_applied_preview_without_seek_worker_or_release(
     });
     let graph = graph(&editor, cx, device);
     for moving in [false, true] {
-        assert!(!backend.status().unwrap().playing.load(Acquire));
+        assert!(!fixture.backend.status().unwrap().playing.load(Acquire));
         let start = plot(&mut visual, device, 0.5, 0.5);
         visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
         let end = if moving {
@@ -362,7 +405,7 @@ fn eq_held_node_space_starts_applied_preview_without_seek_worker_or_release(
         }
         // Admit the real preview before asking for transport, keeping the mouse held.
         let deadline = crate::test_wait::hang_deadline();
-        pump_output(&editor, cx, &mut output, &mut backend);
+        pump_device_playback(&mut fixture, cx);
         visual.run_until_parked();
         while editor.read_with(cx, |view, _| {
             let current_preview_applied = !moving
@@ -389,7 +432,7 @@ fn eq_held_node_space_starts_applied_preview_without_seek_worker_or_release(
                 || view.pending_resident_publication.is_some()
                 || !view.playback_candidates.is_empty()
         }) {
-            pump_output(&editor, cx, &mut output, &mut backend);
+            pump_device_playback(&mut fixture, cx);
             visual.run_until_parked();
             assert!(
                 std::time::Instant::now() < deadline,
@@ -420,8 +463,8 @@ fn eq_held_node_space_starts_applied_preview_without_seek_worker_or_release(
             );
         });
         let deadline = crate::test_wait::hang_deadline();
-        while !backend.status().unwrap().playing.load(Acquire) {
-            pump_output(&editor, cx, &mut output, &mut backend);
+        while !fixture.backend.status().unwrap().playing.load(Acquire) {
+            pump_device_playback(&mut fixture, cx);
             visual.run_until_parked();
             if std::time::Instant::now() >= deadline {
                 let detail = editor.read_with(cx, |view, _| {
@@ -454,8 +497,8 @@ fn eq_held_node_space_starts_applied_preview_without_seek_worker_or_release(
         graph.read_with(cx, |graph, _| assert_eq!(graph.is_dragging(), moving));
         visual.simulate_keystrokes("space");
         let deadline = crate::test_wait::hang_deadline();
-        while backend.status().unwrap().playing.load(Acquire) {
-            pump_output(&editor, cx, &mut output, &mut backend);
+        while fixture.backend.status().unwrap().playing.load(Acquire) {
+            pump_device_playback(&mut fixture, cx);
             visual.run_until_parked();
             assert!(
                 std::time::Instant::now() < deadline,
@@ -465,7 +508,7 @@ fn eq_held_node_space_starts_applied_preview_without_seek_worker_or_release(
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         let deadline = crate::test_wait::hang_deadline();
         loop {
-            pump_output(&editor, cx, &mut output, &mut backend);
+            pump_device_playback(&mut fixture, cx);
             visual.run_until_parked();
             if editor.read_with(cx, |view, _| settled(view)) {
                 break;
@@ -476,11 +519,7 @@ fn eq_held_node_space_starts_applied_preview_without_seek_worker_or_release(
             );
         }
     }
-    editor.update(cx, |view, _| {
-        let _ = view.audio.take();
-    });
-    backend.close();
-    drop(output);
+    fixture.finish(cx);
 }
 
 fn preview_is_applied(view: &EditorView) -> bool {
@@ -1048,12 +1087,42 @@ fn eq_held_node_retirement_fallback_blocks_admission_and_retries_exact_runtime(
     drop(output);
 }
 
-// Space starts the applied runtime directly. These lifecycle races deliberately
-// request the existing guarded worker seek so candidate/publication custody is
-// still exercised independently of the immediate keyboard transport path.
+// These tests deliberately hold the legacy graph-return worker at individual
+// handoff stages. Start at seek admission with its actual applied preview.
+// The worker-owned Space test above exercises the normal transport source gate.
 fn request_worker_seek(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext) {
+    use crate::editor::arrangement_seek::{SeekIntent, SeekKind};
     editor.update(cx, |view, _| {
-        view.request_prepared_seek(0, true);
+        let (prepared_revision, audio_revision, project_revision) =
+            view.current_preroll_source().expect("applied stateful EQ");
+        let audible = view.audible_playback.as_ref().unwrap();
+        let preview = audible.device_preview_identity.expect("applied EQ preview");
+        let gesture = view.device_gesture.snapshot().expect("held EQ gesture");
+        assert_eq!(
+            (preview.key, preview.sequence),
+            (gesture.key, gesture.sequence)
+        );
+        assert_eq!(
+            audio_revision,
+            view.audio_status()
+                .unwrap()
+                .applied_revision
+                .load(std::sync::atomic::Ordering::Acquire),
+        );
+        view.submit_prepared_seek_intent(
+            SeekIntent {
+                note_chase: hex_engine::NoteChase::On,
+                kind: SeekKind::Fresh,
+                recovery_generation: None,
+                destination_frame: 0,
+                start_playing: true,
+                project_generation: view.project_generation,
+                project_revision,
+                prepared_revision,
+                device_preview_identity: Some(preview),
+            },
+            audio_revision,
+        );
         assert!(
             view.prepared_seek.is_some(),
             "worker seek admission: {:?}",
@@ -1371,7 +1440,15 @@ fn eq_review_completed_seek_cancel_reconciles_actual_callback_revision(cx: &mut 
                 .load(Acquire)
         },
     );
+    // The compatibility publication has an applied revision but carries no
+    // recording source. Ordinary Play must still respect that transport fence.
     visual.simulate_keystrokes("space");
+    pump_output(&editor, cx, &mut output, &mut backend);
+    editor.read_with(cx, |view, _| {
+        assert!(view.normal_start_source().is_none());
+        assert!(!backend.status().unwrap().playing.load(Acquire));
+    });
+    request_worker_seek(&editor, cx);
     pump_actual_until(
         &editor,
         cx,

@@ -220,7 +220,7 @@ impl EditorView {
                     && self.recovery.generation().is_none()
                     && (self.normal_start_source() == Some(source)
                         || self.section_copy_play_source() == Some(source)
-                        || self.committed_locator_seek_source_is_current(source))
+                        || self.locator_play_source() == Some(source))
             }
             Start::Prepared { intent, .. } => match intent.kind {
                 super::arrangement_seek::SeekKind::CommittedLocator {

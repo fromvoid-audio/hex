@@ -1439,7 +1439,8 @@ impl Session {
             crate::device_gesture::GesturePreparation::Plugin(_) => Err(SessionError::Invalid(
                 "plugin gestures require native host preparation",
             )),
-            crate::device_gesture::GesturePreparation::Preview(draft) => {
+            crate::device_gesture::GesturePreparation::Preview(draft)
+            | crate::device_gesture::GesturePreparation::UnchangedPairPreview(draft) => {
                 let command = crate::device_gesture::command_for_snapshot(self, draft)?;
                 self.validate_prepared_command(&command)?;
                 let mut preview = hex_project::Editor::new(self.project().clone(), 1)?;

@@ -105,13 +105,51 @@ pub(crate) struct EndpointQueues {
 
 enum CacheSlot {
     Empty,
-    Occupied { page: Box<PageBuffer>, pinned: u8 },
+    Occupied {
+        page: Box<PageBuffer>,
+        pinned: u8,
+        /// Monotonic insertion/use stamp so eviction prefers stale pages over
+        /// freshly installed multi-source prefetches (fits in existing padding).
+        stamp: u32,
+    },
+}
+
+const PENDING_FLAG_PREFETCH: u8 = 0b0000_0001;
+const PENDING_FLAG_DIRECT_DEMAND: u8 = 0b0000_0010;
+/// Upper bound on concurrent speculative lookahead requests across distinct
+/// active sources. Actual concurrency is further bounded by page-pool and
+/// request-queue capacities and always yields to real demand.
+const MAX_CONCURRENT_PREFETCHES: usize = 64;
+
+#[derive(Clone, Copy)]
+struct PendingEntry {
+    key: ResourcePageKey,
+    flags: u8,
+    readiness_mask: u8,
+}
+
+impl PendingEntry {
+    const fn is_prefetch(self) -> bool {
+        self.flags & PENDING_FLAG_PREFETCH != 0
+    }
+
+    const fn has_direct_demand(self) -> bool {
+        self.flags & PENDING_FLAG_DIRECT_DEMAND != 0
+    }
+
+    const fn is_demanded(self) -> bool {
+        !self.is_prefetch() || self.has_direct_demand() || self.readiness_mask != 0
+    }
+
+    const fn is_pure_prefetch(self) -> bool {
+        self.is_prefetch() && !self.has_direct_demand() && self.readiness_mask == 0
+    }
 }
 
 #[derive(Clone, Copy)]
 enum PendingSlot {
     Empty,
-    Key(ResourcePageKey),
+    Occupied(PendingEntry),
 }
 
 pub(crate) struct Endpoint {
@@ -119,17 +157,16 @@ pub(crate) struct Endpoint {
     max_cached_pages: usize,
     cache_count: usize,
     eviction_cursor: usize,
+    access_tick: u32,
     pending: Vec<PendingSlot>,
     pending_mask: usize,
-    /// Occupied `pending` slots; gates speculative prefetch.
+    /// Total occupied `pending` slots (demand + speculative prefetch).
     pending_count: usize,
-    // At most one speculative request; its ready buffer remains owned by the queue.
-    prefetch_key: Option<ResourcePageKey>,
-    outgoing_prefetch_revision: Option<u64>,
-    // Direct callers have no cancellation receipt; readiness roles clear their
-    // own bits on cancellation so other consumers keep their pending page.
-    prefetch_direct_demand: bool,
-    prefetch_readiness_mask: u8,
+    /// Pending slots carrying real demand (direct or readiness); nonzero yields prefetch.
+    demand_pending_count: usize,
+    /// Dense control-preallocated list, with at most one in-flight key per source.
+    prefetch_keys: Vec<ResourcePageKey>,
+    outgoing_prefetch_revision: Option<(ResourcePageKey, u64)>,
     source_keys: Vec<StreamResourceKey>,
     request_tx: Producer<PageRequest>,
     ready_rx: Consumer<Box<PageBuffer>>,
@@ -196,6 +233,9 @@ impl Endpoint {
         Some(crate::EndpointData {
             cache: crate::AllocationData::of::<CacheSlot>(cache_slots),
             pending: crate::AllocationData::of::<PendingSlot>(pending_count),
+            prefetch_keys: crate::AllocationData::of::<ResourcePageKey>(
+                source_count.min(MAX_CONCURRENT_PREFETCHES),
+            ),
             source_keys: crate::AllocationData::of::<StreamResourceKey>(source_count),
             held_returns: crate::AllocationData::of::<Box<PageBuffer>>(cache_pages.checked_add(1)?),
         })
@@ -225,6 +265,10 @@ impl Endpoint {
         let mut pending = Vec::new();
         pending.try_reserve_exact(pending_count).map_err(|_| ())?;
         pending.resize_with(pending_count, || PendingSlot::Empty);
+        let mut prefetch_keys = Vec::new();
+        prefetch_keys
+            .try_reserve_exact(sources.len().min(MAX_CONCURRENT_PREFETCHES))
+            .map_err(|_| ())?;
         let mut held_returns = Vec::new();
         held_returns
             .try_reserve_exact(cache_pages.checked_add(1).ok_or(())?)
@@ -234,13 +278,13 @@ impl Endpoint {
             max_cached_pages,
             cache_count: 0,
             eviction_cursor: 0,
+            access_tick: 0,
             pending,
             pending_mask: pending_count - 1,
             pending_count: 0,
-            prefetch_key: None,
+            demand_pending_count: 0,
+            prefetch_keys,
             outgoing_prefetch_revision: None,
-            prefetch_direct_demand: false,
-            prefetch_readiness_mask: 0,
             source_keys: sources,
             request_tx: queues.request_tx,
             ready_rx: queues.ready_rx,
@@ -262,12 +306,14 @@ impl Endpoint {
 
     #[cfg(test)]
     pub(crate) fn test_speculative_request(&self, key: ResourcePageKey) -> bool {
-        self.prefetch_key == Some(key)
+        self.pending_entry(key)
+            .is_some_and(PendingEntry::is_prefetch)
     }
 
     #[cfg(feature = "test-support")]
     pub(crate) fn test_coalesced_prefetch(&self, key: ResourcePageKey) -> bool {
-        self.prefetch_key == Some(key) && self.prefetch_readiness_mask != 0
+        self.pending_entry(key)
+            .is_some_and(|entry| entry.is_prefetch() && entry.readiness_mask != 0)
     }
 
     #[cfg(feature = "test-support")]
@@ -312,11 +358,10 @@ impl Endpoint {
             // different demand is missing, release the speculative buffer so
             // the worker can service it rather than blocking behind lookahead.
             if !pending.is_empty()
-                && !self.prefetch_direct_demand
                 && self.cache_count >= self.max_cached_pages
-                && let Some(key) = self.prefetch_key
+                && let Some(key) = self.ready_rx.peek().ok().and_then(|page| page.key)
+                && self.is_pure_pending_prefetch(key)
                 && self.source_keys.binary_search(&key.source).is_ok()
-                && self.ready_rx.peek().is_ok_and(|page| page.key == Some(key))
                 && !pending.iter().any(|(_, rows)| {
                     rows.iter()
                         .any(|row| row.source == key.source && row.page_index == key.page_index)
@@ -325,7 +370,7 @@ impl Endpoint {
                 let missing = pending
                     .iter()
                     .any(|(_, rows)| rows.iter().any(|row| !self.has_extent(*row)));
-                if !missing && self.pending_count == 1 {
+                if !missing && self.demand_pending_count == 0 && self.pending_count == 1 {
                     break;
                 }
                 if let Ok(page) = self.ready_rx.pop() {
@@ -340,9 +385,9 @@ impl Endpoint {
                 self.return_buffer(page);
                 continue;
             };
-            let prefetched = self.prefetch_key == Some(key);
-            let direct_demand = self.prefetch_direct_demand;
-            self.pending_remove(key);
+            let removed = self.pending_remove(key);
+            let prefetched = removed.is_some_and(PendingEntry::is_prefetch);
+            let direct_demand = removed.is_some_and(PendingEntry::has_direct_demand);
             if self.source_keys.binary_search(&key.source).is_err() {
                 self.stale_pages = self.stale_pages.saturating_add(1);
                 self.return_buffer(page);
@@ -385,7 +430,7 @@ impl Endpoint {
                 page_index: extent.page_index,
             };
             if let Some(index) = self.cache_lookup(key)
-                && let CacheSlot::Occupied { page, pinned } = &mut self.cache[index]
+                && let CacheSlot::Occupied { page, pinned, .. } = &mut self.cache[index]
                 && extent.start < extent.end
                 && extent.end <= page.valid_frames
                 && page.valid_frames <= page.payload_len()
@@ -437,7 +482,8 @@ impl Endpoint {
         };
         let revision = self
             .outgoing_prefetch_revision
-            .filter(|_| self.prefetch_key == Some(key));
+            .filter(|(expected, _)| *expected == key)
+            .map(|(_, revision)| revision);
         self.pending_remove(key);
         Some((failure, revision))
     }
@@ -550,43 +596,93 @@ impl Endpoint {
         count
     }
 
-    fn pending_remove(&mut self, key: impl Into<ResourcePageKey>) {
-        let key = key.into();
-        if self.prefetch_key == Some(key) {
-            self.prefetch_key = None;
-            self.outgoing_prefetch_revision = None;
-            self.prefetch_direct_demand = false;
-            self.prefetch_readiness_mask = 0;
-        }
+    fn pending_slot_index(&self, key: ResourcePageKey) -> Option<usize> {
         let mut slot = page_slot(key, self.pending_mask);
         for _ in 0..self.pending.len() {
             #[cfg(test)]
             self.pending_probe_count
                 .set(self.pending_probe_count.get().saturating_add(1));
             match self.pending[slot] {
-                PendingSlot::Key(found) if found == key => {
-                    self.pending[slot] = PendingSlot::Empty;
-                    self.pending_count = self.pending_count.saturating_sub(1);
-                    self.pending_shift_delete(slot);
-                    return;
-                }
-                PendingSlot::Key(_) => slot = (slot + 1) & self.pending_mask,
-                PendingSlot::Empty => return,
+                PendingSlot::Occupied(entry) if entry.key == key => return Some(slot),
+                PendingSlot::Occupied(_) => slot = (slot + 1) & self.pending_mask,
+                PendingSlot::Empty => return None,
             }
         }
+        None
+    }
+
+    fn pending_entry(&self, key: ResourcePageKey) -> Option<PendingEntry> {
+        let slot = self.pending_slot_index(key)?;
+        match self.pending[slot] {
+            PendingSlot::Occupied(entry) => Some(entry),
+            PendingSlot::Empty => None,
+        }
+    }
+
+    fn is_pending_prefetch(&self, key: ResourcePageKey) -> bool {
+        self.pending_entry(key)
+            .is_some_and(PendingEntry::is_prefetch)
+    }
+
+    fn is_pure_pending_prefetch(&self, key: ResourcePageKey) -> bool {
+        self.pending_entry(key)
+            .is_some_and(PendingEntry::is_pure_prefetch)
+    }
+
+    fn remove_prefetch_key(&mut self, key: ResourcePageKey) {
+        if self
+            .outgoing_prefetch_revision
+            .is_some_and(|(expected, _)| expected == key)
+        {
+            self.outgoing_prefetch_revision = None;
+        }
+        if let Some(index) = self
+            .prefetch_keys
+            .iter()
+            .position(|pending| *pending == key)
+        {
+            self.prefetch_keys.swap_remove(index);
+        }
+    }
+
+    fn pending_remove(&mut self, key: impl Into<ResourcePageKey>) -> Option<PendingEntry> {
+        let key = key.into();
+        let mut slot = page_slot(key, self.pending_mask);
+        for _ in 0..self.pending.len() {
+            #[cfg(test)]
+            self.pending_probe_count
+                .set(self.pending_probe_count.get().saturating_add(1));
+            match self.pending[slot] {
+                PendingSlot::Occupied(entry) if entry.key == key => {
+                    self.pending[slot] = PendingSlot::Empty;
+                    self.pending_count = self.pending_count.saturating_sub(1);
+                    if entry.is_demanded() {
+                        self.demand_pending_count = self.demand_pending_count.saturating_sub(1);
+                    }
+                    if entry.is_prefetch() {
+                        self.remove_prefetch_key(key);
+                    }
+                    self.pending_shift_delete(slot);
+                    return Some(entry);
+                }
+                PendingSlot::Occupied(_) => slot = (slot + 1) & self.pending_mask,
+                PendingSlot::Empty => return None,
+            }
+        }
+        None
     }
 
     fn pending_shift_delete(&mut self, mut hole: usize) {
         let mut scan = (hole + 1) & self.pending_mask;
         for _ in 0..self.pending.len().saturating_sub(1) {
-            let PendingSlot::Key(key) = self.pending[scan] else {
+            let PendingSlot::Occupied(entry) = self.pending[scan] else {
                 break;
             };
-            let home = page_slot(key, self.pending_mask);
+            let home = page_slot(entry.key, self.pending_mask);
             if probe_distance(home, hole, self.pending_mask)
                 < probe_distance(home, scan, self.pending_mask)
             {
-                self.pending[hole] = PendingSlot::Key(key);
+                self.pending[hole] = PendingSlot::Occupied(entry);
                 self.pending[scan] = PendingSlot::Empty;
                 hole = scan;
             }
@@ -603,40 +699,67 @@ impl Endpoint {
     }
 
     pub(crate) fn cancel_readiness_demand(&mut self, mask: u8) {
-        self.prefetch_readiness_mask &= !mask;
+        if self.pending_count == 0 || mask == 0 {
+            return;
+        }
+        for slot in &mut self.pending {
+            if let PendingSlot::Occupied(entry) = slot
+                && entry.readiness_mask & mask != 0
+            {
+                let was_demanded = entry.is_demanded();
+                entry.readiness_mask &= !mask;
+                if was_demanded && !entry.is_demanded() {
+                    self.demand_pending_count = self.demand_pending_count.saturating_sub(1);
+                }
+            }
+        }
     }
 
     fn queue_demand_inner(&mut self, key: ResourcePageKey, direct: bool, mask: u8) {
-        if let Some(prefetched) = self.prefetch_key {
-            if prefetched == key {
-                // Preserve the request origin even if a readiness intent later cancels.
-                self.prefetch_direct_demand |= direct;
-                self.prefetch_readiness_mask |= mask;
-            } else if !self.prefetch_direct_demand
-                && self.prefetch_readiness_mask == 0
-                && self.source_keys.binary_search(&key.source).is_ok()
-                && self.cache_lookup(key).is_none()
-                && self
-                    .ready_rx
-                    .peek()
-                    .is_ok_and(|page| page.key == Some(prefetched))
-                && let Ok(page) = self.ready_rx.pop()
-            {
-                // Return the already decoded speculative page before the worker
+        if !self.prefetch_keys.is_empty()
+            && self.source_keys.binary_search(&key.source).is_ok()
+            && self.cache_lookup(key).is_none()
+            && !self.is_pending_prefetch(key)
+        {
+            let mut released = false;
+            while let Ok(ready) = self.ready_rx.peek() {
+                let Some(prefetched) = ready.key else {
+                    break;
+                };
+                if !self.is_pure_pending_prefetch(prefetched) {
+                    break;
+                }
+                let Ok(page) = self.ready_rx.pop() else {
+                    break;
+                };
+                // Return already decoded speculative pages before the worker
                 // observes a different demand for the reserved turnover buffer.
                 self.pending_remove(prefetched);
                 self.return_buffer(page);
+                released = true;
+            }
+            if released {
                 self.flush_held_returns();
             }
         }
-        self.queue_request(key);
+        self.queue_request_with(
+            key,
+            PendingEntry {
+                key,
+                flags: if direct {
+                    PENDING_FLAG_DIRECT_DEMAND
+                } else {
+                    0
+                },
+                readiness_mask: mask,
+            },
+        );
     }
 
-    fn queue_request(&mut self, key: impl Into<ResourcePageKey>) {
-        let key = key.into();
+    fn queue_request_with(&mut self, key: ResourcePageKey, entry: PendingEntry) -> bool {
         if self.source_keys.binary_search(&key.source).is_err() {
             self.rejected_requests = self.rejected_requests.saturating_add(1);
-            return;
+            return false;
         }
         let mut first_available = None;
         let mut slot = page_slot(key, self.pending_mask);
@@ -644,12 +767,22 @@ impl Endpoint {
             #[cfg(test)]
             self.pending_probe_count
                 .set(self.pending_probe_count.get().saturating_add(1));
-            match self.pending[slot] {
-                PendingSlot::Key(found) if found == key => {
+            match &mut self.pending[slot] {
+                PendingSlot::Occupied(found) if found.key == key => {
+                    if !entry.is_prefetch() {
+                        let was_demanded = found.is_demanded();
+                        if entry.has_direct_demand() {
+                            found.flags |= PENDING_FLAG_DIRECT_DEMAND;
+                        }
+                        found.readiness_mask |= entry.readiness_mask;
+                        if !was_demanded && found.is_demanded() {
+                            self.demand_pending_count = self.demand_pending_count.saturating_add(1);
+                        }
+                    }
                     self.coalesced_requests = self.coalesced_requests.saturating_add(1);
-                    return;
+                    return false;
                 }
-                PendingSlot::Key(_) => slot = (slot + 1) & self.pending_mask,
+                PendingSlot::Occupied(_) => slot = (slot + 1) & self.pending_mask,
                 PendingSlot::Empty => {
                     first_available.get_or_insert(slot);
                     break;
@@ -658,16 +791,25 @@ impl Endpoint {
         }
         let Some(slot) = first_available else {
             self.rejected_requests = self.rejected_requests.saturating_add(1);
-            return;
+            return false;
         };
         match self.request_tx.push(PageRequest(key)) {
             Ok(()) => {
-                self.pending[slot] = PendingSlot::Key(key);
+                self.pending[slot] = PendingSlot::Occupied(entry);
                 self.pending_count += 1;
+                if entry.is_demanded() {
+                    self.demand_pending_count += 1;
+                }
+                if entry.is_prefetch() {
+                    // prefetch checks bounded capacity before issuing the request.
+                    self.prefetch_keys.push(key);
+                }
                 self.queued_requests = self.queued_requests.saturating_add(1);
+                true
             }
             Err(PushError::Full(_)) => {
                 self.rejected_requests = self.rejected_requests.saturating_add(1);
+                false
             }
         }
     }
@@ -675,40 +817,155 @@ impl Endpoint {
     /// Speculatively request `page_index` ahead of the playhead, which is
     /// reading `page_index - 1` of the same source.
     ///
-    /// Lookahead contract (#4075): at most one request is ever outstanding
-    /// because of it, since it queues only while no other request is pending,
-    /// so it never delays a demand request by more than one page decode and
-    /// never fills the bounded request queue. It skips pages already cached or
-    /// pending and unknown sources (without counting a rejection). The page
-    /// arrives unpinned, so readiness reclaim and ordinary eviction can take
-    /// it back: a prefetch never holds pool pages against demand. To make
-    /// room in a full cache it requires an unpinned victim other than the
-    /// page being read, but never evicts while scheduling the request.
-    /// Readiness may retain one speculative ready buffer in its bounded queue
-    /// or return it when a different missing demand needs worker turnover.
-    /// A full request queue drops it; the callback never waits.
+    /// Lookahead contract: yields whenever any real demand request is pending,
+    /// allows at most one speculative prefetch per distinct source, and stays
+    /// strictly within configured page-pool and request-queue capacities (never
+    /// filling the bounded request queue or exhausting worker page buffers).
+    /// Skips pages already cached or pending and unknown sources (without
+    /// counting a rejection). The first speculative prefetch uses the reserved
+    /// worker turnover buffer without evicting resident pages; additional
+    /// concurrent multi-source prefetches reclaim dead unpinned cache pages
+    /// only when free turnover buffers are otherwise committed and never evict
+    /// pinned or currently reading pages.
     pub(crate) fn prefetch(&mut self, key: impl Into<ResourcePageKey>) {
         let key = key.into();
-        if self.pending_count != 0
+        if self.demand_pending_count != 0
+            || self.prefetch_keys.len() >= MAX_CONCURRENT_PREFETCHES
+            || self.prefetch_keys.len() == self.prefetch_keys.capacity()
             || self.source_keys.binary_search(&key.source).is_err()
             || self.cache_lookup(key).is_some()
         {
             return;
         }
-        let reading = ResourcePageKey {
-            source: key.source,
-            page_index: key.page_index.wrapping_sub(1),
-        };
-        if self.cache_count >= self.max_cached_pages
-            && self.unpinned_victim_except(reading).is_none()
+        // At most one concurrent speculative prefetch per source (also skips
+        // duplicate requests for the same key).
+        if self
+            .prefetch_keys
+            .iter()
+            .any(|pending| pending.source == key.source)
         {
             return;
         }
-        self.prefetched_requests = self.prefetched_requests.saturating_add(1);
-        self.queue_request(key);
-        if self.pending_count != 0 {
-            self.prefetch_key = Some(key);
+        // Reserve request-queue and hash-table headroom for real demand once at
+        // least one speculative prefetch is already in flight.
+        let min_request_slots = if self.pending_count == 0 { 1 } else { 2 };
+        if self.request_tx.slots() < min_request_slots
+            || (self.pending_count + 1).saturating_mul(2) > self.pending.len()
+        {
+            return;
         }
+        let pool_buffers = self.max_cached_pages.saturating_add(1);
+        let committed_buffers = self
+            .cache_count
+            .saturating_add(self.held_returns.len())
+            .saturating_add(self.pending_count);
+        if committed_buffers >= pool_buffers {
+            // The first speculative prefetch always uses the reserved turnover
+            // buffer without evicting. Additional concurrent sources in a full
+            // cache may reclaim one dead unpinned non-reading page if return_tx
+            // can deliver it to the worker immediately.
+            if self.pending_count == 0
+                || !self.held_returns.is_empty()
+                || self.return_tx.slots() == 0
+            {
+                return;
+            }
+            let Some(victim) = self.unpinned_victim_for_prefetch(key) else {
+                return;
+            };
+            let Some((page, _)) = self.cache_remove(victim) else {
+                return;
+            };
+            self.eviction_cursor = (victim + 1) & (self.cache.len() - 1);
+            self.return_buffer(page);
+            self.flush_held_returns();
+        } else if self.cache_count.saturating_add(self.pending_count) >= self.max_cached_pages {
+            let needed = self
+                .cache_count
+                .saturating_add(self.pending_count)
+                .saturating_add(1)
+                .saturating_sub(self.max_cached_pages);
+            if !self.has_unpinned_victims_for_prefetch(key, needed) {
+                return;
+            }
+        }
+        self.prefetched_requests = self.prefetched_requests.saturating_add(1);
+        self.queue_request_with(
+            key,
+            PendingEntry {
+                key,
+                flags: PENDING_FLAG_PREFETCH,
+                readiness_mask: 0,
+            },
+        );
+    }
+
+    fn is_prefetch_reading_page(
+        &self,
+        candidate: ResourcePageKey,
+        incoming: ResourcePageKey,
+    ) -> bool {
+        let incoming_reading = ResourcePageKey {
+            source: incoming.source,
+            page_index: incoming.page_index.wrapping_sub(1),
+        };
+        if candidate == incoming_reading {
+            return true;
+        }
+        self.prefetch_keys.iter().any(|pending| {
+            candidate
+                == ResourcePageKey {
+                    source: pending.source,
+                    page_index: pending.page_index.wrapping_sub(1),
+                }
+        })
+    }
+
+    fn unpinned_victim_for_prefetch(&self, incoming: ResourcePageKey) -> Option<usize> {
+        let mask = self.cache.len() - 1;
+        let mut best: Option<(usize, u32)> = None;
+        for offset in 0..self.cache.len() {
+            let index = (self.eviction_cursor + offset) & mask;
+            if let CacheSlot::Occupied {
+                page,
+                pinned: 0,
+                stamp,
+            } = &self.cache[index]
+                && page
+                    .key
+                    .is_some_and(|candidate| !self.is_prefetch_reading_page(candidate, incoming))
+            {
+                let age = self.access_tick.wrapping_sub(*stamp);
+                if best.is_none_or(|(_, best_age)| age > best_age) {
+                    best = Some((index, age));
+                }
+            }
+        }
+        best.map(|(index, _)| index)
+    }
+
+    fn has_unpinned_victims_for_prefetch(&self, incoming: ResourcePageKey, needed: usize) -> bool {
+        if needed == 0 {
+            return true;
+        }
+        let mask = self.cache.len() - 1;
+        let mut found = 0usize;
+        for offset in 0..self.cache.len() {
+            let index = (self.eviction_cursor + offset) & mask;
+            if let CacheSlot::Occupied {
+                page, pinned: 0, ..
+            } = &self.cache[index]
+                && page
+                    .key
+                    .is_some_and(|candidate| !self.is_prefetch_reading_page(candidate, incoming))
+            {
+                found += 1;
+                if found >= needed {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Service one exact lookahead. The complete current window must be pinned
@@ -723,9 +980,9 @@ impl Endpoint {
             source: extent.source,
             page_index: extent.page_index,
         };
-        let ready = self.prefetch_key == Some(key)
+        let ready = self.is_pending_prefetch(key)
             && self.ready_rx.peek().is_ok_and(|page| page.key == Some(key));
-        if (!ready && self.pending_count != 0)
+        if (!ready && self.demand_pending_count != 0)
             || (self.cache_count >= self.max_cached_pages
                 && retained.is_none_or(|extents| !self.reclaim_fade_victim(extents)))
         {
@@ -735,9 +992,10 @@ impl Endpoint {
             self.pump_ready(1);
             return self.has_extent(extent);
         }
+        let was_pending = self.is_pending_prefetch(key);
         self.prefetch(key);
-        if self.prefetch_key == Some(key) {
-            self.outgoing_prefetch_revision = Some(revision);
+        if !was_pending && self.is_pending_prefetch(key) {
+            self.outgoing_prefetch_revision = Some((key, revision));
         }
         false
     }
@@ -747,7 +1005,7 @@ impl Endpoint {
         let victim = (0..self.cache.len())
             .map(|offset| (self.eviction_cursor + offset) & mask)
             .find(|&index| {
-                matches!(&self.cache[index], CacheSlot::Occupied { page, pinned: 0 }
+                matches!(&self.cache[index], CacheSlot::Occupied { page, pinned: 0, .. }
                 if page.key.is_some_and(|key| {
                     !retained.iter().any(|extents| extents.binary_search_by_key(
                         &(key.source, key.page_index),
@@ -767,15 +1025,23 @@ impl Endpoint {
 
     fn unpinned_victim_except(&self, keep: ResourcePageKey) -> Option<usize> {
         let mask = self.cache.len() - 1;
+        let mut best: Option<(usize, u32)> = None;
         for offset in 0..self.cache.len() {
             let index = (self.eviction_cursor + offset) & mask;
-            if let CacheSlot::Occupied { page, pinned: 0 } = &self.cache[index]
+            if let CacheSlot::Occupied {
+                page,
+                pinned: 0,
+                stamp,
+            } = &self.cache[index]
                 && page.key != Some(keep)
             {
-                return Some(index);
+                let age = self.access_tick.wrapping_sub(*stamp);
+                if best.is_none_or(|(_, best_age)| age > best_age) {
+                    best = Some((index, age));
+                }
             }
         }
-        None
+        best.map(|(index, _)| index)
     }
 
     fn cache_lookup(&self, key: impl Into<ResourcePageKey>) -> Option<usize> {
@@ -819,7 +1085,9 @@ impl Endpoint {
             // has no receipt or borrowed consumer, so a strictly longer decode
             // may replace it only if it covers every existing pending role.
             let refuse = match &self.cache[index] {
-                CacheSlot::Occupied { page: old, pinned } => {
+                CacheSlot::Occupied {
+                    page: old, pinned, ..
+                } => {
                     let pending = *pinned & PENDING_PINS;
                     *pinned & INSTALLED_PINS != 0
                         || (pending != 0
@@ -832,14 +1100,16 @@ impl Endpoint {
                 self.return_buffer(page);
                 return false;
             }
+            let stamp = self.next_access_stamp();
             let old = std::mem::replace(
                 &mut self.cache[index],
                 CacheSlot::Occupied {
                     page,
                     pinned: pending_mask,
+                    stamp,
                 },
             );
-            if let CacheSlot::Occupied { page, pinned } = old {
+            if let CacheSlot::Occupied { page, pinned, .. } = old {
                 if let CacheSlot::Occupied {
                     pinned: current, ..
                 } = &mut self.cache[index]
@@ -872,18 +1142,25 @@ impl Endpoint {
             self.return_buffer(page);
             return false;
         };
+        let stamp = self.next_access_stamp();
         self.cache[index] = CacheSlot::Occupied {
             page,
             pinned: pending_mask,
+            stamp,
         };
         self.cache_count += 1;
         true
     }
 
+    fn next_access_stamp(&mut self) -> u32 {
+        self.access_tick = self.access_tick.wrapping_add(1);
+        self.access_tick
+    }
+
     fn cache_remove(&mut self, index: usize) -> Option<(Box<PageBuffer>, u8)> {
         let mask = self.cache.len() - 1;
         let removed = std::mem::replace(&mut self.cache[index], CacheSlot::Empty);
-        let CacheSlot::Occupied { page, pinned } = removed else {
+        let CacheSlot::Occupied { page, pinned, .. } = removed else {
             return None;
         };
         self.cache_count = self.cache_count.saturating_sub(1);
@@ -924,14 +1201,23 @@ impl Endpoint {
     }
 
     fn unpinned_victim(&mut self) -> Option<usize> {
+        let mask = self.cache.len() - 1;
+        let mut best: Option<(usize, u32)> = None;
         for offset in 0..self.cache.len() {
-            let index = (self.eviction_cursor + offset) & (self.cache.len() - 1);
-            if matches!(self.cache[index], CacheSlot::Occupied { pinned: 0, .. }) {
-                self.eviction_cursor = (index + 1) & (self.cache.len() - 1);
-                return Some(index);
+            let index = (self.eviction_cursor + offset) & mask;
+            if let CacheSlot::Occupied {
+                pinned: 0, stamp, ..
+            } = self.cache[index]
+            {
+                let age = self.access_tick.wrapping_sub(stamp);
+                if best.is_none_or(|(_, best_age)| age > best_age) {
+                    best = Some((index, age));
+                }
             }
         }
-        None
+        let (index, _) = best?;
+        self.eviction_cursor = (index + 1) & mask;
+        Some(index)
     }
 
     fn return_buffer(&mut self, page: Box<PageBuffer>) {
@@ -1052,13 +1338,13 @@ impl Endpoint {
             max_cached_pages: _,
             cache_count: _,
             eviction_cursor: _,
+            access_tick: _,
             pending,
             pending_mask: _,
             pending_count: _,
-            prefetch_key: _,
+            demand_pending_count: _,
+            prefetch_keys,
             outgoing_prefetch_revision: _,
-            prefetch_direct_demand: _,
-            prefetch_readiness_mask: _,
             source_keys,
             request_tx: _,
             ready_rx: _,
@@ -1079,6 +1365,7 @@ impl Endpoint {
         crate::EndpointData {
             cache: crate::AllocationData::of::<CacheSlot>(cache.capacity()),
             pending: crate::AllocationData::of::<PendingSlot>(pending.capacity()),
+            prefetch_keys: crate::AllocationData::of::<ResourcePageKey>(prefetch_keys.capacity()),
             source_keys: crate::AllocationData::of::<StreamResourceKey>(source_keys.capacity()),
             held_returns: crate::AllocationData::of::<Box<PageBuffer>>(held_returns.capacity()),
         }
@@ -1756,7 +2043,7 @@ mod tests {
         longer.valid_frames = 9;
         assert!(!test.endpoint.insert_ready_with_mask(longer, 16));
         assert!(
-            matches!(&test.endpoint.cache[index], CacheSlot::Occupied { page, pinned } if page.frames.as_ptr() == original && *pinned == RENDER_HOLD_PIN)
+            matches!(&test.endpoint.cache[index], CacheSlot::Occupied { page, pinned, .. } if page.frames.as_ptr() == original && *pinned == RENDER_HOLD_PIN)
         );
         test.endpoint.replace_protection(RENDER_HOLD_PIN, &[]);
     }

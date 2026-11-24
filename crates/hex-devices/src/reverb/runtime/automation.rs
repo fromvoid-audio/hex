@@ -541,19 +541,28 @@ impl ReverbRuntime {
         &mut self,
         frames: &mut [StereoFrame],
         values: &dyn NativeParameterAutomation,
+        bypassed: bool,
     ) -> Result<(), DeviceContractError> {
-        let mut resolved = self.automation_controls.resolve(&BINDINGS, values)?;
+        if !self.open {
+            self.begin_block();
+        }
+        let mut resolved = self
+            .speculative
+            .automation_controls
+            .resolve(&BINDINGS, values)?;
         for (offset, frame) in frames.iter_mut().enumerate() {
-            if let Some(next) =
-                self.automation_controls
-                    .sample(&BINDINGS, &mut resolved, values, offset)?
-            {
+            if let Some(next) = self.speculative.automation_controls.sample(
+                &BINDINGS,
+                &mut resolved,
+                values,
+                offset,
+            )? {
                 let settings = next.effective();
-                let old = self.automation_controls.effective();
+                let old = self.speculative.automation_controls.effective();
                 // Installed presence distinguishes authored values from the
                 // canonical ramp fallback without another producer query.
-                self.automation_controls.install(next);
-                let present = |index| self.automation_controls.has_value(index);
+                self.speculative.automation_controls.install(next);
+                let present = |index| self.speculative.automation_controls.has_value(index);
                 let g = |hz: f32| {
                     (std::f32::consts::PI * hz.min(self.tank_rate * 0.45) / self.tank_rate).tan()
                 };
@@ -573,14 +582,14 @@ impl ReverbRuntime {
                         present(3),
                         settings.lo_freq,
                         old.lo_freq,
-                        self.automated_values.lo_g,
+                        self.speculative.automated_values.lo_g,
                         g,
                     ),
                     hi_g: converted(
                         present(5),
                         settings.hi_freq,
                         old.hi_freq,
-                        self.automated_values.hi_g,
+                        self.speculative.automated_values.hi_g,
                         g,
                     ),
                     predelay: present(6).then_some(settings.predelay),
@@ -591,7 +600,7 @@ impl ReverbRuntime {
                         present(12),
                         settings.high_freq,
                         old.high_freq,
-                        self.automated_values.high_alpha,
+                        self.speculative.automated_values.high_alpha,
                         |v| alpha(v, self.tank_rate),
                     ),
                     high_ratio: present(13).then_some(settings.high_ratio),
@@ -599,7 +608,7 @@ impl ReverbRuntime {
                         present(15),
                         settings.low_freq,
                         old.low_freq,
-                        self.automated_values.low_alpha,
+                        self.speculative.automated_values.low_alpha,
                         |v| alpha(v, self.tank_rate),
                     ),
                     low_ratio: present(16).then_some(settings.low_ratio),
@@ -615,43 +624,53 @@ impl ReverbRuntime {
                         present(29),
                         settings.reflect,
                         old.reflect,
-                        self.automated_values.reflect,
-                        |v| 10.0_f32.powf(v / 20.0),
+                        self.speculative.automated_values.reflect,
+                        db_to_linear,
                     ),
                     diffuse: converted(
                         present(30),
                         settings.diffuse,
                         old.diffuse,
-                        self.automated_values.diffuse,
-                        |v| 10.0_f32.powf(v / 20.0),
+                        self.speculative.automated_values.diffuse,
+                        db_to_linear,
                     ),
                     lo_damping: converted(
                         present(31),
                         settings.lo_q,
                         old.lo_q,
-                        self.automated_values.lo_damping,
+                        self.speculative.automated_values.lo_damping,
                         |v| 1.0 / v,
                     ),
                     hi_damping: converted(
                         present(32),
                         settings.hi_q,
                         old.hi_q,
-                        self.automated_values.hi_damping,
+                        self.speculative.automated_values.hi_damping,
                         |v| 1.0 / v,
                     ),
                 };
                 let canonical_mode = self.settings.get(p::SMOOTH) as u32;
                 let mode = output.smooth.unwrap_or(canonical_mode);
-                if mode != self.automated_values.smooth.unwrap_or(canonical_mode) {
-                    self.retime_canonical_ramps(mode);
+                if mode
+                    != self
+                        .speculative
+                        .automated_values
+                        .smooth
+                        .unwrap_or(canonical_mode)
+                {
+                    self.speculative.retime_canonical_ramps(self.rate, mode);
                 }
-                self.silence_limit = silence_deadline_frames(
+                self.speculative.silence_limit = silence_deadline_frames(
                     self.rate,
                     output.decay.unwrap_or(self.settings.get(p::DECAY)),
                 );
-                self.automated_values = output;
+                self.speculative.automated_values = output;
             }
-            self.frame_outputs(frame, self.automated_values);
+            let dry = *frame;
+            self.frame_outputs(frame, self.speculative.automated_values);
+            if bypassed {
+                *frame = dry;
+            }
         }
         Ok(())
     }
@@ -676,6 +695,25 @@ mod tests {
                 .position(|&p| p == id)
                 .and_then(|i| self.values[i])
         }
+    }
+    fn run_block(runtime: &mut ReverbRuntime, frames: &mut [StereoFrame]) {
+        runtime.begin_block();
+        runtime.process_block(frames, &R);
+        runtime.commit_block();
+    }
+    fn run_auto(
+        runtime: &mut ReverbRuntime,
+        frames: &mut [StereoFrame],
+        values: &dyn NativeParameterAutomation,
+    ) -> Result<(), DeviceContractError> {
+        runtime.begin_block();
+        let result = runtime.process_automation(frames, values, false);
+        if result.is_ok() {
+            runtime.commit_block();
+        } else {
+            runtime.rollback_block();
+        }
+        result
     }
     fn automated_prepared(
         rate: u32,
@@ -746,24 +784,30 @@ mod tests {
                     settings.0[crate::reverb::index(p::HIGH_RATIO).unwrap()] = 0.2;
                     settings.0[crate::reverb::index(p::LOW_RATIO).unwrap()] = 2.0;
                     settings.0[crate::reverb::index(id).unwrap()] = f32::from(!enabled);
-                    let mut actual = automated_prepared(rate, settings).unwrap().runtime();
+                    let mut actual = automated_prepared(rate, settings)
+                        .unwrap()
+                        .runtime()
+                        .unwrap();
                     settings.0[crate::reverb::index(id).unwrap()] = f32::from(enabled);
-                    let mut reference = automated_prepared(rate, settings).unwrap().runtime();
+                    let mut reference = automated_prepared(rate, settings)
+                        .unwrap()
+                        .runtime()
+                        .unwrap();
                     let values = Values {
                         ids: vec![id],
                         values: vec![Some(ParameterValue::Bool(enabled))],
                     };
                     let mut output = signal(8192);
                     let mut expected = output.clone();
-                    actual.process_automation(&mut output, &values).unwrap();
-                    reference.process_block(&mut expected, &R);
+                    run_auto(&mut actual, &mut output, &values).unwrap();
+                    run_block(&mut reference, &mut expected);
                     assert_eq!(output, expected, "{rate} {id:?} {enabled}");
                     variants.push(output);
                     let wrong = Values {
                         ids: vec![id],
                         values: vec![Some(ParameterValue::Float(1.0))],
                     };
-                    assert!(actual.process_automation(&mut [[0.0; 2]], &wrong).is_err());
+                    assert!(run_auto(&mut actual, &mut [[0.0; 2]], &wrong).is_err());
                 }
                 assert!(
                     variants[0]
@@ -791,10 +835,11 @@ mod tests {
         let settings = enabled_settings();
         for rate in [8000, 96000] {
             let mut baseline = signal(8192);
-            automated_prepared(rate, settings)
+            let mut base_runtime = automated_prepared(rate, settings)
                 .unwrap()
                 .runtime()
-                .process_block(&mut baseline, &R);
+                .unwrap();
+            run_block(&mut base_runtime, &mut baseline);
             for (id, value) in [
                 (p::DRY_WET, 100.0),
                 (p::DECAY, 2.0),
@@ -825,13 +870,19 @@ mod tests {
                 };
                 let mut changed = settings;
                 changed.0[crate::reverb::index(id).unwrap()] = value;
-                let mut actual = automated_prepared(rate, settings).unwrap().runtime();
-                let mut reference = automated_prepared(rate, changed).unwrap().runtime();
+                let mut actual = automated_prepared(rate, settings)
+                    .unwrap()
+                    .runtime()
+                    .unwrap();
+                let mut reference = automated_prepared(rate, changed)
+                    .unwrap()
+                    .runtime()
+                    .unwrap();
                 let mut output = signal(8192);
                 let mut expected = output.clone();
-                reference.process_block(&mut expected, &R);
+                run_block(&mut reference, &mut expected);
                 for block in output.chunks_mut(13) {
-                    actual.process_automation(block, &input).unwrap();
+                    run_auto(&mut actual, block, &input).unwrap();
                 }
                 assert_eq!(output, expected, "parameter {} at {rate}", id.value());
                 if matches!(
@@ -889,13 +940,13 @@ mod tests {
             let mut settings = enabled_settings();
             settings.0[crate::reverb::index(p::SMOOTH).unwrap()] = 0.0;
             let prepared = automated_prepared(rate, settings).unwrap();
-            let mut actual = prepared.runtime();
-            actual.process_block(&mut signal(8193), &R);
-            let mut reference = prepared.runtime();
-            reference.copy_history_from(&actual);
+            let mut actual = prepared.runtime().unwrap();
+            run_block(&mut actual, &mut signal(8193));
+            let mut reference = prepared.runtime().unwrap();
+            reference.inherit_from(&actual);
             let mut output = signal(128);
             let mut expected = output.clone();
-            actual.process_automation(&mut output, &values).unwrap();
+            run_auto(&mut actual, &mut output, &values).unwrap();
             for (offset, frame) in expected.iter_mut().enumerate() {
                 let mut changed = settings;
                 for id in values.parameter_ids() {
@@ -908,9 +959,12 @@ mod tests {
                 }
                 // Public canonical handoff law with one-sample smoothing is
                 // an independent delivery oracle; no authored cache is used.
-                let mut next = automated_prepared(rate, changed).unwrap().runtime();
-                next.copy_history_from(&reference);
-                next.process_block(std::slice::from_mut(frame), &R);
+                let mut next = automated_prepared(rate, changed)
+                    .unwrap()
+                    .runtime()
+                    .unwrap();
+                next.inherit_from(&reference);
+                run_block(&mut next, std::slice::from_mut(frame));
                 reference = next;
             }
             for (offset, (a, b)) in output.iter().zip(&expected).enumerate() {
@@ -924,21 +978,21 @@ mod tests {
     }
     #[test]
     fn decay_admission_reserves_deadline_and_canonical_render_drops_override() {
-        use hex_lattice::PreparedNativeProcessor;
+        use hex_lattice::PreparedOwnedProcessorRuntime;
         use hex_lattice_contract::ParameterNormalization;
         let state = crate::reverb::REVERB_DEFINITION.default_state().unwrap();
         for rate in [8000, 96000] {
             let canonical =
                 crate::reverb::ReverbDefinition::prepare_owned_room(&state, rate).unwrap();
             assert!(!canonical.supports_parameter_automation(p::DECAY));
-            let mut unprepared = canonical.runtime();
+            let mut unprepared = canonical.runtime().unwrap();
             assert!(!unprepared.supports_parameter_automation(p::DECAY));
             let values = Values {
                 ids: vec![p::DECAY],
                 values: vec![Some(ParameterValue::Float(60.0))],
             };
             let mut frame = [[0.125; 2]];
-            assert!(unprepared.process_automation(&mut frame, &values).is_err());
+            assert!(run_auto(&mut unprepared, &mut frame, &values).is_err());
             assert_eq!(frame, [[0.125; 2]]);
             assert_eq!(
                 canonical.output_tail(),
@@ -958,24 +1012,23 @@ mod tests {
                     max_tail_frames: u64::from(rate) * 181 + u64::from(rate).div_ceil(10)
                 }
             );
-            let mut runtime = admitted.runtime();
-            runtime
-                .process_automation(&mut signal(8193), &values)
-                .unwrap();
-            assert_eq!(runtime.silence_limit, u64::from(rate) * 181);
-            let mut inherited = admitted.runtime();
-            inherited.copy_history_from(&runtime);
-            assert_eq!(inherited.silence_limit, runtime.silence_limit);
+            let mut runtime = admitted.runtime().unwrap();
+            run_auto(&mut runtime, &mut signal(8193), &values).unwrap();
+            assert_eq!(runtime.primary.silence_limit, u64::from(rate) * 181);
+            let mut inherited = admitted.runtime().unwrap();
+            inherited.inherit_from(&runtime);
+            assert_eq!(
+                inherited.primary.silence_limit,
+                runtime.primary.silence_limit
+            );
             // Existing real-render deadline regressions cover clock advance;
             // place this long admitted deadline at its last frame to verify
             // terminal clearing without rendering181seconds in a unit test.
-            inherited.silent_frames = inherited.silence_limit - 1;
-            inherited
-                .process_automation(&mut [[0.0; 2]], &values)
-                .unwrap();
-            assert!(inherited.is_quiescent());
-            runtime.process_block(&mut [[0.0; 2]], &R);
-            assert_eq!(runtime.silence_limit, u64::from(rate) * 8);
+            inherited.primary.silent_frames = inherited.primary.silence_limit - 1;
+            run_auto(&mut inherited, &mut [[0.0; 2]], &values).unwrap();
+            assert!(inherited.committed_is_quiescent());
+            run_block(&mut runtime, &mut [[0.0; 2]]);
+            assert_eq!(runtime.primary.silence_limit, u64::from(rate) * 8);
         }
         for id in [p::DECAY, p::SIZE, p::HIGH_RATIO, p::LOW_RATIO] {
             assert_eq!(
@@ -986,18 +1039,18 @@ mod tests {
     }
     #[test]
     fn smoothing_handoff_matches_canonical_modes_and_requires_admission() {
-        use hex_lattice::PreparedNativeProcessor;
+        use hex_lattice::PreparedOwnedProcessorRuntime;
         let state = crate::reverb::REVERB_DEFINITION.default_state().unwrap();
         for rate in [8000, 96000] {
             let plain = crate::reverb::ReverbDefinition::prepare_owned_room(&state, rate).unwrap();
             assert!(!plain.supports_parameter_automation(p::SMOOTH));
-            let mut unprepared = plain.runtime();
+            let mut unprepared = plain.runtime().unwrap();
             let mut values = Values {
                 ids: vec![p::SMOOTH],
                 values: vec![Some(ParameterValue::Choice(0))],
             };
             let mut input = [[0.125; 2]];
-            assert!(unprepared.process_automation(&mut input, &values).is_err());
+            assert!(run_auto(&mut unprepared, &mut input, &values).is_err());
             assert_eq!(input, [[0.125; 2]]);
             let admitted = crate::reverb::ReverbDefinition::prepare_owned_room_for_parameters(
                 &state,
@@ -1009,24 +1062,33 @@ mod tests {
             for mode in 0..3 {
                 let mut settings = enabled_settings();
                 settings.0[crate::reverb::index(p::SMOOTH).unwrap()] = 2.0;
-                let mut source = automated_prepared(rate, settings).unwrap().runtime();
-                source.process_block(&mut signal(8193), &R);
+                let mut source = automated_prepared(rate, settings)
+                    .unwrap()
+                    .runtime()
+                    .unwrap();
+                run_block(&mut source, &mut signal(8193));
                 values.values[0] = Some(ParameterValue::Choice(mode));
-                source.process_automation(&mut signal(17), &values).unwrap();
+                run_auto(&mut source, &mut signal(17), &values).unwrap();
                 let mut changed = settings;
                 for (id, value) in [(p::DRY_WET, 100.0), (p::LO_FREQ, 250.0), (p::DECAY, 0.4)] {
                     changed.0[crate::reverb::index(id).unwrap()] = value;
                 }
-                let mut actual = automated_prepared(rate, changed).unwrap().runtime();
-                actual.copy_history_from(&source);
+                let mut actual = automated_prepared(rate, changed)
+                    .unwrap()
+                    .runtime()
+                    .unwrap();
+                actual.inherit_from(&source);
                 changed.0[crate::reverb::index(p::SMOOTH).unwrap()] = mode as f32;
                 // Plain canonical preparation is an independent edit-ramp oracle.
-                let mut reference = PreparedReverb::new(rate, changed).unwrap().runtime();
-                reference.copy_history_from(&source);
+                let mut reference = PreparedReverb::new(rate, changed)
+                    .unwrap()
+                    .runtime()
+                    .unwrap();
+                reference.inherit_from(&source);
                 let mut output = signal(2048);
                 let mut expected = output.clone();
-                actual.process_automation(&mut output, &values).unwrap();
-                reference.process_block(&mut expected, &R);
+                run_auto(&mut actual, &mut output, &values).unwrap();
+                run_block(&mut reference, &mut expected);
                 assert!(
                     output.iter().zip(&expected).all(|(a, b)| a == b),
                     "mode {mode} at {rate}"
@@ -1034,7 +1096,7 @@ mod tests {
                 for invalid in [ParameterValue::Choice(3), ParameterValue::Float(1.0)] {
                     values.values[0] = Some(invalid);
                     let mut frame = [[0.125; 2]];
-                    assert!(actual.process_automation(&mut frame, &values).is_err());
+                    assert!(run_auto(&mut actual, &mut frame, &values).is_err());
                     assert_eq!(frame, [[0.125; 2]]);
                 }
             }
@@ -1048,45 +1110,56 @@ mod tests {
                 let mut settings = enabled_settings();
                 settings.0[crate::reverb::index(p::DRY_WET).unwrap()] = 0.0;
                 settings.0[crate::reverb::index(p::SMOOTH).unwrap()] = prior as f32;
-                let mut source = automated_prepared(rate, settings).unwrap().runtime();
-                source.process_block(&mut signal(8193), &R);
+                let mut source = automated_prepared(rate, settings)
+                    .unwrap()
+                    .runtime()
+                    .unwrap();
+                run_block(&mut source, &mut signal(8193));
                 settings.0[crate::reverb::index(p::DRY_WET).unwrap()] = 100.0;
-                let mut actual = automated_prepared(rate, settings).unwrap().runtime();
-                actual.copy_history_from(&source);
+                let mut actual = automated_prepared(rate, settings)
+                    .unwrap()
+                    .runtime()
+                    .unwrap();
+                actual.inherit_from(&source);
                 let mut values = Values {
                     ids: vec![p::SMOOTH],
                     values: vec![Some(ParameterValue::Choice(prior))],
                 };
-                actual.process_automation(&mut signal(17), &values).unwrap();
-                let mut wet_reference = PreparedReverb::new(rate, settings).unwrap().runtime();
-                wet_reference.copy_history_from(&actual);
+                run_auto(&mut actual, &mut signal(17), &values).unwrap();
+                let mut wet_reference = PreparedReverb::new(rate, settings)
+                    .unwrap()
+                    .runtime()
+                    .unwrap();
+                wet_reference.inherit_from(&actual);
                 // Independent full-wet DSP oracle: only the output mix changes.
-                wet_reference.parameters[crate::reverb::index(p::DRY_WET).unwrap()] =
+                wet_reference.primary.parameters[crate::reverb::index(p::DRY_WET).unwrap()] =
                     Ramp::steady(100.0);
                 let frames = smoothing_frames(rate, mode) as usize;
                 let input = signal(frames + 17);
                 let mut wet = input.clone();
-                wet_reference.process_block(&mut wet, &R);
+                run_block(&mut wet_reference, &mut wet);
                 let start = 17.0 / smoothing_frames(rate, prior) as f32;
                 let mut oracle_settings = settings;
                 oracle_settings.0[crate::reverb::index(p::SMOOTH).unwrap()] = mode as f32;
                 oracle_settings.0[crate::reverb::index(p::DRY_WET).unwrap()] = start * 100.0;
                 let mut canonical_source = PreparedReverb::new(rate, oracle_settings)
                     .unwrap()
-                    .runtime();
-                canonical_source.copy_history_from(&actual);
-                canonical_source.parameters[crate::reverb::index(p::DRY_WET).unwrap()] =
+                    .runtime()
+                    .unwrap();
+                canonical_source.inherit_from(&actual);
+                canonical_source.primary.parameters[crate::reverb::index(p::DRY_WET).unwrap()] =
                     Ramp::steady(start * 100.0);
                 oracle_settings.0[crate::reverb::index(p::DRY_WET).unwrap()] = 100.0;
                 let mut canonical = PreparedReverb::new(rate, oracle_settings)
                     .unwrap()
-                    .runtime();
-                canonical.copy_history_from(&canonical_source);
+                    .runtime()
+                    .unwrap();
+                canonical.inherit_from(&canonical_source);
                 let mut expected_canonical = input.clone();
-                canonical.process_block(&mut expected_canonical, &R);
+                run_block(&mut canonical, &mut expected_canonical);
                 let mut output = input.clone();
                 values.values[0] = Some(ParameterValue::Choice(mode));
-                actual.process_automation(&mut output, &values).unwrap();
+                run_auto(&mut actual, &mut output, &values).unwrap();
                 assert!(
                     output
                         .iter()
@@ -1115,40 +1188,49 @@ mod tests {
                 );
                 // The admitted mode starts another canonical edit.
                 settings.0[crate::reverb::index(p::DRY_WET).unwrap()] = 0.0;
-                let mut next = automated_prepared(rate, settings).unwrap().runtime();
-                next.copy_history_from(&actual);
-                let mut plain = automated_prepared(rate, settings).unwrap().runtime();
-                plain.copy_history_from(&actual);
+                let mut next = automated_prepared(rate, settings)
+                    .unwrap()
+                    .runtime()
+                    .unwrap();
+                next.inherit_from(&actual);
+                let mut plain = automated_prepared(rate, settings)
+                    .unwrap()
+                    .runtime()
+                    .unwrap();
+                plain.inherit_from(&actual);
                 // Empty views must not retime a pending ramp or alter its cache.
                 let absent = Values {
                     ids: vec![],
                     values: vec![],
                 };
-                next.process_automation(&mut [], &absent).unwrap();
+                run_auto(&mut next, &mut [], &absent).unwrap();
                 output = signal(128);
                 let mut expected = output.clone();
-                next.process_automation(&mut output, &absent).unwrap();
-                plain.process_block(&mut expected, &R);
+                run_auto(&mut next, &mut output, &absent).unwrap();
+                run_block(&mut plain, &mut expected);
                 assert_eq!(output, expected);
                 // Identical authored values must resume after the missing view.
-                let mut resumed = automated_prepared(rate, settings).unwrap().runtime();
-                resumed.copy_history_from(&plain);
-                next.process_automation(&mut [], &values).unwrap();
+                let mut resumed = automated_prepared(rate, settings)
+                    .unwrap()
+                    .runtime()
+                    .unwrap();
+                resumed.inherit_from(&plain);
+                run_auto(&mut next, &mut [], &values).unwrap();
                 output = signal(128);
                 expected = output.clone();
-                next.process_automation(&mut output, &values).unwrap();
-                resumed.process_automation(&mut expected, &values).unwrap();
+                run_auto(&mut next, &mut output, &values).unwrap();
+                run_auto(&mut resumed, &mut expected, &values).unwrap();
                 assert_eq!(output, expected);
             }
         }
     }
     #[test]
     fn freeze_admission_and_effective_clock_preserve_the_tail_promise() {
-        use hex_lattice::PreparedNativeProcessor;
+        use hex_lattice::PreparedOwnedProcessorRuntime;
         let state = crate::reverb::REVERB_DEFINITION.default_state().unwrap();
         for rate in [8000, 96000] {
             let plain = crate::reverb::ReverbDefinition::prepare_owned_room(&state, rate).unwrap();
-            let mut unprepared = plain.runtime();
+            let mut unprepared = plain.runtime().unwrap();
             let mut values = Values {
                 ids: vec![p::FREEZE],
                 values: vec![Some(ParameterValue::Bool(true))],
@@ -1156,7 +1238,7 @@ mod tests {
             assert!(!plain.supports_parameter_automation(p::FREEZE));
             assert!(!unprepared.supports_parameter_automation(p::FREEZE));
             let mut input = [[0.125; 2]];
-            assert!(unprepared.process_automation(&mut input, &values).is_err());
+            assert!(run_auto(&mut unprepared, &mut input, &values).is_err());
             assert_eq!(input, [[0.125; 2]]);
             let admitted = crate::reverb::ReverbDefinition::prepare_owned_room_for_parameters(
                 &state,
@@ -1165,56 +1247,62 @@ mod tests {
             )
             .unwrap();
             assert_eq!(admitted.output_tail(), hex_lattice::OutputTail::Unbounded);
-            let mut room = admitted.runtime();
-            room.process_block(&mut signal(8193), &R);
-            room.silent_frames = room.silence_limit - 1;
-            room.process_automation(&mut [[0.0; 2]], &values).unwrap();
-            assert!(!room.is_quiescent());
-            assert_eq!(room.silent_frames, room.silence_limit - 1);
+            let mut room = admitted.runtime().unwrap();
+            run_block(&mut room, &mut signal(8193));
+            room.primary.silent_frames = room.primary.silence_limit - 1;
+            run_auto(&mut room, &mut [[0.0; 2]], &values).unwrap();
+            assert!(!room.committed_is_quiescent());
+            assert_eq!(room.primary.silent_frames, room.primary.silence_limit - 1);
             room.begin_output_tail();
-            room.process_block(&mut [[0.0; 2]; 17], &R);
-            assert!(!room.is_quiescent());
+            run_block(&mut room, &mut [[0.0; 2]; 17]);
+            assert!(!room.committed_is_quiescent());
             values.values[0] = Some(ParameterValue::Bool(false));
-            room.process_automation(&mut [[0.0; 2]], &values).unwrap();
-            assert!(room.is_quiescent());
+            run_auto(&mut room, &mut [[0.0; 2]], &values).unwrap();
+            assert!(room.committed_is_quiescent());
             room.reset();
-            assert_eq!(room.automated_values.freeze, None);
+            assert_eq!(room.primary.automated_values.freeze, None);
         }
     }
     #[test]
     fn authored_feedback_cache_tracks_canonical_ramps_and_reaches_static_law() {
         for rate in [8000, 96000] {
             let settings = enabled_settings();
-            let mut old = automated_prepared(rate, settings).unwrap().runtime();
-            old.process_block(&mut signal(8193), &R);
+            let mut old = automated_prepared(rate, settings)
+                .unwrap()
+                .runtime()
+                .unwrap();
+            run_block(&mut old, &mut signal(8193));
             let mut changed = settings;
             changed.0[crate::reverb::index(p::DECAY).unwrap()] = 0.4;
             changed.0[crate::reverb::index(p::HIGH).unwrap()] = 0.0;
             changed.0[crate::reverb::index(p::LOW).unwrap()] = 0.0;
             let prepared = automated_prepared(rate, changed).unwrap();
-            let mut whole = prepared.runtime();
-            whole.copy_history_from(&old);
-            let mut split = prepared.runtime();
-            split.copy_history_from(&old);
+            let mut whole = prepared.runtime().unwrap();
+            whole.inherit_from(&old);
+            let mut split = prepared.runtime().unwrap();
+            split.inherit_from(&old);
             let values = Values {
                 ids: vec![p::HIGH_RATIO],
                 values: vec![Some(ParameterValue::Float(0.2))],
             };
             let mut output = signal(4096);
             let mut expected = output.clone();
-            whole.process_automation(&mut output, &values).unwrap();
+            run_auto(&mut whole, &mut output, &values).unwrap();
             for block in expected.chunks_mut(13) {
-                split.process_automation(block, &values).unwrap();
+                run_auto(&mut split, block, &values).unwrap();
             }
             assert_eq!(output, expected);
             changed.0[crate::reverb::index(p::HIGH_RATIO).unwrap()] = 0.2;
             changed.0[crate::reverb::index(p::SMOOTH).unwrap()] = 0.0;
-            let mut reference = automated_prepared(rate, changed).unwrap().runtime();
-            reference.copy_history_from(&whole);
+            let mut reference = automated_prepared(rate, changed)
+                .unwrap()
+                .runtime()
+                .unwrap();
+            reference.inherit_from(&whole);
             output = signal(4096);
             expected = output.clone();
-            whole.process_automation(&mut output, &values).unwrap();
-            reference.process_block(&mut expected, &R);
+            run_auto(&mut whole, &mut output, &values).unwrap();
+            run_block(&mut reference, &mut expected);
             for (a, b) in output.iter().zip(&expected) {
                 assert!((a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6);
             }
@@ -1230,8 +1318,11 @@ mod tests {
                 (p::HI_Q, p::HI_FREQ, 3000.0),
             ] {
                 let settings = enabled_settings();
-                let mut source = automated_prepared(rate, settings).unwrap().runtime();
-                source.process_block(&mut signal(8193), &R);
+                let mut source = automated_prepared(rate, settings)
+                    .unwrap()
+                    .runtime()
+                    .unwrap();
+                run_block(&mut source, &mut signal(8193));
                 let mut expected_settings = settings;
                 expected_settings.0[crate::reverb::index(canonical).unwrap()] = value;
                 let mut actual_settings = expected_settings;
@@ -1241,12 +1332,16 @@ mod tests {
                     } else {
                         1500.0
                     };
-                let mut actual = automated_prepared(rate, actual_settings).unwrap().runtime();
-                actual.copy_history_from(&source);
+                let mut actual = automated_prepared(rate, actual_settings)
+                    .unwrap()
+                    .runtime()
+                    .unwrap();
+                actual.inherit_from(&source);
                 let mut reference = automated_prepared(rate, expected_settings)
                     .unwrap()
-                    .runtime();
-                reference.copy_history_from(&source);
+                    .runtime()
+                    .unwrap();
+                reference.inherit_from(&source);
                 let values = Values {
                     ids: vec![authored],
                     values: vec![Some(ParameterValue::Float(settings.get(authored)))],
@@ -1254,9 +1349,9 @@ mod tests {
                 let mut output = signal(2048);
                 let mut expected = output.clone();
                 for block in output.chunks_mut(13) {
-                    actual.process_automation(block, &values).unwrap();
+                    run_auto(&mut actual, block, &values).unwrap();
                 }
-                reference.process_block(&mut expected, &R);
+                run_block(&mut reference, &mut expected);
                 assert_eq!(
                     output,
                     expected,
@@ -1273,16 +1368,22 @@ mod tests {
             for choice in 0..3 {
                 let mut changed = settings;
                 changed.0[crate::reverb::index(p::DENSITY).unwrap()] = choice as f32;
-                let mut actual = automated_prepared(rate, settings).unwrap().runtime();
-                let mut reference = automated_prepared(rate, changed).unwrap().runtime();
+                let mut actual = automated_prepared(rate, settings)
+                    .unwrap()
+                    .runtime()
+                    .unwrap();
+                let mut reference = automated_prepared(rate, changed)
+                    .unwrap()
+                    .runtime()
+                    .unwrap();
                 let values = Values {
                     ids: vec![p::DENSITY],
                     values: vec![Some(ParameterValue::Choice(choice))],
                 };
                 let mut output = signal(8192);
                 let mut expected = output.clone();
-                actual.process_automation(&mut output, &values).unwrap();
-                reference.process_block(&mut expected, &R);
+                run_auto(&mut actual, &mut output, &values).unwrap();
+                run_block(&mut reference, &mut expected);
                 assert_eq!(output, expected, "density {choice} rate {rate}");
                 for invalid in [ParameterValue::Choice(3), ParameterValue::Float(1.0)] {
                     let values = Values {
@@ -1290,7 +1391,7 @@ mod tests {
                         values: vec![Some(invalid)],
                     };
                     let mut frame = [[0.125; 2]];
-                    assert!(actual.process_automation(&mut frame, &values).is_err());
+                    assert!(run_auto(&mut actual, &mut frame, &values).is_err());
                     assert_eq!(frame, [[0.125; 2]]);
                 }
             }
@@ -1304,18 +1405,25 @@ mod tests {
                 (p::DENSITY, p::DIFFUSION, 10.0, 2.0),
             ] {
                 let settings = enabled_settings();
-                let mut source = automated_prepared(rate, settings).unwrap().runtime();
-                source.process_block(&mut signal(8193), &R);
+                let mut source = automated_prepared(rate, settings)
+                    .unwrap()
+                    .runtime()
+                    .unwrap();
+                run_block(&mut source, &mut signal(8193));
                 let mut expected_settings = settings;
                 expected_settings.0[crate::reverb::index(canonical).unwrap()] = target;
                 let mut actual_settings = expected_settings;
                 actual_settings.0[crate::reverb::index(authored).unwrap()] = override_target;
-                let mut actual = automated_prepared(rate, actual_settings).unwrap().runtime();
+                let mut actual = automated_prepared(rate, actual_settings)
+                    .unwrap()
+                    .runtime()
+                    .unwrap();
                 let mut reference = automated_prepared(rate, expected_settings)
                     .unwrap()
-                    .runtime();
-                actual.copy_history_from(&source);
-                reference.copy_history_from(&source);
+                    .runtime()
+                    .unwrap();
+                actual.inherit_from(&source);
+                reference.inherit_from(&source);
                 let value = if authored == p::DENSITY {
                     ParameterValue::Choice(settings.get(authored) as u32)
                 } else {
@@ -1328,9 +1436,9 @@ mod tests {
                 let mut output = signal(2048);
                 let mut expected = output.clone();
                 for block in output.chunks_mut(13) {
-                    actual.process_automation(block, &values).unwrap();
+                    run_auto(&mut actual, block, &values).unwrap();
                 }
-                reference.process_block(&mut expected, &R);
+                run_block(&mut reference, &mut expected);
                 assert_eq!(
                     output,
                     expected,
@@ -1352,16 +1460,22 @@ mod tests {
                 let settings = enabled_settings();
                 let mut changed = settings;
                 changed.0[crate::reverb::index(binding.descriptor.id).unwrap()] = value;
-                let mut actual = automated_prepared(8000, settings).unwrap().runtime();
-                let mut reference = automated_prepared(8000, changed).unwrap().runtime();
+                let mut actual = automated_prepared(8000, settings)
+                    .unwrap()
+                    .runtime()
+                    .unwrap();
+                let mut reference = automated_prepared(8000, changed)
+                    .unwrap()
+                    .runtime()
+                    .unwrap();
                 let values = Values {
                     ids: vec![binding.descriptor.id],
                     values: vec![Some(ParameterValue::Float(value))],
                 };
                 let mut output = signal(8192);
                 let mut expected = output.clone();
-                actual.process_automation(&mut output, &values).unwrap();
-                reference.process_block(&mut expected, &R);
+                run_auto(&mut actual, &mut output, &values).unwrap();
+                run_block(&mut reference, &mut expected);
                 assert_eq!(
                     output,
                     expected,
@@ -1381,38 +1495,38 @@ mod tests {
     fn malformed_atomic_delivery_history_bypass_reset_and_storage_are_preserved() {
         let settings = enabled_settings();
         let prepared = automated_prepared(8000, settings).unwrap();
-        let mut source = prepared.runtime();
-        let mut reference = prepared.runtime();
+        let mut source = prepared.runtime().unwrap();
+        let mut reference = prepared.runtime().unwrap();
         let mut values = held_values();
         let filter = values.ids.iter().position(|&id| id == p::LO_FREQ).unwrap();
         values.values[filter] = Some(ParameterValue::Float(f32::NAN));
         let mut output = [[0.125; 2]; 17];
-        assert!(source.process_automation(&mut output, &values).is_err());
+        assert!(run_auto(&mut source, &mut output, &values).is_err());
         assert_eq!(output, [[0.125; 2]; 17]);
         values.values[filter] = Some(ParameterValue::Float(25.0));
         let mut expected = output;
-        source.process_automation(&mut output, &values).unwrap();
-        reference
-            .process_automation(&mut expected, &values)
-            .unwrap();
+        run_auto(&mut source, &mut output, &values).unwrap();
+        run_auto(&mut reference, &mut expected, &values).unwrap();
         assert_eq!(output, expected);
-        let mut copied = prepared.runtime();
-        copied.copy_history_from(&source);
-        let mut bypassed = prepared.runtime();
-        bypassed.copy_history_from(&source);
+        let mut copied = prepared.runtime().unwrap();
+        copied.inherit_from(&source);
+        let mut bypassed = prepared.runtime().unwrap();
+        bypassed.inherit_from(&source);
         output.fill([0.125; 2]);
         expected = output;
-        source.process_automation(&mut output, &values).unwrap();
-        copied.process_automation(&mut expected, &values).unwrap();
+        run_auto(&mut source, &mut output, &values).unwrap();
+        run_auto(&mut copied, &mut expected, &values).unwrap();
         assert_eq!(output, expected);
         expected.fill([0.125; 2]);
+        bypassed.begin_block();
         bypassed
             .process_bypassed_block_with_automation(&mut expected, None, &values, &R)
             .unwrap();
+        bypassed.commit_block();
         assert_eq!(expected, [[0.125; 2]; 17]);
         output.fill([0.125; 2]);
-        source.process_automation(&mut output, &values).unwrap();
-        bypassed.process_automation(&mut expected, &values).unwrap();
+        run_auto(&mut source, &mut output, &values).unwrap();
+        run_auto(&mut bypassed, &mut expected, &values).unwrap();
         assert_eq!(output, expected);
         copied.reset();
         reference.reset();
@@ -1422,12 +1536,13 @@ mod tests {
         };
         output.fill([0.125; 2]);
         expected = output;
-        copied.process_automation(&mut output, &absent).unwrap();
-        reference.process_block(&mut expected, &R);
+        run_auto(&mut copied, &mut output, &absent).unwrap();
+        run_block(&mut reference, &mut expected);
         assert_eq!(output, expected);
         let storage = copied.control_storage().unwrap();
         assert_eq!(storage.inline_bytes, std::mem::size_of::<ReverbRuntime>());
-        assert_eq!(storage.heap_bytes.len(), 14);
+        assert_eq!(storage.committed_heap_bytes.len(), 14);
+        assert_eq!(storage.scratch_heap_bytes.len(), 14);
         assert!(validate_ids(&[ParameterId::from_static(34)]).is_err());
         assert!(validate_ids(&[p::STEREO, p::DRY_WET]).is_err());
         assert!(
@@ -1444,12 +1559,10 @@ mod tests {
         for rate in [8000, 96000] {
             for frozen in [false, true] {
                 let mut prepared = automated_prepared(rate, enabled_settings()).unwrap();
-                let mut source = prepared.runtime();
+                let mut source = prepared.runtime().unwrap();
                 let mut values = held_values();
                 // Fill beyond the authored 50ms predelay even at 96kHz.
-                source
-                    .process_automation(&mut signal(8193), &values)
-                    .unwrap();
+                run_auto(&mut source, &mut signal(8193), &values).unwrap();
                 if frozen {
                     values.values[values.ids.iter().position(|&id| id == p::FREEZE).unwrap()] =
                         Some(ParameterValue::Bool(true));
@@ -1459,22 +1572,20 @@ mod tests {
                     }
                     settings.0[crate::reverb::index(p::SMOOTH).unwrap()] = 0.0;
                     prepared = automated_prepared(rate, settings).unwrap();
-                    let mut next = prepared.runtime();
-                    next.copy_history_from(&source);
+                    let mut next = prepared.runtime().unwrap();
+                    next.inherit_from(&source);
                     source = next;
-                    source.process_automation(&mut [[0.0; 2]], &values).unwrap();
+                    run_auto(&mut source, &mut [[0.0; 2]], &values).unwrap();
                 }
-                let mut reference = prepared.runtime();
-                reference.copy_history_from(&source);
+                let mut reference = prepared.runtime().unwrap();
+                reference.inherit_from(&source);
                 source.begin_output_tail();
                 let mut output = vec![[0.0; 2]; 513];
                 let mut expected = output.clone();
                 for block in output.chunks_mut(13) {
-                    source.process_block(block, &R);
+                    run_block(&mut source, block);
                 }
-                reference
-                    .process_automation(&mut expected, &values)
-                    .unwrap();
+                run_auto(&mut reference, &mut expected, &values).unwrap();
                 for (index, (a, b)) in output.iter().zip(&expected).enumerate() {
                     for ch in 0..2 {
                         assert!(
@@ -1486,49 +1597,43 @@ mod tests {
                 assert!(output.iter().flatten().any(|v| v.abs() > 1e-6));
                 // Empty canonical calls do not install a new audible control
                 // state; a subsequent tail still freezes the last delivery.
-                let mut empty = prepared.runtime();
-                empty.copy_history_from(&source);
-                let mut empty_reference = prepared.runtime();
-                empty_reference.copy_history_from(&source);
-                empty.process_block(&mut [], &R);
+                let mut empty = prepared.runtime().unwrap();
+                empty.inherit_from(&source);
+                let mut empty_reference = prepared.runtime().unwrap();
+                empty_reference.inherit_from(&source);
+                run_block(&mut empty, &mut []);
                 empty.begin_output_tail();
                 empty_reference.begin_output_tail();
                 let mut empty_output = [[0.0; 2]; 17];
                 let mut empty_expected = empty_output;
-                empty.process_block(&mut empty_output, &R);
-                empty_reference.process_block(&mut empty_expected, &R);
+                run_block(&mut empty, &mut empty_output);
+                run_block(&mut empty_reference, &mut empty_expected);
                 assert_eq!(empty_output, empty_expected);
                 // A new active graph inherits DSP history, not tail admission or
                 // the detached graph's override mode after lane removal.
-                let mut canonical = prepared.runtime();
-                canonical.copy_history_from(&source);
-                let mut canonical_reference = prepared.runtime();
-                canonical_reference.copy_history_from(&reference);
+                let mut canonical = prepared.runtime().unwrap();
+                canonical.inherit_from(&source);
+                let mut canonical_reference = prepared.runtime().unwrap();
+                canonical_reference.inherit_from(&reference);
                 output.fill([0.0; 2]);
                 expected.fill([0.0; 2]);
-                canonical.process_block(&mut output, &R);
+                run_block(&mut canonical, &mut output);
                 let absent = Values {
                     ids: vec![],
                     values: vec![],
                 };
-                canonical_reference
-                    .process_automation(&mut expected, &absent)
-                    .unwrap();
+                run_auto(&mut canonical_reference, &mut expected, &absent).unwrap();
                 assert_eq!(output, expected);
                 // Identical authored values must be sampled again after an
                 // ordinary canonical render, even if their old cache matches.
-                let mut resumed = prepared.runtime();
-                resumed.copy_history_from(&canonical);
-                let mut resumed_reference = prepared.runtime();
-                resumed_reference.copy_history_from(&canonical_reference);
+                let mut resumed = prepared.runtime().unwrap();
+                resumed.inherit_from(&canonical);
+                let mut resumed_reference = prepared.runtime().unwrap();
+                resumed_reference.inherit_from(&canonical_reference);
                 let mut resumed_output = signal(128);
                 let mut resumed_expected = resumed_output.clone();
-                resumed
-                    .process_automation(&mut resumed_output, &values)
-                    .unwrap();
-                resumed_reference
-                    .process_automation(&mut resumed_expected, &values)
-                    .unwrap();
+                run_auto(&mut resumed, &mut resumed_output, &values).unwrap();
+                run_auto(&mut resumed_reference, &mut resumed_expected, &values).unwrap();
                 assert_eq!(
                     resumed_output, resumed_expected,
                     "resumed rate {rate} frozen {frozen}"
@@ -1539,15 +1644,15 @@ mod tests {
                 canonical_reference.begin_output_tail();
                 output.fill([0.0; 2]);
                 expected.fill([0.0; 2]);
-                canonical.process_block(&mut output, &R);
-                canonical_reference.process_block(&mut expected, &R);
+                run_block(&mut canonical, &mut output);
+                run_block(&mut canonical_reference, &mut expected);
                 assert_eq!(
                     output, expected,
                     "canonical tail rate {rate} frozen {frozen}"
                 );
                 source.reset();
                 output.fill([0.0; 2]);
-                source.process_block(&mut output, &R);
+                run_block(&mut source, &mut output);
                 assert!(output.iter().all(|frame| *frame == [0.0; 2]));
             }
         }
@@ -1654,7 +1759,7 @@ mod benchmark {
     fn previous_canonical(runtime: &mut ReverbRuntime, frames: &mut [StereoFrame]) {
         for frame in frames {
             if runtime.tail_controls_frozen {
-                runtime.frame_outputs(frame, runtime.automated_values);
+                runtime.frame_outputs(frame, runtime.speculative.automated_values);
             } else {
                 runtime.frame(frame, None);
             }
@@ -1676,26 +1781,33 @@ mod benchmark {
             let mut runtime = PreparedReverb::new(48000, Settings::default_values())
                 .unwrap()
                 .with_automation(&[p::DECAY, p::SMOOTH, p::FREEZE])
-                .runtime();
+                .runtime()
+                .unwrap();
             // Excite the room before held freeze+cut can suppress new input.
             // Construction and this seed are outside every timed interval.
+            runtime.begin_block();
             runtime.process_block(
                 &mut [[0.125, -0.25]; 8192],
                 &hex_lattice::EMPTY_DEVICE_RESOURCES,
             );
+            runtime.commit_block();
             let mut block = [[0.125, -0.25]; 128];
             let mut run = || {
                 for _ in 0..128 {
                     block.fill([0.125, -0.25]);
+                    runtime.begin_block();
                     match mode {
                         0 => legacy(&mut runtime, &mut block, &source),
-                        1..=3 => runtime.process_automation(&mut block, &source).unwrap(),
+                        1..=3 => runtime
+                            .process_automation(&mut block, &source, false)
+                            .unwrap(),
                         4 => {
                             runtime.process_block(&mut block, &hex_lattice::EMPTY_DEVICE_RESOURCES)
                         }
                         5 => previous_canonical(&mut runtime, &mut block),
                         _ => panic!("bounded benchmark mode"),
                     }
+                    runtime.commit_block();
                     black_box(&block);
                 }
             };

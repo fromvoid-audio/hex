@@ -209,6 +209,7 @@ impl GestureMachine {
                     origin_parameters: None,
                     state_origin: None,
                     plugin_initial: None,
+                    accepted_pair_preview: None,
                 });
                 self.last_key = Some(key);
             }

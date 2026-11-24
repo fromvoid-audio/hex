@@ -6,6 +6,14 @@ use gpui::{Context, Div, KeyDownEvent, Modifiers, MouseUpEvent, Window, div, pre
 pub(super) const PANEL_GUTTER: f32 = 3.0;
 
 impl EditorView {
+    /// Horizontal space reserved before frame zero alongside the editable lane.
+    pub(super) fn timeline_leading_buffer_width(&self) -> f32 {
+        match self.mode {
+            EditorMode::Arrangement => super::arrangement::LEADING_BUFFER_WIDTH,
+            EditorMode::Session => 0.0,
+        }
+    }
+
     /// Actual main-panel content width, after the browser, gutter and surround.
     pub(super) fn workspace_body_width(&self, window: &Window) -> f32 {
         (f32::from(window.bounds().size.width)
