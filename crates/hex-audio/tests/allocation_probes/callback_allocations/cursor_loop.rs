@@ -395,9 +395,11 @@ fn silent_left_prefix_publication_keeps_pcm_and_allocates_or_frees_nothing()
         control
             .command(PlaybackCommand::PlayFrom(16))
             .map_err(|_| "play failed")?;
+        let mut clip_start = 32;
         for block in 0..12 {
             if block == 1 || block == 4 {
-                let index = if block == 1 { 1 } else { 2 };
+                let (index, start) = if block == 1 { (1, 16) } else { (2, 8) };
+                clip_start = start;
                 control
                     .publish(Playback::try_from_prepared_with_session(Arc::clone(
                         &graphs[index],
@@ -407,6 +409,20 @@ fn silent_left_prefix_publication_keeps_pcm_and_allocates_or_frees_nothing()
             let mut expected = [[0.0; 2]; 8];
             let mut actual = [[0.0; 2]; 8];
             reference.render(&mut expected)?;
+            if cents == 0 {
+                // Only the plain clip's instance fade moves onto its extended
+                // left edge. The source remains at frames 32..96. Transformed
+                // clips retain their original processing envelope.
+                let fade = hex_project::ClipFade::new(96 - clip_start, 0, 4, 4)?;
+                for (offset, frame) in expected.iter_mut().enumerate() {
+                    let song_frame = 16 + block * 8 + offset as u64;
+                    *frame = if (32..96).contains(&song_frame) {
+                        [0.5 * fade.gain_at(song_frame - clip_start); 2]
+                    } else {
+                        [0.0; 2]
+                    };
+                }
+            }
             measured_block(&mut callback, &mut actual);
             compare_output(&actual, &expected);
             control.reclaim();

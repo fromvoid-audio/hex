@@ -2359,7 +2359,7 @@ fn unsafe_grouped_tail_preserves_the_previous_playback() {
 #[test]
 fn retained_foreign_track_tail_renders_on_its_original_endpoint() {
     struct Probe {
-        calls: Vec<(u64, usize)>,
+        calls: Vec<(u64, usize, usize)>,
         drained: bool,
         fail_tail: bool,
         rejected: bool,
@@ -2373,11 +2373,10 @@ fn retained_foreign_track_tail_renders_on_its_original_endpoint() {
             _: Option<&dyn hex_lattice::NativeInstrumentClock>,
         ) -> Result<(), DeviceContractError> {
             let epoch = node.prepared.binding().unwrap().epoch;
-            assert_eq!(frames.len(), 1);
             if epoch == 1 {
-                assert_eq!(frames, &[[0.0; 2]]);
+                assert!(frames.iter().all(|frame| *frame == [0.0; 2]));
             }
-            self.calls.push((epoch, offset));
+            self.calls.push((epoch, offset, frames.len()));
             if epoch == 1 && self.fail_tail {
                 return Err(DeviceContractError::ForeignProcessingFailed);
             }
@@ -2414,12 +2413,15 @@ fn retained_foreign_track_tail_renders_on_its_original_endpoint() {
     candidate
         .render_with_foreign_processors(&mut output, None, None, None, &mut probe)
         .unwrap();
-    assert_eq!(
-        probe.calls,
-        (0..8)
-            .flat_map(|offset| [(2, offset), (1, offset)])
-            .collect::<Vec<_>>()
-    );
+    for endpoint in [1, 2] {
+        let rendered: Vec<_> = probe
+            .calls
+            .iter()
+            .filter(|(epoch, _, _)| *epoch == endpoint)
+            .flat_map(|&(_, offset, len)| offset..offset + len)
+            .collect();
+        assert_eq!(rendered, (0..output.len()).collect::<Vec<_>>());
+    }
     assert_eq!(output, [[0.2, 0.2]; 8]);
     probe.drained = true;
     candidate
@@ -2429,7 +2431,7 @@ fn retained_foreign_track_tail_renders_on_its_original_endpoint() {
     candidate
         .render_with_foreign_processors(&mut output, None, None, None, &mut probe)
         .unwrap();
-    assert!(probe.calls.iter().all(|(epoch, _)| *epoch == 2));
+    assert!(probe.calls.iter().all(|(epoch, _, _)| *epoch == 2));
 
     let mut old = SessionPlayback::new(prepared_with_latency(3, false, 0, Some(1)).0).unwrap();
     let mut candidate =

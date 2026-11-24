@@ -232,7 +232,7 @@ impl WorkerLoop {
                 *midi_preview = Arc::clone(prepared.midi_preview());
                 // The verified receipt and committed edit refer to the same staged
                 // snapshot. Keep that identity for the next native admission.
-                *state = events.measure_section_view(|| {
+                *state = events.measure_edit_view(|| {
                     view_state_bound(
                         session,
                         Arc::clone(midi_preview),
@@ -267,6 +267,30 @@ impl WorkerLoop {
                 // can wait or be refused without silencing the installed graph.
                 *keyboard_activation = None;
                 *keyboard_tuning_hint = None;
+            }
+            // The canonical switch is committed. Its display can advance while a held
+            // preview is rebuilt; the request terminal still owns recovery and the rebase.
+            let committed_track_switch =
+                track_switch_request && canonical_changed && error.is_none();
+            if committed_track_switch {
+                let mut tracks = Vec::new();
+                if tracks
+                    .try_reserve_exact(state.project.tracks().len())
+                    .is_ok()
+                {
+                    tracks.extend(state.project.tracks().iter().map(|track| TrackSwitchState {
+                        track: track.id(),
+                        muted: track.muted(),
+                        soloed: track.soloed(),
+                    }));
+                    track_switch_views.send(TrackSwitchViewObservation {
+                        project_generation,
+                        first_previous_revision: revision_before_request,
+                        previous_revision: revision_before_request,
+                        revision,
+                        tracks,
+                    });
+                }
             }
             if canonical_changed && !project_replaced && device_gesture.snapshot().is_some() {
                 let outcome = if events.resident_publication_enabled()
@@ -449,28 +473,6 @@ impl WorkerLoop {
                         .is_none()
                         .then_some(restore_prepared)
                         .flatten();
-                }
-            }
-            let committed_track_switch =
-                track_switch_request && canonical_changed && error.is_none();
-            if committed_track_switch {
-                let mut tracks = Vec::new();
-                if tracks
-                    .try_reserve_exact(state.project.tracks().len())
-                    .is_ok()
-                {
-                    tracks.extend(state.project.tracks().iter().map(|track| TrackSwitchState {
-                        track: track.id(),
-                        muted: track.muted(),
-                        soloed: track.soloed(),
-                    }));
-                    track_switch_views.send(TrackSwitchViewObservation {
-                        project_generation,
-                        first_previous_revision: revision_before_request,
-                        previous_revision: revision_before_request,
-                        revision,
-                        tracks,
-                    });
                 }
             }
             let committed_arrangement_duplicate = created.filter(|created| {

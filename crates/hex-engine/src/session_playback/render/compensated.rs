@@ -1702,14 +1702,25 @@ impl SessionPlayback {
         Ok(())
     }
 
-    /// Steady-state block execution for compensated flat graphs (including
+    fn has_grouped_detached_tails(&self) -> bool {
+        self.compensation
+            .as_ref()
+            .is_some_and(|runtime| runtime.graph.has_group_outputs())
+            && (self.detached_tail_group_limit != 0
+                || self
+                    .release_scratch
+                    .last()
+                    .is_some_and(|entry| entry.location.track_index() >= self.route_scratch.len()))
+    }
+
+    /// Steady-state block execution for compensated graphs (including
     /// sidechains, return buses, native effects, VST3 effects/instruments,
     /// Samplers, automation, metering and observers).
     ///
     /// Requires the transport stamp ring to hold its retained horizon of
     /// consecutive running frames so every stage's `OriginWindow` is populated
-    /// and running across the entire chunk `[0..count]`. Startup pre-roll and
-    /// group-routed detached track tails retain the per-frame kernel. Track-owned MIDI releases
+    /// and running across the entire chunk `[0..count]`. Startup pre-roll
+    /// retains the per-frame kernel. Track-owned MIDI releases
     /// are summed into their generators before source effects.
     pub(super) fn can_block_compensated_route(&self, count: usize) -> bool {
         if count <= 1
@@ -1733,15 +1744,6 @@ impl SessionPlayback {
         let Some(compensation) = self.compensation.as_ref() else {
             return false;
         };
-        if compensation.graph.has_group_outputs()
-            && (self.detached_tail_group_limit != 0
-                || self
-                    .release_scratch
-                    .last()
-                    .is_some_and(|entry| entry.location.track_index() >= self.route_scratch.len()))
-        {
-            return false;
-        }
         if !compensation.graph.supports_block_compensated_routing()
             || self.return_scratch.len() != compensation.graph.returns.len()
         {
@@ -1763,6 +1765,7 @@ impl SessionPlayback {
         capture: &mut Option<&mut dyn CaptureSink>,
         inputs: RenderBlockInputs<'_>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
+        tail_scratch: &mut [[Frame; 256]],
     ) -> Result<(), SessionPlaybackError> {
         let count = output.len();
         if count == 0 || count > 256 {
@@ -1776,6 +1779,36 @@ impl SessionPlayback {
             &mut stamps[..count],
         )?;
         let stamps = &stamps[..count];
+        for scratch in &mut self.return_scratch {
+            scratch[..count].fill([0.0; 2]);
+        }
+        let (detached, detached_sends) = if self.has_grouped_detached_tails() {
+            let cells = self.route_scratch.len() * count;
+            let planes = tail_scratch
+                .as_flattened_mut()
+                .get_mut(..2 * cells)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            let (output_plane, send_plane) = planes.split_at_mut(cells);
+            output_plane.fill([0.0; 2]);
+            let mut sends = self.has_tail_route_sends.then_some(send_plane);
+            if let Some(plane) = sends.as_deref_mut() {
+                plane.fill([0.0; 2]);
+            }
+            self.render_detached_tails(
+                performance_frame,
+                output,
+                frame_offset,
+                capture,
+                DetachedTailRouting {
+                    routed: Some(output_plane),
+                    routed_sends: sends.as_deref_mut(),
+                },
+                foreign,
+            )?;
+            (Some(output_plane), sends)
+        } else {
+            (None, None)
+        };
         let region = self.active_loop_region();
         let loop_fade = self
             .active_loop_region_at(arrangement_frame)
@@ -1786,9 +1819,6 @@ impl SessionPlayback {
                 )
             });
         let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
-        for scratch in &mut self.return_scratch {
-            scratch[..count].fill([0.0; 2]);
-        }
         let owner_count = self
             .compensation
             .as_ref()
@@ -2250,11 +2280,21 @@ impl SessionPlayback {
                     }
                     self.resident_source_scratch[index][..count].copy_from_slice(audio);
 
-                    for send_index in 0..compensation.graph.tracks[index].sends.len() {
+                    let sends = &compensation.graph.tracks[index].sends;
+                    let send_audio = if let Some(tails) = &detached_sends
+                        && !sends.is_empty()
+                    {
+                        generator.copy_from_slice(audio);
+                        add_main_track(generator, &tails[index * count..(index + 1) * count]);
+                        &*generator
+                    } else {
+                        &*audio
+                    };
+                    for send_index in 0..sends.len() {
                         let send = &compensation.graph.tracks[index].sends[send_index];
                         let (target, gain, edge) = (send.target, send.gain, send.edge);
                         let buf = &mut send_buf[..count];
-                        for (dst, &src) in buf.iter_mut().zip(audio.iter()) {
+                        for (dst, &src) in buf.iter_mut().zip(send_audio) {
                             *dst = [src[0] * gain, src[1] * gain];
                         }
                         compensation
@@ -2267,6 +2307,9 @@ impl SessionPlayback {
                     {
                         let routed = &mut send_buf[..count];
                         routed.copy_from_slice(audio);
+                        if let Some(tails) = &detached {
+                            add_main_track(routed, &tails[index * count..(index + 1) * count]);
+                        }
                         compensation
                             .edge_block(edge, routed)
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
@@ -2381,6 +2424,9 @@ impl SessionPlayback {
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
             let routed = &mut audio_buf[..count];
             routed.copy_from_slice(&self.resident_source_scratch[index][..count]);
+            if let Some(tails) = &detached {
+                add_main_track(routed, &tails[index * count..(index + 1) * count]);
+            }
             compensation
                 .edge_block(edge, routed)
                 .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;

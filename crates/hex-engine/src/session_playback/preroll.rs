@@ -654,6 +654,7 @@ impl SessionPlayback {
             current_route_cut_scratch: self.current_route_cut_scratch.capacity(),
             return_scratch: self.return_scratch.capacity(),
             resident_source_scratch: self.resident_source_scratch.capacity(),
+            grouped_tail_scratch: self.grouped_tail_scratch.capacity(),
             meter_cells: self.meter_cells.capacity(),
             mutable_events: self.mutable_events.capacity(),
             tail_mixes: self.tail_mixes.capacity(),
@@ -730,6 +731,7 @@ pub(super) struct RuntimeStorage<'a> {
     pub(super) current_route_cut_scratch: usize,
     pub(super) return_scratch: usize,
     pub(super) resident_source_scratch: usize,
+    pub(super) grouped_tail_scratch: usize,
     pub(super) meter_cells: usize,
     pub(super) mutable_events: usize,
     pub(super) tail_mixes: usize,
@@ -812,6 +814,7 @@ impl RuntimeStorage<'_> {
         )?;
         add_capacity::<[Frame; PREROLL_BLOCK_FRAMES]>(&mut total, self.return_scratch)?;
         add_capacity::<[Frame; PREROLL_BLOCK_FRAMES]>(&mut total, self.resident_source_scratch)?;
+        add_capacity::<[Frame; PREROLL_BLOCK_FRAMES]>(&mut total, self.grouped_tail_scratch)?;
         add_capacity::<super::meter_capture::Cell>(&mut total, self.meter_cells)?;
         checked_add(&mut total, self.foreign_arrangement.storage_bytes()?)?;
         add_capacity::<Option<MutableInstrumentTrackRuntime>>(
@@ -971,6 +974,17 @@ fn runtime_storage_preflight_bytes(
         return_buses.len(),
         std::mem::size_of::<[Frame; PREROLL_BLOCK_FRAMES]>(),
     )?;
+    if let Some(graph) = arrangement
+        .signal_graph
+        .as_ref()
+        .filter(|graph| graph.needs_runtime())
+    {
+        add_vec(
+            &mut total,
+            graph.grouped_tail_windows(),
+            std::mem::size_of::<[Frame; PREROLL_BLOCK_FRAMES]>(),
+        )?;
+    }
     if arrangement
         .signal_graph
         .as_ref()

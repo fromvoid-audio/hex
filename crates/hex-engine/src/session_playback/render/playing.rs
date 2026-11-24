@@ -204,7 +204,8 @@ impl SessionPlayback {
                     let chunk_end = output_offset
                         .checked_add(block_count)
                         .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-                    self.render_compensated_route_block(
+                    let mut tail_scratch = std::mem::take(&mut self.grouped_tail_scratch);
+                    let rendered = self.render_compensated_route_block(
                         performance_frame,
                         arrangement_frame,
                         arrangement_loop_pass,
@@ -215,7 +216,10 @@ impl SessionPlayback {
                         capture,
                         inputs,
                         foreign,
-                    )?;
+                        &mut tail_scratch,
+                    );
+                    self.grouped_tail_scratch = tail_scratch;
+                    rendered?;
                     let chunk = u64::try_from(block_count)
                         .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
                     performance_frame = performance_frame
