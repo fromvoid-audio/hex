@@ -2807,6 +2807,17 @@ fn clocked_main_and_detached_suffix_match_single_frames_across_loop_wraps() {
 
     for delays in [&[][..], &[1][..]] {
         let mut f = fixture(&[delays], 64);
+        let audio = f.media.values_mut().next().unwrap();
+        *audio = Audio::new(
+            48_000,
+            (0..64)
+                .map(|index| {
+                    let sample = (index + 1) as f32 / 128.0;
+                    [sample, -sample]
+                })
+                .collect(),
+        )
+        .unwrap();
         f.editor
             .execute(Command::SetLoopRegion {
                 start: 0,
@@ -2860,8 +2871,8 @@ fn clocked_main_and_detached_suffix_match_single_frames_across_loop_wraps() {
             assert!(width > 1, "serial Main processed only single frames");
             first_width.unwrap()
         };
-        // Cross a wrap with an impulse still in the old five-frame stage.
-        compare(&mut blocked, &mut scalar, 67);
+        // Cross a wrap, then remove the stage while its delay contains audio.
+        compare(&mut blocked, &mut scalar, 111);
         f.editor.execute(Command::RemoveDevice(last)).unwrap();
         let replacement = prepare(&f).unwrap();
         let inherit = |old: &mut SessionPlayback| {
