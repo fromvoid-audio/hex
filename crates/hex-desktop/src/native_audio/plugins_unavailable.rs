@@ -52,7 +52,7 @@ impl Plugins {
     pub fn ready(&self) -> bool {
         true
     }
-    pub fn take_degraded_change(&mut self) -> Option<(u64, u64, Vec<u64>)> {
+    pub fn take_degraded_change(&mut self) -> Option<(u64, u64, Vec<(u64, String)>)> {
         None
     }
     pub(super) fn matches_capture_source(

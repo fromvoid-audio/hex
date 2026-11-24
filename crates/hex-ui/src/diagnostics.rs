@@ -622,6 +622,7 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
             project_generation,
             output_identity,
             devices,
+            ..
         } => format!(
             "stage=degraded_plugins generation={project_generation} output={output_identity} devices={devices:?}"
         ),
@@ -1023,6 +1024,7 @@ mod tests {
                     project_generation: 0,
                     output_identity: 1,
                     devices: Vec::new(),
+                    reasons: Vec::new(),
                 },
             );
             record_audio_backend_event(
@@ -1031,6 +1033,7 @@ mod tests {
                     project_generation: 0,
                     output_identity: 1,
                     devices: vec![42],
+                    reasons: vec![(42, "vst3 helper exited".into())],
                 },
             );
         });

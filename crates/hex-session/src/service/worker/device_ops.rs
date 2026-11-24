@@ -340,6 +340,68 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                 Some("instrument insertion request was not prepared; select it again".into());
         }
 
+        Request::ReloadPlugin {
+            project_generation: target_generation,
+            device,
+        } => {
+            if ctx.worker.device_gesture.snapshot().is_some() {
+                ctx.outcome.error =
+                    Some("finish the device gesture before reloading a vst3 plugin".into());
+            } else if target_generation != ctx.worker.project_generation
+                || !ctx
+                    .worker
+                    .session
+                    .project()
+                    .device(device)
+                    .is_some_and(|entry| {
+                        entry.state().type_id().as_str() == Ok("hex.vst3") && !entry.bypassed()
+                    })
+            {
+                ctx.outcome.error = Some("vst3 reload target changed or is powered off".into());
+            } else if !ctx.worker.events.resident_publication_enabled()
+                || ctx.worker.session.audio_mode() != DocumentAudioMode::Resident
+            {
+                ctx.outcome.error = Some("vst3 reload requires resident audio".into());
+            } else {
+                let context = hex_engine::AudioSourceContext {
+                    project_generation: ctx.worker.project_generation,
+                    editor_revision: ctx.worker.revision,
+                };
+                let result = (|| {
+                    let sink = ctx
+                        .worker
+                        .events
+                        .resident_audio()
+                        .ok_or(SessionError::Invalid("native reload output unavailable"))?;
+                    let snapshot = ctx.worker.session.reload_plugin_snapshot(
+                        context,
+                        device,
+                        sink,
+                        ctx.worker.export_lane.admission_with_resident_owners(
+                            ctx.worker.compiled.as_ref().map(|(_, p)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: ctx.worker.current_sources.as_ref(),
+                                    prepared: Some(p),
+                                }
+                            }),
+                            ctx.worker.resident_seek.as_ref(),
+                            ctx.worker.resident_preview.as_ref(),
+                        ),
+                        ctx.worker.resident_snapshot.as_ref(),
+                    )?;
+                    ctx.worker.compiled =
+                        Some((ctx.worker.revision, Arc::clone(&snapshot.prepared)));
+                    ctx.worker.resident_snapshot = Some(snapshot);
+                    ctx.worker.resident_preview = None;
+                    Ok::<_, SessionError>(())
+                })();
+                match result {
+                    Ok(()) => ctx.outcome.status = Some("vst3 plugin reloaded".into()),
+                    Err(error) => ctx.outcome.error = Some(error.to_string()),
+                }
+            }
+        }
+
         Request::TogglePluginEditor {
             project_generation: target_generation,
             device,

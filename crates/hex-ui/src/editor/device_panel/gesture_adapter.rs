@@ -80,7 +80,7 @@ pub fn commit_owned_numeric_edit(
                 | GestureTarget::ReturnGain { .. }
                 | GestureTarget::TrackGain { .. }
                 | GestureTarget::TrackBalance { .. }
-        ) && view.has_degraded_vst3_output())
+        ) && view.has_output_fault_requiring_recovery())
         || (matches!(
             target,
             GestureTarget::MainGain

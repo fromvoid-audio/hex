@@ -155,6 +155,7 @@ pub(super) fn prepare_private_export(
         power_on: None,
         running_power_off: None,
         hosted_move: None,
+        reload_plugin_device: None,
     };
     let mut owner = sink
         .prepare_offline_bounce(input, control)?
@@ -230,6 +231,7 @@ struct Inputs<'a> {
     device_insert_control: Option<&'a PluginEffectControl>,
     restoring_plugin_state: bool,
     preparing_edit: bool,
+    reload_plugin_device: Option<u64>,
     power_on: Option<ResidentPowerOn>,
     running_power_off: Option<ResidentRunningPowerOff>,
     hosted_move: Option<audio_sink::ResidentHostedMove>,
@@ -700,6 +702,7 @@ impl Inputs<'_> {
                     context,
                     restoring_plugin_state: self.restoring_plugin_state,
                     preparing_edit: self.preparing_edit,
+                    reload_plugin_device: self.reload_plugin_device,
                     power_on: self.power_on,
                     running_power_off: self.running_power_off,
                     hosted_move: self.hosted_move,
@@ -1467,6 +1470,7 @@ pub(super) fn prepare_document_replacement(
                 power_on: None,
                 running_power_off: None,
                 hosted_move: None,
+                reload_plugin_device: None,
             },
             &mut |effects| {
                 crate::prepare_with_waveforms_using(
@@ -1690,6 +1694,7 @@ pub(super) fn prepare_import_playback(
         power_on: None,
         running_power_off: None,
         hosted_move: None,
+        reload_plugin_device: None,
         stopped_history: position.is_none(),
         predecessor: None,
         native: NativeSamplerSources::Committed(input.native),
@@ -2051,6 +2056,7 @@ impl Session {
                     power_on: None,
                     running_power_off: None,
                     hosted_move: None,
+                    reload_plugin_device: None,
                     stopped_history: true,
                     predecessor: None,
                     native: NativeSamplerSources::Staged(stage),
@@ -2087,6 +2093,7 @@ impl Session {
                     power_on: None,
                     running_power_off: None,
                     hosted_move: None,
+                    reload_plugin_device: None,
                     stopped_history: true,
                     predecessor: None,
                     native: NativeSamplerSources::Staged(stage),
@@ -2424,6 +2431,7 @@ impl Session {
             power_on: None,
             running_power_off: None,
             hosted_move: None,
+            reload_plugin_device: None,
             stopped_history: false,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
@@ -2498,6 +2506,7 @@ impl Session {
             power_on: None,
             running_power_off: None,
             hosted_move: None,
+            reload_plugin_device: None,
             stopped_history: false,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -2533,6 +2542,7 @@ impl Session {
             power_on: None,
             running_power_off: None,
             hosted_move: None,
+            reload_plugin_device: None,
             stopped_history: true,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
@@ -2550,6 +2560,30 @@ impl Session {
                 .flat_map(|media| [&media.source_audio, &media.audio])
                 .collect(),
         };
+        let result = (|| {
+            let mut snapshot = inputs.prepare_for_session(self.project(), self, sink, context)?;
+            snapshot.source_origin = ResidentSourceOrigin::CanonicalCandidate;
+            inputs.publish(&mut snapshot, self.project(), sink, context)?;
+            Ok(snapshot)
+        })();
+        sink.finish_resident_effect_edit(context, result.is_ok());
+        result
+    }
+
+    /// Respawn a single degraded VST3 plugin from its last confirmed canonical
+    /// `NativeDeviceState` and republish the unchanged canonical project without
+    /// modifying Undo history or interrupting healthy plugins.
+    pub(super) fn reload_plugin_snapshot(
+        &self,
+        context: hex_engine::AudioSourceContext,
+        device: hex_project::DeviceId,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+    ) -> Result<Snapshot, SessionError> {
+        let mut inputs = self.resident_seek_inputs(admission, current, None)?;
+        inputs.preparing_edit = true;
+        inputs.reload_plugin_device = Some(device.value());
         let result = (|| {
             let mut snapshot = inputs.prepare_for_session(self.project(), self, sink, context)?;
             snapshot.source_origin = ResidentSourceOrigin::CanonicalCandidate;
@@ -2863,6 +2897,7 @@ impl Session {
             power_on: None,
             running_power_off: None,
             hosted_move: None,
+            reload_plugin_device: None,
             stopped_history: false,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
@@ -3102,6 +3137,7 @@ impl Session {
             power_on: None,
             running_power_off: None,
             hosted_move: None,
+            reload_plugin_device: None,
             stopped_history: true,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
@@ -3250,6 +3286,7 @@ impl Session {
             power_on: None,
             running_power_off: None,
             hosted_move: None,
+            reload_plugin_device: None,
             stopped_history: !matches!(
                 &transition,
                 Transition::BounceHistory { .. }

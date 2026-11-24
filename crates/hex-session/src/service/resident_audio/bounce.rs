@@ -168,6 +168,7 @@ pub(in crate::service) fn bounce_arrangement(
                 power_on: None,
                 running_power_off: None,
                 hosted_move: None,
+                reload_plugin_device: None,
             };
             let captured = plugin_state_save::project_for_bounce_with_capture(
                 session.project(),

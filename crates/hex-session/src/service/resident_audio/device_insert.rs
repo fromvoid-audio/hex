@@ -1286,6 +1286,7 @@ impl Session {
             power_on: None,
             running_power_off: None,
             hosted_move: None,
+            reload_plugin_device: None,
         };
         let prepared = if input.requires_plugin_profile() {
             sink.prepare_verified_effects(input, attempt, &mut |effects| {
@@ -1886,6 +1887,7 @@ impl Session {
             };
             let inputs = Inputs {
                 preparing_edit: plugin.is_none(),
+                reload_plugin_device: None,
                 power_on,
                 running_power_off,
                 hosted_move: hosted_instrument_move

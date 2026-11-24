@@ -115,33 +115,60 @@ pub enum EditorAudioEvent {
         value: Option<hex_session::device_gesture::PluginParameterValue>,
     },
     /// The complete set of vst3 device ids for this document on this output whose endpoint
-    /// faulted and now passes audio through (#3977). Sent when the set
-    /// changes; an empty set clears every degraded marker.
+    /// faulted and now passes audio through (#3977, #13237). Sent when the set or any
+    /// failure reason changes; an empty set clears every degraded marker.
     DegradedPlugins {
         project_generation: u64,
         output_identity: u64,
         devices: Vec<u64>,
+        reasons: Vec<(u64, String)>,
     },
 }
 
-/// Sorted, duplicate-free device ids, so membership is a binary search.
+pub(crate) const DEFAULT_DEGRADED_PLUGIN_REASON: &str = "vst3 stopped responding";
+
+/// Sorted, duplicate-free `(device_id, failure_reason)` entries, so membership
+/// and reason lookup are binary searches.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct DegradedDevices(Vec<u64>);
+pub(crate) struct DegradedDevices(Vec<(u64, String)>);
 impl DegradedDevices {
-    pub(crate) fn new(mut devices: Vec<u64>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn new(devices: Vec<u64>) -> Self {
+        Self::with_reasons(devices, Vec::new())
+    }
+    pub(crate) fn with_reasons(mut devices: Vec<u64>, reasons: Vec<(u64, String)>) -> Self {
         devices.sort_unstable();
         devices.dedup();
-        Self(devices)
+        let entries = devices
+            .into_iter()
+            .map(|device| {
+                let reason = reasons
+                    .iter()
+                    .find(|(id, _)| *id == device)
+                    .map(|(_, reason)| reason.trim())
+                    .filter(|reason| !reason.is_empty())
+                    .map(str::to_lowercase)
+                    .unwrap_or_else(|| DEFAULT_DEGRADED_PLUGIN_REASON.to_owned());
+                (device, reason)
+            })
+            .collect();
+        Self(entries)
     }
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
     pub(crate) fn contains(&self, device: u64) -> bool {
-        self.0.binary_search(&device).is_ok()
+        self.0.binary_search_by_key(&device, |(id, _)| *id).is_ok()
+    }
+    pub(crate) fn reason(&self, device: u64) -> Option<&str> {
+        self.0
+            .binary_search_by_key(&device, |(id, _)| *id)
+            .ok()
+            .map(|index| self.0[index].1.as_str())
     }
     #[cfg(all(test, not(feature = "ui-test-support")))]
-    fn as_slice(&self) -> &[u64] {
-        &self.0
+    fn device_ids(&self) -> Vec<u64> {
+        self.0.iter().map(|(id, _)| *id).collect()
     }
 }
 
@@ -192,7 +219,7 @@ mod tests {
     #[test]
     fn degraded_devices_are_normalized_for_membership() {
         let devices = DegradedDevices::new(vec![9, 3, 9, 5]);
-        assert_eq!(devices.as_slice(), [3, 5, 9]);
+        assert_eq!(devices.device_ids(), [3, 5, 9]);
         assert!([3, 5, 9].into_iter().all(|device| devices.contains(device)));
         assert!(!devices.contains(4));
         assert_eq!(
@@ -200,5 +227,13 @@ mod tests {
             DegradedDevices::new(vec![3, 5, 3])
         );
         assert!(!DegradedDevices::default().contains(0));
+        let reasoned =
+            DegradedDevices::with_reasons(vec![7, 2], vec![(7, "VST3 Helper Exited".into())]);
+        assert_eq!(reasoned.reason(7), Some("vst3 helper exited"));
+        assert_eq!(
+            reasoned.reason(2),
+            Some(super::DEFAULT_DEGRADED_PLUGIN_REASON)
+        );
+        assert_eq!(reasoned.reason(99), None);
     }
 }

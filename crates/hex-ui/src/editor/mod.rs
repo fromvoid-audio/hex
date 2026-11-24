@@ -856,6 +856,8 @@ pub(super) struct EditorView {
     route_follow: Option<u64>,
     /// Vst3 devices the current output reports as degraded.
     degraded_plugins: crate::editor_backend::DegradedDevices,
+    /// Degraded vst3 devices with an in-flight per-plugin reload request.
+    reloading_plugins: std::collections::BTreeSet<hex_project::DeviceId>,
     plugin_editor_windows: Vec<u64>,
     pending_audio_result: Option<PendingEditorAudioResult>,
     pending_publication_observation: Option<PendingEditorPublicationObservation>,
@@ -1778,6 +1780,7 @@ impl EditorView {
             pending_recovery_generation: None,
             route_follow: None,
             degraded_plugins: Default::default(),
+            reloading_plugins: std::collections::BTreeSet::new(),
             plugin_editor_windows: Vec::new(),
             pending_audio_result: None,
             pending_publication_observation: None,
@@ -2262,6 +2265,28 @@ impl EditorView {
                 }
             }
         }
+    }
+
+    pub(in crate::editor) fn reload_plugin_device(
+        &mut self,
+        device: hex_project::DeviceId,
+        cx: &mut Context<Self>,
+    ) {
+        if self.reloading_plugins.contains(&device)
+            || self.opening_project
+            || self.close_prompt_open
+        {
+            return;
+        }
+        if self.enqueue(Request::ReloadPlugin {
+            project_generation: self.project_generation,
+            device,
+        }) {
+            self.reloading_plugins.insert(device);
+            self.status = "reloading vst3 plugin".into();
+            self.error = None;
+        }
+        cx.notify();
     }
 
     fn defer_toggle_play(&mut self, frame: u64, target: TogglePlayTarget) {

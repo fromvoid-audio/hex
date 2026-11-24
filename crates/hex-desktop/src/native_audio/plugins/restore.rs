@@ -61,6 +61,34 @@ impl Plugins {
                 result.as_ref().map(|()| Some(true)).map_err(Clone::clone)
             });
         }
+        let control = output.publication.control().ok_or("native output closed")?;
+        if let Some(output_id) = control.output_identity() {
+            let mut newly_degraded = Vec::new();
+            for source in &mut self.sources {
+                if source.accepted && !source.retiring {
+                    let status = control.native_source_endpoint_status(source.binding);
+                    if status == Some((true, false))
+                        || self.degraded.is_binding_degraded(output_id, source.binding)
+                    {
+                        let diagnostic =
+                            control.take_native_source_failure_diagnostic(source.binding);
+                        source.accepted = false;
+                        source.retiring = true;
+                        source.edit_backlog = false;
+                        newly_degraded.push((source.binding, source.device, diagnostic));
+                    }
+                }
+            }
+            for (binding, device, diagnostic) in newly_degraded {
+                self.note_degraded_source(
+                    context.project_generation,
+                    output_id,
+                    binding,
+                    device,
+                    diagnostic.as_deref(),
+                );
+            }
+        }
         if !self
             .sources
             .iter()
@@ -68,7 +96,6 @@ impl Plugins {
         {
             return Ok(None);
         }
-        let control = output.publication.control().ok_or("native output closed")?;
         // Constructor/sampler restoration has its own existing owner. This
         // adapter renews only the ordinary graphs it compiled from its sources.
         if control.status.applied_audio_source().is_some() {
@@ -213,6 +240,13 @@ impl Plugins {
                 Stage::Renew(index) => {
                     if let Some(source) = self.sources.get_mut(index) {
                         if source.accepted && !source.retiring {
+                            let output_id = restore.source.output_identity;
+                            if self.degraded.is_binding_degraded(output_id, source.binding) {
+                                source.accepted = false;
+                                source.retiring = true;
+                                restore.stage = Stage::Renew(index + 1);
+                                return Ok(false);
+                            }
                             let lease = source.editor_retirement.lease.as_mut().ok_or(
                                 "stopped vst3 restore lost its editor receipt reservation",
                             )?;
@@ -244,7 +278,33 @@ impl Plugins {
                                     | "native epoch requires parameter input terminal"
                                     | "native epoch requires original graph and endpoint return",
                                 ) => return Ok(false),
-                                Err(reason) => return Err(reason.into()),
+                                Err("native epoch output is closing") => {
+                                    return Err("native epoch output is closing".into());
+                                }
+                                Err(reason) => {
+                                    // Isolate this single failed/revoked plugin so healthy
+                                    // plugins continue their stopped epoch renewal cleanly.
+                                    let binding = source.binding;
+                                    let device = source.device;
+                                    let diagnostic = control
+                                        .take_native_source_failure_diagnostic(binding)
+                                        .unwrap_or_else(|| reason.to_owned());
+                                    source.accepted = false;
+                                    source.retiring = true;
+                                    source.edit_backlog = false;
+                                    if let Some(entries) = self.degraded.mark_degraded(
+                                        output_id,
+                                        binding,
+                                        device,
+                                        Some(diagnostic.as_str()),
+                                    ) {
+                                        self.degraded_changed = Some((
+                                            restore.context.project_generation,
+                                            output_id,
+                                            entries,
+                                        ));
+                                    }
+                                }
                             }
                         }
                         restore.stage = Stage::Renew(index + 1);
@@ -261,12 +321,29 @@ impl Plugins {
                     match control.settle_native_latency_on_control(binding) {
                         Ok(Some(_)) => restore.stage = Stage::Renew(index + 1),
                         Err("native preparation is busy") => {}
-                        Ok(None) => {
-                            return Err(control
-                                .native_source_preparation_error(binding)
-                                .unwrap_or_else(|| "vst3 latency reactivation refused".into()));
+                        Err("native reactivation output is closing") => {
+                            return Err("native reactivation output is closing".into());
                         }
-                        Err(reason) => return Err(reason.into()),
+                        Ok(None) | Err(_) => {
+                            let reason = control
+                                .native_source_preparation_error(binding)
+                                .unwrap_or_else(|| "vst3 latency reactivation refused".into());
+                            let output_id = restore.source.output_identity;
+                            let device = self.sources[index].device;
+                            self.sources[index].accepted = false;
+                            self.sources[index].retiring = true;
+                            self.sources[index].edit_backlog = false;
+                            if let Some(entries) = self.degraded.mark_degraded(
+                                output_id,
+                                binding,
+                                device,
+                                Some(reason.as_str()),
+                            ) {
+                                self.degraded_changed =
+                                    Some((restore.context.project_generation, output_id, entries));
+                            }
+                            restore.stage = Stage::Renew(index + 1);
+                        }
                     }
                 }
                 Stage::Prepare(index) => {
@@ -286,8 +363,32 @@ impl Plugins {
                         .host
                         .as_ref()
                         .ok_or("qualified vst3 helper unavailable")?;
-                    if advance_source(host, presentation, control, source)?.is_some() {
-                        restore.stage = Stage::Prepare(index + 1);
+                    match advance_source(host, presentation, control, source) {
+                        Ok(Some(_)) => restore.stage = Stage::Prepare(index + 1),
+                        Ok(None) => {}
+                        Err(reason) => {
+                            if control.output_identity() != Some(restore.source.output_identity) {
+                                return Err(reason);
+                            }
+                            // Isolate this single plugin's renewal failure so healthy
+                            // plugins finish restoring cleanly.
+                            let output_id = restore.source.output_identity;
+                            let binding = source.binding;
+                            let device = source.device;
+                            source.accepted = false;
+                            source.retiring = true;
+                            source.edit_backlog = false;
+                            if let Some(entries) = self.degraded.mark_degraded(
+                                output_id,
+                                binding,
+                                device,
+                                Some(reason.as_str()),
+                            ) {
+                                self.degraded_changed =
+                                    Some((restore.context.project_generation, output_id, entries));
+                            }
+                            restore.stage = Stage::Prepare(index + 1);
+                        }
                     }
                 }
                 Stage::Ready => return Ok(true),

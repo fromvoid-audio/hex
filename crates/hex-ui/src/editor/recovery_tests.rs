@@ -509,6 +509,10 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
         v.project_generation = 0;
         v.audio = Some(old_audio);
         if edit != EditFixture::InFlightTimeDuplicate {
+            v.audio_status()
+                .unwrap()
+                .render_fault
+                .store(true, std::sync::atomic::Ordering::Release);
             v.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![2]);
         }
         if let Some((_, path)) = &sample {
@@ -2978,6 +2982,10 @@ fn setup_degraded_device_recovery(
         v.project_generation = 0;
         v.document_audio_mode = hex_session::DocumentAudioMode::Resident;
         v.audio = Some(old_audio);
+        v.audio_status()
+            .unwrap()
+            .render_fault
+            .store(true, std::sync::atomic::Ordering::Release);
         v.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![device.value()]);
     });
     (editor, track, device, old_guard, restarted)
@@ -3955,4 +3963,123 @@ fn save_offers_a_committed_copy_without_retrying_a_stranded_pair(app: &mut gpui:
             assert!(!v.saving_project);
         });
     }
+}
+
+#[gpui::test]
+fn single_degraded_vst3_isolates_unrelated_edits_and_stop_from_teardown(
+    cx: &mut gpui::TestAppContext,
+) {
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let (editor, track, device, old_guard, restarted) = setup_degraded_device_recovery(cx);
+    let healthy_vst3_id = device.value().saturating_add(10);
+    let faulted_vst3_id = device.value().saturating_add(20);
+    editor.update(cx, |v, _| {
+        // Clear the output-level render fault so ONLY a single VST3 plugin is degraded.
+        let status = v.audio_status().unwrap();
+        status
+            .render_fault
+            .store(false, std::sync::atomic::Ordering::Release);
+        status
+            .device_fault
+            .store(false, std::sync::atomic::Ordering::Release);
+        status
+            .playing
+            .store(true, std::sync::atomic::Ordering::Release);
+        v.plugin_editor_windows = vec![healthy_vst3_id];
+        v.degraded_plugins = crate::editor_backend::DegradedDevices::with_reasons(
+            vec![faulted_vst3_id],
+            vec![(faulted_vst3_id, "vst3 helper exited".into())],
+        );
+
+        let tracks = hex_project::TrackSelectionIds::new(&[track]).unwrap();
+        let unrelated_requests = [
+            Request::Edit(Command::ToggleMute(track)),
+            Request::Edit(Command::ToggleSolo {
+                track,
+                exclusive: false,
+            }),
+            Request::Edit(Command::ToggleSoloTracks {
+                tracks: tracks.clone(),
+                exclusive: false,
+            }),
+            Request::Edit(Command::ToggleTracksMute(tracks)),
+            Request::Edit(Command::Gain { track, gain: 0.75 }),
+            Request::Edit(Command::Balance {
+                track,
+                balance: -0.25,
+            }),
+            Request::Edit(Command::LoopRegion {
+                start: 0,
+                length: 48_000,
+                enabled: true,
+            }),
+            Request::Edit(Command::AddTrack {
+                name: "other".into(),
+            }),
+            Request::Edit(Command::InsertDevice {
+                track,
+                before: None,
+                state: hex_engine::default_native_device_state(
+                    hex_engine::DeviceTypeId::from_static("hex.utility"),
+                )
+                .unwrap(),
+            }),
+            Request::Undo,
+            Request::Redo,
+        ];
+        for request in &unrelated_requests {
+            assert_eq!(
+                v.recoverable_graph_edit(request),
+                None,
+                "single degraded VST3 must not trigger full-engine recovery for {request:?}"
+            );
+        }
+
+        // Submitting unrelated edits (ToggleMute, ToggleSolo, Gain, AddTrack, Undo, Redo)
+        // must NOT trigger recover_audio(), stop playback, or close healthy VST3 editors.
+        let identity = v.audio.as_ref().unwrap().control.output_identity();
+        assert!(v.enqueue(Request::Edit(Command::ToggleMute(track))));
+        let muted = next_service_event(&v.service);
+        v.receive(muted);
+        assert!(v.enqueue(Request::Edit(Command::ToggleSolo {
+            track,
+            exclusive: false,
+        })));
+        let soloed = next_service_event(&v.service);
+        v.receive(soloed);
+        assert!(v.enqueue(Request::Edit(Command::Gain { track, gain: 0.5 })));
+        let gained = next_service_event(&v.service);
+        v.receive(gained);
+        assert!(v.enqueue(Request::Undo));
+        let undone = next_service_event(&v.service);
+        v.receive(undone);
+        assert!(v.enqueue(Request::Redo));
+        let redone = next_service_event(&v.service);
+        v.receive(redone);
+
+        assert!(v.recovery.generation().is_none());
+        assert!(v.pending_restart_request.is_none());
+        assert_eq!(
+            v.audio.as_ref().unwrap().control.output_identity(),
+            identity
+        );
+        assert!(v.audio_status().unwrap().playing.load(Acquire));
+        assert_eq!(v.plugin_editor_windows, vec![healthy_vst3_id]);
+        assert!(
+            restarted.try_recv().is_err(),
+            "no audio restart must be requested for unrelated edits"
+        );
+
+        // Pressing Stop with a single degraded VST3 uses RestoreStoppedPlayback
+        // rather than tearing down the audio output.
+        v.stop_transport(true);
+        assert!(v.recovery.generation().is_none());
+        assert!(v.pending_restart_request.is_none());
+        assert!(
+            restarted.try_recv().is_err(),
+            "Stop with a single degraded VST3 must not trigger full audio restart"
+        );
+        v.audio = None;
+    });
+    drop(old_guard);
 }

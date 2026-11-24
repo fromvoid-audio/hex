@@ -258,7 +258,7 @@ pub(crate) struct Plugins {
     edit: Option<AudioSourceContext>,
     pub(crate) catalog: Option<std::path::PathBuf>,
     degraded: degraded::DegradedReport<Binding>,
-    degraded_changed: Option<(u64, u64, Vec<u64>)>,
+    degraded_changed: Option<(u64, u64, Vec<(u64, String)>)>,
     diagnostics: Option<hex_diagnostics::DiagnosticsHandle>,
     parameter_poll: parameter_touches::PollSchedule,
     retiring_poll: usize,
@@ -381,9 +381,55 @@ impl Plugins {
         self.installed_removals_checked = None;
         self.pool_held = false;
     }
-    /// The newest changed degraded vst3 device set, project generation and output, once.
-    pub fn take_degraded_change(&mut self) -> Option<(u64, u64, Vec<u64>)> {
+    /// The newest changed degraded vst3 device set (with lowercase failure reasons),
+    /// project generation and output, once.
+    pub fn take_degraded_change(&mut self) -> Option<(u64, u64, Vec<(u64, String)>)> {
         self.degraded_changed.take()
+    }
+
+    pub(super) fn is_binding_degraded_on_control(
+        &self,
+        control: &hex_audio::prepared::PublicationControl,
+        binding: Binding,
+    ) -> bool {
+        control
+            .output_identity()
+            .is_some_and(|output| self.degraded.is_binding_degraded(output, binding))
+            || control.native_source_endpoint_status(binding) == Some((true, false))
+    }
+
+    pub(super) fn is_device_degraded_on_control(
+        &self,
+        control: &hex_audio::prepared::PublicationControl,
+        project_generation: u64,
+        device: u64,
+    ) -> bool {
+        if control
+            .output_identity()
+            .is_some_and(|output| self.degraded.is_device_degraded(output, device))
+        {
+            return true;
+        }
+        self.sources.iter().any(|source| {
+            source.project_generation == project_generation
+                && source.device == device
+                && source.accepted
+                && !source.retiring
+                && control.native_source_endpoint_status(source.binding) == Some((true, false))
+        })
+    }
+
+    pub(super) fn note_degraded_source(
+        &mut self,
+        generation: u64,
+        output: u64,
+        binding: Binding,
+        device: u64,
+        reason: Option<&str>,
+    ) {
+        if let Some(entries) = self.degraded.mark_degraded(output, binding, device, reason) {
+            self.degraded_changed = Some((generation, output, entries));
+        }
     }
     pub fn output_closed(&mut self) {
         self.power_off = None;
@@ -977,6 +1023,19 @@ impl Plugins {
             && let Some(context) = context
         {
             let generation = context.project_generation;
+            let active_devices: Option<Vec<u64>> = desired
+                .filter(|snapshot| snapshot.context().project_generation == generation)
+                .map(|snapshot| {
+                    let prep = snapshot.effect_preparation();
+                    let mut active = Vec::new();
+                    let _ = prep.visit_plugin_devices(|_, id, _| {
+                        if prep.plugin_device_bypassed(id) == Some(false) {
+                            active.push(id);
+                        }
+                        Ok(())
+                    });
+                    active
+                });
             let endpoints = self
                 .sources
                 .iter_mut()
@@ -1012,17 +1071,11 @@ impl Plugins {
                             ),
                         );
                     }
+                    let mut failure_diagnostic = None;
                     if status == Some((true, false)) {
                         source.edit_backlog = false;
-                    }
-                    if status == Some((true, false)) {
-                        #[cfg(all(test, feature = "allocation-probe"))]
-                        let observe_failure = self.failure_observation.is_some();
-                        #[cfg(not(all(test, feature = "allocation-probe")))]
-                        let observe_failure = false;
-                        if (self.diagnostics.is_some() || observe_failure)
-                            && let Some(diagnostic) =
-                                control.take_native_source_failure_diagnostic(source.binding)
+                        if let Some(diagnostic) =
+                            control.take_native_source_failure_diagnostic(source.binding)
                         {
                             #[cfg(all(test, feature = "allocation-probe"))]
                             if let Some(observation) = &self.failure_observation
@@ -1040,12 +1093,16 @@ impl Plugins {
                                     ),
                                 );
                             }
+                            failure_diagnostic = Some(diagnostic);
                         }
                     }
-                    (source.binding, source.device, status)
+                    (source.binding, source.device, status, failure_diagnostic)
                 });
-            if let Some(devices) = self.degraded.observe(output, endpoints) {
-                self.degraded_changed = Some((generation, output, devices));
+            if let Some(entries) =
+                self.degraded
+                    .observe(output, endpoints, active_devices.as_deref())
+            {
+                self.degraded_changed = Some((generation, output, entries));
             }
         }
         #[cfg(all(test, feature = "allocation-probe"))]
@@ -1399,15 +1456,19 @@ impl Plugins {
         let previous = desired
             .filter(|_| fresh_hosted_sources)
             .map(CanonicalAudioSourceSnapshot::effect_preparation);
+        let reload_device = input.reload_plugin_device();
         input.visit_plugin_devices(|destination, device, state| {
             // History may carry the identity and state of a deleted device.
             // The predecessor's membership decides whether DSP can survive.
-            let powering_on = power_on.is_some_and(|identity| {
-                identity.owner() == destination.owner() && identity.device_id() == device
-            });
-            let fresh_source = previous
-                .as_ref()
-                .is_some_and(|source| source.plugin_device_bypassed(device).is_none());
+            let reloading = reload_device == Some(device);
+            let powering_on = reloading
+                || power_on.is_some_and(|identity| {
+                    identity.owner() == destination.owner() && identity.device_id() == device
+                });
+            let fresh_source = reloading
+                || previous
+                    .as_ref()
+                    .is_some_and(|source| source.plugin_device_bypassed(device).is_none());
             self.prepare_edit_source(
                 output.as_deref_mut().ok_or("native output closed")?,
                 input,
@@ -1607,13 +1668,18 @@ impl Plugins {
                 bindings.push(binding);
                 return Ok(());
             }
-            let (has_control, source) = match output
+            let (has_control, degraded_device, source) = match output
                 .as_deref_mut()
                 .and_then(|output| output.publication.control())
             {
-                Some(control) => (
-                    true,
-                    self.matching_edit_source(
+                Some(control) => {
+                    let degraded = input.reload_plugin_device() != Some(device)
+                        && self.is_device_degraded_on_control(
+                            control,
+                            context.project_generation,
+                            device,
+                        );
+                    let matched = self.matching_edit_source(
                         control,
                         &input,
                         destination,
@@ -1621,9 +1687,10 @@ impl Plugins {
                         state,
                         desired,
                         cancellation,
-                    )?,
-                ),
-                None => (false, None),
+                    )?;
+                    (true, degraded, matched)
+                }
+                None => (false, false, None),
             };
             if let Some(binding) = source {
                 bindings.push(binding);
@@ -1632,25 +1699,30 @@ impl Plugins {
             let previous_bypassed = desired
                 .filter(|source| source.context().project_generation == context.project_generation)
                 .and_then(|source| source.effect_preparation().plugin_device_bypassed(device));
-            if self.refuse_unavailable_fallback(
-                has_control,
-                context,
-                owner,
-                device,
-                input.preparing_edit(),
-                input.plugin_device_bypassed(device),
-                previously_powered_off,
-                previous_bypassed,
-            ) {
+            if !degraded_device
+                && self.refuse_unavailable_fallback(
+                    has_control,
+                    context,
+                    owner,
+                    device,
+                    input.preparing_edit(),
+                    input.plugin_device_bypassed(device),
+                    previously_powered_off,
+                    previous_bypassed,
+                )
+            {
                 return Err("original vst3 source unavailable for this device".into());
             }
             // A staged document can preserve unresolved state, as can later
-            // edits retaining that same canonical device. This is never an
-            // admission path for a new unsupported same-document effect edit.
-            let mut preserved = desired.is_some_and(|source| {
-                source.context().project_generation.checked_add(1)
-                    == Some(context.project_generation)
-            });
+            // edits retaining that same canonical device. A degraded device also
+            // falls back to an isolated pass-through placeholder on unrelated
+            // edits until explicitly reloaded. This is never an admission path
+            // for a new unsupported same-document effect edit.
+            let mut preserved = degraded_device
+                || desired.is_some_and(|source| {
+                    source.context().project_generation.checked_add(1)
+                        == Some(context.project_generation)
+                });
             if let Some(source) = desired
                 .filter(|source| source.context().project_generation == context.project_generation)
             {

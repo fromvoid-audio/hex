@@ -1643,6 +1643,12 @@ pub(super) fn request(value: &Request) -> Description {
         } => {
             describe!("toggle_plugin_editor"; ["project_generation" => project_generation, "device" => device.value()]; omitted="")
         }
+        Request::ReloadPlugin {
+            project_generation,
+            device,
+        } => {
+            describe!("reload_plugin"; ["project_generation" => project_generation, "device" => device.value()]; omitted="")
+        }
         Request::ContinuePluginEditor => describe!("continue_plugin_editor"; []; omitted=""),
         Request::QueryPluginParameters(query) => {
             describe!("query_plugin_parameters"; ["device" => query.device.value(), "request_id" => query.request_id]; omitted="")

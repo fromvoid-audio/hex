@@ -1042,7 +1042,7 @@ pub(in crate::editor) fn vst3_status_body(
 ) -> Stateful<Div> {
     let device_id = device.id();
     if view.degraded_plugins.contains(device_id.value()) {
-        return vst3_degraded_body(device_id);
+        return vst3_degraded_body(view, device_id, cx);
     }
     let availability = audible_vst3_processor(view, device_id);
     let parameters = match availability {
@@ -1086,24 +1086,55 @@ pub(in crate::editor) fn vst3_status_body(
 }
 
 /// A vst3 endpoint that faulted renders as an aligned pass-through while the
-/// other devices keep processing (#3977). Shows the shared unsupported-body
-/// display with an explanatory tooltip.
-pub(in crate::editor) fn vst3_degraded_body(device_id: DeviceId) -> Stateful<Div> {
+/// other devices keep processing (#3977, #13237). Displays the actual failure
+/// reason and an actionable per-device reload control without disturbing
+/// healthy plugins.
+pub(in crate::editor) fn vst3_degraded_body(
+    view: &EditorView,
+    device_id: DeviceId,
+    cx: &mut Context<EditorView>,
+) -> Stateful<Div> {
     let selector = format!("device-vst3-degraded-{}", device_id.value());
-    let content = crate::device_composition::unsupported_body(theme::text(
-        "vst3 stopped responding · audio passes through",
-    ))
-    .id(ElementId::Name(selector.clone().into()))
-    .debug_selector(move || selector.clone())
-    .tooltip(|_, cx| {
-        cx.new(|_| crate::editor::transport::MiniTooltip {
-            kind: crate::tooltips::Kind::Help,
-            description: theme::text(
-                "the plugin missed its audio deadline · it is bypassed with its latency kept, and other devices keep playing",
-            ),
-        })
-        .into()
-    });
+    let reason = view
+        .degraded_plugins
+        .reason(device_id.value())
+        .unwrap_or(crate::editor_backend::DEFAULT_DEGRADED_PLUGIN_REASON)
+        .to_owned();
+    let reloading = view.reloading_plugins.contains(&device_id);
+    let selected = view.device_panel.is_selected(device_id);
+    let reload_button = actions::segment_button(
+        format!("device-vst3-reload-{}", device_id.value()),
+        if reloading {
+            "reloading plugin..."
+        } else {
+            "reload plugin"
+        },
+        "restart only this vst3 plugin from its last saved state",
+        if reloading {
+            theme::DeviceActionRole::Enabled
+        } else {
+            theme::DeviceActionRole::Normal
+        },
+        selected,
+    )
+    .on_click(cx.listener(move |view, _, _, cx| {
+        view.reload_plugin_device(device_id, cx);
+    }));
+    let tooltip_reason = reason.clone();
+    let summary = format!("{reason} · audio passes through");
+    let content = crate::device_composition::degraded_body(theme::text(summary), reload_button)
+        .id(ElementId::Name(selector.clone().into()))
+        .debug_selector(move || selector.clone())
+        .tooltip(move |_, cx| {
+            let description = theme::text(format!(
+                "{tooltip_reason} · bypassed while other devices keep playing"
+            ));
+            cx.new(|_| crate::editor::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Help,
+                description,
+            })
+            .into()
+        });
     div()
         .child(content)
         .id(ElementId::Name(
