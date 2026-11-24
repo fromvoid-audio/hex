@@ -252,14 +252,32 @@ mod tests {
             .unwrap();
         assert!(stage(&mut compound, false, true).unwrap().is_none());
 
-        let mut extra_row = Editor::new(original, 8).unwrap();
+        let mut extra_row = Editor::new(original.clone(), 8).unwrap();
         extra_row
             .execute(Command::AddTrack {
                 name: "third".into(),
             })
             .unwrap();
+        let before_move = extra_row.project().clone();
         extra_row.execute(command()).unwrap();
-        assert!(stage(&mut extra_row, false, true).unwrap().is_none());
+        let after_move = extra_row.project().clone();
+        for (redo, expected) in [(false, before_move), (true, after_move)] {
+            let staged = stage(&mut extra_row, redo, true).unwrap().unwrap();
+            extra_row.commit_staged_history(staged.edge).unwrap();
+            assert_eq!(extra_row.project(), &expected);
+        }
+
+        let mut populated_row = Editor::new(original, 8).unwrap();
+        populated_row
+            .execute(Command::ImportAudioTrack {
+                name: "third".into(),
+                path: "memory/third.wav".into(),
+                sample_rate: 48_000,
+                frames: 4096,
+            })
+            .unwrap();
+        populated_row.execute(command()).unwrap();
+        assert!(stage(&mut populated_row, false, true).unwrap().is_none());
     }
 
     #[test]
