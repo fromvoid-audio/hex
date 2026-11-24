@@ -5,7 +5,8 @@
 //! # Dependencies
 //! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json, sha2 and fs2, plus
 //! libc errno/flags, rustix's safe exclusive rename for create-new publication and its safe
-//! xattr calls to keep a replaced project's extended attributes.
+//! xattr calls to keep a replaced project's extended attributes, and same-file on Windows
+//! for hardlink/alias file identity checks.
 //!
 //! # Does not own
 //! Does not decode PCM, construct DSP, access callback state or silently convert unsupported
@@ -35,8 +36,8 @@ mod schema;
 mod temporaries;
 pub use extended_attributes::MetadataWarning;
 pub use files::{
-    FileToken, SaveNewOutcome, load, load_with_token, save_new, save_new_with_outcome,
-    save_new_with_token,
+    FileToken, SaveNewOutcome, load, load_with_token, same_existing_file, save_new,
+    save_new_with_outcome, save_new_with_token,
 };
 use hex_project::Project;
 pub use replacement::{
