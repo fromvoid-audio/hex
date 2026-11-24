@@ -181,7 +181,6 @@ impl SessionPlayback {
                 .is_some_and(|runtime| runtime.graph.needs_upstream_frame_routing());
             if upstream_frame_routing
                 && resident_source_index == resident_source_end
-                && live_audio.is_none()
                 && scalar.is_none()
             {
                 let mut block_count = (output.len() - output_offset).min(256);
@@ -211,7 +210,7 @@ impl SessionPlayback {
                         output_offset,
                         observer,
                         capture,
-                        sources,
+                        inputs,
                         foreign,
                     )?;
                     let chunk = u64::try_from(block_count)
