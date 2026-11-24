@@ -125,6 +125,11 @@ fn load_arrangement(
     for clip in project.tracks().iter().flat_map(|track| track.clips()) {
         referenced_assets.extend(clip.referenced_assets());
     }
+    for cell in project.session_cells() {
+        if let hex_project::SessionCellContent::Audio(clip) = cell.content() {
+            referenced_assets.insert(clip.asset());
+        }
+    }
 
     let project_dir = project_base_dir(input);
     let mut media_bank: BTreeMap<_, Audio> = BTreeMap::new();
