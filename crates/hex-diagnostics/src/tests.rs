@@ -377,3 +377,39 @@ fn stalled_startup_returns_failure_and_closes_admission_without_waiting_for_disk
     resume.send(()).unwrap();
     ended_rx.recv_timeout(Duration::from_secs(2)).unwrap();
 }
+
+#[test]
+fn default_directory_prefers_nonempty_home_and_uses_userprofile_on_windows() {
+    use std::ffi::OsString;
+    let explicit = default_directory_from(
+        Some(OsString::from("/explicit-home")),
+        Some(OsString::from("C:\\Users\\profile")),
+    )
+    .unwrap();
+    assert!(explicit.starts_with("/explicit-home"));
+    assert!(default_directory_from(None, None).is_err());
+    assert!(default_directory_from(Some(OsString::new()), Some(OsString::new())).is_err());
+
+    let from_profile = default_directory_from(
+        Some(OsString::new()),
+        Some(OsString::from("C:\\Users\\hex")),
+    );
+    if cfg!(windows) {
+        let path = from_profile.unwrap();
+        assert_eq!(
+            path,
+            PathBuf::from("C:\\Users\\hex")
+                .join(".local")
+                .join("state")
+                .join("hex")
+                .join("logs")
+        );
+        if env::var_os("USERPROFILE").is_some_and(|value| !value.is_empty()) {
+            let live = default_directory().expect("windows user profile resolves log directory");
+            assert!(live.ends_with("logs"));
+        }
+    } else {
+        assert!(from_profile.is_err());
+        assert!(default_directory_from(None, Some(OsString::from("C:\\Users\\hex"))).is_err());
+    }
+}
