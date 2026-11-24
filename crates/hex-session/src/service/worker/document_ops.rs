@@ -16,15 +16,7 @@ pub(crate) struct SaveCurrentCommit {
 /// Save As onto the open document would skip Save's format-upgrade and
 /// older-reader consent checks, so it is refused; Save owns that replacement.
 pub(crate) fn is_open_document(document: &DocumentHandle, destination: &Path) -> bool {
-    document.path == destination
-        || same_existing_file(&document.path, destination)
-        || matches!(
-            (
-                std::fs::canonicalize(&document.path),
-                std::fs::canonicalize(destination),
-            ),
-            (Ok(open), Ok(chosen)) if open == chosen
-        )
+    document.path == destination || same_existing_file(&document.path, destination)
 }
 
 /// Save As: create `path`, or replace it when it already exists. The UI only
