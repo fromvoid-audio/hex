@@ -562,6 +562,7 @@ pub fn quiesce(config: &Configuration, sequence: u64) -> Result<[u8; 64]> {
 
 /// Stopped restoration discards the old graph's instrument gates. The helper
 /// releases its accepted notes without extending the acknowledged PCM prefix.
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 pub(crate) fn quiesce_for_stopped_restore(
     config: &Configuration,
     sequence: u64,

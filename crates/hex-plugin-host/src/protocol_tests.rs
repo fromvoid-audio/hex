@@ -1640,6 +1640,7 @@ fn live_capture_reply_separates_refusal_from_terminal_frames() {
     ));
 }
 
+#[cfg(unix)]
 #[test]
 fn refusal_frame_reads_through_the_channel_and_keeps_its_successor() {
     use crate::channel::{Channel, Packet, end_after};

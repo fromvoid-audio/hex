@@ -32,9 +32,11 @@
 //! independent disposal polling. Synchronous convenience APIs join before
 //! returning an error; neither path grants graph/callback retirement authority.
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 macro_rules! include_vst3_sdk_tests {
     ($($item:item)*) => {};
 }
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) use include_vst3_sdk_tests;
 
 #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(test, unix)))]
