@@ -144,10 +144,7 @@ impl Drag {
     }
 }
 
-#[cfg(any(
-    all(test, feature = "ui-unit-tier"),
-    all(test, not(feature = "ui-test-support"))
-))]
+#[cfg(all(test, any(feature = "ui-unit-tier", not(feature = "ui-test-support"))))]
 mod tests {
     use super::*;
 
