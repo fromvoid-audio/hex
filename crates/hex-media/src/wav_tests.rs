@@ -572,3 +572,81 @@ fn cancellable_file_decode_matches_plain_decode_and_stops_when_cancelled() {
     ));
     std::fs::remove_file(&path).expect("remove fixture");
 }
+
+#[test]
+fn strict_truncated_decode_preserves_validation_limits_cancellation_and_recovery() {
+    // 1. Truncated float32 with a NaN sample in the readable prefix must still fail
+    //    validation rather than offering recovery.
+    let mut float_data = Vec::new();
+    float_data.extend_from_slice(&0.25_f32.to_le_bytes());
+    float_data.extend_from_slice(&f32::NAN.to_le_bytes());
+    float_data.extend_from_slice(&0.5_f32.to_le_bytes());
+    let mut float_wav = wave(&format(3, 1, 32), &float_data, None);
+    float_wav.truncate(float_wav.len() - 4);
+    assert!(matches!(
+        decode_wav(&float_wav, Limits::new(float_wav.len(), 16)),
+        Err(ImportError::Invalid("float samples must be finite"))
+    ));
+
+    // 2. Truncated ADPCM continues to be refused directly as invalid.
+    let valid_block = [0_u8, 0, 0, 0, 0x11, 0x11, 0x11, 0x11];
+    let mut truncated_adpcm = wave(
+        &adpcm_format(17, 1, 8, 9),
+        &[valid_block, valid_block].concat(),
+        None,
+    );
+    truncated_adpcm.truncate(truncated_adpcm.len() - 8);
+    assert!(matches!(
+        decode_wav(&truncated_adpcm, Limits::new(truncated_adpcm.len(), 32)),
+        Err(ImportError::Invalid(
+            "data chunk is empty or not frame-aligned"
+        ))
+    ));
+
+    // 3. Large truncated mono PCM16 reports exact readable frames and missing bytes.
+    let readable_frames = 2_000_000_usize;
+    let mut large_data = vec![0_u8; (readable_frames + 1) * 2];
+    large_data[0..2].copy_from_slice(&16_384_i16.to_le_bytes());
+    let mut large_truncated = wave(&format(1, 1, 16), &large_data, None);
+    large_truncated.truncate(large_truncated.len() - 2);
+    assert!(matches!(
+        decode_wav(
+            &large_truncated,
+            Limits::new(large_truncated.len(), readable_frames)
+        ),
+        Err(ImportError::Truncated(WavTruncation {
+            readable_frames: 2_000_000,
+            missing_bytes: 2,
+            partial_frame_bytes: 0,
+        }))
+    ));
+
+    // 3. Limits and cancellation still trigger before truncation reporting.
+    let pcm = pcm16(&[1000, -1000, 2000, -2000, 3000]);
+    let mut truncated_pcm = wave(&format(1, 1, 16), &pcm, None);
+    truncated_pcm.truncate(truncated_pcm.len() - 2);
+    assert!(matches!(
+        decode_wav(&truncated_pcm, Limits::new(truncated_pcm.len(), 3)),
+        Err(ImportError::LimitExceeded("decoded frames"))
+    ));
+    assert!(matches!(
+        crate::wav::decode(&truncated_pcm, 16, &AtomicBool::new(true)),
+        Err(ImportError::Cancelled)
+    ));
+    assert_eq!(
+        recover(&truncated_pcm).expect("explicit recovery"),
+        (
+            vec![
+                [1000.0 / 32768.0; 2],
+                [-1000.0 / 32768.0; 2],
+                [2000.0 / 32768.0; 2],
+                [-2000.0 / 32768.0; 2],
+            ],
+            Some(WavTruncation {
+                readable_frames: 4,
+                missing_bytes: 2,
+                partial_frame_bytes: 0,
+            }),
+        )
+    );
+}

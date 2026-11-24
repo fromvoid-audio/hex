@@ -382,15 +382,40 @@ fn scan_recoverable<R: Read + Seek>(
     ))
 }
 
-/// Decodes a complete resident WAV. Truncated or partial-frame data is refused.
+struct PreparedDecode<'a> {
+    layout: Layout,
+    truncation: Option<WavTruncation>,
+    data: &'a [u8],
+    frame_count: usize,
+}
+
+/// Decodes a complete resident WAV. Truncated or partial-frame data is refused
+/// without allocating the full stereo output buffer.
 pub(super) fn decode(
     bytes: &[u8],
     max_frames: usize,
     cancel: &AtomicBool,
 ) -> Result<(Audio, u32, usize), ImportError> {
-    match decode_recoverable(bytes, max_frames, cancel)? {
-        (decoded, None) => Ok(decoded),
-        (_, Some(truncation)) => Err(ImportError::Truncated(truncation)),
+    let prepared = prepare_decode(bytes, max_frames, cancel)?;
+    if let Some(truncation) = prepared.truncation {
+        // scan_recoverable already refuses truncated block-compressed (ADPCM) inputs.
+        validate_samples(prepared.data, prepared.layout.format, cancel)?;
+        return Err(ImportError::Truncated(truncation));
+    }
+    if prepared.layout.format.samples_per_block != 0 {
+        crate::adpcm::decode(
+            prepared.data,
+            prepared.layout.format,
+            prepared.frame_count,
+            cancel,
+        )
+    } else {
+        decode_samples(
+            prepared.data,
+            prepared.layout.format,
+            prepared.frame_count,
+            cancel,
+        )
     }
 }
 
@@ -401,6 +426,30 @@ pub(super) fn decode_recoverable(
     max_frames: usize,
     cancel: &AtomicBool,
 ) -> Result<(Decoded, Option<WavTruncation>), ImportError> {
+    let prepared = prepare_decode(bytes, max_frames, cancel)?;
+    let decoded = if prepared.layout.format.samples_per_block != 0 {
+        crate::adpcm::decode(
+            prepared.data,
+            prepared.layout.format,
+            prepared.frame_count,
+            cancel,
+        )?
+    } else {
+        decode_samples(
+            prepared.data,
+            prepared.layout.format,
+            prepared.frame_count,
+            cancel,
+        )?
+    };
+    Ok((decoded, prepared.truncation))
+}
+
+fn prepare_decode<'a>(
+    bytes: &'a [u8],
+    max_frames: usize,
+    cancel: &AtomicBool,
+) -> Result<PreparedDecode<'a>, ImportError> {
     let mut cursor = Cursor::new(bytes);
     let (layout, truncation) = scan_recoverable(&mut cursor, bytes.len() as u64, usize::MAX)?;
     let frame_count =
@@ -420,12 +469,38 @@ pub(super) fn decode_recoverable(
         .get(start..end)
         .ok_or(ImportError::Invalid("data chunk exceeds input"))?;
     crate::cancelled(cancel)?;
-    let decoded = if layout.format.samples_per_block != 0 {
-        crate::adpcm::decode(data, layout.format, frame_count, cancel)?
-    } else {
-        decode_samples(data, layout.format, frame_count, cancel)?
-    };
-    Ok((decoded, truncation))
+    Ok(PreparedDecode {
+        layout,
+        truncation,
+        data,
+        frame_count,
+    })
+}
+
+/// Validates sample encoding, finiteness, and cooperative cancellation across
+/// `data` without allocating a decoded frame buffer.
+fn validate_samples(data: &[u8], format: Format, cancel: &AtomicBool) -> Result<(), ImportError> {
+    let chunk_bytes = format
+        .block_align
+        .saturating_mul(crate::CANCEL_CHECK_FRAMES);
+    let needs_per_frame_check = !matches!(
+        (format.encoding, format.bits_per_sample),
+        (1, 8 | 16 | 24 | 32) | (6 | 7, 8)
+    );
+    for chunk in data.chunks(chunk_bytes.max(1)) {
+        crate::cancelled(cancel)?;
+        if needs_per_frame_check {
+            for frame in chunk.chunks_exact(format.block_align) {
+                let decoded = decode_frame(frame, format)?;
+                if !decoded[0].is_finite() || !decoded[1].is_finite() {
+                    return Err(ImportError::Invalid(
+                        "decoded samples are not valid finite audio",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn decode_samples(
