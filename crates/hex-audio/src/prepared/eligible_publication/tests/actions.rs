@@ -1681,6 +1681,7 @@ fn prewarm_pool_pressure(abandon: bool) {
     assert!(control.status.performance_frame.load(Acquire) < 4096);
     let mut crossed = false;
     let mut pressure_observed = false;
+    let mut previous = [0.0; 2];
     while control.status.performance_frame.load(Acquire) < due {
         let before = control.status.performance_frame.load(Acquire);
         let count = usize::try_from((due - before).min(1024)).unwrap();
@@ -1690,6 +1691,7 @@ fn prewarm_pool_pressure(abandon: bool) {
                 c.render(&mut output[..count]).unwrap();
             })
         }));
+        previous = output[count - 1];
         if control.status.stream_buffering.load(Acquire)
             && control.status.performance_frame.load(Acquire) < due
         {
@@ -1726,8 +1728,10 @@ fn prewarm_pool_pressure(abandon: bool) {
     }));
     assert_eq!(control.status.performance_frame.load(Acquire), due);
     assert_eq!(control.status.stream_activated_command.load(Acquire), 0);
-    assert_eq!(output[..8], [[0.0; 2]; 8]);
+    assert_page_fade(&output[..8], previous, [0.0; 2], 0);
+    let mut held_frames = 8;
     loop {
+        let held_endpoint = output[7];
         zero(allocation_counter::measure(|| {
             data.owner_mut().unwrap().run(|c, _| {
                 c.begin_block();
@@ -1735,14 +1739,15 @@ fn prewarm_pool_pressure(abandon: bool) {
             })
         }));
         if control.status.stream_activated_command.load(Acquire) == launch {
+            assert_page_fade(&output[..8], held_endpoint, [0.75; 2], 0);
             break;
         }
         assert_eq!(control.status.performance_frame.load(Acquire), due);
-        assert_eq!(output[..8], [[0.0; 2]; 8]);
+        assert_page_fade(&output[..8], previous, [0.0; 2], held_frames);
+        held_frames += 8;
         assert!(std::time::Instant::now() < deadline);
         std::thread::yield_now();
     }
-    assert_eq!(output[..8], [[0.75; 2]; 8]);
     assert_eq!(control.status.performance_frame.load(Acquire), due + 8);
     assert_eq!(control.status.applied_revision.load(Acquire), 1);
     data.owner_mut().unwrap().run(|c, _| {

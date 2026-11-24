@@ -1489,6 +1489,7 @@ fn changed_source_during_playback_reports_fault_and_preserves_committed_audio() 
         assert_eq!(output, [[0.25; 2]; 256]);
         assert!(std::time::Instant::now() < deadline);
     }
+    let mut held_frames = 0;
     while !control.status.stream_readiness_refused.load(Acquire) {
         let measured = allocation_counter::measure(|| {
             data.owner_mut().unwrap().run(|c, _| {
@@ -1505,7 +1506,8 @@ fn changed_source_during_playback_reports_fault_and_preserves_committed_audio() 
             ),
             (0, 0, 0, 0)
         );
-        assert_eq!(output, [[0.0; 2]; 256]);
+        assert_page_fade(&output, [0.25; 2], [0.0; 2], held_frames);
+        held_frames += output.len();
         assert_eq!(control.status.position.load(Acquire), 4096);
         assert!(std::time::Instant::now() < deadline);
         std::thread::yield_now();

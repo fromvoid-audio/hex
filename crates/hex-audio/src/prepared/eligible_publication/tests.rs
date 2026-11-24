@@ -97,6 +97,28 @@ fn usage_observation_waits_out_lifecycle_bank_contention() {
     drop(control);
     finish(&mut retirement);
 }
+/// Compare the stereo output bridge while the page clock is held or resumes.
+#[cfg(feature = "allocation-probe")]
+fn assert_page_fade(
+    frames: &[hex_engine::Frame],
+    origin: hex_engine::Frame,
+    target: hex_engine::Frame,
+    elapsed: usize,
+) {
+    for (offset, frame) in frames.iter().enumerate() {
+        let gain = ((elapsed + offset + 1).min(64) as f32) / 64.0;
+        for channel in 0..2 {
+            let expected = origin[channel] * (1.0 - gain) + target[channel] * gain;
+            assert!(
+                (frame[channel] - expected).abs() < 1e-6,
+                "page fade frame {} channel {channel}: {} vs {expected}",
+                elapsed + offset,
+                frame[channel]
+            );
+        }
+    }
+}
+
 fn reservation(
     owner: &mut hex_engine::AudioCandidateOwner,
 ) -> crate::AudioCandidatePublicationReservation {
