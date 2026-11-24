@@ -681,7 +681,9 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                 .ok_or(SessionError::Invalid("native worker unavailable"))
                 .and_then(|sink| {
                     if resident_audio::device_insert::should_stage_resident_graph_edit(
-                        &command, sink,
+                        ctx.worker.session.project(),
+                        &command,
+                        sink,
                     ) || resident_audio::device_insert::stages_main_power_off(
                         ctx.worker.session.project(),
                         &command,
@@ -767,25 +769,17 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                 ctx.worker.events.record_track_switch_phases(phases);
             }
             match result {
-                Ok(None) if ctx.worker.pending_device_insert.is_some() => {
-                    ctx.outcome.request_complete = false;
-                    ctx.outcome.status = Some(
-                        if ctx
-                            .worker
-                            .pending_device_insert
-                            .as_ref()
-                            .is_some_and(|pending| {
-                                pending.operation.device() == Some(GraphEditOperation::MoveTrack)
-                            })
-                        {
-                            "track move pending · waiting for audio"
-                        } else {
-                            "device edit pending · waiting for audio"
-                        }
-                        .into(),
-                    );
+                Ok(None) => {
+                    if let Some(pending) = &ctx.worker.pending_device_insert {
+                        ctx.outcome.request_complete = false;
+                        ctx.outcome.status = Some(format!(
+                            "{} pending · waiting for audio",
+                            pending.operation.edit_name()
+                        ));
+                    } else {
+                        ctx.outcome.status = Some("no change".into());
+                    }
                 }
-                Ok(None) => ctx.outcome.status = Some("no change".into()),
                 Ok(Some((new, snapshot))) => {
                     if ctx.outcome.failed_plugin_adoption {
                         // Device-take VST3 publication returns only after the exact
