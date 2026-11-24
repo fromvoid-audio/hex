@@ -129,8 +129,14 @@ pub(super) fn default_preferences_path() -> Option<PathBuf> {
     preferences_path_for_home(home.as_deref())
 }
 
-fn clamped_panel_width(requested: f32, window_width: f32) -> f32 {
-    geometry::clamped_panel_width(requested, window_width, super::workspace_view::PANEL_GUTTER)
+impl EditorView {
+    fn clamped_browser_width(&self, requested: f32, window_width: f32) -> f32 {
+        geometry::clamped_panel_width(
+            requested,
+            window_width,
+            super::workspace_view::PANEL_GUTTER + self.timeline_leading_buffer_width(),
+        )
+    }
 }
 
 #[path = "browser/geometry.rs"]

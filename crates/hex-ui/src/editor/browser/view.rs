@@ -379,7 +379,8 @@ impl EditorView {
         .track_scroll(self.browser.scroll.clone());
 
         let bounds = window.bounds();
-        let pane_width = clamped_panel_width(self.browser.width, f32::from(bounds.size.width));
+        let pane_width =
+            self.clamped_browser_width(self.browser.width, f32::from(bounds.size.width));
         let mut panel = div()
             .w(px(pane_width))
             .flex_shrink_0()

@@ -512,6 +512,25 @@ fn empty_project_main_header_width_handle_uses_current_window_limit(cx: &mut Tes
     editor.read_with(&visual, |view, _| {
         assert!(view.last_enqueued_edit.is_none())
     });
+    let browser_width = visual
+        .debug_bounds("resize-browser-hit-region")
+        .unwrap()
+        .size
+        .width;
+    editor.update(&mut visual, |view, cx| {
+        view.mode = super::EditorMode::Session;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        visual
+            .debug_bounds("resize-browser-hit-region")
+            .unwrap()
+            .size
+            .width,
+        browser_width + px(super::arrangement::LEADING_BUFFER_WIDTH),
+        "Session retains the browser space used by the Arrangement gutter"
+    );
 }
 
 #[gpui::test]

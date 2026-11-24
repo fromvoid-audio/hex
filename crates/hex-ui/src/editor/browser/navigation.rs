@@ -6,8 +6,8 @@ impl EditorView {
         let content = if !self.browser.open {
             COLLAPSED_WIDTH
         } else {
-            let base =
-                clamped_panel_width(self.browser.width, f32::from(window.bounds().size.width));
+            let base = self
+                .clamped_browser_width(self.browser.width, f32::from(window.bounds().size.width));
             base + self.browser.layout.editor_width(base) + 4.0
         };
         content + 2.0 * hex_widgets::PANEL_FRAME_INSET
