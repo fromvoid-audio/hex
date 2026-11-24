@@ -34,9 +34,10 @@ fn live_zero_tail_devices_bypass_without_a_step_in_the_actual_callback() {
             .as_mut()
             .unwrap()
             .control
-            .command(PlaybackCommand::PlayFrom(0))
+            .command(PlaybackCommand::PlayFrom(4096))
             .unwrap();
-        for _ in 0..16 {
+        let fresh_wet = h.render();
+        for _ in 1..16 {
             h.render();
         }
         let before = h.render();
@@ -78,11 +79,29 @@ fn live_zero_tail_devices_bypass_without_a_step_in_the_actual_callback() {
                 .load(std::sync::atomic::Ordering::Acquire)
                 > first_revision
         );
-        assert!(
-            (resumed[0][0] - dry).abs() < 0.01,
-            "{kind}: resumed {}",
-            resumed[0][0]
-        );
+        assert_zero_latency_restart(&resumed, &fresh_wet, [0.25; 2], 0, kind);
+    }
+}
+
+// These fixtures play constant PCM inside the clip. At 48 kHz, the
+// half-millisecond cold ramp reaches the independent wet render at frame 24.
+fn assert_zero_latency_restart(
+    resumed: &[[f32; 2]; 64],
+    fresh_wet: &[[f32; 2]; 64],
+    dry: [f32; 2],
+    elapsed: usize,
+    kind: &str,
+) {
+    for (index, (actual, fresh)) in resumed.iter().zip(fresh_wet).enumerate() {
+        let mix = (elapsed + index + 1).min(24) as f32 / 24.0;
+        for lane in 0..2 {
+            let expected = dry[lane] + (fresh[lane] - dry[lane]) * mix;
+            assert!(
+                (actual[lane] - expected).abs() < 1e-5,
+                "{kind} frame {index} lane {lane}: {} != {expected}",
+                actual[lane]
+            );
+        }
     }
 }
 
@@ -452,9 +471,10 @@ fn check_filter_bypass(owner: usize, dc: bool, bass: bool, muted: bool, automate
         .as_mut()
         .unwrap()
         .control
-        .command(PlaybackCommand::PlayFrom(0))
+        .command(PlaybackCommand::PlayFrom(4096))
         .unwrap();
-    for _ in 0..16 {
+    let fresh_wet: [_; 5] = std::array::from_fn(|_| h.render());
+    for _ in fresh_wet.len()..16 {
         h.render();
     }
     let smooth = |previous: [f32; 2], frames: &[[f32; 2]]| {
@@ -498,11 +518,12 @@ fn check_filter_bypass(owner: usize, dc: bool, bass: bool, muted: bool, automate
         device,
         false,
     );
-    smooth(previous, &resumed);
+    let dry = [0.25 * factor, -0.125 * factor];
+    assert_zero_latency_restart(&resumed, &fresh_wet[0], dry, 0, "hex.utility");
     previous = resumed[63];
-    for _ in 0..4 {
+    for (block, fresh) in fresh_wet.iter().enumerate().skip(1) {
         let frames = h.render();
-        smooth(previous, &frames);
+        assert_zero_latency_restart(&frames, fresh, dry, block * frames.len(), "hex.utility");
         previous = frames[63];
     }
     assert!(
