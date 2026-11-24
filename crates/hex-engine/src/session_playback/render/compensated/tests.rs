@@ -743,8 +743,11 @@ fn resident_alignment_matches_scalar_automation_capture_seek_and_rollback() {
     }
 }
 
-#[test]
-fn block_compensated_route_matches_scalar_with_sidechain_group_return_and_main_limiter() {
+fn grouped_sidechain_fixture() -> (
+    crate::signal_graph::tests::Fixture,
+    hex_project::TrackId,
+    hex_project::DeviceId,
+) {
     use hex_lattice_contract::DeviceTypeId;
     use hex_project::{Command, Created, TrackSelectionIds};
 
@@ -848,6 +851,12 @@ fn block_compensated_route_matches_scalar_with_sidechain_group_return_and_main_l
         })
         .unwrap();
 
+    (f, group, comp_id)
+}
+
+#[test]
+fn block_compensated_route_matches_scalar_with_sidechain_group_return_and_main_limiter() {
+    let (f, group, _) = grouped_sidechain_fixture();
     let revision = Arc::new(
         PreparedRevision::prepare(
             f.editor.project(),
@@ -1008,5 +1017,85 @@ fn monitored_keyboard_blocks_match_scalar_press_and_release() {
             pcm.map(|frame| frame.map(f32::to_bits))
         };
         assert_eq!(run(false), run(true));
+    }
+}
+
+#[test]
+fn compensated_parameter_gestures_match_scalar_pcm_and_receipts() {
+    use hex_lattice::{NativeTransientOperation, NativeTransientValue};
+    use hex_lattice_contract::{DeviceAutomationTarget, DeviceTypeId, HostGain};
+
+    let (mut f, group, keyed) = grouped_sidechain_fixture();
+    let ret = f.editor.project().return_tracks()[0].id();
+    let hex_project::Created::Device(bus) = f
+        .editor
+        .execute(hex_project::Command::InsertReturnDevice {
+            return_track: ret,
+            before: None,
+            state: crate::default_native_device_state(DeviceTypeId::from_static("hex.utility"))
+                .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("expected a return effect")
+    };
+    let group_effect = f.editor.project().track(group).unwrap().devices()[0].id();
+    let main = f.editor.project().main_devices()[0].id();
+    let gain = HostGain::from_db(-6.0).unwrap();
+    for device in [keyed, group_effect, bus, main] {
+        for (target, value) in [
+            (
+                DeviceAutomationTarget::HostInputGain,
+                NativeTransientValue::HostInputGain(gain),
+            ),
+            (
+                DeviceAutomationTarget::HostOutputGain,
+                NativeTransientValue::HostOutputGain(gain),
+            ),
+        ] {
+            let revision = Arc::new(
+                PreparedRevision::prepare_for_native_parameter_input(
+                    f.editor.project(),
+                    &f.media,
+                    Arc::new(crate::SineTable::new()),
+                    None,
+                    device,
+                    target,
+                )
+                .unwrap(),
+            );
+            let mut block = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+            let mut scalar = SessionPlayback::new(revision).unwrap();
+            scalar.resident_source_scratch.clear();
+            for playback in [&mut block, &mut scalar] {
+                playback.apply(SessionPlaybackCommand::Play).unwrap();
+                playback.render(&mut [[0.0; 2]; 768]).unwrap();
+            }
+            for operation in [
+                NativeTransientOperation::Set(value),
+                NativeTransientOperation::Clear(target),
+            ] {
+                let render = |playback: &mut SessionPlayback| {
+                    playback.set_native_parameter_input(operation).unwrap();
+                    let mut pcm = [[0.0; 2]; 257];
+                    let mut max_slice = 0;
+                    playback
+                        .render_with_node_signal_observer(
+                            &mut pcm,
+                            Some(&mut |_, _, _, frames| max_slice = max_slice.max(frames.len())),
+                        )
+                        .unwrap();
+                    let receipt = playback.take_native_parameter_application().unwrap();
+                    assert_eq!(receipt.operation, operation);
+                    (pcm.map(|f| f.map(f32::to_bits)), receipt, max_slice)
+                };
+                let (actual, receipt, width) = render(&mut block);
+                let (expected, oracle_receipt, scalar_width) = render(&mut scalar);
+                assert_eq!(actual, expected, "{device:?} {target:?}");
+                assert_eq!(receipt, oracle_receipt);
+                assert_eq!(scalar_width, 1);
+                assert!(width > 1);
+            }
+        }
     }
 }
