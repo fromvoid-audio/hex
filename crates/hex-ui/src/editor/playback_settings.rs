@@ -145,8 +145,12 @@ impl EditorView {
             }
         }
         let Some(source) = source else {
-            self.error =
-                Some("playback source is unavailable · retry playback when audio is ready".into());
+            let message = if matches!(start, Start::Session { .. }) && self.audio.is_none() {
+                "session playback requires an audio output"
+            } else {
+                "playback source is unavailable · retry playback when audio is ready"
+            };
+            self.error = Some(message.into());
             return;
         };
         let pending = PendingStart {
