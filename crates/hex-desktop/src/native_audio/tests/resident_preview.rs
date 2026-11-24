@@ -5413,7 +5413,7 @@ fn confirmed_limiter_resumes_file_backed_audio_on_the_same_output() {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
-fn removing_limiter_requires_consent_and_keeps_the_same_output() {
+fn removing_longer_main_limiter_requires_consent_and_keeps_the_same_output() {
     confirmed_limiter_keeps_the_same_output(262_144, false, LimiterEdit::RemoveDevice);
 }
 
@@ -6143,9 +6143,26 @@ fn confirmed_limiter_keeps_the_same_output(frame_limit: u64, streamed: bool, edi
     );
     let (mut applied, _) = h.applied(applied);
     let limiter = || {
-        hex_engine::default_native_device_state_for_class(
+        let default = hex_engine::default_native_device_state_for_class(
             hex_engine::NativeDeviceClass::Effect,
             hex_engine::DeviceTypeId::from_static("hex.limiter"),
+        )
+        .unwrap();
+        if edit != LimiterEdit::RemoveDevice {
+            return default;
+        }
+        // The default 72-frame Main reduction fits the retained pass delay.
+        // At 48 kHz the 3 ms lookahead needs 144 frames and requires consent.
+        let lookahead = hex_engine::native_device_descriptors(default.type_id())
+            .unwrap()
+            .iter()
+            .find(|descriptor| descriptor.label == "lookahead")
+            .unwrap()
+            .id;
+        hex_engine::patch_native_device_parameter(
+            &default,
+            lookahead,
+            hex_session::device_gesture::ParameterValue::Choice(1),
         )
         .unwrap()
     };
