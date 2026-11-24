@@ -3928,21 +3928,29 @@ fn save_offers_a_committed_copy_without_retrying_a_stranded_pair(app: &mut gpui:
                 app.run_until_parked();
                 std::thread::yield_now();
             }
+            // Drive the receipt here. The normal poll also handles audio and
+            // session events, either of which can replace the status text.
+            editor.update(app, |v, _| v.poll_cadence = Default::default());
             let destination = files.root().join("copy.hex");
             app.simulate_new_path_selection(|_| Some(destination));
-            let deadline = crate::test_wait::hang_deadline();
-            loop {
-                app.run_until_parked();
-                editor.update(app, |v, cx| {
-                    v.tick(cx);
-                    cx.notify();
-                });
-                if editor.read_with(app, |v, _| v.status.contains("committed copy saved")) {
-                    break;
+            app.run_until_parked();
+            editor.update(app, |v, _| {
+                assert_eq!(v.status, "saving committed copy", "{:?}", v.error);
+                let deadline = Instant::now() + std::time::Duration::from_secs(2);
+                while !v.poll_committed_copy() {
+                    assert!(
+                        Instant::now() < deadline,
+                        "session did not return the copy receipt"
+                    );
+                    std::thread::yield_now();
                 }
-                assert!(Instant::now() < deadline, "missing real copy receipt");
-                std::thread::yield_now();
-            }
+                assert!(v.error.is_none(), "{:?}", v.error);
+                assert!(
+                    v.status.starts_with("committed copy saved · "),
+                    "{}",
+                    v.status
+                );
+            });
             assert_eq!(
                 hex_storage::load(files.root().join("copy").join("copy.hex")).unwrap(),
                 *committed
