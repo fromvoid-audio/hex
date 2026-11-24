@@ -107,7 +107,7 @@ impl EditorView {
         };
         let source = source.or_else(|| {
             if let Start::Play { frame } = &start
-                && self.has_degraded_vst3_output()
+                && self.has_output_fault_requiring_recovery()
             {
                 // Open stopped recovery only. Raw auto-Play must not race the settings load.
                 self.recover_audio_at(*frame);

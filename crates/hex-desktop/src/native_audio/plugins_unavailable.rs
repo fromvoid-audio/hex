@@ -13,6 +13,8 @@ use hex_session::service::{
 
 const UNAVAILABLE: &str = "vst3 hosting requires macos arm64";
 
+pub(crate) type DegradedChange = (u64, u64, Vec<(u64, String)>);
+
 #[derive(Default)]
 pub(crate) struct Plugins {
     // No native pool can be acquired on this target.
@@ -52,7 +54,7 @@ impl Plugins {
     pub fn ready(&self) -> bool {
         true
     }
-    pub fn take_degraded_change(&mut self) -> Option<(u64, u64, Vec<u64>)> {
+    pub fn take_degraded_change(&mut self) -> Option<DegradedChange> {
         None
     }
     pub(super) fn matches_capture_source(

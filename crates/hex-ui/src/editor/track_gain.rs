@@ -734,7 +734,7 @@ impl EditorView {
                             cx.notify();
                             return;
                         }
-                        if view.has_degraded_vst3_output() {
+                        if view.has_output_fault_requiring_recovery() {
                             let target = match view.state.as_ref() {
                                 Some(state)
                                     if view.track_selection.contains(id)
@@ -986,7 +986,7 @@ impl EditorView {
                     }
                     if event.phase == NumericEventPhase::Begin
                         && view.document_audio_mode == hex_session::DocumentAudioMode::Resident
-                        && view.has_degraded_vst3_output()
+                        && view.has_output_fault_requiring_recovery()
                     {
                         let recovery_target = match key {
                             MixerKey::MainGain => RecoveryTarget::MainGain,

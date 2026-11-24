@@ -78,6 +78,31 @@ pub(crate) fn unsupported_body(message: SharedString) -> Div {
     )
 }
 
+/// Degraded VST3 presentation showing the actual failure reason and an
+/// actionable per-device reload control while healthy devices keep playing.
+pub(crate) fn degraded_body(message: SharedString, footer: impl IntoElement) -> Div {
+    let style = theme::device_style(DeviceStyleRole::ErrorDisplay);
+    body().child(
+        device_compact_section(style, DeviceSectionSurface::Display)
+            .id("device-degraded-content")
+            .w_full()
+            .h_full()
+            .flex()
+            .flex_col()
+            .justify_between()
+            .gap(px(6.0))
+            .overflow_y_scroll()
+            .p(px(6.0))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(style.text))
+                    .child(theme::text(message)),
+            )
+            .child(div().flex().items_center().child(footer)),
+    )
+}
+
 pub(crate) fn rail_column() -> Div {
     device_layout(DeviceLayout::Column).gap(px(hex_widgets::DEVICE_ROW_GUTTER))
 }

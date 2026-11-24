@@ -73,13 +73,15 @@ fn only_the_current_documents_degraded_vst3_devices_show_the_marker(cx: &mut Tes
     let deliver = |visual: &mut VisualTestContext,
                    project_generation,
                    output_identity,
-                   devices,
+                   devices: Vec<u64>,
+                   reasons: Vec<(u64, String)>,
                    current: bool| {
         events
             .send(EditorAudioEvent::DegradedPlugins {
                 project_generation,
                 output_identity,
                 devices,
+                reasons,
             })
             .unwrap();
         view.update(visual, |view, cx| {
@@ -151,27 +153,67 @@ fn only_the_current_documents_degraded_vst3_devices_show_the_marker(cx: &mut Tes
         generation,
         identity + 1,
         vec![faulted.value()],
+        vec![(faulted.value(), "vst3 helper exited".into())],
         false,
     );
     // The same output may still carry a queued notice from its old document.
-    deliver(&mut visual, 0, identity, vec![faulted.value()], false);
+    deliver(
+        &mut visual,
+        0,
+        identity,
+        vec![faulted.value()],
+        vec![(faulted.value(), "vst3 helper exited".into())],
+        false,
+    );
     assert!(visual.debug_bounds(selector("degraded", faulted)).is_none());
     deliver(
         &mut visual,
         generation,
         identity,
         vec![faulted.value()],
+        vec![(faulted.value(), "vst3 helper exited".into())],
         true,
     );
     assert!(visual.debug_bounds(selector("degraded", faulted)).is_some());
+    assert!(visual.debug_bounds(selector("reload", faulted)).is_some());
     assert!(visual.debug_bounds(selector("pending", faulted)).is_none());
     assert!(trace(&mut visual).contains("vst3_panel=degraded"));
     assert!(visual.debug_bounds(selector("degraded", healthy)).is_none());
+    assert!(visual.debug_bounds(selector("reload", healthy)).is_none());
     assert!(visual.debug_bounds(selector("pending", healthy)).is_some());
-    // An empty set clears the marker.
-    deliver(&mut visual, generation, identity, Vec::new(), true);
+    // Preserves the actual failure reason instead of blaming audio deadlines.
+    view.update(&mut visual, |view, _| {
+        assert_eq!(
+            view.degraded_plugins.reason(faulted.value()),
+            Some("vst3 helper exited")
+        );
+    });
+    // Clicking the per-device Reload button submits Request::ReloadPlugin without
+    // triggering a full audio teardown or closing other healthy editors.
+    let reload_bounds = visual
+        .debug_bounds(selector("reload", faulted))
+        .expect("reload button bounds");
+    visual.simulate_click(reload_bounds.center(), gpui::Modifiers::default());
+    visual.run_until_parked();
+    view.update(&mut visual, |view, _| {
+        assert!(view.reloading_plugins.contains(&faulted));
+        assert!(view.recovery.generation().is_none());
+    });
+    // An empty set clears the degraded marker and per-device reload state.
+    deliver(
+        &mut visual,
+        generation,
+        identity,
+        Vec::new(),
+        Vec::new(),
+        true,
+    );
     assert!(visual.debug_bounds(selector("degraded", faulted)).is_none());
+    assert!(visual.debug_bounds(selector("reload", faulted)).is_none());
     assert!(visual.debug_bounds(selector("pending", faulted)).is_some());
+    view.update(&mut visual, |view, _| {
+        assert!(!view.reloading_plugins.contains(&faulted));
+    });
     drop(backend);
     output.publication.close();
 }

@@ -859,6 +859,12 @@ pub enum Request {
         project_generation: u64,
         device: hex_project::DeviceId,
     },
+    /// Respawn one degraded VST3 plugin from its last confirmed canonical state
+    /// and re-admit it into the live audio graph without interrupting healthy tracks.
+    ReloadPlugin {
+        project_generation: u64,
+        device: hex_project::DeviceId,
+    },
     ContinuePluginEditor,
     #[doc(hidden)]
     ContinueRetiringEditorReplay,

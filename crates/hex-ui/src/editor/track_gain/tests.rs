@@ -281,6 +281,10 @@ fn degraded_group_volume_recovery(cx: &mut TestAppContext, released: bool, faile
                     spectrum_error: None,
                     mode: hex_session::DocumentAudioMode::Resident,
                 });
+                view.audio_status()
+                    .unwrap()
+                    .render_fault
+                    .store(true, std::sync::atomic::Ordering::Release);
                 view.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![119]);
                 cx.notify();
             });
@@ -574,6 +578,10 @@ fn degraded_plugin_track_pan_and_main_volume_recover_automatically(cx: &mut Test
                     spectrum_error: None,
                     mode: hex_session::DocumentAudioMode::Resident,
                 });
+                view.audio_status()
+                    .unwrap()
+                    .render_fault
+                    .store(true, std::sync::atomic::Ordering::Release);
                 view.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![42]);
                 cx.notify();
             });

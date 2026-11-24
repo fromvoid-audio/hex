@@ -150,6 +150,10 @@ fn audio_start_recovery(
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
+        v.audio_status()
+            .unwrap()
+            .render_fault
+            .store(true, std::sync::atomic::Ordering::Release);
         v.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![99]);
         v.audio_event_editor.grid = SnapGrid::Off;
         let state = v.state.as_ref().unwrap();

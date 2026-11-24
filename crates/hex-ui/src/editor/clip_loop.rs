@@ -84,7 +84,7 @@ impl EditorView {
         if self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && let Some(target) = &target
             && let hex_session::service::PlayStartEdit::Audio { clip, .. } = target.edit
-            && self.has_degraded_vst3_output()
+            && self.has_output_fault_requiring_recovery()
         {
             if self.clip_loop.play_start_audition_held {
                 self.set_held_play_start_audition(None);

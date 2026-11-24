@@ -209,6 +209,7 @@ impl WorkerLoop {
                     | Request::ContinuePluginEffect
                     | Request::ContinueDeviceInsert
                     | Request::TogglePluginEditor { .. }
+                    | Request::ReloadPlugin { .. }
                     | Request::ContinuePluginEditor
                     | Request::QueryPluginParameters(_)
                     | Request::ContinueRetiringEditorReplay
@@ -534,7 +535,8 @@ impl WorkerLoop {
                 | Request::SetDeviceParameter { .. }
                 | Request::StartPluginEditorRecording { .. }
                 | Request::StopPluginEditorRecording { .. }
-                | Request::TogglePluginEditor { .. }) => device_ops::handle(&mut ctx, req),
+                | Request::TogglePluginEditor { .. }
+                | Request::ReloadPlugin { .. }) => device_ops::handle(&mut ctx, req),
                 req @ (Request::ChangeProjectSampleRate { .. }
                 | Request::ContinueRecovery
                 | Request::Export(..)

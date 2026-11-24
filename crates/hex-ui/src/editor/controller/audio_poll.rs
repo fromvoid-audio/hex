@@ -418,6 +418,7 @@ impl EditorView {
         self.device_gesture.invalidate_accepted_preview();
         // A new output prepares fresh endpoints; it reports its own set.
         self.degraded_plugins = Default::default();
+        self.reloading_plugins.clear();
         self.plugin_editor_windows.clear();
         if self
             .pending_publication_observation
@@ -998,6 +999,7 @@ impl EditorView {
                     project_generation,
                     output_identity,
                     devices,
+                    reasons,
                 } => {
                     if project_generation == self.project_generation
                         && self
@@ -1007,7 +1009,9 @@ impl EditorView {
                             == Some(output_identity)
                     {
                         self.degraded_plugins =
-                            crate::editor_backend::DegradedDevices::new(devices);
+                            crate::editor_backend::DegradedDevices::with_reasons(devices, reasons);
+                        self.reloading_plugins
+                            .retain(|device| self.degraded_plugins.contains(device.value()));
                         changed = true;
                     }
                 }

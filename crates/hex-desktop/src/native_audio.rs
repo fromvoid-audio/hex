@@ -3254,13 +3254,15 @@ impl WorkerAudioSink for NativeAudioSink {
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 self.plugins
                     .poll_editor_recording(output.publication.control());
-                if let Some((project_generation, output_identity, devices)) =
+                if let Some((project_generation, output_identity, reasons)) =
                     self.plugins.take_degraded_change()
                 {
+                    let devices = reasons.iter().map(|(device, _)| *device).collect();
                     self.pending_degraded_event = Some(EditorAudioEvent::DegradedPlugins {
                         project_generation,
                         output_identity,
                         devices,
+                        reasons,
                     });
                 }
             }

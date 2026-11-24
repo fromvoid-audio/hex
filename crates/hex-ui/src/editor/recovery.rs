@@ -170,6 +170,7 @@ pub(super) fn is_graph_republishing_edit(request: &Request) -> bool {
         | Request::PrepareComputerKeyboard { .. }
         | Request::PreparePausedInputMonitor { .. }
         | Request::TogglePluginEditor { .. }
+        | Request::ReloadPlugin { .. }
         | Request::ContinuePluginEditor
         | Request::ContinueRetiringEditorReplay
         | Request::ContinuePluginEffect
@@ -552,11 +553,22 @@ impl EditorView {
             && !self.degraded_plugins.is_empty()
     }
 
+    /// True only when the audio output itself has a device/render fault requiring
+    /// full-engine restart. A single degraded VST3 plugin stays isolated as an
+    /// aligned pass-through and must not tear down healthy playback or editors.
+    pub(super) fn has_output_fault_requiring_recovery(&self) -> bool {
+        self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && self.stopped_playback_restore.is_none()
+            && self.audio_status().is_some_and(|status| {
+                status.device_fault.load(Acquire) || status.render_fault.load(Acquire)
+            })
+    }
+
     fn has_degraded_stranded_device_gesture(&self) -> bool {
         let Some(snapshot) = self.device_gesture.snapshot() else {
             return false;
         };
-        self.has_degraded_vst3_output()
+        (self.has_output_fault_requiring_recovery() || self.has_degraded_vst3_output())
             && self.device_gesture.is_recovery_pending()
             && !self.device_gesture.has_pending_requests()
             && self.device_gesture_barriers.is_empty()
@@ -565,13 +577,17 @@ impl EditorView {
     }
 
     pub(super) fn recoverable_graph_edit(&self, request: &Request) -> Option<DeferredEditKind> {
+        let output_fault = self.has_output_fault_requiring_recovery();
         if clip_play_start(request).is_some()
             && self.pending_clip_loop_matches(request)
-            && self.has_degraded_vst3_output()
+            && output_fault
         {
             return Some(DeferredEditKind::ClipPlayStart);
         }
-        if !self.has_degraded_vst3_output() && self.recovery.deferred_edit.is_none() {
+        if !output_fault && self.recovery.deferred_edit.is_none() {
+            if is_track_switch_edit(request) && self.has_degraded_stranded_device_gesture() {
+                return Some(DeferredEditKind::GraphEdit);
+            }
             return None;
         }
         if self.pending_time_duplicate_matches(request) {
@@ -838,8 +854,8 @@ impl EditorView {
             // A worker edit without an installed reply can already have
             // changed the captured revision for these unversioned requests.
             Some("edit canceled · project work pending during audio recovery")
-        } else if self.has_degraded_vst3_output() {
-            Some("plug-in failed during audio recovery · edit was canceled")
+        } else if self.has_output_fault_requiring_recovery() {
+            Some("audio output failed during recovery · edit was canceled")
         } else {
             None
         };

@@ -2230,7 +2230,7 @@ impl EditorView {
             return false;
         }
         self.stopped_playback_restore = None;
-        if self.has_degraded_vst3_output() {
+        if self.has_output_fault_requiring_recovery() {
             self.recover_audio_at(0);
         } else {
             self.queue_stopped_playback_restore();
@@ -2278,7 +2278,7 @@ impl EditorView {
             && self.device_gesture.snapshot().is_none()
             && self.tuning.client.snapshot().is_none()
             && self.recovery.generation().is_none();
-        let restart_degraded = can_restore && self.has_degraded_vst3_output();
+        let restart_degraded = can_restore && self.has_output_fault_requiring_recovery();
         let restore = can_restore
             && !restart_degraded
             && self.audio.as_ref().is_some_and(|audio| {
