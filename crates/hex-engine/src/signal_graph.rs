@@ -1100,6 +1100,16 @@ impl SignalGraph {
             .all(|track| track.audio_feeds.is_empty() && track.printed_merge.is_none())
             && self.returns.iter().all(|bus| bus.audio_feeds.is_empty())
     }
+    /// Reserve a default-output plane and a separately authorized send plane
+    /// only for grouped graphs that can use block routing.
+    pub(crate) fn grouped_tail_windows(&self) -> usize {
+        if self.has_group_outputs() && self.supports_block_compensated_routing() {
+            self.tracks.len() * 2
+        } else {
+            0
+        }
+    }
+
     pub(crate) fn resident_main_alignment(&self, index: usize) -> Option<(usize, u32)> {
         let track = self.tracks.get(index)?;
         let TrackOutput::Main { edge } = track.output else {

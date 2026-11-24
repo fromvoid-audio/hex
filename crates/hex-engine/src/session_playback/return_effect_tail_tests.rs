@@ -1208,10 +1208,25 @@ fn compensated_return_tail_matches_scalar_through_completion() {
 
 #[test]
 fn flat_detached_track_tail_keeps_compensated_blocks_and_its_original_track_capture() {
+    check_compensated_track_tail(None);
+}
+
+#[test]
+fn grouped_detached_track_tail_enters_only_proven_sends_and_drains_in_blocks() {
+    for include_send in [false, true] {
+        check_compensated_track_tail(Some(include_send));
+    }
+}
+
+fn check_compensated_track_tail(group_send: Option<bool>) {
     use crate::signal_graph::tests::{fixture, prepare};
     use hex_project::{Command, Created};
 
-    let mut f = fixture(&[&[3]], 64);
+    let mut f = if group_send.is_some() {
+        fixture(&[&[3], &[], &[]], 64)
+    } else {
+        fixture(&[&[3]], 64)
+    };
     let track = f.tracks[0];
     let Created::ReturnTrack(bus) = f
         .editor
@@ -1229,9 +1244,28 @@ fn flat_detached_track_tail_keeps_compensated_blocks_and_its_original_track_capt
             gain: 0.5,
         })
         .unwrap();
+    if group_send.is_some() {
+        f.editor
+            .execute(Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap();
+    }
     let revision = prepare(&f).unwrap();
     let render = |scalar| {
         let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let expected_windows = if group_send.is_some() {
+            2 * playback.route_scratch.len()
+        } else {
+            0
+        };
+        assert_eq!(playback.grouped_tail_scratch.len(), expected_windows);
+        let quoted = crate::session_playback::preroll::arrangement_runtime_storage_preflight_bytes(
+            &revision,
+        )
+        .unwrap();
+        assert!(playback.accounted_runtime_storage_bytes().unwrap() <= quoted);
         if scalar {
             playback.resident_source_scratch.clear();
         }
@@ -1246,6 +1280,8 @@ fn flat_detached_track_tail_keeps_compensated_blocks_and_its_original_track_capt
         playback.tail_track_ids[0] = Some(track);
         playback.tail_mixes[0] = crate::PreparedTrackMix::new(0.5, 0.25, false).unwrap();
         playback.tail_output_active[0] = true;
+        playback.tail_route_sends[0] = group_send == Some(true);
+        playback.has_tail_route_sends = playback.tail_route_sends[0];
         let mut first = [[0.0; 2]; 2];
         let mut width = 0;
         playback
@@ -1272,12 +1308,41 @@ fn flat_detached_track_tail_keeps_compensated_blocks_and_its_original_track_capt
             .unwrap();
         assert!(track_tap[..2].iter().all(|f| *f != [0.0; 2]));
         assert!(track_tap[2..].iter().all(|f| *f == [0.0; 2]));
-        assert_eq!(return_tap, [[0.0; 2]; 257]);
-        assert_eq!(main, track_tap);
+        let expected_return = if group_send == Some(true) {
+            track_tap.map(|f| f.map(|sample| sample * 0.5))
+        } else {
+            [[0.0; 2]; 257]
+        };
+        assert_eq!(return_tap, expected_return);
+        for ((sample, track), bus) in main.iter().zip(track_tap).zip(return_tap) {
+            assert_eq!(*sample, [track[0] + bus[0], track[1] + bus[1]]);
+        }
+        assert!(!playback.tail_output_active[0]);
+        // Re-prime the four-frame tail and observe the normal full-size
+        // current-track slice while the old suffix expires inside it.
+        playback.tail_groups[0] = Some(active_tail_chain(
+            bus,
+            1,
+            4,
+            std::mem::size_of::<HoldRuntime>(),
+        ));
+        playback.tail_output_active[0] = true;
+        let mut wide = [[0.0; 2]; 256];
+        let mut first_width = None;
+        playback
+            .render_with_node_signal_observer(
+                &mut wide,
+                Some(&mut |_, _, _, frames| {
+                    first_width.get_or_insert(frames.len());
+                }),
+            )
+            .unwrap();
+        assert_eq!(first_width, Some(if scalar { 1 } else { 256 }));
         assert!(!playback.tail_output_active[0]);
         (
             first.map(|f| f.map(f32::to_bits)),
             main.map(|f| f.map(f32::to_bits)),
+            wide.map(|f| f.map(f32::to_bits)),
         )
     };
     assert_eq!(render(false), render(true));

@@ -43,23 +43,25 @@ pub(super) fn emit_detached_tail(
     allow_sends: bool,
 ) -> Result<(), SessionPlaybackError> {
     if let Some(destinations) = routed.as_deref_mut() {
-        if tail.len() != 1 {
-            return Err(SessionPlaybackError::DeviceRuntime);
-        }
         let owner = owner.ok_or(SessionPlaybackError::DeviceRuntime)?;
         let index = graph
             .and_then(|graph| graph.track_index(owner))
             .ok_or(SessionPlaybackError::UnknownTrack)?;
+        let range = index * tail.len()..(index + 1) * tail.len();
         let destination = destinations
-            .get_mut(index)
+            .get_mut(range.clone())
             .ok_or(SessionPlaybackError::UnknownTrack)?;
-        mix.add_frame(destination, tail[0]);
+        for (dst, &src) in destination.iter_mut().zip(tail.iter()) {
+            mix.add_frame(dst, src);
+        }
         if allow_sends {
-            let send_destination = routed_sends
+            let sent = routed_sends
                 .as_deref_mut()
-                .and_then(|destinations| destinations.get_mut(index))
+                .and_then(|dst| dst.get_mut(range))
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
-            mix.add_frame(send_destination, tail[0]);
+            for (dst, &src) in sent.iter_mut().zip(tail.iter()) {
+                mix.add_frame(dst, src);
+            }
         }
     } else {
         for (destination, source) in output.iter_mut().zip(tail.iter().copied()) {
@@ -182,9 +184,6 @@ impl SessionPlayback {
             let Some(group) = release.location.tail_group() else {
                 let mut captured = [[0.0; 2]; 256];
                 if let Some(destinations) = routed.as_deref_mut() {
-                    if output.len() != 1 {
-                        return Err(SessionPlaybackError::DeviceRuntime);
-                    }
                     render_release_captured(
                         release,
                         table,
@@ -193,17 +192,16 @@ impl SessionPlayback {
                         &self.analytic_continuations,
                         performance_frame,
                         self.playing,
-                        &mut captured[..1],
+                        &mut captured[..output.len()],
                         None,
                     )?;
                     let index = graph
                         .and_then(|graph| graph.track_index(release.track_id))
                         .ok_or(SessionPlaybackError::UnknownTrack)?;
                     let destination = destinations
-                        .get_mut(index)
+                        .get_mut(index * output.len()..(index + 1) * output.len())
                         .ok_or(SessionPlaybackError::UnknownTrack)?;
-                    destination[0] += captured[0][0];
-                    destination[1] += captured[0][1];
+                    compensated::add_main_track(destination, &captured[..output.len()]);
                 } else {
                     render_release_captured(
                         release,
