@@ -1017,6 +1017,18 @@ impl EditorView {
         let live_mode = self.live_mode_settings_row(cx);
         let settings = self.audio_import_settings_row(cx);
         let track_defaults = self.track_defaults_row(cx);
+        let controls = div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .gap(px(8.0))
+            .children([audio_rates, live_mode, settings, track_defaults])
+            .child(self.controller_input_settings(cx));
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let controls = {
+            let row = self.vst3_editor_settings_row(cx);
+            controls.child(row)
+        };
         let mut card = div()
             .id("theme settings panel")
             .debug_selector(|| "theme settings panel".into())
@@ -1024,6 +1036,7 @@ impl EditorView {
             .key_context("hex_theme_settings")
             .w(px(560.0))
             .max_w(px(600.0))
+            .max_h(gpui::relative(1.0))
             .p(px(10.0))
             .gap(px(8.0))
             .flex()
@@ -1034,14 +1047,14 @@ impl EditorView {
             .font_family(theme::FONT_FAMILY)
             .text_color(rgb(style.text))
             .shadow_lg()
-            .children([audio_rates, live_mode, settings, track_defaults])
-            .child(self.controller_input_settings(cx));
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        {
-            let row = self.vst3_editor_settings_row(cx);
-            card = card.child(row);
-        }
-        card = card
+            .child(
+                div()
+                    .id("settings preferences scroll")
+                    .debug_selector(|| "settings preferences scroll".into())
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(controls),
+            )
             .child(div().text_sm().child(theme::text("theme colors")))
             .child(rows)
             .child(content);
@@ -1472,6 +1485,25 @@ mod tests {
                 control.origin.y + control.size.height <= backdrop.origin.y + backdrop.size.height
             );
         }
+
+        // Scroll the general preferences at minimum height while the picker and
+        // the footer remain available for the live theme edit.
+        let viewport = visual.debug_bounds("settings preferences scroll").unwrap();
+        let rates = visual.debug_bounds("settings sample rates").unwrap();
+        assert!(rates.top() >= viewport.top() && rates.bottom() <= viewport.bottom());
+        let footer = visual.debug_bounds("save theme settings").unwrap();
+        visual.simulate_event(gpui::ScrollWheelEvent {
+            position: viewport.center(),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-500.0))),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let bottom = visual.debug_bounds("vst3 editor settings status").unwrap();
+            assert!(bottom.top() >= viewport.top() && bottom.bottom() <= viewport.bottom());
+        }
+        assert_eq!(visual.debug_bounds("save theme settings").unwrap(), footer);
 
         let center = visual
             .debug_bounds("theme-role-secondary")
