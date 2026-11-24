@@ -139,10 +139,24 @@ static bool processing_case(CFBundleRef bundle,Steinberg::IPluginFactory* factor
                 out[0]=out_left.data();data.numSamples=1;
             }
             const bool processed=instance.process(data);
-            if ((scenario>=19 && scenario<=22) || scenario==26) {
+            if (scenario==20 || scenario==22 || scenario==26) {
                 e.pcm=!processed && !instance.process(data);break; // no foreign replay after failure
             }
-            e.pcm=processed;
+            if (scenario==19) {
+                // Non-finite output samples are sanitized to 0.0f without
+                // revoking the instance.
+                e.pcm=processed;
+                for (int channel=0;channel<setup.output_channels && setup.output_enabled;++channel)
+                    for (int n=0;n<data.numSamples;++n)
+                        e.pcm=e.pcm && std::isfinite(out[channel][n]) && out[channel][n]==0.0f;
+                continue;
+            } else if (scenario==21) {
+                // Non-zero audio with silenceFlags set clears the stale flag
+                // and keeps processing without killing the helper.
+                e.pcm=processed && output.silenceFlags==0;
+            } else {
+                e.pcm=processed;
+            }
             const float scale=block==0?0.5f:(block==1?0.625f:0.75f);
             const float gain=scenario==10?0.25f:1.0f;
             for (int channel=0;channel<setup.output_channels && setup.output_enabled;++channel) {
