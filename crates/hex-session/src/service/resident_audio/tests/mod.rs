@@ -37,6 +37,7 @@ struct HeldPreview {
 #[derive(Default)]
 struct Observed {
     hold_next_device_preview: Mutex<Option<HeldPreview>>,
+    pending_switch_polls: Mutex<Option<(u64, usize)>>,
     accepted: Mutex<Vec<(u64, thread::ThreadId)>>,
     next_submission: Mutex<Option<(u64, u64)>>,
     refuse: AtomicBool,
@@ -159,11 +160,28 @@ impl WorkerAudioSink for OfflineSink {
         true
     }
     fn resident_publication_readiness(&mut self) -> ResidentPublicationReadiness {
-        self.observed
+        let readiness = self
+            .observed
             .readiness
             .lock()
             .unwrap()
-            .unwrap_or(ResidentPublicationReadiness::NoOutput)
+            .unwrap_or(ResidentPublicationReadiness::NoOutput);
+        if let ResidentPublicationReadiness::Applied { submission, .. } = readiness
+            && let Some((revision, remaining)) =
+                self.observed.pending_switch_polls.lock().unwrap().as_mut()
+            && submission
+                .source_context
+                .is_some_and(|context| context.editor_revision == *revision)
+            && *remaining > 0
+        {
+            *remaining -= 1;
+            return ResidentPublicationReadiness::Pending {
+                submission,
+                applied_revision: submission.audio_revision - 1,
+                publication_in_flight: true,
+            };
+        }
+        readiness
     }
     fn confirm_source_effect_publication(
         &mut self,
@@ -212,6 +230,22 @@ impl WorkerAudioSink for OfflineSink {
             playback.native_parameter_input_target(),
             observation.native_parameter_input_target(),
         );
+        if metadata.device_preview.is_some()
+            && self
+                .observed
+                .pending_switch_polls
+                .lock()
+                .unwrap()
+                .is_some_and(|(revision, remaining)| {
+                    revision == metadata.context.editor_revision && remaining > 0
+                })
+        {
+            return Err(ResidentPublicationRefusal {
+                kind: ResidentPublicationFailure::Other,
+                playback,
+                error: "playback publication already pending".into(),
+            });
+        }
         if metadata.device_preview.is_some()
             && let Some(gate) = self
                 .observed
@@ -2409,6 +2443,70 @@ fn check_locator_checkpoint_seek(stale: bool, cancelled: bool, conflict: bool, s
 }
 
 #[test]
+fn switch_rebase_reports_refusal_replacement_and_cancellation_without_a_new_preview() {
+    let observed = Arc::new(Observed::default());
+    let mut audio = OfflineSink {
+        observed: Arc::clone(&observed),
+        pending: None,
+    };
+    let source = ResidentGraphSubmission {
+        context: hex_engine::AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 5,
+        },
+        output_identity: 4,
+        audio_revision: 9,
+    };
+    let submission = ResidentRuntimeLoop {
+        source_origin: ResidentSourceOrigin::Unknown,
+        output_identity: source.output_identity,
+        audio_revision: source.audio_revision,
+        source_context: Some(source.context),
+        section_loop: None,
+    };
+    for (readiness, cancelled, reason) in [
+        (
+            ResidentPublicationReadiness::Refused {
+                submission,
+                applied_revision: 8,
+                publication_in_flight: false,
+            },
+            false,
+            "track switch publication refused",
+        ),
+        (
+            ResidentPublicationReadiness::Pending {
+                submission: ResidentRuntimeLoop {
+                    output_identity: 5,
+                    ..submission
+                },
+                applied_revision: 8,
+                publication_in_flight: true,
+            },
+            false,
+            "audio output changed",
+        ),
+        (
+            ResidentPublicationReadiness::Applied {
+                submission,
+                publication_in_flight: false,
+            },
+            true,
+            "source changed",
+        ),
+    ] {
+        *observed.readiness.lock().unwrap() = Some(readiness);
+        let error =
+            crate::service::publication_wait::wait_for_switch_rebase(&mut audio, source, || {
+                cancelled
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains(reason), "{error}");
+    }
+    assert!(observed.publications.lock().unwrap().is_empty());
+}
+
+#[test]
 fn resident_paired_drag_skips_unchanged_publications_handles_retry_lost_output_and_interleaved_solo_mute()
  {
     use crate::device_gesture::{
@@ -2610,12 +2708,21 @@ fn resident_paired_drag_skips_unchanged_publications_handles_retry_lost_output_a
         client.change_pair(pair_a).unwrap();
         assert_eq!(client.next_request(), None);
     }
+    // The output accepts the canonical switch, then holds its publication
+    // reservation for two control polls before it can admit the rebased EQ.
+    *observed.pending_switch_polls.lock().unwrap() = Some((solo_ev.state.revision + 1, 2));
     service
         .submit(Request::Edit(Command::ToggleMute(track)))
         .unwrap();
     let mute_ev = next();
     assert!(mute_ev.error.is_none());
     assert!(mute_ev.state.project.track(track).unwrap().muted());
+    let ack = mute_ev.gesture_ack.as_ref().expect("rebased EQ gesture");
+    assert!(
+        ack.accepted,
+        "paired EQ was cancelled by its own pending switch: {:?}",
+        ack.reason
+    );
     assert!(mute_ev.device_preview.is_some());
 
     // After Solo/Mute rebase, an unchanged direct ChangePair at the rebased revision still skips.
