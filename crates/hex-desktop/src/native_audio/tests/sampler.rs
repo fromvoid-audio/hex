@@ -22,6 +22,9 @@ mod keyboard;
 mod live_release;
 use hex_project::{BeatTime, Command, Created};
 
+#[cfg(feature = "ui-test-support")]
+const PLAY_BUTTON: &str = "play or pause · space · right-click for playback options";
+
 /// The sampler's prepared ~2 ms declick release floor at this fixture's
 /// 16 kHz output (#4087): no note-off releases in fewer frames.
 const RELEASE_FLOOR_FRAMES: usize = 32;
