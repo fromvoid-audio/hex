@@ -8,7 +8,7 @@ use gpui::{
 use hex_session::service::{
     ExportControl, ExportFormat, ExportPublication, ExportSignal, Request, Stem,
 };
-use std::{path::PathBuf, sync::mpsc::TryRecvError};
+use std::sync::mpsc::TryRecvError;
 
 impl EditorView {
     pub(super) fn selected_export_tracks(&self) -> Vec<Stem> {
@@ -186,11 +186,7 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         let batch = matches!(&signal, ExportSignal::Stems(_));
-        let Some(directory) = std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .filter(|home| !home.is_empty())
-            .map(PathBuf::from)
-        else {
+        let Some(directory) = super::user_home_directory() else {
             self.export_dialog_open = false;
             self.error = Some("could not locate your user folder for export".into());
             cx.notify();
@@ -537,7 +533,7 @@ mod tests {
         cx.run_until_parked();
         assert!(cx.did_prompt_for_new_path());
         cx.simulate_new_path_selection(|directory| {
-            assert_eq!(directory, PathBuf::from(std::env::var_os("HOME").unwrap()));
+            assert_eq!(directory, super::user_home_directory().unwrap());
             None
         });
         cx.run_until_parked();

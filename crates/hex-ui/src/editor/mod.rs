@@ -2646,3 +2646,69 @@ pub(crate) fn sampler_midi_fixture_ready(
 
 #[cfg(test)]
 mod shortcut_tests;
+
+pub(crate) fn user_home_directory() -> Option<std::path::PathBuf> {
+    user_home_directory_from(std::env::var_os("HOME"), std::env::var_os("USERPROFILE"))
+}
+
+fn user_home_directory_from(
+    home: Option<std::ffi::OsString>,
+    user_profile: Option<std::ffi::OsString>,
+) -> Option<std::path::PathBuf> {
+    home.filter(|value| !value.is_empty())
+        .or_else(|| {
+            #[cfg(windows)]
+            {
+                user_profile.filter(|value| !value.is_empty())
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = user_profile;
+                None
+            }
+        })
+        .map(std::path::PathBuf::from)
+}
+
+#[cfg(test)]
+mod home_directory_tests {
+    use super::*;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    #[test]
+    fn prefers_nonempty_home_and_uses_userprofile_on_windows() {
+        assert_eq!(
+            user_home_directory_from(
+                Some(OsString::from("/explicit-home")),
+                Some(OsString::from("C:\\Users\\profile")),
+            ),
+            Some(PathBuf::from("/explicit-home"))
+        );
+        assert_eq!(user_home_directory_from(None, None), None);
+        assert_eq!(
+            user_home_directory_from(Some(OsString::new()), Some(OsString::new())),
+            None
+        );
+        let fallback = user_home_directory_from(
+            Some(OsString::new()),
+            Some(OsString::from("C:\\Users\\hex")),
+        );
+        if cfg!(windows) {
+            assert_eq!(fallback, Some(PathBuf::from("C:\\Users\\hex")));
+            assert_eq!(
+                user_home_directory_from(None, Some(OsString::from("C:\\Users\\hex"))),
+                Some(PathBuf::from("C:\\Users\\hex"))
+            );
+            if std::env::var_os("USERPROFILE").is_some_and(|value| !value.is_empty()) {
+                assert!(user_home_directory().is_some());
+            }
+        } else {
+            assert_eq!(fallback, None);
+            assert_eq!(
+                user_home_directory_from(None, Some(OsString::from("C:\\Users\\hex"))),
+                None
+            );
+        }
+    }
+}
