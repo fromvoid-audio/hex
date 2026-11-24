@@ -107,14 +107,37 @@ pub enum ProjectSource {
     },
 }
 
+pub(crate) fn user_home_directory() -> Option<PathBuf> {
+    user_home_directory_from(std::env::var_os("HOME"), std::env::var_os("USERPROFILE"))
+}
+
+fn user_home_directory_from(
+    home: Option<std::ffi::OsString>,
+    user_profile: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    home.filter(|value| !value.is_empty())
+        .or_else(|| {
+            #[cfg(windows)]
+            {
+                user_profile.filter(|value| !value.is_empty())
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = user_profile;
+                None
+            }
+        })
+        .map(PathBuf::from)
+}
+
 /// Slot 0 of the native application's untitled recovery directory, shared by
 /// development and review bundles; its parent anchors derived media folders.
 /// Running instances each claim their own slot with
 /// [`claim_untitled_recovery_slot`]. No fallback to another user's directory
-/// when HOME is unavailable.
+/// when the current user's home directory is unavailable.
 pub fn untitled_recovery_path() -> Result<PathBuf, String> {
-    let home = std::env::var_os("HOME").ok_or("home directory is unavailable")?;
-    Ok(PathBuf::from(home).join("Library/Application Support/hex/recovery/untitled.hex-journal"))
+    let home = user_home_directory().ok_or("home directory is unavailable")?;
+    Ok(home.join("Library/Application Support/hex/recovery/untitled.hex-journal"))
 }
 
 /// Claim this instance's own untitled recovery slot so concurrent hex
@@ -1346,5 +1369,41 @@ mod tests {
         assert_eq!(error, "recovery directory must be a real directory");
         assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn user_home_directory_prefers_nonempty_home_and_uses_userprofile_on_windows() {
+        use std::ffi::OsString;
+        assert_eq!(
+            user_home_directory_from(
+                Some(OsString::from("/explicit-home")),
+                Some(OsString::from("C:\\Users\\profile")),
+            ),
+            Some(PathBuf::from("/explicit-home"))
+        );
+        assert_eq!(user_home_directory_from(None, None), None);
+        assert_eq!(
+            user_home_directory_from(Some(OsString::new()), Some(OsString::new())),
+            None
+        );
+        let fallback = user_home_directory_from(
+            Some(OsString::new()),
+            Some(OsString::from("C:\\Users\\hex")),
+        );
+        if cfg!(windows) {
+            assert_eq!(fallback, Some(PathBuf::from("C:\\Users\\hex")));
+            assert_eq!(
+                user_home_directory_from(None, Some(OsString::from("C:\\Users\\hex"))),
+                Some(PathBuf::from("C:\\Users\\hex"))
+            );
+            let path = untitled_recovery_path().expect("windows user profile resolves recovery");
+            assert!(path.ends_with("untitled.hex-journal"));
+        } else {
+            assert_eq!(fallback, None);
+            assert_eq!(
+                user_home_directory_from(None, Some(OsString::from("C:\\Users\\hex"))),
+                None
+            );
+        }
     }
 }
