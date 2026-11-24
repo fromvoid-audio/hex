@@ -1649,7 +1649,7 @@ fn session_audio_binding_keeps_ordinary_copy_and_refuses_unrepresented_placement
 }
 
 #[test]
-fn review_phase_fade_uses_actual_root_origin_before_and_after_tempo_edit() {
+fn phased_instance_fade_keeps_its_destination_clock_through_tempo_edits_and_history() {
     for phase in [0, Q / 2] {
         let (mut setup, clip) = beat_fixture();
         setup
@@ -1677,52 +1677,25 @@ fn review_phase_fade_uses_actual_root_origin_before_and_after_tempo_edit() {
         let check = |project: &Project| {
             let c = project.clip(clip).unwrap();
             let edit = c.audio_edit().unwrap();
-            let projection = AudioViewProjection::new(c, project.tempo_map()).unwrap();
-            let expected_origin = projection.root_origin() + i128::from(edit.domain.fade_start);
-            let delta = i128::from(3 * Q - edit.domain.fade_start);
-            let age = u64::try_from(
-                hex_project::audio_projection_frame(&authored, expected_origin + delta).unwrap()
-                    - hex_project::audio_projection_frame(&authored, expected_origin).unwrap(),
-            )
-            .unwrap();
-            let frame = edit.root_frame_at(3 * Q, project.tempo_map()).unwrap();
-            let actual = edit
-                .projected_fade(project.tempo_map())
+            let projection = c
+                .projected_outer_fade(project.tempo_map())
                 .unwrap()
-                .gain_at(frame)
                 .unwrap();
-            let expected = fade.gain_at(age);
-            eprintln!(
-                "phase={phase} root={} fade_start={} anchor={} stored={} age={age} gain={actual} expected={expected}",
-                projection.root_origin(),
-                edit.domain.fade_start,
-                expected_origin,
-                edit.domain
-                    .fade_projection
-                    .as_ref()
-                    .unwrap()
-                    .origin_beat_raw
-            );
-            assert!(
-                (actual - expected).abs() < 1e-6,
-                "actual projected envelope age phase={phase}"
-            );
-            assert_eq!(
-                edit.domain
-                    .fade_projection
-                    .as_ref()
-                    .unwrap()
-                    .origin_beat_raw,
-                expected_origin
-            );
-            assert_eq!(
-                edit.domain
-                    .fade_projection
-                    .as_ref()
-                    .unwrap()
-                    .local_start_raw,
-                edit.domain.fade_start
-            );
+            let author = edit.domain.fade_projection.as_ref().unwrap();
+            assert_eq!(author.tempo, authored);
+            assert_eq!(author.origin_beat_raw, i128::from(Q));
+            assert_eq!(author.local_start_raw, 0);
+            let start = authored.beat_to_frame(beat(Q)).unwrap();
+            for elapsed in [0, Q / 4, Q / 2, Q, 2 * Q] {
+                let position = beat(Q + elapsed);
+                let frame = project.tempo_map().beat_to_frame(position).unwrap();
+                let age = authored.beat_to_frame(position).unwrap() - start;
+                assert_eq!(
+                    projection.domain_position_at_frame(frame).unwrap(),
+                    Some(age)
+                );
+                assert_eq!(projection.gain_at(frame).unwrap(), fade.gain_at(age));
+            }
             assert_eq!(edit.placement.unwrap().cycle_phase, phase);
         };
         check(e.project());
