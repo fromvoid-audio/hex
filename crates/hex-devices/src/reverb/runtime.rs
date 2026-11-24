@@ -4,8 +4,8 @@ pub(super) mod automation;
 use super::{PARAMETER_COUNT, Settings, parameter as p};
 use automation::{AutomatedSettings, AutomatedValues};
 use hex_lattice::{
-    DeviceResources, NativeInstrumentClock, NativeParameterAutomation, NativeProcessorRuntime,
-    OutputTail, PreparedNativeProcessor, StereoFrame,
+    DeviceResources, NativeInstrumentClock, NativeParameterAutomation, OutputTail,
+    OwnedProcessorRuntime, PreparedOwnedProcessorRuntime, StereoFrame,
 };
 use hex_lattice_contract::{DeviceContractError, ParameterDescriptor, ParameterId};
 use std::any::Any;
@@ -83,20 +83,46 @@ fn blend(a: f32, b: f32, weight: f32) -> f32 {
         a + (b - a) * weight
     }
 }
+#[inline]
+fn decay_gain(log2_rate: f32, time: f32) -> f32 {
+    (log2_rate * time).exp2()
+}
+#[inline]
+pub(super) fn db_to_linear(db: f32) -> f32 {
+    (db * (std::f32::consts::LOG2_10 / 20.0)).exp2()
+}
 impl FeedbackCache {
     fn resolve(&mut self, parameters: [f32; 8]) -> &[FeedbackGains; 8] {
         if self.parameters != Some(parameters) {
             let [decay, size, high_ratio, low_ratio, freeze, flat, low, high] = parameters;
+            let base_rate = -3.0 * std::f32::consts::LOG2_10 * size / decay;
+            let unflat = 1.0 - freeze * flat;
+            let low_weight = low * unflat;
+            let high_weight = high * unflat;
+            let low_rate = if low_weight > 0.0 {
+                base_rate / low_ratio
+            } else {
+                0.0
+            };
+            let high_rate = if high_weight > 0.0 {
+                base_rate / high_ratio
+            } else {
+                0.0
+            };
             self.gains = std::array::from_fn(|i| {
-                let base = 10.0_f32.powf(-3.0 * TIMES[i] * size / decay);
+                let time = TIMES[i];
+                let base = decay_gain(base_rate, time);
                 let mid = blend(base, 1.0, freeze);
-                let shaped_low =
-                    blend(mid, base.powf(1.0 / low_ratio), low * (1.0 - freeze * flat));
-                let shaped_high = blend(
-                    mid,
-                    base.powf(1.0 / high_ratio),
-                    high * (1.0 - freeze * flat),
-                );
+                let shaped_low = if low_weight <= 0.0 {
+                    mid
+                } else {
+                    blend(mid, decay_gain(low_rate, time), low_weight)
+                };
+                let shaped_high = if high_weight <= 0.0 {
+                    mid
+                } else {
+                    blend(mid, decay_gain(high_rate, time), high_weight)
+                };
                 shaping_gains(shaped_low, mid, shaped_high)
             });
             self.parameters = Some(parameters);
@@ -212,17 +238,30 @@ impl PreparedReverb {
         let frozen = settings.on(p::FREEZE);
         let flat = frozen && settings.on(p::FLAT);
         let mut coefficients = [0.0; COEFFICIENTS];
+        let base_rate = -3.0 * std::f32::consts::LOG2_10 * size / settings.get(p::DECAY);
+        let low_active = settings.on(p::LOW) && !flat;
+        let high_active = settings.on(p::HIGH) && !flat;
+        let low_rate = if low_active {
+            base_rate / settings.get(p::LOW_RATIO)
+        } else {
+            0.0
+        };
+        let high_rate = if high_active {
+            base_rate / settings.get(p::HIGH_RATIO)
+        } else {
+            0.0
+        };
         for (i, seconds) in TIMES.into_iter().enumerate() {
-            let base = 10.0_f32.powf(-3.0 * seconds * size / settings.get(p::DECAY));
+            let base = decay_gain(base_rate, seconds);
             let mid = if frozen { 1.0 } else { base };
-            coefficients[i * 3] = if settings.on(p::LOW) && !flat {
-                base.powf(1.0 / settings.get(p::LOW_RATIO))
+            coefficients[i * 3] = if low_active {
+                decay_gain(low_rate, seconds)
             } else {
                 mid
             };
             coefficients[i * 3 + 1] = mid;
-            coefficients[i * 3 + 2] = if settings.on(p::HIGH) && !flat {
-                base.powf(1.0 / settings.get(p::HIGH_RATIO))
+            coefficients[i * 3 + 2] = if high_active {
+                decay_gain(high_rate, seconds)
             } else {
                 mid
             };
@@ -238,8 +277,8 @@ impl PreparedReverb {
             .tan();
         coefficients[30] = 1.0 / settings.get(p::LO_Q);
         coefficients[31] = 1.0 / settings.get(p::HI_Q);
-        coefficients[28] = 10.0_f32.powf(settings.get(p::REFLECT) / 20.0);
-        coefficients[29] = 10.0_f32.powf(settings.get(p::DIFFUSE) / 20.0);
+        coefficients[28] = db_to_linear(settings.get(p::REFLECT));
+        coefficients[29] = db_to_linear(settings.get(p::DIFFUSE));
         let capacities =
             TIMES.map(|t| ((t * std::f32::consts::SQRT_2 + 0.004) * tank_rate).ceil() as usize + 4);
         let allpass_capacities =
@@ -273,8 +312,8 @@ impl PreparedReverb {
         self.smoothing_admitted = parameters.contains(&p::SMOOTH);
         self
     }
-    fn runtime(&self) -> ReverbRuntime {
-        ReverbRuntime {
+    fn runtime(&self) -> Result<ReverbRuntime, DeviceContractError> {
+        let initial = ReverbState {
             automation_controls: crate::parameter_binding::Controls::new(
                 AutomatedSettings::new(self.settings),
                 std::array::from_fn(|i| {
@@ -284,22 +323,11 @@ impl PreparedReverb {
                 }),
             ),
             automated_values: AutomatedValues::default(),
-            tail_controls_frozen: false,
             scatter_cache: ScatterCache::default(),
             feedback_cache: FeedbackCache::default(),
-            rate: self.rate,
-            factor: self.factor,
-            tank_rate: self.tank_rate,
-            inputs: std::array::from_fn(|_| Ring::new(self.input_capacity)),
-            lines: std::array::from_fn(|i| Ring::new(self.capacities[i])),
-            allpasses: std::array::from_fn(|_| {
-                std::array::from_fn(|i| Ring::new(self.allpass_capacities[i]))
-            }),
             parameters: self.settings.0.map(Ramp::steady),
             coefficients: self.coefficients.map(Ramp::steady),
-            settled_tank: self.settled_tank,
             tank_ramp_remaining: 0,
-            settings: self.settings,
             silence_limit: self.silence_limit,
             silent_frames: 0,
             active: false,
@@ -313,10 +341,48 @@ impl PreparedReverb {
             next: [0.0; 2],
             spin_phase: 0.0,
             chorus_phase: 0.0,
-        }
+        };
+        let inputs = [
+            RingPair::try_new(self.input_capacity)?,
+            RingPair::try_new(self.input_capacity)?,
+        ];
+        let lines = [
+            RingPair::try_new(self.capacities[0])?,
+            RingPair::try_new(self.capacities[1])?,
+            RingPair::try_new(self.capacities[2])?,
+            RingPair::try_new(self.capacities[3])?,
+            RingPair::try_new(self.capacities[4])?,
+            RingPair::try_new(self.capacities[5])?,
+            RingPair::try_new(self.capacities[6])?,
+            RingPair::try_new(self.capacities[7])?,
+        ];
+        let allpasses = [
+            [
+                RingPair::try_new(self.allpass_capacities[0])?,
+                RingPair::try_new(self.allpass_capacities[1])?,
+            ],
+            [
+                RingPair::try_new(self.allpass_capacities[0])?,
+                RingPair::try_new(self.allpass_capacities[1])?,
+            ],
+        ];
+        Ok(ReverbRuntime {
+            rate: self.rate,
+            factor: self.factor,
+            tank_rate: self.tank_rate,
+            settled_tank: self.settled_tank,
+            settings: self.settings,
+            primary: initial,
+            speculative: initial,
+            tail_controls_frozen: false,
+            open: false,
+            inputs,
+            lines,
+            allpasses,
+        })
     }
 }
-impl PreparedNativeProcessor for PreparedReverb {
+impl PreparedOwnedProcessorRuntime for PreparedReverb {
     fn parameter_automation_descriptor(
         &self,
         parameter: ParameterId,
@@ -357,16 +423,21 @@ impl PreparedNativeProcessor for PreparedReverb {
     }
 
     fn runtime_version(&self) -> u32 {
-        3
+        4
     }
-    fn declared_runtime_bytes(&self) -> usize {
+    fn declared_pair_bytes(&self) -> usize {
         std::mem::size_of::<ReverbRuntime>()
-            + 4 * (2 * self.input_capacity
-                + self.capacities.iter().sum::<usize>()
-                + 2 * self.allpass_capacities.iter().sum::<usize>())
+            + 2 * 4
+                * (2 * self.input_capacity
+                    + self.capacities.iter().sum::<usize>()
+                    + 2 * self.allpass_capacities.iter().sum::<usize>())
     }
-    fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
-        Box::new(self.runtime())
+    fn create_runtime(&self) -> Result<Box<dyn OwnedProcessorRuntime>, DeviceContractError> {
+        let runtime = self.runtime()?;
+        if runtime.fixed_storage_pair_bytes() != Some(self.declared_pair_bytes()) {
+            return Err(DeviceContractError::RuntimeBudgetExceeded);
+        }
+        Ok(Box::new(runtime))
     }
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(0)
@@ -387,26 +458,69 @@ impl PreparedNativeProcessor for PreparedReverb {
         }
     }
 }
-struct Ring {
-    samples: Box<[f32]>,
-    cursor: usize,
-    // Before the first wrap after reset, only samples before the cursor are
-    // valid. Older taps read as zero without clearing the backing allocation.
-    filled: bool,
+fn allocate_ring(capacity: usize) -> Result<Box<[f32]>, DeviceContractError> {
+    let mut samples = Vec::new();
+    samples
+        .try_reserve_exact(capacity)
+        .map_err(|_| DeviceContractError::RuntimeAllocation)?;
+    samples.resize(capacity, 0.0);
+    Ok(samples.into_boxed_slice())
 }
-impl Ring {
-    fn new(capacity: usize) -> Self {
-        Self {
-            samples: vec![0.0; capacity].into_boxed_slice(),
+/// Paired committed/speculative delay ring with O(written frames) commit and
+/// rollback. Between closed transactions, `committed` and `scratch` remain
+/// identical at every slot.
+struct RingPair {
+    committed: Box<[f32]>,
+    scratch: Box<[f32]>,
+    committed_cursor: usize,
+    committed_filled: bool,
+    cursor: usize,
+    filled: bool,
+    dirty_start: usize,
+    dirty_len: usize,
+    cleared_in_block: bool,
+    post_clear_writes: usize,
+    post_clear_max: usize,
+}
+impl RingPair {
+    fn try_new(capacity: usize) -> Result<Self, DeviceContractError> {
+        Ok(Self {
+            committed: allocate_ring(capacity)?,
+            scratch: allocate_ring(capacity)?,
+            committed_cursor: 0,
+            committed_filled: false,
             cursor: 0,
             filled: false,
+            dirty_start: 0,
+            dirty_len: 0,
+            cleared_in_block: false,
+            post_clear_writes: 0,
+            post_clear_max: 0,
+        })
+    }
+    fn copy_interval(source: &[f32], destination: &mut [f32], start: usize, length: usize) {
+        if length == 0 {
+            return;
+        }
+        let first = length.min(source.len() - start);
+        destination[start..start + first].copy_from_slice(&source[start..start + first]);
+        let rest = length - first;
+        if rest > 0 {
+            destination[..rest].copy_from_slice(&source[..rest]);
         }
     }
+    fn begin_block(&mut self) {
+        self.dirty_start = self.cursor;
+        self.dirty_len = 0;
+        self.cleared_in_block = false;
+        self.post_clear_writes = 0;
+        self.post_clear_max = 0;
+    }
     fn read<const MATURE: bool>(&self, delay: f32) -> f32 {
-        let delay = delay.clamp(1.0, (self.samples.len() - 2) as f32);
+        let delay = delay.clamp(1.0, (self.scratch.len() - 2) as f32);
         let whole = delay.floor() as usize;
         let fraction = delay - whole as f32;
-        let length = self.samples.len();
+        let length = self.scratch.len();
         let unwrapped = self.cursor + length - whole;
         // The delay clamp and the ring cursor bound permit a single wrap.
         let a = if unwrapped >= length {
@@ -414,41 +528,117 @@ impl Ring {
         } else {
             unwrapped
         };
-        let b = if a == 0 {
-            self.samples.len() - 1
-        } else {
-            a - 1
-        };
+        let b = if a == 0 { length - 1 } else { a - 1 };
         let (newer, older) = if MATURE || self.filled || whole < self.cursor {
-            (self.samples[a], self.samples[b])
+            (self.scratch[a], self.scratch[b])
         } else if whole == self.cursor {
-            (self.samples[a], 0.0)
+            (self.scratch[a], 0.0)
         } else {
             (0.0, 0.0)
         };
         newer + fraction * (older - newer)
     }
     fn push(&mut self, value: f32) {
-        self.samples[self.cursor] = clean(value);
+        let length = self.scratch.len();
+        self.scratch[self.cursor] = clean(value);
         self.cursor += 1;
-        if self.cursor == self.samples.len() {
+        if self.cursor == length {
             self.cursor = 0;
             self.filled = true;
+        }
+        if self.cleared_in_block {
+            self.post_clear_writes = self.post_clear_writes.saturating_add(1).min(length);
+            self.post_clear_max = self.post_clear_max.max(self.post_clear_writes);
+        } else {
+            self.dirty_len = self.dirty_len.saturating_add(1).min(length);
         }
     }
     fn clear(&mut self) {
         self.cursor = 0;
         self.filled = false;
+        self.cleared_in_block = true;
+        self.post_clear_writes = 0;
     }
-    fn copy(&mut self, source: &Self) {
-        let valid = if source.filled {
-            source.samples.len()
+    fn commit(&mut self) {
+        Self::copy_interval(
+            &self.scratch,
+            &mut self.committed,
+            self.dirty_start,
+            self.dirty_len,
+        );
+        if self.post_clear_max > 0 {
+            self.committed[..self.post_clear_max]
+                .copy_from_slice(&self.scratch[..self.post_clear_max]);
+        }
+        self.committed_cursor = self.cursor;
+        self.committed_filled = self.filled;
+        self.dirty_start = self.cursor;
+        self.dirty_len = 0;
+        self.cleared_in_block = false;
+        self.post_clear_writes = 0;
+        self.post_clear_max = 0;
+    }
+    fn rollback(&mut self) {
+        Self::copy_interval(
+            &self.committed,
+            &mut self.scratch,
+            self.dirty_start,
+            self.dirty_len,
+        );
+        if self.post_clear_max > 0 {
+            self.scratch[..self.post_clear_max]
+                .copy_from_slice(&self.committed[..self.post_clear_max]);
+        }
+        self.cursor = self.committed_cursor;
+        self.filled = self.committed_filled;
+        self.dirty_start = self.cursor;
+        self.dirty_len = 0;
+        self.cleared_in_block = false;
+        self.post_clear_writes = 0;
+        self.post_clear_max = 0;
+    }
+    fn reset(&mut self) {
+        self.committed_cursor = 0;
+        self.committed_filled = false;
+        self.cursor = 0;
+        self.filled = false;
+        self.dirty_start = 0;
+        self.dirty_len = 0;
+        self.cleared_in_block = false;
+        self.post_clear_writes = 0;
+        self.post_clear_max = 0;
+    }
+    fn copy_committed_from(&mut self, source: &Self) {
+        let valid = if source.committed_filled {
+            source.committed.len()
         } else {
-            source.cursor
+            source.committed_cursor
         };
-        self.samples[..valid].copy_from_slice(&source.samples[..valid]);
-        self.cursor = source.cursor;
-        self.filled = source.filled;
+        self.committed[..valid].copy_from_slice(&source.committed[..valid]);
+        self.scratch[..valid].copy_from_slice(&source.committed[..valid]);
+        self.committed_cursor = source.committed_cursor;
+        self.committed_filled = source.committed_filled;
+        self.cursor = source.committed_cursor;
+        self.filled = source.committed_filled;
+        self.dirty_start = self.cursor;
+        self.dirty_len = 0;
+        self.cleared_in_block = false;
+        self.post_clear_writes = 0;
+        self.post_clear_max = 0;
+    }
+    fn swap_committed_from(&mut self, source: &mut Self) {
+        std::mem::swap(&mut self.committed, &mut source.committed);
+        std::mem::swap(&mut self.scratch, &mut source.scratch);
+        self.committed_cursor = source.committed_cursor;
+        self.committed_filled = source.committed_filled;
+        self.cursor = source.committed_cursor;
+        self.filled = source.committed_filled;
+        self.dirty_start = self.cursor;
+        self.dirty_len = 0;
+        self.cleared_in_block = false;
+        self.post_clear_writes = 0;
+        self.post_clear_max = 0;
+        source.reset();
     }
 }
 fn clean(value: f32) -> f32 {
@@ -504,26 +694,20 @@ impl Ramp {
 #[derive(Clone, Copy)]
 pub struct ReverbRuntimeStorage {
     pub inline_bytes: usize,
-    pub heap_bytes: [usize; RUNTIME_HEAP_ALLOCATIONS],
+    pub committed_heap_bytes: [usize; RUNTIME_HEAP_ALLOCATIONS],
+    pub scratch_heap_bytes: [usize; RUNTIME_HEAP_ALLOCATIONS],
 }
 pub const RUNTIME_HEAP_ALLOCATIONS: usize = 14;
-pub struct ReverbRuntime {
+
+#[derive(Clone, Copy)]
+struct ReverbState {
     automation_controls: crate::parameter_binding::Controls<AutomatedSettings, 33>,
     automated_values: AutomatedValues,
-    tail_controls_frozen: bool,
     scatter_cache: ScatterCache,
     feedback_cache: FeedbackCache,
-    rate: u32,
-    factor: u32,
-    tank_rate: f32,
-    inputs: [Ring; 2],
-    lines: [Ring; 8],
-    allpasses: [[Ring; 2]; 2],
     parameters: [Ramp; PARAMETER_COUNT],
     coefficients: [Ramp; COEFFICIENTS],
-    settled_tank: TankDesign,
     tank_ramp_remaining: u32,
-    settings: Settings,
     silence_limit: u64,
     silent_frames: u64,
     active: bool,
@@ -538,29 +722,16 @@ pub struct ReverbRuntime {
     spin_phase: f32,
     chorus_phase: f32,
 }
-impl ReverbRuntime {
-    /// Original exclusive runtime leaf, including every requested Box payload.
-    /// A borrowed declaration never transfers native custody. The closed host
-    /// constructor must establish origin before using this bounded observation.
-    /// Exhaustive destructuring forces an owning-field audit when this changes.
-    pub fn control_storage(&self) -> Option<ReverbRuntimeStorage> {
+impl ReverbState {
+    fn check_inline(&self) {
         let Self {
             automation_controls,
             automated_values,
-            tail_controls_frozen,
             scatter_cache,
             feedback_cache,
-            rate,
-            factor,
-            tank_rate,
-            inputs,
-            lines,
-            allpasses,
             parameters,
             coefficients,
-            settled_tank,
             tank_ramp_remaining,
-            settings,
             silence_limit,
             silent_frames,
             active,
@@ -578,17 +749,11 @@ impl ReverbRuntime {
         fn inline<T: Copy>(_: &T) {}
         automation_controls.check_inline(AutomatedSettings::check_inline);
         automated_values.check_inline();
-        inline(tail_controls_frozen);
         scatter_cache.check_inline();
         feedback_cache.check_inline();
-        inline(rate);
-        inline(factor);
-        inline(tank_rate);
         inline(parameters);
         inline(coefficients);
-        inline(settled_tank);
         inline(tank_ramp_remaining);
-        inline(settings);
         inline(silence_limit);
         inline(silent_frames);
         inline(active);
@@ -602,44 +767,15 @@ impl ReverbRuntime {
         inline(next);
         inline(spin_phase);
         inline(chorus_phase);
-        let mut heap_bytes = [0; RUNTIME_HEAP_ALLOCATIONS];
-        let mut observed = 0;
-        for (index, ring) in inputs
-            .iter()
-            .chain(lines.iter())
-            .chain(allpasses.iter().flatten())
-            .enumerate()
-        {
-            let Ring {
-                samples,
-                cursor,
-                filled,
-            } = ring;
-            inline(cursor);
-            inline(filled);
-            *heap_bytes.get_mut(index)? = samples.len().checked_mul(std::mem::size_of::<f32>())?;
-            observed += 1;
-        }
-        if observed != RUNTIME_HEAP_ALLOCATIONS {
-            return None;
-        }
-        Some(ReverbRuntimeStorage {
-            inline_bytes: std::mem::size_of::<Self>(),
-            heap_bytes,
-        })
     }
-    pub fn control_storage_bytes(&self) -> Option<usize> {
-        let storage = self.control_storage()?;
-        storage
-            .heap_bytes
-            .into_iter()
-            .try_fold(storage.inline_bytes, usize::checked_add)
+    fn v(&self, id: hex_lattice_contract::ParameterId) -> f32 {
+        self.parameters[(id.value() - 1) as usize].current
     }
-    fn retime_canonical_ramps(&mut self, mode: u32) {
+    fn retime_canonical_ramps(&mut self, rate: u32, mode: u32) {
         if self.tank_ramp_remaining == 0 {
             return;
         }
-        let frames = smoothing_frames(self.rate, mode);
+        let frames = smoothing_frames(rate, mode);
         let mut remaining = 0;
         for ramp in self
             .parameters
@@ -653,19 +789,7 @@ impl ReverbRuntime {
         }
         self.tank_ramp_remaining = remaining;
     }
-    fn v(&self, id: hex_lattice_contract::ParameterId) -> f32 {
-        self.parameters[(id.value() - 1) as usize].current
-    }
-    fn clear(&mut self) {
-        for ring in &mut self.inputs {
-            ring.clear();
-        }
-        for ring in &mut self.lines {
-            ring.clear();
-        }
-        for ring in self.allpasses.iter_mut().flatten() {
-            ring.clear();
-        }
+    fn clear_scalars(&mut self) {
         self.input_low = [[0.0; 2]; 2];
         self.input_high = [[0.0; 2]; 2];
         self.feedback_low = [0.0; 8];
@@ -679,74 +803,263 @@ impl ReverbRuntime {
         self.silent_frames = 0;
         self.active = false;
     }
+    fn reset(&mut self, rate: u32, settings: Settings) {
+        self.automation_controls.reset();
+        self.automated_values = AutomatedValues::default();
+        self.scatter_cache = ScatterCache::default();
+        self.feedback_cache = FeedbackCache::default();
+        self.silence_limit = silence_deadline_frames(rate, settings.get(p::DECAY));
+        self.clear_scalars();
+        for v in &mut self.parameters {
+            *v = Ramp::steady(v.target);
+        }
+        for v in &mut self.coefficients {
+            *v = Ramp::steady(v.target);
+        }
+        self.tank_ramp_remaining = 0;
+    }
+}
+
+pub struct ReverbRuntime {
+    rate: u32,
+    factor: u32,
+    tank_rate: f32,
+    settled_tank: TankDesign,
+    settings: Settings,
+    primary: ReverbState,
+    speculative: ReverbState,
+    tail_controls_frozen: bool,
+    open: bool,
+    inputs: [RingPair; 2],
+    lines: [RingPair; 8],
+    allpasses: [[RingPair; 2]; 2],
+}
+impl ReverbRuntime {
+    /// Original exclusive runtime leaf, including every requested Box payload.
+    /// A borrowed declaration never transfers native custody. The closed host
+    /// constructor must establish origin before using this bounded observation.
+    /// Exhaustive destructuring forces an owning-field audit when this changes.
+    pub fn control_storage(&self) -> Option<ReverbRuntimeStorage> {
+        let Self {
+            rate,
+            factor,
+            tank_rate,
+            settled_tank,
+            settings,
+            primary,
+            speculative,
+            tail_controls_frozen,
+            open,
+            inputs,
+            lines,
+            allpasses,
+        } = self;
+        fn inline<T: Copy>(_: &T) {}
+        inline(rate);
+        inline(factor);
+        inline(tank_rate);
+        inline(settled_tank);
+        inline(settings);
+        primary.check_inline();
+        speculative.check_inline();
+        inline(tail_controls_frozen);
+        inline(open);
+        let mut committed_heap_bytes = [0; RUNTIME_HEAP_ALLOCATIONS];
+        let mut scratch_heap_bytes = [0; RUNTIME_HEAP_ALLOCATIONS];
+        let mut observed = 0;
+        for (index, ring) in inputs
+            .iter()
+            .chain(lines.iter())
+            .chain(allpasses.iter().flatten())
+            .enumerate()
+        {
+            let RingPair {
+                committed,
+                scratch,
+                committed_cursor,
+                committed_filled,
+                cursor,
+                filled,
+                dirty_start,
+                dirty_len,
+                cleared_in_block,
+                post_clear_writes,
+                post_clear_max,
+            } = ring;
+            inline(committed_cursor);
+            inline(committed_filled);
+            inline(cursor);
+            inline(filled);
+            inline(dirty_start);
+            inline(dirty_len);
+            inline(cleared_in_block);
+            inline(post_clear_writes);
+            inline(post_clear_max);
+            *committed_heap_bytes.get_mut(index)? =
+                committed.len().checked_mul(std::mem::size_of::<f32>())?;
+            *scratch_heap_bytes.get_mut(index)? =
+                scratch.len().checked_mul(std::mem::size_of::<f32>())?;
+            observed += 1;
+        }
+        if observed != RUNTIME_HEAP_ALLOCATIONS {
+            return None;
+        }
+        Some(ReverbRuntimeStorage {
+            inline_bytes: std::mem::size_of::<Self>(),
+            committed_heap_bytes,
+            scratch_heap_bytes,
+        })
+    }
+    pub fn control_storage_bytes(&self) -> Option<usize> {
+        let storage = self.control_storage()?;
+        let committed = storage
+            .committed_heap_bytes
+            .into_iter()
+            .try_fold(storage.inline_bytes, usize::checked_add)?;
+        storage
+            .scratch_heap_bytes
+            .into_iter()
+            .try_fold(committed, usize::checked_add)
+    }
+    fn rings_mut(&mut self) -> impl Iterator<Item = &mut RingPair> {
+        self.inputs
+            .iter_mut()
+            .chain(self.lines.iter_mut())
+            .chain(self.allpasses.iter_mut().flatten())
+    }
+    fn inherit_scalars(&mut self, old: &ReverbState, old_settings: Settings) {
+        self.tail_controls_frozen = false;
+        self.primary
+            .automation_controls
+            .inherit(&old.automation_controls);
+        self.primary.automated_values = old.automated_values;
+        self.primary.scatter_cache = old.scatter_cache;
+        self.primary.feedback_cache = old.feedback_cache;
+        if self.primary.automation_controls.admitted(0) {
+            self.primary.silence_limit = silence_deadline_frames(
+                self.rate,
+                self.primary
+                    .automated_values
+                    .decay
+                    .unwrap_or(self.settings.get(p::DECAY)),
+            );
+        }
+        let canonical_mode = self.settings.get(p::SMOOTH) as u32;
+        let mode = if self
+            .primary
+            .automation_controls
+            .admitted(automation::SMOOTH_INDEX)
+        {
+            old.automated_values.smooth.unwrap_or(canonical_mode)
+        } else {
+            canonical_mode
+        };
+        let frames = smoothing_frames(self.rate, mode);
+        let mut ramp_remaining = 0;
+        for (v, p) in self.primary.parameters.iter_mut().zip(old.parameters) {
+            v.inherit(p, frames);
+            ramp_remaining = ramp_remaining.max(v.remaining);
+        }
+        for (v, p) in self.primary.coefficients.iter_mut().zip(old.coefficients) {
+            v.inherit(p, frames);
+            ramp_remaining = ramp_remaining.max(v.remaining);
+        }
+        self.primary.tank_ramp_remaining = ramp_remaining;
+        self.primary.input_low = old.input_low;
+        self.primary.input_high = old.input_high;
+        self.primary.feedback_low = old.feedback_low;
+        self.primary.feedback_high = old.feedback_high;
+        self.primary.phase = old.phase;
+        self.primary.sum = old.sum;
+        self.primary.previous = old.previous;
+        self.primary.next = old.next;
+        self.primary.spin_phase = old.spin_phase;
+        self.primary.chorus_phase = old.chorus_phase;
+        self.primary.active = old.active;
+        self.primary.silent_frames = if self.settings.get(p::DECAY) != old_settings.get(p::DECAY)
+            || self.settings.on(p::FREEZE) != old_settings.on(p::FREEZE)
+        {
+            0
+        } else {
+            old.silent_frames
+        };
+        self.speculative = self.primary;
+        self.open = false;
+    }
+    fn clear_speculative(&mut self) {
+        for ring in self.rings_mut() {
+            ring.clear();
+        }
+        self.speculative.clear_scalars();
+    }
     fn tank<const MATURE: bool>(&mut self, input: StereoFrame, output: AutomatedValues) {
-        let freeze = output.freeze.unwrap_or_else(|| self.v(p::FREEZE));
-        let flat = output.flat.unwrap_or_else(|| self.v(p::FLAT));
-        let cut = output.cut.unwrap_or_else(|| self.v(p::CUT));
-        let predelay = output.predelay.unwrap_or_else(|| self.v(p::PREDELAY));
-        let spin_amount = output.spin_amount.unwrap_or_else(|| self.v(p::SPIN_AMOUNT));
-        let spin_rate = output.spin_rate.unwrap_or_else(|| self.v(p::SPIN_RATE));
-        let shape = output.shape.unwrap_or_else(|| self.v(p::SHAPE));
-        let scale = output.scale.unwrap_or_else(|| self.v(p::SCALE));
+        let s = &mut self.speculative;
+        let freeze = output.freeze.unwrap_or_else(|| s.v(p::FREEZE));
+        let flat = output.flat.unwrap_or_else(|| s.v(p::FLAT));
+        let cut = output.cut.unwrap_or_else(|| s.v(p::CUT));
+        let predelay = output.predelay.unwrap_or_else(|| s.v(p::PREDELAY));
+        let spin_amount = output.spin_amount.unwrap_or_else(|| s.v(p::SPIN_AMOUNT));
+        let spin_rate = output.spin_rate.unwrap_or_else(|| s.v(p::SPIN_RATE));
+        let shape = output.shape.unwrap_or_else(|| s.v(p::SHAPE));
+        let scale = output.scale.unwrap_or_else(|| s.v(p::SCALE));
         let chorus_amount = output
             .chorus_amount
-            .unwrap_or_else(|| self.v(p::CHORUS_AMOUNT));
-        let chorus_rate = output.chorus_rate.unwrap_or_else(|| self.v(p::CHORUS_RATE));
-        let diffusion = output.diffusion.unwrap_or_else(|| self.v(p::DIFFUSION));
-        let density = output.density.unwrap_or_else(|| self.v(p::DENSITY));
-        let size = (output.size.unwrap_or_else(|| self.v(p::SIZE)) / 100.0).sqrt();
+            .unwrap_or_else(|| s.v(p::CHORUS_AMOUNT));
+        let chorus_rate = output.chorus_rate.unwrap_or_else(|| s.v(p::CHORUS_RATE));
+        let diffusion = output.diffusion.unwrap_or_else(|| s.v(p::DIFFUSION));
+        let density = output.density.unwrap_or_else(|| s.v(p::DENSITY));
+        let size = (output.size.unwrap_or_else(|| s.v(p::SIZE)) / 100.0).sqrt();
         let predelay = predelay * 0.001 * self.tank_rate;
         let excitation = 1.0 - freeze * cut;
-        let settled = self.tank_ramp_remaining == 0;
+        let settled = s.tank_ramp_remaining == 0;
         let [high_filter, low_filter] = if settled {
             self.settled_tank.filters
         } else {
             [
-                InputFilter::new(self.coefficients[24].current, self.coefficients[30].current),
-                InputFilter::new(self.coefficients[25].current, self.coefficients[31].current),
+                InputFilter::new(s.coefficients[24].current, s.coefficients[30].current),
+                InputFilter::new(s.coefficients[25].current, s.coefficients[31].current),
             ]
         };
         let high_filter = if output.lo_g.is_some() || output.lo_damping.is_some() {
             InputFilter::new(
-                output.lo_g.unwrap_or(self.coefficients[24].current),
-                output.lo_damping.unwrap_or(self.coefficients[30].current),
+                output.lo_g.unwrap_or(s.coefficients[24].current),
+                output.lo_damping.unwrap_or(s.coefficients[30].current),
             )
         } else {
             high_filter
         };
         let low_filter = if output.hi_g.is_some() || output.hi_damping.is_some() {
             InputFilter::new(
-                output.hi_g.unwrap_or(self.coefficients[25].current),
-                output.hi_damping.unwrap_or(self.coefficients[31].current),
+                output.hi_g.unwrap_or(s.coefficients[25].current),
+                output.hi_damping.unwrap_or(s.coefficients[31].current),
             )
         } else {
             low_filter
         };
-        let lo_alpha = output.low_alpha.unwrap_or(self.coefficients[26].current);
-        let hi_alpha = output.high_alpha.unwrap_or(self.coefficients[27].current);
+        let lo_alpha = output.low_alpha.unwrap_or(s.coefficients[26].current);
+        let hi_alpha = output.high_alpha.unwrap_or(s.coefficients[27].current);
         let mut late_input = [0.0; 2];
         let mut early = [0.0; 2];
-        let spin_scale = output.spin.unwrap_or_else(|| self.v(p::SPIN))
-            * spin_amount
-            * 0.000025
-            * self.tank_rate;
-        let spin_sc =
-            (spin_scale != 0.0).then(|| (std::f32::consts::TAU * self.spin_phase).sin_cos());
+        let spin_scale =
+            output.spin.unwrap_or_else(|| s.v(p::SPIN)) * spin_amount * 0.000025 * self.tank_rate;
+        let spin_sc = (spin_scale != 0.0).then(|| (std::f32::consts::TAU * s.spin_phase).sin_cos());
         let tap_scale = size * (0.75 + 0.5 * shape) * self.tank_rate;
+        let lo_cut = output.lo_cut.unwrap_or_else(|| s.v(p::LO_CUT));
+        let hi_cut = output.hi_cut.unwrap_or_else(|| s.v(p::HI_CUT));
         for c in 0..2 {
             let mut x = input[c] * excitation;
-            let high = high_filter.apply(&mut self.input_low[c], x, true);
-            x += (high - x) * output.lo_cut.unwrap_or_else(|| self.v(p::LO_CUT));
-            let low = low_filter.apply(&mut self.input_high[c], x, false);
-            x += (low - x) * output.hi_cut.unwrap_or_else(|| self.v(p::HI_CUT));
+            let high = high_filter.apply(&mut s.input_low[c], x, true);
+            x += (high - x) * lo_cut;
+            let low = low_filter.apply(&mut s.input_high[c], x, false);
+            x += (low - x) * hi_cut;
             self.inputs[c].push(x);
             late_input[c] = self.inputs[c].read::<MATURE>(predelay + 1.0);
             // Channel 1 adds +0.25 turns (+pi/2): sin(a + pi/2 + b) = cos(a)cos(b) - sin(a)sin(b).
-            let spin_channel = spin_sc.map(|(s, co)| if c == 0 { (s, co) } else { (co, -s) });
+            let spin_channel = spin_sc.map(|(si, co)| if c == 0 { (si, co) } else { (co, -si) });
             for (i, seconds) in TAPS.into_iter().enumerate() {
-                let spin = if let Some((s, co)) = spin_channel {
+                let spin = if let Some((si, co)) = spin_channel {
                     let (tap_sin, tap_cos) = SPIN_TAP_SIN_COS[i];
-                    (s * tap_cos + co * tap_sin) * spin_scale
+                    (si * tap_cos + co * tap_sin) * spin_scale
                 } else {
                     0.0
                 };
@@ -758,17 +1071,16 @@ impl ReverbRuntime {
             }
             late_input[c] += early[c] * 0.25;
         }
-        let depth = output.chorus.unwrap_or_else(|| self.v(p::CHORUS))
+        let depth = output.chorus.unwrap_or_else(|| s.v(p::CHORUS))
             * chorus_amount
             * 0.001
             * self.tank_rate
             * (1.0 - freeze);
-        let chorus_sc =
-            (depth != 0.0).then(|| (std::f32::consts::TAU * self.chorus_phase).sin_cos());
+        let chorus_sc = (depth != 0.0).then(|| (std::f32::consts::TAU * s.chorus_phase).sin_cos());
         let delayed = std::array::from_fn(|i| {
-            let modulation = if let Some((s, co)) = chorus_sc {
+            let modulation = if let Some((si, co)) = chorus_sc {
                 let (tap_sin, tap_cos) = CHORUS_TAP_SIN_COS[i];
-                (s * tap_cos + co * tap_sin) * depth
+                (si * tap_cos + co * tap_sin) * depth
             } else {
                 0.0
             };
@@ -777,11 +1089,11 @@ impl ReverbRuntime {
             self.lines[i].read::<MATURE>(delay + modulation)
         });
         let rotations = if output.diffusion.is_some() || output.density.is_some() {
-            self.scatter_cache.resolve(diffusion, density)
+            s.scatter_cache.resolve(diffusion, density)
         } else if settled {
             self.settled_tank.rotations
         } else {
-            scatter_rotations(self.v(p::DIFFUSION) * 0.01, self.v(p::DENSITY) + 1.0)
+            scatter_rotations(s.v(p::DIFFUSION) * 0.01, s.v(p::DENSITY) + 1.0)
         };
         let feedback = scatter(delayed, rotations);
         let authored_feedback = if output.decay.is_some()
@@ -794,22 +1106,21 @@ impl ReverbRuntime {
             || output.flat.is_some()
         {
             let feedback_parameters = [
-                output.decay.unwrap_or_else(|| self.v(p::DECAY)),
+                output.decay.unwrap_or_else(|| s.v(p::DECAY)),
                 size,
-                output.high_ratio.unwrap_or_else(|| self.v(p::HIGH_RATIO)),
-                output.low_ratio.unwrap_or_else(|| self.v(p::LOW_RATIO)),
+                output.high_ratio.unwrap_or_else(|| s.v(p::HIGH_RATIO)),
+                output.low_ratio.unwrap_or_else(|| s.v(p::LOW_RATIO)),
                 freeze,
                 flat,
-                output.low.unwrap_or_else(|| self.v(p::LOW)),
-                output.high.unwrap_or_else(|| self.v(p::HIGH)),
+                output.low.unwrap_or_else(|| s.v(p::LOW)),
+                output.high.unwrap_or_else(|| s.v(p::HIGH)),
             ];
-            Some(self.feedback_cache.resolve(feedback_parameters))
+            Some(*s.feedback_cache.resolve(feedback_parameters))
         } else {
             None
         };
         for (i, sample) in feedback.into_iter().enumerate() {
-            self.feedback_low[i] =
-                clean(lo_alpha * self.feedback_low[i] + (1.0 - lo_alpha) * sample);
+            s.feedback_low[i] = clean(lo_alpha * s.feedback_low[i] + (1.0 - lo_alpha) * sample);
             // Cascaded shelves have a conservative product-gain bound. Keep
             // even crossed cutoffs and in-flight mode/ratio edits passive;
             // ordinary feedback stays below unity, flat freeze reaches unity.
@@ -819,23 +1130,22 @@ impl ReverbRuntime {
                 self.settled_tank.feedback[i]
             } else {
                 shaping_gains(
-                    self.coefficients[i * 3].current,
-                    self.coefficients[i * 3 + 1].current,
-                    self.coefficients[i * 3 + 2].current,
+                    s.coefficients[i * 3].current,
+                    s.coefficients[i * 3 + 1].current,
+                    s.coefficients[i * 3 + 2].current,
                 )
             };
-            let low_shaped = sample * mid + self.feedback_low[i] * (low - mid);
-            self.feedback_high[i] =
-                clean(hi_alpha * self.feedback_high[i] + (1.0 - hi_alpha) * low_shaped);
-            let shaped = (self.feedback_high[i]
-                + (low_shaped - self.feedback_high[i]) * high_ratio)
-                * normalizer;
+            let low_shaped = sample * mid + s.feedback_low[i] * (low - mid);
+            s.feedback_high[i] =
+                clean(hi_alpha * s.feedback_high[i] + (1.0 - hi_alpha) * low_shaped);
+            let shaped =
+                (s.feedback_high[i] + (low_shaped - s.feedback_high[i]) * high_ratio) * normalizer;
             let excitation = (late_input[0] * if i & 1 == 0 { 1.0 } else { -1.0 }
                 + late_input[1] * if i & 2 == 0 { 1.0 } else { -1.0 })
                 * 0.25;
             self.lines[i].push(shaped + excitation);
         }
-        self.previous = self.next;
+        s.previous = s.next;
         for (c, reflection) in early.into_iter().enumerate() {
             let mut diffuse = delayed
                 .iter()
@@ -846,21 +1156,19 @@ impl ReverbRuntime {
                 let a = diffusion * 0.006;
                 let old = self.allpasses[c][i]
                     .read::<MATURE>(seconds * (0.5 + 1.5 * scale * 0.01) * self.tank_rate);
-                let output = old - a * diffuse;
-                self.allpasses[c][i].push(diffuse + a * output);
-                diffuse = output;
+                let out = old - a * diffuse;
+                self.allpasses[c][i].push(diffuse + a * out);
+                diffuse = out;
             }
-            self.next[c] = reflection * output.reflect.unwrap_or(self.coefficients[28].current)
-                + diffuse * output.diffuse.unwrap_or(self.coefficients[29].current);
+            s.next[c] = reflection * output.reflect.unwrap_or(s.coefficients[28].current)
+                + diffuse * output.diffuse.unwrap_or(s.coefficients[29].current);
         }
-        let mid = (self.next[0] + self.next[1]) * 0.5;
-        let side = (self.next[0] - self.next[1])
-            * 0.5
-            * output.stereo.unwrap_or_else(|| self.v(p::STEREO))
-            * 0.01;
-        self.next = [mid + side, mid - side];
-        self.spin_phase = (self.spin_phase + spin_rate / self.tank_rate).fract();
-        self.chorus_phase = (self.chorus_phase + chorus_rate / self.tank_rate).fract();
+        let mid = (s.next[0] + s.next[1]) * 0.5;
+        let side =
+            (s.next[0] - s.next[1]) * 0.5 * output.stereo.unwrap_or_else(|| s.v(p::STEREO)) * 0.01;
+        s.next = [mid + side, mid - side];
+        s.spin_phase = (s.spin_phase + spin_rate / self.tank_rate).fract();
+        s.chorus_phase = (s.chorus_phase + chorus_rate / self.tank_rate).fract();
     }
     fn frame(&mut self, frame: &mut StereoFrame, dry_wet: Option<f32>) {
         self.frame_outputs(
@@ -872,14 +1180,14 @@ impl ReverbRuntime {
         );
     }
     fn frame_outputs(&mut self, frame: &mut StereoFrame, output: AutomatedValues) {
-        if self.tank_ramp_remaining != 0 {
-            for ramp in &mut self.parameters {
+        if self.speculative.tank_ramp_remaining != 0 {
+            for ramp in &mut self.speculative.parameters {
                 ramp.advance();
             }
-            for ramp in &mut self.coefficients {
+            for ramp in &mut self.speculative.coefficients {
                 ramp.advance();
             }
-            self.tank_ramp_remaining -= 1;
+            self.speculative.tank_ramp_remaining -= 1;
         }
         let input = frame.map(|v| {
             if v.is_finite() {
@@ -888,38 +1196,80 @@ impl ReverbRuntime {
                 0.0
             }
         });
-        let freeze = output.freeze.unwrap_or_else(|| self.v(p::FREEZE));
-        let cut = output.cut.unwrap_or_else(|| self.v(p::CUT));
+        let freeze = output
+            .freeze
+            .unwrap_or_else(|| self.speculative.v(p::FREEZE));
+        let cut = output.cut.unwrap_or_else(|| self.speculative.v(p::CUT));
         if input != [0.0; 2] && freeze * cut < 1.0 {
-            self.active = true;
-            self.silent_frames = 0;
-        } else if self.active && freeze == 0.0 {
-            self.silent_frames += 1;
-            if self.silent_frames >= self.silence_limit {
-                self.clear();
+            self.speculative.active = true;
+            self.speculative.silent_frames = 0;
+        } else if self.speculative.active && freeze == 0.0 {
+            self.speculative.silent_frames += 1;
+            if self.speculative.silent_frames >= self.speculative.silence_limit {
+                self.clear_speculative();
             }
         }
-        if self.active {
-            for (sum, v) in self.sum.iter_mut().zip(input) {
+        if self.speculative.active {
+            for (sum, v) in self.speculative.sum.iter_mut().zip(input) {
                 *sum += v;
             }
-            self.phase += 1;
-            if self.phase == self.factor {
-                self.phase = 0;
-                let input = self.sum.map(|v| v / self.factor as f32);
+            self.speculative.phase += 1;
+            if self.speculative.phase == self.factor {
+                self.speculative.phase = 0;
+                let averaged = self.speculative.sum.map(|v| v / self.factor as f32);
                 if self.inputs[0].filled {
-                    self.tank::<true>(input, output);
+                    self.tank::<true>(averaged, output);
                 } else {
-                    self.tank::<false>(input, output);
+                    self.tank::<false>(averaged, output);
                 }
-                self.sum = [0.0; 2];
+                self.speculative.sum = [0.0; 2];
             }
         }
-        let fraction = (self.phase + 1) as f32 / self.factor as f32;
-        let wet = output.dry_wet.unwrap_or_else(|| self.v(p::DRY_WET)) * 0.01;
+        let fraction = (self.speculative.phase + 1) as f32 / self.factor as f32;
+        let wet = output
+            .dry_wet
+            .unwrap_or_else(|| self.speculative.v(p::DRY_WET))
+            * 0.01;
         for c in 0..2 {
-            let room = self.previous[c] + fraction * (self.next[c] - self.previous[c]);
+            let room = self.speculative.previous[c]
+                + fraction * (self.speculative.next[c] - self.speculative.previous[c]);
             frame[c] = ((1.0 - wet) * input[c] + wet * room).clamp(-16.0, 16.0);
+        }
+    }
+    fn process(&mut self, frames: &mut [StereoFrame], bypassed: bool) {
+        if !self.open {
+            self.begin_block();
+        }
+        if !frames.is_empty() && !self.tail_controls_frozen {
+            // This active render has no provider automation view. Discard
+            // inherited delivery state without resetting the room; a later
+            // tail must freeze canonical controls, and resumed identical
+            // authored values must be sampled into a fresh cache.
+            let canonical_mode = self.settings.get(p::SMOOTH) as u32;
+            if self
+                .speculative
+                .automated_values
+                .smooth
+                .is_some_and(|mode| mode != canonical_mode)
+            {
+                self.speculative
+                    .retime_canonical_ramps(self.rate, canonical_mode);
+            }
+            self.speculative.automation_controls.reset();
+            self.speculative.automated_values = AutomatedValues::default();
+            self.speculative.silence_limit =
+                silence_deadline_frames(self.rate, self.settings.get(p::DECAY));
+        }
+        for frame in frames {
+            let dry = *frame;
+            if self.tail_controls_frozen {
+                self.frame_outputs(frame, self.speculative.automated_values);
+            } else {
+                self.frame(frame, None);
+            }
+            if bypassed {
+                *frame = dry;
+            }
         }
     }
 }
@@ -956,43 +1306,67 @@ fn scatter(mut output: [f32; 8], rotations: Rotations) -> [f32; 8] {
     }
     output
 }
-impl NativeProcessorRuntime for ReverbRuntime {
-    fn process_block(&mut self, frames: &mut [StereoFrame], _: &dyn hex_lattice::DeviceResources) {
-        if !frames.is_empty() && !self.tail_controls_frozen {
-            // This active render has no provider automation view. Discard
-            // inherited delivery state without resetting the room; a later
-            // tail must freeze canonical controls, and resumed identical
-            // authored values must be sampled into a fresh cache.
-            let canonical_mode = self.settings.get(p::SMOOTH) as u32;
-            if self
-                .automated_values
-                .smooth
-                .is_some_and(|mode| mode != canonical_mode)
-            {
-                self.retime_canonical_ramps(canonical_mode);
-            }
-            self.automation_controls.reset();
-            self.automated_values = AutomatedValues::default();
-            self.silence_limit = silence_deadline_frames(self.rate, self.settings.get(p::DECAY));
+impl OwnedProcessorRuntime for ReverbRuntime {
+    fn fixed_storage_pair_bytes(&self) -> Option<usize> {
+        self.control_storage_bytes()
+    }
+    fn begin_block(&mut self) {
+        if self.open {
+            self.rollback_block();
         }
-        for frame in frames {
-            if self.tail_controls_frozen {
-                self.frame_outputs(frame, self.automated_values);
-            } else {
-                self.frame(frame, None);
-            }
+        self.speculative = self.primary;
+        for ring in self.rings_mut() {
+            ring.begin_block();
         }
+        self.open = true;
+    }
+    fn process_block(&mut self, frames: &mut [StereoFrame], _: &dyn DeviceResources) {
+        self.process(frames, false);
+    }
+    fn process_bypassed_block_with_clock(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _: Option<&dyn NativeInstrumentClock>,
+        _: &dyn DeviceResources,
+    ) {
+        self.process(frames, true);
+    }
+    fn commit_block(&mut self) {
+        if !self.open {
+            return;
+        }
+        for ring in self.rings_mut() {
+            ring.commit();
+        }
+        self.primary = self.speculative;
+        self.open = false;
+    }
+    fn rollback_block(&mut self) {
+        if !self.open {
+            return;
+        }
+        for ring in self.rings_mut() {
+            ring.rollback();
+        }
+        self.speculative = self.primary;
+        self.open = false;
     }
     fn begin_output_tail(&mut self) {
         self.tail_controls_frozen = true;
     }
     fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
         automation::supports(parameter)
-            && (parameter != p::DECAY || self.automation_controls.admitted(0))
+            && (parameter != p::DECAY || self.primary.automation_controls.admitted(0))
             && (parameter != p::FREEZE
-                || self.automation_controls.admitted(automation::FREEZE_INDEX))
+                || self
+                    .primary
+                    .automation_controls
+                    .admitted(automation::FREEZE_INDEX))
             && (parameter != p::SMOOTH
-                || self.automation_controls.admitted(automation::SMOOTH_INDEX))
+                || self
+                    .primary
+                    .automation_controls
+                    .admitted(automation::SMOOTH_INDEX))
     }
     fn process_block_with_automation(
         &mut self,
@@ -1001,59 +1375,55 @@ impl NativeProcessorRuntime for ReverbRuntime {
         automation: &dyn NativeParameterAutomation,
         _: &dyn DeviceResources,
     ) -> Result<(), DeviceContractError> {
-        self.process_automation(frames, automation)
+        self.process_automation(frames, automation, false)
     }
-
+    fn process_bypassed_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _: Option<&dyn NativeInstrumentClock>,
+        automation: &dyn NativeParameterAutomation,
+        _: &dyn DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        self.process_automation(frames, automation, true)
+    }
     fn reset(&mut self) {
-        self.automation_controls.reset();
-        self.automated_values = AutomatedValues::default();
+        if self.open {
+            self.rollback_block();
+        }
         self.tail_controls_frozen = false;
-        self.scatter_cache = ScatterCache::default();
-        self.feedback_cache = FeedbackCache::default();
-        self.silence_limit = silence_deadline_frames(self.rate, self.settings.get(p::DECAY));
-        self.clear();
-        for v in &mut self.parameters {
-            *v = Ramp::steady(v.target);
+        for ring in self.rings_mut() {
+            ring.reset();
         }
-        for v in &mut self.coefficients {
-            *v = Ramp::steady(v.target);
+        self.primary.reset(self.rate, self.settings);
+        self.speculative = self.primary;
+        self.open = false;
+    }
+    fn committed_is_quiescent(&self) -> bool {
+        !self.primary.active
+    }
+    fn speculative_is_quiescent(&self) -> bool {
+        if self.open {
+            !self.speculative.active
+        } else {
+            !self.primary.active
         }
-        self.tank_ramp_remaining = 0;
     }
-    fn is_quiescent(&self) -> bool {
-        !self.active
-    }
-    fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+    fn can_inherit_from(&self, previous: &dyn OwnedProcessorRuntime) -> bool {
         previous
             .as_any()
             .downcast_ref::<Self>()
-            .is_some_and(|p| p.rate == self.rate)
+            .is_some_and(|p| !self.open && !p.open && p.rate == self.rate)
     }
-    fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
-        self.can_copy_history_from(previous)
+    fn can_retarget_parameters_from(&self, previous: &dyn OwnedProcessorRuntime) -> bool {
+        self.can_inherit_from(previous)
     }
-    fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {
-        let Some(old) = previous
-            .as_any()
-            .downcast_ref::<Self>()
-            .filter(|p| p.rate == self.rate)
-        else {
+    fn inherit_from(&mut self, previous: &dyn OwnedProcessorRuntime) {
+        if !self.can_inherit_from(previous) {
+            return;
+        }
+        let Some(old) = previous.as_any().downcast_ref::<Self>() else {
             return;
         };
-        self.automation_controls.inherit(&old.automation_controls);
-        self.automated_values = old.automated_values;
-        self.scatter_cache = old.scatter_cache;
-        self.feedback_cache = old.feedback_cache;
-        if self.automation_controls.admitted(0) {
-            self.silence_limit = silence_deadline_frames(
-                self.rate,
-                self.automated_values
-                    .decay
-                    .unwrap_or(self.settings.get(p::DECAY)),
-            );
-        }
-        // Tail admission belongs to the host, not inherited DSP history. Fresh
-        // canonical successors must ignore overrides from removed lanes.
         for (to, from) in self
             .inputs
             .iter_mut()
@@ -1066,46 +1436,41 @@ impl NativeProcessorRuntime for ReverbRuntime {
                     .chain(old.allpasses.iter().flatten()),
             )
         {
-            to.copy(from);
+            to.copy_committed_from(from);
         }
-        let canonical_mode = self.settings.get(p::SMOOTH) as u32;
-        let mode = if self.automation_controls.admitted(automation::SMOOTH_INDEX) {
-            old.automated_values.smooth.unwrap_or(canonical_mode)
-        } else {
-            canonical_mode
+        self.inherit_scalars(&old.primary, old.settings);
+    }
+    fn transfer_history_from(&mut self, previous: &mut dyn OwnedProcessorRuntime) {
+        if !self.can_inherit_from(previous) {
+            return;
+        }
+        let Some(old) = previous.as_any_mut().and_then(|v| v.downcast_mut::<Self>()) else {
+            return;
         };
-        let frames = smoothing_frames(self.rate, mode);
-        let mut ramp_remaining = 0;
-        for (v, p) in self.parameters.iter_mut().zip(old.parameters) {
-            v.inherit(p, frames);
-            ramp_remaining = ramp_remaining.max(v.remaining);
-        }
-        for (v, p) in self.coefficients.iter_mut().zip(old.coefficients) {
-            v.inherit(p, frames);
-            ramp_remaining = ramp_remaining.max(v.remaining);
-        }
-        self.tank_ramp_remaining = ramp_remaining;
-        self.input_low = old.input_low;
-        self.input_high = old.input_high;
-        self.feedback_low = old.feedback_low;
-        self.feedback_high = old.feedback_high;
-        self.phase = old.phase;
-        self.sum = old.sum;
-        self.previous = old.previous;
-        self.next = old.next;
-        self.spin_phase = old.spin_phase;
-        self.chorus_phase = old.chorus_phase;
-        self.active = old.active;
-        self.silent_frames = if self.settings.get(p::DECAY) != old.settings.get(p::DECAY)
-            || self.settings.on(p::FREEZE) != old.settings.on(p::FREEZE)
+        for (to, from) in self
+            .inputs
+            .iter_mut()
+            .chain(self.lines.iter_mut())
+            .chain(self.allpasses.iter_mut().flatten())
+            .zip(
+                old.inputs
+                    .iter_mut()
+                    .chain(old.lines.iter_mut())
+                    .chain(old.allpasses.iter_mut().flatten()),
+            )
         {
-            0
-        } else {
-            old.silent_frames
-        };
+            to.swap_committed_from(from);
+        }
+        let old_primary = old.primary;
+        let old_settings = old.settings;
+        self.inherit_scalars(&old_primary, old_settings);
+        old.reset();
     }
     fn as_any(&self) -> &dyn Any {
         self
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        Some(self)
     }
 }
 #[cfg(test)]
@@ -1114,7 +1479,7 @@ mod tests {
 
     #[test]
     fn bounded_ring_wrap_matches_modulo_at_every_cursor() {
-        let mut ring = Ring::new(9);
+        let mut ring = RingPair::try_new(9).unwrap();
         for index in 0..9 {
             ring.push(index as f32 * 0.25);
         }
@@ -1125,8 +1490,8 @@ mod tests {
                 let whole = clamped.floor() as usize;
                 let a = (cursor + 9 - whole) % 9;
                 let b = (a + 8) % 9;
-                let expected = ring.samples[a]
-                    + (clamped - whole as f32) * (ring.samples[b] - ring.samples[a]);
+                let expected = ring.scratch[a]
+                    + (clamped - whole as f32) * (ring.scratch[b] - ring.scratch[a]);
                 assert_eq!(ring.read::<true>(delay).to_bits(), expected.to_bits());
                 assert_eq!(ring.read::<false>(delay).to_bits(), expected.to_bits());
             }
@@ -1135,17 +1500,21 @@ mod tests {
 
     #[test]
     fn cleared_and_copied_ring_reads_match_fresh_history_through_wrap() {
-        let mut source = Ring::new(9);
-        let mut target = Ring::new(9);
+        let mut source = RingPair::try_new(9).unwrap();
+        let mut target = RingPair::try_new(9).unwrap();
+        source.begin_block();
+        target.begin_block();
         for i in 1..26 {
             source.push(i as f32);
             target.push(-(i as f32));
         }
         source.clear();
+        source.commit();
+        target.commit();
 
         let mut history = Vec::new();
         for i in 0..22 {
-            target.copy(&source);
+            target.copy_committed_from(&source);
             for delay in [1.0_f32, 1.5, 4.5, 7.0] {
                 let whole = delay.floor() as usize;
                 let read = |lag| {
@@ -1163,7 +1532,9 @@ mod tests {
                 assert_eq!(target.read::<false>(delay), expected);
             }
             let new_sample = i as f32 * -0.25;
+            source.begin_block();
             source.push(new_sample);
+            source.commit();
             history.push(new_sample);
         }
     }
@@ -1183,10 +1554,12 @@ mod tests {
         }
         for rate in [44_100, 96_000] {
             let prepare = |settings| PreparedReverb::new(rate, settings).unwrap();
-            let mut cached = prepare(original).runtime();
-            let mut recalculated = prepare(original).runtime();
+            let mut cached = prepare(original).runtime().unwrap();
+            let mut recalculated = prepare(original).runtime().unwrap();
             let render = |cached: &mut ReverbRuntime, recalculated: &mut ReverbRuntime| {
-                recalculated.tank_ramp_remaining = u32::MAX;
+                cached.begin_block();
+                recalculated.begin_block();
+                recalculated.speculative.tank_ramp_remaining = u32::MAX;
                 for index in 0..(rate / 20) {
                     let mut left = if index % 17 < 5 {
                         [0.125, -0.25]
@@ -1198,19 +1571,85 @@ mod tests {
                     recalculated.frame(&mut right, None);
                     assert_eq!(left.map(f32::to_bits), right.map(f32::to_bits));
                 }
-                assert_eq!(cached.tank_ramp_remaining, 0);
+                assert_eq!(cached.speculative.tank_ramp_remaining, 0);
+                cached.commit_block();
+                recalculated.commit_block();
             };
             render(&mut cached, &mut recalculated);
             for settings in [frozen, original] {
-                let mut next_cached = prepare(settings).runtime();
-                let mut next_recalculated = prepare(settings).runtime();
-                next_cached.copy_history_from(&cached);
-                next_recalculated.copy_history_from(&recalculated);
-                assert!(next_cached.tank_ramp_remaining > 0);
+                let mut next_cached = prepare(settings).runtime().unwrap();
+                let mut next_recalculated = prepare(settings).runtime().unwrap();
+                next_cached.inherit_from(&cached);
+                next_recalculated.inherit_from(&recalculated);
+                assert!(next_cached.primary.tank_ramp_remaining > 0);
                 render(&mut next_cached, &mut next_recalculated);
                 cached = next_cached;
                 recalculated = next_recalculated;
             }
+        }
+    }
+
+    #[test]
+    fn dirty_range_rollback_and_mid_block_clear_preserve_exact_committed_history() {
+        let mut settings = Settings::default_values();
+        settings.0[super::super::index(p::DECAY).unwrap()] = 0.1;
+        settings.0[super::super::index(p::DRY_WET).unwrap()] = 100.0;
+        let prepared = PreparedReverb::new(8_000, settings).unwrap();
+        let mut runtime = prepared.runtime().unwrap();
+        let mut oracle = prepared.runtime().unwrap();
+
+        let seed: Vec<StereoFrame> = (0..256)
+            .map(|i| {
+                let s = ((i % 29) as f32 - 14.0) / 32.0;
+                [s, -s * 0.5]
+            })
+            .collect();
+        let mut s1 = seed.clone();
+        let mut s2 = seed;
+        runtime.begin_block();
+        runtime.process_block(&mut s1, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        runtime.commit_block();
+        oracle.begin_block();
+        oracle.process_block(&mut s2, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        oracle.commit_block();
+        assert_eq!(s1, s2);
+
+        // Speculatively advance past silence_limit (triggering mid-block clear)
+        // and then re-excite in the same block, then roll back on fault.
+        runtime.begin_block();
+        let mut clear_block = vec![[0.0; 2]; runtime.primary.silence_limit as usize + 64];
+        for frame in clear_block.iter_mut().rev().take(32) {
+            *frame = [0.75, -0.5];
+        }
+        runtime.process_block(&mut clear_block, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        runtime.rollback_block();
+
+        // Subsequent committed blocks must match the untouched oracle bit-for-bit.
+        for chunk_len in [1, 17, 128, 257] {
+            let mut actual: Vec<StereoFrame> = (0..chunk_len)
+                .map(|i| {
+                    [
+                        (i as f32 * 0.13).sin() * 0.2,
+                        -(i as f32 * 0.07).cos() * 0.2,
+                    ]
+                })
+                .collect();
+            let mut expected = actual.clone();
+            runtime.begin_block();
+            runtime.process_block(&mut actual, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            // Rollback and replay must produce identical output too.
+            let first = actual.clone();
+            runtime.rollback_block();
+            actual.copy_from_slice(&expected);
+            runtime.begin_block();
+            runtime.process_block(&mut actual, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            assert_eq!(actual, first);
+            runtime.commit_block();
+
+            oracle.begin_block();
+            oracle.process_block(&mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            oracle.commit_block();
+            assert_eq!(actual, expected);
         }
     }
 
@@ -1293,24 +1732,27 @@ mod tests {
     fn actual_heap_storage_matches_the_declaration_including_every_ring() {
         for rate in [8000, 192000] {
             let prepared = PreparedReverb::new(rate, Settings::default_values()).unwrap();
-            let runtime = prepared.create_runtime();
+            let runtime = prepared.create_runtime().unwrap();
             let runtime = runtime.as_any().downcast_ref::<ReverbRuntime>().unwrap();
             let heap = runtime
                 .inputs
                 .iter()
                 .chain(runtime.lines.iter())
                 .chain(runtime.allpasses.iter().flatten())
-                .map(|ring| std::mem::size_of_val(ring.samples.as_ref()))
+                .map(|ring| {
+                    std::mem::size_of_val(ring.committed.as_ref())
+                        + std::mem::size_of_val(ring.scratch.as_ref())
+                })
                 .sum::<usize>();
             assert_eq!(
                 runtime.control_storage_bytes(),
-                Some(prepared.declared_runtime_bytes())
+                Some(prepared.declared_pair_bytes())
             );
             assert_eq!(
-                prepared.declared_runtime_bytes(),
+                prepared.declared_pair_bytes(),
                 std::mem::size_of::<ReverbRuntime>() + heap
             );
-            assert!(prepared.declared_runtime_bytes() <= hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES);
+            assert!(prepared.declared_pair_bytes() <= hex_lattice::MAX_OWNED_PROCESSOR_PAIR_BYTES);
         }
     }
 

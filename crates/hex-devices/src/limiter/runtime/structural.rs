@@ -370,6 +370,9 @@ struct Padding {
     records: Vec<[f64; 2]>,
     next: usize,
     nonzero: usize,
+    dirty_start: usize,
+    dirty_len: usize,
+    dirty_full: bool,
 }
 impl Padding {
     fn new(capacity: usize) -> Result<Self, Error> {
@@ -377,33 +380,81 @@ impl Padding {
             records: super::allocate(capacity)?,
             next: 0,
             nonzero: 0,
+            dirty_start: 0,
+            dirty_len: 0,
+            dirty_full: false,
         })
+    }
+    fn begin_block(&mut self) {
+        self.dirty_start = self.next;
+        self.dirty_len = 0;
+        self.dirty_full = false;
     }
     fn reset(&mut self) {
         self.records.fill([0.0; 2]);
         self.next = 0;
         self.nonzero = 0;
+        self.dirty_start = 0;
+        self.dirty_len = 0;
+        self.dirty_full = true;
     }
     fn copy_from(&mut self, old: &Self) {
         self.records.copy_from_slice(&old.records);
         self.next = old.next;
         self.nonzero = old.nonzero;
+        self.dirty_start = 0;
+        self.dirty_len = 0;
+        self.dirty_full = false;
+    }
+    fn sync_from(
+        &mut self,
+        source: &Self,
+        dirty_start: usize,
+        dirty_len: usize,
+        dirty_full: bool,
+        delay: usize,
+    ) {
+        if dirty_full {
+            self.records.copy_from_slice(&source.records);
+        } else if delay > 0 && dirty_len > 0 {
+            super::copy_cyclic(
+                &source.records,
+                &mut self.records,
+                dirty_start,
+                dirty_len,
+                delay,
+            );
+        }
+        self.next = source.next;
+        self.nonzero = source.nonzero;
+        self.dirty_start = 0;
+        self.dirty_len = 0;
+        self.dirty_full = false;
     }
     fn process(&mut self, record: [f64; 2], delay: usize) -> [f64; 2] {
         if delay == 0 {
             return record;
         }
+        if self.dirty_len == 0 {
+            self.dirty_start = self.next;
+        }
+        self.dirty_len = (self.dirty_len + 1).min(delay);
         let old = self.records[self.next];
         self.nonzero -= usize::from(old != [0.0; 2]);
         self.nonzero += usize::from(record != [0.0; 2]);
         self.records[self.next] = record;
-        self.next = (self.next + 1) % delay;
+        self.next = if self.next + 1 == delay {
+            0
+        } else {
+            self.next + 1
+        };
         old
     }
 }
 struct Branch {
     history: History,
     padding: Padding,
+    touched: bool,
 }
 impl Branch {
     fn new(p: &PreparedStructuralLimiter) -> Result<Self, Error> {
@@ -415,11 +466,52 @@ impl Branch {
                 p.reserve_final_stage,
             )?,
             padding: Padding::new(p.pad_capacity)?,
+            touched: false,
         })
+    }
+    fn begin_block(&mut self) {
+        self.touched = false;
+        self.history.begin_block();
+        self.padding.begin_block();
     }
     fn copy_from(&mut self, old: &Self) {
         self.history.copy_from(&old.history);
         self.padding.copy_from(&old.padding);
+        self.touched = false;
+    }
+    fn commit_from(&mut self, scratch: &mut Self, p: &PreparedStructuralLimiter, layout: Layout) {
+        if !scratch.touched {
+            return;
+        }
+        let window = p.config(layout).delay + 1;
+        let delay = p.padding[layout.index()];
+        self.history.commit_from(&mut scratch.history, window);
+        let (ds, dl, df) = (
+            scratch.padding.dirty_start,
+            scratch.padding.dirty_len,
+            scratch.padding.dirty_full,
+        );
+        self.padding.sync_from(&scratch.padding, ds, dl, df, delay);
+        scratch.padding.dirty_len = 0;
+        scratch.padding.dirty_full = false;
+        scratch.touched = false;
+        self.touched = false;
+    }
+    fn rollback_from(&mut self, committed: &Self, p: &PreparedStructuralLimiter, layout: Layout) {
+        if !self.touched {
+            return;
+        }
+        let window = p.config(layout).delay + 1;
+        let delay = p.padding[layout.index()];
+        self.history.rollback_from(&committed.history, window);
+        let (ds, dl, df) = (
+            self.padding.dirty_start,
+            self.padding.dirty_len,
+            self.padding.dirty_full,
+        );
+        self.padding
+            .sync_from(&committed.padding, ds, dl, df, delay);
+        self.touched = false;
     }
     fn reset(
         &mut self,
@@ -429,6 +521,7 @@ impl Branch {
         gain: f64,
         output: f64,
     ) {
+        self.touched = true;
         self.history.reset(*p.config(layout));
         self.padding.reset();
         self.history.gain = gain;
@@ -436,6 +529,7 @@ impl Branch {
         self.history.parameters = p.parameters(layout, settings);
     }
     fn render(&mut self, p: &PreparedStructuralLimiter, layout: Layout, input: [f64; 2]) -> Record {
+        self.touched = true;
         let signal = self.padding.process(input, p.padding[layout.index()]);
         let mut frame = [0.0; 2];
         let mut stats = BlockStats::new();
@@ -493,6 +587,38 @@ impl State {
             meter: DynamicsMeter::default(),
         })
     }
+    fn begin_block(&mut self) {
+        self.branches[0].begin_block();
+        self.branches[1].begin_block();
+        self.meter = DynamicsMeter::default();
+    }
+    fn commit_from(&mut self, scratch: &mut Self, p: &PreparedStructuralLimiter) {
+        self.controls = scratch.controls;
+        self.layouts = scratch.layouts;
+        self.active = scratch.active;
+        self.phase = scratch.phase;
+        self.pending = scratch.pending;
+        self.pristine = scratch.pristine;
+        self.meter = scratch.meter;
+        for i in 0..2 {
+            self.branches[i].commit_from(&mut scratch.branches[i], p, scratch.layouts[i]);
+        }
+    }
+    fn rollback_from(&mut self, committed: &Self, p: &PreparedStructuralLimiter) {
+        for i in 0..2 {
+            // If a layout reset changed `self.layouts[i]` mid-block, `dirty_full`
+            // is already set on both history and padding so `committed.layouts[i]`
+            // safely restores the entire committed branch storage.
+            self.branches[i].rollback_from(&committed.branches[i], p, committed.layouts[i]);
+        }
+        self.controls = committed.controls;
+        self.layouts = committed.layouts;
+        self.active = committed.active;
+        self.phase = committed.phase;
+        self.pending = committed.pending;
+        self.pristine = committed.pristine;
+        self.meter = committed.meter;
+    }
     fn copy_from(&mut self, old: &Self) {
         self.controls = old.controls;
         self.layouts = old.layouts;
@@ -501,10 +627,8 @@ impl State {
         self.pending = old.pending;
         self.pristine = old.pristine;
         self.meter = old.meter;
-        self.branches[old.active].copy_from(&old.branches[old.active]);
-        if old.phase != Phase::Stable {
-            self.branches[1 - old.active].copy_from(&old.branches[1 - old.active]);
-        }
+        self.branches[0].copy_from(&old.branches[0]);
+        self.branches[1].copy_from(&old.branches[1]);
     }
     fn start(&mut self, p: &PreparedStructuralLimiter, layout: Layout, settings: Settings) {
         let next = 1 - self.active;
@@ -523,6 +647,7 @@ impl State {
     ) {
         if scalars_changed {
             let parameters = p.parameters(self.layouts[self.active], settings);
+            self.branches[self.active].touched = true;
             self.branches[self.active].history.parameters = parameters;
             if self.phase != Phase::Stable {
                 let next = 1 - self.active;
@@ -532,6 +657,7 @@ impl State {
                 branch_settings.0[5..8]
                     .copy_from_slice(&p.config(self.layouts[next]).settings.0[5..8]);
                 let parameters = parameters.for_layout(branch_settings);
+                self.branches[next].touched = true;
                 self.branches[next].history.parameters = parameters;
             }
         }
@@ -724,8 +850,10 @@ impl OwnedProcessorRuntime for Runtime {
         self.primary.controls.supports(&BINDINGS, id)
     }
     fn begin_block(&mut self) {
-        self.scratch.copy_from(&self.primary);
-        self.scratch.meter = DynamicsMeter::default();
+        if self.open {
+            self.rollback_block();
+        }
+        self.scratch.begin_block();
         self.open = true;
     }
     fn process_block(&mut self, frames: &mut [StereoFrame], _: &dyn hex_lattice::DeviceResources) {
@@ -761,12 +889,15 @@ impl OwnedProcessorRuntime for Runtime {
     }
     fn commit_block(&mut self) {
         if self.open {
-            std::mem::swap(&mut self.primary, &mut self.scratch);
+            self.primary.commit_from(&mut self.scratch, &self.prepared);
             self.open = false;
         }
     }
     fn rollback_block(&mut self) {
-        self.open = false;
+        if self.open {
+            self.scratch.rollback_from(&self.primary, &self.prepared);
+            self.open = false;
+        }
     }
     fn begin_output_tail(&mut self) {
         self.releasing = true;

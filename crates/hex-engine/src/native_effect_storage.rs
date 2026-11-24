@@ -33,15 +33,21 @@ pub(crate) fn pair_bytes(
             scratch,
         )));
     }
-    if let Some((primary, scratch)) = entry.runtime_pair::<hex_devices::reverb::ReverbRuntime>() {
-        return Ok(Some((
-            primary
-                .control_storage_bytes()
-                .ok_or(AudioStorageError::Overflow)?,
-            scratch
-                .control_storage_bytes()
-                .ok_or(AudioStorageError::Overflow)?,
-        )));
+    if let Some(reverb) = entry.owned_runtime::<hex_devices::reverb::ReverbRuntime>() {
+        let storage = reverb
+            .control_storage()
+            .ok_or(AudioStorageError::Overflow)?;
+        let committed = storage
+            .committed_heap_bytes
+            .into_iter()
+            .try_fold(storage.inline_bytes, usize::checked_add)
+            .ok_or(AudioStorageError::Overflow)?;
+        let scratch = storage
+            .scratch_heap_bytes
+            .into_iter()
+            .try_fold(0usize, usize::checked_add)
+            .ok_or(AudioStorageError::Overflow)?;
+        return Ok(Some((committed, scratch)));
     }
     if let Some((primary, scratch)) = entry.runtime_pair::<hex_devices::eq::EqRuntime>() {
         return Ok(Some((

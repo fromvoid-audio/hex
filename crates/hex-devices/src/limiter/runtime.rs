@@ -83,7 +83,9 @@ struct Scalar {
     gain: [f64; 2],
     attack_step: [f64; 2],
     program: [f64; 2],
-    input: [[f64; 2]; TAPS],
+    // Doubled planar ring buffer so `[input_next..input_next + TAPS]` is a
+    // contiguous 32-tap slice per lane with zero modulo indexing.
+    input: [[f64; TAPS * 2]; 2],
     input_next: usize,
 }
 impl Default for Scalar {
@@ -97,15 +99,157 @@ impl Default for Scalar {
             gain: [1.0; 2],
             attack_step: [0.0; 2],
             program: [0.0; 2],
-            input: [[0.0; 2]; TAPS],
+            input: [[0.0; TAPS * 2]; 2],
             input_next: 0,
         }
     }
+}
+#[derive(Clone, Copy)]
+struct StageDirty {
+    full: bool,
+    signal_start: usize,
+    signal_len: usize,
+    peaks_base_head: [usize; 2],
+    peaks_head_off: [usize; 2],
+    peaks_min: [usize; 2],
+    peaks_max: [usize; 2],
+}
+impl Default for StageDirty {
+    fn default() -> Self {
+        Self {
+            full: false,
+            signal_start: 0,
+            signal_len: 0,
+            peaks_base_head: [0; 2],
+            peaks_head_off: [0; 2],
+            peaks_min: [usize::MAX; 2],
+            peaks_max: [0; 2],
+        }
+    }
+}
+impl StageDirty {
+    fn begin(scalar: &Scalar) -> Self {
+        Self {
+            full: false,
+            signal_start: scalar.next,
+            signal_len: 0,
+            peaks_base_head: scalar.head,
+            peaks_head_off: [0; 2],
+            peaks_min: [usize::MAX; 2],
+            peaks_max: [0; 2],
+        }
+    }
+    fn has_writes(&self) -> bool {
+        self.full
+            || self.signal_len > 0
+            || self.peaks_min[0] < self.peaks_max[0]
+            || self.peaks_min[1] < self.peaks_max[1]
+    }
+}
+fn copy_cyclic<T: Copy>(
+    source: &[T],
+    target: &mut [T],
+    start: usize,
+    length: usize,
+    ring_len: usize,
+) {
+    if length == 0 {
+        return;
+    }
+    if length >= ring_len {
+        target[..ring_len].copy_from_slice(&source[..ring_len]);
+        return;
+    }
+    let first = length.min(ring_len - start);
+    target[start..start + first].copy_from_slice(&source[start..start + first]);
+    let rest = length - first;
+    if rest > 0 {
+        target[..rest].copy_from_slice(&source[..rest]);
+    }
+}
+#[inline(always)]
+fn dot32(x: &[f64], h: &[f64; TAPS]) -> f64 {
+    let mut a0 = 0.0;
+    let mut a1 = 0.0;
+    let mut a2 = 0.0;
+    let mut a3 = 0.0;
+    let mut i = 0;
+    while i < TAPS {
+        a0 += x[i] * h[i];
+        a1 += x[i + 1] * h[i + 1];
+        a2 += x[i + 2] * h[i + 2];
+        a3 += x[i + 3] * h[i + 3];
+        i += 4;
+    }
+    (a0 + a1) + (a2 + a3)
+}
+/// Coarse-to-fine peak search over the exact 32-phase, 32-tap Blackman-windowed
+/// sinc reconstruction for one lane. Evaluates phase 0/32 directly from the
+/// sample buffer, probes 4x phases (8, 16, 24), checks 8x midpoints only on
+/// brackets that can beat the coarse peak, then refines at stride 2 and 1.
+#[inline]
+fn true_peak_lane(x: &[f64], phases: &[[f64; TAPS]; PHASES]) -> f64 {
+    let v0 = x[15].abs();
+    let v8 = dot32(x, &phases[8]).abs();
+    let v16 = dot32(x, &phases[16]).abs();
+    let v24 = dot32(x, &phases[24]).abs();
+    let v32 = x[16].abs();
+    let mut best = v0.max(v8).max(v16).max(v24).max(v32);
+    if best == 0.0 {
+        return 0.0;
+    }
+    let mut grid = [v0, 0.0, v8, 0.0, v16, 0.0, v24, 0.0, v32];
+    // For any bandlimited signal (<= Nyquist), a 1/4-sample bracket's higher
+    // endpoint is at least cos(pi/8) ~= 0.9239 of an interior peak; 0.85 adds
+    // margin for sharp envelopes while rejecting non-peak brackets.
+    let coarse_threshold = best * 0.85;
+    for (idx, phase) in [(1usize, 4usize), (3, 12), (5, 20), (7, 28)] {
+        if grid[idx - 1].max(grid[idx + 1]) >= coarse_threshold {
+            let v = dot32(x, &phases[phase]).abs();
+            grid[idx] = v;
+            if v > best {
+                best = v;
+            }
+        }
+    }
+    // At 8x spacing (1/8 sample), cos(pi/16) ~= 0.9808; 0.95 ensures every
+    // candidate 8x neighborhood that could exceed `best` is refined to 32x.
+    let fine_threshold = best * 0.95;
+    for (idx, &val) in grid.iter().enumerate() {
+        if val < fine_threshold {
+            continue;
+        }
+        let mut center = idx * 4;
+        for stride in [2usize, 1] {
+            let mut next_center = center;
+            if center >= stride {
+                let p = center - stride;
+                if p > 0 && p < PHASES {
+                    let v = dot32(x, &phases[p]).abs();
+                    if v > best {
+                        best = v;
+                        next_center = p;
+                    }
+                }
+            }
+            let p = center + stride;
+            if p > 0 && p < PHASES {
+                let v = dot32(x, &phases[p]).abs();
+                if v > best {
+                    best = v;
+                    next_center = p;
+                }
+            }
+            center = next_center;
+        }
+    }
+    best
 }
 struct Stage {
     signal: Vec<Sample>,
     peaks: [Vec<Peak>; 2],
     scalar: Scalar,
+    dirty: StageDirty,
 }
 fn allocate<T: Clone + Default>(length: usize) -> Result<Vec<T>, DeviceContractError> {
     let mut values = Vec::new();
@@ -121,7 +265,11 @@ impl Stage {
             signal: allocate(length)?,
             peaks: [allocate(length)?, allocate(length)?],
             scalar: Scalar::default(),
+            dirty: StageDirty::default(),
         })
+    }
+    fn begin_block(&mut self) {
+        self.dirty = StageDirty::begin(&self.scalar);
     }
     fn copy_from(&mut self, old: &Self) {
         self.signal.copy_from_slice(&old.signal);
@@ -129,6 +277,39 @@ impl Stage {
             target.copy_from_slice(source);
         }
         self.scalar = old.scalar;
+        self.dirty = StageDirty::default();
+    }
+    fn sync_from(&mut self, source: &Self, dirty: &StageDirty, window: usize) {
+        if dirty.full {
+            self.signal.copy_from_slice(&source.signal);
+            for (target, src) in self.peaks.iter_mut().zip(&source.peaks) {
+                target.copy_from_slice(src);
+            }
+        } else {
+            copy_cyclic(
+                &source.signal,
+                &mut self.signal,
+                dirty.signal_start,
+                dirty.signal_len,
+                window,
+            );
+            for lane in 0..2 {
+                if dirty.peaks_min[lane] < dirty.peaks_max[lane] {
+                    let capacity = self.peaks[lane].len();
+                    let span = dirty.peaks_max[lane] - dirty.peaks_min[lane];
+                    let start = (dirty.peaks_base_head[lane] + dirty.peaks_min[lane]) % capacity;
+                    copy_cyclic(
+                        &source.peaks[lane],
+                        &mut self.peaks[lane],
+                        start,
+                        span,
+                        capacity,
+                    );
+                }
+            }
+        }
+        self.scalar = source.scalar;
+        self.dirty = StageDirty::default();
     }
     fn bytes(&self) -> usize {
         self.signal.capacity() * std::mem::size_of::<Sample>()
@@ -149,7 +330,8 @@ impl Stage {
             || s.attack_step != [0.0; 2]
             || (s.len[0] > 0 && self.peaks[0][s.head[0]].value != 0.0)
             || (s.len[1] > 0 && self.peaks[1][s.head[1]].value != 0.0)
-            || s.input.iter().any(|v| *v != [0.0; 2])
+            || s.input[0][..TAPS].iter().any(|&v| v != 0.0)
+            || s.input[1][..TAPS].iter().any(|&v| v != 0.0)
         {
             return false;
         }
@@ -165,6 +347,9 @@ impl Stage {
         true
     }
     fn advance_silent(&mut self, count: usize, window: usize) {
+        if self.dirty.has_writes() {
+            self.dirty.full = true;
+        }
         let s = &mut self.scalar;
         s.next = (s.next + count) % window;
         s.input_next = (s.input_next + count) % TAPS;
@@ -174,6 +359,7 @@ impl Stage {
     fn reset(&mut self) {
         self.signal.fill(Sample::default());
         self.scalar = Scalar::default();
+        self.dirty.full = true;
     }
     fn same_storage_layout(&self, previous: &Self) -> bool {
         self.signal.len() == previous.signal.len()
@@ -183,22 +369,34 @@ impl Stage {
                 .zip(&previous.peaks)
                 .all(|(a, b)| a.len() == b.len())
     }
+    #[inline(always)]
     fn maximum(&mut self, lane: usize, value: f64, window: usize) -> f64 {
         let s = &mut self.scalar;
         let queue = &mut self.peaks[lane];
         let capacity = queue.len();
         while s.len[lane] > 0 && s.stamp.wrapping_sub(queue[s.head[lane]].stamp) >= window as u64 {
-            s.head[lane] = (s.head[lane] + 1) % capacity;
+            let next_head = s.head[lane] + 1;
+            s.head[lane] = if next_head == capacity { 0 } else { next_head };
             s.len[lane] -= 1;
+            self.dirty.peaks_head_off[lane] = self.dirty.peaks_head_off[lane].saturating_add(1);
         }
         while s.len[lane] > 0 {
-            let last = (s.head[lane] + s.len[lane] - 1) % capacity;
+            let mut last = s.head[lane] + s.len[lane] - 1;
+            if last >= capacity {
+                last -= capacity;
+            }
             if queue[last].value > value {
                 break;
             }
             s.len[lane] -= 1;
         }
-        let tail = (s.head[lane] + s.len[lane]) % capacity;
+        let pos = self.dirty.peaks_head_off[lane].saturating_add(s.len[lane]);
+        self.dirty.peaks_min[lane] = self.dirty.peaks_min[lane].min(pos);
+        self.dirty.peaks_max[lane] = self.dirty.peaks_max[lane].max(pos.saturating_add(1));
+        let mut tail = s.head[lane] + s.len[lane];
+        if tail >= capacity {
+            tail -= capacity;
+        }
         queue[tail] = Peak {
             value,
             stamp: s.stamp,
@@ -215,20 +413,23 @@ impl Stage {
         physical_guard: bool,
     ) -> (Sample, [f64; 2]) {
         let s = &mut self.scalar;
-        s.input[s.input_next] = sample.signal;
-        s.input_next = (s.input_next + 1) % TAPS;
+        let write_idx = s.input_next;
+        s.input[0][write_idx] = sample.signal[0];
+        s.input[0][write_idx + TAPS] = sample.signal[0];
+        s.input[1][write_idx] = sample.signal[1];
+        s.input[1][write_idx + TAPS] = sample.signal[1];
+        s.input_next = if write_idx + 1 == TAPS {
+            0
+        } else {
+            write_idx + 1
+        };
         let mut detector = sample.signal.map(f64::abs);
         if config.true_peak {
-            for phase in config.reconstruction {
-                let mut bound = [0.0; 2];
-                for (tap, coefficient) in phase.iter().enumerate() {
-                    let input = s.input[(s.input_next + tap) % TAPS];
-                    bound[0] += input[0] * coefficient;
-                    bound[1] += input[1] * coefficient;
-                }
-                detector[0] = detector[0].max(bound[0].abs());
-                detector[1] = detector[1].max(bound[1].abs());
-            }
+            let start = s.input_next;
+            let p0 = true_peak_lane(&s.input[0][start..start + TAPS], config.reconstruction);
+            let p1 = true_peak_lane(&s.input[1][start..start + TAPS], config.reconstruction);
+            detector[0] = detector[0].max(p0);
+            detector[1] = detector[1].max(p1);
         }
         // Construction validates this logical window against both backing
         // stores. Physical capacity does not define latency or peak lifetime.
@@ -240,24 +441,38 @@ impl Stage {
         let worst = maxima[0].max(maxima[1]);
         sample.detector = detector;
         let s = &mut self.scalar;
-        if self.signal[s.next].signal != [0.0; 2] {
+        let old_next = s.next;
+        if self.dirty.signal_len == 0 {
+            self.dirty.signal_start = old_next;
+            self.dirty.signal_len = 2.min(window);
+        } else {
+            self.dirty.signal_len = (self.dirty.signal_len + 1).min(window);
+        }
+        if self.signal[old_next].signal != [0.0; 2] {
             s.nonzero -= 1;
         }
         if sample.signal != [0.0; 2] {
             s.nonzero += 1;
         }
-        self.signal[s.next] = sample;
-        s.next = (s.next + 1) % window;
+        self.signal[old_next] = sample;
+        s.next = if old_next + 1 == window {
+            0
+        } else {
+            old_next + 1
+        };
         let mut delayed = self.signal[s.next];
         // Current-output constraints are separate from the long anticipation
         // maximum, allowing a smooth attack before the transient reaches output.
         let mut immediate = delayed.signal.map(f64::abs);
         if config.true_peak {
-            for offset in 0..TAPS {
-                let detector = self.signal[(s.next + offset) % window].detector;
-                for lane in 0..2 {
-                    immediate[lane] = immediate[lane].max(detector[lane]);
-                }
+            let first = TAPS.min(window - s.next);
+            for slot in &self.signal[s.next..s.next + first] {
+                immediate[0] = immediate[0].max(slot.detector[0]);
+                immediate[1] = immediate[1].max(slot.detector[1]);
+            }
+            for slot in &self.signal[..TAPS - first] {
+                immediate[0] = immediate[0].max(slot.detector[0]);
+                immediate[1] = immediate[1].max(slot.detector[1]);
             }
         }
         self.signal[s.next] = Sample::default();
@@ -297,8 +512,10 @@ impl Stage {
                     let coefficient = if physical_guard {
                         config.guard_release_coefficient
                     } else if parameters.auto_release {
-                        let seconds = 0.05 + 0.22 * s.program[lane];
-                        1.0 - (-1.0 / (seconds * f64::from(config.rate))).exp()
+                        // x = 1 / (seconds * rate) <= 0.0025 (seconds >= 0.05, rate >= 8 kHz).
+                        // 4-term Horner series for 1 - exp(-x) has max error < 1e-15.
+                        let x = config.inv_rate / (0.05 + 0.22 * s.program[lane]);
+                        x * (1.0 - x * (0.5 - x * ((1.0 / 6.0) - x * (1.0 / 24.0))))
                     } else {
                         parameters.release_coefficient
                     };
@@ -424,6 +641,8 @@ fn reconstruction_coefficients() -> &'static [[f64; TAPS]; PHASES] {
 #[derive(Clone, Copy)]
 struct Config {
     rate: u32,
+    inv_rate: f64,
+    gain_ramp_inv: f64,
     settings: Settings,
     parameters: Parameters,
     guard_release_coefficient: f64,
@@ -444,8 +663,11 @@ impl Config {
         let delay = (lookahead * f64::from(rate) / 1000.0).ceil() as usize
             + if true_peak { TAPS - 1 } else { 0 };
         let reconstruction = reconstruction_coefficients();
+        let inv_rate = 1.0 / f64::from(rate);
         Self {
             rate,
+            inv_rate,
+            gain_ramp_inv: inv_rate / 0.005,
             settings,
             parameters: Parameters::new(settings, rate),
             antimodulation_coefficient: 1.0 - (-1.0 / (0.001 * f64::from(rate))).exp(),
@@ -606,6 +828,41 @@ impl History {
                 (None, None) => true,
                 _ => false,
             }
+    }
+    fn begin_block(&mut self) {
+        self.first.begin_block();
+        if let Some(stage) = &mut self.final_stage {
+            stage.begin_block();
+        }
+        self.meter = DynamicsMeter::default();
+    }
+    fn commit_from(&mut self, scratch: &mut Self, window: usize) {
+        self.controls = scratch.controls;
+        self.parameters = scratch.parameters;
+        let first_dirty = scratch.first.dirty;
+        self.first.sync_from(&scratch.first, &first_dirty, window);
+        scratch.first.dirty = StageDirty::default();
+        if let (Some(target), Some(source)) = (&mut self.final_stage, &mut scratch.final_stage) {
+            let final_dirty = source.dirty;
+            target.sync_from(source, &final_dirty, window);
+            source.dirty = StageDirty::default();
+        }
+        self.meter = scratch.meter;
+        self.gain = scratch.gain;
+        self.output = scratch.output;
+    }
+    fn rollback_from(&mut self, committed: &Self, window: usize) {
+        self.controls = committed.controls;
+        self.parameters = committed.parameters;
+        let first_dirty = self.first.dirty;
+        self.first.sync_from(&committed.first, &first_dirty, window);
+        if let (Some(target), Some(source)) = (&mut self.final_stage, &committed.final_stage) {
+            let final_dirty = target.dirty;
+            target.sync_from(source, &final_dirty, window);
+        }
+        self.meter = committed.meter;
+        self.gain = committed.gain;
+        self.output = committed.output;
     }
     fn copy_from(&mut self, old: &Self) {
         self.controls = old.controls;
@@ -793,8 +1050,8 @@ impl Runtime {
         let parameters = &history.parameters;
         // Compatible edits ramp input/output gain over 5 ms. A falling ceiling
         // is immediate, preserving its safety invariant on the first sample.
-        history.gain += (parameters.gain - history.gain) / (0.005 * f64::from(config.rate));
-        history.output += (parameters.output - history.output) / (0.005 * f64::from(config.rate));
+        history.gain += (parameters.gain - history.gain) * config.gain_ramp_inv;
+        history.output += (parameters.output - history.output) * config.gain_ramp_inv;
         // Output gain is never above the authored target after a downward edit.
         history.output = history.output.min(parameters.output);
         let signal = frame.map(|v| {
@@ -893,8 +1150,10 @@ impl OwnedProcessorRuntime for Runtime {
         inline.checked_add(committed)?.checked_add(scratch)
     }
     fn begin_block(&mut self) {
-        self.scratch.copy_from(&self.primary);
-        self.scratch.meter = DynamicsMeter::default();
+        if self.open {
+            self.rollback_block();
+        }
+        self.scratch.begin_block();
         self.open = true;
     }
     fn supports_parameter_automation(&self, id: hex_lattice_contract::ParameterId) -> bool {
@@ -914,12 +1173,17 @@ impl OwnedProcessorRuntime for Runtime {
     }
     fn commit_block(&mut self) {
         if self.open {
-            std::mem::swap(&mut self.primary, &mut self.scratch);
+            self.primary
+                .commit_from(&mut self.scratch, self.config.delay + 1);
             self.open = false;
         }
     }
     fn rollback_block(&mut self) {
-        self.open = false;
+        if self.open {
+            self.scratch
+                .rollback_from(&self.primary, self.config.delay + 1);
+            self.open = false;
+        }
     }
     fn begin_output_tail(&mut self) {
         self.releasing = true;
@@ -987,5 +1251,92 @@ impl OwnedProcessorRuntime for Runtime {
 
 #[cfg(test)]
 mod storage_tests;
+
+#[cfg(test)]
+mod detector_oracle_tests {
+    use super::*;
+
+    fn exhaustive_32_phase(x: &[f64; TAPS], phases: &[[f64; TAPS]; PHASES]) -> f64 {
+        let mut max_val = 0.0_f64;
+        for phase in phases {
+            let mut acc = 0.0_f64;
+            for (sample, coeff) in x.iter().zip(phase.iter()) {
+                acc += sample * coeff;
+            }
+            max_val = max_val.max(acc.abs());
+        }
+        max_val
+    }
+
+    #[test]
+    fn coarse_to_fine_true_peak_matches_exhaustive_32_phase_oracle() {
+        let phases = reconstruction_coefficients();
+        let mut x = [0.0_f64; TAPS];
+        let mut max_under_read = 0.0_f64;
+        let mut state = 0x1234_5678_9abc_def0_u64;
+        for step in 0..8_192usize {
+            let sample = match step / 2048 {
+                0 => {
+                    // Near-Nyquist gated bursts
+                    let env = if step % 97 < 13 { 10.0 } else { 0.5 };
+                    env * (step as f64 * 2.71 + 0.3).sin()
+                }
+                1 => {
+                    // Full-band frequency sweep
+                    let t = (step % 2048) as f64 / 2048.0;
+                    (std::f64::consts::PI * t * (step % 2048) as f64).sin()
+                }
+                2 => {
+                    // Sparse impulses & step edges
+                    if step % 37 == 0 {
+                        2.5
+                    } else if step % 37 == 1 {
+                        -2.5
+                    } else {
+                        0.0
+                    }
+                }
+                _ => {
+                    // Deterministic white noise
+                    state = state
+                        .wrapping_mul(6_364_136_223_846_793_005)
+                        .wrapping_add(1_442_695_040_888_963_407);
+                    ((state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+                }
+            };
+            x.rotate_left(1);
+            x[TAPS - 1] = sample;
+            let exact = exhaustive_32_phase(&x, phases);
+            let fast = true_peak_lane(&x, phases);
+            // `true_peak_lane` also inspects `x[16]` (phase 32 = next sample's phase 0),
+            // so it is always >= exact (within floating-point rounding) and never under-reads.
+            let under_read = (exact - fast).max(0.0);
+            max_under_read = max_under_read.max(under_read);
+            assert!(
+                under_read <= 1e-6 * exact.max(1.0),
+                "step={step}: fast={fast} exact={exact} under_read={under_read}"
+            );
+        }
+        assert!(max_under_read <= 1e-6, "max_under_read={max_under_read}");
+    }
+
+    #[test]
+    fn auto_release_taylor_matches_exp_across_rates_and_program_range() {
+        for rate in [8_000u32, 44_100, 48_000, 96_000, 192_000] {
+            let inv_rate = 1.0 / f64::from(rate);
+            for step in 0..=100 {
+                let program = step as f64 / 100.0;
+                let seconds = 0.05 + 0.22 * program;
+                let exact = 1.0 - (-1.0 / (seconds * f64::from(rate))).exp();
+                let x = inv_rate / seconds;
+                let approx = x * (1.0 - x * (0.5 - x * ((1.0 / 6.0) - x * (1.0 / 24.0))));
+                assert!(
+                    (approx - exact).abs() < 1e-14,
+                    "rate={rate} program={program}: approx={approx} exact={exact}"
+                );
+            }
+        }
+    }
+}
 
 pub(super) mod structural;
