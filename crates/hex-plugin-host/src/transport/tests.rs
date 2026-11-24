@@ -1385,6 +1385,204 @@ fn stopped_partial_quantum_dispatches_play_context_before_the_coincident_note() 
 }
 
 #[test]
+fn interior_loop_wraps_emit_timing_changes_and_contiguous_or_aligned_wraps_do_not() {
+    let running = |frame: i64| ProcessTiming {
+        arrangement_frame: frame,
+        playing: true,
+        arrangement_beat_raw: Some((frame as u64) << 20),
+        tempo_micro_bpm: std::num::NonZeroU32::new(120_000_000),
+        meter: Some((4, 4)),
+        cycle_beats_raw: Some((64 << 20, 128 << 20)),
+    };
+
+    // Loop [64, 128) wraps at offsets 1, 3 and 7 inside one 8-frame quantum.
+    for cut in [1usize, 3, 7] {
+        let (_control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
+        let initial_frame = (128 - cut) as i64;
+        let mut stage = || {
+            callback.begin_physical_callback(8).unwrap();
+            callback
+                .stage_segment_with_timing(
+                    0,
+                    &[[0.25; 2]; 8][..cut],
+                    &[],
+                    &[],
+                    &mut [[0.0; 2]; 8][..cut],
+                    SegmentTiming {
+                        playing: Some(true),
+                        at: |i| Some(running(initial_frame + i as i64)),
+                    },
+                )
+                .unwrap();
+            callback
+                .stage_segment_with_timing(
+                    cut,
+                    &[[0.5; 2]; 8][cut..],
+                    &[],
+                    &[],
+                    &mut [[0.0; 2]; 8][cut..],
+                    SegmentTiming {
+                        playing: Some(true),
+                        at: |i| Some(running(64 + i as i64)),
+                    },
+                )
+                .unwrap();
+            callback.finish(true).unwrap();
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(&mut stage);
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        stage();
+        let request = worker.receive().unwrap().unwrap();
+        assert_eq!(request.timing, Some(running(initial_frame)));
+        assert_eq!(
+            request.timing_changes.as_slice(),
+            &[TimingChange {
+                frame: cut as u16,
+                timing: running(64),
+            }]
+        );
+    }
+
+    // Wrap split across two physical callbacks (3 + 5), followed by contiguous
+    // two-callback audio (3 + 5) and a block-aligned wrap (8 + 8).
+    let (_control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
+    let mut run_sequence = || {
+        // Quantum 0: wrap at offset 3 across two callbacks ([125..128) then [64..69)).
+        callback.begin_physical_callback(3).unwrap();
+        callback
+            .stage_segment_with_timing(
+                0,
+                &[[0.25; 2]; 3],
+                &[],
+                &[],
+                &mut [[0.0; 2]; 3],
+                SegmentTiming {
+                    playing: Some(true),
+                    at: |i| Some(running(125 + i as i64)),
+                },
+            )
+            .unwrap();
+        callback.finish(true).unwrap();
+
+        callback.begin_physical_callback(5).unwrap();
+        callback
+            .stage_segment_with_timing(
+                0,
+                &[[0.5; 2]; 5],
+                &[],
+                &[],
+                &mut [[0.0; 2]; 5],
+                SegmentTiming {
+                    playing: Some(true),
+                    at: |i| Some(running(64 + i as i64)),
+                },
+            )
+            .unwrap();
+        callback.finish(true).unwrap();
+
+        // Quantum 1: contiguous running audio across two callbacks ([69..72) then [72..77)).
+        callback.begin_physical_callback(3).unwrap();
+        callback
+            .stage_segment_with_timing(
+                0,
+                &[[0.25; 2]; 3],
+                &[],
+                &[],
+                &mut [[0.0; 2]; 3],
+                SegmentTiming {
+                    playing: Some(true),
+                    at: |i| Some(running(69 + i as i64)),
+                },
+            )
+            .unwrap();
+        callback.finish(true).unwrap();
+
+        callback.begin_physical_callback(5).unwrap();
+        callback
+            .stage_segment_with_timing(
+                0,
+                &[[0.5; 2]; 5],
+                &[],
+                &[],
+                &mut [[0.0; 2]; 5],
+                SegmentTiming {
+                    playing: Some(true),
+                    at: |i| Some(running(72 + i as i64)),
+                },
+            )
+            .unwrap();
+        callback.finish(true).unwrap();
+    };
+    #[cfg(feature = "allocation-probe")]
+    {
+        let measured = allocation_counter::measure(&mut run_sequence);
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    #[cfg(not(feature = "allocation-probe"))]
+    run_sequence();
+
+    let mut q0 = worker.receive().unwrap().unwrap();
+    assert_eq!(q0.timing, Some(running(125)));
+    assert_eq!(
+        q0.timing_changes.as_slice(),
+        &[TimingChange {
+            frame: 3,
+            timing: running(64),
+        }]
+    );
+    q0.timing_changes = TimingChanges::default();
+    worker.complete(q0).unwrap();
+
+    let q1 = worker.receive().unwrap().unwrap();
+    assert_eq!(q1.timing, Some(running(69)));
+    assert!(q1.timing_changes.as_slice().is_empty());
+    worker.complete(q1).unwrap();
+
+    // Quantum 2 -> Quantum 3: wrap aligned exactly to the worker block boundary.
+    for start in [120_i64, 64_i64] {
+        callback.begin_physical_callback(8).unwrap();
+        callback
+            .stage_segment_with_timing(
+                0,
+                &[[0.25; 2]; 8],
+                &[],
+                &[],
+                &mut [[0.0; 2]; 8],
+                SegmentTiming {
+                    playing: Some(true),
+                    at: |i| Some(running(start + i as i64)),
+                },
+            )
+            .unwrap();
+        callback.finish(true).unwrap();
+        let req = worker.receive().unwrap().unwrap();
+        assert_eq!(req.timing, Some(running(start)));
+        assert!(req.timing_changes.as_slice().is_empty());
+        worker.complete(req).unwrap();
+    }
+}
+
+#[test]
 fn dense_identified_notes_cross_callback_and_wire_without_expanding_replies() {
     let (control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
     let events: [MidiEvent; 160] = std::array::from_fn(|index| MidiEvent {

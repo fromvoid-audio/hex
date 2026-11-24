@@ -367,6 +367,297 @@ fn actual_unautomated_effect_delivers_in_block_and_boundary_transport_transition
             .unwrap();
     }
 }
+
+#[test]
+#[ignore = "requires explicit source-bound original SDK receipts"]
+fn actual_unautomated_instrument_and_effect_receive_sdk_loop_wrap_origins() {
+    const NAME: &str = "plugin_effects::callbacks::tests::actual_unautomated_instrument_and_effect_receive_sdk_loop_wrap_origins";
+    const CHILD: &str = "HEX_LOOP_WRAP_SDK_TEST_CHILD";
+    const K_PLAYING: i64 = 1 << 1;
+    const K_PROJECT_TIME_MUSIC_VALID: i64 = 1 << 9;
+
+    if std::env::var_os(CHILD).is_none() {
+        let dir = std::env::temp_dir().join(format!("hex-loop-wrap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (mode, variant) in [("effect", "0"), ("instrument", "115")] {
+            let trace_path = dir.join(format!("{mode}.bin"));
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--ignored"])
+                .env(CHILD, mode)
+                .env("HEX_ORIGINAL_INSTANCE_VARIANT", variant)
+                .env("HEX_ORIGINAL_CONTEXT_TRACE", &trace_path)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success()
+                    && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+                "{mode}:\n{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            let bytes = std::fs::read(&trace_path).unwrap();
+            assert!(bytes.len() >= 8 && bytes.len() % 8 == 0);
+            let words: Vec<i64> = bytes
+                .chunks_exact(8)
+                .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            let count = words[0] as usize;
+            // Quantum 0 splits into 2 SDK slices (3 frames @ 125, 5 frames @ 64).
+            // Quanta 1 (contiguous across 2 callbacks), 2 (aligned pre-wrap),
+            // 3 (aligned post-wrap), 4 & 5 (drain) each execute 1 SDK slice -> 7 total.
+            assert_eq!(count, 7, "{mode}: unexpected SDK slice count: {words:?}");
+            let slice = |idx: usize| -> (i64, i64, i64, f64) {
+                let base = 1 + idx * 4;
+                (
+                    words[base],
+                    words[base + 1],
+                    words[base + 2],
+                    f64::from_bits(words[base + 3] as u64),
+                )
+            };
+            // Slice 0: pre-wrap 3 samples at frame 125, beat 125.0, kPlaying set.
+            assert_eq!(
+                slice(0),
+                (3, K_PLAYING | K_PROJECT_TIME_MUSIC_VALID, 125, 125.0),
+                "{mode}: slice 0"
+            );
+            // Slice 1: post-wrap 5 samples at frame 64, beat 64.0, kPlaying set.
+            assert_eq!(
+                slice(1),
+                (5, K_PLAYING | K_PROJECT_TIME_MUSIC_VALID, 64, 64.0),
+                "{mode}: slice 1"
+            );
+            // Slice 2: contiguous across two callbacks (3 + 5), single 8-sample SDK call @ 69.
+            assert_eq!(
+                slice(2),
+                (8, K_PLAYING | K_PROJECT_TIME_MUSIC_VALID, 69, 69.0),
+                "{mode}: slice 2"
+            );
+            // Slice 3: block-aligned pre-wrap [120..128), single 8-sample SDK call @ 120.
+            assert_eq!(
+                slice(3),
+                (8, K_PLAYING | K_PROJECT_TIME_MUSIC_VALID, 120, 120.0),
+                "{mode}: slice 3"
+            );
+            // Slice 4: block-aligned post-wrap [64..72), single 8-sample SDK call @ 64.
+            assert_eq!(
+                slice(4),
+                (8, K_PLAYING | K_PROJECT_TIME_MUSIC_VALID, 64, 64.0),
+                "{mode}: slice 4"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+
+    let mode = std::env::var(CHILD).unwrap();
+    let is_instrument = mode == "instrument";
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            struct LoopClock(u64);
+            impl hex_lattice::NativeInstrumentClock for LoopClock {
+                fn beat_at_offset(&self, _: usize) -> Option<u64> {
+                    None
+                }
+                fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+                    Some(self.0 + offset as u64)
+                }
+                fn arrangement_beat_at_offset(&self, offset: usize) -> Option<u64> {
+                    Some((self.0 + offset as u64) << 32)
+                }
+                fn transport_is_running(&self) -> Option<bool> {
+                    Some(true)
+                }
+            }
+
+            let binding = Binding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: if is_instrument { 21 } else { 20 },
+            };
+            let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 2).unwrap();
+            let source = crate::plugin_worker::native_tests::original_instance_with_inputs(
+                binding,
+                if is_instrument { 0 } else { 2 },
+            );
+            let effect = NativeEffect::prepare_on_control(identity, source).unwrap();
+            let facts = Facts {
+                identity,
+                state: effect.configuration().clone(),
+                prepared: effect.prepared(),
+            };
+            assert_eq!(facts.prepared.is_instrument_profile(), is_instrument);
+            let (mut workers, mut endpoints) =
+                NativeEffectCallbacks::from_effects_on_control(vec![effect]).unwrap();
+            let worker = &mut workers[0];
+
+            let note_on_pre = ForeignNote {
+                frame: 1,
+                channel: 2,
+                pitch: 60,
+                velocity: 127,
+                on: true,
+                note_id: std::num::NonZeroU32::new(41),
+            };
+            let note_on_cut = ForeignNote {
+                frame: 0,
+                channel: 2,
+                pitch: 60,
+                velocity: 127,
+                on: true,
+                note_id: std::num::NonZeroU32::new(42),
+            };
+            let note_off_pre = ForeignNote {
+                frame: 2,
+                velocity: 0,
+                on: false,
+                ..note_on_pre
+            };
+            let note_off_cut = ForeignNote {
+                frame: 3,
+                velocity: 0,
+                on: false,
+                ..note_on_cut
+            };
+
+            let mut received = Vec::new();
+            let wait_for = |worker: &crate::plugin_worker::NativeWorker, blocks: u64| {
+                let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                while worker.published_blocks_on_control() < blocks {
+                    assert!(std::time::Instant::now() < until, "native PCM completion");
+                    std::thread::yield_now();
+                }
+            };
+
+            // Quantum 0: interior wrap at offset 3 split across two physical callbacks (3 + 5).
+            {
+                let mut out = [[0.25_f32; 2]; 8];
+                let mut run = || {
+                    endpoints.begin_host_callback(3).unwrap();
+                    if is_instrument {
+                        endpoints
+                            .process_segment_with_notes(
+                                facts.node(),
+                                0,
+                                &mut out[..3],
+                                &[],
+                                &[note_on_pre],
+                                Some(&LoopClock(125)),
+                            )
+                            .unwrap();
+                    } else {
+                        endpoints
+                            .process_segment(facts.node(), 0, &mut out[..3], Some(&LoopClock(125)))
+                            .unwrap();
+                    }
+                    endpoints.finish_host_callback(true).unwrap();
+
+                    endpoints.begin_host_callback(5).unwrap();
+                    if is_instrument {
+                        endpoints
+                            .process_segment_with_notes(
+                                facts.node(),
+                                0,
+                                &mut out[3..],
+                                &[],
+                                &[note_on_cut, note_off_pre, note_off_cut],
+                                Some(&LoopClock(64)),
+                            )
+                            .unwrap();
+                    } else {
+                        endpoints
+                            .process_segment(facts.node(), 0, &mut out[3..], Some(&LoopClock(64)))
+                            .unwrap();
+                    }
+                    endpoints.finish_host_callback(true).unwrap();
+                };
+                #[cfg(feature = "allocation-probe")]
+                assert_eq!(allocations_during(&mut run), [0; 4]);
+                #[cfg(not(feature = "allocation-probe"))]
+                run();
+                received.push(out);
+                wait_for(worker, 1);
+            }
+
+            // Quantum 1: contiguous running audio across two physical callbacks (3 + 5).
+            {
+                let mut out = [[0.25_f32; 2]; 8];
+                let mut run = || {
+                    endpoints.begin_host_callback(3).unwrap();
+                    endpoints
+                        .process_segment(facts.node(), 0, &mut out[..3], Some(&LoopClock(69)))
+                        .unwrap();
+                    endpoints.finish_host_callback(true).unwrap();
+                    endpoints.begin_host_callback(5).unwrap();
+                    endpoints
+                        .process_segment(facts.node(), 0, &mut out[3..], Some(&LoopClock(72)))
+                        .unwrap();
+                    endpoints.finish_host_callback(true).unwrap();
+                };
+                #[cfg(feature = "allocation-probe")]
+                assert_eq!(allocations_during(&mut run), [0; 4]);
+                #[cfg(not(feature = "allocation-probe"))]
+                run();
+                received.push(out);
+                wait_for(worker, 2);
+            }
+
+            // Quanta 2..6: block-aligned wrap (120 -> 64) + 2 drain quanta (72, 80).
+            for (idx, start) in [120_u64, 64, 72, 80].into_iter().enumerate() {
+                let mut out = [[0.25_f32; 2]; 8];
+                let mut run = || {
+                    endpoints.begin_host_callback(8).unwrap();
+                    endpoints
+                        .process_segment(facts.node(), 0, &mut out, Some(&LoopClock(start)))
+                        .unwrap();
+                    endpoints.finish_host_callback(true).unwrap();
+                };
+                #[cfg(feature = "allocation-probe")]
+                assert_eq!(allocations_during(&mut run), [0; 4]);
+                #[cfg(not(feature = "allocation-probe"))]
+                run();
+                received.push(out);
+                wait_for(worker, 3 + idx as u64);
+            }
+
+            // Quantum 0 output arrives at received[2] (2-quantum bridge latency).
+            if is_instrument {
+                // Slice 0 (block 0, scale 0.5): frame 0 silent, frames 1..3 have voice 41 (1.0 * 0.5 = 0.5).
+                // Slice 1 (block 1, scale 0.625): frames 3..5 have voices 41+42 (2.0 * 0.625 = 1.25),
+                // frame 5 has voice 42 only (1.0 * 0.625 = 0.625), frames 6..8 silent.
+                let expected = [0.0, 0.5, 0.5, 1.25, 1.25, 0.625, 0.0, 0.0].map(|s| [s; 2]);
+                assert_eq!(received[2], expected, "instrument loop-wrap PCM/MIDI order");
+            } else {
+                // Slice 0 (block 0, scale 0.5): 0.25 * 0.5 = 0.125 for frames 0..3.
+                // Slice 1 (block 1, scale 0.625): 0.25 * 0.625 = 0.15625 for frames 3..8.
+                let expected = [
+                    0.125, 0.125, 0.125, 0.15625, 0.15625, 0.15625, 0.15625, 0.15625,
+                ]
+                .map(|s| [s; 2]);
+                assert_eq!(received[2], expected, "effect loop-wrap PCM order");
+                // Quantum 1 (block 2, single unsplit slice, scale 0.75): 0.25 * 0.75 = 0.1875.
+                assert_eq!(received[3], [[0.1875; 2]; 8], "effect contiguous PCM");
+                // Quantum 2 (block 3, aligned pre-wrap, scale 0.875): 0.25 * 0.875 = 0.21875.
+                assert_eq!(received[4], [[0.21875; 2]; 8], "effect aligned pre-wrap PCM");
+                // Quantum 3 (block 4, aligned post-wrap, scale 1.0): 0.25 * 1.0 = 0.25.
+                assert_eq!(received[5], [[0.25; 2]; 8], "effect aligned post-wrap PCM");
+            }
+
+            let retirement = worker.retire_on_control().unwrap();
+            assert!(
+                retirement.failure.is_none() && retirement.native.status.success(),
+                "{mode}: retirement failed: {:?}",
+                retirement.failure
+            );
+            assert_eq!(retirement.native.terminal.unwrap().blocks, 6, "{mode}");
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
 }
 
 /// Copied graph facts for one endpoint, so a node can be built while the
@@ -696,6 +987,158 @@ fn unautomated_effect_records_in_block_and_boundary_transport_transitions() {
     );
     assert!(boundary_play.timing_changes.as_slice().is_empty());
     endpoint.worker.complete(boundary_play).unwrap();
+}
+
+#[test]
+fn unautomated_effect_delivers_interior_loop_wraps_without_redundant_splits() {
+    use hex_plugin_host::transport::{ProcessTiming, TimingChange};
+
+    struct WindowClock([u64; QUANTUM]);
+    impl hex_lattice::NativeInstrumentClock for WindowClock {
+        fn beat_at_offset(&self, _: usize) -> Option<u64> {
+            None
+        }
+        fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+            self.0.get(offset).copied()
+        }
+        fn transport_is_running(&self) -> Option<bool> {
+            Some(true)
+        }
+    }
+
+    let (mut callbacks, mut endpoints) = endpoints();
+    let endpoint = &mut endpoints[0];
+    let node = endpoint.facts.node();
+
+    // Single-segment delayed OriginWindow-style interior wrap: [126, 127, 64, 65].
+    {
+        let mut output = [[0.25; 2]; QUANTUM];
+        let clock = WindowClock([126, 127, 64, 65]);
+        assert_eq!(
+            allocations_during(|| {
+                callbacks.begin_host_callback(QUANTUM).unwrap();
+                callbacks
+                    .process_segment(node, 0, &mut output, Some(&clock))
+                    .unwrap();
+                callbacks.finish_host_callback(true).unwrap();
+            }),
+            [0; 4]
+        );
+        let mut req = endpoint.worker.receive().unwrap().unwrap();
+        assert_eq!(
+            req.timing,
+            Some(ProcessTiming {
+                arrangement_frame: 126,
+                playing: true,
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            req.timing_changes.as_slice(),
+            &[TimingChange {
+                frame: 2,
+                timing: ProcessTiming {
+                    arrangement_frame: 64,
+                    playing: true,
+                    ..Default::default()
+                },
+            }]
+        );
+        req.timing_changes = Default::default();
+        endpoint.worker.complete(req).unwrap();
+    }
+
+    // Two-callback interior wrap: [127] then [64, 65, 66].
+    {
+        let mut out_a = [[0.25; 2]; 1];
+        let mut out_b = [[0.25; 2]; 3];
+        let clock_a = WindowClock([127, 0, 0, 0]);
+        let clock_b = WindowClock([64, 65, 66, 0]);
+        assert_eq!(
+            allocations_during(|| {
+                callbacks.begin_host_callback(1).unwrap();
+                callbacks
+                    .process_segment(node, 0, &mut out_a, Some(&clock_a))
+                    .unwrap();
+                callbacks.finish_host_callback(true).unwrap();
+                callbacks.begin_host_callback(3).unwrap();
+                callbacks
+                    .process_segment(node, 0, &mut out_b, Some(&clock_b))
+                    .unwrap();
+                callbacks.finish_host_callback(true).unwrap();
+            }),
+            [0; 4]
+        );
+        let mut req = endpoint.worker.receive().unwrap().unwrap();
+        assert_eq!(
+            req.timing,
+            Some(ProcessTiming {
+                arrangement_frame: 127,
+                playing: true,
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            req.timing_changes.as_slice(),
+            &[TimingChange {
+                frame: 1,
+                timing: ProcessTiming {
+                    arrangement_frame: 64,
+                    playing: true,
+                    ..Default::default()
+                },
+            }]
+        );
+        req.timing_changes = Default::default();
+        endpoint.worker.complete(req).unwrap();
+    }
+
+    // Contiguous two-callback audio [67, 68] + [69, 70] emits zero timing changes.
+    {
+        let mut out_a = [[0.25; 2]; 2];
+        let mut out_b = [[0.25; 2]; 2];
+        let clock_a = WindowClock([67, 68, 0, 0]);
+        let clock_b = WindowClock([69, 70, 0, 0]);
+        assert_eq!(
+            allocations_during(|| {
+                callbacks.begin_host_callback(2).unwrap();
+                callbacks
+                    .process_segment(node, 0, &mut out_a, Some(&clock_a))
+                    .unwrap();
+                callbacks.finish_host_callback(true).unwrap();
+                callbacks.begin_host_callback(2).unwrap();
+                callbacks
+                    .process_segment(node, 0, &mut out_b, Some(&clock_b))
+                    .unwrap();
+                callbacks.finish_host_callback(true).unwrap();
+            }),
+            [0; 4]
+        );
+        let req = endpoint.worker.receive().unwrap().unwrap();
+        assert_eq!(req.timing.unwrap().arrangement_frame, 67);
+        assert!(req.timing_changes.as_slice().is_empty());
+        endpoint.worker.complete(req).unwrap();
+    }
+
+    // Wrap aligned to next block boundary ([124..128) then [64..68)) emits zero splits.
+    for frames in [[124, 125, 126, 127], [64, 65, 66, 67]] {
+        let mut output = [[0.25; 2]; QUANTUM];
+        let clock = WindowClock(frames);
+        assert_eq!(
+            allocations_during(|| {
+                callbacks.begin_host_callback(QUANTUM).unwrap();
+                callbacks
+                    .process_segment(node, 0, &mut output, Some(&clock))
+                    .unwrap();
+                callbacks.finish_host_callback(true).unwrap();
+            }),
+            [0; 4]
+        );
+        let req = endpoint.worker.receive().unwrap().unwrap();
+        assert_eq!(req.timing.unwrap().arrangement_frame, frames[0] as i64);
+        assert!(req.timing_changes.as_slice().is_empty());
+        endpoint.worker.complete(req).unwrap();
+    }
 }
 
 #[test]
