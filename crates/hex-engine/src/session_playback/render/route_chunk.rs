@@ -871,17 +871,7 @@ impl SessionPlayback {
                         generator,
                     )?;
                     if self.source_input_receiver() == Some(index) {
-                        let authored = self
-                            .revision
-                            .source_routing()
-                            .contributors(index)
-                            .iter()
-                            .try_fold(0usize, |sum, &contributor| {
-                                sum.checked_add(
-                                    self.source_voice_envelope(usize::from(contributor)),
-                                )
-                            })
-                            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                        let authored = self.authored_source_voices(index)?;
                         source_live::render_source_live_input(
                             &self.revision,
                             self.computer_keyboard.as_mut().map(Box::as_mut),
