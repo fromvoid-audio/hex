@@ -879,3 +879,134 @@ fn render_and_export_refuse_device_referenced_audio_assets_explicitly() {
         assert!(!directory.path().join("out.wav").exists());
     }
 }
+
+#[test]
+fn export_project_overwrite_refuses_input_project_and_source_media_including_aliases() {
+    let directory = TempDir::new();
+    let media_dir = directory.path().join("media");
+    fs::create_dir_all(&media_dir).unwrap();
+    let source = media_dir.join("source.wav");
+    let source_bytes = wav(&[16_384; 16]);
+    fs::write(&source, &source_bytes).unwrap();
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+    editor
+        .execute(Command::ImportAudioTrack {
+            name: "audio".into(),
+            path: PathBuf::from("media/source.wav"),
+            sample_rate: 48_000,
+            frames: 16,
+        })
+        .unwrap();
+    let project_path = directory.path().join("input.hex");
+    hex_storage::save_new(&project_path, editor.project()).unwrap();
+    let project_bytes = fs::read(&project_path).unwrap();
+
+    let source_hardlink = directory.path().join("source-hardlink.wav");
+    fs::hard_link(&source, &source_hardlink).unwrap();
+    let project_hardlink = directory.path().join("input-hardlink.hex");
+    fs::hard_link(&project_path, &project_hardlink).unwrap();
+
+    #[cfg(unix)]
+    let (alias_dir, source_via_alias, project_via_alias) = {
+        let alias_dir = TempDir::new();
+        let linked = alias_dir.path().join("linked");
+        std::os::unix::fs::symlink(directory.path(), &linked).unwrap();
+        let src_alias = linked.join("media").join("source.wav");
+        let prj_alias = linked.join("input.hex");
+        (alias_dir, src_alias, prj_alias)
+    };
+    #[cfg(unix)]
+    let _keep_alias_dir = alias_dir;
+
+    let snapshot_entries = |dir: &Path| -> Vec<String> {
+        let mut names: Vec<_> = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    let root_entries_before = snapshot_entries(directory.path());
+    let media_entries_before = snapshot_entries(&media_dir);
+
+    let mut protected = vec![
+        (project_path.to_string_lossy().into_owned(), "input project"),
+        (
+            project_hardlink.to_string_lossy().into_owned(),
+            "input project",
+        ),
+        (source.to_string_lossy().into_owned(), "source media"),
+        (
+            source_hardlink.to_string_lossy().into_owned(),
+            "source media",
+        ),
+    ];
+    #[cfg(unix)]
+    {
+        protected.push((
+            project_via_alias.to_string_lossy().into_owned(),
+            "input project",
+        ));
+        protected.push((
+            source_via_alias.to_string_lossy().into_owned(),
+            "source media",
+        ));
+    }
+
+    for (destination, expected) in protected {
+        let output = run(
+            directory.path(),
+            &[
+                "export-project",
+                "input.hex",
+                &destination,
+                "0",
+                "16",
+                "--overwrite",
+            ],
+        );
+        assert!(
+            !output.status.success(),
+            "expected refusal for destination {destination}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(expected),
+            "expected {expected:?} in stderr: {stderr}"
+        );
+    }
+
+    assert_eq!(fs::read(&project_path).unwrap(), project_bytes);
+    assert_eq!(fs::read(&source).unwrap(), source_bytes);
+    assert_eq!(snapshot_entries(directory.path()), root_entries_before);
+    assert_eq!(snapshot_entries(&media_dir), media_entries_before);
+
+    // An unrelated existing WAV remains replaceable with --overwrite and keeps its recovery copy.
+    let unrelated = directory.path().join("unrelated.wav");
+    let unrelated_before = b"previous unrelated wav";
+    fs::write(&unrelated, unrelated_before).unwrap();
+    let output = run(
+        directory.path(),
+        &[
+            "export-project",
+            "input.hex",
+            "unrelated.wav",
+            "0",
+            "16",
+            "--overwrite",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "expected unrelated overwrite to succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let recovery_line = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("previous file preserved at "))
+        .expect("expected recovery copy announcement in stdout");
+    let recovery_path = directory.path().join(recovery_line.trim());
+    assert_eq!(fs::read(&recovery_path).unwrap(), unrelated_before);
+}
