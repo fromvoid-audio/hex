@@ -217,6 +217,11 @@ mod tests {
             load_playback_preferences(&path),
             Err(PreferencesError::Io(_))
         ));
+        let nested = parent_file.join("nested").join("playback.json");
+        assert!(matches!(
+            load_playback_preferences(&nested),
+            Err(PreferencesError::Io(_))
+        ));
         assert!(matches!(
             save_playback_preferences(&path, PlaybackPreferences::default()),
             Err(PreferencesError::Io(_))

@@ -725,7 +725,28 @@ pub fn save(path: &Path, places: &BrowserPlaces) -> Result<(), PreferencesError>
 fn read_document(path: &Path) -> Result<Option<Vec<u8>>, PreferencesError> {
     let file = match File::open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            #[cfg(windows)]
+            if let Some(parent) = path.parent() {
+                // Windows maps ERROR_PATH_NOT_FOUND to NotFound even when an
+                // ancestor path component is a regular file instead of a directory.
+                for ancestor in parent.ancestors() {
+                    if ancestor.as_os_str().is_empty() {
+                        break;
+                    }
+                    match fs::metadata(ancestor) {
+                        Ok(meta) if meta.is_dir() => break,
+                        Ok(_) => {
+                            return Err(io::Error::new(io::ErrorKind::NotADirectory, error).into());
+                        }
+                        Err(ancestor_error) if ancestor_error.kind() == io::ErrorKind::NotFound => {
+                        }
+                        Err(ancestor_error) => return Err(ancestor_error.into()),
+                    }
+                }
+            }
+            return Ok(None);
+        }
         Err(error) => return Err(error.into()),
     };
     let size = file.metadata()?.len();
