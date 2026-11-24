@@ -433,12 +433,14 @@ impl State {
 
     // Recheck queued PCM after a sleep and between replies before starting
     // avoidable synchronous I/O. A finite catch-up quota preserves receipt and
-    // metadata progress under continuous PCM. Capture, editor admission and
-    // writes retain their original ordering, including the offline path.
+    // metadata progress under continuous PCM. Routine periodic polls keep the
+    // transport thread's RT policy intact; only heavy non-routine control turns
+    // invoke `before_non_routine_control`. Capture, editor admission and writes
+    // retain their original ordering, including the offline path.
     pub(super) fn advance_native_control(
         &mut self,
         signal: &Signal,
-        before_control: impl FnOnce() -> Result<(), Error>,
+        before_non_routine_control: impl FnOnce(),
     ) -> Result<(), Error> {
         let allow_routine = signal.offline.is_some()
             || !self.worker.has_queued_request()
@@ -448,7 +450,7 @@ impl State {
                 0 if (signal.capture_requested.load(Acquire) || self.capture.is_in_flight())
                     && !self.capture.between_polls() =>
                 {
-                    before_control()?;
+                    before_non_routine_control();
                     self.control_turn = 1;
                     return self.advance_capture(signal);
                 }
@@ -476,7 +478,9 @@ impl State {
                     if routine && !allow_routine {
                         continue;
                     }
-                    before_control()?;
+                    if !routine {
+                        before_non_routine_control();
+                    }
                     self.control_turn = 2;
                     if routine {
                         self.pcm_since_routine_control = 0;
@@ -495,7 +499,9 @@ impl State {
                     if routine && !allow_routine {
                         continue;
                     }
-                    before_control()?;
+                    if !routine {
+                        before_non_routine_control();
+                    }
                     self.control_turn = 3;
                     if routine {
                         self.pcm_since_routine_control = 0;
@@ -503,7 +509,7 @@ impl State {
                     return self.advance_parameter_edits_selected(signal, Some(read));
                 }
                 3 if signal.parameter_change_requested.load(Acquire) => {
-                    before_control()?;
+                    before_non_routine_control();
                     self.control_turn = 0;
                     return self.advance_idle_parameter_change(signal);
                 }
@@ -703,12 +709,10 @@ mod scheduling_tests {
             request_controller(signal, ControllerRequest::default());
             let called = Cell::new(false);
             state
-                .advance_native_control(signal, || {
-                    called.set(true);
-                    Ok(())
-                })
+                .advance_native_control(signal, || called.set(true))
                 .unwrap();
             assert!(!called.get(), "queued PCM must precede routine native I/O");
+            assert_eq!(state.control_turn, 0);
             assert!(signal.controller_requested.load(Acquire));
             assert_eq!(state.worker.receive().unwrap().unwrap().sequence, 0);
         });
@@ -747,21 +751,71 @@ mod scheduling_tests {
                     state.record_pcm_completion();
                     stage(callback, sequence + 2);
                     assert!(state.worker.has_queued_request());
-                    let called = Cell::new(false);
+                    let before_turn = state.control_turn;
+                    let demoted = Cell::new(false);
                     state
-                        .advance_native_control(signal, || {
-                            called.set(true);
-                            Ok(())
-                        })
+                        .advance_native_control(signal, || demoted.set(true))
                         .unwrap();
-                    if called.get() && state.control_turn == 2 {
+                    if state.control_turn == 2
+                        && (before_turn != 2 || state.pcm_since_routine_control == 0)
+                    {
+                        assert!(
+                            !demoted.get(),
+                            "routine controller poll must not call deadline.leave()"
+                        );
                         routine_turns.push(sequence);
+                    } else if capture_pending {
+                        assert!(demoted.get());
+                    } else {
+                        assert!(!demoted.get());
                     }
                 }
                 assert_eq!(routine_turns, [3, 7, 11]);
                 assert!(signal.controller_requested.load(Acquire));
             });
         }
+    }
+
+    #[test]
+    fn routine_periodic_control_polls_never_demote_transport_deadline() {
+        for query in [
+            ControllerRequest::default(),
+            ControllerRequest::SelectedParameters { first: 0 },
+            ControllerRequest::EditorVisibility,
+        ] {
+            with_state(false, |state, signal, _callback| {
+                request_controller(signal, query);
+                let demoted = Cell::new(false);
+                state
+                    .advance_native_control(signal, || demoted.set(true))
+                    .unwrap();
+                assert_eq!(
+                    state.control_turn, 2,
+                    "routine query must advance: {query:?}"
+                );
+                assert!(
+                    !demoted.get(),
+                    "routine periodic query must not leave RT deadline: {query:?}"
+                );
+            });
+        }
+        // Periodic 10 ms parameter touch receipt polls (!flush_idle) also stay in RT.
+        // The function processor returns `native edit source missing` after selection.
+        with_state(false, |state, signal, _callback| {
+            signal.capture.lock().unwrap().edits_pending = true;
+            signal.edits_requested.store(true, Release);
+            let demoted = Cell::new(false);
+            assert!(
+                state
+                    .advance_native_control(signal, || demoted.set(true))
+                    .is_err()
+            );
+            assert_eq!(state.control_turn, 3);
+            assert!(
+                !demoted.get(),
+                "periodic parameter touch poll must not leave RT deadline"
+            );
+        });
     }
 
     #[test]
@@ -781,10 +835,7 @@ mod scheduling_tests {
                 request_controller(signal, query);
                 let called = Cell::new(false);
                 state
-                    .advance_native_control(signal, || {
-                        called.set(true);
-                        Ok(())
-                    })
+                    .advance_native_control(signal, || called.set(true))
                     .unwrap();
                 assert!(
                     called.get(),
@@ -797,10 +848,7 @@ mod scheduling_tests {
             signal.capture_requested.store(true, Release);
             let called = Cell::new(false);
             state
-                .advance_native_control(signal, || {
-                    called.set(true);
-                    Ok(())
-                })
+                .advance_native_control(signal, || called.set(true))
                 .unwrap();
             assert!(called.get());
         });
@@ -814,10 +862,7 @@ mod scheduling_tests {
             signal.edits_requested.store(true, Release);
             let called = Cell::new(false);
             state
-                .advance_native_control(signal, || {
-                    called.set(true);
-                    Ok(())
-                })
+                .advance_native_control(signal, || called.set(true))
                 .unwrap();
             assert!(!called.get());
             signal.capture.lock().unwrap().flush_idle_edits = true;
@@ -825,10 +870,7 @@ mod scheduling_tests {
             // must still occur before that explicit missing-source refusal.
             assert!(
                 state
-                    .advance_native_control(signal, || {
-                        called.set(true);
-                        Ok(())
-                    })
+                    .advance_native_control(signal, || called.set(true))
                     .is_err()
             );
             assert!(called.get());
@@ -852,10 +894,7 @@ mod scheduling_tests {
             // ordering-sensitive priority without waiting for the PCM quota.
             let called = Cell::new(false);
             state
-                .advance_native_control(signal, || {
-                    called.set(true);
-                    Ok(())
-                })
+                .advance_native_control(signal, || called.set(true))
                 .unwrap();
             assert!(called.get());
             assert_eq!(state.control_turn, 2);
@@ -873,10 +912,7 @@ mod scheduling_tests {
                 let _mailbox = signal.capture.lock().unwrap();
                 let called = Cell::new(false);
                 state
-                    .advance_native_control(signal, || {
-                        called.set(true);
-                        Ok(())
-                    })
+                    .advance_native_control(signal, || called.set(true))
                     .unwrap();
                 assert_eq!(called.get(), !routine);
             });
@@ -898,10 +934,7 @@ mod scheduling_tests {
                 .is_err()
             );
             let called = Cell::new(false);
-            let error = state.advance_native_control(signal, || {
-                called.set(true);
-                Ok(())
-            });
+            let error = state.advance_native_control(signal, || called.set(true));
             assert!(matches!(
                 error,
                 Err(Error::Protocol("native controller mailbox failed"))
@@ -915,14 +948,12 @@ mod scheduling_tests {
         with_state(true, |state, signal, callback| {
             stage(callback, 0);
             request_controller(signal, ControllerRequest::default());
-            let called = Cell::new(false);
+            let demoted = Cell::new(false);
             state
-                .advance_native_control(signal, || {
-                    called.set(true);
-                    Ok(())
-                })
+                .advance_native_control(signal, || demoted.set(true))
                 .unwrap();
-            assert!(called.get());
+            assert_eq!(state.control_turn, 2);
+            assert!(!demoted.get());
         });
     }
 }

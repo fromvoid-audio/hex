@@ -178,11 +178,16 @@ class NativeBootstrapTests(unittest.TestCase):
         value, observed = self.processing(30)
         self.assertEqual(value["flush"], 4)
         self.assertEqual(observed[7:11], [0, 0, 0, 1])
-        for scenario in (19, 20, 21, 22, 26):
+        for scenario in (20, 22, 26):
             with self.subTest(scenario=scenario):
                 _value, observed = self.processing(scenario)
                 self.assertEqual(observed[7:9], [1, 1])
                 self.assertEqual(observed[9], 1)  # one attempted DSP call, even when the plug-in refuses
+        for scenario in (19, 21):
+            with self.subTest(scenario=scenario):
+                _value, observed = self.processing(scenario)
+                self.assertEqual(observed[7:9], [1, 1])
+                self.assertEqual(observed[9], 3)  # NaN output and silenceFlags mismatch sanitize without revoking DSP
 
     @staticmethod
     def stream_packet(sequence, *, graph=3, frames=8, events=True):
@@ -350,13 +355,13 @@ class NativeBootstrapTests(unittest.TestCase):
 
     def test_actual_sdk_sealed_editor_keeps_accepted_fifo_and_refuses_late_input(self):
         value = self.host_control(15)
-        self.assertEqual((value["edit_count"], value["edit_order"], value["edit_backpressure"], value["enqueued"]), (16, 1, 1, 16))
-        self.assertEqual((value["known"], value["unknown"], value["message"], value["refusals"]), (1, 1, 16, 0))
+        self.assertEqual((value["edit_count"], value["edit_order"], value["edit_backpressure"], value["enqueued"]), (64, 1, 1, 64))
+        self.assertEqual((value["known"], value["unknown"], value["message"], value["refusals"]), (1, 1, 64, 0))
         self.assertTrue(value["closed"] and value["unloaded"])
 
     def test_actual_sdk_edit_fifo_preserves_boundaries_values_and_backpressure(self):
         value=self.host_control(13)
-        self.assertEqual((value["edit_count"],value["edit_order"],value["edit_backpressure"],value["enqueued"]),(16,1,1,16))
+        self.assertEqual((value["edit_count"],value["edit_order"],value["edit_backpressure"],value["enqueued"]),(64,1,1,64))
         self.assertEqual(value["refusals"],0)
         self.assertEqual(value["before_revision"],value["after_revision"],"queue admission is not a controller refresh or DSP ACK")
         self.assertTrue(value["closed"] and value["unloaded"])
@@ -368,7 +373,7 @@ class NativeBootstrapTests(unittest.TestCase):
         self.assertEqual(value["disposition"], 1)
         self.assertEqual(value["after_revision"], 2)
         self.assertEqual(value["after_value"], 0.75)
-        self.assertTrue(value["refusals"] & 512, "message pool exhaustion was explicit")
+        self.assertEqual(value["refusals"], 0, "message pool exhaustion is non-fatal")
         self.assertTrue(value["closed"] and value["unloaded"])
 
     def test_background_host_message_during_processing_keeps_instance_healthy(self):
@@ -379,20 +384,21 @@ class NativeBootstrapTests(unittest.TestCase):
 
     def test_unknown_and_graph_restart_classes_refuse_without_partial_cache_update(self):
         value = self.host_control(1)
-        for field in ("unknown", "graph", "known"):
-            self.assertNotEqual(value[field], 0, value)
-        self.assertEqual(value["dispatched"], 0)
-        self.assertEqual((value["after_revision"], value["after_value"]), (1, 0.25))
-        self.assertEqual(value["refusals"] & (2 | 4 | 128), 2 | 4 | 128)
+        self.assertNotEqual(value["unknown"], 0, value)
+        self.assertEqual(value["graph"], 0, "structural restarts schedule controlled resync")
+        self.assertNotEqual(value["known"], 0, "benign unsupported flag returns kNotImplemented")
+        self.assertEqual(value["dispatched"], 1)
+        self.assertEqual((value["after_revision"], value["after_value"]), (2, 0.25))
+        self.assertEqual(value["refusals"], 2, "only invalid >0xFFF mask latches UnknownRestart")
         self.assertTrue(value["closed"] and value["unloaded"])
 
     def test_restart_queue_has_bounded_ordered_backpressure(self):
         value = self.host_control(2)
         self.assertEqual((value["enqueued"], value["dispatched"]), (8, 8))
-        self.assertNotEqual(value["callback"], 0)
-        self.assertEqual((value["first_sequence"], value["last_sequence"]), (2, 9))
+        self.assertEqual(value["callback"], 0, "9th restart coalesces cleanly instead of latching QueueFull")
+        self.assertEqual((value["first_sequence"], value["last_sequence"]), (2, 10))
         self.assertEqual((value["after_revision"], value["after_value"]), (9, 0.75))
-        self.assertTrue(value["refusals"] & 8)
+        self.assertEqual(value["refusals"], 0)
         self.assertTrue(value["closed"] and value["unloaded"])
 
     def test_malformed_recursive_and_over_capacity_metadata_preserves_the_last_snapshot(self):
@@ -410,7 +416,7 @@ class NativeBootstrapTests(unittest.TestCase):
     def test_processing_thread_callbacks_refuse_before_controller_or_message_work(self):
         value = self.host_control(10)
         self.assertNotEqual(value["processing_callback"], 0)
-        self.assertNotEqual(value["processing_message"], 0)
+        self.assertEqual(value["processing_message"], 0, "IMessage from processing thread is tolerated")
         self.assertEqual(value["worker_dispatch"], 6)
         self.assertEqual(value["dispatched"], 0)
         self.assertEqual((value["after_revision"], value["after_value"]), (1, 0.25))

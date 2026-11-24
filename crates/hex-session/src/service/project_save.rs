@@ -29,7 +29,36 @@ pub(super) fn save_as(
             hex_storage::text::verbatim(name)
         ));
     }
-    let replace_existing = exists;
+    publish_as(path, exists, project, recovery_path, cancellation)
+}
+
+/// Publish a desktop project copy without permission to replace any file.
+pub(super) fn save_copy(
+    path: PathBuf,
+    project: Project,
+    recovery_path: Option<&Path>,
+    cancellation: &RequestCancellation,
+) -> Result<PathBuf, String> {
+    if path
+        .try_exists()
+        .map_err(|error| display(hex_storage::StorageError::Io(error)))?
+    {
+        return Err("copy destination exists · choose a new filename".into());
+    }
+    let (handle, commit) = publish_as(path, false, project, recovery_path, cancellation)?;
+    match commit.error {
+        Some(error) => Err(error),
+        None => Ok(handle.path),
+    }
+}
+
+fn publish_as(
+    path: PathBuf,
+    replace_existing: bool,
+    project: Project,
+    recovery_path: Option<&Path>,
+    cancellation: &RequestCancellation,
+) -> Result<(DocumentHandle, SaveCurrentCommit), String> {
     let destination = Destination::prepare(path, replace_existing).map_err(display)?;
     match destination {
         Destination::File(path) => {

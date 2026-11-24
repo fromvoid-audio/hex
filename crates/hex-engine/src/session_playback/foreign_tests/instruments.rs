@@ -89,7 +89,7 @@ impl NativeDeviceDefinition for InstrumentDefinition {
     ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
         self.migrate_state(state)?;
         if (identity != self.identity && Some(identity) != self.second)
-            || context.sample_rate != 48_000
+            || !matches!(context.sample_rate, 44_100 | 48_000)
         {
             return Err(DeviceContractError::InvalidId);
         }
@@ -120,7 +120,11 @@ fn fixture() -> (Editor, ProcessorInstanceIdentity) {
 }
 
 fn fixture_with_duration(duration: BeatTime) -> (Editor, ProcessorInstanceIdentity) {
-    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    fixture_at_rate(48_000, duration)
+}
+
+fn fixture_at_rate(rate: u32, duration: BeatTime) -> (Editor, ProcessorInstanceIdentity) {
+    let mut editor = Editor::new(Project::new(rate).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
         .execute(Command::AddMidiTrack {
             name: "synth".into(),
@@ -1761,6 +1765,76 @@ fn seek_and_stop_release_original_notes_and_a_late_fault_refuses_the_block() {
     assert!(endpoint.rejected);
     assert_eq!(output, [[0.0; 2]; 2]);
     assert_eq!(playback.performance_frame(), 0);
+}
+
+#[test]
+fn range_deactivation_waits_for_the_hosted_gate_then_allows_mute_and_unmute() {
+    let (mut editor, identity) = fixture_at_rate(44_100, BeatTime::from_ratio(1, 32).unwrap());
+    let track = editor.project().tracks()[0].id();
+    let mut playing = SessionPlayback::new(prepare(&editor, identity, true).unwrap()).unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    playing.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut block = [[0.0; 2]; 256];
+    endpoint.render(&mut playing, &mut block).unwrap();
+    let [(0, onset)] = endpoint.notes.as_slice() else {
+        panic!("one hosted onset before the edit");
+    };
+    let onset = *onset;
+    let frames_at = |beat| editor.project().tempo_map().beat_to_frame(beat).unwrap();
+    let gate = frames_at(BeatTime::from_ratio(1, 32).unwrap());
+    let end = frames_at(BeatTime::from_ratio(1, 1).unwrap());
+    let range = hex_project::TimeRange::new(vec![track], 0, end).unwrap();
+    editor
+        .execute(Command::SetTimeRangeActive {
+            range,
+            active: false,
+        })
+        .unwrap();
+    let mut edited = SessionPlayback::new(prepare(&editor, identity, true).unwrap()).unwrap();
+    let refusal = edited.inherit_state(&mut playing).unwrap_err();
+    let reason =
+        crate::PlaybackHandoffRejection::from_error(crate::PlaybackHandoffError::Session(refusal));
+    assert_eq!(
+        reason.message(),
+        "a held arrangement note changed · retry after the original note ends"
+    );
+    assert_eq!(
+        crate::PlaybackHandoffRejection::from_code(reason as u32),
+        Some(reason)
+    );
+    assert_eq!(playing.performance_frame(), 256);
+    let mut releases = Vec::new();
+    let blocks_until_release = (gate - playing.performance_frame()) / block.len() as u64 + 1;
+    for _ in 0..blocks_until_release {
+        let start = playing.performance_frame();
+        endpoint.render(&mut playing, &mut block).unwrap();
+        releases.extend(
+            endpoint
+                .notes
+                .iter()
+                .map(|(offset, note)| (start + *offset as u64, *note)),
+        );
+    }
+    assert_eq!(
+        releases,
+        [(
+            gate,
+            hex_lattice::ForeignNote {
+                on: false,
+                velocity: 0,
+                ..onset
+            }
+        )]
+    );
+    edited.inherit_state(&mut playing).unwrap();
+    for _ in 0..2 {
+        editor.execute(Command::ToggleMute(track)).unwrap();
+        let mut next = SessionPlayback::new(prepare(&editor, identity, true).unwrap()).unwrap();
+        next.inherit_state(&mut edited).unwrap();
+        endpoint.render(&mut next, &mut block).unwrap();
+        assert!(endpoint.notes.is_empty());
+        edited = next;
+    }
 }
 
 #[test]

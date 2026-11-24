@@ -38,13 +38,19 @@ impl EqNodeCreationSnapshot {
         device: DeviceId,
         sequence: u64,
     ) -> Result<Command, SessionError> {
-        let entry = session
-            .project()
+        self.command_for_project(session.project(), device, sequence)
+    }
+
+    pub(super) fn command_for_project(
+        &self,
+        project: &Project,
+        device: DeviceId,
+        sequence: u64,
+    ) -> Result<Command, SessionError> {
+        let entry = project
             .device(device)
             .ok_or(SessionError::Invalid("eq no longer exists"))?;
-        if session.project().next_identity() != self.next_id
-            || entry.active_variant() != self.variant
-        {
+        if project.next_identity() != self.next_id || entry.active_variant() != self.variant {
             return Err(SessionError::Invalid("eq node identity or variant changed"));
         }
         if sequence == 0 {
@@ -138,6 +144,7 @@ impl GestureClient {
         }
         active.sequence = active.sequence.saturating_add(1).max(1);
         active.creation = Some(snapshot);
+        self.stranded_commit = None;
         if terminal {
             self.latest_change = None;
             self.terminal = Some(GestureRequest::CommitEqCreation {

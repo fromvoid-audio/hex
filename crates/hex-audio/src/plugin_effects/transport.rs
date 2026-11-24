@@ -181,11 +181,12 @@ impl EffectTransport {
         }
     }
 
-    #[cfg(all(test, feature = "vst3-sdk-tests"))]
-    pub(super) fn pending_requests_for_test(&self) -> usize {
-        match self {
-            Self::Ordinary(callback) => callback.pending_requests_for_test(),
-            Self::Dense(callback) => callback.pending_requests_for_test(),
+    crate::include_vst3_sdk_tests! {
+        pub(super) fn pending_requests_for_test(&self) -> usize {
+            match self {
+                Self::Ordinary(callback) => callback.pending_requests_for_test(),
+                Self::Dense(callback) => callback.pending_requests_for_test(),
+            }
         }
     }
 }

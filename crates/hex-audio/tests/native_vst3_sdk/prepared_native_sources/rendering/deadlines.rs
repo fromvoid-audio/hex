@@ -30,6 +30,7 @@ fn held_worker_misses_pipeline(location: usize) {
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", &test, "--ignored", "--nocapture"])
             .env("HEX_AUDIO_HELD_WORKER_DRIVER", "1")
+            .env("RUST_MIN_STACK", "16777216")
             .env("HEX_ORIGINAL_INSTANCE_VARIANT", "28")
             .env_remove("HEX_ORIGINAL_INSTANCE_RELEASE")
             .output()
@@ -42,6 +43,12 @@ fn held_worker_misses_pipeline(location: usize) {
         );
         return;
     }
+    // Two pipeline quanta precede the six consecutive missing replies that
+    // ordinary audio-only endpoints conceal. Keep the source clip sounding
+    // through the seventh gap so losing the aligned dry path is observable.
+    const QUANTUM: usize = 2;
+    const TERMINAL_BLOCK: u64 = 2 + 6;
+    const TERMINAL_FRAME: u64 = TERMINAL_BLOCK * QUANTUM as u64;
     let _serial = serial();
     let PreparedFixture {
         mut control,
@@ -51,7 +58,7 @@ fn held_worker_misses_pipeline(location: usize) {
         binding,
         owner,
         ..
-    } = prepared_fixture_with_profile(location, false, "processing", 8, false);
+    } = prepared_fixture_with_profile(location, false, "processing", QUANTUM as u16, false);
     let root = control.native_candidate_root();
     let ticket = control
         .stage_eligible_audio_candidate(owner, vec![], PublicationPolicy::InheritRuntime, 41)
@@ -62,13 +69,13 @@ fn held_worker_misses_pipeline(location: usize) {
     } else {
         [0.25, -0.5]
     };
-    for block in 0..3 {
-        let mut frames = [[9.0; 2]; 8];
-        let mut host = [9.0_f32; 16];
+    for block in 0..TERMINAL_BLOCK {
+        let mut frames = [[9.0; 2]; QUANTUM];
+        let mut host = [9.0_f32; 2 * QUANTUM];
         allocation_free(|| {
             data.owner_mut().unwrap().run(|callback, _| {
                 callback.begin_block();
-                callback.begin_native_effect_callback(8).unwrap();
+                callback.begin_native_effect_callback(QUANTUM).unwrap();
                 let rendered = callback.render(&mut frames);
                 assert!(rendered.is_ok());
                 assert_eq!(callback.native_source_fault_for_test(binding), None);
@@ -78,17 +85,17 @@ fn held_worker_misses_pipeline(location: usize) {
                     &mut frames,
                     2,
                     &rendered,
-                    block * 8,
+                    block * QUANTUM as u64,
                     Instant::now()
                 ));
                 assert_eq!(
                     callback.native_sources.test_committed_frames(binding),
-                    Some((block + 1) * 8)
+                    Some((block + 1) * QUANTUM as u64)
                 );
             })
         });
         for frame in host.chunks_exact(2) {
-            assert_eq!(frame, if block == 2 { expected } else { [0.0; 2] });
+            assert_eq!(frame, if block >= 2 { expected } else { [0.0; 2] });
         }
         if block == 0 {
             // The original producer committed a complete request. Observe
@@ -113,12 +120,12 @@ fn held_worker_misses_pipeline(location: usize) {
             }
         }
     }
-    let mut frames = [[9.0; 2]; 8];
-    let mut host = [9.0_f32; 16];
+    let mut frames = [[9.0; 2]; QUANTUM];
+    let mut host = [9.0_f32; 2 * QUANTUM];
     allocation_free(|| {
         data.owner_mut().unwrap().run(|callback, _| {
             callback.begin_block();
-            callback.begin_native_effect_callback(8).unwrap();
+            callback.begin_native_effect_callback(QUANTUM).unwrap();
             let rendered = callback.render(&mut frames);
             assert!(rendered.is_ok());
             assert_eq!(
@@ -131,12 +138,12 @@ fn held_worker_misses_pipeline(location: usize) {
                 &mut frames,
                 2,
                 &rendered,
-                24,
+                TERMINAL_FRAME,
                 Instant::now()
             ));
             assert_eq!(
                 callback.native_sources.test_committed_frames(binding),
-                Some(24)
+                Some(TERMINAL_FRAME)
             );
             assert!(!callback.native_sources.rendering_revoked());
         })

@@ -13,6 +13,7 @@
 #include <optional>
 #include <new>
 #include <libproc.h>
+#include <os/log.h>
 #include <unistd.h>
 
 namespace hex_instance {
@@ -475,10 +476,22 @@ public:
         }
         if(window) [window orderOut:nil];
         if(frame) frame->invalidate();
-        if(attached && view->removed()!=kResultOk) { quarantine();return false; }
-        attached=false;
-        if(frame_set && view->setFrame(nullptr)!=kResultOk) { quarantine();return false; }
-        frame_set=false;
+        if(attached) {
+            const auto removed_result=view->removed();
+            if(removed_result!=kResultOk) {
+                static const auto log=os_log_create("org.portalsurfer.hex.vst3","editor");
+                os_log(log,"vst3 editor view->removed() returned %d; continuing teardown",static_cast<int>(removed_result));
+            }
+            attached=false;
+        }
+        if(frame_set) {
+            const auto unset_result=view->setFrame(nullptr);
+            if(unset_result!=kResultOk) {
+                static const auto log=os_log_create("org.portalsurfer.hex.vst3","editor");
+                os_log(log,"vst3 editor view->setFrame(nullptr) returned %d; continuing teardown",static_cast<int>(unset_result));
+            }
+            frame_set=false;
+        }
         view->release();view=nullptr;
         if(frame) { frame->release();frame=nullptr; }
         if(window) {

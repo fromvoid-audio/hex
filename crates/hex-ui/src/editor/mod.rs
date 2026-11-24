@@ -1040,6 +1040,7 @@ pub(super) struct EditorView {
     save_dialog_open: bool,
     document_format_upgrade_required: bool,
     format_upgrade_prompt: Option<save::FormatUpgradeIntent>,
+    committed_copy: save::CommittedCopy,
     preset_dialog_open: bool,
     status: String,
     pub(in crate::editor) error: Option<display_error::DisplayError>,
@@ -1943,6 +1944,7 @@ impl EditorView {
             save_dialog_open: false,
             document_format_upgrade_required: false,
             format_upgrade_prompt: None,
+            committed_copy: Default::default(),
             preset_dialog_open: false,
             status,
             error: device_defaults_error.map(Into::into),
@@ -2374,7 +2376,7 @@ impl EditorView {
         true
     }
 
-    fn displayed_track_switches(&self, track: &hex_project::Track) -> (bool, bool) {
+    fn observed_track_switches(&self, track: TrackId) -> Option<(u64, (bool, bool))> {
         self.track_switch_observation
             .as_ref()
             .filter(|view| {
@@ -2387,10 +2389,14 @@ impl EditorView {
             .and_then(|view| {
                 view.tracks
                     .iter()
-                    .find(|switches| switches.track == track.id())
-                    .map(|switches| (switches.muted, switches.soloed))
+                    .find(|switches| switches.track == track)
+                    .map(|switches| (view.revision, (switches.muted, switches.soloed)))
             })
-            .unwrap_or_else(|| (track.muted(), track.soloed()))
+    }
+
+    fn displayed_track_switches(&self, track: &hex_project::Track) -> (bool, bool) {
+        self.observed_track_switches(track.id())
+            .map_or_else(|| (track.muted(), track.soloed()), |(_, switches)| switches)
     }
 
     pub(super) fn toggle_solo(&mut self, track: TrackId, exclusive: bool) {

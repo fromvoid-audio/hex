@@ -1,9 +1,11 @@
 #import <AppKit/AppKit.h>
 #include "macos_host.hpp"
 #include "macos_parameters.hpp"
+#include "macos_processing.hpp"
 #include <cassert>
 #include <chrono>
 #include <cstdio>
+#include <thread>
 using namespace Steinberg;
 using namespace Steinberg::Vst;
 using namespace hex_instance;
@@ -347,9 +349,182 @@ int main(int argc,char** argv) { @autoreleasepool {
         assert(host.snapshot()->parameters[0].value==0.75);
         assert(host.refusal_flags()==0);
 
-        // Graph-affecting restarts combined with mapping still refuse with GraphControlRequired.
-        assert(host.restartComponent(kMidiCCAssignmentChanged|kIoChanged)==kNotImplemented);
-        assert((host.refusal_flags() & GraphControlRequired)!=0);
+        // Structural restart flags combined with mapping schedule a controlled
+        // resync and record diagnostics without latching a fatal HostRefusal.
+        controller.value=0.625;
+        assert(host.restartComponent(kMidiCCAssignmentChanged|kIoChanged)==kResultOk);
+        assert(host.refusal_flags()==0);
+        assert((host.tolerated_flags() & GraphControlRequired)!=0);
+        assert(host.dispatch(&controller).disposition==HostDisposition::Refreshed);
+        assert(host.snapshot()->parameters[0].value==0.625);
+        assert(host.refusal_flags()==0);
+    }
+    if(argc==1 || !std::strcmp(argv[1],"commercial-sdk-tolerance")) {
+        // 1. restartComponent flags commonly emitted by commercial VST3s and
+        //    startup kLatencyChanged never latch a fatal HostRefusal.
+        {
+            Controller controller;
+            Host host;
+            assert(host.refresh_on_control(&controller).disposition==HostDisposition::Refreshed);
+            // Startup kLatencyChanged before observe_latency_restarts() is tolerated.
+            assert(host.restartComponent(kLatencyChanged)==kResultOk);
+            assert(host.refusal_flags()==0);
+            // Benign unsupported notifications return kNotImplemented with zero refusals.
+            for(int32 benign : {static_cast<int32>(kPrefetchableSupportChanged),
+                                static_cast<int32>(kRoutingInfoChanged),
+                                static_cast<int32>(kMidiCCAssignmentChanged),
+                                static_cast<int32>(kNoteExpressionChanged)}) {
+                assert(host.restartComponent(benign)==kNotImplemented);
+                assert(host.refusal_flags()==0);
+            }
+            // Structural commercial restart flags schedule controlled resync cleanly.
+            for(int32 structural : {static_cast<int32>(kReloadComponent),
+                                    static_cast<int32>(kIoChanged),
+                                    static_cast<int32>(kParamIDMappingChanged)}) {
+                controller.value=0.5;
+                assert(host.restartComponent(structural)==kResultOk);
+                assert(host.refusal_flags()==0);
+                assert(host.dispatch(&controller).disposition==HostDisposition::Refreshed);
+                assert(host.snapshot()->parameters[0].value==0.5);
+            }
+            // >8 restartComponent burst coalesces cleanly without latching QueueFull.
+            for(int i=0;i<20;++i) {
+                assert(host.restartComponent(kParamValuesChanged)==kResultOk);
+            }
+            assert(host.refusal_flags()==0);
+            while(host.dispatch(&controller).disposition!=HostDisposition::Idle) {}
+            assert(host.refusal_flags()==0);
+        }
+        // 2. beginEdit/performEdit/endEdit tolerate hidden/internal/read-only params,
+        //    out-of-range finite clamping, NaN rejection without sticky refusal,
+        //    duplicate Begin / unmatched End, and >8 (16) simultaneous active edits.
+        {
+            LargeController large;
+            large.parameter_count=64;
+            Host host;
+            assert(host.refresh_on_control(&large).disposition==HostDisposition::Refreshed);
+            // Hidden/unknown ID tolerated without latching HostRefusal.
+            assert(host.beginEdit(99999)==kResultOk);
+            assert(host.performEdit(99999,0.5)==kResultOk);
+            assert(host.endEdit(99999)==kResultOk);
+            assert(host.refusal_flags()==0);
+            // Out-of-range finite values clamp cleanly to [0, 1]; NaN returns
+            // kInvalidArgument without latching a fatal HostRefusal.
+            assert(host.beginEdit(1)==kResultOk);
+            assert(host.beginEdit(1)==kResultOk); // duplicate beginEdit idempotent
+            assert(host.performEdit(1,-0.25)==kResultOk);
+            assert(host.performEdit(1,1.75)==kResultOk);
+            assert(host.performEdit(1,std::numeric_limits<ParamValue>::quiet_NaN())==kInvalidArgument);
+            assert(host.endEdit(1)==kResultOk);
+            assert(host.endEdit(1)==kResultOk); // unmatched endEdit idempotent
+            assert(host.refusal_flags()==0);
+            // Drain clamped edits and verify values are strictly in [0, 1].
+            while(host.dispatch(&large).disposition==HostDisposition::EditQueued) {
+                EditEvent ev{};
+                while(host.peek_edit(ev)) {
+                    if(ev.kind==Perform) {
+                        assert(ev.normalized>=0.0 && ev.normalized<=1.0);
+                    }
+                    host.consume_edit();
+                    host.complete_parameter_edit();
+                }
+            }
+            // 16 simultaneous active edits (>8) all succeed with zero refusals.
+            for(ParamID id=10;id<26;++id) {
+                assert(host.beginEdit(id)==kResultOk);
+                assert(host.performEdit(id,0.5)==kResultOk);
+            }
+            for(ParamID id=10;id<26;++id) {
+                assert(host.endEdit(id)==kResultOk);
+            }
+            assert(host.refusal_flags()==0);
+        }
+        // 3. createInstance(IMessage) from processing thread and bursts beyond 16 & 64.
+        {
+            Host host(true);
+            TUID msg_id{}; std::memcpy(msg_id,INLINE_UID_OF(IMessage),sizeof(TUID));
+            bool proc_ok=false;
+            std::thread worker([&] {
+                host.bind_processing_thread();
+                IMessage* m=nullptr;
+                proc_ok=(host.createInstance(msg_id,msg_id,reinterpret_cast<void**>(&m))==kResultOk && m!=nullptr);
+                if(m) m->release();
+            });
+            worker.join();
+            assert(proc_ok);
+            assert(host.refusal_flags()==0);
+            assert(host.message_diagnostics().processing_thread_messages.load()==1);
+            // Burst beyond 16 (all 64 slots) succeeds; 65th returns kOutOfMemory
+            // cleanly without latching a fatal HostRefusal.
+            std::array<IMessage*,HOST_MESSAGE_COUNT> held{};
+            for(auto& slot : held) {
+                assert(host.createInstance(msg_id,msg_id,reinterpret_cast<void**>(&slot))==kResultOk && slot);
+            }
+            IMessage* overflow=nullptr;
+            assert(host.createInstance(msg_id,msg_id,reinterpret_cast<void**>(&overflow))==kOutOfMemory);
+            assert(overflow==nullptr);
+            assert(host.refusal_flags()==0);
+            for(auto* slot : held) slot->release();
+        }
+        // 4. setParamNormalized returning kResultFalse / kNotImplemented & kIsHidden without kIsReadOnly.
+        {
+            class TolerantController final : public Controller {
+            public:
+                tresult setter_return=kResultFalse;
+                int32 PLUGIN_API getParameterCount() override { return 2; }
+                tresult PLUGIN_API getParameterInfo(int32 n,ParameterInfo& info) override {
+                    if(n<0 || n>=2) return kInvalidArgument;
+                    info={};
+                    if(n==0) {
+                        info.id=7; info.flags=ParameterInfo::kCanAutomate;
+                        info.defaultNormalizedValue=0.25;
+                    } else {
+                        // kIsHidden WITHOUT kIsReadOnly (commercial SDK pattern).
+                        info.id=8; info.flags=ParameterInfo::kIsHidden;
+                        info.defaultNormalizedValue=1.2; // finite out-of-range clamps
+                    }
+                    return kResultOk;
+                }
+                tresult PLUGIN_API setParamNormalized(ParamID,ParamValue) override {
+                    ++setter_calls;
+                    return setter_return;
+                }
+            };
+            TolerantController ctrl;
+            Host host;
+            assert(host.refresh_on_control(&ctrl).disposition==HostDisposition::Refreshed);
+            assert(host.refusal_flags()==0);
+            assert(host.snapshot()->count==2);
+            assert(host.snapshot()->parameters[1].info.defaultNormalizedValue==1.0);
+            // Hidden parameter edits are tolerated as benign no-ops.
+            assert(host.beginEdit(8)==kResultOk && host.performEdit(8,0.5)==kResultOk && host.endEdit(8)==kResultOk);
+            assert(host.refusal_flags()==0);
+            for(tresult ret : {kResultFalse, kNotImplemented}) {
+                ctrl.setter_return=ret;
+                ParameterFeedback fb;
+                assert(fb.put(7,0.75));
+                assert(host.publish_parameter_feedback(fb));
+                assert(host.synchronize_parameter_feedback(&ctrl));
+                assert(host.refusal_flags()==0);
+            }
+        }
+        // 5. finite_outputs tolerates non-zero audio with silenceFlags set and sanitizes NaN/Inf.
+        {
+            ProcessingConfiguration cfg{};
+            cfg.input_channels=2; cfg.output_channels=2; cfg.maximum_frames=4;
+            std::array<float,4> out_l{0.25f, std::numeric_limits<float>::quiet_NaN(), -0.5f, std::numeric_limits<float>::infinity()};
+            std::array<float,4> out_r{0.0f, 0.0f, 0.0f, 0.0f};
+            float* ptrs[2]={out_l.data(), out_r.data()};
+            AudioBusBuffers out_bus{};
+            out_bus.numChannels=2; out_bus.channelBuffers32=ptrs;
+            out_bus.silenceFlags=0x3; // claims both channels silent despite non-zero L
+            ProcessData data{};
+            data.numSamples=4; data.numOutputs=1; data.outputs=&out_bus;
+            assert(finite_outputs(cfg,data));
+            assert((out_bus.silenceFlags & 0x1)==0); // L silence bit cleared
+            assert((out_bus.silenceFlags & 0x2)!=0); // R genuinely silent bit kept
+            assert(out_l[0]==0.25f && out_l[1]==0.0f && out_l[2]==-0.5f && out_l[3]==0.0f);
+        }
     }
     if(argc==1 || !std::strcmp(argv[1],"stale-step-count-history")) {
         Controller controller;

@@ -1005,9 +1005,11 @@ impl ActiveView<'_> {
                     if refused {
                         self.state.cancel_stream_pending(domains);
                     }
+                    // A changed file cannot contribute more PCM. Fade only the
+                    // last verified output, even if refusal beats the first hold.
                     self.silence_stream_suffix(
                         &mut output[committed..],
-                        !refused && !pending_play && !source_changed && !read_failed,
+                        !pending_play && (source_changed || (!refused && !read_failed)),
                     );
                     return StreamOutcome {
                         progress: StreamProgress::Buffering {

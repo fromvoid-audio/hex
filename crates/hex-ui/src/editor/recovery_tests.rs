@@ -3422,3 +3422,545 @@ fn degraded_general_graph_edits_and_pending_receipts_recover_or_retire_cleanly(
         drop(old_guard);
     }
 }
+
+fn install_eq_node_and_strand_pair_commit(
+    app: &mut gpui::TestAppContext,
+    editor: &gpui::Entity<EditorView>,
+    device: hex_project::DeviceId,
+    other_faulted_device_id: u64,
+    preview_pair: (f32, f32),
+    released_pair: (f32, f32),
+) -> hex_devices::eq::NodeId {
+    use hex_devices::eq::{EqState, Node, NodeId, NodeParameter};
+    use hex_session::device_gesture::{
+        GestureAck, GesturePhase, ParameterPairValue, ParameterValue,
+    };
+    let node_id = editor.update(app, |v, _| {
+        let existing = v
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .state()
+            .clone();
+        let mut eq = EqState::decode(&existing).unwrap();
+        if let Some(first_node) = eq.nodes.first() {
+            first_node.id
+        } else {
+            let id = NodeId::new(1).unwrap();
+            eq.add(Node::new(id, 120.0, 0.0, 0).unwrap()).unwrap();
+            let encoded = eq
+                .encode()
+                .unwrap()
+                .with_host_metadata_from(&existing)
+                .unwrap();
+            v.service
+                .submit(Request::Edit(Command::ReplaceDeviceState {
+                    device,
+                    state: encoded,
+                }))
+                .unwrap();
+            let updated = next_service_event(&v.service);
+            v.receive(updated);
+            id
+        }
+    });
+    let first = node_id.parameter(NodeParameter::Frequency).unwrap();
+    let second = node_id.parameter(NodeParameter::Gain).unwrap();
+    editor.update(app, |v, _| {
+        // Start and accept a live paired EQ preview on the worker before a
+        // different VST3 endpoint faults and strands the released Commit.
+        v.degraded_plugins = Default::default();
+        v.begin_device_pair_gesture(
+            device,
+            first,
+            second,
+            ParameterPairValue {
+                first: ParameterValue::Float(120.0),
+                second: ParameterValue::Float(0.0),
+            },
+        )
+        .unwrap();
+        assert!(v.pump_device_gesture());
+        let begin_ev = next_service_event(&v.service);
+        v.receive(begin_ev);
+
+        v.change_device_pair_gesture(ParameterPairValue {
+            first: ParameterValue::Float(preview_pair.0),
+            second: ParameterValue::Float(preview_pair.1),
+        })
+        .unwrap();
+        assert!(v.pump_device_gesture());
+        let change_ev = next_service_event(&v.service);
+        v.receive(change_ev);
+        let worker_preview = v
+            .device_gesture
+            .snapshot()
+            .expect("accepted worker preview");
+
+        // A different VST3 endpoint faults before the user releases the drag.
+        v.degraded_plugins =
+            crate::editor_backend::DegradedDevices::new(vec![other_faulted_device_id]);
+        v.finish_device_pair_gesture(ParameterPairValue {
+            first: ParameterValue::Float(released_pair.0),
+            second: ParameterValue::Float(released_pair.1),
+        })
+        .unwrap();
+        let commit_req = v.device_gesture.next_request().expect("commit request");
+        v.device_gesture.mark_submitted();
+        let refused_ack = GestureAck {
+            preview_retained: true,
+            source_lost: false,
+            key: commit_req.key(),
+            phase: GesturePhase::Commit,
+            sequence: commit_req.sequence(),
+            accepted: false,
+            reason: Some("resident audio source is degraded".into()),
+        };
+        assert!(v.acknowledge_device_gesture_with_snapshot(&refused_ack, Some(worker_preview)));
+        assert!(v.device_gesture.is_recovery_pending());
+        assert!(v.device_gesture.has_stranded_commit());
+        assert!(!v.device_gesture.has_pending_requests());
+    });
+    node_id
+}
+
+#[gpui::test]
+fn stranded_released_pair_drag_recovers_solo_and_mute_while_playing_and_paused(
+    cx: &mut gpui::TestAppContext,
+) {
+    use hex_devices::eq::{EqState, NodeId, NodeParameter};
+    use hex_session::device_gesture::{ParameterPairValue, ParameterValue};
+
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+
+    // 1. Playing transport: Solo shortcut recovers, reconciles released EQ values,
+    // applies Solo once, preserves Undo history, and preserves deferred play.
+    {
+        let mut app = cx.new_app();
+        let (editor, track, device, old_guard, restarted) =
+            setup_degraded_device_recovery(&mut app);
+        let other_faulted_id = device.value().saturating_add(99);
+        let node_id = install_eq_node_and_strand_pair_commit(
+            &mut app,
+            &editor,
+            device,
+            other_faulted_id,
+            (320.0, 3.0),
+            (540.0, -4.5),
+        );
+        editor.update(&mut app, |v, _| {
+            v.audio_status()
+                .unwrap()
+                .playing
+                .store(true, std::sync::atomic::Ordering::Release);
+            v.toggle_solo(track, false);
+            assert!(v.recovery.generation().is_some());
+            assert!(v.recovery.deferred_edit.is_some());
+            assert!(
+                v.deferred_play.is_some(),
+                "playing recovery must preserve deferred play"
+            );
+            assert_eq!(
+                v.status.as_str(),
+                "restarting audio · solo will update when ready"
+            );
+        });
+        let fresh_guard = finish_fresh_recovery_output(&mut app, &editor, &restarted, old_guard);
+        editor.update(&mut app, |v, _| {
+            assert_eq!(v.status.as_str(), "updating solo");
+            assert!(
+                v.device_gesture.snapshot().is_none(),
+                "restart retirement must clear stranded gesture"
+            );
+            // Event 1: reconciled EQ pair edit; Event 2: Solo toggle applied once.
+            let eq_event = next_service_event(&v.service);
+            v.receive(eq_event);
+            let solo_event = next_service_event(&v.service);
+            v.receive(solo_event);
+
+            let state = v.state.as_ref().unwrap();
+            let track_ref = state.project.track(track).unwrap();
+            assert!(track_ref.soloed(), "solo must be applied once");
+            assert_eq!(v.displayed_track_switches(track_ref), (false, true));
+            let decoded = EqState::decode(state.project.device(device).unwrap().state()).unwrap();
+            let node = decoded.nodes.iter().find(|n| n.id == node_id).unwrap();
+            assert!((node.frequency_hz - 540.0).abs() < 1e-2);
+            assert!((node.gain_db - (-4.5)).abs() < 1e-2);
+            assert!(v.error.is_none(), "{:?}", v.error);
+
+            // Undo history preserves both Solo and the reconciled EQ parameter edit.
+            assert!(v.enqueue(Request::Undo));
+            let undo_solo = next_service_event(&v.service);
+            v.receive(undo_solo);
+            assert!(
+                !v.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .soloed()
+            );
+            let eq_after_solo_undo = EqState::decode(
+                v.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .device(device)
+                    .unwrap()
+                    .state(),
+            )
+            .unwrap();
+            let node_after_solo_undo = eq_after_solo_undo
+                .nodes
+                .iter()
+                .find(|n| n.id == node_id)
+                .unwrap();
+            assert!((node_after_solo_undo.frequency_hz - 540.0).abs() < 1e-2);
+            assert!(v.enqueue(Request::Undo));
+            let undo_eq = next_service_event(&v.service);
+            v.receive(undo_eq);
+            let eq_after_second_undo = EqState::decode(
+                v.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .device(device)
+                    .unwrap()
+                    .state(),
+            )
+            .unwrap();
+            let node_after_second_undo = eq_after_second_undo
+                .nodes
+                .iter()
+                .find(|n| n.id == node_id)
+                .unwrap();
+            assert!((node_after_second_undo.frequency_hz - 120.0).abs() < 1e-2);
+            v.audio = None;
+        });
+        drop(fresh_guard);
+    }
+
+    // 2. Paused transport: track-header Mute recovers, stays paused, reconciles
+    // released EQ values, applies Mute once, and preserves committed edits.
+    {
+        let mut app = cx.new_app();
+        let (editor, track, device, old_guard, restarted) =
+            setup_degraded_device_recovery(&mut app);
+        let other_faulted_id = device.value().saturating_add(99);
+        let node_id = install_eq_node_and_strand_pair_commit(
+            &mut app,
+            &editor,
+            device,
+            other_faulted_id,
+            (260.0, 2.0),
+            (780.0, 6.0),
+        );
+        editor.update(&mut app, |v, _| {
+            assert!(
+                !v.audio_status()
+                    .unwrap()
+                    .playing
+                    .load(std::sync::atomic::Ordering::Acquire)
+            );
+            v.toggle_mute(track);
+            assert!(v.recovery.generation().is_some());
+            assert!(v.recovery.deferred_edit.is_some());
+            assert!(
+                v.deferred_play.is_none(),
+                "paused recovery must stay paused"
+            );
+            assert_eq!(
+                v.status.as_str(),
+                "restarting audio · mute will update when ready"
+            );
+        });
+        let fresh_guard = finish_fresh_recovery_output(&mut app, &editor, &restarted, old_guard);
+        editor.update(&mut app, |v, _| {
+            assert_eq!(v.status.as_str(), "updating mute");
+            let eq_event = next_service_event(&v.service);
+            v.receive(eq_event);
+            let mute_event = next_service_event(&v.service);
+            v.receive(mute_event);
+
+            let state = v.state.as_ref().unwrap();
+            let track_ref = state.project.track(track).unwrap();
+            assert!(track_ref.muted(), "mute must be applied once");
+            assert_eq!(v.displayed_track_switches(track_ref), (true, false));
+            let decoded = EqState::decode(state.project.device(device).unwrap().state()).unwrap();
+            let node = decoded.nodes.iter().find(|n| n.id == node_id).unwrap();
+            assert!((node.frequency_hz - 780.0).abs() < 1e-2);
+            assert!((node.gain_db - 6.0).abs() < 1e-2);
+            assert!(v.deferred_play.is_none());
+            assert!(v.error.is_none(), "{:?}", v.error);
+            v.audio = None;
+        });
+        drop(fresh_guard);
+    }
+
+    // 3. Failure, replacement project, healthy-graph refusal, and unreconcilable plug-in edit.
+    {
+        let mut app = cx.new_app();
+        let (editor, track, device, old_guard, restarted) =
+            setup_degraded_device_recovery(&mut app);
+        let other_faulted_id = device.value().saturating_add(99);
+        let _node_id = install_eq_node_and_strand_pair_commit(
+            &mut app,
+            &editor,
+            device,
+            other_faulted_id,
+            (300.0, 1.5),
+            (620.0, -3.0),
+        );
+        // Healthy-graph path: when degraded_plugins is empty, ToggleSolo does
+        // not trigger audio recovery; drain its worker reply before testing
+        // degraded recovery failure.
+        editor.update(&mut app, |v, _| {
+            v.degraded_plugins = Default::default();
+            v.toggle_solo(track, false);
+            assert!(v.recovery.generation().is_none());
+            assert!(v.recovery.deferred_edit.is_none());
+            let healthy_solo = next_service_event(&v.service);
+            v.receive(healthy_solo);
+            assert!(
+                v.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .soloed()
+            );
+            // Restore degraded state so ToggleSolo starts recovery.
+            v.degraded_plugins =
+                crate::editor_backend::DegradedDevices::new(vec![other_faulted_id]);
+            v.toggle_solo(track, false);
+            assert!(v.recovery.generation().is_some());
+            assert!(v.recovery.deferred_edit.is_some());
+            // Second genuine failure surfaces an actionable terminal and leaves retry available.
+            v.fail_audio_recovery("fixture recovery failure");
+            assert!(v.recovery.generation().is_none());
+            assert!(v.recovery.deferred_edit.is_none());
+            assert_eq!(
+                v.status.as_str(),
+                "audio unavailable · restart audio to restore playback"
+            );
+            assert!(
+                v.error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("interrupted parameter edit was not saved")),
+                "expected unreconciled parameter accounting, got {:?}",
+                v.error
+            );
+            v.audio = None;
+        });
+        drop(restarted);
+        drop(old_guard);
+    }
+
+    // 3b. Active unreleased drag while degraded keeps normal edit_pending blocking.
+    {
+        let mut app = cx.new_app();
+        let (editor, track, device, old_guard, _restarted) =
+            setup_degraded_device_recovery(&mut app);
+        let first = NodeId::new(1)
+            .unwrap()
+            .parameter(NodeParameter::Frequency)
+            .unwrap();
+        let second = NodeId::new(1)
+            .unwrap()
+            .parameter(NodeParameter::Gain)
+            .unwrap();
+        editor.update(&mut app, |v, _| {
+            v.begin_device_pair_gesture(
+                device,
+                first,
+                second,
+                ParameterPairValue {
+                    first: ParameterValue::Float(120.0),
+                    second: ParameterValue::Float(0.0),
+                },
+            )
+            .unwrap();
+            assert!(!v.device_gesture.is_recovery_pending());
+            v.toggle_solo(track, false);
+            assert!(v.recovery.generation().is_none());
+            assert!(v.recovery.deferred_edit.is_none());
+            assert_eq!(
+                v.error.as_deref(),
+                Some("finish the current edit before restarting audio")
+            );
+            v.audio = None;
+        });
+        drop(old_guard);
+    }
+
+    // 4. Opening a replacement project retires stranded recovery; late failed-graph
+    // events cannot apply to the replacement project.
+    {
+        let mut app = cx.new_app();
+        let (editor, track, device, old_guard, _restarted) =
+            setup_degraded_device_recovery(&mut app);
+        let other_faulted_id = device.value().saturating_add(99);
+        let node_id = install_eq_node_and_strand_pair_commit(
+            &mut app,
+            &editor,
+            device,
+            other_faulted_id,
+            (300.0, 1.5),
+            (620.0, -3.0),
+        );
+        editor.update(&mut app, |v, _| {
+            v.toggle_mute(track);
+            assert!(v.recovery.generation().is_some());
+            assert!(v.recovery.deferred_edit.is_some());
+            v.retire_audio_for_future_generation();
+            v.project_generation += 1;
+            assert!(v.recovery.generation().is_none());
+            assert!(v.recovery.deferred_edit.is_none());
+            assert!(!v.finish_audio_recovery_tick());
+            let state = v.state.as_ref().unwrap();
+            assert!(!state.project.track(track).unwrap().muted());
+            let decoded = EqState::decode(state.project.device(device).unwrap().state()).unwrap();
+            let node = decoded.nodes.iter().find(|n| n.id == node_id).unwrap();
+            assert!((node.frequency_hz - 120.0).abs() < 1e-2);
+            v.audio = None;
+        });
+        drop(old_guard);
+    }
+
+    // 5. Unreconcilable stranded plug-in edit is explicitly accounted for while Mute applies.
+    {
+        let mut app = cx.new_app();
+        let (editor, track, device, old_guard, restarted) =
+            setup_degraded_device_recovery(&mut app);
+        let other_faulted_id = device.value().saturating_add(99);
+        let _node_id = install_eq_node_and_strand_pair_commit(
+            &mut app,
+            &editor,
+            device,
+            other_faulted_id,
+            (300.0, 1.5),
+            (620.0, -3.0),
+        );
+        editor.update(&mut app, |v, _| {
+            v.toggle_mute(track);
+            let deferred = v.recovery.deferred_edit.as_mut().expect("deferred mute");
+            let stranded = deferred
+                .stranded_gesture
+                .as_mut()
+                .expect("stranded gesture metadata");
+            stranded.reconcilable = None;
+            stranded.is_plugin = true;
+        });
+        let fresh_guard = finish_fresh_recovery_output(&mut app, &editor, &restarted, old_guard);
+        editor.update(&mut app, |v, _| {
+            assert_eq!(
+                v.error.as_deref(),
+                Some("interrupted plug-in parameter edit was not saved · audio restarted")
+            );
+            let mute_event = next_service_event(&v.service);
+            v.receive(mute_event);
+            assert!(
+                v.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .muted()
+            );
+            v.audio = None;
+        });
+        drop(fresh_guard);
+    }
+}
+
+#[gpui::test]
+fn save_offers_a_committed_copy_without_retrying_a_stranded_pair(app: &mut gpui::TestAppContext) {
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (editor, _, device, _old_output, _restarts) = setup_degraded_device_recovery(app);
+    let files = crate::editor::test_environment::Environment::new().unwrap();
+    let path = files.root().join("source.hex");
+    editor.update(app, |view, _| {
+        view.service.submit(Request::SaveNew(path.clone())).unwrap();
+        let saved = next_service_event(&view.service);
+        assert!(saved.save_complete && saved.error.is_none());
+        view.receive(saved);
+    });
+    let original = std::fs::read(&path).unwrap();
+    install_eq_node_and_strand_pair_commit(
+        app,
+        &editor,
+        device,
+        device.value() + 99,
+        (900.0, 1.0),
+        (1600.0, 2.0),
+    );
+    let committed = editor.read_with(app, |v, _| v.state.as_ref().unwrap().project.clone());
+    let released = editor.read_with(app, |v, _| {
+        v.device_gesture.reconcilable_snapshot().unwrap()
+    });
+    for answer in ["cancel", "save committed copy…"] {
+        editor.update(app, |v, cx| {
+            v.save_project(cx);
+            cx.notify();
+        });
+        app.run_until_parked();
+        assert!(
+            app.has_pending_prompt(),
+            "a refused release must offer a committed copy"
+        );
+        assert!(editor.read_with(app, |v, _| !v.device_gesture.has_pending_requests()));
+        app.simulate_prompt_answer(answer);
+        app.run_until_parked();
+        if answer == "save committed copy…" {
+            let deadline = crate::test_wait::hang_deadline();
+            while app.pending_save_options().is_none() {
+                assert!(Instant::now() < deadline, "copy picker did not open");
+                editor.update(app, |v, cx| {
+                    v.tick(cx);
+                    cx.notify();
+                });
+                app.run_until_parked();
+                std::thread::yield_now();
+            }
+            // Drive the receipt here. The normal poll also handles audio and
+            // session events, either of which can replace the status text.
+            editor.update(app, |v, _| v.poll_cadence = Default::default());
+            let destination = files.root().join("copy.hex");
+            app.simulate_new_path_selection(|_| Some(destination));
+            app.run_until_parked();
+            editor.update(app, |v, _| {
+                assert_eq!(v.status, "saving committed copy", "{:?}", v.error);
+                let deadline = Instant::now() + std::time::Duration::from_secs(2);
+                while !v.poll_committed_copy() {
+                    assert!(
+                        Instant::now() < deadline,
+                        "session did not return the copy receipt"
+                    );
+                    std::thread::yield_now();
+                }
+                assert!(v.error.is_none(), "{:?}", v.error);
+                assert!(
+                    v.status.starts_with("committed copy saved · "),
+                    "{}",
+                    v.status
+                );
+            });
+            assert_eq!(
+                hex_storage::load(files.root().join("copy").join("copy.hex")).unwrap(),
+                *committed
+            );
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        editor.read_with(app, |v, _| {
+            assert_eq!(v.device_gesture.reconcilable_snapshot(), Some(released));
+            assert_eq!(v.state.as_ref().unwrap().project, committed);
+            assert!(!v.saving_project);
+        });
+    }
+}

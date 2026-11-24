@@ -57,6 +57,23 @@ fn field(line: &str, name: &str) -> u128 {
 }
 
 #[test]
+fn supplied_callback_entry_uses_the_log_record_clock() {
+    let (handle, records) = pair();
+    let start = handle.shared.started;
+    assert_eq!(handle.elapsed_nanos_at(start), Some(0));
+    assert_eq!(
+        handle.elapsed_nanos_at(start + Duration::from_nanos(123)),
+        Some(123)
+    );
+    if let Some(before) = start.checked_sub(Duration::from_nanos(1)) {
+        assert_eq!(handle.elapsed_nanos_at(before), None);
+    }
+    let entry = Instant::now();
+    handle.record("after callback entry").unwrap();
+    assert!(handle.elapsed_nanos_at(entry).unwrap() <= records.try_recv().unwrap().elapsed_nanos);
+}
+
+#[test]
 fn typed_and_legacy_events_keep_classification_in_written_records() {
     let (handle, receiver) = pair();
     handle

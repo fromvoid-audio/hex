@@ -671,6 +671,9 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                 ctx.worker.resident_seek.as_ref(),
                 ctx.worker.resident_preview.as_ref(),
             );
+            let mut switch_phases = (ctx.track_switch_request
+                && ctx.worker.events.observing_request())
+            .then(super::super::diagnostics::SectionPhases::default);
             let result = ctx
                 .worker
                 .events
@@ -678,7 +681,9 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                 .ok_or(SessionError::Invalid("native worker unavailable"))
                 .and_then(|sink| {
                     if resident_audio::device_insert::should_stage_resident_graph_edit(
-                        &command, sink,
+                        ctx.worker.session.project(),
+                        &command,
+                        sink,
                     ) || resident_audio::device_insert::stages_main_power_off(
                         ctx.worker.session.project(),
                         &command,
@@ -740,46 +745,41 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                         }
                         return Ok(None);
                     }
-                    if let Some((_, target)) = ctx.worker.adopted_device_draft.as_ref() {
-                        ctx.worker.session.device_take_resident_snapshot(
+                    ctx.worker
+                        .session
+                        .command_resident_snapshot_timed(
                             command,
-                            *target,
-                            context,
-                            sink,
-                            admission,
+                            ctx.worker
+                                .adopted_device_draft
+                                .as_ref()
+                                .map(|(_, target)| *target),
+                            resident_audio::ResidentSinkContext {
+                                context,
+                                sink,
+                                admission,
+                            },
                             ctx.worker.resident_snapshot.as_ref(),
+                            switch_phases.as_mut(),
                         )
-                    } else {
-                        ctx.worker.session.command_resident_snapshot(
-                            command,
-                            context,
-                            sink,
-                            admission,
-                            ctx.worker.resident_snapshot.as_ref(),
-                        )
-                    }
-                    .map(Some)
+                        .map(Some)
                 });
+            if matches!(result, Ok(Some(_)))
+                && let Some(phases) = switch_phases
+            {
+                ctx.worker.events.record_track_switch_phases(phases);
+            }
             match result {
-                Ok(None) if ctx.worker.pending_device_insert.is_some() => {
-                    ctx.outcome.request_complete = false;
-                    ctx.outcome.status = Some(
-                        if ctx
-                            .worker
-                            .pending_device_insert
-                            .as_ref()
-                            .is_some_and(|pending| {
-                                pending.operation.device() == Some(GraphEditOperation::MoveTrack)
-                            })
-                        {
-                            "track move pending · waiting for audio"
-                        } else {
-                            "device edit pending · waiting for audio"
-                        }
-                        .into(),
-                    );
+                Ok(None) => {
+                    if let Some(pending) = &ctx.worker.pending_device_insert {
+                        ctx.outcome.request_complete = false;
+                        ctx.outcome.status = Some(format!(
+                            "{} pending · waiting for audio",
+                            pending.operation.edit_name()
+                        ));
+                    } else {
+                        ctx.outcome.status = Some("no change".into());
+                    }
                 }
-                Ok(None) => ctx.outcome.status = Some("no change".into()),
                 Ok(Some((new, snapshot))) => {
                     if ctx.outcome.failed_plugin_adoption {
                         // Device-take VST3 publication returns only after the exact
