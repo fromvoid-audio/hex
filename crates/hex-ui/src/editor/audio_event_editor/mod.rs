@@ -347,7 +347,7 @@ impl EditorView {
     pub(in crate::editor) fn audio_loop_grid(&self) -> SnapGrid {
         self.audio_event_editor.grid
     }
-    #[cfg(test)]
+    #[cfg(all(test, feature = "ui-test-support"))]
     pub(in crate::editor) fn set_audio_loop_grid(&mut self, grid: SnapGrid) {
         self.audio_event_editor.grid = grid;
     }
