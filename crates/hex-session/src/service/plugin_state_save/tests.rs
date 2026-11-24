@@ -634,6 +634,7 @@ fn bounce_capture_uses_the_live_receiver_and_projects_only_the_isolated_instrume
         power_on: None,
         running_power_off: None,
         hosted_move: None,
+        reload_plugin_device: None,
     };
     let control = hex_export::ExportControl::default();
     let cancellation = RequestCancellation::new(

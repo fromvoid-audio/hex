@@ -20,6 +20,7 @@ pub struct ResidentEffectPreparation<'a> {
     pub(in crate::service) context: hex_engine::AudioSourceContext,
     pub(in crate::service) restoring_plugin_state: bool,
     pub(in crate::service) preparing_edit: bool,
+    pub(in crate::service) reload_plugin_device: Option<u64>,
     pub(in crate::service) power_on: Option<ResidentPowerOn>,
     pub(in crate::service) running_power_off: Option<ResidentRunningPowerOff>,
     pub(in crate::service) hosted_move: Option<ResidentHostedMove>,
@@ -342,6 +343,9 @@ impl<'a> ResidentEffectPreparation<'a> {
             ResidentHostedMove::Reorder(route) => Some(route),
             ResidentHostedMove::Instrument(_) | ResidentHostedMove::TrackEffect(_) => None,
         }
+    }
+    pub fn reload_plugin_device(&self) -> Option<u64> {
+        self.preparing_edit.then_some(self.reload_plugin_device?)
     }
     pub fn sample_rate(&self) -> u32 {
         self.project.sample_rate()
@@ -2722,6 +2726,7 @@ mod tests {
                 preparing_edit,
                 running_power_off,
                 hosted_move: None,
+                reload_plugin_device: None,
                 restoring_plugin_state: false,
                 power_on: None,
             }
@@ -2813,6 +2818,7 @@ mod tests {
                 power_on,
                 running_power_off: None,
                 hosted_move: None,
+                reload_plugin_device: None,
             }
             .power_on()
         };
@@ -2892,6 +2898,7 @@ mod tests {
                 power_on: None,
                 running_power_off: None,
                 hosted_move: None,
+                reload_plugin_device: None,
             }
             .powered_off_main()
             .map(|(id, _)| id)
@@ -2954,6 +2961,7 @@ mod tests {
                 power_on: None,
                 running_power_off: None,
                 hosted_move: None,
+                reload_plugin_device: None,
             }
             .plugin_device_bypassed(device.value())
         };
@@ -3210,6 +3218,7 @@ mod tests {
                 power_on: None,
                 running_power_off: None,
                 hosted_move: None,
+                reload_plugin_device: None,
             }
         }
 
@@ -3320,6 +3329,7 @@ mod tests {
             power_on: None,
             running_power_off: None,
             hosted_move: None,
+            reload_plugin_device: None,
         };
         assert_eq!(
             input
@@ -3375,6 +3385,7 @@ mod tests {
                 power_on: None,
                 running_power_off: None,
                 hosted_move: None,
+                reload_plugin_device: None,
             }
             .modulated_plugin_target(device.value())
             .unwrap()

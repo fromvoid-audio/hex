@@ -86,6 +86,25 @@ fn graph_republishing_classifier_covers_solo_mute_history_and_excludes_control_o
         PathBuf::from("out.wav")
     )));
     assert!(!is_graph_republishing_edit(&Request::CopyClips(Vec::new())));
+    assert!(!is_graph_republishing_edit(&Request::ReloadPlugin {
+        project_generation: 0,
+        device: {
+            let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+            let Created::Device(device) = editor
+                .execute(Command::InsertMainDevice {
+                    before: None,
+                    state: hex_engine::default_native_device_state(
+                        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                    )
+                    .unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("device expected")
+            };
+            device
+        },
+    }));
 }
 
 #[test]

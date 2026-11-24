@@ -38,6 +38,9 @@ impl Plugins {
             return Ok(());
         }
         let binding = self.sources[index].binding;
+        if self.is_binding_degraded_on_control(control, binding) {
+            return Ok(());
+        }
         if !original_state(control, binding, cancellation)?.processing_eq(state)
             && !captured_state_approved(control, binding, state, cancellation)?
         {

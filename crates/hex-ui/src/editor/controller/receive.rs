@@ -618,6 +618,7 @@ impl EditorView {
             self.pending_resident_publication = None;
             self.clear_route_telemetry();
             self.degraded_plugins = Default::default();
+            self.reloading_plugins.clear();
             self.plugin_editor_windows.clear();
             self.drag_lanes.clear();
             self.track_drop_lanes.clear();
@@ -1153,6 +1154,14 @@ impl EditorView {
         }
         if let Some(path) = &successfully_opened_path {
             self.check_leftover_recovery(Some(path.clone()));
+        }
+        if !self.reloading_plugins.is_empty()
+            && self.worker_requests_pending == 0
+            && !self
+                .queued_requests()
+                .any(|request| matches!(request, Request::ReloadPlugin { .. }))
+        {
+            self.reloading_plugins.clear();
         }
         self.start_ahead_time_duplicate();
         self.continue_time_duplicate(time_duplicate_repeats);

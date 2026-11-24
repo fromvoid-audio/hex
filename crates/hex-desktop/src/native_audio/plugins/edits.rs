@@ -372,6 +372,32 @@ impl Plugins {
             }
         }
         if accepted {
+            let mut cleared = Vec::new();
+            for source in &self.sources {
+                if source.accepted
+                    && !source.retiring
+                    && source.operation.edit_context() == Some(context)
+                {
+                    cleared.push((source.binding.root, source.device));
+                }
+            }
+            for (output_id, device) in cleared {
+                if let Some(entries) = self.degraded.clear_device(output_id, device) {
+                    self.degraded_changed = Some((context.project_generation, output_id, entries));
+                }
+            }
+            for source in &mut self.sources {
+                if source.accepted
+                    && !source.retiring
+                    && source.operation.edit_context() != Some(context)
+                    && self
+                        .degraded
+                        .is_binding_degraded(source.binding.root, source.binding)
+                {
+                    source.accepted = false;
+                    source.retiring = true;
+                }
+            }
             self.installed_removals_checked = None;
             if let Some((generation, identity)) = self.saved_off_document
                 && self.sources.iter().any(|source| {
@@ -533,12 +559,16 @@ impl Plugins {
         }
         // The latest accepted preparation for an equal state is the current
         // device's source; older matching instances can still own old tails.
+        let reload_this = input.reload_plugin_device() == Some(device);
         for source in self.sources.iter().rev() {
             if source.project_generation != input.context().project_generation
                 || source.owner != owner
                 || source.device != device
                 || !source_covers_selection(source.authored.as_ref(), authored.as_ref())
                 || source.retiring
+                || (reload_this && source.operation.edit_context() != Some(input.context()))
+                || (source.operation.edit_context() != Some(input.context())
+                    && self.is_binding_degraded_on_control(control, source.binding))
                 || (input.preparing_edit()
                     && !source.accepted
                     && source.operation.edit_context() != Some(input.context()))
@@ -616,6 +646,14 @@ impl Plugins {
         self.extend_edit_targets(control, input, destination, device, state, cancellation)?;
         if !fresh_source
             && !powering_on
+            && self.is_device_degraded_on_control(control, context.project_generation, device)
+        {
+            // Keep a degraded VST3 isolated as an aligned pass-through during
+            // unrelated project edits without tearing down healthy plugins.
+            return Ok(());
+        }
+        if !fresh_source
+            && !powering_on
             && self
                 .matching_edit_source(
                     control,
@@ -641,6 +679,7 @@ impl Plugins {
             if source.project_generation == context.project_generation
                 && source.accepted
                 && !source.retiring
+                && !self.is_binding_degraded_on_control(control, source.binding)
                 && Hosting::saved_identity_on_control(&original_state(
                     control,
                     source.binding,
@@ -649,6 +688,19 @@ impl Plugins {
             {
                 original = Some(source.binding);
                 break;
+            }
+        }
+        if original.is_none() {
+            // Fall back to metadata on a degraded source when no healthy sibling
+            // or catalog entry is available (e.g. fixture reload tests).
+            for source in self.sources.iter().rev() {
+                if source.project_generation == context.project_generation
+                    && source.provider == Some(provider_identity(state)?)
+                    && control.native_source_metadata(source.binding).is_ok()
+                {
+                    original = Some(source.binding);
+                    break;
+                }
             }
         }
         let metadata;
