@@ -99,6 +99,135 @@ pub(crate) fn rename_exclusive(_: &Path, _: &Path) -> io::Result<()> {
     ))
 }
 
+/// Atomically claim an absent `destination` directory and publish `staging`'s
+/// contents without replacing any existing file or directory.
+pub(crate) fn rename_directory_exclusive(staging: &Path, destination: &Path) -> io::Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        rename_exclusive(staging, destination)
+    }
+    #[cfg(windows)]
+    {
+        publish_directory_exclusive_windows(staging, destination)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        let _ = (staging, destination);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "exclusive directory rename is unsupported on this platform",
+        ))
+    }
+}
+
+#[cfg(windows)]
+fn publish_directory_exclusive_windows(staging: &Path, destination: &Path) -> io::Result<()> {
+    use std::path::PathBuf;
+    const MAX_DEPTH: usize = 32;
+    const MAX_ENTRIES: usize = 16_384;
+
+    let meta = fs::symlink_metadata(staging)?;
+    if !meta.is_dir() || meta.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "staged project folder must be a real directory",
+        ));
+    }
+
+    // Collect the staged tree before touching `destination` so symlinks or
+    // malformed entries fail before creating any destination directory.
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    let mut marker: Option<PathBuf> = None;
+    let mut pending = vec![(PathBuf::new(), 0usize)];
+    let mut entries_seen = 0usize;
+    while let Some((relative, depth)) = pending.pop() {
+        let current = if relative.as_os_str().is_empty() {
+            staging.to_path_buf()
+        } else {
+            staging.join(&relative)
+        };
+        for entry in fs::read_dir(&current)? {
+            entries_seen += 1;
+            if entries_seen > MAX_ENTRIES {
+                return Err(io::Error::other(
+                    "staged project folder entry bound exceeded",
+                ));
+            }
+            let entry = entry?;
+            let name = entry.file_name();
+            let child_rel = if relative.as_os_str().is_empty() {
+                PathBuf::from(&name)
+            } else {
+                relative.join(&name)
+            };
+            let child_path = entry.path();
+            let kind = fs::symlink_metadata(&child_path)?.file_type();
+            if kind.is_symlink() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "staged project folder cannot contain symbolic links",
+                ));
+            }
+            if kind.is_dir() {
+                if depth >= MAX_DEPTH {
+                    return Err(io::Error::other(
+                        "staged project folder depth bound exceeded",
+                    ));
+                }
+                dirs.push(child_rel.clone());
+                pending.push((child_rel, depth + 1));
+            } else if kind.is_file() {
+                if relative.as_os_str().is_empty() && name == ".hex-project" {
+                    marker = Some(child_rel);
+                } else {
+                    files.push(child_rel);
+                }
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "staged project folder contains an unsupported entry",
+                ));
+            }
+        }
+    }
+
+    // `create_dir` on Windows atomically fails with `AlreadyExists` if any
+    // file, symlink, empty directory, or non-empty directory already exists at
+    // `destination` (unlike `fs::rename`, which passes MOVEFILE_REPLACE_EXISTING).
+    fs::create_dir(destination)?;
+    for rel_dir in &dirs {
+        fs::create_dir(destination.join(rel_dir))?;
+    }
+    let mut staged_to_unlink = Vec::with_capacity(files.len() + usize::from(marker.is_some()));
+    for rel_file in &files {
+        let src = staging.join(rel_file);
+        let dst = destination.join(rel_file);
+        let published = publish_new(&src, &dst)?;
+        if published.staging_remains() {
+            staged_to_unlink.push(src);
+        }
+    }
+    if let Some(rel_marker) = &marker {
+        let src = staging.join(rel_marker);
+        let dst = destination.join(rel_marker);
+        let published = publish_new(&src, &dst)?;
+        if published.staging_remains() {
+            staged_to_unlink.push(src);
+        }
+    }
+    // Destination is now completely published. Remove only the staged entries
+    // we created (never `remove_dir_all`).
+    for path in staged_to_unlink {
+        let _ = fs::remove_file(path);
+    }
+    for rel_dir in dirs.iter().rev() {
+        let _ = fs::remove_dir(staging.join(rel_dir));
+    }
+    let _ = fs::remove_dir(staging);
+    Ok(())
+}
+
 fn copy_exclusive(staging: &Path, destination: &Path) -> io::Result<()> {
     let mut source = File::open(staging)?;
     let mut options = OpenOptions::new();
@@ -402,5 +531,47 @@ mod cross_platform_tests {
         assert!(rename_unsupported(&error));
         assert!(!destination.exists());
         assert!(staging.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rename_directory_exclusive_refuses_existing_empty_dir_nonempty_dir_and_file() {
+        let dir = Dir::new();
+        let stage = dir.0.join(".stage-dir");
+        fs::create_dir(&stage).unwrap();
+        fs::write(stage.join("marker"), b"staged").unwrap();
+
+        let existing_file = dir.0.join("existing-file");
+        fs::write(&existing_file, b"keep-file").unwrap();
+        assert!(rename_directory_exclusive(&stage, &existing_file).is_err());
+        assert_eq!(fs::read(&existing_file).unwrap(), b"keep-file");
+        assert!(stage.join("marker").is_file());
+
+        let existing_empty = dir.0.join("existing-empty");
+        fs::create_dir(&existing_empty).unwrap();
+        assert!(rename_directory_exclusive(&stage, &existing_empty).is_err());
+        assert!(fs::read_dir(&existing_empty).unwrap().next().is_none());
+        assert!(stage.join("marker").is_file());
+
+        let existing_nonempty = dir.0.join("existing-nonempty");
+        fs::create_dir(&existing_nonempty).unwrap();
+        fs::write(existing_nonempty.join("keep"), b"keep-dir").unwrap();
+        assert!(rename_directory_exclusive(&stage, &existing_nonempty).is_err());
+        assert_eq!(
+            fs::read(existing_nonempty.join("keep")).unwrap(),
+            b"keep-dir"
+        );
+        assert!(stage.join("marker").is_file());
+
+        // Non-directory source must be refused so file-over-file rename cannot occur.
+        let regular_source = dir.staged(b"not-a-dir");
+        assert!(rename_directory_exclusive(&regular_source, &existing_file).is_err());
+        assert_eq!(fs::read(&existing_file).unwrap(), b"keep-file");
+
+        // Absent destination succeeds atomically.
+        let target = dir.0.join("published-dir");
+        rename_directory_exclusive(&stage, &target).unwrap();
+        assert!(!stage.exists());
+        assert_eq!(fs::read(target.join("marker")).unwrap(), b"staged");
     }
 }

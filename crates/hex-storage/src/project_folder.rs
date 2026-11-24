@@ -175,7 +175,7 @@ impl NewFolder {
             if cancelled() {
                 return Err(StorageError::Invalid("project save cancelled"));
             }
-            publication::rename_exclusive(stage, root)?;
+            publication::rename_directory_exclusive(stage, root)?;
             outcome.path = self.path.clone();
             outcome.warning = root
                 .parent()
@@ -342,7 +342,7 @@ fn sync_directory(path: &Path) -> io::Result<()> {
     }
 }
 
-#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+#[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
 mod tests {
     use super::*;
 
@@ -472,6 +472,7 @@ mod tests {
         assert!(!files.0.join("Cancelled").exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn derived_path_must_fit_even_when_the_chosen_filename_fits() {
         let files = Files::new();
