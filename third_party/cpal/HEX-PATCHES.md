@@ -19,11 +19,15 @@ for its client-frame maximum. It refuses before stream start if the configured
 rate or buffer no longer matches, or the maximum exceeds the caller's ceiling.
 The reported hardware-buffer duration uses the device's rate. Failed startup
 attempts restore the prior buffer if it still equals the requested value.
-The generic output entry point keeps its existing setup. The input entry point
-forwards device-disconnect errors for every selected input, including the
-system default, to the supplied error callback. The selected input is pinned;
-a change of system default does not silently transfer its capture to another
-device. As elsewhere in this backend, a contended error callback may be skipped.
+The generic output entry point forwards `kAudioDevicePropertyDeviceIsAlive`
+disconnects (`StreamError::DeviceNotAvailable`) for every output stream,
+including the system default output, using the same shared error callback
+forwarding as the input entry point (replacing the upstream default-output
+no-op callback). The input entry point forwards device-disconnect errors for
+every selected input, including the system default, to the supplied error
+callback. The selected input is pinned; a change of system default does not
+silently transfer its capture to another device. As elsewhere in this backend,
+a contended error callback may be skipped.
 The direct device-property approach also appears in upstream CPAL 0.18.0,
 archive SHA-256 `d9dd2b2151ebb4d5866c804d89fe28244bfb6b74481b9b4d406e4ec4d7f88ce5`,
 VCS revision `45fe976149d5ea0c01b30546e26b3c867285c539`.

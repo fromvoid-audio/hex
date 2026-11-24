@@ -404,9 +404,9 @@ fn is_default_output_device(device: &Device) -> bool {
     default_output_device().is_some_and(|d| d.audio_device_id == device.audio_device_id)
 }
 
-// The input stream is pinned to the selected device even when it is the
-// system default. Its disconnection must reach the stream's error callback.
-fn input_disconnect_callback<E>(callback: Arc<Mutex<E>>) -> super::ErrorCallback
+// Both input and output streams (including the system default output) must
+// forward DeviceIsAlive disconnect errors to the caller's error callback.
+fn stream_disconnect_callback<E>(callback: Arc<Mutex<E>>) -> super::ErrorCallback
 where
     E: FnMut(StreamError) + Send + 'static,
 {
@@ -429,9 +429,23 @@ mod input_disconnect_regression {
                 target.fetch_add(1, Ordering::Relaxed);
             }
         }));
-        // Input stream construction uses this same callback for every selected
-        // device, without a separate no-op route for the default device.
-        let mut disconnect = input_disconnect_callback(callback);
+        // Input and output stream construction both use this shared callback
+        // for every selected device, including the system default.
+        let mut disconnect = stream_disconnect_callback(callback);
+        disconnect(StreamError::DeviceNotAvailable);
+        assert_eq!(observed.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn default_output_disconnect_forwards_device_not_available() {
+        let observed = Arc::new(AtomicUsize::new(0));
+        let target = Arc::clone(&observed);
+        let callback = Arc::new(Mutex::new(move |error| {
+            if matches!(error, StreamError::DeviceNotAvailable) {
+                target.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+        let mut disconnect = stream_disconnect_callback(callback);
         disconnect(StreamError::DeviceNotAvailable);
         assert_eq!(observed.load(Ordering::Relaxed), 1);
     }
@@ -927,7 +941,7 @@ impl Device {
             Ok(())
         })?;
 
-        let error_callback_for_stream = input_disconnect_callback(error_callback_disconnect);
+        let error_callback_for_stream = stream_disconnect_callback(error_callback_disconnect);
 
         let stream = Stream::new(
             StreamInner {
@@ -1103,15 +1117,9 @@ impl Device {
             }
         }
 
-        // Create error callback for stream - either dummy or real based on device type
-        let error_callback_for_stream: super::ErrorCallback = if is_default_output_device(self) {
-            Box::new(|_: StreamError| {})
-        } else {
-            let error_callback_clone = error_callback_disconnect.clone();
-            Box::new(move |err: StreamError| {
-                invoke_error_callback(&error_callback_clone, err);
-            })
-        };
+        // Forward DeviceIsAlive disconnects for every output stream, including
+        // the system default output, rather than swallowing them with a no-op.
+        let error_callback_for_stream = stream_disconnect_callback(error_callback_disconnect);
 
         let stream = Stream::new(
             StreamInner {

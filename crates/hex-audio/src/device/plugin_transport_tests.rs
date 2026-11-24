@@ -273,6 +273,195 @@ fn physical_callback_bound_is_distinct_from_render_chunk_size_and_native_admissi
     );
 }
 
+#[test]
+fn host_callback_subslices_frames_above_256_into_plugin_quanta_without_fault_or_allocation() {
+    let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+    let (transport, mut worker) = callback
+        .prepare_output_transport_on_control(1, 1, 1, 256)
+        .unwrap();
+    assert_eq!(control.publish(original_graph()).unwrap(), 1);
+    control.command(hex_engine::PlaybackCommand::Play).unwrap();
+
+    let info = cpal::OutputCallbackInfo::new(cpal::OutputStreamTimestamp {
+        callback: cpal::StreamInstant::new(1, 0),
+        playback: cpal::StreamInstant::new(1, 100),
+    });
+    let mut previous_start = None;
+
+    // 512-frame callback (2 x 256) warms up the 2Q pipeline without revoking
+    // transport or latching a render fault, with zero callback allocations.
+    let mut warm_512 = vec![9.0_f32; 512 * 2];
+    let run_512 = || {
+        render_host_callback(
+            &mut callback,
+            &control.status,
+            &mut warm_512,
+            &info,
+            2,
+            48_000,
+            Some(256),
+            &mut previous_start,
+        );
+    };
+    #[cfg(feature = "allocation-probe")]
+    {
+        let measured = allocation_counter::measure(run_512);
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    #[cfg(not(feature = "allocation-probe"))]
+    {
+        let mut run_512 = run_512;
+        run_512();
+    }
+    assert!(!transport.is_revoked());
+    assert!(!control.status.render_fault.load(Acquire));
+    assert!(warm_512.iter().all(|s| *s == 0.0));
+
+    // Complete the two 256-frame worker quanta produced by the 512-frame callback.
+    let mut completed = 0;
+    while let Some(mut block) = worker.receive().unwrap() {
+        assert_eq!(block.frames, 256);
+        for frame in &mut block.pcm[..256] {
+            frame[0] *= 0.5;
+            frame[1] *= 0.5;
+        }
+        worker.complete(block).unwrap();
+        completed += 1;
+    }
+    assert_eq!(completed, 2);
+
+    // Second 512-frame callback (2 x 256) consumes the two completed worker
+    // quanta and dispatches two new 256-frame quanta with zero allocations.
+    let mut host_512 = vec![9.0_f32; 512 * 2];
+    let run_second_512 = || {
+        render_host_callback(
+            &mut callback,
+            &control.status,
+            &mut host_512,
+            &info,
+            2,
+            48_000,
+            Some(256),
+            &mut previous_start,
+        );
+    };
+    #[cfg(feature = "allocation-probe")]
+    {
+        let measured = allocation_counter::measure(run_second_512);
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    #[cfg(not(feature = "allocation-probe"))]
+    {
+        let mut run_second_512 = run_second_512;
+        run_second_512();
+    }
+    assert!(!transport.is_revoked());
+    assert!(!control.status.render_fault.load(Acquire));
+    // All 512 frames carry the worker-processed 0.5x stereo signal.
+    assert!(
+        host_512
+            .chunks_exact(2)
+            .all(|frame| frame == [0.375, -0.25])
+    );
+    let mut dispatched = 0;
+    while let Some(block) = worker.receive().unwrap() {
+        assert_eq!(block.frames, 256);
+        worker.complete(block).unwrap();
+        dispatched += 1;
+    }
+    assert_eq!(dispatched, 2);
+
+    // Channel-misaligned host slice still revokes transport and latches RenderFault.
+    let mut misaligned = vec![9.0_f32; 511];
+    render_host_callback(
+        &mut callback,
+        &control.status,
+        &mut misaligned,
+        &info,
+        2,
+        48_000,
+        Some(256),
+        &mut previous_start,
+    );
+    assert!(transport.is_revoked());
+    assert!(control.status.render_fault.load(Acquire));
+    assert!(misaligned.iter().all(|s| *s == 0.0));
+
+    // PluginBridge profile (bridge_quantum = Some(256)) also sub-slices 1024-frame
+    // (4 x 256) and non-multiple 513-frame (256 + 256 + 1) physical callbacks
+    // without faulting or allocating.
+    let (mut bridge_control, mut bridge_callback) = prepared::channel(48_000).unwrap();
+    bridge_control
+        .configure_plugin_callback_quantum(&mut bridge_callback, 256)
+        .unwrap();
+    assert_eq!(bridge_control.publish(original_graph()).unwrap(), 1);
+    bridge_control
+        .command(hex_engine::PlaybackCommand::Play)
+        .unwrap();
+    let mut host_1024 = vec![0.0_f32; 1024 * 2];
+    let mut host_513 = vec![0.0_f32; 513 * 2];
+    let mut bridge_prev = None;
+    let run_large = || {
+        render_host_callback(
+            &mut bridge_callback,
+            &bridge_control.status,
+            &mut host_1024,
+            &info,
+            2,
+            48_000,
+            Some(256),
+            &mut bridge_prev,
+        );
+        render_host_callback(
+            &mut bridge_callback,
+            &bridge_control.status,
+            &mut host_513,
+            &info,
+            2,
+            48_000,
+            Some(256),
+            &mut bridge_prev,
+        );
+    };
+    #[cfg(feature = "allocation-probe")]
+    {
+        let measured = allocation_counter::measure(run_large);
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    #[cfg(not(feature = "allocation-probe"))]
+    {
+        let mut run_large = run_large;
+        run_large();
+    }
+    assert!(!bridge_control.status.render_fault.load(Acquire));
+    assert!(host_1024.chunks_exact(2).all(|frame| frame == [0.75, -0.5]));
+    assert!(host_513.chunks_exact(2).all(|frame| frame == [0.75, -0.5]));
+}
+
 #[cfg(feature = "allocation-probe")]
 #[test]
 fn owned_worker_and_all_four_original_guards_retire_on_control_after_zero_allocation_callbacks() {
