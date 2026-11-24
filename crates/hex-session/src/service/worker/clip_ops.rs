@@ -671,6 +671,9 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                 ctx.worker.resident_seek.as_ref(),
                 ctx.worker.resident_preview.as_ref(),
             );
+            let mut switch_phases = (ctx.track_switch_request
+                && ctx.worker.events.observing_request())
+            .then(super::super::diagnostics::SectionPhases::default);
             let result = ctx
                 .worker
                 .events
@@ -740,26 +743,29 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                         }
                         return Ok(None);
                     }
-                    if let Some((_, target)) = ctx.worker.adopted_device_draft.as_ref() {
-                        ctx.worker.session.device_take_resident_snapshot(
+                    ctx.worker
+                        .session
+                        .command_resident_snapshot_timed(
                             command,
-                            *target,
-                            context,
-                            sink,
-                            admission,
+                            ctx.worker
+                                .adopted_device_draft
+                                .as_ref()
+                                .map(|(_, target)| *target),
+                            resident_audio::ResidentSinkContext {
+                                context,
+                                sink,
+                                admission,
+                            },
                             ctx.worker.resident_snapshot.as_ref(),
+                            switch_phases.as_mut(),
                         )
-                    } else {
-                        ctx.worker.session.command_resident_snapshot(
-                            command,
-                            context,
-                            sink,
-                            admission,
-                            ctx.worker.resident_snapshot.as_ref(),
-                        )
-                    }
-                    .map(Some)
+                        .map(Some)
                 });
+            if matches!(result, Ok(Some(_)))
+                && let Some(phases) = switch_phases
+            {
+                ctx.worker.events.record_track_switch_phases(phases);
+            }
             match result {
                 Ok(None) if ctx.worker.pending_device_insert.is_some() => {
                     ctx.outcome.request_complete = false;
