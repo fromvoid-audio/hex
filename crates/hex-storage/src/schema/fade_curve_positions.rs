@@ -140,11 +140,8 @@ mod tests {
         else {
             panic!("import");
         };
-        if edited {
-            editor
-                .execute(Command::SetAudioClipPitch { clip, cents: 137 })
-                .unwrap();
-        }
+        // Author while the clip is plain so its captured root is a true
+        // predecessor fixture rather than a newly authored Outer envelope.
         let fade = ClipFade::new(1001, 0, 401, 301)
             .unwrap()
             .with_shape(10, 20, 700, -600)
@@ -154,6 +151,11 @@ mod tests {
         editor
             .execute(Command::SetClipFadeEnvelope { clip, fade })
             .unwrap();
+        if edited {
+            editor
+                .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+                .unwrap();
+        }
         editor.project().clone()
     }
     #[test]
@@ -247,5 +249,45 @@ mod tests {
             illicit["fade_curve_positions"] = serde_json::json!([]);
             assert!(crate::decode(&serde_json::to_vec(&illicit).unwrap()).is_err());
         }
+    }
+    #[test]
+    fn authored_outer_fade_preserves_curve_positions_in_schema122() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "Case Preserved".into(),
+                path: "Original/Source.WAV".into(),
+                sample_rate: 48_000,
+                frames: 1001,
+            })
+            .unwrap()
+        else {
+            panic!("import");
+        };
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+            .unwrap();
+        let fade = ClipFade::new(1001, 0, 401, 301)
+            .unwrap()
+            .with_shape(10, 20, 700, -600)
+            .unwrap()
+            .with_curve_positions(250, 750)
+            .unwrap();
+        editor
+            .execute(Command::SetClipFadeEnvelope { clip, fade })
+            .unwrap();
+        let project = editor.project();
+        assert_eq!(
+            crate::schema_version_for(project),
+            crate::OUTER_CLIP_FADE_SCHEMA_VERSION
+        );
+        let bytes = crate::encode(project).unwrap();
+        let decoded = crate::decode(&bytes).unwrap();
+        assert_eq!(&decoded, project);
+        let restored = decoded.tracks()[0].clips()[0].retained_fade();
+        assert_eq!(
+            (restored.in_position(), restored.out_position()),
+            (250, 750)
+        );
     }
 }
