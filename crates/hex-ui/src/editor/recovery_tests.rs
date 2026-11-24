@@ -3423,116 +3423,118 @@ fn degraded_general_graph_edits_and_pending_receipts_recover_or_retire_cleanly(
     }
 }
 
-#[gpui::test]
-fn stranded_released_pair_drag_recovers_solo_and_mute_while_playing_and_paused(
-    cx: &mut gpui::TestAppContext,
-) {
+fn install_eq_node_and_strand_pair_commit(
+    app: &mut gpui::TestAppContext,
+    editor: &gpui::Entity<EditorView>,
+    device: hex_project::DeviceId,
+    other_faulted_device_id: u64,
+    preview_pair: (f32, f32),
+    released_pair: (f32, f32),
+) -> hex_devices::eq::NodeId {
     use hex_devices::eq::{EqState, Node, NodeId, NodeParameter};
     use hex_session::device_gesture::{
         GestureAck, GesturePhase, ParameterPairValue, ParameterValue,
     };
+    let node_id = editor.update(app, |v, _| {
+        let existing = v
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .state()
+            .clone();
+        let mut eq = EqState::decode(&existing).unwrap();
+        if let Some(first_node) = eq.nodes.first() {
+            first_node.id
+        } else {
+            let id = NodeId::new(1).unwrap();
+            eq.add(Node::new(id, 120.0, 0.0, 0).unwrap()).unwrap();
+            let encoded = eq
+                .encode()
+                .unwrap()
+                .with_host_metadata_from(&existing)
+                .unwrap();
+            v.service
+                .submit(Request::Edit(Command::ReplaceDeviceState {
+                    device,
+                    state: encoded,
+                }))
+                .unwrap();
+            let updated = next_service_event(&v.service);
+            v.receive(updated);
+            id
+        }
+    });
+    let first = node_id.parameter(NodeParameter::Frequency).unwrap();
+    let second = node_id.parameter(NodeParameter::Gain).unwrap();
+    editor.update(app, |v, _| {
+        // Start and accept a live paired EQ preview on the worker before a
+        // different VST3 endpoint faults and strands the released Commit.
+        v.degraded_plugins = Default::default();
+        v.begin_device_pair_gesture(
+            device,
+            first,
+            second,
+            ParameterPairValue {
+                first: ParameterValue::Float(120.0),
+                second: ParameterValue::Float(0.0),
+            },
+        )
+        .unwrap();
+        assert!(v.pump_device_gesture());
+        let begin_ev = next_service_event(&v.service);
+        v.receive(begin_ev);
+
+        v.change_device_pair_gesture(ParameterPairValue {
+            first: ParameterValue::Float(preview_pair.0),
+            second: ParameterValue::Float(preview_pair.1),
+        })
+        .unwrap();
+        assert!(v.pump_device_gesture());
+        let change_ev = next_service_event(&v.service);
+        v.receive(change_ev);
+        let worker_preview = v
+            .device_gesture
+            .snapshot()
+            .expect("accepted worker preview");
+
+        // A different VST3 endpoint faults before the user releases the drag.
+        v.degraded_plugins =
+            crate::editor_backend::DegradedDevices::new(vec![other_faulted_device_id]);
+        v.finish_device_pair_gesture(ParameterPairValue {
+            first: ParameterValue::Float(released_pair.0),
+            second: ParameterValue::Float(released_pair.1),
+        })
+        .unwrap();
+        let commit_req = v.device_gesture.next_request().expect("commit request");
+        v.device_gesture.mark_submitted();
+        let refused_ack = GestureAck {
+            preview_retained: true,
+            source_lost: false,
+            key: commit_req.key(),
+            phase: GesturePhase::Commit,
+            sequence: commit_req.sequence(),
+            accepted: false,
+            reason: Some("resident audio source is degraded".into()),
+        };
+        assert!(v.acknowledge_device_gesture_with_snapshot(&refused_ack, Some(worker_preview)));
+        assert!(v.device_gesture.is_recovery_pending());
+        assert!(v.device_gesture.has_stranded_commit());
+        assert!(!v.device_gesture.has_pending_requests());
+    });
+    node_id
+}
+
+#[gpui::test]
+fn stranded_released_pair_drag_recovers_solo_and_mute_while_playing_and_paused(
+    cx: &mut gpui::TestAppContext,
+) {
+    use hex_devices::eq::{EqState, NodeId, NodeParameter};
+    use hex_session::device_gesture::{ParameterPairValue, ParameterValue};
 
     let _output_serial = hex_audio::worker_fixture::serial_output();
-
-    fn install_eq_node_and_strand_pair_commit(
-        app: &mut gpui::TestAppContext,
-        editor: &gpui::Entity<EditorView>,
-        device: hex_project::DeviceId,
-        other_faulted_device_id: u64,
-        preview_pair: (f32, f32),
-        released_pair: (f32, f32),
-    ) -> NodeId {
-        let node_id = editor.update(app, |v, _| {
-            let existing = v
-                .state
-                .as_ref()
-                .unwrap()
-                .project
-                .device(device)
-                .unwrap()
-                .state()
-                .clone();
-            let mut eq = EqState::decode(&existing).unwrap();
-            if let Some(first_node) = eq.nodes.first() {
-                first_node.id
-            } else {
-                let id = NodeId::new(1).unwrap();
-                eq.add(Node::new(id, 120.0, 0.0, 0).unwrap()).unwrap();
-                let encoded = eq
-                    .encode()
-                    .unwrap()
-                    .with_host_metadata_from(&existing)
-                    .unwrap();
-                v.service
-                    .submit(Request::Edit(Command::ReplaceDeviceState {
-                        device,
-                        state: encoded,
-                    }))
-                    .unwrap();
-                let updated = next_service_event(&v.service);
-                v.receive(updated);
-                id
-            }
-        });
-        let first = node_id.parameter(NodeParameter::Frequency).unwrap();
-        let second = node_id.parameter(NodeParameter::Gain).unwrap();
-        editor.update(app, |v, _| {
-            // Start and accept a live paired EQ preview on the worker before a
-            // different VST3 endpoint faults and strands the released Commit.
-            v.degraded_plugins = Default::default();
-            v.begin_device_pair_gesture(
-                device,
-                first,
-                second,
-                ParameterPairValue {
-                    first: ParameterValue::Float(120.0),
-                    second: ParameterValue::Float(0.0),
-                },
-            )
-            .unwrap();
-            assert!(v.pump_device_gesture());
-            let begin_ev = next_service_event(&v.service);
-            v.receive(begin_ev);
-
-            v.change_device_pair_gesture(ParameterPairValue {
-                first: ParameterValue::Float(preview_pair.0),
-                second: ParameterValue::Float(preview_pair.1),
-            })
-            .unwrap();
-            assert!(v.pump_device_gesture());
-            let change_ev = next_service_event(&v.service);
-            v.receive(change_ev);
-            let worker_preview = v
-                .device_gesture
-                .snapshot()
-                .expect("accepted worker preview");
-
-            // A different VST3 endpoint faults before the user releases the drag.
-            v.degraded_plugins =
-                crate::editor_backend::DegradedDevices::new(vec![other_faulted_device_id]);
-            v.finish_device_pair_gesture(ParameterPairValue {
-                first: ParameterValue::Float(released_pair.0),
-                second: ParameterValue::Float(released_pair.1),
-            })
-            .unwrap();
-            let commit_req = v.device_gesture.next_request().expect("commit request");
-            v.device_gesture.mark_submitted();
-            let refused_ack = GestureAck {
-                preview_retained: true,
-                source_lost: false,
-                key: commit_req.key(),
-                phase: GesturePhase::Commit,
-                sequence: commit_req.sequence(),
-                accepted: false,
-                reason: Some("resident audio source is degraded".into()),
-            };
-            assert!(v.acknowledge_device_gesture_with_snapshot(&refused_ack, Some(worker_preview)));
-            assert!(v.device_gesture.is_recovery_pending());
-            assert!(v.device_gesture.has_stranded_commit());
-            assert!(!v.device_gesture.has_pending_requests());
-        });
-        node_id
-    }
 
     // 1. Playing transport: Solo shortcut recovers, reconciles released EQ values,
     // applies Solo once, preserves Undo history, and preserves deferred play.
@@ -3874,5 +3876,83 @@ fn stranded_released_pair_drag_recovers_solo_and_mute_while_playing_and_paused(
             v.audio = None;
         });
         drop(fresh_guard);
+    }
+}
+
+#[gpui::test]
+fn save_offers_a_committed_copy_without_retrying_a_stranded_pair(app: &mut gpui::TestAppContext) {
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (editor, _, device, _old_output, _restarts) = setup_degraded_device_recovery(app);
+    let files = crate::editor::test_environment::Environment::new().unwrap();
+    let path = files.root().join("source.hex");
+    editor.update(app, |view, _| {
+        view.service.submit(Request::SaveNew(path.clone())).unwrap();
+        let saved = next_service_event(&view.service);
+        assert!(saved.save_complete && saved.error.is_none());
+        view.receive(saved);
+    });
+    let original = std::fs::read(&path).unwrap();
+    install_eq_node_and_strand_pair_commit(
+        app,
+        &editor,
+        device,
+        device.value() + 99,
+        (900.0, 1.0),
+        (1600.0, 2.0),
+    );
+    let committed = editor.read_with(app, |v, _| v.state.as_ref().unwrap().project.clone());
+    let released = editor.read_with(app, |v, _| {
+        v.device_gesture.reconcilable_snapshot().unwrap()
+    });
+    for answer in ["cancel", "save committed copy…"] {
+        editor.update(app, |v, cx| {
+            v.save_project(cx);
+            cx.notify();
+        });
+        app.run_until_parked();
+        assert!(
+            app.has_pending_prompt(),
+            "a refused release must offer a committed copy"
+        );
+        assert!(editor.read_with(app, |v, _| !v.device_gesture.has_pending_requests()));
+        app.simulate_prompt_answer(answer);
+        app.run_until_parked();
+        if answer == "save committed copy…" {
+            let deadline = crate::test_wait::hang_deadline();
+            while app.pending_save_options().is_none() {
+                assert!(Instant::now() < deadline, "copy picker did not open");
+                editor.update(app, |v, cx| {
+                    v.tick(cx);
+                    cx.notify();
+                });
+                app.run_until_parked();
+                std::thread::yield_now();
+            }
+            let destination = files.root().join("copy.hex");
+            app.simulate_new_path_selection(|_| Some(destination));
+            let deadline = crate::test_wait::hang_deadline();
+            loop {
+                app.run_until_parked();
+                editor.update(app, |v, cx| {
+                    v.tick(cx);
+                    cx.notify();
+                });
+                if editor.read_with(app, |v, _| v.status.contains("committed copy saved")) {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "missing real copy receipt");
+                std::thread::yield_now();
+            }
+            assert_eq!(
+                hex_storage::load(files.root().join("copy").join("copy.hex")).unwrap(),
+                *committed
+            );
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        editor.read_with(app, |v, _| {
+            assert_eq!(v.device_gesture.reconcilable_snapshot(), Some(released));
+            assert_eq!(v.state.as_ref().unwrap().project, committed);
+            assert!(!v.saving_project);
+        });
     }
 }

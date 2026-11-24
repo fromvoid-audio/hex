@@ -1,5 +1,7 @@
+mod committed_copy;
 use super::EditorView;
 use crate::theme;
+pub(super) use committed_copy::CommittedCopy;
 use gpui::{AppContext, Context, PromptButton, PromptLevel, Window};
 use hex_session::service::Request;
 use std::path::{Path, PathBuf};
@@ -64,6 +66,10 @@ fn prepare_save_path(mut path: PathBuf) -> Result<PathBuf, String> {
 
 impl EditorView {
     pub(super) fn save_project(&mut self, cx: &mut Context<Self>) {
+        if self.offer_committed_copy() {
+            cx.notify();
+            return;
+        }
         if !super::device_panel::finalize_controls(self, cx) {
             return;
         }
@@ -199,6 +205,10 @@ impl EditorView {
     }
 
     pub(super) fn save_as_dialog(&mut self, cx: &mut Context<Self>) {
+        if self.offer_committed_copy() {
+            cx.notify();
+            return;
+        }
         if !super::device_panel::finalize_controls(self, cx) {
             return;
         }
@@ -214,6 +224,10 @@ impl EditorView {
             }
         }
 
+        self.choose_save_path(None, cx);
+    }
+
+    fn choose_save_path(&mut self, copy: Option<committed_copy::Intent>, cx: &mut Context<Self>) {
         let fallback_directory = self
             .state
             .as_ref()
@@ -221,7 +235,9 @@ impl EditorView {
             .and_then(Path::parent)
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
-        let suggested_name = if self.document_format_upgrade_required {
+        let suggested_name = if copy.is_some() {
+            Some("committed copy.hex".into())
+        } else if self.document_format_upgrade_required {
             self.state
                 .as_ref()
                 .and_then(|state| state.document_path.as_deref())
@@ -255,7 +271,9 @@ impl EditorView {
                     }
                     match picked {
                         Ok(Ok(Some(path))) => {
-                            if super::device_panel::finalize_controls(view, cx) {
+                            if let Some(intent) = copy {
+                                view.submit_committed_copy(intent, path);
+                            } else if super::device_panel::finalize_controls(view, cx) {
                                 view.begin_save_new(path);
                             }
                         }
@@ -285,7 +303,7 @@ impl EditorView {
                 .as_ref()
                 .and_then(|state| state.document_path.as_ref())
                 .is_some(),
-            self.saving_project,
+            self.saving_project || self.committed_copy.pending(),
             self.save_dialog_open,
             self.close_prompt_open
                 || self.opening_project
