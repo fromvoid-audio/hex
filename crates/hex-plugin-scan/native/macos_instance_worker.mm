@@ -1129,15 +1129,36 @@ int main(int argc,char** argv) {
                         }
                         if(!valid) { worker_failure.store(ProtocolFailure);break; }
                         instance.refresh_processing_parameters(processing_parameters);
+                        std::array<ParamID,hex_instance::PARAMETER_POINT_COUNT> skipped_stale_zero{};
+                        size_t skipped_stale_zero_count=0;
+                        size_t active_parameters=0;
                         for(size_t n=0;n<packet.parameter_count;++n) {
                             const auto* info=processing_parameters.find(packet.parameters[n].id);
                             const bool authored=packet.authored_parameters && (n || !packet.manual_parameter);
-                            if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden)) ||
-                                (authored && !info->accepts_authored(packet.authored_steps[n]))) valid=false;
+                            if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden))) {
+                                valid=false;
+                            } else if(authored && !info->accepts_authored(packet.authored_steps[n])) {
+                                if(info->is_stale_authored_steps(packet.authored_steps[n])) {
+                                    if(!packet.parameters[n].offset)
+                                        skipped_stale_zero[skipped_stale_zero_count++]=packet.parameters[n].id;
+                                    continue;
+                                }
+                                valid=false;
+                            }
+                            if(active_parameters!=n) {
+                                packet.parameters[active_parameters]=packet.parameters[n];
+                                packet.authored_steps[active_parameters]=packet.authored_steps[n];
+                            }
+                            ++active_parameters;
                         }
+                        packet.parameter_count=active_parameters;
                         if(packet.dense_parameter) {
                             const auto* info=processing_parameters.find(packet.dense_id);
-                            if(!info || !info->accepts_authored(packet.dense_steps)) valid=false;
+                            if(!info) valid=false;
+                            else if(!info->accepts_authored(packet.dense_steps)) {
+                                if(info->is_stale_authored_steps(packet.dense_steps)) packet.dense_parameter=false;
+                                else valid=false;
+                            }
                         }
                         if(!valid || (event_channels && !held_notes.stage(packet.notes,packet.note_count))) {
                             worker_failure.store(ProtocolFailure);break;
@@ -1161,6 +1182,8 @@ int main(int argc,char** argv) {
                                     if(point.offset) break;
                                     if(point.id==target.parameter) return;
                                 }
+                                for(size_t n=0;n<skipped_stale_zero_count;++n)
+                                    if(skipped_stale_zero[n]==target.parameter) return;
                             }
                             if(target.reading && ended_in_scope) valid=false;
                             restore_bases[restore_base_count++]={0,target.parameter,target.base};

@@ -191,6 +191,7 @@ constexpr int component_prealloc_overflow_variant=157, controller_prealloc_overf
 constexpr int full_output_with_editor_input_variant=159;
 constexpr int split_slice_65_outputs_variant=160;
 constexpr int midi_cc_mapping_restart_variant=161, midi_cc_mapping_and_value_restart_variant=162;
+constexpr int stale_step_count_two_lanes_variant=163;
 static bool held_parameter_input(int variant) {
     return variant==144 || variant==held_instrument_variant || grouped_editor(variant);
 }
@@ -221,7 +222,8 @@ class RestoreController final : public IEditController {
     const int32 inventory_size=fault==grouped_instrument_variant?3:
         (fault==full_output_with_editor_input_variant?129:
         (fault==split_slice_65_outputs_variant?66:
-        ((saturated_editor_drag(fault) || mixed_parameter_input(fault))?2:parameter_inventory_size())));
+        (fault==stale_step_count_two_lanes_variant?2:
+        ((saturated_editor_drag(fault) || mixed_parameter_input(fault))?2:parameter_inventory_size()))));
     FUnknown* context=nullptr;
     IComponentHandler* handler=nullptr;
     float component_gain=0;uint32 scroll=7;
@@ -336,7 +338,7 @@ class RestoreController final : public IEditController {
             self->handler->restartComponent(kLatencyChanged);
             return;
         }
-        if(self->fault==141 || self->fault==142) {
+        if(self->fault==141 || self->fault==142 || self->fault==stale_step_count_two_lanes_variant) {
             self->handler->restartComponent(kParamTitlesChanged);
             return;
         }
@@ -427,7 +429,7 @@ public:
         if (!control() || !context || (value && handler)) return kResultFalse;
         if(value)value->addRef();if(handler)handler->release();handler=value;
         if(fault==104 || fault==105 || fault==118 || fault==119) latency_handler=handler;
-        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=135) || fault==141 || fault==142 || fault==touched_automation_variant || fault==stopped_editor_echo_variant || fault==full_output_with_editor_input_variant || fault==midi_cc_mapping_restart_variant || fault==midi_cc_mapping_and_value_restart_variant || grouped_editor(fault) ||
+        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=135) || fault==141 || fault==142 || fault==stale_step_count_two_lanes_variant || fault==touched_automation_variant || fault==stopped_editor_echo_variant || fault==full_output_with_editor_input_variant || fault==midi_cc_mapping_restart_variant || fault==midi_cc_mapping_and_value_restart_variant || grouped_editor(fault) ||
             (fault==held_instrument_variant && std::getenv("HEX_ORIGINAL_EDITOR_TOUCH")))) {
             CFRunLoopTimerContext timer_context{};timer_context.info=this;
             edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
@@ -520,7 +522,7 @@ public:
         // Keep the low gain ID last to exercise SDK page order separately
         // from the host's sorted processing lookup.
         if(inventory_size>1 && index<inventory_size-1) {
-            if(fault==grouped_instrument_variant && index==0) {
+            if((fault==grouped_instrument_variant || fault==stale_step_count_two_lanes_variant) && index==0) {
                 info.id=independent_id;info.flags=ParameterInfo::kCanAutomate;
                 return kResultOk;
             }
@@ -554,8 +556,8 @@ public:
         if(fault==80 || fault==81 || fault==82 || fault==91 || fault==92 || fault==touched_automation_variant || mixed_parameter_input(fault) || (fault==authored_instrument_variant || fault==held_instrument_variant)) info.flags=ParameterInfo::kCanAutomate;
         if(fault==91 || fault==92) {const char16_t unit[]=u"ratio";std::memcpy(info.units,unit,sizeof(unit));}
         if(fault==81) info.stepCount=3;
-        if(fault==141 || (fault==142 && !edits_sent)) info.flags=ParameterInfo::kCanAutomate;
-        if(fault==141 && edits_sent) info.stepCount=3;
+        if(fault==141 || fault==stale_step_count_two_lanes_variant || (fault==142 && !edits_sent)) info.flags=ParameterInfo::kCanAutomate;
+        if((fault==141 || fault==stale_step_count_two_lanes_variant) && edits_sent) info.stepCount=3;
         if(fault==82) {info.stepCount=1;info.flags|=ParameterInfo::kIsBypass;}
         if(fault==83 || fault==84 || fault==88) info.flags=ParameterInfo::kIsReadOnly;
         if(fault==84) info.flags|=ParameterInfo::kIsHidden;
@@ -563,7 +565,7 @@ public:
     }
     ParamValue PLUGIN_API getParamNormalized(ParamID id) override {
         if(control() && context && (saturated_editor_drag(fault) || mixed_parameter_input(fault)) && id==drag_axis_id) return drag_axis;
-        if(control() && context && fault==grouped_instrument_variant && id==independent_id) return independent;
+        if(control() && context && (fault==grouped_instrument_variant || fault==stale_step_count_two_lanes_variant) && id==independent_id) return independent;
         if(control() && context &&
            (fault==full_output_with_editor_input_variant || fault==split_slice_65_outputs_variant) &&
            id>=1001 && id<static_cast<ParamID>(1000+inventory_size))
@@ -623,7 +625,7 @@ public:
         // deliberately later authored value, but rejects replay of 0.25.
         if(fault==135 && edits_sent && value!=0.875 && value!=0.5) return kResultFalse;
         if((saturated_editor_drag(fault) || mixed_parameter_input(fault)) && id==drag_axis_id) {drag_axis=value;return kResultOk;}
-        if(fault==grouped_instrument_variant && id==independent_id) {independent=value;return kResultOk;}
+        if((fault==grouped_instrument_variant || fault==stale_step_count_two_lanes_variant) && id==independent_id) {independent=value;return kResultOk;}
         if((fault==full_output_with_editor_input_variant || fault==split_slice_65_outputs_variant) &&
            id>=1001 && id<static_cast<ParamID>(1000+inventory_size)) {
             extra_outputs[static_cast<size_t>(id-1001)]=value;return kResultOk;
@@ -1145,7 +1147,7 @@ public:
         independent.left_value=independent_gain.load()/4.0;
         if(data.inputParameterChanges) {
             const auto count=data.inputParameterChanges->getParameterCount();
-            if(count<1 || count>(fault==grouped_instrument_variant?3:(mixed_parameter_input(fault)?2:1))) return kInvalidArgument;
+            if(count<1 || count>(fault==grouped_instrument_variant?3:((mixed_parameter_input(fault) || fault==stale_step_count_two_lanes_variant)?2:1))) return kInvalidArgument;
             for(int32 index=0;index<count;++index) {
                 auto* queue=data.inputParameterChanges->getParameterData(index);
                 if(!queue) return kInvalidArgument;
@@ -1153,7 +1155,7 @@ public:
                     if(!secondary.read(*queue,data.numSamples) ||
                         (fault==mixed_input_fixture &&
                             (secondary.count!=1 || secondary.points[0].first!=0))) return kInvalidArgument;
-                } else if(fault==grouped_instrument_variant && queue->getParameterId()==independent_id) {
+                } else if((fault==grouped_instrument_variant || fault==stale_step_count_two_lanes_variant) && queue->getParameterId()==independent_id) {
                     if(!independent.read(*queue,data.numSamples)) return kInvalidArgument;
                 } else if(queue->getParameterId()!=parameter_id(fault) ||
                     !primary.read(*queue,data.numSamples)) return kInvalidArgument;
@@ -1381,7 +1383,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>midi_cc_mapping_and_value_restart_variant) return false;next_fault=value;
+        if (value>stale_step_count_two_lanes_variant) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

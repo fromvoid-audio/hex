@@ -729,24 +729,235 @@ fn authored_pcm_rechecks_processing_capability_after_controller_refresh() {
             assert!(Instant::now() < until, "SDK metadata did not refresh");
             thread::yield_now();
         }
-        assert!(matches!(
-            instance.exchange_authored_on_worker(input(&instance, 2), &metadata),
-            Err(Error::Worker(8))
-        ));
-        assert_eq!(instance.completed_blocks_on_control(), 2);
-        assert!(
-            !instance
-                .cancel_and_reap_on_control()
-                .unwrap()
-                .status
-                .success()
-        );
-        assert_eq!(
-            case.observation().unwrap()[10],
-            2,
-            "stale input entered SDK DSP"
-        );
+        if variant == 142 {
+            assert!(matches!(
+                instance.exchange_authored_on_worker(input(&instance, 2), &metadata),
+                Err(Error::Worker(8))
+            ));
+            assert_eq!(instance.completed_blocks_on_control(), 2);
+            assert!(
+                !instance
+                    .cancel_and_reap_on_control()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+            assert_eq!(
+                case.observation().unwrap()[10],
+                2,
+                "stale input entered SDK DSP"
+            );
+        } else {
+            // Variant 141 keeps kCanAutomate while changing step_count 0 -> 3.
+            // A queued/in-flight point carrying the old step count must skip
+            // nonterminally without taking the original processor offline, and
+            // freshly reconciled metadata for step_count 3 must apply cleanly.
+            let stale_block = input(&instance, 2);
+            let stale_reply = instance
+                .exchange_authored_on_worker(stale_block, &metadata)
+                .unwrap();
+            let scale = 0.5 + 2.0 * 0.125;
+            let retained_gain = (0.75 * 4.0 * scale) as f32;
+            for (in_frame, out_frame) in stale_block.pcm[..8].iter().zip(&stale_reply.pcm[..8]) {
+                for channel in 0..2 {
+                    assert!((out_frame[channel] - in_frame[channel] * retained_gain).abs() < 1e-6);
+                }
+            }
+            assert_eq!(instance.completed_blocks_on_control(), 3);
+            let reconciled = instance
+                .read_authored_parameter_metadata_on_control(class, &[7])
+                .unwrap();
+            assert_eq!(reconciled.step_count(7), Some(3));
+            let fresh_block = input(&instance, 3);
+            let fresh_reply = instance
+                .exchange_authored_on_worker(fresh_block, &reconciled)
+                .unwrap();
+            for (frame, (in_frame, out_frame)) in fresh_block.pcm[..8]
+                .iter()
+                .zip(&fresh_reply.pcm[..8])
+                .enumerate()
+            {
+                let normalized = 0.25 + 0.5 * frame as f64 / 7.0;
+                let gain = (normalized * 4.0 * (0.5 + 3.0 * 0.125)) as f32;
+                for channel in 0..2 {
+                    assert!((out_frame[channel] - in_frame[channel] * gain).abs() < 1e-6);
+                }
+            }
+            assert_eq!(instance.completed_blocks_on_control(), 4);
+            assert!(instance.stop_and_reap_on_control().unwrap().status.success());
+            assert_eq!(case.observation().unwrap()[10], 4);
+        }
     }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn authored_stale_step_count_keeps_processor_and_compatible_lanes_alive() {
+    use crate::native::AuthoredParameterExtensionProgress as Progress;
+    use crate::transport::{ParameterPoint, ProcessTiming};
+
+    const STALE_STEP_COUNT_TWO_LANES_VARIANT: u32 = 163;
+    const GAIN_ID: u32 = 7;
+    const INDEPENDENT_ID: u32 = 23;
+
+    let build = build();
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build,
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup(STALE_STEP_COUNT_TWO_LANES_VARIANT),
+    )
+    .unwrap();
+    let class = instance.configuration().identity.class;
+    instance
+        .reserve_authored_parameter_capacity_on_control(2)
+        .unwrap();
+    let metadata = instance
+        .read_authored_parameter_metadata_on_control(class, &[GAIN_ID, INDEPENDENT_ID])
+        .unwrap();
+    assert_eq!(metadata.step_count(GAIN_ID), Some(0));
+    assert_eq!(metadata.step_count(INDEPENDENT_ID), Some(0));
+    assert_eq!(metadata.initial_normalized(GAIN_ID), Some(0.25));
+    instance
+        .arm_authored_parameter_metadata_on_control(metadata)
+        .unwrap();
+
+    let make_block = |instance: &Prepared, sequence, points: &[(u16, u32, f64)]| {
+        let mut block = request(instance.configuration(), sequence);
+        block.timing = Some(ProcessTiming {
+            playing: true,
+            arrangement_frame: block.first_frame as i64,
+            arrangement_beat_raw: None,
+            tempo_micro_bpm: None,
+            meter: Some((4, 4)),
+            cycle_beats_raw: None,
+        });
+        for &(frame, id, normalized) in points {
+            block
+                .parameters
+                .push(ParameterPoint {
+                    frame,
+                    id,
+                    normalized,
+                })
+                .unwrap();
+        }
+        block
+    };
+
+    // Block 0: both lanes active at step_count = 0.
+    let block0 = make_block(
+        &instance,
+        0,
+        &[(0, GAIN_ID, 0.75), (0, INDEPENDENT_ID, 0.5)],
+    );
+    let reply0 = instance.exchange_armed_authored_on_worker(block0).unwrap();
+    let expected0 = (0.5_f64 * (0.75 * 4.0) * (0.5 * 4.0)) as f32;
+    for (in_frame, out_frame) in block0.pcm[..8].iter().zip(&reply0.pcm[..8]) {
+        for channel in 0..2 {
+            assert!((out_frame[channel] - in_frame[channel] * expected0).abs() < 1e-5);
+        }
+    }
+
+    // Trigger kParamTitlesChanged changing GAIN_ID step_count 0 -> 3 while INDEPENDENT_ID stays 0.
+    let signature_before = page(&mut instance, ParameterPageQuery::default()).descriptor_signature;
+    fs::write(case.release(), b"change gain step count to 3").unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    let refreshed = loop {
+        let current = page(&mut instance, ParameterPageQuery::default());
+        if let Some(gain) = current.as_slice().iter().find(|p| p.id == GAIN_ID)
+            && gain.step_count == 3
+        {
+            assert_ne!(current.descriptor_signature, signature_before);
+            let indep = current
+                .as_slice()
+                .iter()
+                .find(|p| p.id == INDEPENDENT_ID)
+                .unwrap();
+            assert_eq!(indep.step_count, 0);
+            break current;
+        }
+        assert!(Instant::now() < until, "SDK metadata did not refresh");
+        thread::yield_now();
+    };
+
+    // Block 1 (before reconciliation): GAIN_ID point carries stale step_count 0
+    // and must be skipped; INDEPENDENT_ID remains compatible and applies on schedule.
+    let block1 = make_block(
+        &instance,
+        1,
+        &[(0, GAIN_ID, 0.125), (0, INDEPENDENT_ID, 0.75)],
+    );
+    let reply1 = instance.exchange_armed_authored_on_worker(block1).unwrap();
+    let scale1 = 0.5 + 1.0 * 0.125;
+    let retained_gain = 0.75 * 4.0;
+    let updated_indep = 0.75 * 4.0;
+    let expected1 = (scale1 * retained_gain * updated_indep) as f32;
+    for (in_frame, out_frame) in block1.pcm[..8].iter().zip(&reply1.pcm[..8]) {
+        for channel in 0..2 {
+            assert!((out_frame[channel] - in_frame[channel] * expected1).abs() < 1e-5);
+        }
+    }
+    assert_eq!(instance.completed_blocks_on_control(), 2);
+
+    // Explicit reconciliation on the running worker: stale step count 0 is refused,
+    // new step count 3 arms cleanly while preserving the original base witness.
+    let query = ParameterPageQuery {
+        first: 0,
+        revision: refreshed.revision,
+        conversion: None,
+    };
+    let poll_extension = |instance: &mut Prepared| {
+        let until = Instant::now() + Duration::from_secs(2);
+        loop {
+            match instance
+                .poll_authored_parameter_extension_on_worker()
+                .unwrap()
+            {
+                Progress::Pending => {
+                    assert!(Instant::now() < until, "extension timed out");
+                    thread::yield_now();
+                }
+                terminal => break terminal,
+            }
+        }
+    };
+    instance
+        .begin_authored_parameter_extension_on_worker(class, GAIN_ID, 0, query)
+        .unwrap();
+    assert!(matches!(poll_extension(&mut instance), Progress::Refused(_)));
+    instance
+        .begin_authored_parameter_extension_on_worker(class, GAIN_ID, 3, query)
+        .unwrap();
+    assert!(matches!(
+        poll_extension(&mut instance),
+        Progress::Armed {
+            id: GAIN_ID,
+            steps: 3,
+            ..
+        }
+    ));
+
+    // Block 2 (after reconciliation): freshly admitted points with step_count 3
+    // apply alongside the compatible lane on the same original processor.
+    let block2 = make_block(
+        &instance,
+        2,
+        &[(0, GAIN_ID, 0.5), (0, INDEPENDENT_ID, 0.25)],
+    );
+    let reply2 = instance.exchange_armed_authored_on_worker(block2).unwrap();
+    let scale2 = 0.5 + 2.0 * 0.125;
+    let expected2 = (scale2 * (0.5 * 4.0) * (0.25 * 4.0)) as f32;
+    for (in_frame, out_frame) in block2.pcm[..8].iter().zip(&reply2.pcm[..8]) {
+        for channel in 0..2 {
+            assert!((out_frame[channel] - in_frame[channel] * expected2).abs() < 1e-5);
+        }
+    }
+    assert_eq!(instance.completed_blocks_on_control(), 3);
+    assert!(instance.stop_and_reap_on_control().unwrap().status.success());
+    assert_eq!(case.observation().unwrap()[10], 3);
 }
 
 #[test]
