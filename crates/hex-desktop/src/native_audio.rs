@@ -906,13 +906,17 @@ impl NativeAudioSink {
                     .map_err(|error| format!("this audio revision is unsupported: {error:?}"))
                 })
             });
-            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-            let hosted_quote = None;
-            let (quote, builtin_effects) = match hosted_quote.unwrap_or_else(|| {
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            let quote_result = hosted_quote.unwrap_or_else(|| {
                 snapshot
                     .candidate_reservation_quote()
                     .map_err(|error| format!("this audio revision is unsupported: {error:?}"))
-            }) {
+            });
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            let quote_result = snapshot
+                .candidate_reservation_quote()
+                .map_err(|error| format!("this audio revision is unsupported: {error:?}"));
+            let (quote, builtin_effects) = match quote_result {
                 Ok(quote) => quote,
                 Err(error)
                     if matches!(

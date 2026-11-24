@@ -14,7 +14,7 @@ use hex_session::service::{
 const UNAVAILABLE: &str = "vst3 hosting requires macos arm64";
 
 #[derive(Default)]
-pub(super) struct Plugins {
+pub(crate) struct Plugins {
     // No native pool can be acquired on this target.
     pub(super) pool_held: bool,
 }
@@ -54,6 +54,16 @@ impl Plugins {
     }
     pub fn take_degraded_change(&mut self) -> Option<(u64, u64, Vec<u64>)> {
         None
+    }
+    pub(super) fn matches_capture_source(
+        &self,
+        _: AudioSourceContext,
+        _: hex_session::service::automation_draft::Vst3CaptureTarget,
+    ) -> bool {
+        false
+    }
+    pub(super) fn matches_capture_binding<B>(&self, _: AudioSourceContext, _: u64, _: B) -> bool {
+        false
     }
     pub fn prepare(
         &mut self,

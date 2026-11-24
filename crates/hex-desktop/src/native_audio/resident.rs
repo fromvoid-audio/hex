@@ -169,6 +169,7 @@ pub(super) struct PendingPausedNotes {
     pub(super) effects: Option<plugins::PausedEffects>,
 }
 impl Resident {
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     pub(super) fn powered_off_main(
         &self,
         actual: hex_audio::prepared::AppliedAudioSource,
@@ -335,6 +336,7 @@ impl NativeAudioSink {
         self.resident.retain_applied_off(actual);
         self.resident.reap_control_owners();
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn applied_powered_off_main(&mut self, context: AudioSourceContext) -> Option<u64> {
         self.applied_powered_off(context)
             .filter(|identity| identity.owner() == hex_engine::ProcessorChainOwner::Main)

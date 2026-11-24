@@ -5,16 +5,26 @@
 //! readiness is not approval. Dropping an unapproved handle closes the pipe.
 
 use sha2::{Digest, Sha256};
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Read, Write};
+#[cfg(unix)]
+use std::fs::OpenOptions;
+use std::fs::{self, File};
+use std::io::{self, Read, Write};
+#[cfg(unix)]
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin};
+#[cfg(unix)]
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
+#[cfg(unix)]
 const READY: &[u8] = b"hex-update-observer-ready-v1\n";
 const APPROVAL: &[u8] = b"hex-update-approved-v1\n";
 const MAX_RECEIPT: u64 = 8 * 1024 * 1024;
+#[cfg(unix)]
 const MAX_HELPER_FILE: u64 = 128 * 1024 * 1024;
 
 /// Start one desktop-owned worker for a bundle whose startup lease is held.
@@ -197,6 +207,7 @@ fn signal_child_group(child: &mut Child) {
     let _ = child.kill();
 }
 
+#[cfg(unix)]
 fn cancel_child_group(child: &mut Child) {
     signal_child_group(child);
     let _ = child.wait();
@@ -339,10 +350,12 @@ fn plain_path(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn copy_bundle(source: &Path, target: &Path) -> io::Result<()> {
     copy_bundle_bounded(source, target, &mut 0, &mut 0, 0)
 }
 
+#[cfg(unix)]
 fn copy_bundle_bounded(
     source: &Path,
     target: &Path,
@@ -396,6 +409,7 @@ fn copy_bundle_bounded(
     Ok(())
 }
 
+#[cfg(unix)]
 fn run_checked(command: &mut Command, timeout: Duration) -> io::Result<()> {
     let mut child = command
         .stdout(Stdio::null())
@@ -456,6 +470,7 @@ fn receipt_digest(receipt: &Path) -> io::Result<String> {
         .collect())
 }
 
+#[cfg(unix)]
 fn selected_receipt(target: &Path) -> io::Result<String> {
     receipt_digest(&receipt_paths(target)?.0)
 }
