@@ -129,6 +129,35 @@ fn trim_retained_outer(
     Ok(result)
 }
 
+/// Keep the existing source program and fade clock when an arrangement
+/// operation needs only a subinterval of an edited clip.
+pub(crate) fn retained_source_interval(
+    clip: &Clip,
+    start: u64,
+    end: u64,
+    tempo: &TempoMap,
+) -> Result<Clip, Invalid> {
+    let duration = end
+        .checked_sub(start)
+        .filter(|value| *value > 0)
+        .ok_or(Invalid("retained audio interval must have positive length"))?;
+    let mut result = if start > clip.start {
+        trim_retained_view(clip, TrimEdge::Left, start, tempo)?
+    } else {
+        clip.clone()
+    };
+    if duration < result.duration() {
+        result = trim_retained_view(&result, TrimEdge::Right, end, tempo)?;
+    }
+    if result.start != start || result.duration != duration {
+        return Err(Invalid("retained audio interval changed sample bounds"));
+    }
+    if start != clip.start {
+        super::outer_fade::retain_source_offset(clip, &mut result, tempo)?;
+    }
+    Ok(result)
+}
+
 pub(crate) fn trim_view(
     clip: &Clip,
     edge: TrimEdge,

@@ -832,30 +832,30 @@ fn native_begin_release_refuses_delayed_output_profile_before_engine_application
 }
 
 #[test]
-fn bypassed_host_trims_abort_live_requests_without_holding_publication() {
-    for target in [
-        DeviceAutomationTarget::HostInputGain,
-        DeviceAutomationTarget::HostOutputGain,
+fn powered_off_utility_aborts_provider_and_host_gestures_without_holding_publication() {
+    let gain = HostGain::from_db(-6.0).unwrap();
+    for (value, queue_release) in [
+        (value(0.5), false),
+        (value(0.5), true),
+        (NativeTransientValue::HostInputGain(gain), true),
+        (NativeTransientValue::HostOutputGain(gain), true),
     ] {
-        let (mut control, mut callback, binding) = fixture_with_target(false, target, true, |_| {});
-        let gain = HostGain::from_db(-6.0).unwrap();
-        let value = match target {
-            DeviceAutomationTarget::HostInputGain => NativeTransientValue::HostInputGain(gain),
-            DeviceAutomationTarget::HostOutputGain => NativeTransientValue::HostOutputGain(gain),
-            _ => panic!("host target fixture"),
-        };
+        let (mut control, mut callback, binding) =
+            fixture_with_target(false, value.target(), true, |_| {});
         control
             .native_parameter_input
             .begin(binding, value)
             .unwrap();
-        control.native_parameter_input.release().unwrap();
+        if queue_release {
+            control.native_parameter_input.release().unwrap();
+        }
         let mut source = [[0.0; 2]; 16];
         let rendered = render(&mut callback, &mut source);
         assert!(rendered.is_ok());
         assert_eq!(
             source,
             [[0.25, -0.5]; 16],
-            "host trim bypass preserves ordinary PCM"
+            "the powered-off Utility passes the input through"
         );
         assert!(write(&mut callback, &mut source, &rendered, 2));
         assert!(!control.status.publication_reserve_for_test());
@@ -874,63 +874,6 @@ fn bypassed_host_trims_abort_live_requests_without_holding_publication() {
         control.status.publication_clear_for_test();
         shutdown(&mut control, &mut callback);
     }
-}
-
-#[test]
-fn bypassed_provider_gain_still_applies_and_finishes_clear_without_changing_dry_pcm() {
-    let target = DeviceAutomationTarget::Parameter(parameter::GAIN);
-    let (mut control, mut callback, binding) = fixture_with_target(false, target, true, |_| {});
-    let value = value(0.5);
-    control
-        .native_parameter_input
-        .begin(binding, value)
-        .unwrap();
-    let mut source = [[0.0; 2]; 1];
-    let rendered = render(&mut callback, &mut source);
-    assert!(rendered.is_ok());
-    assert_eq!(
-        source,
-        [[0.25, -0.5]],
-        "bypassed provider advances only its internal controls/history"
-    );
-    assert!(control.native_parameter_input.try_receipt().is_none());
-    assert!(write(&mut callback, &mut source, &rendered, 2));
-    let Some(Receipt::Applied {
-        target: actual,
-        sequence: 1,
-        application,
-    }) = control.native_parameter_input.try_receipt()
-    else {
-        panic!("applied provider input under bypass")
-    };
-    assert_eq!(actual, binding);
-    assert_eq!(
-        application.operation,
-        hex_lattice::NativeTransientOperation::Set(value)
-    );
-    control.native_parameter_input.release().unwrap();
-    let rendered = render(&mut callback, &mut source);
-    assert!(rendered.is_ok());
-    assert_eq!(source, [[0.25, -0.5]]);
-    assert!(control.native_parameter_input.try_receipt().is_none());
-    assert!(write(&mut callback, &mut source, &rendered, 2));
-    let Some(Receipt::Finished {
-        target: actual,
-        application,
-    }) = control.native_parameter_input.try_receipt()
-    else {
-        panic!("delivered provider clear under bypass")
-    };
-    assert_eq!(actual, binding);
-    assert_eq!(
-        application.operation,
-        hex_lattice::NativeTransientOperation::Clear(target)
-    );
-    assert!(control.native_parameter_input.try_receipt().is_none());
-    assert!(control.native_parameter_input.target().is_none());
-    assert!(control.status.publication_reserve_for_test());
-    control.status.publication_clear_for_test();
-    shutdown(&mut control, &mut callback);
 }
 
 #[test]
