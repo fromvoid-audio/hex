@@ -153,6 +153,7 @@ pub(crate) mod simulate {
     #[derive(Clone, Copy)]
     pub(crate) enum Volume {
         /// Hard links fail with this errno; exclusive rename works.
+        #[cfg_attr(not(unix), allow(dead_code))]
         NoHardLinks(i32),
         /// Neither hard links nor exclusive rename exist (copy fallback).
         NoAtomicCreate,
@@ -176,6 +177,7 @@ pub(crate) mod simulate {
         Guard
     }
 
+    #[cfg(unix)]
     pub(super) fn fail_copy_after_open(hook: impl FnOnce(&Path) -> io::Error + 'static) -> Guard {
         VOLUME.with(|cell| cell.set(Some(Volume::NoAtomicCreate)));
         COPY_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
@@ -188,10 +190,21 @@ pub(crate) mod simulate {
             .map(|hook| hook(destination))
     }
 
+    fn unsupported_error() -> io::Error {
+        #[cfg(unix)]
+        {
+            io::Error::from_raw_os_error(libc::ENOTSUP)
+        }
+        #[cfg(not(unix))]
+        {
+            io::Error::new(io::ErrorKind::Unsupported, "simulated unsupported volume")
+        }
+    }
+
     pub(super) fn link_error() -> Option<io::Error> {
         match VOLUME.with(Cell::get)? {
             Volume::NoHardLinks(code) => Some(io::Error::from_raw_os_error(code)),
-            Volume::NoAtomicCreate => Some(io::Error::from_raw_os_error(libc::ENOTSUP)),
+            Volume::NoAtomicCreate => Some(unsupported_error()),
         }
     }
 
@@ -202,7 +215,7 @@ pub(crate) mod simulate {
     pub(super) fn rename_error() -> Option<io::Error> {
         match VOLUME.with(Cell::get)? {
             Volume::NoHardLinks(_) => None,
-            Volume::NoAtomicCreate => Some(io::Error::from_raw_os_error(libc::ENOTSUP)),
+            Volume::NoAtomicCreate => Some(unsupported_error()),
         }
     }
 }
@@ -326,5 +339,68 @@ mod tests {
             fs::read(&staging).expect("staging file preserved"),
             b"staged-project-bytes"
         );
+    }
+}
+
+#[cfg(all(test, not(unix)))]
+mod cross_platform_tests {
+    use super::simulate::{Volume, volume};
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    struct Dir(PathBuf);
+    impl Dir {
+        fn new() -> Self {
+            let id = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path =
+                std::env::temp_dir().join(format!("hex-publish-xplat-{}-{id}", std::process::id()));
+            fs::create_dir(&path).expect("test directory");
+            Self(path)
+        }
+        fn staged(&self, bytes: &[u8]) -> PathBuf {
+            let id = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path = self.0.join(format!(".staging-{id}"));
+            fs::write(&path, bytes).expect("staging file");
+            path
+        }
+    }
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn publish_new_links_or_copies_without_replacing_and_atomic_refuses_copy() {
+        for (capability, expected) in [
+            (None, Published::Linked),
+            (Some(Volume::NoAtomicCreate), Published::Copied),
+        ] {
+            let dir = Dir::new();
+            let _guard = capability.map(volume);
+            let staging = dir.staged(b"complete");
+            let destination = dir.0.join("saved");
+            let published = publish_new(&staging, &destination).expect("published");
+            assert_eq!(published, expected);
+            assert_eq!(fs::read(&destination).expect("destination"), b"complete");
+            assert_eq!(staging.exists(), published.staging_remains());
+
+            let newer = dir.staged(b"newer");
+            let error = publish_new(&newer, &destination).expect_err("existing destination");
+            assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+            assert_eq!(fs::read(&destination).expect("untouched"), b"complete");
+        }
+
+        let dir = Dir::new();
+        let _guard = volume(Volume::NoAtomicCreate);
+        let staging = dir.staged(b"complete");
+        let destination = dir.0.join("draft");
+        let error = publish_new_atomic(&staging, &destination).expect_err("refused");
+        assert!(rename_unsupported(&error));
+        assert!(!destination.exists());
+        assert!(staging.exists());
     }
 }
