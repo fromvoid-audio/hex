@@ -57,11 +57,13 @@ fn position(h: &ResidentHarness) -> u64 {
         .load(Acquire)
 }
 
-fn collect(
-    h: &mut ResidentHarness,
-    destination: u64,
-    loop_end: Option<u64>,
-) -> Vec<(u64, [hex_engine::Frame; 64])> {
+struct CapturedBlock {
+    position: u64,
+    pcm: [hex_engine::Frame; 64],
+    resumed_after_hold: bool,
+}
+
+fn collect(h: &mut ResidentHarness, destination: u64, loop_end: Option<u64>) -> Vec<CapturedBlock> {
     if loop_end.is_some() {
         // A playing section has consumed its first callback at installation.
         assert_eq!(position(h), destination + 64);
@@ -77,12 +79,19 @@ fn collect(
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut blocks = Vec::new();
     let mut advancing = 0;
+    let mut held = false;
     while blocks.len() < 32 {
         h.pump();
         let before = position(h);
         let pcm = h.render();
         let after = position(h);
         if before == after {
+            if advancing > 0 {
+                let status = h.audio.as_ref().unwrap().status().unwrap();
+                assert!(status.stream_buffering.load(Acquire));
+                assert_eq!(pcm[63], [0.0; 2], "a full page hold ends in silence");
+                held = true;
+            }
             assert!(
                 Instant::now() < deadline,
                 "granular transport did not advance"
@@ -98,8 +107,13 @@ fn collect(
         // Transport declick has its own law. Compare settled output, including
         // all subsequent loop-end fades and attacks, at exact callback positions.
         if advancing >= FADE_BLOCKS {
-            blocks.push((before, pcm));
+            blocks.push(CapturedBlock {
+                position: before,
+                pcm,
+                resumed_after_hold: held,
+            });
         }
+        held = false;
         advancing += 1;
         assert!(
             Instant::now() < deadline,
@@ -109,11 +123,7 @@ fn collect(
     blocks
 }
 
-fn render(
-    path: &Path,
-    streamed: bool,
-    mode: hex_project::WarpMode,
-) -> Vec<(u64, [hex_engine::Frame; 64])> {
+fn render(path: &Path, streamed: bool, mode: hex_project::WarpMode) -> Vec<CapturedBlock> {
     // Retain the short oracle's raw and transformed history, while the long
     // 25.2M-frame converted source remains beyond the resident domain cap,
     // including its 16.8M-frame output at the tested tempo.
@@ -242,7 +252,7 @@ fn render(
         assert!(
             blocks
                 .iter()
-                .flat_map(|(_, block)| block.iter().flatten())
+                .flat_map(|block| block.pcm.iter().flatten())
                 .any(|x| x.abs() > 0.01),
             "each seek/loop case must exercise nonzero audio"
         );
@@ -317,20 +327,32 @@ fn compare(mode: hex_project::WarpMode) {
     assert!(
         expected
             .iter()
-            .flat_map(|(_, block)| block.iter().flatten())
+            .flat_map(|block| block.pcm.iter().flatten())
             .any(|x| x.abs() > 0.01)
     );
-    for ((at, actual), (expected_at, expected)) in actual.iter().zip(&expected) {
-        assert_eq!(at, expected_at);
-        let error = actual
-            .iter()
-            .flatten()
-            .zip(expected.iter().flatten())
-            .map(|(a, b)| (a - b).abs())
-            .fold(0.0f32, f32::max);
+    for (actual, expected) in actual.iter().zip(&expected) {
+        assert_eq!(actual.position, expected.position);
         assert!(
-            error < 1e-6,
-            "granular transport PCM difference {error} at {at}"
+            !expected.resumed_after_hold,
+            "resident reference must stay ready"
         );
+        for (offset, (sample, source)) in actual.pcm.iter().zip(&expected.pcm).enumerate() {
+            // Page demand can hold the long file while the harness advances
+            // callbacks faster than realtime. Its first 64 returning frames
+            // ramp from the preceding hold's verified silent endpoint.
+            let gain = if actual.resumed_after_hold {
+                (offset + 1) as f32 / 64.0
+            } else {
+                1.0
+            };
+            for channel in 0..2 {
+                let error = (sample[channel] - source[channel] * gain).abs();
+                assert!(
+                    error < 1e-6,
+                    "granular transport PCM difference {error} at {} channel {channel}",
+                    actual.position + offset as u64
+                );
+            }
+        }
     }
 }
