@@ -109,6 +109,36 @@ fn v1_golden_digests_freeze_edge_impulse_and_binary_outputs() {
 }
 
 #[test]
+fn converted_silence_includes_both_channels_and_the_entire_filter_halo() {
+    for version in [crate::ResampleVersion::V1, crate::ResampleVersion::V2] {
+        let kernel = crate::ResampleKernel::with_version(24_000, 48_000, version).unwrap();
+        let plan = ResamplePlan::with_kernel(kernel, 512, 512, 1024, 1024).unwrap();
+        let mut source = [[-0.0, 0.0]; 512];
+        source[99][1] = 1.0;
+        let mut whole = [[1.0; 2]; 1024];
+        plan.render_window(0, &source, 0, &mut whole).unwrap();
+        assert_ne!(whole[201][1], 0.0);
+
+        for start in [201, 750] {
+            let (first, end) = plan.required_source_range(start, 1).unwrap();
+            let mut one = [[1.0; 2]];
+            plan.render_window(
+                first,
+                &source[first as usize..end as usize],
+                start,
+                &mut one,
+            )
+            .unwrap();
+            assert_eq!(
+                one[0].map(f32::to_bits),
+                whole[start as usize].map(f32::to_bits)
+            );
+        }
+        assert_eq!(whole[750].map(f32::to_bits), [0; 2]);
+    }
+}
+
+#[test]
 fn indexed_windows_match_resident_output_across_irregular_and_random_partitions() {
     for (source_rate, target_rate) in [
         (44_100, 48_000),

@@ -2389,6 +2389,7 @@ pub(super) const fn is_paused_republish_rejection(
     matches!(
         reason,
         hex_engine::PlaybackHandoffRejection::SessionRuntime
+            | hex_engine::PlaybackHandoffRejection::HeldArrangementGateChanged
             | hex_engine::PlaybackHandoffRejection::ForeignTailSourcePaused
     )
 }
@@ -2461,6 +2462,9 @@ mod tests {
 
     #[test]
     fn paused_republish_rejection_matches_only_expected_handoff_reasons() {
+        assert!(is_paused_republish_rejection(
+            hex_engine::PlaybackHandoffRejection::HeldArrangementGateChanged
+        ));
         assert!(is_paused_republish_rejection(
             hex_engine::PlaybackHandoffRejection::SessionRuntime
         ));
