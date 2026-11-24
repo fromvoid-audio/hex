@@ -1,8 +1,9 @@
 use super::*;
 use hex_lattice::{
-    DevicePreparationContext, EMPTY_DEVICE_RESOURCES, NativeProcessorRuntime,
-    PreparedNativeProcessor, TuningTable,
+    DevicePreparationContext, EMPTY_DEVICE_RESOURCES, OwnedProcessorRuntime,
+    PreparedOwnedProcessorRuntime, PreparedProcessorFactory, TuningTable,
 };
+use std::sync::Arc;
 fn patch(state: &NativeDeviceState, id: ParameterId, value: ParameterValue) -> NativeDeviceState {
     REVERB_DEFINITION.patch_parameter(state, id, value).unwrap()
 }
@@ -11,9 +12,9 @@ fn state(decay: f32, wet: f32) -> NativeDeviceState {
     let s = patch(&s, parameter::DECAY, ParameterValue::Float(decay));
     patch(&s, parameter::DRY_WET, ParameterValue::Float(wet))
 }
-fn prepare(rate: u32, state: &NativeDeviceState) -> Box<dyn PreparedNativeProcessor> {
-    REVERB_DEFINITION
-        .prepare_processor(
+fn prepare(rate: u32, state: &NativeDeviceState) -> Arc<dyn PreparedOwnedProcessorRuntime> {
+    let Some(PreparedProcessorFactory::Owned(factory)) = REVERB_DEFINITION
+        .prepare_runtime_factory(
             state,
             &DevicePreparationContext {
                 sample_rate: rate,
@@ -22,19 +23,29 @@ fn prepare(rate: u32, state: &NativeDeviceState) -> Box<dyn PreparedNativeProces
             },
         )
         .unwrap()
-        .unwrap()
+    else {
+        panic!("reverb must prepare an owned factory");
+    };
+    factory
 }
-fn run(runtime: &mut dyn NativeProcessorRuntime, frames: &mut [[f32; 2]], partitions: &[usize]) {
+fn run(runtime: &mut dyn OwnedProcessorRuntime, frames: &mut [[f32; 2]], partitions: &[usize]) {
     let mut start = 0;
     let mut i = 0;
     while start < frames.len() {
         let end = start
             .saturating_add(partitions[i % partitions.len()])
             .min(frames.len());
+        runtime.begin_block();
         runtime.process_block(&mut frames[start..end], &EMPTY_DEVICE_RESOURCES);
+        runtime.commit_block();
         start = end;
         i += 1;
     }
+}
+fn process_one(runtime: &mut dyn OwnedProcessorRuntime, frames: &mut [[f32; 2]]) {
+    runtime.begin_block();
+    runtime.process_block(frames, &EMPTY_DEVICE_RESOURCES);
+    runtime.commit_block();
 }
 #[test]
 fn state_v3_migrates_v1_and_v2_strictly_and_every_control_is_typed_bounded_and_roundtrips() {
@@ -116,8 +127,8 @@ fn real_storage_fits_shared_admission_at_all_rates_and_invalid_rates_refuse() {
     let state = state(60.0, 100.0);
     for rate in [8000, 44100, 48000, 96000, 192000] {
         let p = prepare(rate, &state);
-        assert!(p.declared_runtime_bytes() <= hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES);
-        assert!(p.declared_runtime_bytes() > 0);
+        assert!(p.declared_pair_bytes() <= hex_lattice::MAX_OWNED_PROCESSOR_PAIR_BYTES);
+        assert!(p.declared_pair_bytes() > 0);
     }
     for rate in [0, 7999, 192001, u32::MAX] {
         assert!(
@@ -151,7 +162,7 @@ fn early_impulse_fractional_onset_and_predelay_have_hand_computed_oracles() {
     input[0] = [1.0, 0.0];
     let mut delayed = input.clone();
     run(
-        prepare(8000, &s).create_runtime().as_mut(),
+        prepare(8000, &s).create_runtime().unwrap().as_mut(),
         &mut input,
         &[1, 7, 31],
     );
@@ -163,7 +174,7 @@ fn early_impulse_fractional_onset_and_predelay_have_hand_computed_oracles() {
     assert!(input.iter().all(|v| v[1] == 0.0));
     s = patch(&s, parameter::PREDELAY, ParameterValue::Float(5.0));
     run(
-        prepare(8000, &s).create_runtime().as_mut(),
+        prepare(8000, &s).create_runtime().unwrap().as_mut(),
         &mut delayed,
         &[17],
     );
@@ -185,8 +196,8 @@ fn mono_stereo_uneven_partitions_decay_and_short_tail_deadline() {
         let mut a = vec![[0.0; 2]; rate as usize];
         a[0] = [1.0, 0.3];
         let mut b = a.clone();
-        let mut whole = p.create_runtime();
-        let mut chunks = p.create_runtime();
+        let mut whole = p.create_runtime().unwrap();
+        let mut chunks = p.create_runtime().unwrap();
         run(whole.as_mut(), &mut a, &[usize::MAX]);
         run(chunks.as_mut(), &mut b, &[1, 7, 131, 3, 257]);
         assert_eq!(a, b);
@@ -195,19 +206,25 @@ fn mono_stereo_uneven_partitions_decay_and_short_tail_deadline() {
         assert!(energy(&a) > 0.0);
         let mut tail = vec![[0.0; 2]; rate as usize * 9];
         run(chunks.as_mut(), &mut tail, &[127, 1, 513]);
-        assert!(chunks.is_quiescent());
+        assert!(chunks.committed_is_quiescent());
         assert!(tail[tail.len() - 512..].iter().flatten().all(|v| *v == 0.0));
     }
     let mut short = vec![[0.0; 2]; 48000];
     short[0] = [1.0; 2];
     let mut long = short.clone();
     run(
-        prepare(48000, &state(0.1, 100.0)).create_runtime().as_mut(),
+        prepare(48000, &state(0.1, 100.0))
+            .create_runtime()
+            .unwrap()
+            .as_mut(),
         &mut short,
         &[127],
     );
     run(
-        prepare(48000, &state(2.5, 100.0)).create_runtime().as_mut(),
+        prepare(48000, &state(2.5, 100.0))
+            .create_runtime()
+            .unwrap()
+            .as_mut(),
         &mut long,
         &[127],
     );
@@ -217,62 +234,64 @@ fn mono_stereo_uneven_partitions_decay_and_short_tail_deadline() {
 fn freeze_flat_cut_holds_energy_and_stop_reset_clears_it_without_unbounded_state() {
     let mut s = state(1.2, 100.0);
     s = patch(&s, parameter::CHORUS, ParameterValue::Bool(false));
-    let mut old = prepare(48000, &s).create_runtime();
+    let mut old = prepare(48000, &s).create_runtime().unwrap();
     let mut excitation = vec![[0.0; 2]; 9600];
     excitation[0] = [1.0; 2];
-    old.process_block(&mut excitation, &EMPTY_DEVICE_RESOURCES);
+    process_one(old.as_mut(), &mut excitation);
     s = patch(&s, parameter::FREEZE, ParameterValue::Bool(true));
     let p = prepare(48000, &s);
     assert_eq!(p.output_tail(), hex_lattice::OutputTail::Unbounded);
-    let mut frozen = p.create_runtime();
-    frozen.copy_history_from(old.as_ref());
+    let mut frozen = p.create_runtime().unwrap();
+    frozen.inherit_from(old.as_ref());
     let mut settle = vec![[0.0; 2]; 4800];
-    frozen.process_block(&mut settle, &EMPTY_DEVICE_RESOURCES);
+    process_one(frozen.as_mut(), &mut settle);
     let mut silence = vec![[0.0; 2]; 48000];
-    frozen.process_block(&mut silence, &EMPTY_DEVICE_RESOURCES);
+    process_one(frozen.as_mut(), &mut silence);
     let first = energy(&silence);
-    frozen.process_block(&mut silence, &EMPTY_DEVICE_RESOURCES);
+    process_one(frozen.as_mut(), &mut silence);
     let second = energy(&silence);
     assert!(first > 1e-8);
     assert!(
         second > first * 0.5 && second < first * 2.0,
         "frozen energy {first} then {second}"
     );
-    let mut twin = p.create_runtime();
-    twin.copy_history_from(frozen.as_ref());
+    let mut twin = p.create_runtime().unwrap();
+    twin.inherit_from(frozen.as_ref());
     let mut noise = vec![[16.0, -16.0]; 4096];
     let mut zero = vec![[0.0; 2]; 4096];
-    frozen.process_block(&mut noise, &EMPTY_DEVICE_RESOURCES);
-    twin.process_block(&mut zero, &EMPTY_DEVICE_RESOURCES);
+    process_one(frozen.as_mut(), &mut noise);
+    process_one(twin.as_mut(), &mut zero);
     assert_eq!(noise, zero, "cut blocks new excitation at 100% wet");
     frozen.reset();
-    frozen.process_block(&mut silence, &EMPTY_DEVICE_RESOURCES);
-    assert!(frozen.is_quiescent());
+    process_one(frozen.as_mut(), &mut silence);
+    assert!(frozen.committed_is_quiescent());
     assert_eq!(energy(&silence), 0.0);
 }
 #[test]
 fn bypass_rate_change_and_mid_transition_copy_preserve_existing_host_contracts() {
     let p = prepare(48000, &state(1.2, 25.0));
-    let mut a = p.create_runtime();
-    let mut b = p.create_runtime();
+    let mut a = p.create_runtime().unwrap();
+    let mut b = p.create_runtime().unwrap();
     let mut input = vec![[0.2, -0.3]; 4097];
     let original = input.clone();
     let mut wet = input.clone();
-    a.process_bypassed_block(&mut input, &EMPTY_DEVICE_RESOURCES);
-    b.process_block(&mut wet, &EMPTY_DEVICE_RESOURCES);
+    a.begin_block();
+    a.process_bypassed_block_with_clock(&mut input, None, &EMPTY_DEVICE_RESOURCES);
+    a.commit_block();
+    process_one(b.as_mut(), &mut wet);
     assert_eq!(input, original);
     let mut x = vec![[0.0; 2]; 997];
     let mut y = x.clone();
-    a.process_block(&mut x, &EMPTY_DEVICE_RESOURCES);
-    b.process_block(&mut y, &EMPTY_DEVICE_RESOURCES);
+    process_one(a.as_mut(), &mut x);
+    process_one(b.as_mut(), &mut y);
     assert_eq!(x, y);
     let changed = state(2.5, 70.0);
     let p = prepare(48000, &changed);
-    let mut next = p.create_runtime();
-    next.copy_history_from(a.as_ref());
-    next.process_block(&mut x[..71], &EMPTY_DEVICE_RESOURCES);
-    let mut twin = p.create_runtime();
-    twin.copy_history_from(next.as_ref());
+    let mut next = p.create_runtime().unwrap();
+    next.inherit_from(a.as_ref());
+    process_one(next.as_mut(), &mut x[..71]);
+    let mut twin = p.create_runtime().unwrap();
+    twin.inherit_from(next.as_ref());
     x.fill([0.0; 2]);
     y.fill([0.0; 2]);
     run(next.as_mut(), &mut x, &[1, 7, 131]);
@@ -281,7 +300,8 @@ fn bypass_rate_change_and_mid_transition_copy_preserve_existing_host_contracts()
     assert!(
         !prepare(44100, &changed)
             .create_runtime()
-            .can_copy_history_from(next.as_ref())
+            .unwrap()
+            .can_inherit_from(next.as_ref())
     );
 }
 #[test]
@@ -296,7 +316,7 @@ fn every_room_control_changes_processed_audio_in_its_enabled_domain() {
             input[i] = [0.3, -0.2];
         }
         run(
-            prepare(48000, s).create_runtime().as_mut(),
+            prepare(48000, s).create_runtime().unwrap().as_mut(),
             &mut input,
             &[127],
         );
@@ -336,10 +356,12 @@ fn every_room_control_changes_processed_audio_in_its_enabled_domain() {
 }
 #[test]
 fn nonfinite_audio_and_extreme_finite_excitation_remain_bounded() {
-    let mut r = prepare(48000, &state(60.0, 100.0)).create_runtime();
+    let mut r = prepare(48000, &state(60.0, 100.0))
+        .create_runtime()
+        .unwrap();
     let mut input = vec![[f32::MAX, f32::MIN]; 12000];
     input[0] = [f32::NAN, f32::INFINITY];
-    r.process_block(&mut input, &EMPTY_DEVICE_RESOURCES);
+    process_one(r.as_mut(), &mut input);
     assert!(
         input
             .iter()
@@ -356,10 +378,10 @@ fn smooth_modes_have_original_sample_accurate_mix_transition_oracles() {
             ParameterValue::Float(250.0),
         );
         let s = patch(&s, parameter::SMOOTH, ParameterValue::Choice(mode));
-        let old = prepare(48000, &s).create_runtime();
+        let old = prepare(48000, &s).create_runtime().unwrap();
         let changed = patch(&s, parameter::DRY_WET, ParameterValue::Float(100.0));
-        let mut next = prepare(48000, &changed).create_runtime();
-        next.copy_history_from(old.as_ref());
+        let mut next = prepare(48000, &changed).create_runtime().unwrap();
+        next.inherit_from(old.as_ref());
         let mut input = vec![[1.0; 2]; frames];
         run(next.as_mut(), &mut input, &[1, 7, 131]);
         for (i, frame) in input.iter().enumerate() {
@@ -375,17 +397,18 @@ fn freeze_flat_and_cut_each_have_a_functional_signal_law() {
         parameter::FREEZE,
         ParameterValue::Bool(true),
     );
-    let mut cut = prepare(48000, &s).create_runtime();
+    let mut cut = prepare(48000, &s).create_runtime().unwrap();
     let mut no_cut = prepare(
         48000,
         &patch(&s, parameter::CUT, ParameterValue::Bool(false)),
     )
-    .create_runtime();
+    .create_runtime()
+    .unwrap();
     let mut a = vec![[0.0; 2]; 12000];
     a[0] = [1.0; 2];
     let mut b = a.clone();
-    cut.process_block(&mut a, &EMPTY_DEVICE_RESOURCES);
-    no_cut.process_block(&mut b, &EMPTY_DEVICE_RESOURCES);
+    process_one(cut.as_mut(), &mut a);
+    process_one(no_cut.as_mut(), &mut b);
     assert_eq!(energy(&a), 0.0);
     assert!(energy(&b) > 0.0);
     let colored = patch(
@@ -393,10 +416,10 @@ fn freeze_flat_and_cut_each_have_a_functional_signal_law() {
         parameter::CUT,
         ParameterValue::Bool(false),
     );
-    let mut colored = prepare(48000, &colored).create_runtime();
+    let mut colored = prepare(48000, &colored).create_runtime().unwrap();
     let mut input = vec![[0.0; 2]; 12000];
     input[0] = [1.0; 2];
-    colored.process_block(&mut input, &EMPTY_DEVICE_RESOURCES);
+    process_one(colored.as_mut(), &mut input);
     assert!(
         input != b,
         "flat and frequency-shaped frozen feedback differ"
@@ -425,24 +448,24 @@ fn freeze_off_tail_declaration_includes_an_inherited_slow_transition() {
         parameter::SMOOTH,
         ParameterValue::Choice(2),
     );
-    let mut ordinary = prepare(8000, &s).create_runtime();
+    let mut ordinary = prepare(8000, &s).create_runtime().unwrap();
     let mut excitation = vec![[0.0; 2]; 2000];
     excitation[0] = [1.0; 2];
-    ordinary.process_block(&mut excitation, &EMPTY_DEVICE_RESOURCES);
+    process_one(ordinary.as_mut(), &mut excitation);
     let frozen_state = patch(&s, parameter::FREEZE, ParameterValue::Bool(true));
-    let mut frozen = prepare(8000, &frozen_state).create_runtime();
-    frozen.copy_history_from(ordinary.as_ref());
+    let mut frozen = prepare(8000, &frozen_state).create_runtime().unwrap();
+    frozen.inherit_from(ordinary.as_ref());
     let mut settle = vec![[0.0; 2]; 1000];
-    frozen.process_block(&mut settle, &EMPTY_DEVICE_RESOURCES);
+    process_one(frozen.as_mut(), &mut settle);
     let next = prepare(8000, &s);
     let hex_lattice::OutputTail::Finite { max_tail_frames } = next.output_tail() else {
         panic!("ordinary tail");
     };
-    let mut next = next.create_runtime();
-    next.copy_history_from(frozen.as_ref());
+    let mut next = next.create_runtime().unwrap();
+    next.inherit_from(frozen.as_ref());
     let mut silence = vec![[0.0; 2]; max_tail_frames as usize];
     run(next.as_mut(), &mut silence, &[1, 7, 131]);
-    assert!(next.is_quiescent());
+    assert!(next.committed_is_quiescent());
     assert_eq!(silence.last(), Some(&[0.0; 2]));
 }
 
@@ -452,7 +475,6 @@ fn reverb_power_off_discards_the_room_and_on_restarts_fresh() {
         NativeRuntimeChain, PreparedProcessorFactory, PreparedRuntimeInstance, ProcessorChainOwner,
         StereoMatrix,
     };
-    use std::sync::Arc;
 
     const RATE: u32 = 8_000;
     const SILENCE: [f32; 2] = [0.0; 2];
@@ -467,10 +489,7 @@ fn reverb_power_off_discards_the_room_and_on_restarts_fresh() {
             bypassed,
             sample_rate: RATE,
             configuration: Some(Arc::clone(&configured)),
-            definition: Some(PreparedProcessorFactory::Legacy(Arc::from(prepare(
-                RATE,
-                &configured,
-            )))),
+            definition: Some(PreparedProcessorFactory::Owned(prepare(RATE, &configured))),
             automation: Default::default(),
             modulation: None,
             meter: Default::default(),
@@ -517,4 +536,102 @@ fn reverb_power_off_discards_the_room_and_on_restarts_fresh() {
     render(&mut restarted, &mut actual);
     assert_eq!(actual, expected);
     assert!(actual[128..].iter().any(|&frame| frame != SILENCE));
+}
+
+/// Matched release-build headless microbenchmark comparing 8 active stereo Reverbs
+/// under O(written frames) OwnedProcessorRuntime dirty-range transactions vs a
+/// legacy full-buffer twin-copy baseline on the exact same workload.
+#[test]
+#[cfg(not(debug_assertions))]
+#[ignore = "run explicitly with --release --ignored --nocapture"]
+fn multi_reverb_transaction_throughput() {
+    const RATE: u32 = 48_000;
+    const BLOCK: usize = 256;
+    const INSTANCES: usize = 8;
+    const WARMUP: usize = 100;
+    const BLOCKS: usize = RATE as usize * 2 / BLOCK;
+
+    let configured = state(2.5, 50.0);
+    let factory = prepare(RATE, &configured);
+    let mut owned: Vec<Box<dyn OwnedProcessorRuntime>> = (0..INSTANCES)
+        .map(|_| factory.create_runtime().unwrap())
+        .collect();
+    let mut legacy_primary: Vec<Box<dyn OwnedProcessorRuntime>> = (0..INSTANCES)
+        .map(|_| factory.create_runtime().unwrap())
+        .collect();
+    let mut legacy_scratch: Vec<Box<dyn OwnedProcessorRuntime>> = (0..INSTANCES)
+        .map(|_| factory.create_runtime().unwrap())
+        .collect();
+
+    let input: [[f32; 2]; BLOCK] = std::array::from_fn(|i| {
+        [
+            (i as f32 * 0.17).sin() * 0.25,
+            (i as f32 * 0.23).cos() * 0.25,
+        ]
+    });
+    let mut work;
+    for _ in 0..WARMUP {
+        for r in &mut owned {
+            work = input;
+            r.begin_block();
+            r.process_block(&mut work, &EMPTY_DEVICE_RESOURCES);
+            r.commit_block();
+        }
+        for (p, s) in legacy_primary.iter_mut().zip(&mut legacy_scratch) {
+            work = input;
+            s.inherit_from(p.as_ref());
+            s.begin_block();
+            s.process_block(&mut work, &EMPTY_DEVICE_RESOURCES);
+            s.commit_block();
+            std::mem::swap(p, s);
+        }
+    }
+
+    let started = std::time::Instant::now();
+    for b in 0..BLOCKS {
+        for r in &mut owned {
+            work = input;
+            r.begin_block();
+            r.process_block(&mut work, &EMPTY_DEVICE_RESOURCES);
+            if b % 64 == 0 {
+                r.rollback_block();
+                work = input;
+                r.begin_block();
+                r.process_block(&mut work, &EMPTY_DEVICE_RESOURCES);
+            }
+            r.commit_block();
+            std::hint::black_box(&work);
+        }
+    }
+    let owned_s = started.elapsed().as_secs_f64();
+
+    let started = std::time::Instant::now();
+    for b in 0..BLOCKS {
+        for (p, s) in legacy_primary.iter_mut().zip(&mut legacy_scratch) {
+            work = input;
+            s.inherit_from(p.as_ref());
+            s.begin_block();
+            s.process_block(&mut work, &EMPTY_DEVICE_RESOURCES);
+            if b % 64 == 0 {
+                s.rollback_block();
+                work = input;
+                s.inherit_from(p.as_ref());
+                s.begin_block();
+                s.process_block(&mut work, &EMPTY_DEVICE_RESOURCES);
+            }
+            s.commit_block();
+            std::mem::swap(p, s);
+            std::hint::black_box(&work);
+        }
+    }
+    let legacy_s = started.elapsed().as_secs_f64();
+
+    let total_frames = BLOCKS * BLOCK;
+    eprintln!(
+        "reverb instances={INSTANCES} rate={RATE} block={BLOCK} frames={total_frames} owned_s={owned_s:.6} owned_rt={:.2}x legacy_twin_s={legacy_s:.6} legacy_twin_rt={:.2}x speedup={:.2}x pair_bytes={}",
+        total_frames as f64 / f64::from(RATE) / owned_s,
+        total_frames as f64 / f64::from(RATE) / legacy_s,
+        legacy_s / owned_s,
+        factory.declared_pair_bytes()
+    );
 }

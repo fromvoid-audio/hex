@@ -203,7 +203,7 @@ impl NativeDeviceDefinition for ReverbDefinition {
         runtime::automation::validate_ids(parameters)?;
         Ok(hex_lattice::PreparedRuntimeDevice {
             matrix: StereoMatrix::identity(),
-            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
+            processor: Some(hex_lattice::PreparedProcessorFactory::Owned(
                 std::sync::Arc::new(Self::prepare_owned_room_for_parameters(
                     state,
                     context.sample_rate,
@@ -230,12 +230,19 @@ impl NativeDeviceDefinition for ReverbDefinition {
     fn prepare_processor(
         &self,
         state: &NativeDeviceState,
-        context: &hex_lattice::DevicePreparationContext<'_>,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn hex_lattice::PreparedNativeProcessor>>, DeviceContractError> {
-        Ok(Some(Box::new(runtime::PreparedReverb::new(
-            context.sample_rate,
-            decode(state)?,
-        )?)))
+        decode(state)?;
+        Err(DeviceContractError::UnsupportedProcessingClass)
+    }
+    fn prepare_runtime_factory(
+        &self,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+    ) -> Result<Option<hex_lattice::PreparedProcessorFactory>, DeviceContractError> {
+        Ok(Some(hex_lattice::PreparedProcessorFactory::Owned(
+            std::sync::Arc::new(Self::prepare_owned_room(state, context.sample_rate)?),
+        )))
     }
 }
 #[cfg(test)]
