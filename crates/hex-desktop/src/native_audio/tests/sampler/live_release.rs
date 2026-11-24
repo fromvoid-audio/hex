@@ -1,9 +1,8 @@
-//! Actual Resident input retirement, callback re-enable and fresh keyboard
-//! activation while the original dry Sampler release is still audible.
+//! Resident Sampler power-off, input retirement and fresh keyboard activation.
 use super::*;
 
 #[test]
-fn long_live_sampler_release_rejoins_and_accepts_a_fresh_keyboard_generation() {
+fn live_sampler_power_cycle_accepts_only_the_fresh_keyboard_generation() {
     for key_up in ["before-disable", "while-disabled", "after-reenable"] {
         check(key_up);
     }
@@ -103,9 +102,17 @@ fn check(key_up: &str) {
         input.set_key(0, None).unwrap();
     }
     input.set_key(1, Some((67, 127, 2))).unwrap();
-    let mut previous = after;
-    for _ in 0..16 {
-        previous = h.render();
+    let mut previous = after[63];
+    for block in 1..=16 {
+        for (offset, frame) in h.render().into_iter().enumerate() {
+            for channel in 0..2 {
+                assert!(frame[channel] >= 0.0 && frame[channel] <= previous[channel] + 1e-6);
+            }
+            if block * 64 + offset >= 240 {
+                assert_eq!(frame, [0.0; 2], "old voice survived the 5 ms power cut");
+            }
+            previous = frame;
+        }
     }
     let status = h.audio.as_ref().unwrap().status().unwrap();
     let cut = status
@@ -117,11 +124,10 @@ fn check(key_up: &str) {
     let enabled = h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
     assert!(enabled.error.is_none(), "{:?}", enabled.error);
     let resumed = h.render();
-    assert!(
-        (resumed[0][0] - previous[63][0]).abs() < 0.001,
-        "{key_up}: re-enable {previous:?} -> {resumed:?}"
+    assert_eq!(
+        resumed, [[0.0; 2]; 64],
+        "{key_up}: old keys must stay silent"
     );
-    assert!(resumed.iter().flatten().any(|x| *x > 0.1));
     let status = h.audio.as_ref().unwrap().status().unwrap();
     assert_eq!(
         status
@@ -151,16 +157,23 @@ fn check(key_up: &str) {
     fresh.set_key(1, Some((67, 127, 1))).unwrap();
     let new_note = h.render();
     assert!(
-        new_note.iter().flatten().any(|x| *x > 0.3),
-        "new key must sound during the inherited release"
+        new_note[63].iter().all(|x| (x - 0.25).abs() < 1e-5),
+        "fresh key must reach the level of one voice"
     );
     input.set_key(0, None).unwrap();
     fresh.set_key(0, None).unwrap();
     assert!(
-        h.render().iter().flatten().any(|x| *x > 0.3),
+        h.render().iter().flatten().all(|x| (x - 0.25).abs() < 1e-5),
         "old physical key up cannot cut the new generation"
     );
     fresh.set_key(1, None).unwrap();
+    let release = h.render();
+    assert!(
+        release[63]
+            .iter()
+            .all(|sample| *sample > 0.0 && *sample < 0.25),
+        "ordinary key-up must use the fresh voice's configured release"
+    );
     let mut end = [[0.0; 2]; 64];
     for _ in 0..100 {
         end = h.render();

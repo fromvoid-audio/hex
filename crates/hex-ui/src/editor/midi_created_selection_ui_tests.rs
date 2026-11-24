@@ -55,40 +55,55 @@ fn committed_draw_selects_actual_authored_ids_with_last_primary_after_later_fram
     );
     visual.run_until_parked();
     let scale = gpui::ScaledPixels::from(visual.update(|window, _| window.scale_factor()));
-    let text: gpui::Background =
-        gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Text)).into();
-    let accents: Vec<_> = visual
-        .rendered_filled_quads("midi-note-roll")
-        .into_iter()
-        .filter(|(b, c)| {
-            c == &text && b.size.width / scale > 3.0 && (b.size.height / scale - 2.0).abs() < 0.01
-        })
-        .collect();
-    assert_eq!(
-        accents.len(),
-        2,
-        "the primary note has persistent top/bottom accents without hover"
-    );
-    let primary_start = editor.read_with(&visual, |v, _| {
-        v.state
-            .as_ref()
-            .unwrap()
-            .project
-            .midi_note(*ids.last().unwrap())
-            .unwrap()
-            .start()
+    let text = gpui::Hsla::from(gpui::rgb(crate::theme::color(
+        crate::theme::PaletteRole::Text,
+    )));
+    let centers = editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        let rows = view.piano_pitch.test_row_count();
+        let top_pitch = view.piano_pitch.first_test_pitch() + rows - 1;
+        ids.iter()
+            .map(|id| {
+                let note = project.midi_note(*id).unwrap();
+                let mid_beat = note.start().raw() as f32 + note.duration().raw() as f32 / 2.0;
+                let x = mid_beat / (4 * BeatTime::ONE.raw()) as f32;
+                let y = (f32::from(top_pitch - note.pitch()) + 0.5) / f32::from(rows);
+                (
+                    *id,
+                    point(
+                        roll.left() + roll.size.width * x,
+                        roll.top() + roll.size.height * y,
+                    ),
+                )
+            })
+            .collect::<Vec<_>>()
     });
-    let expected_x = f32::from(roll.origin.x)
-        + f32::from(roll.size.width)
-            * (primary_start.raw() as f32 / (4 * BeatTime::ONE.raw()) as f32);
-    for (bounds, _) in accents {
-        assert!((bounds.origin.x / scale - expected_x).abs() < 0.05);
-    }
+    let check_outline = |visual: &mut VisualTestContext| {
+        for &(id, center) in &centers {
+            let primary_borders = visual
+                .rendered_quad_borders_at(center)
+                .into_iter()
+                .filter(|(color, edges)| {
+                    *color == text
+                        && [edges.top, edges.bottom]
+                            .into_iter()
+                            .all(|edge| (edge / scale - 2.0).abs() < 0.01)
+                })
+                .count();
+            assert_eq!(
+                primary_borders,
+                usize::from(Some(&id) == ids.last()),
+                "only the primary drawn note has the strong top and bottom outline"
+            );
+        }
+    };
+    check_outline(&mut visual);
     for _ in 0..3 {
         editor.update(&mut visual, |_, cx| cx.notify());
         visual.run_until_parked();
         pump(&editor, &mut visual);
     }
+    check_outline(&mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.midi_selection.ids(), ids.as_slice());
         assert_eq!(v.midi_selection.primary(), ids.last().copied());

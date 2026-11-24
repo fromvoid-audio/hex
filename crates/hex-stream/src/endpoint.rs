@@ -164,9 +164,8 @@ pub(crate) struct Endpoint {
     pending_count: usize,
     /// Pending slots carrying real demand (direct or readiness); nonzero yields prefetch.
     demand_pending_count: usize,
-    /// Active speculative prefetch keys (in `0..prefetch_pending_count`), at most one per source.
-    prefetch_keys: [Option<ResourcePageKey>; MAX_CONCURRENT_PREFETCHES],
-    prefetch_pending_count: usize,
+    /// Dense control-preallocated list, with at most one in-flight key per source.
+    prefetch_keys: Vec<ResourcePageKey>,
     outgoing_prefetch_revision: Option<(ResourcePageKey, u64)>,
     source_keys: Vec<StreamResourceKey>,
     request_tx: Producer<PageRequest>,
@@ -234,6 +233,9 @@ impl Endpoint {
         Some(crate::EndpointData {
             cache: crate::AllocationData::of::<CacheSlot>(cache_slots),
             pending: crate::AllocationData::of::<PendingSlot>(pending_count),
+            prefetch_keys: crate::AllocationData::of::<ResourcePageKey>(
+                source_count.min(MAX_CONCURRENT_PREFETCHES),
+            ),
             source_keys: crate::AllocationData::of::<StreamResourceKey>(source_count),
             held_returns: crate::AllocationData::of::<Box<PageBuffer>>(cache_pages.checked_add(1)?),
         })
@@ -263,6 +265,10 @@ impl Endpoint {
         let mut pending = Vec::new();
         pending.try_reserve_exact(pending_count).map_err(|_| ())?;
         pending.resize_with(pending_count, || PendingSlot::Empty);
+        let mut prefetch_keys = Vec::new();
+        prefetch_keys
+            .try_reserve_exact(sources.len().min(MAX_CONCURRENT_PREFETCHES))
+            .map_err(|_| ())?;
         let mut held_returns = Vec::new();
         held_returns
             .try_reserve_exact(cache_pages.checked_add(1).ok_or(())?)
@@ -277,8 +283,7 @@ impl Endpoint {
             pending_mask: pending_count - 1,
             pending_count: 0,
             demand_pending_count: 0,
-            prefetch_keys: [None; MAX_CONCURRENT_PREFETCHES],
-            prefetch_pending_count: 0,
+            prefetch_keys,
             outgoing_prefetch_revision: None,
             source_keys: sources,
             request_tx: queues.request_tx,
@@ -631,14 +636,12 @@ impl Endpoint {
         {
             self.outgoing_prefetch_revision = None;
         }
-        for index in 0..self.prefetch_pending_count {
-            if self.prefetch_keys[index] == Some(key) {
-                let last = self.prefetch_pending_count - 1;
-                self.prefetch_keys[index] = self.prefetch_keys[last];
-                self.prefetch_keys[last] = None;
-                self.prefetch_pending_count = last;
-                return;
-            }
+        if let Some(index) = self
+            .prefetch_keys
+            .iter()
+            .position(|pending| *pending == key)
+        {
+            self.prefetch_keys.swap_remove(index);
         }
     }
 
@@ -713,7 +716,7 @@ impl Endpoint {
     }
 
     fn queue_demand_inner(&mut self, key: ResourcePageKey, direct: bool, mask: u8) {
-        if self.prefetch_pending_count != 0
+        if !self.prefetch_keys.is_empty()
             && self.source_keys.binary_search(&key.source).is_ok()
             && self.cache_lookup(key).is_none()
             && !self.is_pending_prefetch(key)
@@ -797,9 +800,9 @@ impl Endpoint {
                 if entry.is_demanded() {
                     self.demand_pending_count += 1;
                 }
-                if entry.is_prefetch() && self.prefetch_pending_count < MAX_CONCURRENT_PREFETCHES {
-                    self.prefetch_keys[self.prefetch_pending_count] = Some(key);
-                    self.prefetch_pending_count += 1;
+                if entry.is_prefetch() {
+                    // prefetch checks bounded capacity before issuing the request.
+                    self.prefetch_keys.push(key);
                 }
                 self.queued_requests = self.queued_requests.saturating_add(1);
                 true
@@ -827,7 +830,8 @@ impl Endpoint {
     pub(crate) fn prefetch(&mut self, key: impl Into<ResourcePageKey>) {
         let key = key.into();
         if self.demand_pending_count != 0
-            || self.prefetch_pending_count >= MAX_CONCURRENT_PREFETCHES
+            || self.prefetch_keys.len() >= MAX_CONCURRENT_PREFETCHES
+            || self.prefetch_keys.len() == self.prefetch_keys.capacity()
             || self.source_keys.binary_search(&key.source).is_err()
             || self.cache_lookup(key).is_some()
         {
@@ -835,9 +839,10 @@ impl Endpoint {
         }
         // At most one concurrent speculative prefetch per source (also skips
         // duplicate requests for the same key).
-        if self.prefetch_keys[..self.prefetch_pending_count]
+        if self
+            .prefetch_keys
             .iter()
-            .any(|existing| existing.is_some_and(|pending| pending.source == key.source))
+            .any(|pending| pending.source == key.source)
         {
             return;
         }
@@ -907,16 +912,13 @@ impl Endpoint {
         if candidate == incoming_reading {
             return true;
         }
-        self.prefetch_keys[..self.prefetch_pending_count]
-            .iter()
-            .flatten()
-            .any(|pending| {
-                candidate
-                    == ResourcePageKey {
-                        source: pending.source,
-                        page_index: pending.page_index.wrapping_sub(1),
-                    }
-            })
+        self.prefetch_keys.iter().any(|pending| {
+            candidate
+                == ResourcePageKey {
+                    source: pending.source,
+                    page_index: pending.page_index.wrapping_sub(1),
+                }
+        })
     }
 
     fn unpinned_victim_for_prefetch(&self, incoming: ResourcePageKey) -> Option<usize> {
@@ -1341,8 +1343,7 @@ impl Endpoint {
             pending_mask: _,
             pending_count: _,
             demand_pending_count: _,
-            prefetch_keys: _,
-            prefetch_pending_count: _,
+            prefetch_keys,
             outgoing_prefetch_revision: _,
             source_keys,
             request_tx: _,
@@ -1364,6 +1365,7 @@ impl Endpoint {
         crate::EndpointData {
             cache: crate::AllocationData::of::<CacheSlot>(cache.capacity()),
             pending: crate::AllocationData::of::<PendingSlot>(pending.capacity()),
+            prefetch_keys: crate::AllocationData::of::<ResourcePageKey>(prefetch_keys.capacity()),
             source_keys: crate::AllocationData::of::<StreamResourceKey>(source_keys.capacity()),
             held_returns: crate::AllocationData::of::<Box<PageBuffer>>(held_returns.capacity()),
         }
