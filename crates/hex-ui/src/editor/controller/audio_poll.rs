@@ -415,6 +415,7 @@ impl EditorView {
         self.observed_rejected_revision = 0;
         self.paused_republish = None;
         self.audio_admission.reset_audio();
+        self.device_gesture.invalidate_accepted_preview();
         // A new output prepares fresh endpoints; it reports its own set.
         self.degraded_plugins = Default::default();
         self.plugin_editor_windows.clear();
