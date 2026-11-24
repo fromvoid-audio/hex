@@ -751,9 +751,10 @@ impl NativeEffectCallback {
     pub(crate) fn transport_fault_for_test(&self) -> Option<Fault> {
         self.transport.fault()
     }
-    #[cfg(all(test, feature = "vst3-sdk-tests"))]
-    pub(crate) fn pending_requests_for_test(&self) -> usize {
-        self.transport.pending_requests_for_test()
+    crate::include_vst3_sdk_tests! {
+        pub(crate) fn pending_requests_for_test(&self) -> usize {
+            self.transport.pending_requests_for_test()
+        }
     }
     /// Contained placeholder for a revoked endpoint (#3977): advance the dry
     /// history exactly as bypass does and return the input delayed by the
