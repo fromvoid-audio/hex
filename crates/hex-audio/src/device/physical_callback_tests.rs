@@ -13,19 +13,29 @@ fn bridge_profile_requests_the_largest_reported_size_within_its_real_cap() {
         assert_eq!(
             bridge_callback_request(cpal::SupportedBufferSize::Range { min, max }, 256, false)
                 .unwrap(),
-            expected
+            Some(expected)
         );
     }
+    // Unknown ranges or minimum buffers above the cap defer to internal
+    // callback sub-slicing rather than rejecting plugin hosting.
     for range in [
         cpal::SupportedBufferSize::Unknown,
-        cpal::SupportedBufferSize::Range { min: 0, max: 256 },
-        cpal::SupportedBufferSize::Range { min: 2, max: 1 },
         cpal::SupportedBufferSize::Range {
             min: 257,
             max: 1024,
         },
+        cpal::SupportedBufferSize::Range {
+            min: 512,
+            max: 1024,
+        },
     ] {
-        assert!(bridge_callback_request(range, 256, false).is_err());
+        assert_eq!(bridge_callback_request(range, 256, false).unwrap(), None);
+    }
+    for malformed in [
+        cpal::SupportedBufferSize::Range { min: 0, max: 256 },
+        cpal::SupportedBufferSize::Range { min: 2, max: 1 },
+    ] {
+        assert!(bridge_callback_request(malformed, 256, false).is_err());
     }
 }
 
@@ -78,7 +88,7 @@ fn exposed_or_closing_outputs_cannot_gain_a_new_physical_profile() {
 }
 
 #[test]
-fn ordinary_outputs_keep_device_defaults_even_when_the_plugin_profile_is_unavailable() {
+fn ordinary_outputs_keep_device_defaults_and_plugin_bridge_subslices_large_minimum_buffers() {
     for supported in [
         cpal::SupportedBufferSize::Unknown,
         cpal::SupportedBufferSize::Range {
@@ -96,16 +106,19 @@ fn ordinary_outputs_keep_device_defaults_even_when_the_plugin_profile_is_unavail
                 None
             );
         }
-        assert!(
-            PreparedOutputKind::Worker(WorkerOutputProfile::PluginBridge)
-                .bridge_stream_plan(supported, 48_000, 48_000)
-                .is_err()
-        );
-        assert!(
-            PreparedOutputKind::WorkerReliable(WorkerOutputProfile::PluginBridge)
-                .bridge_stream_plan(supported, 48_000, 48_000)
-                .is_err()
-        );
+        for kind in [
+            PreparedOutputKind::Worker(WorkerOutputProfile::PluginBridge),
+            PreparedOutputKind::WorkerReliable(WorkerOutputProfile::PluginBridge),
+        ] {
+            assert_eq!(
+                kind.bridge_stream_plan(supported, 48_000, 48_000).unwrap(),
+                Some(BridgeStreamPlan {
+                    device_frames: None,
+                    project_quantum: 256,
+                    converting_device_rate: None,
+                })
+            );
+        }
     }
     assert_eq!(
         PreparedOutputKind::Worker(WorkerOutputProfile::PluginBridge)
@@ -116,7 +129,7 @@ fn ordinary_outputs_keep_device_defaults_even_when_the_plugin_profile_is_unavail
             )
             .unwrap(),
         Some(BridgeStreamPlan {
-            device_frames: 256,
+            device_frames: Some(256),
             project_quantum: 256,
             converting_device_rate: None
         })
@@ -130,7 +143,7 @@ fn ordinary_outputs_keep_device_defaults_even_when_the_plugin_profile_is_unavail
             )
             .unwrap(),
         Some(BridgeStreamPlan {
-            device_frames: 256,
+            device_frames: Some(256),
             project_quantum: 256,
             converting_device_rate: None
         })
@@ -149,16 +162,23 @@ fn mixed_rate_plan_keeps_hardware_and_project_frames_independent() {
         assert_eq!(
             plan,
             BridgeStreamPlan {
-                device_frames: hardware_frames,
+                device_frames: Some(hardware_frames),
                 project_quantum: 256,
                 converting_device_rate: Some(device),
             }
         );
     }
+    // When the device's minimum hardware buffer exceeds the mixed-rate cap,
+    // open without a fixed hardware buffer request and sub-slice at 256 frames.
     let cannot_reduce = cpal::SupportedBufferSize::Range { min: 256, max: 512 };
-    assert!(
+    assert_eq!(
         kind.bridge_stream_plan(cannot_reduce, 44_100, 48_000)
-            .is_err()
+            .unwrap(),
+        Some(BridgeStreamPlan {
+            device_frames: None,
+            project_quantum: 256,
+            converting_device_rate: None,
+        })
     );
     assert_eq!(
         PreparedOutputKind::Legacy
