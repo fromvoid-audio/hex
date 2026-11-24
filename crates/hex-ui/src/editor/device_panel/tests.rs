@@ -60,7 +60,7 @@ mod source_housing_tests;
 pub(in crate::editor) mod source_picker_ui_tests;
 mod vst3_degraded_tests;
 
-pub(super) fn receive_service_event(service: &Service) -> Event {
+pub(in crate::editor) fn receive_service_event(service: &Service) -> Event {
     let deadline = crate::test_wait::hang_deadline();
     loop {
         match service.try_event() {
@@ -73,7 +73,7 @@ pub(super) fn receive_service_event(service: &Service) -> Event {
     }
 }
 
-fn actor_native_effect_fixture(
+pub(in crate::editor) fn actor_native_effect_fixture(
     type_id: hex_lattice_contract::DeviceTypeId,
 ) -> (Service, Arc<ViewState>, TrackId, DeviceId) {
     let service = Service::new(48_000, 8, 8_000_000).expect("service");
@@ -201,7 +201,7 @@ fn actor_return_utility_fixture() -> (
     )
 }
 
-pub(super) fn actor_editor_window(
+pub(in crate::editor) fn actor_editor_window(
     cx: &mut TestAppContext,
     service: Service,
     state: Arc<ViewState>,
@@ -228,7 +228,7 @@ pub(super) fn actor_editor_window(
     (handle, editor)
 }
 
-pub(super) fn pump_until(
+pub(in crate::editor) fn pump_until(
     editor: &gpui::Entity<EditorView>,
     cx: &mut TestAppContext,
     mut done: impl FnMut(&EditorView) -> bool,
