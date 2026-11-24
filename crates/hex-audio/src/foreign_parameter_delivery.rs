@@ -70,6 +70,10 @@ impl Receipt {
         }
     }
 }
+#[cfg_attr(
+    not(all(target_os = "macos", target_arch = "aarch64")),
+    allow(dead_code)
+)]
 pub(crate) struct Control {
     commands: Producer<Target>,
     receipts: Consumer<Receipt>,
@@ -157,6 +161,10 @@ pub(crate) fn constructor_storage_quote() -> Option<usize> {
         .checked_add(ChannelStorage::ring_bytes::<Receipt>(1)?)?
         .checked_add(std::mem::size_of::<AtomicU64>())
 }
+#[cfg_attr(
+    not(all(target_os = "macos", target_arch = "aarch64")),
+    allow(dead_code)
+)]
 impl Control {
     pub(crate) fn target(&self) -> Option<Target> {
         self.target

@@ -860,6 +860,7 @@ mod tests {
             signal,
         )
     }
+    #[cfg(target_os = "macos")]
     fn input_with_preroll() -> (InputCapture, Receiver<()>) {
         let (producer, input) = rtrb::RingBuffer::new(input_capture::PACKETS);
         let shared = Arc::new(Shared {

@@ -58,7 +58,10 @@ impl ActiveView<'_> {
             scheduled.allow_prewarm = false;
         }
     }
-    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+    #[cfg(any(
+        all(test, feature = "allocation-probe"),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))]
     /// A successor that abandoned its candidate role leaves the original
     /// schedule authoritative. Let it request its own pages again; the
     /// revoked page stamps must never be reused.

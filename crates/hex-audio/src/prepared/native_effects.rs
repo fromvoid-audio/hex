@@ -175,7 +175,10 @@ impl Callback {
             .native_sources
             .take_accepted_manual_parameter(target.binding);
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        let marker = None;
+        let marker = {
+            let _ = target;
+            None
+        };
         // The typed admission excludes constructor and delayed-output paths.
         let active = self.active.as_ref().and_then(ActivePublication::legacy);
         let (end, latency) = active.map_or((0, 0), |active| {
