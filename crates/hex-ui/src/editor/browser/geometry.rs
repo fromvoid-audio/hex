@@ -3,7 +3,7 @@
 pub(super) const MIN_WIDTH: f32 = 220.0;
 pub(in crate::editor) const MIN_WORKSPACE_WIDTH: f32 = 560.0;
 
-pub(super) fn clamped_panel_width(requested: f32, window_width: f32, panel_gutter: f32) -> f32 {
+pub(super) fn clamped_panel_width(requested: f32, window_width: f32, gutter_width: f32) -> f32 {
     requested.clamp(
         MIN_WIDTH,
         (window_width
@@ -11,7 +11,7 @@ pub(super) fn clamped_panel_width(requested: f32, window_width: f32, panel_gutte
             - 4.0
             // Both the browser and workspace panels have framed surrounds.
             - 4.0 * hex_widgets::PANEL_FRAME_INSET
-            - panel_gutter)
+            - gutter_width)
             .max(MIN_WIDTH),
     )
 }

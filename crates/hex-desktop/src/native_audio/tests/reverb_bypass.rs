@@ -126,6 +126,7 @@ fn check(location: usize) {
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut frames = Vec::new();
         let mut event = None;
+        let mut install_frame = None;
         loop {
             h.pump();
             frames.extend_from_slice(&h.render());
@@ -134,6 +135,9 @@ fn check(location: usize) {
             }
             let status = h.audio.as_ref().unwrap().status().unwrap();
             let active = status.applied_revision.load(Acquire);
+            if active > applied {
+                install_frame.get_or_insert(frames.len() - 64);
+            }
             if let (Some(event), Some((revision, metadata))) = (&event, h.submitted)
                 && revision > applied
                 && active == revision
@@ -166,6 +170,11 @@ fn check(location: usize) {
             frames.extend_from_slice(&h.render());
         }
         let settled = *frames.last().unwrap();
+        if !bypassed {
+            // The frozen room remains silent after the restart fade.
+            assert_cold_power_on_to_silence(&frames, install_frame.unwrap(), dry_track);
+            continue;
+        }
         let mut last = previous;
         let mut max_step = 0.0_f32;
         let mut largest_transition = (0, 0, 0.0, 0.0);
@@ -183,22 +192,12 @@ fn check(location: usize) {
             max_step < 0.003,
             "location={location} bypass={bypassed}: PCM step {max_step}; (offset, lane, before, after): {largest_transition:?}"
         );
-        if bypassed {
-            assert!(
-                settled
-                    .iter()
-                    .all(|sample| (*sample - dry_track - 0.25).abs() < 1e-5),
-                "dry endpoint: {settled:?}"
-            );
-        } else {
-            assert!(
-                frames[frames.len() - 512..]
-                    .iter()
-                    .flatten()
-                    .all(|sample| (*sample - dry_track).abs() < 1e-8),
-                "authored freeze must start with an empty room after power-off"
-            );
-        }
+        assert!(
+            settled
+                .iter()
+                .all(|sample| (*sample - dry_track - 0.25).abs() < 1e-5),
+            "dry endpoint: {settled:?}"
+        );
     }
     h.audio
         .as_mut()

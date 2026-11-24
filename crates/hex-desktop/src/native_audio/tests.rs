@@ -56,6 +56,24 @@ pub(crate) use std::{
 /// to 96 kHz (256 frames; Pulse #4151), so oracles assert the settled
 /// transport after it rather than in the first block.
 pub(crate) const FADE_BLOCKS: usize = 256_usize.div_ceil(64);
+
+/// At 48 kHz a cold power-on fades from the 0.25 fixture input to fresh silent
+/// effect output in 24 frames. A parallel dry track bypasses that fade.
+fn assert_cold_power_on_to_silence(frames: &[[f32; 2]], cut: usize, parallel_dry: f32) {
+    const FADE_FRAMES: usize = 24;
+    assert!(cut + FADE_FRAMES <= frames.len());
+    for (index, frame) in frames.iter().enumerate() {
+        let elapsed = (index + 1).saturating_sub(cut).min(FADE_FRAMES);
+        let expected = parallel_dry + 0.25 * (1.0 - elapsed as f32 / FADE_FRAMES as f32);
+        for (lane, sample) in frame.iter().enumerate() {
+            assert!(
+                (sample - expected).abs() < 1e-6,
+                "cold power-on at frame {index}, lane {lane}, cut {cut}: {sample} != {expected}"
+            );
+        }
+    }
+}
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 // The actual native constructor retains the process-wide output lease.
 static NATIVE_FIXTURE: Mutex<()> = Mutex::new(());
