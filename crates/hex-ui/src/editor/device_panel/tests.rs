@@ -9365,10 +9365,9 @@ fn assert_modulation_mapping(
         let map = format!("lfo-{}-map", source_id.value());
         scroll_to(&mut visual, &map);
         click(&mut visual, map);
-        if matches!(
-            device_type,
-            hex_engine::eq::EQ_TYPE_ID | hex_devices::limiter::TYPE_ID
-        ) {
+        // The limiter's lookahead excludes its host trims. Zero-latency EQ
+        // supports both host trims in addition to the sparse EQ output gain.
+        if device_type == hex_devices::limiter::TYPE_ID {
             for name in ["input-gain", "output-gain"] {
                 let selector = Box::leak(format!("map-{name}-{}", device.value()).into_boxed_str());
                 assert!(visual.debug_bounds(selector).is_none());
