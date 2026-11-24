@@ -29,8 +29,14 @@ fn interactive_sampler_session(files: &sampler_export::tests::Files) -> Session 
     session
 }
 
+struct HeldPreview {
+    entered: std::sync::mpsc::SyncSender<u64>,
+    resume: std::sync::mpsc::Receiver<()>,
+}
+
 #[derive(Default)]
 struct Observed {
+    hold_next_device_preview: Mutex<Option<HeldPreview>>,
     accepted: Mutex<Vec<(u64, thread::ThreadId)>>,
     next_submission: Mutex<Option<(u64, u64)>>,
     refuse: AtomicBool,
@@ -168,6 +174,19 @@ impl WorkerAudioSink for OfflineSink {
             playback.native_parameter_input_target(),
             observation.native_parameter_input_target(),
         );
+        if metadata.device_preview.is_some()
+            && let Some(gate) = self
+                .observed
+                .hold_next_device_preview
+                .lock()
+                .unwrap()
+                .take()
+        {
+            gate.entered.send(metadata.context.editor_revision).unwrap();
+            gate.resume
+                .recv_timeout(crate::test_wait::HANG_BOUND)
+                .unwrap();
+        }
         if matches!(policy, ResidentPublicationPolicy::FreshIfUnchanged(_)) {
             self.observed.seek_attempts.fetch_add(1, Ordering::Release);
             return Err(ResidentPublicationRefusal {
@@ -2388,13 +2407,38 @@ fn resident_paired_drag_skips_unchanged_publications_handles_retry_lost_output_a
         client.change_pair(pair_a).unwrap();
         assert_eq!(client.next_request(), None);
     }
+    let (entered, preview_revision) = std::sync::mpsc::sync_channel(1);
+    let (resume, release) = std::sync::mpsc::sync_channel(1);
+    *observed.hold_next_device_preview.lock().unwrap() = Some(HeldPreview {
+        entered,
+        resume: release,
+    });
     service
         .submit(Request::Edit(Command::ToggleSolo {
             track,
             exclusive: true,
         }))
         .unwrap();
+    let revision = preview_revision
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap();
+    let committed_view = service.try_track_switch_view();
+    let terminal_pending = matches!(
+        service.try_event(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    );
+    resume.send(()).unwrap();
+    let committed_view = committed_view.expect("committed switch precedes the rebuilt preview");
+    assert_eq!(committed_view.revision, revision);
+    assert!(
+        committed_view
+            .tracks
+            .iter()
+            .any(|item| item.track == track && item.soloed)
+    );
+    assert!(terminal_pending);
     let solo_ev = next();
+    assert_eq!(solo_ev.state.revision, revision);
     assert!(solo_ev.error.is_none());
     assert!(solo_ev.state.project.track(track).unwrap().soloed());
     assert!(solo_ev.device_preview.is_some());
