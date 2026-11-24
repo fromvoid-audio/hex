@@ -269,7 +269,11 @@ fn reparent_classification_is_single_resident_and_keeps_no_output_behavior() {
     );
     assert_eq!(graph_edit_operation(&command), None); // Verified catalog stays unchanged.
     let mut sink = Arc::clone(&fixture);
-    assert!(should_stage_resident_graph_edit(&command, &mut sink));
+    assert!(should_stage_resident_graph_edit(
+        &original.project,
+        &command,
+        &mut sink
+    ));
     let child = original
         .project
         .tracks()
@@ -286,7 +290,11 @@ fn reparent_classification_is_single_resident_and_keeps_no_output_behavior() {
     };
     assert_eq!(resident_graph_edit_operation(&multiple, false), None);
     fixture.lock().unwrap().active = None;
-    assert!(!should_stage_resident_graph_edit(&command, &mut sink));
+    assert!(!should_stage_resident_graph_edit(
+        &original.project,
+        &command,
+        &mut sink
+    ));
 }
 
 #[test]
