@@ -266,6 +266,7 @@ impl Catalog {
     }
 
     /// A remembered failure applies only to the same bundle and scan tools.
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     fn failed_unchanged(&self, path: &Path, current: &Bundle, tools_sha256: &str) -> bool {
         self.entries.iter().any(|entry| {
             entry.path == path
@@ -331,6 +332,7 @@ impl Catalog {
     }
 
     /// Record a failed scan with its observed bundle and discovery tools.
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
     fn record_failure(
         &mut self,
         path: PathBuf,

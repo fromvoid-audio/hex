@@ -2,7 +2,7 @@
 use crate::{MAX_MODULES, path_valid};
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 const MAX_ENTRIES: usize = 4096;
 const MAX_DIRECTORIES: usize = 1024;
@@ -49,6 +49,9 @@ fn existing_root(path: &Path) -> Result<bool, String> {
     let mut prefix = PathBuf::new();
     for component in path.components() {
         prefix.push(component.as_os_str());
+        if matches!(component, Component::Prefix(_)) {
+            continue;
+        }
         match fs::symlink_metadata(&prefix) {
             Ok(info) if info.is_dir() && !info.file_type().is_symlink() => {}
             Ok(_) => {
