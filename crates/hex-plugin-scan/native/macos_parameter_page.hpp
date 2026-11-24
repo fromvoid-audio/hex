@@ -36,11 +36,16 @@ struct ControllerQuery {
             id==other.id && bits==other.bits && !std::memcmp(text,other.text,sizeof(text));
     }
 };
-// The reopen kind uses the reserved revision/bits words as two doubles.
+// The reopen kind uses the reserved revision/bits words as two doubles, and id
+// as either 1 (position only) or (width << 16) | height (1..=4096 each).
 inline EditorPosition editor_reopen_position(const ControllerQuery& query) {
     EditorPosition position{};
     std::memcpy(&position.x,&query.revision,8);
     std::memcpy(&position.y,&query.bits,8);
+    if(query.id>1) {
+        position.width=static_cast<uint16_t>(query.id>>16);
+        position.height=static_cast<uint16_t>(query.id&0xFFFFu);
+    }
     return position;
 }
 struct ControllerConversion {
@@ -90,8 +95,11 @@ inline bool valid_controller_query(const ControllerQuery& query) {
     String128 text{};std::memcpy(text,query.text,sizeof(text));
     if(!controller_text(text) || std::memcmp(text,query.text,sizeof(text))) return false;
     if(query.kind==REOPEN_EDITOR) {
-        return !query.first && !text[0] &&
-            (query.id==1?editor_reopen_position(query).valid():!query.id && !query.revision && !query.bits);
+        if(query.first || text[0]) return false;
+        if(!query.id) return !query.revision && !query.bits;
+        const auto position=editor_reopen_position(query);
+        if(query.id==1) return position.valid() && !position.has_size();
+        return position.valid() && position.has_size();
     }
     if(editor_admission_request(query.kind))
         return !query.first && query.revision && !query.id && !query.bits && !text[0];

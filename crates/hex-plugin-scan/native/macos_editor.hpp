@@ -241,6 +241,32 @@ public:
         else [window setFrame:rollback display:NO];
         resizing=false;
     }
+    NSSize current_accepted_size() const { return accepted_size; }
+    // Offer a previously accepted content size to a freshly attached resizable
+    // successor. Constrained sizes are applied; refusals retain the default.
+    void restore_content_size(NSSize desired) {
+        if(![NSThread isMainThread] || !window || !view || resizing) return;
+        if(view->canResize()!=kResultOk) return;
+        ViewRect target{};
+        if(!content_rectangle(desired,target)) return;
+        resizing=true;
+        const auto constrained=view->checkSizeConstraint(&target);
+        resizing=false;
+        NSSize resolved{};
+        if(constrained==kResultOk) {
+            if(!extent(target,resolved)) return;
+        } else if(constrained==kNotImplemented) {
+            if(!extent(target,resolved)) return;
+        } else {
+            return;
+        }
+        if(NSEqualSizes(resolved,accepted_size)) return;
+        const auto rollback=[window frame];
+        resizing=true;
+        [window setContentSize:resolved];
+        notify_size(target,rollback);
+        resizing=false;
+    }
 private:
     static int16 text_control_key(unichar character) {
         switch(character) {
@@ -390,10 +416,17 @@ inline bool is_editor_foreground_group(pid_t foreground,pid_t editor,pid_t owner
         info.pbi_ppid==static_cast<uint32_t>(owner);
 }
 
-inline std::optional<EditorPosition> editor_window_position(NSWindow* window) {
+inline std::optional<EditorPosition> editor_window_position(
+    NSWindow* window,std::optional<NSSize> accepted_content=std::nullopt) {
     if(!window) return std::nullopt;
     const auto frame=[window frame];
-    const EditorPosition position{NSMinX(frame),NSMaxY(frame)};
+    const auto content=accepted_content?*accepted_content:[[window contentView] bounds].size;
+    uint16_t width=0,height=0;
+    if(content.width>=1 && content.width<=4096 && content.height>=1 && content.height<=4096) {
+        width=static_cast<uint16_t>(content.width+0.5);
+        height=static_cast<uint16_t>(content.height+0.5);
+    }
+    const EditorPosition position{NSMinX(frame),NSMaxY(frame),width,height};
     return position.valid()?std::optional<EditorPosition>(position):std::nullopt;
 }
 
@@ -457,7 +490,7 @@ public:
     }
     bool is_open() const { return visibility.is_open(window); }
     std::optional<EditorPosition> position() const {
-        return is_open()?editor_window_position(window):std::nullopt;
+        return is_open()?editor_window_position(window,frame?std::optional<NSSize>(frame->current_accepted_size()):std::nullopt):std::nullopt;
     }
     std::optional<EditorState> open(IPlugView* editor,bool activate,
                                     std::optional<EditorPosition> placement=std::nullopt) {
@@ -494,6 +527,10 @@ public:
         resize_delegate=[[HexVSTEditorResizeDelegate alloc] initWithEditorFrame:frame];
         if(!resize_delegate) return unavailable();
         [window setDelegate:resize_delegate];
+        // Offer prior accepted dimensions before restoring top-left so reachability
+        // checks use the successor's final accepted frame width and height.
+        if(placement && placement->has_size())
+            frame->restore_content_size(NSMakeSize(placement->width,placement->height));
         // Apply the original top-left after attachment, when the SDK view
         // has supplied its final size. Ordering the panel keeps Hex focused.
         if(placement) restore_editor_window_position(window,*placement);

@@ -175,6 +175,7 @@ public:
     int constraints=0;
     bool accepts=false;
     bool resizable=false;
+    tresult constraint_result=kResultOk;
     int focus_gained=0,focus_lost=0;
     int key_downs=0,key_ups=0,last_key=0,last_modifiers=0;
     char16 last_character=0;
@@ -224,6 +225,7 @@ public:
     tresult PLUGIN_API canResize() override { return resizable?kResultOk:kResultFalse; }
     tresult PLUGIN_API checkSizeConstraint(ViewRect* rect) override {
         ++constraints;
+        if(constraint_result!=kResultOk) return constraint_result;
         if(rect->right>600) rect->right=600;
         return kResultOk;
     }
@@ -539,12 +541,144 @@ static void check_reentrant_keys() {
     [window release];
 }
 
+static void check_editor_handoff_resize() {
+    const auto screen=[[NSScreen mainScreen] visibleFrame];
+    assert(NSWidth(screen)>700 && NSHeight(screen)>450);
+    const auto style=NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskResizable;
+
+    // 1. Resize an open resizable view (320x240 -> 540x360), then hand off through
+    //    Move -> Undo -> Redo onto fresh default-sized (320x240) resizable successors.
+    auto* donor=[[HexFixturePanel alloc] initWithContentRect:NSMakeRect(0,0,320,240)
+        styleMask:style backing:NSBackingStoreBuffered defer:NO];
+    assert(donor);
+    ResizeView donor_view(donor);
+    donor_view.resizable=true;
+    donor_view.accepts=true;
+    EditorFrame donor_frame(donor,&donor_view);
+    ViewRect resized(0,0,540,360);
+    assert(donor_frame.resizeView(&donor_view,&resized)==kResultOk);
+    [donor setFrameTopLeftPoint:NSMakePoint(NSMinX(screen)+48.0,NSMaxY(screen)-48.0)];
+    auto placement=editor_window_position(donor,donor_frame.current_accepted_size());
+    assert(placement && placement->has_size() && placement->width==540 && placement->height==360);
+    const auto expected_x=placement->x, expected_y=placement->y;
+    donor_frame.invalidate();
+    [donor release];
+
+    // Verify wire round-trip and malformed query rejection for sized ReopenEditor.
+    ControllerQuery query{};
+    query.kind=REOPEN_EDITOR;
+    std::memcpy(&query.revision,&placement->x,8);
+    std::memcpy(&query.bits,&placement->y,8);
+    query.id=(static_cast<uint32>(placement->width)<<16)|placement->height;
+    assert(valid_controller_query(query));
+    const auto decoded=editor_reopen_position(query);
+    assert(decoded.x==expected_x && decoded.y==expected_y && decoded.width==540 && decoded.height==360);
+    ControllerQuery malformed=query;
+    malformed.id=2; // width == 0, height == 2
+    assert(!valid_controller_query(malformed));
+    malformed.id=(4097u<<16)|360u;
+    assert(!valid_controller_query(malformed));
+    malformed.id=1; // position-only still valid
+    assert(valid_controller_query(malformed) && !editor_reopen_position(malformed).has_size());
+
+    for(int step=0;step<3;++step) { // Move, Undo, Redo
+        auto* successor=[[HexFixturePanel alloc] initWithContentRect:NSMakeRect(0,0,320,240)
+            styleMask:style backing:NSBackingStoreBuffered defer:NO];
+        assert(successor);
+        ResizeView view(successor);
+        view.resizable=true;
+        view.accepts=true;
+        EditorFrame frame(successor,&view);
+        frame.restore_content_size(NSMakeSize(placement->width,placement->height));
+        restore_editor_window_position(successor,*placement);
+        assert(view.constraints==1 && view.calls==1);
+        assert(NSEqualSizes([[successor contentView] bounds].size,NSMakeSize(540,360)));
+        assert(NSEqualSizes(frame.current_accepted_size(),NSMakeSize(540,360)));
+        assert(NSMinX([successor frame])==expected_x && NSMaxY([successor frame])==expected_y);
+        placement=editor_window_position(successor,frame.current_accepted_size());
+        assert(placement && placement->width==540 && placement->height==360);
+        frame.invalidate();
+        [successor release];
+    }
+
+    // 2. Successor that constrains prior width (700x400 -> 600x400) opens at constrained size.
+    {
+        auto* successor=[[HexFixturePanel alloc] initWithContentRect:NSMakeRect(0,0,320,240)
+            styleMask:style backing:NSBackingStoreBuffered defer:NO];
+        ResizeView view(successor);
+        view.resizable=true;
+        view.accepts=true;
+        EditorFrame frame(successor,&view);
+        frame.restore_content_size(NSMakeSize(700,400));
+        restore_editor_window_position(successor,EditorPosition{expected_x,expected_y,700,400});
+        assert(view.constraints==1 && view.calls==1);
+        assert(NSEqualSizes([[successor contentView] bounds].size,NSMakeSize(600,400)));
+        assert(NSEqualSizes(frame.current_accepted_size(),NSMakeSize(600,400)));
+        assert(NSMinX([successor frame])==expected_x && NSMaxY([successor frame])==expected_y);
+        frame.invalidate();
+        [successor release];
+    }
+
+    // 3. Successor that refuses prior dimensions in onSize retains its default accepted size.
+    {
+        auto* successor=[[HexFixturePanel alloc] initWithContentRect:NSMakeRect(0,0,320,240)
+            styleMask:style backing:NSBackingStoreBuffered defer:NO];
+        ResizeView view(successor);
+        view.resizable=true;
+        view.accepts=false;
+        EditorFrame frame(successor,&view);
+        frame.restore_content_size(NSMakeSize(540,360));
+        restore_editor_window_position(successor,EditorPosition{expected_x,expected_y,540,360});
+        assert(view.constraints==1 && view.calls==1);
+        assert(NSEqualSizes([[successor contentView] bounds].size,NSMakeSize(320,240)));
+        assert(NSEqualSizes(frame.current_accepted_size(),NSMakeSize(320,240)));
+        assert(NSMinX([successor frame])==expected_x && NSMaxY([successor frame])==expected_y);
+        frame.invalidate();
+        [successor release];
+    }
+
+    // 4. Non-resizable successor keeps its default size without calling checkSizeConstraint/onSize.
+    {
+        auto* successor=[[HexFixturePanel alloc] initWithContentRect:NSMakeRect(0,0,320,240)
+            styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable
+            backing:NSBackingStoreBuffered defer:NO];
+        ResizeView view(successor);
+        view.resizable=false;
+        view.accepts=true;
+        EditorFrame frame(successor,&view);
+        frame.restore_content_size(NSMakeSize(540,360));
+        assert(view.constraints==0 && view.calls==0);
+        assert(NSEqualSizes([[successor contentView] bounds].size,NSMakeSize(320,240)));
+        assert(NSEqualSizes(frame.current_accepted_size(),NSMakeSize(320,240)));
+        frame.invalidate();
+        [successor release];
+    }
+
+    // 5. Resizable successor returning kNotImplemented from checkSizeConstraint still applies via onSize.
+    {
+        auto* successor=[[HexFixturePanel alloc] initWithContentRect:NSMakeRect(0,0,320,240)
+            styleMask:style backing:NSBackingStoreBuffered defer:NO];
+        ResizeView view(successor);
+        view.resizable=true;
+        view.accepts=true;
+        view.constraint_result=kNotImplemented;
+        EditorFrame frame(successor,&view);
+        frame.restore_content_size(NSMakeSize(540,360));
+        assert(view.constraints==1 && view.calls==1);
+        assert(NSEqualSizes([[successor contentView] bounds].size,NSMakeSize(540,360)));
+        assert(NSEqualSizes(frame.current_accepted_size(),NSMakeSize(540,360)));
+        frame.invalidate();
+        [successor release];
+    }
+}
+
 int main() {
     @autoreleasepool {
         [HexFixtureApp sharedApplication];
         check_modal_editor_observation();
         check_floating_panel();
         check_editor_placement();
+        check_editor_handoff_resize();
         ResizeView fixed(nullptr);
         assert(!(EditorFrame::window_style(fixed)&NSWindowStyleMaskResizable));
         fixed.resizable=true;

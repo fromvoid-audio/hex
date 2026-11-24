@@ -1225,6 +1225,12 @@ fn replacement_editor_commands_report_closed_and_unavailable_without_opening_win
             ControllerRequest::ReopenEditor(PluginEditorPosition::new(-204.25, 300.5)),
             PluginEditorState::Unavailable,
         ),
+        (
+            ControllerRequest::ReopenEditor(PluginEditorPosition::with_size(
+                -204.25, 300.5, 540, 360,
+            )),
+            PluginEditorState::Unavailable,
+        ),
     ] {
         instance
             .begin_controller_request_on_worker(request)

@@ -859,11 +859,16 @@ int main(int argc,char** argv) {
                         } else if(complete && hex_instance::editor_request(page_query.kind)) {
                             wire::number(body,4,1);
                             if(detached_editor_position) {
-                                wire::number(body,3,1);
+                                const bool has_size=detached_editor_position->has_size();
+                                wire::number(body,has_size?5:3,1);
                                 uint64_t x=0,y=0;
                                 std::memcpy(&x,&detached_editor_position->x,8);
                                 std::memcpy(&y,&detached_editor_position->y,8);
                                 wire::number(body,x,8);wire::number(body,y,8);
+                                if(has_size) {
+                                    wire::number(body,detached_editor_position->width,2);
+                                    wire::number(body,detached_editor_position->height,2);
+                                }
                             } else wire::number(body,static_cast<uint8_t>(editor_state),1);
                         } else if(complete) {
                             wire::number(body,parameter_page.changed?2:(parameter_page.conversion?3:1),1);
@@ -1431,7 +1436,7 @@ int main(int argc,char** argv) {
                                     } guard{instance,guarded && allowed};
                                     detached_editor_position=allowed &&
                                         (kind==hex_instance::DETACH_EDITOR || guarded)?editor.position():std::nullopt;
-                                    const auto placement=kind==hex_instance::REOPEN_EDITOR && page_query.id==1?
+                                    const auto placement=kind==hex_instance::REOPEN_EDITOR && page_query.id!=0?
                                         std::optional<hex_instance::EditorPosition>(hex_instance::editor_reopen_position(page_query)):
                                         std::nullopt;
                                     if(admission==hex_instance::EditorDetachAdmission::Refused)
