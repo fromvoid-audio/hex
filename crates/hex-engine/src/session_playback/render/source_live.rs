@@ -3,6 +3,20 @@
 use super::*;
 
 impl SessionPlayback {
+    pub(super) fn authored_source_voices(
+        &self,
+        receiver: usize,
+    ) -> Result<usize, SessionPlaybackError> {
+        self.revision
+            .source_routing()
+            .contributors(receiver)
+            .iter()
+            .try_fold(0usize, |sum, &contributor| {
+                sum.checked_add(self.source_voice_envelope(usize::from(contributor)))
+                    .ok_or(SessionPlaybackError::ArithmeticOverflow)
+            })
+    }
+
     pub(super) fn source_input_receiver(&self) -> Option<usize> {
         let keyboard = self
             .computer_keyboard
