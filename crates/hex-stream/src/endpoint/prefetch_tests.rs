@@ -376,7 +376,7 @@ fn ready_lookahead_is_installed_when_exactly_demanded() {
     );
     assert!(worker.endpoint.has_extent(demanded[0]));
     assert_eq!(worker.endpoint.pending_count, 0);
-    assert_eq!(worker.endpoint.prefetch_pending_count, 0);
+    assert!(worker.endpoint.prefetch_keys.is_empty());
 }
 
 #[test]
@@ -408,7 +408,7 @@ fn unrelated_queued_demand_cannot_be_blocked_by_ready_lookahead() {
         0
     );
     assert_eq!(worker.returns.pop().unwrap().key.unwrap().page_index, 2);
-    assert_eq!(worker.endpoint.prefetch_pending_count, 0);
+    assert!(worker.endpoint.prefetch_keys.is_empty());
     assert_eq!(worker.endpoint.pending_count, 1);
 }
 
@@ -442,7 +442,7 @@ fn direct_missing_demand_releases_ready_lookahead_before_requesting_worker() {
     );
     assert_eq!(worker.returns.pop().unwrap().key.unwrap().page_index, 2);
     assert_eq!(worker.requests.pop().unwrap().0.page_index, 3);
-    assert_eq!(worker.endpoint.prefetch_pending_count, 0);
+    assert!(worker.endpoint.prefetch_keys.is_empty());
 }
 
 #[test]
@@ -575,6 +575,13 @@ fn concurrent_multitrack_lookahead_admits_16_aligned_sources_without_misses_or_o
         },
     )
     .expect("preallocated endpoint");
+
+    let quoted = Endpoint::requested_data(POOL_PAGES, REQ_CAP, TRACKS).unwrap();
+    assert_eq!(quoted.prefetch_keys.capacity, TRACKS);
+    assert_eq!(
+        endpoint.data_footprint().prefetch_keys,
+        quoted.prefetch_keys
+    );
 
     // Preallocate the exact worker pool so any buffer over-commitment panics.
     let mut free_pages: Vec<Box<PageBuffer>> = (0..POOL_PAGES)
