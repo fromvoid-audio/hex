@@ -1415,6 +1415,8 @@ fn changed_source_during_playback_reports_fault_and_preserves_committed_audio() 
     let asset = project.assets().next().unwrap().id();
     let wav = stream_fixture::Wav::with_frames(8192);
     let definition = wav.definition(asset, 11);
+    #[cfg(feature = "stream-test-support")]
+    let key = definition.key;
     let source_path = definition.path.clone();
     let original = std::fs::read(&source_path).unwrap();
     let mut owner = stream_fixture::owner_with_context(
@@ -1489,12 +1491,39 @@ fn changed_source_during_playback_reports_fault_and_preserves_committed_audio() 
         assert_eq!(output, [[0.25; 2]; 256]);
         assert!(std::time::Instant::now() < deadline);
     }
+    // Make the first unavailable slice observe the real failure before it can
+    // start a temporary buffering fade. Peeking leaves the receipt for render.
+    #[cfg(feature = "stream-test-support")]
+    loop {
+        let mut failure = None;
+        data.owner_mut().unwrap().run(|callback, _| {
+            let loan = callback
+                .domain_pages
+                .iter_mut()
+                .flatten()
+                .find_map(|pages| pages.test_page_loan(domain))
+                .unwrap();
+            loan.test_request_audio_page(key, 1);
+            failure = loan.test_next_failure();
+        });
+        if let Some(failure) = failure {
+            assert_eq!(failure.key, key.into());
+            assert_eq!(failure.page_index, 1);
+            assert_eq!(failure.kind, hex_stream::StreamFailureKind::SourceChanged);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+
     let mut held_frames = 0;
-    while !control.status.stream_readiness_refused.load(Acquire) {
+    let mut refused = false;
+    while !refused || held_frames < 80 {
+        let output = &mut output[..16];
         let measured = allocation_counter::measure(|| {
             data.owner_mut().unwrap().run(|c, _| {
                 c.begin_block();
-                c.render(&mut output).unwrap();
+                c.render(output).unwrap();
             })
         });
         assert_eq!(
@@ -1506,7 +1535,13 @@ fn changed_source_during_playback_reports_fault_and_preserves_committed_audio() 
             ),
             (0, 0, 0, 0)
         );
-        assert_page_fade(&output, [0.25; 2], [0.0; 2], held_frames);
+        assert_page_fade(output, [0.25; 2], [0.0; 2], held_frames);
+        refused |= control.status.stream_readiness_refused.load(Acquire);
+        #[cfg(feature = "stream-test-support")]
+        assert!(
+            refused,
+            "the first held slice must consume the queued refusal"
+        );
         held_frames += output.len();
         assert_eq!(control.status.position.load(Acquire), 4096);
         assert!(std::time::Instant::now() < deadline);
