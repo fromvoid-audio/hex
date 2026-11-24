@@ -250,14 +250,10 @@ impl StreamOwner {
             retirement.backend_exposed = true;
         }
     }
-    pub(crate) fn expose_backend(&mut self) {
-        if let Some(retirement) = self.retirement.as_mut() {
-            retirement.backend_exposed = true;
-        }
-    }
     pub(crate) fn set_stream(&mut self, stream: cpal::Stream) {
         if let Some(retirement) = self.retirement.as_mut() {
             retirement.stream = Some(stream);
+            retirement.backend_exposed = true;
         }
     }
     /// Control-only borrow from the original backend custody. No ownership or
@@ -933,7 +929,9 @@ pub(crate) fn test_dispose_backend<S>(
 }
 
 // Same physical owner frontier for legacy and prepared native output. A missing
-// handle after backend exposure is uncertainty, including failed CPAL build.
+// handle after backend exposure is unprovable stream retirement. Pre-stream
+// construction failures stay unexposed and still require both callback guards
+// to drop through NativeRetirement before releasing the exclusive output lease.
 fn dispose_stream_on_control<S>(
     stream: &mut Option<S>,
     backend_exposed: bool,
@@ -1250,6 +1248,222 @@ mod candidate_retirement_tests {
         );
         assert_eq!(calls.load(Acquire), 1);
         drop(first);
+    }
+
+    #[test]
+    fn failed_stream_build_releases_lease_without_latching_retirement_and_allows_fallback_open() {
+        let _serial = crate::prepared::candidate_tests::serial();
+        struct FailedBuildRetirement {
+            stream: Option<Backend>,
+            backend_exposed: bool,
+            pending: bool,
+            disposed: bool,
+            native: crate::native_callback_owner::NativeRetirement,
+            occupied: Arc<AtomicBool>,
+        }
+        impl Drop for FailedBuildRetirement {
+            fn drop(&mut self) {
+                self.occupied.store(false, Release);
+            }
+        }
+
+        let (sender, receiver) =
+            mpsc::sync_channel::<LifecycleMessage<WorkerOutputProfile, FailedBuildRetirement>>(3);
+        let state = Arc::new(OpenState::new());
+        let status = Arc::new(LifecycleStatus::new());
+        let occupied = Arc::new(AtomicBool::new(false));
+        let mut worker_sender = Some(sender.clone());
+        let worker_status = status.clone();
+        let worker_occupied = occupied.clone();
+
+        let worker = std::thread::spawn(move || {
+            let occupied_read = worker_occupied.clone();
+            let occupied_open = worker_occupied.clone();
+            let retire_status = worker_status.clone();
+            run_lifecycle_observed(
+                receiver,
+                || occupied_read.load(Acquire),
+                move |_rate, kind| {
+                    if occupied_open
+                        .compare_exchange(false, true, AcqRel, Acquire)
+                        .is_err()
+                    {
+                        return None;
+                    }
+                    match kind {
+                        PreparedOutputKind::WorkerReliable(WorkerOutputProfile::PluginBridge) => {
+                            let (control, callback) =
+                                crate::prepared::channel_with_interface(48_000, None, Some(48_000))
+                                    .unwrap();
+                            let root = control.native_candidate_root();
+                            let (data, errors, terminals, client, mut publication) =
+                                crate::native_callback_owner::reserve_native_worker(
+                                    control, callback, None,
+                                );
+                            let native = crate::native_callback_owner::NativeRetirement::new(
+                                terminals,
+                                root.clone(),
+                            );
+                            publication
+                                .control()
+                                .unwrap()
+                                .enable_native_custody()
+                                .unwrap();
+                            // Simulate CPAL build() failing before set_stream(): both callback
+                            // guards and local worker endpoints drop cleanly while backend_exposed
+                            // stays false.
+                            drop(data);
+                            drop(errors);
+                            drop(client);
+                            drop(publication);
+                            root.announce_retirement();
+                            worker_sender
+                                .take()
+                                .unwrap()
+                                .try_send(LifecycleMessage::Retire(
+                                    FailedBuildRetirement {
+                                        stream: None,
+                                        backend_exposed: false,
+                                        pending: false,
+                                        disposed: false,
+                                        native,
+                                        occupied: occupied_open.clone(),
+                                    },
+                                    Some(root),
+                                ))
+                                .unwrap();
+                            Some(Err("coreaudio fixed buffer rejected".into()))
+                        }
+                        PreparedOutputKind::WorkerReliable(WorkerOutputProfile::DeviceDefault) => {
+                            Some(Ok(WorkerOutputProfile::DeviceDefault))
+                        }
+                        other => panic!("unexpected open kind: {other:?}"),
+                    }
+                },
+                move |mut retirement| {
+                    let mut progress = RetirementProgress::default();
+                    let complete = progress.advance(&retire_status, || {
+                        dispose_stream_and_native_on_control(
+                            &mut retirement.stream,
+                            retirement.backend_exposed,
+                            &mut retirement.pending,
+                            &mut retirement.disposed,
+                            Some(&mut retirement.native),
+                            |_| Ok(()),
+                        )
+                    });
+                    assert!(complete, "unexposed failed build must retire cleanly");
+                },
+                &worker_status,
+            );
+        });
+
+        let mut bridge_waiter = enqueue_worker_open(
+            &sender,
+            &state,
+            Some(48_000),
+            WorkerOutputProfile::PluginBridge,
+            true,
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(result) = bridge_waiter.try_take().unwrap() {
+                assert!(result.is_err());
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        drop(bridge_waiter);
+        while state.reserved.load(Acquire) != 0 || occupied.load(Acquire) {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert_eq!(status.failure(), None);
+
+        // Immediate fallback to DeviceDefault must acquire the released lease and open cleanly.
+        let mut fallback_waiter = enqueue_worker_open(
+            &sender,
+            &state,
+            Some(48_000),
+            WorkerOutputProfile::DeviceDefault,
+            true,
+        )
+        .unwrap();
+        loop {
+            if let Some(result) = fallback_waiter.try_take().unwrap() {
+                assert_eq!(result.unwrap(), WorkerOutputProfile::DeviceDefault);
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        drop(fallback_waiter);
+        while state.reserved.load(Acquire) != 0 {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert_eq!(status.failure(), None);
+        drop(sender);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn failed_build_still_holds_custody_if_callback_guard_not_dropped_and_exposed_loss_latches() {
+        let _serial = crate::prepared::candidate_tests::serial();
+        // Unexposed build failure still waits for callback guards before retiring.
+        let (control, data, errors, mut native) = crate::prepared::candidate_tests::anchored();
+        drop(control);
+        let status = LifecycleStatus::new();
+        let mut progress = RetirementProgress::default();
+        let mut stream: Option<Backend> = None;
+        let (mut pending, mut disposed) = (false, false);
+        assert!(!progress.advance(&status, || {
+            dispose_stream_and_native_on_control(
+                &mut stream,
+                false,
+                &mut pending,
+                &mut disposed,
+                Some(&mut native),
+                |_| Ok(()),
+            )
+        }));
+        assert_eq!(status.failure(), None);
+        drop(data);
+        drop(errors);
+        assert!(progress.advance(&status, || {
+            dispose_stream_and_native_on_control(
+                &mut stream,
+                false,
+                &mut pending,
+                &mut disposed,
+                Some(&mut native),
+                |_| Ok(()),
+            )
+        }));
+        assert_eq!(status.failure(), None);
+
+        // Genuine post-exposure lost stream handle still permanently latches Retirement.
+        let (control, data, errors, mut native) = crate::prepared::candidate_tests::anchored();
+        drop(control);
+        drop(data);
+        drop(errors);
+        let status = LifecycleStatus::new();
+        let mut progress = RetirementProgress::default();
+        let mut stream: Option<Backend> = None;
+        let (mut pending, mut disposed) = (false, false);
+        assert!(!progress.advance(&status, || {
+            dispose_stream_and_native_on_control(
+                &mut stream,
+                true,
+                &mut pending,
+                &mut disposed,
+                Some(&mut native),
+                |_| Ok(()),
+            )
+        }));
+        assert_eq!(status.failure(), Some(AudioLifecycleFailure::Retirement));
     }
 }
 

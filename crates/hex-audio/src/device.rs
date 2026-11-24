@@ -338,7 +338,9 @@ pub(crate) fn open_prepared(
         };
     let native = crate::native_callback_owner::NativeRetirement::new(terminals, root);
     // Anchor both terminal receivers and lease BEFORE CPAL can start or
-    // retain a callback, including failed construction with no Stream handle.
+    // retain a callback. Only mark backend exposure once `build` returns a
+    // live `cpal::Stream` handle (`set_stream`); failed construction drops its
+    // callback guards cleanly and must not latch permanent Retirement.
     let mut stream_owner = lifecycle::StreamOwner::prepared_custody(lease, spectrum_reaper, native);
     if let Some(control) = legacy_control.as_mut() {
         control.enable_native_custody()?;
@@ -349,7 +351,6 @@ pub(crate) fn open_prepared(
             .ok_or("worker publication endpoint unavailable")?
             .enable_native_custody()?;
     }
-    stream_owner.expose_backend();
     let stream = if sample_format == cpal::SampleFormat::F32 {
         build::<f32>(&device, &config, bridge, data_guard, error_guard)
     } else if sample_format == cpal::SampleFormat::I16 {
