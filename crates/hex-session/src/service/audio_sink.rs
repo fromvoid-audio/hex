@@ -1792,7 +1792,10 @@ pub(super) struct WorkerEvents {
     diagnostic: Option<super::diagnostics::DiagnosticRequest>,
     // Observed-request timing only; absent without an installed observer.
     diagnostic_started: Option<std::time::Instant>,
-    section_phases: Option<super::diagnostics::SectionPhases>,
+    edit_phases: Option<(
+        super::diagnostics::TimedEdit,
+        super::diagnostics::SectionPhases,
+    )>,
     recovery_timing: Option<(&'static str, Duration)>,
     shutdown: Arc<AtomicBool>,
     audio: Option<Box<dyn WorkerAudioSink>>,
@@ -1816,7 +1819,10 @@ pub(super) struct PendingOutcome {
     pub(super) event: Event,
     diagnostic: Option<super::diagnostics::DiagnosticRequest>,
     diagnostic_started: Option<std::time::Instant>,
-    section_phases: Option<super::diagnostics::SectionPhases>,
+    edit_phases: Option<(
+        super::diagnostics::TimedEdit,
+        super::diagnostics::SectionPhases,
+    )>,
     recovery_timing: Option<(&'static str, Duration)>,
 }
 impl PendingOutcome {
@@ -1877,7 +1883,7 @@ impl WorkerEvents {
         });
         self.diagnostic = request;
         self.diagnostic_started = request.map(|_| std::time::Instant::now());
-        self.section_phases = None;
+        self.edit_phases = None;
         self.recovery_timing = None;
         self.diagnostics.emit(
             request,
@@ -1891,18 +1897,22 @@ impl WorkerEvents {
     /// Attach section phases to this request's OutcomeReady observation.
     pub(super) fn record_section_phases(&mut self, phases: super::diagnostics::SectionPhases) {
         if self.diagnostic.is_some() {
-            self.section_phases = Some(phases);
+            self.edit_phases = Some((super::diagnostics::TimedEdit::Section, phases));
         }
     }
-    /// Time a section request's post-transition view construction only when
+    pub(super) fn observing_request(&self) -> bool {
+        self.diagnostic.is_some()
+    }
+
+    pub(super) fn record_track_switch_phases(&mut self, phases: super::diagnostics::SectionPhases) {
+        self.edit_phases = Some((super::diagnostics::TimedEdit::TrackSwitch, phases));
+    }
+    /// Time the request's post-transition view construction only when
     /// its diagnostic phase record exists. The work remains on the worker.
-    pub(super) fn measure_section_view<T>(&mut self, build: impl FnOnce() -> T) -> T {
-        let started = self
-            .section_phases
-            .as_ref()
-            .map(|_| std::time::Instant::now());
+    pub(super) fn measure_edit_view<T>(&mut self, build: impl FnOnce() -> T) -> T {
+        let started = self.edit_phases.as_ref().map(|_| std::time::Instant::now());
         let result = build();
-        if let (Some(phases), Some(started)) = (&mut self.section_phases, started) {
+        if let (Some((_, phases)), Some(started)) = (&mut self.edit_phases, started) {
             phases.view += started.elapsed();
         }
         result
@@ -1988,7 +1998,7 @@ impl WorkerEvents {
             diagnostics,
             diagnostic: None,
             diagnostic_started: None,
-            section_phases: None,
+            edit_phases: None,
             recovery_timing: None,
             shutdown,
             audio,
@@ -2151,7 +2161,7 @@ impl WorkerEvents {
             event,
             diagnostic: self.diagnostic.take(),
             diagnostic_started: self.diagnostic_started.take(),
-            section_phases: self.section_phases.take(),
+            edit_phases: self.edit_phases.take(),
             recovery_timing: self.recovery_timing.take(),
         }
     }
@@ -2165,12 +2175,18 @@ impl WorkerEvents {
             mut event,
             diagnostic,
             diagnostic_started,
-            section_phases: section,
+            edit_phases,
             recovery_timing,
         } = pending;
         let worker = diagnostic_started.map(|start| start.elapsed());
-        self.diagnostics
-            .outcome(diagnostic, &event, false, worker, section, recovery_timing);
+        self.diagnostics.outcome(
+            diagnostic,
+            &event,
+            false,
+            worker,
+            edit_phases,
+            recovery_timing,
+        );
         let mut reported_backpressure = false;
         loop {
             if self.shutdown.load(Ordering::Acquire) {

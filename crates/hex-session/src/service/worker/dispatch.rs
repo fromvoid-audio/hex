@@ -341,6 +341,7 @@ impl WorkerLoop {
             error = Some(reason);
         } else {
             let mut ctx = WorkerDispatch {
+                track_switch_request: exec.meta.track_switch_request,
                 worker: WorkerState {
                     session,
                     history_capacity,

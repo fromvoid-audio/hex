@@ -166,6 +166,7 @@ pub(super) struct RequestOutcome {
 }
 
 pub(super) struct WorkerDispatch<'a> {
+    pub(super) track_switch_request: bool,
     pub(super) worker: WorkerState<'a>,
     pub(super) outcome: RequestOutcome,
 }

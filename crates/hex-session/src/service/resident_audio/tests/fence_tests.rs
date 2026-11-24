@@ -434,3 +434,59 @@ fn parked_wait_is_reported_apart_from_the_dispatched_section_phases() {
         "{details}"
     );
 }
+
+#[test]
+fn solo_and_mute_report_their_own_resident_transition_phases() {
+    use crate::service::diagnostics::{DiagnosticObserver, DiagnosticStage};
+    let fixture = Fixture::new();
+    let (send, outcomes) = std::sync::mpsc::channel();
+    fixture
+        .service
+        .set_diagnostic_observer(Arc::new(DiagnosticObserver::new(move |event| {
+            if matches!(event.stage, DiagnosticStage::OutcomeReady { .. }) {
+                send.send((event.request.unwrap().operation, event.details.clone()))
+                    .unwrap();
+            }
+        })))
+        .unwrap();
+    fixture
+        .service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "switch target".into(),
+        }))
+        .unwrap();
+    let added = fixture.receive();
+    assert!(added.error.is_none());
+    let track = added.state.project.tracks().last().unwrap().id();
+    let (_, details) = outcomes.try_recv().unwrap();
+    assert!(!details.contains("track_switch_prepare_us="));
+    for (command, operation) in [
+        (
+            Command::ToggleSolo {
+                track,
+                exclusive: true,
+            },
+            "toggle_solo",
+        ),
+        (Command::ToggleMute(track), "toggle_mute"),
+    ] {
+        fixture.service.submit(Request::Edit(command)).unwrap();
+        let event = fixture.receive();
+        assert!(event.error.is_none(), "{:?}", event.error);
+        let (observed, details) = outcomes.try_recv().unwrap();
+        assert_eq!(observed, Some(operation));
+        for name in [
+            "track_switch_prepare_us=",
+            "track_switch_publish_us=",
+            "track_switch_view_us=",
+        ] {
+            assert!(
+                details.split_whitespace().any(|field| field
+                    .strip_prefix(name)
+                    .is_some_and(|v| v.parse::<u64>().is_ok())),
+                "{name} missing from {details}"
+            );
+        }
+        assert!(!details.contains("section_prepare_us="));
+    }
+}
