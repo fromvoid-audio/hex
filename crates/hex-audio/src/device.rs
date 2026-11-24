@@ -457,114 +457,121 @@ fn render_host_callback<T: SizedSample + FromSample<f32>>(
     f32: FromSample<T>,
 {
     let start = Instant::now();
-    let timing = status
-        .audio_diagnostics_flags()
-        .contains(AudioDiagnosticsFlags::TIMING);
-    let start_interval_ns =
-        callback_start_interval(previous_callback_start, timing.then_some(start));
-    callback.begin_block();
-    if status.device_fault.load(Acquire) {
-        callback.fence_device_fault();
-        data.fill(T::from_sample(0.0));
-        status.peak_left.store(0, Relaxed);
-        status.peak_right.store(0, Relaxed);
-        return;
-    }
-    if channels == 0 {
-        callback.revoke_output_transport();
-        data.fill(T::from_sample(0.0));
-        callback.report_render_fault(
-            Some(&hex_engine::Invalid("output host buffer has zero channels")),
-            status.position.load(Relaxed),
-        );
-        return;
-    }
-    let mut block: [Frame; 256] = [[0.0; 2]; 256];
-    let mut peaks = [0.0_f32; 2];
-    let complete = data.len() / channels * channels;
-    data[complete..].fill(T::from_sample(0.0));
-    let has_plugin_quantum = bridge_quantum.is_some()
-        || callback.output_transport_quantum().is_some()
-        || callback.native_effect_quantum().is_some();
-    if has_plugin_quantum && complete != data.len() {
-        callback.revoke_output_transport();
-        data.fill(T::from_sample(0.0));
-        callback.report_render_fault(
-            Some(&hex_engine::Invalid(
-                "plugin physical callback buffer is not channel-aligned",
-            )),
-            status.position.load(Relaxed),
-        );
-        return;
-    }
-    let chunk_frames = callback_quantum_frames(callback, bridge_quantum, block.len());
-    let mut faulted = false;
-    for (index, chunk) in data[..complete]
-        .chunks_mut(channels * chunk_frames)
-        .enumerate()
-    {
-        if faulted {
-            chunk.fill(T::from_sample(0.0));
-            continue;
+    callback.with_host_callback_entry(start, |callback| {
+        let timing = status
+            .audio_diagnostics_flags()
+            .contains(AudioDiagnosticsFlags::TIMING);
+        let start_interval_ns =
+            callback_start_interval(previous_callback_start, timing.then_some(start));
+        callback.begin_block();
+        if status.device_fault.load(Acquire) {
+            callback.fence_device_fault();
+            data.fill(T::from_sample(0.0));
+            status.peak_left.store(0, Relaxed);
+            status.peak_right.store(0, Relaxed);
+            return;
         }
-        if index > 0 {
-            callback.begin_block();
-            if status.device_fault.load(Acquire) {
-                callback.fence_device_fault();
-                chunk.fill(T::from_sample(0.0));
-                faulted = true;
-                continue;
-            }
-        }
-        let frames = chunk.len() / channels;
-        if !valid_transport_buffer(callback, chunk.len(), channels) {
+        if channels == 0 {
             callback.revoke_output_transport();
-            chunk.fill(T::from_sample(0.0));
+            data.fill(T::from_sample(0.0));
+            callback.report_render_fault(
+                Some(&hex_engine::Invalid("output host buffer has zero channels")),
+                status.position.load(Relaxed),
+            );
+            return;
+        }
+        let mut block: [Frame; 256] = [[0.0; 2]; 256];
+        let mut peaks = [0.0_f32; 2];
+        let complete = data.len() / channels * channels;
+        data[complete..].fill(T::from_sample(0.0));
+        let has_plugin_quantum = bridge_quantum.is_some()
+            || callback.output_transport_quantum().is_some()
+            || callback.native_effect_quantum().is_some();
+        if has_plugin_quantum && complete != data.len() {
+            callback.revoke_output_transport();
+            data.fill(T::from_sample(0.0));
             callback.report_render_fault(
                 Some(&hex_engine::Invalid(
-                    "plugin callback sub-slice exceeds its fixed quantum",
+                    "plugin physical callback buffer is not channel-aligned",
                 )),
                 status.position.load(Relaxed),
             );
-            faulted = true;
-            continue;
+            return;
         }
-        if let Err(error) = callback.begin_native_effect_callback(frames) {
-            chunk.fill(T::from_sample(0.0));
-            callback.report_render_fault(Some(&error), status.position.load(Relaxed));
-            faulted = true;
-            continue;
-        }
-        let block_start_frame = status.position.load(Relaxed);
-        let rendered = callback.render(&mut block[..frames]);
-        let clock = sample_output_clock(info, index, chunk_frames);
-        callback.set_sample_recording_output_clock(clock);
-        if !finish_host_chunk(
-            callback,
-            chunk,
-            &mut block[..frames],
-            channels,
-            &rendered,
-            block_start_frame,
-            start,
-        ) {
-            faulted = true;
-            continue;
-        }
-        for stereo in &block[..frames] {
-            for channel in 0..2 {
-                peaks[channel] = peaks[channel].max(stereo[channel].abs());
+        let chunk_frames = callback_quantum_frames(callback, bridge_quantum, block.len());
+        let mut faulted = false;
+        for (index, chunk) in data[..complete]
+            .chunks_mut(channels * chunk_frames)
+            .enumerate()
+        {
+            if faulted {
+                chunk.fill(T::from_sample(0.0));
+                continue;
+            }
+            if index > 0 {
+                callback.begin_block();
+                if status.device_fault.load(Acquire) {
+                    callback.fence_device_fault();
+                    chunk.fill(T::from_sample(0.0));
+                    faulted = true;
+                    continue;
+                }
+            }
+            let frames = chunk.len() / channels;
+            if !valid_transport_buffer(callback, chunk.len(), channels) {
+                callback.revoke_output_transport();
+                chunk.fill(T::from_sample(0.0));
+                callback.report_render_fault(
+                    Some(&hex_engine::Invalid(
+                        "plugin callback sub-slice exceeds its fixed quantum",
+                    )),
+                    status.position.load(Relaxed),
+                );
+                faulted = true;
+                continue;
+            }
+            if let Err(error) = callback.begin_native_effect_callback(frames) {
+                chunk.fill(T::from_sample(0.0));
+                callback.report_render_fault(Some(&error), status.position.load(Relaxed));
+                faulted = true;
+                continue;
+            }
+            let block_start_frame = status.position.load(Relaxed);
+            let rendered = callback.render(&mut block[..frames]);
+            let clock = sample_output_clock(info, index, chunk_frames);
+            callback.set_sample_recording_output_clock(clock);
+            if !finish_host_chunk(
+                callback,
+                chunk,
+                &mut block[..frames],
+                channels,
+                &rendered,
+                block_start_frame,
+                start,
+            ) {
+                faulted = true;
+                continue;
+            }
+            for stereo in &block[..frames] {
+                for channel in 0..2 {
+                    peaks[channel] = peaks[channel].max(stereo[channel].abs());
+                }
             }
         }
-    }
-    status.peak_left.store(peaks[0].to_bits(), Relaxed);
-    status.peak_right.store(peaks[1].to_bits(), Relaxed);
-    let frames = data.len() / channels;
-    let elapsed = start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
-    let deadline = record_callback_timing(status, elapsed, frames, rate);
-    if timing {
-        callback.trace_callback_timing(elapsed, deadline.unwrap_or(0), frames, start_interval_ns);
-    }
+        status.peak_left.store(peaks[0].to_bits(), Relaxed);
+        status.peak_right.store(peaks[1].to_bits(), Relaxed);
+        let frames = data.len() / channels;
+        let elapsed = start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+        let deadline = record_callback_timing(status, elapsed, frames, rate);
+        if timing {
+            callback.trace_callback_timing(
+                elapsed,
+                deadline.unwrap_or(0),
+                frames,
+                start_interval_ns,
+            );
+        }
+    });
 }
 
 fn build<T: SizedSample + FromSample<f32>>(
