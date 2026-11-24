@@ -658,6 +658,253 @@ fn actual_unautomated_instrument_and_effect_receive_sdk_loop_wrap_origins() {
         .join()
         .unwrap();
 }
+
+#[test]
+#[ignore = "requires explicit source-bound original SDK receipts"]
+fn actual_vst3_note_events_carry_sample_accurate_ppq_position() {
+    const NAME: &str = "plugin_effects::callbacks::tests::actual_vst3_note_events_carry_sample_accurate_ppq_position";
+    const CHILD: &str = "HEX_NOTE_PPQ_SDK_TEST_CHILD";
+    const K_NOTE_ON: i64 = 0;
+    const K_NOTE_OFF: i64 = 1;
+
+    if std::env::var_os(CHILD).is_none() {
+        let trace_path =
+            std::env::temp_dir().join(format!("hex-note-ppq-{}.bin", std::process::id()));
+        let _ = std::fs::remove_file(&trace_path);
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--ignored"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "115")
+            .env("HEX_ORIGINAL_EVENT_TRACE", &trace_path)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let bytes = std::fs::read(&trace_path).unwrap();
+        let _ = std::fs::remove_file(&trace_path);
+        let words: Vec<i64> = bytes
+            .chunks_exact(8)
+            .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        let count = words[0] as usize;
+        assert_eq!(count, 11, "expected 11 recorded SDK note events: {words:?}");
+        let ev = |idx: usize| -> (i64, i64, i64, i64, i64, f64) {
+            let b = 1 + idx * 6;
+            (
+                words[b],
+                words[b + 1],
+                words[b + 2],
+                words[b + 3],
+                words[b + 4],
+                f64::from_bits(words[b + 5] as u64),
+            )
+        };
+        let assert_ev = |idx: usize,
+                         kind: i64,
+                         sample_offset: i64,
+                         pitch: i64,
+                         note_id: i64,
+                         expected_ppq: f64| {
+            let (ty, off, p, id, flags, ppq) = ev(idx);
+            assert_eq!((ty, off, p, id, flags), (kind, sample_offset, pitch, note_id, 0), "event {idx}");
+            assert!(
+                (ppq - expected_ppq).abs() <= 1e-12,
+                "event {idx}: ppq {ppq} != expected {expected_ppq}"
+            );
+        };
+        // Quantum 0: clip at beat 8, 48 kHz / 120 BPM (note on @ 0, note off @ 6).
+        assert_ev(0, K_NOTE_ON, 0, 60, 101, 8.0);
+        assert_ev(1, K_NOTE_OFF, 6, 60, 101, 8.0 + (6.0 * 120.0) / (60.0 * 48000.0));
+        // Quantum 1: clip moved to beat 16, 48 kHz / 120 BPM (same pitch, note_id, offsets, duration).
+        assert_ev(2, K_NOTE_ON, 0, 60, 101, 16.0);
+        assert_ev(3, K_NOTE_OFF, 6, 60, 101, 16.0 + (6.0 * 120.0) / (60.0 * 48000.0));
+        // Quantum 2: after tempo change to 150 BPM at beat 20 (on @ 2, off @ 6).
+        assert_ev(4, K_NOTE_ON, 2, 60, 102, 20.0 + (2.0 * 150.0) / (60.0 * 48000.0));
+        assert_ev(5, K_NOTE_OFF, 6, 60, 102, 20.0 + (6.0 * 150.0) / (60.0 * 48000.0));
+        // Quantum 3: across loop split at offset 4 (pre-wrap beat 7.75 -> post-wrap beat 4.0 @ 120 BPM).
+        assert_ev(6, K_NOTE_ON, 1, 60, 103, 7.75 + (1.0 * 120.0) / (60.0 * 48000.0));
+        assert_ev(7, K_NOTE_ON, 0, 60, 104, 4.0);
+        assert_ev(8, K_NOTE_OFF, 2, 60, 103, 4.0 + (2.0 * 120.0) / (60.0 * 48000.0));
+        // Quantum 4: no project musical clock (clock = None) -> ppqPosition == 0.0.
+        assert_ev(9, K_NOTE_OFF, 1, 60, 104, 0.0);
+        assert_ev(10, K_NOTE_ON, 3, 60, 105, 0.0);
+        return;
+    }
+
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            struct MusicalClock {
+                frame: u64,
+                beat_raw: u64,
+                tempo_micro_bpm: u32,
+            }
+            impl hex_lattice::NativeInstrumentClock for MusicalClock {
+                fn beat_at_offset(&self, _: usize) -> Option<u64> {
+                    None
+                }
+                fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+                    Some(self.frame + offset as u64)
+                }
+                fn arrangement_beat_at_offset(&self, offset: usize) -> Option<u64> {
+                    let delta_beats = ((offset as f64) * (self.tempo_micro_bpm as f64 / 1_000_000.0))
+                        / (60.0 * 48_000.0);
+                    Some(self.beat_raw + (delta_beats * 4_294_967_296.0).round() as u64)
+                }
+                fn tempo_micro_bpm_at_offset(&self, _: usize) -> Option<u32> {
+                    Some(self.tempo_micro_bpm)
+                }
+                fn transport_is_running(&self) -> Option<bool> {
+                    Some(true)
+                }
+            }
+
+            let binding = Binding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 30,
+            };
+            let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 2).unwrap();
+            let source = crate::plugin_worker::native_tests::original_instance_with_inputs(binding, 0);
+            let effect = NativeEffect::prepare_on_control(identity, source).unwrap();
+            let facts = Facts {
+                identity,
+                state: effect.configuration().clone(),
+                prepared: effect.prepared(),
+            };
+            let (mut workers, mut endpoints) =
+                NativeEffectCallbacks::from_effects_on_control(vec![effect]).unwrap();
+            let worker = &mut workers[0];
+
+            let note = |frame: u16, on: bool, id: u32| ForeignNote {
+                frame,
+                channel: 2,
+                pitch: 60,
+                velocity: if on { 127 } else { 0 },
+                on,
+                note_id: std::num::NonZeroU32::new(id),
+            };
+            let wait_for = |worker: &crate::plugin_worker::NativeWorker, blocks: u64| {
+                let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                while worker.published_blocks_on_control() < blocks {
+                    assert!(std::time::Instant::now() < until, "native PCM completion");
+                    std::thread::yield_now();
+                }
+            };
+
+            // Quanta 0, 1, 2: beat 8 @ 120, beat 16 @ 120, beat 20 @ 150.
+            let blocks_spec: [(Option<MusicalClock>, [ForeignNote; 2]); 3] = [
+                (
+                    Some(MusicalClock {
+                        frame: 192_000,
+                        beat_raw: 8 << 32,
+                        tempo_micro_bpm: 120_000_000,
+                    }),
+                    [note(0, true, 101), note(6, false, 101)],
+                ),
+                (
+                    Some(MusicalClock {
+                        frame: 384_000,
+                        beat_raw: 16 << 32,
+                        tempo_micro_bpm: 120_000_000,
+                    }),
+                    [note(0, true, 101), note(6, false, 101)],
+                ),
+                (
+                    Some(MusicalClock {
+                        frame: 480_000,
+                        beat_raw: 20 << 32,
+                        tempo_micro_bpm: 150_000_000,
+                    }),
+                    [note(2, true, 102), note(6, false, 102)],
+                ),
+            ];
+            for (idx, (clock, notes)) in blocks_spec.into_iter().enumerate() {
+                let mut out = [[0.0_f32; 2]; 8];
+                endpoints.begin_host_callback(8).unwrap();
+                endpoints
+                    .process_segment_with_notes(
+                        facts.node(),
+                        0,
+                        &mut out,
+                        &[],
+                        &notes,
+                        clock.as_ref().map(|c| c as &dyn hex_lattice::NativeInstrumentClock),
+                    )
+                    .unwrap();
+                endpoints.finish_host_callback(true).unwrap();
+                wait_for(worker, 1 + idx as u64);
+            }
+
+            // Quantum 3: loop split at offset 4 (beat 7.75 -> beat 4.0 @ 120 BPM).
+            {
+                let mut out = [[0.0_f32; 2]; 8];
+                let pre = MusicalClock {
+                    frame: 186_000,
+                    beat_raw: (7 << 32) + ((3 << 32) / 4),
+                    tempo_micro_bpm: 120_000_000,
+                };
+                let post = MusicalClock {
+                    frame: 96_000,
+                    beat_raw: 4 << 32,
+                    tempo_micro_bpm: 120_000_000,
+                };
+                endpoints.begin_host_callback(8).unwrap();
+                endpoints
+                    .process_segment_with_notes(
+                        facts.node(),
+                        0,
+                        &mut out[..4],
+                        &[],
+                        &[note(1, true, 103)],
+                        Some(&pre),
+                    )
+                    .unwrap();
+                endpoints
+                    .process_segment_with_notes(
+                        facts.node(),
+                        4,
+                        &mut out[4..],
+                        &[],
+                        &[note(0, true, 104), note(2, false, 103)],
+                        Some(&post),
+                    )
+                    .unwrap();
+                endpoints.finish_host_callback(true).unwrap();
+                wait_for(worker, 4);
+            }
+
+            // Quantum 4: no musical clock -> ppqPosition == 0.0.
+            {
+                let mut out = [[0.0_f32; 2]; 8];
+                endpoints.begin_host_callback(8).unwrap();
+                endpoints
+                    .process_segment_with_notes(
+                        facts.node(),
+                        0,
+                        &mut out,
+                        &[],
+                        &[note(1, false, 104), note(3, true, 105)],
+                        None,
+                    )
+                    .unwrap();
+                endpoints.finish_host_callback(true).unwrap();
+                wait_for(worker, 5);
+            }
+
+            let retirement = worker.retire_on_control().unwrap();
+            assert!(retirement.failure.is_none() && retirement.native.status.success());
+            assert_eq!(retirement.native.terminal.unwrap().blocks, 5);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
 }
 
 /// Copied graph facts for one endpoint, so a node can be built while the
