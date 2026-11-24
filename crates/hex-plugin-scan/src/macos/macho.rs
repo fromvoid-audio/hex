@@ -1,6 +1,6 @@
 //! Bounded native-arm64 admission for thin and normal big-endian fat mach-o.
 use serde::{Deserialize, Serialize};
-use std::{fs::File, os::unix::fs::FileExt};
+use std::{fs::File, io};
 
 const ARM64: u32 = 0x0100_000c;
 const X86_64: u32 = 0x0100_0007;
@@ -56,12 +56,50 @@ impl Region<'_> {
                     .ok_or("truncated mach-o input")?;
                 result.copy_from_slice(source);
             }
-            Input::File(file) => file
-                .read_exact_at(&mut result, start)
-                .map_err(|_| "mach-o file read failed")?,
+            Input::File(file) => {
+                read_exact_at(file, &mut result, start).map_err(|_| "mach-o file read failed")?
+            }
         }
         Ok(result)
     }
+}
+
+#[cfg(unix)]
+fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.read_exact_at(buf, offset)
+}
+
+#[cfg(windows)]
+fn read_exact_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !buf.is_empty() {
+        match file.seek_read(buf, offset) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "failed to fill whole buffer",
+                ));
+            }
+            Ok(count) => {
+                buf = &mut buf[count..];
+                offset = offset.checked_add(count as u64).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "offset overflow")
+                })?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn read_exact_at(_file: &File, _buf: &mut [u8], _offset: u64) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "positioned file reads are unsupported on this platform",
+    ))
 }
 
 fn word(bytes: Region<'_>, offset: u64, big: bool) -> Result<u32, &'static str> {
@@ -277,5 +315,37 @@ mod tests {
         for end in [0, 4, 8, 31, 32, 39] {
             assert!(inspect(&bytes[..end], Role::Module).is_err());
         }
+    }
+
+    #[test]
+    fn positioned_file_inspection_reads_fat_slices_and_refuses_truncated_files() {
+        struct TempFile(std::path::PathBuf);
+        impl Drop for TempFile {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp = TempFile(std::env::temp_dir().join(format!(
+            "hex-macho-file-{}-{unique}.bin",
+            std::process::id()
+        )));
+        let bytes = fat();
+        std::fs::write(&temp.0, &bytes).unwrap();
+        let file = File::open(&temp.0).unwrap();
+        assert_eq!(
+            inspect_file(&file, bytes.len() as u64),
+            Ok(Image::UniversalArm64)
+        );
+        drop(file);
+        std::fs::write(&temp.0, &bytes[..bytes.len() - 4]).unwrap();
+        let truncated = File::open(&temp.0).unwrap();
+        assert_eq!(
+            inspect_file(&truncated, bytes.len() as u64),
+            Err("mach-o file read failed")
+        );
     }
 }
