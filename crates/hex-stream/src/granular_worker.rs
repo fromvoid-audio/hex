@@ -4,7 +4,7 @@ use crate::{
     VerifiedGranularSource,
 };
 use hex_engine::{Frame, StreamSourceKey};
-use rtrb::{Consumer, Producer, PushError};
+use rtrb::{Consumer, Producer};
 use std::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     thread,
@@ -84,7 +84,8 @@ pub struct GranularWorkerExit {
 /// The caller advances `demand_epoch` to supersede all requests from older
 /// demand and must never reuse an epoch during this worker lifetime. A stale
 /// active request is cancelled between and within steps; returned frames remain
-/// caller-owned. Outcomes already in the result queue can race an epoch change:
+/// caller-owned. A held outcome rechecks demand after reserving its result slot.
+/// A later epoch change can race publication into that slot:
 /// the consumer must serialize demand changes with publication and compare each
 /// outcome epoch with its current demand before publication. Retire the worker
 /// before epoch wrap. This loop does not admit sources to playback or establish
@@ -127,6 +128,13 @@ fn run_inner(
             break;
         }
         if let Some(mut outcome) = held.take() {
+            // Acquiring a freed slot observes the consumer's preceding demand change.
+            // Sampling the epoch first could publish obsolete work as ready or failed.
+            let Ok(slot) = queues.results.write_chunk_uninit(1) else {
+                held = Some(outcome);
+                thread::park_timeout(Duration::from_millis(2));
+                continue;
+            };
             if outcome.key.epoch != demand_epoch.load(Ordering::Acquire) {
                 let frames = match outcome.result {
                     GranularWorkerResult::Ready(page) => page.frames,
@@ -135,10 +143,7 @@ fn run_inner(
                 };
                 outcome.result = GranularWorkerResult::Cancelled { frames };
             }
-            if let Err(PushError::Full(outcome)) = queues.results.push(outcome) {
-                held = Some(outcome);
-                thread::park_timeout(Duration::from_millis(2));
-            }
+            slot.fill_from_iter(std::iter::once(outcome));
             continue;
         }
         if let Some((index, key)) = active {
