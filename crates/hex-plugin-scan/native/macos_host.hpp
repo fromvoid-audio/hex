@@ -641,6 +641,12 @@ public:
         if(cohort) {
             poison_cohort();refuse(UnsupportedCapability);return kResultFalse;
         }
+        // Hex does not implement VST3 IMidiMapping; treat kMidiCCAssignmentChanged
+        // as nonterminal without raising a sticky HostRefusal, while preserving
+        // combined supported refresh bits and graph-sensitive restart checks.
+        const bool midi_cc_mapping=(flags & kMidiCCAssignmentChanged)!=0;
+        flags &= ~kMidiCCAssignmentChanged;
+        if (!flags) return midi_cc_mapping?kNotImplemented:kResultOk;
         const auto supported=supported_restarts |
             (latency_enabled?kLatencyChanged:0);
         if (flags & ~supported) {

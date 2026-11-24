@@ -325,6 +325,30 @@ int main(int argc,char** argv) { @autoreleasepool {
             assert(host.endEdit(7)==kResultOk);
         }
     }
+    if(argc==1 || !std::strcmp(argv[1],"midi-cc-assignment-nonterminal")) {
+        Controller controller;
+        Host host;
+        assert(host.refresh_on_control(&controller).disposition==HostDisposition::Refreshed);
+
+        // Mapping-only notification reports kNotImplemented honestly without raising a
+        // sticky HostRefusal that would terminate the active worker.
+        assert(host.restartComponent(kMidiCCAssignmentChanged)==kNotImplemented);
+        assert(host.refusal_flags()==0);
+        assert(host.dispatch(&controller).disposition==HostDisposition::Idle);
+
+        // Combined mapping + parameter-value invalidation admits the value refresh,
+        // updates cached inventory, and leaves refusal_flags at zero.
+        controller.value=0.75;
+        assert(host.restartComponent(kMidiCCAssignmentChanged|kParamValuesChanged)==kResultOk);
+        assert(host.refusal_flags()==0);
+        assert(host.dispatch(&controller).disposition==HostDisposition::Refreshed);
+        assert(host.snapshot()->parameters[0].value==0.75);
+        assert(host.refusal_flags()==0);
+
+        // Graph-affecting restarts combined with mapping still refuse with GraphControlRequired.
+        assert(host.restartComponent(kMidiCCAssignmentChanged|kIoChanged)==kNotImplemented);
+        assert((host.refusal_flags() & GraphControlRequired)!=0);
+    }
     if(argc==1 || !std::strcmp(argv[1],"combined-feedback-capacity")) {
         LargeController large;
         Host host;
