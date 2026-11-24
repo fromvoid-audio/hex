@@ -30,7 +30,9 @@ impl SignalRuntime {
                     || !runtime.delays.is_closed()
                     || !runtime.graph.independent_main_routes()
                     || !runtime.graph.main_devices.is_empty()
-                    || runtime.graph.tracks.len() != 2
+                    || runtime.graph.tracks.len() < 2
+                    || donor >= runtime.graph.tracks.len()
+                    || receiver >= runtime.graph.tracks.len()
                     || runtime.horizon() != delay
                     || runtime.graph.main_input_arrival() != delay
             })
@@ -45,19 +47,42 @@ impl SignalRuntime {
 
         let check_alignment = |runtime: &Self, wet, dry| {
             let (_, wet_arrival) = runtime.graph.resident_main_alignment(wet)?;
-            let (dry, dry_arrival) = runtime.graph.resident_main_alignment(dry)?;
-            if wet_arrival != delay || dry_arrival != 0 {
+            if wet_arrival != delay {
                 return None;
             }
-            let dry = *runtime.graph.pre_main_edges.get(dry)?;
+            let (dry_slot, dry_arrival) = runtime.graph.resident_main_alignment(dry)?;
+            if dry_arrival != 0 {
+                return None;
+            }
+            let dry_edge = *runtime.graph.pre_main_edges.get(dry_slot)?;
+            for track_index in 0..runtime.graph.tracks.len() {
+                if track_index == wet {
+                    continue;
+                }
+                let (slot, arrival) = runtime.graph.resident_main_alignment(track_index)?;
+                if arrival != 0 || runtime.graph.pre_main_edges.get(slot).is_none() {
+                    return None;
+                }
+            }
+            let expected_delayed =
+                |edge_index: usize| {
+                    (0..runtime.graph.tracks.len()).any(|track_index| {
+                        track_index != wet
+                            && runtime.graph.resident_main_alignment(track_index).and_then(
+                                |(slot, _)| runtime.graph.pre_main_edges.get(slot).copied(),
+                            ) == Some(edge_index)
+                    })
+                };
             runtime
                 .graph
                 .plan
                 .edges()
                 .iter()
                 .enumerate()
-                .all(|(index, edge)| edge.delay_frames == if index == dry { delay } else { 0 })
-                .then_some(dry)
+                .all(|(index, edge)| {
+                    edge.delay_frames == if expected_delayed(index) { delay } else { 0 }
+                })
+                .then_some(dry_edge)
         };
         Some(HostedEffectClock {
             old_dry: u8::try_from(check_alignment(previous, donor, receiver)?).ok()?,
@@ -71,6 +96,14 @@ impl SignalRuntime {
             && self
                 .delays
                 .edge_history_is_silent(usize::from(clock.old_dry))
+            && self
+                .graph
+                .plan
+                .edges()
+                .iter()
+                .enumerate()
+                .filter(|(_, edge)| edge.delay_frames > 0)
+                .all(|(index, _)| self.delays.edge_history_is_silent(index))
     }
 
     pub(crate) fn can_transfer_hosted_effect_clock_from(
@@ -85,6 +118,14 @@ impl SignalRuntime {
             && self
                 .delays
                 .edge_history_is_silent(usize::from(expected.new_dry))
+            && self
+                .graph
+                .plan
+                .edges()
+                .iter()
+                .enumerate()
+                .filter(|(_, edge)| edge.delay_frames > 0)
+                .all(|(index, _)| self.delays.edge_history_is_silent(index))
             && self.delays.latest_stamp().is_none()
     }
 
