@@ -1,7 +1,5 @@
-//! One original-to-result context transfer after retained source trimming.
-//! Reanchors the clip's Outer fade strictly to the resulting clip's corners so
-//! trimmed and split clips never carry out-of-range offsets, oversized spans,
-//! or mid-clip endpoints.
+//! Explicit edge edits anchor the destination fade at the new clip corners.
+//! Retained intervals keep the original fade position across section and grouping edits.
 use super::{AudioClipFadeClock, AudioDomainClock};
 use crate::{Clip, ClipFade, Invalid, TempoMap};
 use std::sync::Arc;
