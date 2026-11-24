@@ -376,7 +376,7 @@ fn ready_lookahead_is_installed_when_exactly_demanded() {
     );
     assert!(worker.endpoint.has_extent(demanded[0]));
     assert_eq!(worker.endpoint.pending_count, 0);
-    assert!(worker.endpoint.prefetch_key.is_none());
+    assert!(worker.endpoint.prefetch_keys.is_empty());
 }
 
 #[test]
@@ -408,7 +408,7 @@ fn unrelated_queued_demand_cannot_be_blocked_by_ready_lookahead() {
         0
     );
     assert_eq!(worker.returns.pop().unwrap().key.unwrap().page_index, 2);
-    assert!(worker.endpoint.prefetch_key.is_none());
+    assert!(worker.endpoint.prefetch_keys.is_empty());
     assert_eq!(worker.endpoint.pending_count, 1);
 }
 
@@ -442,7 +442,7 @@ fn direct_missing_demand_releases_ready_lookahead_before_requesting_worker() {
     );
     assert_eq!(worker.returns.pop().unwrap().key.unwrap().page_index, 2);
     assert_eq!(worker.requests.pop().unwrap().0.page_index, 3);
-    assert!(worker.endpoint.prefetch_key.is_none());
+    assert!(worker.endpoint.prefetch_keys.is_empty());
 }
 
 #[test]
@@ -532,4 +532,172 @@ fn competing_demand_preserves_a_page_still_wanted_by_another_role() {
             .is_ok_and(|ready| ready.key == Some(page))
     );
     assert_eq!(worker.requests.pop().unwrap().0.page_index, 3);
+}
+
+#[test]
+fn concurrent_multitrack_lookahead_admits_16_aligned_sources_without_misses_or_overflow() {
+    const TRACKS: usize = 16;
+    const MULTI_PAGES: u64 = 6;
+    const POOL_PAGES: usize = 48;
+    const REQ_CAP: usize = 64;
+
+    let mut editor = Editor::new(Project::new(48_000).expect("project"), 4).expect("editor");
+    let mut keys = Vec::with_capacity(TRACKS);
+    for idx in 0..TRACKS {
+        let Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: format!("track-{idx}.wav").into(),
+                sample_rate: 48_000,
+                frames: MULTI_PAGES * STREAM_PAGE_FRAMES as u64,
+            })
+            .expect("asset")
+        else {
+            panic!("expected asset");
+        };
+        keys.push(StreamSourceKey::new(91, asset));
+    }
+    let mut resource_keys: Vec<StreamResourceKey> = keys.iter().map(|&k| k.into()).collect();
+    resource_keys.sort_unstable();
+
+    let (request_tx, mut requests) = RingBuffer::new(REQ_CAP);
+    let (mut ready, ready_rx) = RingBuffer::new(POOL_PAGES);
+    let (return_tx, mut returns) = RingBuffer::new(POOL_PAGES);
+    let (_failures, failure_rx) = RingBuffer::new(REQ_CAP);
+    let mut endpoint = Endpoint::new(
+        POOL_PAGES,
+        REQ_CAP,
+        resource_keys,
+        EndpointQueues {
+            request_tx,
+            ready_rx,
+            return_tx,
+            failure_rx,
+        },
+    )
+    .expect("preallocated endpoint");
+
+    let quoted = Endpoint::requested_data(POOL_PAGES, REQ_CAP, TRACKS).unwrap();
+    assert_eq!(quoted.prefetch_keys.capacity, TRACKS);
+    assert_eq!(
+        endpoint.data_footprint().prefetch_keys,
+        quoted.prefetch_keys
+    );
+
+    // Preallocate the exact worker pool so any buffer over-commitment panics.
+    let mut free_pages: Vec<Box<PageBuffer>> = (0..POOL_PAGES)
+        .map(|_| PageBuffer::new().expect("page buffer"))
+        .collect();
+    let mut in_flight: VecDeque<(u64, ResourcePageKey)> = VecDeque::new();
+    let mut max_in_flight = 0usize;
+
+    let mut step_worker = |tick: u64| {
+        while let Ok(page) = returns.pop() {
+            free_pages.push(page);
+        }
+        while let Ok(PageRequest(key)) = requests.pop() {
+            in_flight.push_back((tick + LATENCY, key));
+        }
+        max_in_flight = max_in_flight.max(in_flight.len());
+        while in_flight.front().is_some_and(|(due, _)| *due <= tick) {
+            let Some((_, key)) = in_flight.pop_front() else {
+                break;
+            };
+            let mut page = free_pages
+                .pop()
+                .expect("concurrent prefetch must never exhaust worker page pool");
+            page.key = Some(key);
+            page.valid_frames = STREAM_PAGE_FRAMES;
+            page.frames.fill([key.page_index as f32; 2]);
+            assert!(ready.push(page).is_ok(), "ready queue sized to pool");
+        }
+    };
+
+    // Warm page 0 for all 16 tracks before playback starts.
+    let mut tick = 0_u64;
+    for &key in &keys {
+        endpoint.request_page(key, 0);
+    }
+    while keys.iter().any(|&key| endpoint.page(key, 0).is_none()) {
+        step_worker(tick);
+        endpoint.pump_ready(POOL_PAGES);
+        tick += 1;
+    }
+    let warm_misses = endpoint.stats().misses;
+    let total = MULTI_PAGES * STREAM_PAGE_FRAMES as u64;
+    let mut position = 0_u64;
+    let mut missed_blocks = 0_u64;
+
+    while position < total {
+        step_worker(tick);
+        endpoint.pump_ready(POOL_PAGES);
+        let page_index = position / STREAM_PAGE_FRAMES as u64;
+        let offset = (position % STREAM_PAGE_FRAMES as u64) as usize;
+        // Pin active pages for the current render window, as real playback does.
+        let active_extents: Vec<crate::StreamResourceExtent> = keys
+            .iter()
+            .map(|&k| crate::StreamResourceExtent {
+                source: k.into(),
+                page_index,
+                start: 0,
+                end: STREAM_PAGE_FRAMES,
+            })
+            .collect();
+        endpoint.replace_protection(1, &active_extents);
+
+        for &key in &keys {
+            match endpoint.page(key, page_index) {
+                Some(page) => assert_eq!(page.frames[offset], [page_index as f32; 2]),
+                None => {
+                    missed_blocks += 1;
+                    endpoint.request_page(key, page_index);
+                }
+            }
+        }
+        let read_to = offset + BLOCK;
+        if read_to >= STREAM_PAGE_FRAMES / 2 && page_index + 1 < MULTI_PAGES {
+            #[cfg(feature = "allocation-probe")]
+            let info = allocation_counter::measure(|| {
+                for &key in &keys {
+                    endpoint.prefetch_page(key, page_index + 1);
+                }
+            });
+            #[cfg(not(feature = "allocation-probe"))]
+            for &key in &keys {
+                endpoint.prefetch_page(key, page_index + 1);
+            }
+            #[cfg(feature = "allocation-probe")]
+            assert_eq!(
+                (
+                    info.count_total,
+                    info.bytes_total,
+                    info.count_current,
+                    info.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            // Per-source cap remains 1: while page_index + 1 is pending on source 0,
+            // queuing page_index + 2 on source 0 is ignored.
+            if page_index + 2 < MULTI_PAGES
+                && endpoint.test_speculative_request(ResourcePageKey {
+                    source: keys[0].into(),
+                    page_index: page_index + 1,
+                })
+            {
+                let before = endpoint.stats().prefetched_requests;
+                endpoint.prefetch_page(keys[0], page_index + 2);
+                assert_eq!(endpoint.stats().prefetched_requests, before);
+            }
+        }
+        position += BLOCK as u64;
+        tick += 1;
+    }
+
+    let stats = endpoint.stats();
+    assert_eq!(missed_blocks, 0);
+    assert_eq!(stats.misses - warm_misses, 0);
+    assert_eq!(stats.rejected_requests, 0);
+    assert!(
+        max_in_flight >= TRACKS,
+        "expected >= {TRACKS} concurrent in-flight prefetches, got {max_in_flight}"
+    );
 }

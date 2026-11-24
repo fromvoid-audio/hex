@@ -76,15 +76,16 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
             .checked_add(self.entry.runtime.foreign_modulation_bytes()?)
     }
     pub fn runtime_box_identities(&self) -> (Option<usize>, Option<usize>) {
-        self.entry
-            .runtime
-            .legacy()
-            .map_or((None, None), |(primary, scratch)| {
-                (
-                    Some(primary as *const dyn NativeProcessorRuntime as *const () as usize),
-                    Some(scratch as *const dyn NativeProcessorRuntime as *const () as usize),
-                )
-            })
+        if let Some((primary, scratch)) = self.entry.runtime.legacy() {
+            (
+                Some(primary as *const dyn NativeProcessorRuntime as *const () as usize),
+                Some(scratch as *const dyn NativeProcessorRuntime as *const () as usize),
+            )
+        } else if let Some(owned) = self.entry.runtime.owned_identity() {
+            (Some(owned), None)
+        } else {
+            (None, None)
+        }
     }
     /// Explicit prepared Off metadata, not absence of a processing source.
     pub fn is_powered_off(&self) -> bool {

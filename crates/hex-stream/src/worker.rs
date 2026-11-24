@@ -20,8 +20,51 @@ use std::{
         mpsc::SyncSender,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
+
+/// Stack-only adaptive wait for the stream I/O worker. Catches multi-track
+/// request bursts via bounded yields, polls promptly while streaming is active
+/// (avoiding 2-5 ms macOS park_timeout stalls), and sleeps deeper when idle.
+/// The audio callback thread never locks, allocates, or calls syscalls here;
+/// control retains exclusive `worker_wake.unpark()` ownership.
+struct IdleBackoff {
+    last_activity: Instant,
+    spins: u8,
+}
+
+impl IdleBackoff {
+    const BURST_YIELDS: u8 = 8;
+    const ACTIVE_WINDOW: Duration = Duration::from_millis(250);
+    const ACTIVE_PARK: Duration = Duration::from_micros(150);
+    const IDLE_PARK: Duration = Duration::from_millis(1);
+
+    fn new() -> Self {
+        Self {
+            last_activity: Instant::now(),
+            spins: 0,
+        }
+    }
+
+    fn record_activity(&mut self) {
+        self.last_activity = Instant::now();
+        self.spins = 0;
+    }
+
+    fn wait(&mut self) {
+        if self.spins < Self::BURST_YIELDS {
+            self.spins += 1;
+            thread::yield_now();
+            return;
+        }
+        let timeout = if self.last_activity.elapsed() < Self::ACTIVE_WINDOW {
+            Self::ACTIVE_PARK
+        } else {
+            Self::IDLE_PARK
+        };
+        thread::park_timeout(timeout);
+    }
+}
 
 /// A child worker failure is a parent shutdown failure even if no PCM loan was
 /// active; successful pool counts alone must not erase a failed join.
@@ -420,18 +463,22 @@ pub(crate) fn run_worker(
         return Ok(free_pages);
     }
     let mut scalar_job: Option<ScalarJob> = None;
+    let mut idle_backoff = IdleBackoff::new();
     loop {
+        let mut did_work = false;
         for _ in 0..config.return_capacity {
             let Ok(page) = queues.returns.pop() else {
                 break;
             };
             free_pages.push(page);
+            did_work = true;
         }
         if let Some(routing) = &mut granular {
             for _ in 0..config.page_buffers {
                 let Some((mut page, status)) = routing.poll() else {
                     break;
                 };
+                did_work = true;
                 match status {
                     Ok(()) => {
                         if let Err(PushError::Full(page)) = queues.ready.push(page) {
@@ -460,8 +507,13 @@ pub(crate) fn run_worker(
                 break;
             }
         }
+        let held_pages_before = held_pages.len();
+        let held_failures_before = held_failures.len();
         flush_held_pages(&mut held_pages, &mut queues.ready);
         flush_held_failures(&mut held_failures, &mut queues.failures);
+        if held_pages.len() < held_pages_before || held_failures.len() < held_failures_before {
+            did_work = true;
+        }
         if let Some(consumer) = &offline_consumer
             && (queues.ready.slots() < config.ready_capacity
                 || queues.failures.slots() < config.failure_capacity)
@@ -476,8 +528,11 @@ pub(crate) fn run_worker(
             }
             break;
         }
+        if did_work {
+            idle_backoff.record_activity();
+        }
         if !held_pages.is_empty() || !held_failures.is_empty() {
-            thread::park_timeout(Duration::from_millis(2));
+            idle_backoff.wait();
             continue;
         }
         #[cfg(test)]
@@ -488,6 +543,7 @@ pub(crate) fn run_worker(
             break;
         }
         if let Some(mut job) = scalar_job.take() {
+            idle_backoff.record_activity();
             let outcome = job.step(&mut scalar_definitions[job.source]);
             match outcome {
                 Ok(false) => {
@@ -531,10 +587,11 @@ pub(crate) fn run_worker(
         };
         let Some(PageRequest(key)) = request else {
             if scalar_job.is_none() {
-                thread::park_timeout(Duration::from_millis(2));
+                idle_backoff.wait();
             }
             continue;
         };
+        idle_backoff.record_activity();
         #[cfg(feature = "test-support")]
         let read_failure_after = if let Some(gate) = page_gate.take_if(|gate| {
             key.source == StreamResourceKey::Audio(gate.key.source)

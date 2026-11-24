@@ -118,7 +118,7 @@ fn reverb_modulation_follows_host_samples_in_the_96_khz_room() {
         modulation::lfo::{Rate, Settings},
         reverb::{REVERB_DEFINITION as room, REVERB_TYPE_ID, ReverbDefinition, parameter as p},
     };
-    use hex_lattice::{EMPTY_DEVICE_RESOURCES, OutputTail, PreparedNativeProcessor};
+    use hex_lattice::{EMPTY_DEVICE_RESOURCES, OutputTail, PreparedOwnedProcessorRuntime};
     use hex_lattice_contract::{ParameterId, ParameterValue};
     use hex_project::{
         AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime,
@@ -253,10 +253,13 @@ fn reverb_modulation_follows_host_samples_in_the_96_khz_room() {
         .patch_parameter(&state, p::DRY_WET, ParameterValue::Float(100.0))
         .unwrap();
     let mut room_only = dry;
-    ReverbDefinition::prepare_owned_room(&full_wet, RATE)
+    let mut room_runtime = ReverbDefinition::prepare_owned_room(&full_wet, RATE)
         .unwrap()
         .create_runtime()
-        .process_block(&mut room_only, &EMPTY_DEVICE_RESOURCES);
+        .unwrap();
+    room_runtime.begin_block();
+    room_runtime.process_block(&mut room_only, &EMPTY_DEVICE_RESOURCES);
+    room_runtime.commit_block();
     assert!(room_only.iter().any(|&frame| frame != [0.0; 2]));
     let compare = |pcm: &[[f32; 2]; FRAMES]| {
         for (i, actual) in pcm.iter().enumerate() {

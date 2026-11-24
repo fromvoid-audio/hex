@@ -740,16 +740,6 @@ impl ChainCustody {
                 })
                 .map_err(|_| AudioStorageError::UnsupportedGraph)?
                 .map(|value| OwnedShared::new_owned(value).into_processor_parts_on_control())
-            } else if reverb {
-                Some(
-                    OwnedShared::new_owned(
-                        hex_devices::reverb::ReverbDefinition::prepare_owned_room_for_parameters(
-                            &migrated, rate, parameters,
-                        )
-                        .map_err(|_| AudioStorageError::UnsupportedGraph)?,
-                    )
-                    .into_processor_parts_on_control(),
-                )
             } else {
                 None
             };
@@ -798,6 +788,23 @@ impl ChainCustody {
             } else if delay {
                 let (owner, declaration) = OwnedShared::new_owned(
                     hex_devices::delay::DelayDefinition::prepare_owned(
+                        &configuration,
+                        rate,
+                        parameters,
+                    )
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                )
+                .into_owned_processor_parts_on_control();
+                declaration
+                    .parts(&owner)
+                    .ok_or(AudioStorageError::UnknownStorage)?;
+                (
+                    Some(PreparedProcessorFactory::Owned(owner)),
+                    Some(declaration),
+                )
+            } else if reverb {
+                let (owner, declaration) = OwnedShared::new_owned(
+                    hex_devices::reverb::ReverbDefinition::prepare_owned_room_for_parameters(
                         &configuration,
                         rate,
                         parameters,
@@ -952,10 +959,12 @@ impl ChainCustody {
                     (Some(PreparedProcessorFactory::Owned(_)), None, true) => {
                         pair.device_type != hex_devices::delay::TYPE_ID
                             && pair.device_type != hex_devices::limiter::TYPE_ID
+                            && pair.device_type != hex_devices::reverb::REVERB_TYPE_ID
                     }
                     (Some(PreparedProcessorFactory::Legacy(_)), None, true) => {
                         pair.device_type == hex_devices::delay::TYPE_ID
                             || pair.device_type == hex_devices::limiter::TYPE_ID
+                            || pair.device_type == hex_devices::reverb::REVERB_TYPE_ID
                     }
                     (None, None, false) => false,
                     _ => true,

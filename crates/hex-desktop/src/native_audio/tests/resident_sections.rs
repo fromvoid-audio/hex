@@ -1507,13 +1507,9 @@ fn pending_launch_refuses_undo_and_redo_without_losing_either_history_stack() {
     submit_pending_launch(&mut h, 2, renamed.state.revision);
     h.service.submit(Request::Undo).unwrap();
     let refused = h.next();
-    assert!(
-        refused
-            .error
-            .as_ref()
-            .is_some_and(|e| e.contains("publication already pending")),
-        "{:?}",
-        refused.error
+    assert_eq!(
+        refused.error.as_deref(),
+        Some("edit cancelled · audio publication timed out")
     );
     assert_eq!(refused.state.revision, renamed.state.revision);
     assert_eq!(refused.state.project.snapshot(), after);
@@ -1527,13 +1523,9 @@ fn pending_launch_refuses_undo_and_redo_without_losing_either_history_stack() {
     submit_pending_launch(&mut h, 3, undone.state.revision);
     h.service.submit(Request::Redo).unwrap();
     let refused = h.next();
-    assert!(
-        refused
-            .error
-            .as_ref()
-            .is_some_and(|e| e.contains("publication already pending")),
-        "{:?}",
-        refused.error
+    assert_eq!(
+        refused.error.as_deref(),
+        Some("edit cancelled · audio publication timed out")
     );
     assert_eq!(refused.state.revision, undone.state.revision);
     assert_eq!(refused.state.project.snapshot(), original);

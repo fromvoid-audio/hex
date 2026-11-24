@@ -775,12 +775,20 @@ fn delayed_scalar_native_publication_reads_stage_origins_without_callback_alloca
     control.command_with_ticket(PlaybackCommand::Play).unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     let mut actual = Vec::new();
-    while actual.len() < latency + 16 {
+    let mut resume_at = None;
+    while actual.len() < latency + 72 {
         let before = control.status.performance_frame.load(Acquire);
         let output = measured_block(&mut data);
         let after = control.status.performance_frame.load(Acquire);
         if after == before {
             assert_eq!(output, [[0.0; 2]; 8]);
+            if before > 0 {
+                // Before the delayed stage first needs its scalar page, the
+                // committed limiter lead is silent. Page availability can vary.
+                assert!(control.status.stream_buffering.load(Acquire));
+                assert!(actual.len() <= latency);
+                resume_at = Some(actual.len());
+            }
             assert!(std::time::Instant::now() < deadline);
             std::thread::yield_now();
         } else {
@@ -789,14 +797,23 @@ fn delayed_scalar_native_publication_reads_stage_origins_without_callback_alloca
         }
     }
     assert!(actual[..latency].iter().all(|frame| *frame == [0.0; 2]));
-    assert!(
-        actual[latency..latency + 8]
-            .iter()
-            .flatten()
-            .all(|sample| *sample > 0.25)
-    );
-    assert_eq!(&actual[latency + 8..latency + 10], &[[0.25; 2]; 2]);
-    assert_eq!(&actual[latency + 10..latency + 12], &[[0.0; 2]; 2]);
+    for (offset, frame) in actual[latency..].iter().enumerate() {
+        // The capture covers 0..8 with 0.75 normalized linear gain, leaves
+        // 8..10 uncovered, and covers 10..12 with zero. Later frames use base.
+        let gain = match offset {
+            0..8 => 0.75 * hex_devices::utility::MAX_UTILITY_GAIN,
+            10..12 => 0.0,
+            _ => 1.0,
+        };
+        let page_gain = resume_at.map_or(1.0, |start| {
+            (latency + offset - start + 1).min(64) as f32 / 64.0
+        });
+        let expected = 0.25 * gain * page_gain;
+        assert!(
+            frame.iter().all(|sample| (*sample - expected).abs() < 1e-6),
+            "delayed frame {offset}: {frame:?}, expected {expected}; page resume {resume_at:?}"
+        );
+    }
     control.retire_audio_candidate_domain(domain);
     control.request_shutdown();
     loop {
