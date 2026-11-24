@@ -232,7 +232,7 @@ impl WorkerLoop {
                 *midi_preview = Arc::clone(prepared.midi_preview());
                 // The verified receipt and committed edit refer to the same staged
                 // snapshot. Keep that identity for the next native admission.
-                *state = events.measure_section_view(|| {
+                *state = events.measure_edit_view(|| {
                     view_state_bound(
                         session,
                         Arc::clone(midi_preview),

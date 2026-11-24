@@ -138,7 +138,10 @@ impl Drop for DiagnosticActionScope {
 /// construction. These lie within the request's dispatched worker
 /// time (`worker_us`). `parked` is the time the request waited parked for its
 /// stopped-arrangement fence before dispatch (#4544), so it lies outside
-/// `worker_us`. Reported on `OutcomeReady` as `section_*_us`.
+/// `worker_us`. Section edits report `section_*_us` on `OutcomeReady`.
+/// Observed resident track switches reuse the prepare, publish and view
+/// durations under `track_switch_*_us`. Publish measures the control-side
+/// handoff and any required confirmation; view measures construction on the worker.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SectionPhases {
     pub parked: Duration,
@@ -148,6 +151,12 @@ pub struct SectionPhases {
     pub publish: Duration,
     pub finish: Duration,
     pub view: Duration,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum TimedEdit {
+    Section,
+    TrackSwitch,
 }
 
 pub(super) struct Hooks {
@@ -317,7 +326,7 @@ impl Hooks {
         event: &Event,
         received: bool,
         worker: Option<Duration>,
-        section: Option<SectionPhases>,
+        edit: Option<(TimedEdit, SectionPhases)>,
         recovery_timing: Option<(&'static str, Duration)>,
     ) {
         if self.observer.get().is_none() {
@@ -347,16 +356,24 @@ impl Hooks {
         if let Some(worker) = worker {
             description.field("worker_us", format_args!("{}", worker.as_micros()));
         }
-        if let Some(phases) = section {
-            for (name, value) in [
-                ("section_parked_us", phases.parked),
-                ("section_fence_us", phases.fence),
-                ("section_edit_us", phases.edit),
-                ("section_prepare_us", phases.prepare),
-                ("section_publish_us", phases.publish),
-                ("section_finish_us", phases.finish),
-                ("section_view_us", phases.view),
-            ] {
+        if let Some((kind, phases)) = edit {
+            let fields: &[(&str, Duration)] = match kind {
+                TimedEdit::Section => &[
+                    ("section_parked_us", phases.parked),
+                    ("section_fence_us", phases.fence),
+                    ("section_edit_us", phases.edit),
+                    ("section_prepare_us", phases.prepare),
+                    ("section_publish_us", phases.publish),
+                    ("section_finish_us", phases.finish),
+                    ("section_view_us", phases.view),
+                ],
+                TimedEdit::TrackSwitch => &[
+                    ("track_switch_prepare_us", phases.prepare),
+                    ("track_switch_publish_us", phases.publish),
+                    ("track_switch_view_us", phases.view),
+                ],
+            };
+            for &(name, value) in fields {
                 description.field(name, format_args!("{}", value.as_micros()));
             }
         }

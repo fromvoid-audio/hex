@@ -2967,17 +2967,17 @@ impl Session {
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
     ) -> Result<(Created, Snapshot), SessionError> {
-        self.resident_transition(
-            Transition::Command(Box::new(command)),
-            context,
-            sink,
-            admission,
+        self.command_resident_snapshot_timed(
+            command,
+            None,
+            ResidentSinkContext {
+                context,
+                sink,
+                admission,
+            },
             current,
             None,
-        )?
-        .ok_or(SessionError::Invalid(
-            "resident command produced no transition",
-        ))
+        )
     }
 
     /// Keep the same input only across adoption of its delivered take. A
@@ -2991,20 +2991,40 @@ impl Session {
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
     ) -> Result<(Created, Snapshot), SessionError> {
-        self.resident_transition(
-            Transition::DeviceAutomationTake {
-                command: Box::new(command),
-                target,
+        self.command_resident_snapshot_timed(
+            command,
+            Some(target),
+            ResidentSinkContext {
+                context,
+                sink,
+                admission,
             },
-            context,
-            sink,
-            admission,
             current,
             None,
-        )?
-        .ok_or(SessionError::Invalid(
-            "native automation take produced no transition",
-        ))
+        )
+    }
+
+    pub(super) fn command_resident_snapshot_timed(
+        &mut self,
+        command: Command,
+        take: Option<super::native_automation_recording::TakePublication>,
+        resident: ResidentSinkContext<'_>,
+        current: Option<&Snapshot>,
+        phases: Option<&mut super::diagnostics::SectionPhases>,
+    ) -> Result<(Created, Snapshot), SessionError> {
+        let command = Box::new(command);
+        let (transition, missing) = match take {
+            Some(target) => (
+                Transition::DeviceAutomationTake { command, target },
+                "native automation take produced no transition",
+            ),
+            None => (
+                Transition::Command(command),
+                "resident command produced no transition",
+            ),
+        };
+        self.resident_transition_timed(transition, resident, current, None, phases)?
+            .ok_or(SessionError::Invalid(missing))
     }
 
     pub(super) fn plugin_parameter_resident_snapshot(
