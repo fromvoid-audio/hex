@@ -603,6 +603,7 @@ pub struct SessionPlayback {
     return_scratch: Vec<[Frame; 256]>,
     // Constructor-owned, transaction-local resident source windows.
     resident_source_scratch: Vec<[Frame; 256]>,
+    grouped_tail_scratch: Vec<[Frame; 256]>,
     meter_cells: Vec<meter_capture::Cell>,
     return_effect_tails: ReturnEffectTailBank,
     mutable_instruments: Vec<Option<MutableInstrumentTrackRuntime>>,
@@ -1057,6 +1058,7 @@ impl SessionPlayback {
             main_chain,
             return_scratch: _,
             resident_source_scratch: _,
+            grouped_tail_scratch: _,
             meter_cells: _,
             return_effect_tails,
             mutable_instruments,
@@ -2230,6 +2232,14 @@ impl SessionPlayback {
         }
         // Resident Arrangement and eligible Session audio share this window.
         // Generic streamed providers retain their original per-frame lookups.
+        let grouped_windows = compensation
+            .as_ref()
+            .map_or(0, |runtime| runtime.graph.grouped_tail_windows());
+        let mut grouped_tail_scratch = Vec::new();
+        grouped_tail_scratch
+            .try_reserve_exact(grouped_windows)
+            .map_err(|_| SessionPlaybackError::Allocation)?;
+        grouped_tail_scratch.resize(grouped_windows, [[0.0; 2]; 256]);
         let mut resident_source_scratch = Vec::new();
         if compensation
             .as_ref()
@@ -2285,6 +2295,7 @@ impl SessionPlayback {
                 current_route_cut_scratch: current_route_cut_scratch.capacity(),
                 return_scratch: return_scratch.capacity(),
                 resident_source_scratch: resident_source_scratch.capacity(),
+                grouped_tail_scratch: grouped_tail_scratch.capacity(),
                 meter_cells: meter_cells.capacity(),
                 mutable_events: mutable_events.capacity(),
                 tail_mixes: tail_mixes.capacity(),
@@ -2353,6 +2364,7 @@ impl SessionPlayback {
             main_chain,
             return_scratch,
             resident_source_scratch,
+            grouped_tail_scratch,
             meter_cells,
             return_effect_tails,
             mutable_instruments,
