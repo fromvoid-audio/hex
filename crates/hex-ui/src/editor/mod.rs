@@ -819,6 +819,27 @@ pub(super) struct EnqueuedNativeDeviceDrop {
     pub(super) replace: Option<hex_project::DeviceId>,
 }
 
+#[derive(Clone, Copy)]
+struct DeferredTogglePlay {
+    frame: u64,
+    generation: u64,
+    target: TogglePlayTarget,
+}
+
+#[derive(Clone, Copy)]
+enum TogglePlayTarget {
+    Publication,
+    /// Only the matching proposal terminal can advance this intent.
+    DeviceProposal {
+        output: u64,
+    },
+    CommittedDevice {
+        output: u64,
+        revision: u64,
+        audio_revision: Option<u64>,
+    },
+}
+
 pub(super) struct EditorView {
     service: Service,
     track_switch_observation: Option<hex_session::service::TrackSwitchViewObservation>,
@@ -856,7 +877,7 @@ pub(super) struct EditorView {
     // Play requested during a brief sub-frame window where an in-flight edit
     // or audio publication is completing; dispatches once the applied source
     // is ready (Pulse #8948).
-    deferred_toggle_play: Option<(u64, u64)>,
+    deferred_toggle_play: Option<DeferredTogglePlay>,
     // Seek requested while an already-applied Resident audio revision is
     // waiting for its worker_submitted preroll metadata (Pulse #8948).
     deferred_metadata_seek: Option<(u64, u64)>,
@@ -2196,7 +2217,18 @@ impl EditorView {
             return;
         }
         let start_frame = self.playback_start_frame_with_cursor(None, clip_cursor);
-        match self.play_toggle_action(device_playing, start_frame) {
+        let action = self.play_toggle_action(device_playing, start_frame);
+        if !matches!(action, arrangement_seek::ToggleAction::Pause)
+            && self.pending_plugin_effect.is_some()
+            && let Some(output) = self
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.control.output_identity())
+        {
+            self.defer_toggle_play(start_frame, TogglePlayTarget::DeviceProposal { output });
+            return;
+        }
+        match action {
             arrangement_seek::ToggleAction::Pause => self.pause_from_play_toggle(),
             arrangement_seek::ToggleAction::PlayFrom(frame) => {
                 // Offline UI tests construct `EditorView` without an audio
@@ -2222,15 +2254,23 @@ impl EditorView {
                 {
                     self.queue_normal_play(start_frame);
                 } else if self.can_defer_toggle_play_for_inflight_publication() {
-                    self.deferred_toggle_play = Some((start_frame, self.project_generation));
-                    self.status = "applying audio update · playback starts when ready".into();
-                    user_errors::clear_stale_playback_unavailable_error(&mut self.error);
-                    self.wake_poll();
+                    self.defer_toggle_play(start_frame, TogglePlayTarget::Publication);
                 } else {
                     self.error = Some("playback source is unavailable · cannot seek safely".into());
                 }
             }
         }
+    }
+
+    fn defer_toggle_play(&mut self, frame: u64, target: TogglePlayTarget) {
+        self.deferred_toggle_play = Some(DeferredTogglePlay {
+            frame,
+            generation: self.project_generation,
+            target,
+        });
+        self.status = "applying audio update · playback starts when ready".into();
+        user_errors::clear_stale_playback_unavailable_error(&mut self.error);
+        self.wake_poll();
     }
 
     fn pause_from_play_toggle(&mut self) {
