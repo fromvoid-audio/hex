@@ -4088,18 +4088,6 @@ fn prepared_audio_domain_gate(action: GatedPageAction) {
     }
     control.command(PlaybackCommand::Play).unwrap();
     let mut heard = false;
-    loop {
-        measured_render(&mut data, &mut output);
-        heard |= output.contains(&[0.25; 2]);
-        if entered.try_recv().is_ok() {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "later page not requested"
-        );
-        std::thread::yield_now();
-    }
     while control.status.position.load(Acquire) < hex_engine::STREAM_PAGE_FRAMES as u64 {
         measured_render(&mut data, &mut output);
         heard |= output.contains(&[0.25; 2]);
@@ -4111,14 +4099,27 @@ fn prepared_audio_domain_gate(action: GatedPageAction) {
     }
     assert!(heard);
     assert_eq!(control.status.applied_revision.load(Acquire), revision);
-    measured_render(&mut data, &mut output);
+    let held_position = control.status.position.load(Acquire);
+    let last = output[255];
+    assert_eq!(last, [0.25; 2]);
+    measured_render(&mut data, &mut output[..8]);
     assert!(control.status.stream_buffering.load(Acquire));
-    assert_eq!(output, [[0.0; 2]; 256]);
+    assert!(output[0][0] > 0.0 && output[0][0] <= last[0]);
+    let partial = output[7][0];
+    assert!(partial > 0.0 && partial < output[0][0]);
+    measured_render(&mut data, &mut output);
+    assert!(output[0][0] > 0.0 && output[0][0] < partial);
+    assert!(output.windows(2).all(|pair| pair[1][0] <= pair[0][0]));
+    assert_eq!(output[255], [0.0; 2]);
+    assert_eq!(control.status.position.load(Acquire), held_position);
     // The held page starved audible playback: the published count rises (#4074).
     let starved = control.status.stream_starved_callbacks.load(Relaxed);
     assert!(starved > 0, "mid-play page hold was not counted");
     measured_render(&mut data, &mut output);
     assert!(control.status.stream_starved_callbacks.load(Relaxed) > starved);
+    entered
+        .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+        .expect("later page was requested");
     if action == GatedPageAction::ScopePause {
         let mut editor = hex_project::Editor::new(project, 4).unwrap();
         editor
@@ -4340,7 +4341,10 @@ fn prepared_audio_domain_gate(action: GatedPageAction) {
         release.send(()).unwrap();
         loop {
             measured_render(&mut data, &mut output);
-            if output.iter().all(|frame| *frame == [0.25; 2]) {
+            if control.status.position.load(Acquire) > held_position {
+                assert!(output[0][0] > 0.0 && output[0][0] < 0.25);
+                assert!(output.windows(2).all(|pair| pair[1][0] >= pair[0][0]));
+                assert_eq!(output[255], [0.25; 2]);
                 break;
             }
             assert!(
