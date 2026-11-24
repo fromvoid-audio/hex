@@ -241,13 +241,13 @@ struct WorkerLoopCore {
     pub(super) plugin_recording: plugin_recording::State,
     pub(super) recording_barrier: recording_barrier::State,
     pub(super) pending_recovery_outcome: Option<(DeferredRecoveryKind, audio_sink::PendingOutcome)>,
-    pub(super) pending_locator_seek_outcome: Option<audio_sink::PendingOutcome>,
+    pub(super) pending_preview_or_seek_outcome: Option<audio_sink::PendingOutcome>,
     pub(super) pending_export_events: PendingExportEvents,
 }
 
 /// Per-request metadata carried across admission, source resolution, barrier, dispatch, and publication.
 struct RequestMeta {
-    pub(super) seek_during_locator_recovery: bool,
+    pub(super) defer_outcome_until_recovery: bool,
     pub(super) save_correlation: Option<SaveCorrelation>,
     pub(super) defaults_directory: Option<Arc<PathBuf>>,
     pub(super) recording_barrier_completion: Option<recording_barrier::Completion>,

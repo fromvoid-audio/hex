@@ -79,7 +79,7 @@ impl WorkerLoop {
                 plugin_recording: plugin_recording::State::default(),
                 recording_barrier: recording_barrier::State::default(),
                 pending_recovery_outcome: None,
-                pending_locator_seek_outcome: None,
+                pending_preview_or_seek_outcome: None,
                 pending_export_events: PendingExportEvents::default(),
             },
         }
@@ -320,6 +320,14 @@ impl WorkerLoop {
         events.send_pending_with_control_poll(outcome, |audio| core.poll_control_during_send(audio))
     }
 
+    /// Capture the preceding checkpoint’s result before a subsequent edit
+    /// starts its own checkpoint. Delivery still follows request order.
+    pub(super) fn take_preview_or_seek_outcome(&mut self) -> Option<audio_sink::PendingOutcome> {
+        let mut outcome = self.core.pending_preview_or_seek_outcome.take()?;
+        outcome.event.recovery_failure = self.core.recovery_tracker.failure();
+        Some(outcome)
+    }
+
     pub(super) fn finish_pending_recovery(&mut self) -> bool {
         if let Some((kind, mut outcome)) = self.core.pending_recovery_outcome.take() {
             let (elapsed, result) = self
@@ -336,11 +344,10 @@ impl WorkerLoop {
                 return false;
             }
         }
-        if let Some(mut outcome) = self.core.pending_locator_seek_outcome.take() {
-            outcome.event.recovery_failure = self.core.recovery_tracker.failure();
-            if !self.deliver_outcome(outcome) {
-                return false;
-            }
+        if let Some(outcome) = self.take_preview_or_seek_outcome()
+            && !self.deliver_outcome(outcome)
+        {
+            return false;
         }
         true
     }
