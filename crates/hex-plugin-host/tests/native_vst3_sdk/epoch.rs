@@ -1126,8 +1126,15 @@ fn overflow_capture_recovers(variant: u32) {
     let (stopped, result) = stopped
         .capture_state_or_refusal_retained_while_on_control(|| false)
         .unwrap();
+    let expected_observed = match variant {
+        95 => 524288,
+        96 => 524320,
+        157 | 158 => 524193,
+        other => panic!("unexpected overflow variant {other}"),
+    };
     assert!(
-        matches!(result, Err(crate::protocol::StateCaptureRefusal::ExceedsLimit { observed_bytes }) if observed_bytes == if variant == 95 { 524288 } else { 524320 })
+        matches!(result, Err(crate::protocol::StateCaptureRefusal::ExceedsLimit { observed_bytes }) if observed_bytes == expected_observed),
+        "expected ExceedsLimit({expected_observed}), got {result:?}"
     );
     assert_eq!(stopped.child_id_on_control(), child);
     let (stopped, result) = stopped
@@ -1167,6 +1174,18 @@ fn actual_component_overflow_stopped_capture_keeps_instance() {
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_controller_overflow_stopped_capture_keeps_instance() {
     overflow_capture_recovers(96);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_component_prealloc_overflow_stopped_capture_keeps_instance() {
+    overflow_capture_recovers(157);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_controller_prealloc_overflow_stopped_capture_keeps_instance() {
+    overflow_capture_recovers(158);
 }
 
 #[test]

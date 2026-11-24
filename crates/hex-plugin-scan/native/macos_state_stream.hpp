@@ -89,6 +89,7 @@ public:
             overflow_bytes=std::max(overflow_bytes,static_cast<uint32_t>(std::min(observed,static_cast<size_t>(std::numeric_limits<uint32_t>::max()))));
             return Steinberg::kInvalidArgument;
         }
+        if (position>length) std::fill(bytes.begin()+length,bytes.begin()+position,0);
         if (count) std::memcpy(bytes.data()+position,buffer,static_cast<size_t>(count));
         position+=static_cast<size_t>(count);length=std::max(length,position);
         if (done) *done=count;return Steinberg::kResultOk;
@@ -115,9 +116,24 @@ public:
         if (!control()) return invalid();size=static_cast<int64>(length);return Steinberg::kResultOk;
     }
     Steinberg::tresult PLUGIN_API setStreamSize(int64 size) override {
-        if (!control() || read_only || size<0 || static_cast<Steinberg::uint64>(size)>limit) return invalid();
-        const auto target=static_cast<size_t>(size);
+        if (!control() || read_only || size<0) return invalid();
+        const auto requested=static_cast<Steinberg::uint64>(size);
+        if (requested>limit) {
+            // Include the component's reserved prefix for controller captures,
+            // matching write()'s bounded lower-bound overflow reporting.
+            const auto prefix=static_cast<Steinberg::uint64>(capacity-limit);
+            const auto max_u64=std::numeric_limits<Steinberg::uint64>::max();
+            const auto observed=requested>max_u64-prefix?max_u64:prefix+requested;
+            overflow_bytes=std::max(
+                overflow_bytes,
+                static_cast<uint32_t>(std::min<Steinberg::uint64>(
+                    observed,
+                    static_cast<Steinberg::uint64>(std::numeric_limits<uint32_t>::max()))));
+            return Steinberg::kInvalidArgument;
+        }
+        const auto target=static_cast<size_t>(requested);
         if (target>length) std::fill(bytes.begin()+length,bytes.begin()+target,0);
+        else if (target<length) std::fill(bytes.begin()+target,bytes.begin()+length,0);
         length=target;position=std::min(position,length);return Steinberg::kResultOk;
     }
 };
