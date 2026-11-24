@@ -17,13 +17,32 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=../../Cargo.lock");
     println!("cargo:rerun-if-env-changed=CARGO_HOME");
+    println!("cargo:rerun-if-env-changed=HOME");
+    #[cfg(windows)]
+    println!("cargo:rerun-if-env-changed=USERPROFILE");
     println!("cargo:rerun-if-env-changed=HEX_GUARDED_CARGO_CONFIG_FINGERPRINT");
     println!("cargo:rustc-check-cfg=cfg(hex_stream_rtrb_source_observation_matches)");
-    let source = env::var_os("CARGO_HOME")
+    let cargo_home = env::var_os("CARGO_HOME")
+        .filter(|p| !p.is_empty())
         .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|p| PathBuf::from(p).join(".cargo")))
-        .map(|p| p.join("registry/src"));
-    let Some(source) = source else { return };
+        .or_else(|| {
+            env::var_os("HOME")
+                .filter(|p| !p.is_empty())
+                .or_else(|| {
+                    #[cfg(windows)]
+                    {
+                        env::var_os("USERPROFILE").filter(|p| !p.is_empty())
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        None
+                    }
+                })
+                .map(|p| PathBuf::from(p).join(".cargo"))
+        });
+    let Some(source) = cargo_home.map(|p| p.join("registry/src")) else {
+        return;
+    };
     // Refuse observed configurations that can change the supported constructor.
     // Cargo does not expose every CLI --config/source override to build scripts:
     // this observation is valid only with the fixed repository invocation and
@@ -97,6 +116,9 @@ fn main() {
     let Ok(lock) = fs::read_to_string("../../Cargo.lock") else {
         return;
     };
-    if !lock.contains("name = \"rtrb\"\nversion = \"0.3.4\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"4ade083ccbb4bf536df69d1f6432cc23deb7acccff86b183f3923a6fd56a1153\""){return;}
+    let lock = lock.replace("\r\n", "\n");
+    if !lock.contains("name = \"rtrb\"\nversion = \"0.3.4\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"4ade083ccbb4bf536df69d1f6432cc23deb7acccff86b183f3923a6fd56a1153\"") {
+        return;
+    }
     println!("cargo:rustc-cfg=hex_stream_rtrb_source_observation_matches");
 }
