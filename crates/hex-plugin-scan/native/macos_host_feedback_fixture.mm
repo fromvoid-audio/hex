@@ -10,6 +10,8 @@ using namespace hex_instance;
 class Controller : public IEditController {
 public:
     ParamValue value=0.25;
+    int32 step_count=0;
+    int32 flags=ParameterInfo::kCanAutomate;
     uint32 setter_calls=0;
     uint32 descriptor_reads=0;
     Host* late_edit_host=nullptr;
@@ -25,7 +27,7 @@ public:
     int32 PLUGIN_API getParameterCount() override { return 1; }
     tresult PLUGIN_API getParameterInfo(int32 n,ParameterInfo& info) override {
         ++descriptor_reads;
-        if(n) return kInvalidArgument; info={}; info.id=7; info.flags=ParameterInfo::kCanAutomate;
+        if(n) return kInvalidArgument; info={}; info.id=7; info.flags=flags; info.stepCount=step_count;
         info.defaultNormalizedValue=0.25; return kResultOk;
     }
     tresult PLUGIN_API getParamStringByValue(ParamID,ParamValue,String128) override { return kNotImplemented; }
@@ -348,6 +350,40 @@ int main(int argc,char** argv) { @autoreleasepool {
         // Graph-affecting restarts combined with mapping still refuse with GraphControlRequired.
         assert(host.restartComponent(kMidiCCAssignmentChanged|kIoChanged)==kNotImplemented);
         assert((host.refusal_flags() & GraphControlRequired)!=0);
+    }
+    if(argc==1 || !std::strcmp(argv[1],"stale-step-count-history")) {
+        Controller controller;
+        Host host;
+        assert(host.refresh_on_control(&controller).disposition==HostDisposition::Refreshed);
+        ProcessingParameterSnapshot snapshot{};
+        host.refresh_processing_snapshot(snapshot);
+        auto* info=snapshot.find(7);
+        assert(info && info->accepts_authored(0));
+        assert(!info->is_stale_authored_steps(0));
+        assert(!info->is_stale_authored_steps(3));
+        assert(!info->is_stale_authored_steps(99));
+
+        // Preset changes stepCount 0 -> 3 while keeping kCanAutomate.
+        controller.step_count=3;
+        assert(host.restartComponent(kParamTitlesChanged)==kResultOk);
+        assert(host.dispatch(&controller).disposition==HostDisposition::Refreshed);
+        assert(host.refusal_flags()==0);
+        host.refresh_processing_snapshot(snapshot);
+        info=snapshot.find(7);
+        assert(info && info->accepts_authored(3));
+        assert(!info->accepts_authored(0));
+        assert(info->is_stale_authored_steps(0));
+        assert(!info->is_stale_authored_steps(99));
+
+        // Clearing kCanAutomate is never a stale step-count transition.
+        controller.flags=0;
+        assert(host.restartComponent(kParamTitlesChanged)==kResultOk);
+        assert(host.dispatch(&controller).disposition==HostDisposition::Refreshed);
+        host.refresh_processing_snapshot(snapshot);
+        info=snapshot.find(7);
+        assert(info && !info->accepts_authored(3));
+        assert(!info->is_stale_authored_steps(0));
+        assert(!info->is_stale_authored_steps(3));
     }
     if(argc==1 || !std::strcmp(argv[1],"combined-feedback-capacity")) {
         LargeController large;

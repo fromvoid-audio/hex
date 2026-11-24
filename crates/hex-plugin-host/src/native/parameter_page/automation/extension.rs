@@ -236,12 +236,13 @@ impl AuthoredParameterMetadata {
             .parameters
             .binary_search_by_key(&target.id, |parameter| parameter.id)
         {
-            Ok(index) if self.parameters[index].steps.is_none() => {
+            Ok(index) => {
+                // Explicit reconciliation against the fresh SDK descriptor
+                // updates the armed step count without allocating or dropping
+                // the original canonical base witness.
                 self.parameters[index].steps = Some(target.steps);
                 Ok(())
             }
-            Ok(index) if self.parameters[index].steps == Some(target.steps) => Ok(()),
-            Ok(_) => Err("armed authored parameter steps changed"),
             Err(index) => {
                 if self
                     .extension_limit
@@ -328,6 +329,35 @@ mod tests {
             [0, 7]
         );
         metadata.extend(target, &row).unwrap();
+        let reconciled_target = AuthoredTarget { id: 7, steps: 3 };
+        let reconciled_row = protocol::ControllerParameter {
+            id: 7,
+            step_count: 3,
+            flags: 1,
+            normalized: 0.5,
+            ..Default::default()
+        };
+        assert!(
+            metadata
+                .extend(AuthoredTarget { id: 7, steps: 0 }, &reconciled_row)
+                .is_err()
+        );
+        let mut reconcile_result = Ok(());
+        let reconcile_measured = allocation_counter::measure(|| {
+            reconcile_result = metadata.extend(reconciled_target, &reconciled_row)
+        });
+        reconcile_result.unwrap();
+        assert_eq!(
+            (
+                reconcile_measured.count_total,
+                reconcile_measured.bytes_total,
+                reconcile_measured.count_current,
+                reconcile_measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(metadata.step_count(7), Some(3));
+        assert_eq!(metadata.initial_normalized(7), Some(0.25));
         assert!(
             metadata
                 .extend(

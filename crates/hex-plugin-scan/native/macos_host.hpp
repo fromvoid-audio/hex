@@ -22,8 +22,28 @@ inline constexpr size_t HOST_RESTART_COUNT=8;
 // A single native editor event can synchronously report a group of gestures.
 // Reserve the burst on main without changing PCM handoff or receipt sizes.
 inline constexpr size_t HOST_REQUEST_COUNT=64;
+inline constexpr size_t HOST_PRIOR_STEP_COUNT=4;
+inline bool supports_authored_parameter_flags(int32 flags) {
+    constexpr uint32 supported=ParameterInfo::kCanAutomate|ParameterInfo::kIsWrapAround|
+        ParameterInfo::kIsList|ParameterInfo::kIsBypass;
+    const auto bits=static_cast<uint32>(flags);
+    return (bits&ParameterInfo::kCanAutomate) && !(bits&~supported);
+}
 struct ParameterSnapshot {
-    struct Parameter { ParameterInfo info{}; ParamValue value=0; uint64 editor_sequence=0; uint64 feedback_floor=0; };
+    struct Parameter {
+        ParameterInfo info{};
+        ParamValue value=0;
+        uint64 editor_sequence=0;
+        uint64 feedback_floor=0;
+        std::array<int32,HOST_PRIOR_STEP_COUNT> prior_steps{};
+        uint8_t prior_step_count=0;
+        void record_prior_steps(int32 step_count) {
+            for(uint8_t n=0;n<prior_step_count;++n) if(prior_steps[n]==step_count) return;
+            if(prior_step_count<prior_steps.size()) { prior_steps[prior_step_count++]=step_count; return; }
+            for(size_t n=1;n<prior_steps.size();++n) prior_steps[n-1]=prior_steps[n];
+            prior_steps[prior_steps.size()-1]=step_count;
+        }
+    };
     // Rich strings belong to the main SDK lane. Allocate only the validated
     // count, retaining the previous inventory until a full refresh succeeds.
     std::unique_ptr<Parameter[]> parameters;
@@ -74,12 +94,18 @@ struct ProcessingParameterSnapshot {
         ParamID id=0;
         int32 flags=0;
         int32 steps=0;
+        std::array<int32,HOST_PRIOR_STEP_COUNT> prior_steps{};
+        uint8_t prior_step_count=0;
         bool accepts_authored(uint32 expected_steps) const {
-            constexpr uint32 supported=ParameterInfo::kCanAutomate|ParameterInfo::kIsWrapAround|
-                ParameterInfo::kIsList|ParameterInfo::kIsBypass;
-            const auto bits=static_cast<uint32>(flags);
-            return (bits&ParameterInfo::kCanAutomate) && !(bits&~supported) &&
+            return supports_authored_parameter_flags(flags) &&
                 static_cast<uint32>(steps)==expected_steps;
+        }
+        bool is_stale_authored_steps(uint32 expected_steps) const {
+            if(!supports_authored_parameter_flags(flags) ||
+                static_cast<uint32>(steps)==expected_steps) return false;
+            for(uint8_t n=0;n<prior_step_count;++n)
+                if(static_cast<uint32>(prior_steps[n])==expected_steps) return true;
+            return false;
         }
     };
     std::array<Parameter,HOST_PARAMETER_COUNT> parameters{};
@@ -222,7 +248,8 @@ class Host final : public IHostApplication, public IComponentHandler, public ICo
         result.count=source.count;result.revision=source.revision;
         for(uint32 n=0;n<source.count;++n) {
             const auto& parameter=source.parameters[source.by_id[n]];
-            result.parameters[n]={parameter.info.id,parameter.info.flags,parameter.info.stepCount};
+            result.parameters[n]={parameter.info.id,parameter.info.flags,parameter.info.stepCount,
+                parameter.prior_steps,parameter.prior_step_count};
         }
     }
     bool publish_processing_snapshot(const ProcessingParameterSnapshot& next) {
@@ -821,6 +848,11 @@ private:
                     valid=valid && current.info.id==prior.info.id;
                     current.editor_sequence=prior.editor_sequence;
                     current.feedback_floor=prior.feedback_floor;
+                    current.prior_steps=prior.prior_steps;
+                    current.prior_step_count=prior.prior_step_count;
+                    if(supports_authored_parameter_flags(prior.info.flags) &&
+                        current.info.stepCount!=prior.info.stepCount)
+                        current.record_prior_steps(prior.info.stepCount);
                 }
             }
         }
