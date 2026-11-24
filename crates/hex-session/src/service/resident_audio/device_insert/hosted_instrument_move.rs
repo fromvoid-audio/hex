@@ -79,31 +79,45 @@ impl Intent {
     }
 
     pub(super) fn exact_track_effect_move(self, before: &Project, after: &Project) -> Option<()> {
-        let direct_pair = |project: &Project| {
-            project.tracks().len() == 2
+        if self.donor == self.receiver {
+            return None;
+        }
+        let direct_layout = |project: &Project| {
+            project.tracks().len() >= 2
                 && project.main_devices().is_empty()
                 && project.return_tracks().is_empty()
                 && project.native_sources().is_empty()
                 && project.loop_region().is_none()
                 && !project.has_gain_automation()
                 && project.tracks().iter().all(|track| {
+                    let is_participant = track.id() == self.donor || track.id() == self.receiver;
                     !track.is_group()
                         && track.parent_group().is_none()
-                        && track.clips().len() == 1
                         && track.midi_clips().is_empty()
                         && track.source_id().is_none()
                         && track.instrument().is_none()
                         && track.sends().is_empty()
+                        && if is_participant {
+                            track.clips().len() == 1
+                        } else {
+                            track.clips().is_empty() && track.devices().is_empty()
+                        }
                 })
         };
-        if !direct_pair(before)
-            || !direct_pair(after)
+        if !direct_layout(before)
+            || !direct_layout(after)
             || before.sample_rate() != after.sample_rate()
+            || before.tracks().len() != after.tracks().len()
             || !before
                 .tracks()
                 .iter()
                 .zip(after.tracks())
-                .all(|(old, new)| old.id() == new.id() && old.clips() == new.clips())
+                .all(|(old, new)| {
+                    let is_participant = old.id() == self.donor || old.id() == self.receiver;
+                    old.id() == new.id()
+                        && old.clips() == new.clips()
+                        && (is_participant || old == new)
+                })
         {
             return None;
         }
@@ -301,9 +315,53 @@ mod tests {
             })
             .unwrap();
         let staged = editor.stage_edit(movement()).unwrap();
+        assert_eq!(
+            intent.track_effect_preparation(editor.project(), staged.project(), installed()),
+            Some(ResidentHostedTrackEffectMove {
+                donor,
+                receiver,
+                device,
+                predecessor: installed()
+            }),
+            "an unchanged empty direct third track must still admit the live VST3 effect move"
+        );
+        // Undo and Redo with the empty third track present must also preserve admission.
+        let reverse_intent = Intent::from_command(&Command::MoveTrackDevices {
+            source: receiver,
+            selected: DeviceSelectionIds::new(&[device]).unwrap(),
+            destination: donor,
+        })
+        .unwrap();
+        assert_eq!(
+            reverse_intent.track_effect_preparation(
+                staged.project(),
+                editor.project(),
+                installed()
+            ),
+            Some(ResidentHostedTrackEffectMove {
+                donor: receiver,
+                receiver: donor,
+                device,
+                predecessor: installed()
+            }),
+        );
+        // A third track with its own audio clip remains outside this narrow expansion.
+        editor
+            .execute(Command::ImportAudioTrack {
+                name: "third-with-audio".into(),
+                path: "third-with-audio.wav".into(),
+                sample_rate: 48_000,
+                frames: 1024,
+            })
+            .unwrap();
+        let staged_with_audio = editor.stage_edit(movement()).unwrap();
         assert!(
             intent
-                .track_effect_preparation(editor.project(), staged.project(), installed())
+                .track_effect_preparation(
+                    editor.project(),
+                    staged_with_audio.project(),
+                    installed()
+                )
                 .is_none()
         );
     }

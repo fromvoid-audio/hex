@@ -21,9 +21,6 @@ impl SessionPlayback {
         let HostedMoveRequest::Effect(request) = self.hosted_move? else {
             return None;
         };
-        if !self.same_direct_hosted_effect_rows(previous) {
-            return None;
-        }
         let old = previous.revision.arrangement();
         let new = self.revision.arrangement();
         let source = old
@@ -35,6 +32,9 @@ impl SessionPlayback {
             .iter()
             .position(|track| track.canonical_track_id() == Some(request.receiver))?;
         if source == destination {
+            return None;
+        }
+        if !self.same_direct_hosted_effect_rows(previous, Some((source, destination))) {
             return None;
         }
         let [original] = old.tracks()[source].device_chain.as_ref() else {
@@ -107,7 +107,7 @@ impl SessionPlayback {
         let HostedMoveRequest::Reorder(request) = self.hosted_move? else {
             return None;
         };
-        if !self.same_direct_hosted_effect_rows(previous) {
+        if !self.same_direct_hosted_effect_rows(previous, None) {
             return None;
         }
         let old = previous.revision.arrangement().tracks();
@@ -185,13 +185,23 @@ impl SessionPlayback {
             .then_some((index, history))
     }
 
-    fn same_direct_hosted_effect_rows(&self, previous: &Self) -> bool {
+    fn same_direct_hosted_effect_rows(
+        &self,
+        previous: &Self,
+        move_participants: Option<(usize, usize)>,
+    ) -> bool {
         let old = previous.revision.arrangement();
         let new = self.revision.arrangement();
         if !previous.playing
+            || old.tracks().len() != new.tracks().len()
             || [self, previous].into_iter().any(|runtime| {
                 let arrangement = runtime.revision.arrangement();
-                arrangement.tracks().len() != 2
+                let invalid_track_count = if move_participants.is_some() {
+                    arrangement.tracks().len() < 2
+                } else {
+                    arrangement.tracks().len() != 2
+                };
+                invalid_track_count
                     || !arrangement.main_device_chain.is_empty()
                     || !arrangement.return_buses().is_empty()
                     || !arrangement.return_feed_plan.is_empty()
@@ -239,16 +249,26 @@ impl SessionPlayback {
                         && !row.has_gain_automation()
                         && !runtime.source_effects.has_chain(index)
                 };
-                let ([before_clip], [after_clip]) =
-                    (before.clips.as_slice(), after.clips.as_slice())
-                else {
-                    return false;
+                let is_participant = move_participants
+                    .is_none_or(|(source, destination)| index == source || index == destination);
+                let clips_match = if is_participant {
+                    let ([before_clip], [after_clip]) =
+                        (before.clips.as_slice(), after.clips.as_slice())
+                    else {
+                        return false;
+                    };
+                    same_clip(before_clip, after_clip)
+                } else {
+                    before.clips.is_empty()
+                        && after.clips.is_empty()
+                        && before.device_chain.is_empty()
+                        && after.device_chain.is_empty()
                 };
                 before.canonical_track_id() == after.canonical_track_id()
                     && before.mix == after.mix
                     && direct(previous, before)
                     && direct(self, after)
-                    && same_clip(before_clip, after_clip)
+                    && clips_match
             })
     }
 }
