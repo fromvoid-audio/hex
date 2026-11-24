@@ -57,6 +57,7 @@ impl SessionPlayback {
             main_chain,
             return_scratch,
             resident_source_scratch,
+            grouped_tail_scratch,
             meter_cells,
             return_effect_tails,
             mutable_instruments,
@@ -179,6 +180,7 @@ impl SessionPlayback {
         l.vec(return_chains)?;
         l.vec(return_scratch)?;
         l.vec(resident_source_scratch)?;
+        l.vec(grouped_tail_scratch)?;
         l.vec(meter_cells)?;
         return_effect_tails.visit_empty_candidate_storage(l)?;
         l.vec(mutable_instruments)?;
