@@ -2401,7 +2401,10 @@ class BaseAdvanceCarryTests(unittest.TestCase):
 
     @contextmanager
     def carry_fixture(self):
-        with tempfile.TemporaryDirectory() as directory:
+        # These fabricated receipts represent ordinary, reusable work. Explicit
+        # native refusal cases supply their own opt-ins inside this fixture.
+        native_inputs = plan.python_tests.native_acceptance_inputs(os.environ)
+        with patch.dict(os.environ, dict.fromkeys(native_inputs, "")), tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             git = self.repository(root)
             base = git("rev-parse", "HEAD")
