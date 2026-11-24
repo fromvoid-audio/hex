@@ -409,11 +409,8 @@ impl ResamplePlan {
             .map_err(|_| ImportError::Invalid("source window offset exceeds addressable range"))?;
         let required_end_index = usize::try_from(required_end - source_start)
             .map_err(|_| ImportError::Invalid("source window end exceeds addressable range"))?;
-        if source[required_start_index..required_end_index]
-            .iter()
-            .flatten()
-            .any(|sample| !sample.is_finite())
-        {
+        let halo = &source[required_start_index..required_end_index];
+        if halo.iter().flatten().any(|sample| !sample.is_finite()) {
             return Err(ImportError::Invalid("source samples must be finite"));
         }
         if self.source_rate() == self.target_rate() {
@@ -428,6 +425,12 @@ impl ResamplePlan {
                 .get(source_offset..source_end)
                 .ok_or(ImportError::Invalid("identity source window is incomplete"))?;
             output.copy_from_slice(identity_source);
+            return Ok(());
+        }
+
+        // Both kernels accumulate from +0. A silent *complete* halo therefore
+        // yields the pre-cleared output, including at source and window edges.
+        if halo.iter().all(|frame| *frame == [0.0; 2]) {
             return Ok(());
         }
 
