@@ -2,7 +2,7 @@
 use super::{
     EditorView,
     drag::BrowserDropDestination,
-    recovery_state::{DeferredEditKind, DeferredGraphEdit},
+    recovery_state::{DeferredEditKind, DeferredGraphEdit, StrandedGestureRecovery},
 };
 use hex_engine::playback::{PlaybackAction, PlaybackCommand};
 use hex_engine::{AudioSourceContext, NativeDeviceClass};
@@ -40,6 +40,19 @@ fn is_mixer_control_edit(request: &Request) -> bool {
                 | Command::MasterGain { .. }
                 | Command::ReturnGain { .. }
                 | Command::Balance { .. }
+        )
+    )
+}
+
+fn is_track_switch_edit(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::Edit(
+            Command::ToggleSolo { .. }
+                | Command::ToggleSoloTracks { .. }
+                | Command::ToggleMute(_)
+                | Command::ToggleTracksMute(_)
+                | Command::Mute { .. }
         )
     )
 }
@@ -538,6 +551,18 @@ impl EditorView {
             && !self.degraded_plugins.is_empty()
     }
 
+    fn has_degraded_stranded_device_gesture(&self) -> bool {
+        let Some(snapshot) = self.device_gesture.snapshot() else {
+            return false;
+        };
+        self.has_degraded_vst3_output()
+            && self.device_gesture.is_recovery_pending()
+            && !self.device_gesture.has_pending_requests()
+            && self.device_gesture_barriers.is_empty()
+            && snapshot.key.generation == self.project_generation
+            && !self.owns_vst3_recording(snapshot.key)
+    }
+
     pub(super) fn recoverable_graph_edit(&self, request: &Request) -> Option<DeferredEditKind> {
         if clip_play_start(request).is_some()
             && self.pending_clip_loop_matches(request)
@@ -654,7 +679,28 @@ impl EditorView {
             retire_refused(self, &request);
             return false;
         }
-        if !continuing && (self.edit_pending() || self.pending_restart_request.is_some()) {
+        let stranded_gesture = (!continuing
+            && is_track_switch_edit(&request)
+            && self.has_degraded_stranded_device_gesture())
+        .then(|| {
+            let snapshot = self.device_gesture.snapshot()?;
+            Some(StrandedGestureRecovery {
+                key: snapshot.key,
+                reconcilable: self.device_gesture.reconcilable_snapshot(),
+                had_stranded_commit: self.device_gesture.has_stranded_commit(),
+                is_plugin: matches!(
+                    snapshot.target,
+                    hex_session::device_gesture::GestureTarget::PluginParameter { .. }
+                ),
+            })
+        })
+        .flatten();
+        let blocked_by_edit = if stranded_gesture.is_some() {
+            self.edit_pending_excluding_device_gesture()
+        } else {
+            self.edit_pending()
+        };
+        if !continuing && (blocked_by_edit || self.pending_restart_request.is_some()) {
             self.error = Some("finish the current edit before restarting audio".into());
             retire_refused(self, &request);
             return false;
@@ -709,6 +755,7 @@ impl EditorView {
             kind,
             context,
             request: Box::new(request),
+            stranded_gesture,
         });
         self.status = match kind {
             DeferredEditKind::NativeEffect => "restarting audio · device will be added when ready",
@@ -813,6 +860,47 @@ impl EditorView {
             self.mark_replayed_trim(&pending.request);
             self.mark_replayed_clip_loop(&pending.request);
         }
+        let mut stranded_reconcile_note: Option<&'static str> = None;
+        if let Some(stranded) = pending.stranded_gesture
+            && stranded.had_stranded_commit
+        {
+            match (self.state.as_ref(), stranded.reconcilable) {
+                (Some(state), Some(snapshot)) if snapshot.manual_edit => {
+                    match hex_session::device_gesture::reconcile_command_for_project(
+                        &state.project,
+                        snapshot,
+                    ) {
+                        Ok(Some(command)) => {
+                            if !self.enqueue_request(Request::Edit(command), false) {
+                                stranded_reconcile_note = Some(
+                                    "interrupted parameter edit could not be restored · audio restarted",
+                                );
+                            }
+                        }
+                        Ok(None) => {
+                            stranded_reconcile_note = Some(if stranded.is_plugin {
+                                "interrupted plug-in parameter edit was not saved · audio restarted"
+                            } else {
+                                "interrupted parameter edit was not saved · audio restarted"
+                            });
+                        }
+                        Err(_) => {
+                            stranded_reconcile_note = Some(
+                                "interrupted parameter edit could not be restored · audio restarted",
+                            );
+                        }
+                    }
+                }
+                (Some(_), Some(_)) => {}
+                _ => {
+                    stranded_reconcile_note = Some(if stranded.is_plugin {
+                        "interrupted plug-in parameter edit was not saved · audio restarted"
+                    } else {
+                        "interrupted parameter edit was not saved · audio restarted"
+                    });
+                }
+            }
+        }
         if self.enqueue_request(*pending.request, false) {
             self.status = if sample_drop {
                 "importing sample to arrangement".into()
@@ -843,6 +931,11 @@ impl EditorView {
             self.loop_state_installed(false);
         } else if mixer_control {
             self.retire_deferred_mixer_edit();
+        }
+        if let Some(note) = stranded_reconcile_note
+            && self.error.is_none()
+        {
+            self.error = Some(note.into());
         }
     }
 
@@ -1111,6 +1204,10 @@ impl EditorView {
     pub(super) fn fail_audio_recovery(&mut self, error: impl Into<hex_audio::OutputOpenError>) {
         self.playback_settings.pending = None;
         let error = error.into();
+        let lost_stranded_commit = self.recovery.deferred_edit.as_ref().is_some_and(|edit| {
+            edit.stranded_gesture
+                .is_some_and(|stranded| stranded.had_stranded_commit)
+        });
         self.offline_cursor = self.cursor_position();
         self.clear_recovery();
         self.retire_audio_preserving_gain_take();
@@ -1124,7 +1221,11 @@ impl EditorView {
             return;
         }
         self.status = "audio unavailable · restart audio to restore playback".into();
-        self.error = Some(error.to_string().into());
+        self.error = Some(if lost_stranded_commit {
+            format!("{error} · interrupted parameter edit was not saved").into()
+        } else {
+            error.to_string().into()
+        });
     }
 
     fn clear_audio_accounting(&mut self) {
