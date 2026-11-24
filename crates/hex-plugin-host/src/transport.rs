@@ -488,12 +488,16 @@ impl Block {
         }
     }
 
-    fn latest_timing(&self) -> Option<ProcessTiming> {
+    fn latest_timing_entry(&self) -> Option<(u16, ProcessTiming)> {
         self.timing_changes
             .as_slice()
             .last()
-            .map(|change| change.timing)
-            .or(self.timing)
+            .map(|change| (change.frame, change.timing))
+            .or_else(|| self.timing.map(|timing| (0, timing)))
+    }
+
+    fn latest_timing(&self) -> Option<ProcessTiming> {
+        self.latest_timing_entry().map(|(_, timing)| timing)
     }
 
     fn add_timing_change(&mut self, frame: u16, timing: ProcessTiming) -> Result<(), Fault> {
@@ -1575,16 +1579,24 @@ impl Callback {
                 stage.state.input.add_timing_change(offset as u16, change)?;
             } else if index == 0
                 && let Some(playing) = timing.playing
-                && stage
-                    .state
-                    .input
-                    .latest_timing()
-                    .is_some_and(|prior| prior.playing != playing)
+                && let Some((prior_frame, prior)) = stage.state.input.latest_timing_entry()
             {
-                let change = (timing.at)(index)
-                    .filter(|origin| origin.playing == playing)
-                    .ok_or(Fault::Protocol)?;
-                stage.state.input.add_timing_change(offset as u16, change)?;
+                if prior.playing != playing {
+                    let change = (timing.at)(index)
+                        .filter(|origin| origin.playing == playing)
+                        .ok_or(Fault::Protocol)?;
+                    stage.state.input.add_timing_change(offset as u16, change)?;
+                } else if playing && let Some(change) = (timing.at)(index) {
+                    if !change.playing {
+                        return Err(Fault::Protocol);
+                    }
+                    let expected = prior
+                        .arrangement_frame
+                        .checked_add(i64::from(offset as u16 - prior_frame));
+                    if expected != Some(change.arrangement_frame) {
+                        stage.state.input.add_timing_change(offset as u16, change)?;
+                    }
+                }
             }
             stage.state.input.pcm[offset] = *source;
             while let Some(event) = events

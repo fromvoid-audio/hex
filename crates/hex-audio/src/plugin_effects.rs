@@ -932,6 +932,54 @@ impl NativeEffectCallback {
             self.reject_callback();
             return Err(DeviceContractError::ForeignProcessingUnavailable);
         }
+        if node.automation.is_none()
+            && parameters.is_empty()
+            && notes.is_empty()
+            && lane.is_none()
+            && frames.len() > 1
+            && let Some(clock) = clock
+            && clock.transport_is_running() == Some(true)
+            && clock.contiguous_running_frames(0, frames.len()).is_none()
+            && let Some(first_cut) = next_arrangement_discontinuity(clock, 0, frames.len())
+        {
+            let mut start = 0;
+            let mut end = first_cut;
+            loop {
+                let shifted = OffsetClock {
+                    inner: clock,
+                    base: start,
+                };
+                self.stage_segment_contiguous(
+                    node,
+                    offset + start,
+                    &mut frames[start..end],
+                    &[],
+                    &[],
+                    Some(&shifted),
+                    None,
+                )?;
+                if end == frames.len() {
+                    return Ok(());
+                }
+                start = end;
+                end = next_arrangement_discontinuity(clock, start, frames.len())
+                    .unwrap_or(frames.len());
+            }
+        }
+        self.stage_segment_contiguous(node, offset, frames, parameters, notes, clock, lane)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stage_segment_contiguous(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
+        notes: &[ForeignNote],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        lane: Option<ForeignModulationSamples<'_>>,
+    ) -> Result<(), DeviceContractError> {
         let mut events;
         let events: &[MidiEvent] = if notes.is_empty() {
             &[]
@@ -1075,6 +1123,76 @@ fn renewal_preserves_state_authority(
     old.quantum_frames() == next.quantum_frames()
         && old.bridge_latency_frames() == next.bridge_latency_frames()
         && old.is_instrument_profile() == next.is_instrument_profile()
+}
+
+struct OffsetClock<'a> {
+    inner: &'a dyn hex_lattice::NativeInstrumentClock,
+    base: usize,
+}
+
+impl hex_lattice::NativeInstrumentClock for OffsetClock<'_> {
+    fn beat_at_offset(&self, offset: usize) -> Option<u64> {
+        self.inner.beat_at_offset(self.base.checked_add(offset)?)
+    }
+    fn tempo_micro_bpm_at_offset(&self, offset: usize) -> Option<u32> {
+        self.inner
+            .tempo_micro_bpm_at_offset(self.base.checked_add(offset)?)
+    }
+    fn arrangement_beat_at_offset(&self, offset: usize) -> Option<u64> {
+        self.inner
+            .arrangement_beat_at_offset(self.base.checked_add(offset)?)
+    }
+    fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+        self.inner
+            .arrangement_frame_at_offset(self.base.checked_add(offset)?)
+    }
+    fn authored_clock_epoch_at_offset(&self, offset: usize) -> Option<std::num::NonZeroU64> {
+        self.inner
+            .authored_clock_epoch_at_offset(self.base.checked_add(offset)?)
+    }
+    fn authored_arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+        self.inner
+            .authored_arrangement_frame_at_offset(self.base.checked_add(offset)?)
+    }
+    fn loop_pass_at_offset(&self, offset: usize) -> Option<u64> {
+        self.inner
+            .loop_pass_at_offset(self.base.checked_add(offset)?)
+    }
+    fn arrangement_meter_at_offset(&self, offset: usize) -> Option<(u8, u8)> {
+        self.inner
+            .arrangement_meter_at_offset(self.base.checked_add(offset)?)
+    }
+    fn arrangement_cycle_at_offset(&self, offset: usize) -> Option<(u64, u64)> {
+        self.inner
+            .arrangement_cycle_at_offset(self.base.checked_add(offset)?)
+    }
+    fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
+        self.inner
+            .performance_frame_at_offset(self.base.checked_add(offset)?)
+    }
+    fn transport_is_running(&self) -> Option<bool> {
+        self.inner.transport_is_running()
+    }
+    fn contiguous_running_frames(&self, first_offset: usize, len: usize) -> Option<(u64, u64)> {
+        self.inner
+            .contiguous_running_frames(self.base.checked_add(first_offset)?, len)
+    }
+}
+
+fn next_arrangement_discontinuity(
+    clock: &dyn hex_lattice::NativeInstrumentClock,
+    start: usize,
+    len: usize,
+) -> Option<usize> {
+    let mut expected = clock.arrangement_frame_at_offset(start)?.checked_add(1)?;
+    for index in (start + 1)..len {
+        let actual = clock.arrangement_frame_at_offset(index)?;
+        if actual != expected {
+            return Some(index);
+        }
+        expected = actual.checked_add(1)?;
+    }
+    None
 }
 
 #[cfg(test)]

@@ -35,6 +35,34 @@ struct Observation {
     std::atomic<int> arrangements{0}, setups{0}, activations{0}, starts{0}, stops{0}, blocks{0}, flushes{0};
     std::atomic<int> note_ons{0}, note_offs{0}, last_on{-1}, last_off{-1};
 } observed;
+struct ContextTrace {
+    static constexpr size_t capacity=16;
+    std::atomic<size_t> count{0};
+    std::array<std::atomic<int64_t>,capacity*4> entries{};
+    void record(int32 samples,const ProcessContext* context) {
+        const auto slot=count.fetch_add(1,std::memory_order_relaxed);
+        if (slot>=capacity) return;
+        const size_t base=slot*4;
+        entries[base].store(samples,std::memory_order_relaxed);
+        entries[base+1].store(context?static_cast<int64_t>(context->state):-1,std::memory_order_relaxed);
+        entries[base+2].store(context?context->projectTimeSamples:-1,std::memory_order_relaxed);
+        int64_t music_bits=0;
+        if (context) std::memcpy(&music_bits,&context->projectTimeMusic,sizeof(music_bits));
+        entries[base+3].store(music_bits,std::memory_order_relaxed);
+    }
+    void publish(const char* path) const {
+        if (!path || std::strlen(path)>4096) return;
+        const auto recorded=std::min(count.load(std::memory_order_relaxed),capacity);
+        std::array<int64_t,1+capacity*4> values{};
+        values[0]=static_cast<int64_t>(recorded);
+        for (size_t i=0;i<recorded*4;++i) values[1+i]=entries[i].load(std::memory_order_relaxed);
+        const auto pending=std::string(path)+".next";
+        auto* output=std::fopen(pending.c_str(),"wb");if (!output) return;
+        const size_t total=1+recorded*4;
+        const bool written=std::fwrite(values.data(),sizeof(int64_t),total,output)==total;
+        if (std::fclose(output)==0 && written) std::rename(pending.c_str(),path);
+    }
+} context_trace;
 int next_mode=0,next_fault=HEX_INSTANCE_VARIANT;
 bool control() { const bool valid=pthread_main_np()!=0; if (!valid) ++observed.violations; return valid; }
 const TUID processing_id={0x48,0x45,0x58,0x50,1,2,3,4,5,6,7,8,9,10,11,12};
@@ -97,6 +125,7 @@ static void trace(int stage,int factory_refs=-1) {
         restoration.scroll,restoration.latency,restoration.phase,restoration.component_get,restoration.controller_get,
         restoration.controller_created,restoration.controller_terminated,restoration.controller_destroyed};
     publish_trace(std::getenv("HEX_ORIGINAL_RESTORE_TRACE"),restored,15);
+    if (pthread_main_np()) context_trace.publish(std::getenv("HEX_ORIGINAL_CONTEXT_TRACE"));
 }
 static void fault_hang(int stage) {
     trace(stage);
@@ -1081,6 +1110,7 @@ public:
             }
         }
         ++observed.blocks; // count attempted foreign DSP, including a refusal
+        context_trace.record(data.numSamples,data.processContext);
         if (fault==140) fault_hang(27); // controlled in-flight host-input barrier
         if (fault==28 || (fault==127 && std::getenv("HEX_ORIGINAL_SDK_TIMING_GATE"))) fault_hang(9);
         if (fault==127 && std::getenv("HEX_ORIGINAL_SDK_TIMING_GATE")) ::usleep(5000);
