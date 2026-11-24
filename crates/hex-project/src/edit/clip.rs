@@ -446,17 +446,9 @@ pub(crate) fn retained_audio_fragment(
         ));
     }
     if victim.audio_edit().is_some_and(|edit| {
-        edit.domain.fade_clock == crate::AudioClipFadeClock::LegacyRoot
-            && !edit.domain.fade.is_neutral()
+        edit.domain.fade_clock == crate::AudioClipFadeClock::Outer || !edit.domain.fade.is_neutral()
     }) {
-        let mut fragment = if start > victim.start {
-            crate::audio_edit::trim_view(victim, crate::TrimEdge::Left, start, tempo)?
-        } else {
-            victim.clone()
-        };
-        if end < original_end {
-            fragment = crate::audio_edit::trim_view(&fragment, crate::TrimEdge::Right, end, tempo)?;
-        }
+        let mut fragment = crate::audio_edit::retained_source_interval(victim, start, end, tempo)?;
         fragment.id = id;
         return Ok(fragment);
     }
