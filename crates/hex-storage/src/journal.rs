@@ -323,7 +323,18 @@ fn same_file(left: &Path, right: &Path) -> bool {
             _ => false,
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        match (fs::symlink_metadata(left), fs::symlink_metadata(right)) {
+            (Ok(left_meta), Ok(right_meta))
+                if !left_meta.file_type().is_symlink() && !right_meta.file_type().is_symlink() =>
+            {
+                same_file::is_same_file(left, right).unwrap_or(false)
+            }
+            _ => false,
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (left, right);
         false

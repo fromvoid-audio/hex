@@ -15,6 +15,31 @@ pub fn load(path: impl AsRef<Path>) -> Result<Project, StorageError> {
     decode(&read_document(path.as_ref())?)
 }
 
+/// True when `left` and `right` both exist and resolve to the same underlying
+/// file (including hard links and symbolic-link aliases).
+pub fn same_existing_file(left: &Path, right: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let (Ok(left_meta), Ok(right_meta)) = (fs::metadata(left), fs::metadata(right)) else {
+            return false;
+        };
+        if left_meta.dev() == right_meta.dev() && left_meta.ino() == right_meta.ino() {
+            return true;
+        }
+    }
+    #[cfg(windows)]
+    {
+        if same_file::is_same_file(left, right).unwrap_or(false) {
+            return true;
+        }
+    }
+    matches!(
+        (fs::canonicalize(left), fs::canonicalize(right)),
+        (Ok(left_path), Ok(right_path)) if left_path == right_path
+    )
+}
+
 /// Opaque exact-byte content snapshot, shared cheaply between owners.
 /// This is a content check, not a filesystem lock, identity or overwrite permit.
 #[derive(Clone)]
@@ -849,5 +874,23 @@ mod tests {
             Path::new("missing.hex")
         );
         assert_eq!(fs::read_dir(&dir.0).expect("directory").count(), 1);
+    }
+
+    #[test]
+    fn same_existing_file_matches_hardlinks_and_distinguishes_copies_and_missing_paths() {
+        let dir = TestDir::new();
+        let original = dir.0.join("Original.hex");
+        let hardlink = dir.0.join("Alias.hex");
+        let copy = dir.0.join("Copy.hex");
+        let missing = dir.0.join("Missing.hex");
+        fs::write(&original, b"identical bytes").unwrap();
+        fs::hard_link(&original, &hardlink).unwrap();
+        fs::write(&copy, b"identical bytes").unwrap();
+
+        assert!(same_existing_file(&original, &original));
+        assert!(same_existing_file(&original, &hardlink));
+        assert!(!same_existing_file(&original, &copy));
+        assert!(!same_existing_file(&original, &missing));
+        assert!(!same_existing_file(&missing, &missing));
     }
 }
