@@ -1058,13 +1058,13 @@ fn history_refused_while_edit_publication_pending_keeps_both_stacks_and_pcm() {
         },
     )));
     assert_eq!(gain.sampler_edit_complete, Some(2));
-    // One resident publication may be pending: history is refused, not queued or lost.
+    // With the callback held, the queued history request reaches its publication deadline.
     let refuse = |h: &mut ResidentHarness, request: Request, current: &Event| {
         h.service.submit(request).unwrap();
         let refused = h.next();
         assert_eq!(
             refused.error.as_deref(),
-            Some("playback publication already pending")
+            Some("edit cancelled · audio publication timed out")
         );
         assert_eq!(refused.state.revision, current.state.revision);
         assert_eq!(refused.state.project, current.state.project);
