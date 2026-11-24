@@ -90,6 +90,121 @@ fn dragging_looping_audio_scope_body_keeps_arrangement_bounds(cx: &mut TestAppCo
     assert_scope_body(cx, true);
 }
 
+#[gpui::test]
+fn returning_audio_scope_edge_inside_tolerance_restores_preview_and_skips_commit(
+    cx: &mut TestAppContext,
+) {
+    for looping in [false, true] {
+        for start_edge in [true, false] {
+            let cx = &mut cx.new_app();
+            let Fixture {
+                mut visual,
+                editor,
+                width,
+                clip,
+                ..
+            } = open(cx, start_edge);
+            editor.update(&mut visual, |v, cx| {
+                v.set_audio_loop_grid(crate::editor::musical_time::SnapGrid::Off);
+                assert!(v.enqueue(Request::Edit(Command::ResizeAudioClipView {
+                    clip,
+                    operation: AudioViewResizeOperation::ScopeRange {
+                        start: 0,
+                        end: 96_000,
+                        looping,
+                    },
+                })));
+                cx.notify();
+            });
+            crate::editor::clip_drag_ui_test::pump_move(&editor, &mut visual);
+            visual.run_until_parked();
+
+            let edge = visual
+                .debug_bounds(if start_edge {
+                    "audio-loop-start"
+                } else {
+                    "audio-loop-end"
+                })
+                .unwrap()
+                .center();
+            let inward = if start_edge {
+                width / 8.0
+            } else {
+                -width / 8.0
+            };
+
+            let (before_snapshot, before_revision, before_can_undo, before_bounds) = editor
+                .read_with(&visual, |v, _| {
+                    let state = v.state.as_ref().unwrap();
+                    let c = state.project.clip(clip).unwrap();
+                    (
+                        state.project.snapshot(),
+                        state.revision,
+                        state.can_undo,
+                        (c.start(), c.duration()),
+                    )
+                });
+
+            // Out-and-back drag releasing both at the exact start and inside the 3 px tolerance.
+            for return_offset in [px(0.0), if start_edge { px(1.5) } else { px(-1.5) }] {
+                visual.simulate_mouse_down(edge, MouseButton::Left, Modifiers::default());
+                visual.simulate_mouse_move(
+                    edge + point(inward, px(0.0)),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                );
+                visual.run_until_parked();
+                editor.read_with(&visual, |v, _| {
+                    let g = v.clip_loop.audio_gesture.as_ref().unwrap();
+                    assert_ne!(g.preview, (0, 96_000));
+                });
+
+                let returned = edge + point(return_offset, px(0.0));
+                visual.simulate_mouse_move(returned, MouseButton::Left, Modifiers::default());
+                visual.run_until_parked();
+                editor.read_with(&visual, |v, _| {
+                    let g = v.clip_loop.audio_gesture.as_ref().unwrap();
+                    assert_eq!(g.preview, (0, 96_000));
+                });
+
+                visual.simulate_mouse_up(returned, MouseButton::Left, Modifiers::default());
+                visual.run_until_parked();
+                editor.read_with(&visual, |v, _| {
+                    assert!(!v.clip_loop_held());
+                    assert!(!v.edit_pending());
+                    assert_eq!(v.worker_requests_pending, 0);
+                    let state = v.state.as_ref().unwrap();
+                    assert_eq!(state.revision, before_revision);
+                    assert_eq!(state.can_undo, before_can_undo);
+                    assert_eq!(state.project.snapshot(), before_snapshot);
+                    let c = state.project.clip(clip).unwrap();
+                    assert_eq!((c.start(), c.duration()), before_bounds);
+                    let root = c.audio_event_root();
+                    assert_eq!((root.view_start, root.view_end), (0, 96_000));
+                });
+            }
+
+            // Intentional resize outside the 3 px tolerance still commits the indicated edge once.
+            let target = edge + point(inward, px(0.0));
+            visual.simulate_mouse_down(edge, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+            crate::editor::clip_drag_ui_test::pump_move(&editor, &mut visual);
+            editor.read_with(&visual, |v, _| {
+                let state = v.state.as_ref().unwrap();
+                assert_eq!(state.revision, before_revision + 1);
+                let root = state.project.clip(clip).unwrap().audio_event_root();
+                if start_edge {
+                    assert!(root.view_start > 0 && root.view_end == 96_000);
+                } else {
+                    assert!(root.view_start == 0 && root.view_end < 96_000);
+                }
+            });
+        }
+    }
+}
+
 fn assert_scope_body(cx: &mut TestAppContext, looping: bool) {
     let Fixture {
         mut visual,

@@ -347,6 +347,10 @@ impl EditorView {
     pub(in crate::editor) fn audio_loop_grid(&self) -> SnapGrid {
         self.audio_event_editor.grid
     }
+    #[cfg(test)]
+    pub(in crate::editor) fn set_audio_loop_grid(&mut self, grid: SnapGrid) {
+        self.audio_event_editor.grid = grid;
+    }
     pub(in crate::editor) fn audio_loop_time_selection(&self) -> Option<(u64, u64)> {
         self.event_context_current()
             .then_some(self.audio_event_editor.range)
