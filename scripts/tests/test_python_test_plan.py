@@ -195,8 +195,9 @@ class SelectionTests(unittest.TestCase):
                 with redirect_stderr(output):
                     self.assertEqual(shards.main(["--workers", "3", "--", "shard_fixture"]), 1)
             self.assertIn("shard_fixture.Cases.test_plain and 1 more (exit 0)", output.getvalue())
-            self.assertIn("test_plain (shard_fixture.Cases) ... ok", output.getvalue())
-            self.assertIn("test_plain_second (shard_fixture.Cases) ... ok", output.getvalue())
+            fixture = sys.modules["shard_fixture"].Cases
+            for method in ("test_plain", "test_plain_second"):
+                self.assertIn(f"{fixture(method)} ... ok", output.getvalue())
             self.assertIn("shard_fixture.Cases.test_bounded (exit 1)", output.getvalue())
             sys.modules.pop("shard_fixture", None)
 
