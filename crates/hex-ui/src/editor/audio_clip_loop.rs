@@ -6,7 +6,7 @@ use crate::editor::{musical_time::SnapGrid, signed_frame_viewport::SignedFrameVi
 use gpui::{Bounds, Context, Div, MouseButton, Pixels, canvas, div, prelude::*, px, relative};
 use hex_project::AudioClipEdit;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Handle {
     Start,
     End,
@@ -370,12 +370,29 @@ impl EditorView {
             ));
             let body_start = a.clamp(0.0, 1.0);
             let body_end = b.clamp(0.0, 1.0);
-            // Insert the body first so the existing edge handles retain hit priority.
-            for (handle, at, selector) in [
-                (Handle::Body, body_start, "audio-scope-body"),
-                (Handle::Start, a, "audio-loop-start"),
-                (Handle::End, b, "audio-loop-end"),
-            ] {
+            let layout = scope_hit_layout(
+                self.clip_loop.audio_bounds.map(|b| f32::from(b.size.width)),
+                body_start,
+                body_end,
+                (0.0..=1.0).contains(&a),
+                (0.0..=1.0).contains(&b),
+            );
+            let order = if layout.prioritize_body {
+                // Too narrow to distinguish edges from a body drag: give the body hit priority.
+                [
+                    (Handle::Start, a, "audio-loop-start"),
+                    (Handle::End, b, "audio-loop-end"),
+                    (Handle::Body, body_start, "audio-scope-body"),
+                ]
+            } else {
+                // Keep a centered body lane exposed while giving both edges independent hit targets.
+                [
+                    (Handle::Body, body_start, "audio-scope-body"),
+                    (Handle::Start, a, "audio-loop-start"),
+                    (Handle::End, b, "audio-loop-end"),
+                ]
+            };
+            for (handle, at, selector) in order {
                 if !editable
                     || !(0.0..=1.0).contains(&at)
                     || (handle == Handle::Body && body_start >= body_end)
@@ -393,8 +410,12 @@ impl EditorView {
                         .when(handle == Handle::Body, |target| {
                             target.w(relative((body_end - body_start) as f32))
                         })
-                        .when(handle != Handle::Body, |target| target.w(px(7.0)))
-                        .when(handle == Handle::End, |target| target.ml(px(-7.0)))
+                        .when(handle != Handle::Body, |target| {
+                            target.w(px(layout.edge_width))
+                        })
+                        .when(handle == Handle::End, |target| {
+                            target.ml(px(-layout.edge_width))
+                        })
                         .cursor(handle.cursor(false))
                         .on_mouse_down(
                             MouseButton::Left,
@@ -465,12 +486,19 @@ impl EditorView {
                 canvas(
                     |_, _, _| (),
                     move |bounds, _, window, cx| {
-                        entity.update(cx, |view, _| {
-                            let changed =
-                                view.clip_loop.audio_bounds.is_some_and(|old| old != bounds);
+                        entity.update(cx, |view, cx| {
+                            let old = view.clip_loop.audio_bounds;
+                            let changed = old.is_some_and(|old| old != bounds);
+                            let width_changed = old.is_none_or(|old| {
+                                (f32::from(old.size.width) - f32::from(bounds.size.width)).abs()
+                                    > 0.5
+                            });
                             view.clip_loop.audio_bounds = Some(bounds);
                             if changed {
                                 view.cancel_audio_loop_gesture();
+                            }
+                            if width_changed {
+                                cx.notify();
                             }
                         });
                         // Canonical context is reconciled by clip_detail_view;
@@ -496,6 +524,55 @@ impl EditorView {
                 .inset_0(),
             ),
         )
+    }
+}
+
+const AUDIO_SCOPE_EDGE_MAX_WIDTH: f32 = 7.0;
+const AUDIO_SCOPE_EDGE_MIN_WIDTH: f32 = 3.0;
+const AUDIO_SCOPE_BODY_MIN_WIDTH: f32 = 6.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ScopeHitLayout {
+    edge_width: f32,
+    prioritize_body: bool,
+}
+
+fn scope_hit_layout(
+    ruler_width: Option<f32>,
+    body_start: f64,
+    body_end: f64,
+    has_start: bool,
+    has_end: bool,
+) -> ScopeHitLayout {
+    let has_body = body_start < body_end;
+    let edge_count = usize::from(has_start) + usize::from(has_end);
+    if !has_body || edge_count == 0 {
+        return ScopeHitLayout {
+            edge_width: AUDIO_SCOPE_EDGE_MAX_WIDTH,
+            prioritize_body: false,
+        };
+    }
+    let Some(ruler_width) = ruler_width.filter(|w| w.is_finite() && *w > 0.0) else {
+        return ScopeHitLayout {
+            edge_width: AUDIO_SCOPE_EDGE_MAX_WIDTH,
+            prioritize_body: false,
+        };
+    };
+    let visible_width = ((body_end - body_start) as f32) * ruler_width;
+    let min_split_width =
+        (edge_count as f32) * AUDIO_SCOPE_EDGE_MIN_WIDTH + AUDIO_SCOPE_BODY_MIN_WIDTH;
+    if visible_width < min_split_width {
+        ScopeHitLayout {
+            edge_width: visible_width.clamp(0.0, AUDIO_SCOPE_EDGE_MAX_WIDTH),
+            prioritize_body: true,
+        }
+    } else {
+        let edge_width = ((visible_width - AUDIO_SCOPE_BODY_MIN_WIDTH) / (edge_count as f32))
+            .clamp(AUDIO_SCOPE_EDGE_MIN_WIDTH, AUDIO_SCOPE_EDGE_MAX_WIDTH);
+        ScopeHitLayout {
+            edge_width,
+            prioritize_body: false,
+        }
     }
 }
 
