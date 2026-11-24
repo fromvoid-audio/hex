@@ -32,6 +32,15 @@ struct ParameterSnapshot {
     uint32 count=0;
     uint64 revision=0;
     std::array<unsigned char,32> descriptor_signature{};
+    std::optional<uint32> index_for_id(ParamID id) const {
+        if(!count || !by_id || !parameters) return std::nullopt;
+        const auto* begin=by_id.get();
+        const auto* end=begin+count;
+        const auto* found=std::lower_bound(begin,end,id,
+            [&](uint32 index,ParamID target) { return parameters[index].info.id<target; });
+        if(found==end || parameters[*found].info.id!=id) return std::nullopt;
+        return *found;
+    }
 };
 // Main-lane display-cache identity only. Encode validated semantic fields,
 // including enumeration order, rather than SDK struct padding. Runtime values,
@@ -869,9 +878,9 @@ public:
         } leave{dispatching,applying_feedback};
         for(uint32 n=0;n<staged.count;++n) {
             const auto value=staged.at(n);
-            uint32 index=0;
-            while(index<metadata.count && metadata.parameters[index].info.id!=value.id) ++index;
-            if(index==metadata.count) {refuse(FeedbackParameterMissing);return false;}
+            const auto found=metadata.index_for_id(value.id);
+            if(!found) {refuse(FeedbackParameterMissing);return false;}
+            const uint32 index=*found;
             // During a drag, only the exact latest native input can mirror
             // back to its controller. A deferred controller still needs this
             // value even when the processor finishes before End.
