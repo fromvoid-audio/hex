@@ -48,12 +48,13 @@ public:
 class LargeController final : public Controller {
 public:
     bool reverse=false, duplicate_unit=false, changed_id=false;
+    int32 parameter_count=HOST_PARAMETER_COUNT;
     std::array<ParamValue,HOST_PARAMETER_COUNT> values=[] {
         std::array<ParamValue,HOST_PARAMETER_COUNT> init{};
         init.fill(0.25);
         return init;
     }();
-    int32 PLUGIN_API getParameterCount() override { return HOST_PARAMETER_COUNT; }
+    int32 PLUGIN_API getParameterCount() override { return parameter_count; }
     tresult PLUGIN_API getParameterInfo(int32 ordinal,ParameterInfo& info) override {
         if(ordinal<0 || ordinal>=getParameterCount()) return kInvalidArgument;
         const int32 id=reverse?getParameterCount()-1-ordinal:ordinal;
@@ -64,10 +65,10 @@ public:
         return kResultOk;
     }
     ParamValue PLUGIN_API getParamNormalized(ParamID id) override {
-        return id<HOST_PARAMETER_COUNT?values[id]:0.0;
+        return id<static_cast<ParamID>(parameter_count)?values[id]:0.0;
     }
     tresult PLUGIN_API setParamNormalized(ParamID id,ParamValue v) override {
-        if(id>=HOST_PARAMETER_COUNT) return kInvalidArgument;
+        if(id>=static_cast<ParamID>(parameter_count)) return kInvalidArgument;
         ++setter_calls;
         values[id]=v;
         return kResultOk;
@@ -114,8 +115,93 @@ static void large_metadata_refresh() {
         initial_ms[2],reversed_ms[2]);
 }
 
+static void benchmark_feedback_lookup() {
+    using Clock=std::chrono::steady_clock;
+    for(int32 count : {128, static_cast<int32>(HOST_PARAMETER_COUNT)}) {
+        LargeController controller;
+        controller.parameter_count=count;
+        Host host;
+        assert(host.refresh_on_control(&controller).disposition==HostDisposition::Refreshed);
+        ParameterFeedback batch;
+        for(int32 i=count-128;i<count;++i)
+            assert(batch.put(static_cast<ParamID>(i),0.25));
+        for(int w=0;w<10;++w) {
+            auto pending=batch;
+            assert(host.publish_parameter_feedback(pending));
+            assert(host.synchronize_parameter_feedback(&controller));
+        }
+        std::array<double,101> samples_us{};
+        for(size_t s=0;s<samples_us.size();++s) {
+            auto pending=batch;
+            assert(host.publish_parameter_feedback(pending));
+            const auto start=Clock::now();
+            assert(host.synchronize_parameter_feedback(&controller));
+            const auto finish=Clock::now();
+            samples_us[s]=std::chrono::duration<double,std::micro>(finish-start).count();
+        }
+        assert(controller.setter_calls==0);
+        std::sort(samples_us.begin(),samples_us.end());
+        std::printf("feedback lookup (%d descriptors, 128 final unchanged IDs, 101 samples): median %.2f us, p95 %.2f us\n",
+            count,samples_us[50],samples_us[95]);
+    }
+}
+
 int main(int argc,char** argv) { @autoreleasepool {
     if(argc==1 || !std::strcmp(argv[1],"large-metadata")) large_metadata_refresh();
+    if(argc==1 || !std::strcmp(argv[1],"feedback-lookup-bench")) benchmark_feedback_lookup();
+    if(argc==1 || !std::strcmp(argv[1],"reordered-feedback-lookup")) {
+        LargeController reordered;
+        reordered.reverse=true;
+        Host host;
+        assert(host.refresh_on_control(&reordered).disposition==HostDisposition::Refreshed);
+        // SDK inventory order is preserved while lookup uses the sorted by_id index.
+        assert(host.snapshot()->parameters[0].info.id==HOST_PARAMETER_COUNT-1);
+        assert(host.snapshot()->parameters[HOST_PARAMETER_COUNT-1].info.id==0);
+
+        // Unchanged feedback values avoid redundant setter calls.
+        ParameterFeedback unchanged;
+        for(ParamID id : {ParamID{0}, ParamID{7}, ParamID{4095}, ParamID{HOST_PARAMETER_COUNT-1}})
+            assert(unchanged.put(id,0.25));
+        assert(host.publish_parameter_feedback(unchanged));
+        assert(host.synchronize_parameter_feedback(&reordered));
+        assert(reordered.setter_calls==0);
+
+        // Changed feedback values reach the exact controller IDs and cached inventory slots.
+        ParameterFeedback changed;
+        assert(changed.put(0,0.125));
+        assert(changed.put(7,0.5));
+        assert(changed.put(4095,0.625));
+        assert(changed.put(HOST_PARAMETER_COUNT-1,0.875));
+        assert(host.publish_parameter_feedback(changed));
+        assert(host.synchronize_parameter_feedback(&reordered));
+        assert(reordered.setter_calls==4);
+        assert(reordered.values[0]==0.125 && host.snapshot()->parameters[HOST_PARAMETER_COUNT-1].value==0.125);
+        assert(reordered.values[7]==0.5 && host.snapshot()->parameters[HOST_PARAMETER_COUNT-1-7].value==0.5);
+        assert(reordered.values[4095]==0.625 && host.snapshot()->parameters[HOST_PARAMETER_COUNT-1-4095].value==0.625);
+        assert(reordered.values[HOST_PARAMETER_COUNT-1]==0.875 && host.snapshot()->parameters[0].value==0.875);
+
+        // Stale-gesture filtering still holds on reordered descriptors.
+        reordered.values[7]=0.75;
+        assert(host.beginEdit(7)==kResultOk && host.performEdit(7,0.75)==kResultOk && host.endEdit(7)==kResultOk);
+        ParameterFeedback stale;
+        assert(stale.put(7,0.25,0));
+        assert(host.publish_parameter_feedback(stale));
+        assert(host.synchronize_parameter_feedback(&reordered));
+        assert(reordered.values[7]==0.75 && reordered.setter_calls==4);
+        const auto after_end=host.editor_frontier_on_worker();
+        ParameterFeedback fresh;
+        assert(fresh.put(7,0.375,after_end));
+        assert(host.publish_parameter_feedback(fresh));
+        assert(host.synchronize_parameter_feedback(&reordered));
+        assert(reordered.values[7]==0.375 && reordered.setter_calls==5);
+
+        // Undeclared IDs still fail validation with FeedbackParameterMissing.
+        ParameterFeedback missing;
+        assert(missing.put(HOST_PARAMETER_COUNT+5,0.5));
+        assert(host.publish_parameter_feedback(missing));
+        assert(!host.synchronize_parameter_feedback(&reordered));
+        assert(host.refusal_flags() & FeedbackParameterMissing);
+    }
     // Each scenario can also be run independently against an unfixed host.
     if(argc==1 || !std::strcmp(argv[1],"redundant-setter")) {
         Controller unchanged;
