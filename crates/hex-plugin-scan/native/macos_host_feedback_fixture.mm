@@ -262,6 +262,69 @@ int main(int argc,char** argv) { @autoreleasepool {
         assert(host.dispatch(&controller).disposition==HostDisposition::Recursive);
         assert(host.snapshot()->revision==valid_revision && host.snapshot()->parameters[0].value==0.75);
     }
+    if(argc==1 || !std::strcmp(argv[1],"preset-restart-fences-stale-feedback")) {
+        // 1. kParamValuesChanged with older pending 0.25 feedback must keep newly selected 0.75
+        //    in both controller and refreshed inventory in the worker's main-lane dispatch order.
+        for(int32 restart_flags : {static_cast<int32>(kParamValuesChanged),
+                                   static_cast<int32>(kParamValuesChanged|kParamTitlesChanged)}) {
+            Controller controller;
+            Host host;
+            assert(host.refresh_on_control(&controller).disposition==HostDisposition::Refreshed);
+
+            ParameterFeedback stale;
+            const auto before_restart=host.editor_frontier_on_worker();
+            assert(stale.put(7,0.25,before_restart) && host.publish_parameter_feedback(stale));
+
+            controller.value=0.75;
+            assert(host.restartComponent(restart_flags)==kResultOk);
+            const auto after_restart=host.editor_frontier_on_worker();
+            assert(after_restart>before_restart);
+            assert(host.value_restart_frontier_on_worker()==after_restart);
+
+            // Worker main-lane order: synchronize_parameter_feedback runs BEFORE dispatch.
+            assert(host.synchronize_parameter_feedback(&controller));
+            assert(controller.setter_calls==0);
+            assert(controller.value==0.75);
+            assert(host.dispatch(&controller).disposition==HostDisposition::Refreshed);
+            assert(controller.value==0.75);
+            assert(host.snapshot()->parameters[0].value==0.75);
+
+            // Feedback originating AFTER the value invalidation still reaches parameter 7.
+            ParameterFeedback post;
+            assert(post.put(7,0.5,after_restart) && host.publish_parameter_feedback(post));
+            assert(host.synchronize_parameter_feedback(&controller));
+            assert(controller.value==0.5 && controller.setter_calls==1);
+            assert(host.snapshot()->parameters[0].value==0.5);
+
+            // Pre-restart native gesture feedback must not undo a subsequent preset selection,
+            // while post-restart native gestures preserve normal ordering.
+            assert(host.beginEdit(7)==kResultOk && host.performEdit(7,0.625)==kResultOk);
+            const auto native_seq=host.editor_frontier_on_worker();
+            assert(host.endEdit(7)==kResultOk);
+            controller.value=0.875;
+            assert(host.restartComponent(restart_flags)==kResultOk);
+            ParameterFeedback pre_preset_native;
+            assert(pre_preset_native.put(7,0.625,native_seq,true) &&
+                   host.publish_parameter_feedback(pre_preset_native));
+            assert(host.synchronize_parameter_feedback(&controller));
+            assert(controller.value==0.875 && controller.setter_calls==1);
+            for(int i=0;i<3;++i)
+                assert(host.dispatch(&controller).disposition==HostDisposition::EditQueued);
+            assert(host.dispatch(&controller).disposition==HostDisposition::Refreshed);
+            assert(host.snapshot()->parameters[0].value==0.875);
+
+            // Fresh native gesture after preset load still works normally.
+            assert(host.beginEdit(7)==kResultOk && host.performEdit(7,0.375)==kResultOk);
+            const auto post_native=host.editor_frontier_on_worker();
+            controller.value=0.875;
+            ParameterFeedback post_native_fb;
+            assert(post_native_fb.put(7,0.375,post_native,true) &&
+                   host.publish_parameter_feedback(post_native_fb));
+            assert(host.synchronize_parameter_feedback(&controller));
+            assert(controller.value==0.375 && controller.setter_calls==2);
+            assert(host.endEdit(7)==kResultOk);
+        }
+    }
     if(argc==1 || !std::strcmp(argv[1],"combined-feedback-capacity")) {
         LargeController large;
         Host host;
