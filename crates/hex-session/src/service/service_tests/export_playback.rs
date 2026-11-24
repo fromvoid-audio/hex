@@ -1177,3 +1177,115 @@ fn computer_keyboard_worker_preserves_revision_history_and_rejects_stale_activat
     assert!(event.playback.is_none());
     assert!(Arc::ptr_eq(&event.state, &state));
 }
+
+#[test]
+fn desktop_export_refuses_open_project_and_source_media_including_aliases_without_plugins() {
+    let directory = TestDir::new();
+    let media_dir = directory.0.join("media");
+    fs::create_dir_all(&media_dir).unwrap();
+    let source = media_dir.join("source.wav");
+    let source_bytes = wav_mono(&[16_384; 16]);
+    fs::write(&source, &source_bytes).unwrap();
+
+    let mut editor =
+        hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 4).unwrap();
+    editor
+        .execute(Command::ImportAudioTrack {
+            name: "audio".into(),
+            path: std::path::PathBuf::from("media/source.wav"),
+            sample_rate: 48_000,
+            frames: 16,
+        })
+        .unwrap();
+    let project_path = directory.0.join("open.hex");
+    hex_storage::save_new(&project_path, editor.project()).unwrap();
+    let project_bytes = fs::read(&project_path).unwrap();
+
+    let source_hardlink = directory.0.join("source-hardlink.wav");
+    fs::hard_link(&source, &source_hardlink).unwrap();
+    let project_hardlink = directory.0.join("open-hardlink.hex");
+    fs::hard_link(&project_path, &project_hardlink).unwrap();
+    #[cfg(unix)]
+    let (alias_dir, source_via_dir_alias, project_via_dir_alias) = {
+        let alias_dir = TestDir::new();
+        let linked = alias_dir.0.join("linked");
+        std::os::unix::fs::symlink(&directory.0, &linked).unwrap();
+        let source_alias = linked.join("media").join("source.wav");
+        let project_alias = linked.join("open.hex");
+        (alias_dir, source_alias, project_alias)
+    };
+    #[cfg(unix)]
+    let _keep_alias_dir = alias_dir;
+
+    let service = Service::new(48_000, 16, 1024).unwrap();
+    let _ = next_event(&service);
+    service.submit(Request::Open(project_path.clone())).unwrap();
+    let opened = next_event(&service);
+    assert!(opened.error.is_none(), "{:?}", opened.error);
+
+    let mut protected = vec![
+        (source.clone(), "original media"),
+        (source_hardlink, "original media"),
+        (project_path.clone(), "open project"),
+        (project_hardlink, "open project"),
+    ];
+    #[cfg(unix)]
+    {
+        protected.push((source_via_dir_alias, "original media"));
+        protected.push((project_via_dir_alias, "open project"));
+    }
+
+    for (destination, expected) in protected {
+        service
+            .submit(Request::ExportRange {
+                path: destination.clone(),
+                start: 0,
+                frames: Some(16),
+                signal: ExportSignal::Main,
+                control: ExportControl::default(),
+                format: ExportFormat::Pcm16,
+                publication: ExportPublication::confirmed_save(&destination).unwrap(),
+            })
+            .unwrap();
+        let _ = next_event(&service);
+        let completion = next_export_event(&service);
+        let error = completion
+            .result
+            .expect_err("protected export destination must be refused");
+        assert!(
+            error.message().contains(expected),
+            "expected {expected:?} in {:?} for {}",
+            error.message(),
+            destination.display()
+        );
+    }
+
+    assert_eq!(fs::read(&source).unwrap(), source_bytes);
+    assert_eq!(fs::read(&project_path).unwrap(), project_bytes);
+
+    // An unrelated existing WAV remains replaceable with its recovery receipt.
+    let unrelated = directory.0.join("unrelated.wav");
+    let unrelated_before = b"previous unrelated output";
+    fs::write(&unrelated, unrelated_before).unwrap();
+    service
+        .submit(Request::ExportRange {
+            path: unrelated.clone(),
+            start: 0,
+            frames: Some(16),
+            signal: ExportSignal::Main,
+            control: ExportControl::default(),
+            format: ExportFormat::Pcm16,
+            publication: ExportPublication::confirmed_save(&unrelated).unwrap(),
+        })
+        .unwrap();
+    let _ = next_event(&service);
+    let completion = next_export_event(&service);
+    let report = completion
+        .result
+        .expect("unrelated confirmed replacement must succeed");
+    assert_eq!(report.frames, 16);
+    let recovery = report
+        .recovery_path
+        .expect("unrelated confirmed replacement must preserve recovery copy");
+    assert_eq!(fs::read(recovery).unwrap(), unrelated_before);
+}

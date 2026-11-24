@@ -17,8 +17,12 @@ pub(crate) struct SaveCurrentCommit {
 /// older-reader consent checks, so it is refused; Save owns that replacement.
 pub(crate) fn is_open_document(document: &DocumentHandle, destination: &Path) -> bool {
     document.path == destination
+        || same_existing_file(&document.path, destination)
         || matches!(
-            (std::fs::canonicalize(&document.path), std::fs::canonicalize(destination)),
+            (
+                std::fs::canonicalize(&document.path),
+                std::fs::canonicalize(destination),
+            ),
             (Ok(open), Ok(chosen)) if open == chosen
         )
 }
@@ -1243,12 +1247,18 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
         request @ (Request::Export(_) | Request::ExportRange { .. }) => {
             // Both spellings are export requests, so their parts always exist.
             if let Some((path, frames, controlled)) = request.into_export_range() {
-                let job = if audio_sink::requires_plugin_profile(ctx.worker.session.project())
-                    && export_destination_is_original_media(
-                        ctx.worker.session.project(),
-                        &path,
-                        ctx.worker.media_base.as_deref(),
-                    ) {
+                let job = if ctx
+                    .worker
+                    .document
+                    .as_ref()
+                    .is_some_and(|document| is_open_document(document, &path))
+                {
+                    Err("export destination is the open project; choose another path".to_owned())
+                } else if export_destination_is_original_media(
+                    ctx.worker.session.project(),
+                    &path,
+                    ctx.worker.media_base.as_deref(),
+                ) {
                     Err("export destination is original media; choose another path".to_owned())
                 } else {
                     match ctx.worker.compiled.as_ref() {
