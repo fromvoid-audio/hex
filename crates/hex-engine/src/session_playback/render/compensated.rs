@@ -1709,7 +1709,7 @@ impl SessionPlayback {
     /// Requires the transport stamp ring to hold its retained horizon of
     /// consecutive running frames so every stage's `OriginWindow` is populated
     /// and running across the entire chunk `[0..count]`. Startup pre-roll and
-    /// detached track tails retain the per-frame kernel. Track-owned MIDI releases
+    /// group-routed detached track tails retain the per-frame kernel. Track-owned MIDI releases
     /// are summed into their generators before source effects.
     pub(super) fn can_block_compensated_route(&self, count: usize) -> bool {
         if count <= 1
@@ -1720,15 +1720,8 @@ impl SessionPlayback {
             || !self.current_sampler_keyboards.is_empty()
             || self.current_sampler_console
             || !self.browser_audition.is_idle()
-            || self.release_scratch.iter().any(|entry| {
-                entry.location.track_index() >= self.route_scratch.len()
-                    || entry.location.tail_group().is_some()
-            })
             || !self.suppression_scratch.is_empty()
             || self.analytic_continuations.iter().any(Option::is_some)
-            || self.tail_output_scratch.iter().any(|active| *active)
-            || self.tail_groups.iter().any(Option::is_some)
-            || self.tail_mutable_instruments.iter().any(Option::is_some)
             || self.revision.gain_recording_track().is_some()
             || self
                 .route_scratch
@@ -1740,6 +1733,15 @@ impl SessionPlayback {
         let Some(compensation) = self.compensation.as_ref() else {
             return false;
         };
+        if compensation.graph.has_group_outputs()
+            && (self.detached_tail_group_limit != 0
+                || self
+                    .release_scratch
+                    .last()
+                    .is_some_and(|entry| entry.location.track_index() >= self.route_scratch.len()))
+        {
+            return false;
+        }
         if !compensation.graph.supports_block_compensated_routing()
             || self.return_scratch.len() != compensation.graph.returns.len()
         {
@@ -2396,6 +2398,22 @@ impl SessionPlayback {
             add_main_track(output, &scratch[..count]);
         }
 
+        // The handoff keeps flat detached track output post-fader. It joins
+        // Main after current Returns and keeps its original track capture.
+        if self
+            .compensation
+            .as_ref()
+            .is_some_and(|runtime| !runtime.graph.has_group_outputs())
+        {
+            self.render_detached_tails(
+                performance_frame,
+                output,
+                frame_offset,
+                capture,
+                DetachedTailRouting::UNROUTED,
+                foreign,
+            )?;
+        }
         self.return_effect_tails
             .render_chunk(output, frame_offset, capture, foreign)?;
 
