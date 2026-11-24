@@ -62,6 +62,7 @@ mod tests {
                 from[channel] + (next[channel] - from[channel]) / RAMP_FRAMES as f32
             );
         }
+        gap.fill([0.0; 2]);
         fade.apply(&mut gap, true);
         assert_eq!(
             gap[0],

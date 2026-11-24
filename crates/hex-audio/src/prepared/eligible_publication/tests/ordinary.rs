@@ -94,6 +94,39 @@ pub(super) fn measured_render(
     );
 }
 
+// These readiness fixtures render identical left and right channels. Keep an
+// exact PCM oracle for both the committed source and the short output-only
+// bridge. Each checked window starts with a settled signal or a settled hold.
+fn assert_stream_window(
+    output: &[Frame],
+    committed: usize,
+    previous: Frame,
+    recovering: bool,
+    source: impl Fn(usize) -> f32,
+) {
+    let interpolate = |from: f32, to: f32, index: usize| {
+        let gain = (index + 1).min(64) as f32 / 64.0;
+        from * (1.0 - gain) + to * gain
+    };
+    let mut last = previous;
+    for (index, frame) in output[..committed].iter().enumerate() {
+        let value = source(index);
+        last = if recovering {
+            previous.map(|from| interpolate(from, value, index))
+        } else {
+            [value; 2]
+        };
+        assert_eq!(*frame, last, "committed frame {index}");
+    }
+    for (index, frame) in output[committed..].iter().enumerate() {
+        assert_eq!(
+            *frame,
+            last.map(|from| interpolate(from, 0.0, index)),
+            "held frame {index}"
+        );
+    }
+}
+
 #[test]
 fn streamed_retained_restart_under_live_fence_keeps_audio_and_cursor() {
     use hex_project::{Command, Created, Editor, Project, TrackDeviceSlot};
@@ -2169,7 +2202,7 @@ fn pending_replacement_case(
         control.status.position.load(Acquire),
         hex_engine::STREAM_PAGE_FRAMES as u64
     );
-    let mut output = [[0.0; 2]; 256];
+    let mut output = [warmup[warmup.len() - 1]; 256];
 
     #[cfg(feature = "stream-test-support")]
     if _oversized {
@@ -2530,7 +2563,11 @@ fn pending_replacement_case(
         let boundary = if _cross_page { 3968 } else { 4096 };
         // Exercise A1 once so it can remain resident after returning to A0.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut previous = output[255];
+        let mut recovering = false;
         while control.status.position.load(Acquire) == 4096 {
+            previous = output[255];
+            recovering = control.status.stream_buffering.load(Acquire);
             measured_render(&mut data, &mut output);
             assert!(
                 std::time::Instant::now() < deadline,
@@ -2539,7 +2576,7 @@ fn pending_replacement_case(
             std::thread::yield_now();
         }
         assert_eq!(control.status.position.load(Acquire), 4352);
-        assert_eq!(output, [[0.25; 2]; 256], "baseline A1 PCM");
+        assert_stream_window(&output, 256, previous, recovering, |_| 0.25);
         control
             .command(PlaybackCommand::Seek(boundary - 256))
             .unwrap();
@@ -2730,8 +2767,10 @@ fn pending_replacement_case(
     if _oversized {
         let mut large = vec![[0.0; 2]; hex_engine::STREAM_PAGE_FRAMES * 2 + 1];
         let mut total_committed = 0;
+        let mut previous = output[255];
         for _ in 0..8 {
             let before = control.status.position.load(Acquire);
+            let recovering = control.status.stream_buffering.load(Acquire);
             measured_render(&mut data, &mut large);
             let committed = if control.status.stream_buffering.load(Acquire) {
                 usize::try_from(control.status.stream_committed_frames.load(Acquire)).unwrap()
@@ -2743,9 +2782,8 @@ fn pending_replacement_case(
                 control.status.position.load(Acquire),
                 before + committed as u64
             );
-            for (index, frame) in large.iter().enumerate() {
-                assert_eq!(*frame, [if index < committed { 0.25 } else { 0.0 }; 2]);
-            }
+            assert_stream_window(&large, committed, previous, recovering, |_| 0.25);
+            previous = *large.last().unwrap();
             total_committed += committed;
             std::thread::yield_now();
         }
@@ -2778,6 +2816,9 @@ fn pending_replacement_case(
     let render_checked = |data: &mut _, output: &mut [Frame; 256]| {
         let before = control.status.position.load(Acquire);
         let performance_before = control.status.performance_frame.load(Acquire);
+        let previous = output[255];
+        let recovering = control.status.stream_buffering.load(Acquire);
+        let previous_revision = control.status.applied_revision.load(Acquire);
         measured_render(data, output);
         let after = control.status.position.load(Acquire);
         let performance_after = control.status.performance_frame.load(Acquire);
@@ -2805,26 +2846,22 @@ fn pending_replacement_case(
             assert_eq!(revision, b_revision);
             0.5
         };
-        for (index, frame) in output.iter().enumerate() {
-            let position = (before + index as u64) % frames;
-            let remaining = frames - position;
-            let seam_gain = if looping && remaining <= 128 {
-                (remaining - 1) as f32 / 127.0
-            } else {
-                1.0
-            };
-            assert_eq!(
-                *frame,
-                [if index < committed {
-                    expected * seam_gain
+        assert_stream_window(
+            output,
+            committed,
+            previous,
+            recovering && revision == previous_revision,
+            |index| {
+                let position = (before + index as u64) % frames;
+                let remaining = frames - position;
+                let seam_gain = if looping && remaining <= 128 {
+                    (remaining - 1) as f32 / 127.0
                 } else {
-                    0.0
-                }; 2],
-                "before={before} after={after} committed={committed} index={index} revision={revision} buffering={} pending={}",
-                control.status.stream_buffering.load(Acquire),
-                control.status.publication_pending.load(Acquire),
-            );
-        }
+                    1.0
+                };
+                expected * seam_gain
+            },
+        );
     };
     #[cfg(feature = "stream-test-support")]
     if let Some((baseline, long_baseline)) = loop_baseline {
@@ -3440,7 +3477,13 @@ fn candidate_two_domain_capacity_case(action: TwoDomainAfterPressure) {
         );
         std::thread::yield_now();
     }
+    let mut previous = output[127];
+    let mut recovering = false;
     while control.status.position.load(Acquire) == 3968 {
+        recovering = control.status.stream_buffering.load(Acquire);
+        if recovering {
+            previous = output[255];
+        }
         measured_render(&mut data, &mut output);
         assert!(
             std::time::Instant::now() < deadline,
@@ -3449,7 +3492,7 @@ fn candidate_two_domain_capacity_case(action: TwoDomainAfterPressure) {
         std::thread::yield_now();
     }
     assert_eq!(control.status.position.load(Acquire), 4224);
-    assert_eq!(output, [[0.5; 2]; 256]);
+    assert_stream_window(&output, 256, previous, recovering, |_| 0.5);
     control.command(PlaybackCommand::Seek(3840)).unwrap();
     while control.status.position.load(Acquire) != 3968 {
         measured_render(&mut data, &mut output[..128]);
@@ -3795,13 +3838,14 @@ fn partial_domain_readiness_case(replace_while_stalled: bool) {
     };
     let mut result = (false, false);
     for _ in 0..256 {
+        let previous = output[255];
         measured_render(&mut data, &mut output);
         assert!(control.status.stream_buffering.load(Acquire));
         assert_eq!(
             control.status.position.load(Acquire),
             hex_engine::STREAM_PAGE_FRAMES as u64
         );
-        assert_eq!(output, [[0.0; 2]; 256]);
+        assert_stream_window(&output, 0, previous, false, |_| 0.0);
         result = observed(&mut data);
         if result.0 {
             break;
