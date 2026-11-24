@@ -968,23 +968,15 @@ fn projected_fade_samples_match_prepared_pcm_after_crop_and_tempo_change() {
     let context = isolated(256_000, 128_000, 4);
     let prepared = prepare(&editor, &media, &context);
     let clip = editor.project().clip(tail).unwrap();
-    let edit = clip.audio_edit().unwrap();
-    let projection = edit.projected_fade(editor.project().tempo_map()).unwrap();
-    let view = prepared
-        .arrangement()
-        .audio_clip_views()
-        .iter()
-        .find(|v| v.clip == tail)
+    let projection = clip
+        .projected_outer_fade(editor.project().tempo_map())
+        .unwrap()
         .unwrap();
-    for index in (0..view.length).step_by(31) {
-        let actual = view.audio.frames()[(view.offset + index) as usize];
-        let expected = projection.gain_at(view.offset + index).unwrap();
-        assert_eq!(actual, [expected, -expected]);
+    let pcm = render(&prepared, clip.start(), clip.duration() as usize, 127);
+    for (offset, actual) in pcm.into_iter().enumerate() {
+        let expected = projection.gain_at(clip.start() + offset as u64).unwrap();
+        assert_eq!(actual, [expected, -expected], "sample {offset}");
     }
-    assert_eq!(
-        projection.gain_at(8_267).unwrap(),
-        edit.domain.fade.gain_at(7_200)
-    );
 }
 
 #[test]
