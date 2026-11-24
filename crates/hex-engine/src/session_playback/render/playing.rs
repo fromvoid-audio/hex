@@ -228,6 +228,8 @@ impl SessionPlayback {
                             arrangement_loop_pass,
                         )?;
                     }
+                    self.release_scratch
+                        .retain(|entry| entry.end_frame() > performance_frame);
                     output_offset = chunk_end;
                     continue;
                 }

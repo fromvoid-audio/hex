@@ -1720,7 +1720,8 @@ impl SessionPlayback {
     /// Requires the transport stamp ring to already hold `max_latency_frames()`
     /// consecutive running frames so every stage's `OriginWindow` is populated
     /// and running across the entire chunk `[0..count]`. Startup pre-roll and
-    /// transitional/tail/live-input states keep the per-frame kernel.
+    /// detached tails retain the per-frame kernel. Track-owned MIDI releases
+    /// are summed into their generators before source effects.
     pub(super) fn can_block_compensated_route(&self, count: usize) -> bool {
         if count <= 1
             || count > 256
@@ -1731,7 +1732,10 @@ impl SessionPlayback {
             || !self.current_sampler_keyboards.is_empty()
             || self.current_sampler_console
             || !self.browser_audition.is_idle()
-            || !self.release_scratch.is_empty()
+            || self.release_scratch.iter().any(|entry| {
+                entry.location.track_index() >= self.route_scratch.len()
+                    || entry.location.tail_group().is_some()
+            })
             || !self.suppression_scratch.is_empty()
             || self.analytic_continuations.iter().any(Option::is_some)
             || self.tail_output_scratch.iter().any(|active| *active)
@@ -1872,7 +1876,16 @@ impl SessionPlayback {
                         || has_midi_source
                         || self.revision.source_routing().is_shared(index)
                         || !matches!(route.owner, RouteOwner::Arrangement);
-                    let has_generator = has_analytic_source
+                    // Release entries are sorted by track, tail group and voice order.
+                    // The graph visits tracks in topological rather than index order.
+                    let first_release = self
+                        .release_scratch
+                        .partition_point(|entry| entry.location.track_index() < index);
+                    let remaining = &self.release_scratch[first_release..];
+                    let releases = &remaining[..remaining
+                        .partition_point(|entry| entry.location.track_index() == index)];
+                    let has_generator = !releases.is_empty()
+                        || has_analytic_source
                         || has_mutable_instrument
                         || has_foreign_instrument
                         || has_source_effects;
@@ -1983,6 +1996,20 @@ impl SessionPlayback {
                             index,
                             generator,
                             None,
+                        )?;
+                    }
+
+                    for release in releases {
+                        let remaining = release.end_frame().saturating_sub(performance_frame);
+                        let frames = count.min(usize::try_from(remaining).unwrap_or(usize::MAX));
+                        render_release_raw(
+                            release,
+                            self.revision.arrangement().shared_contexts(),
+                            &self.retained_contexts,
+                            &self.analytic_continuations,
+                            performance_frame,
+                            true,
+                            &mut generator[..frames],
                         )?;
                     }
 
