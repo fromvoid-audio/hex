@@ -273,22 +273,47 @@ impl ControllerRequest {
     }
 }
 
-/// Top-left of the live AppKit frame in global screen points. This transient
+/// Top-left of the live AppKit frame in global screen points, plus optional
+/// accepted content dimensions in logical points (`1..=4096`). This transient
 /// snapshot owns no window or SDK object and is scoped to a single handoff.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PluginEditorPosition {
     x: u64,
     y: u64,
+    width: u16,
+    height: u16,
 }
 
 impl PluginEditorPosition {
+    pub const MAX_CONTENT_DIMENSION: u16 = 4096;
+
     pub fn new(x: f64, y: f64) -> Option<Self> {
         // Wide enough for any supported desktop, while bounding foreign input.
         const LIMIT: f64 = 1_000_000.0;
         (x.abs() <= LIMIT && y.abs() <= LIMIT).then_some(Self {
             x: x.to_bits(),
             y: y.to_bits(),
+            width: 0,
+            height: 0,
         })
+    }
+
+    pub fn with_size(x: f64, y: f64, width: u16, height: u16) -> Option<Self> {
+        let mut position = Self::new(x, y)?;
+        if width == 0
+            || height == 0
+            || width > Self::MAX_CONTENT_DIMENSION
+            || height > Self::MAX_CONTENT_DIMENSION
+        {
+            return None;
+        }
+        position.width = width;
+        position.height = height;
+        Some(position)
+    }
+
+    pub fn content_size(self) -> Option<(u16, u16)> {
+        (self.width != 0 && self.height != 0).then_some((self.width, self.height))
     }
 }
 
@@ -357,7 +382,11 @@ pub fn parameter_page_request(
             out[82] = 12;
             if let Some(position) = position {
                 out[74..82].copy_from_slice(&position.x.to_le_bytes());
-                out[83..87].copy_from_slice(&1_u32.to_le_bytes());
+                let encoded = match position.content_size() {
+                    Some((width, height)) => (u32::from(width) << 16) | u32::from(height),
+                    None => 1,
+                };
+                out[83..87].copy_from_slice(&encoded.to_le_bytes());
                 out[87..95].copy_from_slice(&position.y.to_le_bytes());
             }
         }
@@ -470,6 +499,19 @@ pub fn parameter_page(
                 let x = f64::from_le_bytes(reader.array()?);
                 let y = f64::from_le_bytes(reader.array()?);
                 let position = PluginEditorPosition::new(x, y)
+                    .ok_or(Error::Protocol("invalid native editor placement"))?;
+                PluginEditorState::Detached(position)
+            }
+            5 if matches!(
+                request,
+                ControllerRequest::DetachEditor | ControllerRequest::DetachEditorWhenIdle
+            ) =>
+            {
+                let x = f64::from_le_bytes(reader.array()?);
+                let y = f64::from_le_bytes(reader.array()?);
+                let width = u16::from_le_bytes(reader.array()?);
+                let height = u16::from_le_bytes(reader.array()?);
+                let position = PluginEditorPosition::with_size(x, y, width, height)
                     .ok_or(Error::Protocol("invalid native editor placement"))?;
                 PluginEditorState::Detached(position)
             }

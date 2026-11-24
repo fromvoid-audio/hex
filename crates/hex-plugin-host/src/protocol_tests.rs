@@ -252,6 +252,59 @@ fn editor_detach_placement_is_bounded_and_reopen_copies_its_exact_coordinates() 
         reply[prefix..prefix + 8].copy_from_slice(&invalid.to_le_bytes());
         assert!(parameter_page(&reply, &config, 1, 7, detach).is_err());
     }
+
+    // Sized placement round-trips through Detached(5) and ReopenEditor without changing wire size.
+    assert!(PluginEditorPosition::with_size(x, y, 0, 360).is_none());
+    assert!(PluginEditorPosition::with_size(x, y, 540, 0).is_none());
+    assert!(PluginEditorPosition::with_size(x, y, 4097, 360).is_none());
+    assert!(PluginEditorPosition::with_size(x, y, 540, 4097).is_none());
+    let sized = PluginEditorPosition::with_size(x, y, 540, 360).unwrap();
+    assert_eq!(sized.content_size(), Some((540, 360)));
+    assert_eq!(position.content_size(), None);
+    let reopen_sized = ControllerRequest::ReopenEditor(Some(sized));
+    let expected_id = (540_u32 << 16) | 360_u32;
+    for poll in [false, true] {
+        let wire = parameter_page_request(&config, 1, 7, reopen_sized, poll).unwrap();
+        assert_eq!(wire[82], 12);
+        assert_eq!(&wire[74..82], &x.to_le_bytes());
+        assert_eq!(&wire[83..87], &expected_id.to_le_bytes());
+        assert_eq!(&wire[87..95], &y.to_le_bytes());
+        assert!(wire[95..].iter().all(|&byte| byte == 0));
+    }
+
+    let mut sized_reply = Vec::new();
+    stamp(&mut sized_reply, config.binding);
+    for value in [1_u64, u64::from(config.quantum), 7] {
+        sized_reply.extend(value.to_le_bytes());
+    }
+    sized_reply.extend([4, 5]);
+    sized_reply.extend(x.to_le_bytes());
+    sized_reply.extend(y.to_le_bytes());
+    let size_offset = sized_reply.len();
+    sized_reply.extend(540_u16.to_le_bytes());
+    sized_reply.extend(360_u16.to_le_bytes());
+    assert_eq!(
+        parameter_page(&sized_reply, &config, 1, 7, detach).unwrap(),
+        ParameterPageProgress::Editor(PluginEditorState::Detached(sized))
+    );
+    assert_eq!(
+        parameter_page(
+            &sized_reply,
+            &config,
+            1,
+            7,
+            ControllerRequest::DetachEditorWhenIdle
+        )
+        .unwrap(),
+        ParameterPageProgress::Editor(PluginEditorState::Detached(sized))
+    );
+    assert!(parameter_page(&sized_reply, &config, 1, 7, reopen_sized).is_err());
+    assert!(parameter_page(&sized_reply[..sized_reply.len() - 1], &config, 1, 7, detach).is_err());
+    for (bad_w, bad_h) in [(0_u16, 360_u16), (540, 0), (4097, 360), (540, 4097)] {
+        sized_reply[size_offset..size_offset + 2].copy_from_slice(&bad_w.to_le_bytes());
+        sized_reply[size_offset + 2..size_offset + 4].copy_from_slice(&bad_h.to_le_bytes());
+        assert!(parameter_page(&sized_reply, &config, 1, 7, detach).is_err());
+    }
 }
 #[path = "protocol_tests/conversion.rs"]
 mod conversion;

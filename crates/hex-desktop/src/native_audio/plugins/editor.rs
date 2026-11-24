@@ -798,7 +798,7 @@ mod tests {
             epoch: 3,
             ..donor_binding
         };
-        let position = PluginEditorPosition::new(240.0, 180.0).unwrap();
+        let position = PluginEditorPosition::with_size(240.0, 180.0, 540, 360).unwrap();
 
         let mut plugins = Plugins {
             edit: Some(after_move),
@@ -833,21 +833,91 @@ mod tests {
                     binding,
                     action: EditorAction::Reopen(Some(p)),
                     ..
-                }) if binding == receiver_binding && p == position
+                }) if binding == receiver_binding && p == position && p.content_size() == Some((540, 360))
             ),
-            "detach must queue Reopen at prior position on destination track's successor"
+            "detach must queue Reopen with prior position and resized content size on destination track's successor"
         );
 
-        // An intervening cross-track move (e.g. Undo back to Track(10) or move to Track(30))
-        // must also resolve the newer successor across owners.
-        let mut third = source(third_binding, after_undo_or_second_move, false);
-        third.owner = ProcessorChainOwner::Track(30);
-        third.accepted = true;
-        plugins.sources[1].retiring = true;
-        plugins.sources.push(third);
+        // Complete Reopen on receiver, then Undo back to Track(10) and Redo to Track(20),
+        // preserving the resized placement on both transitions.
+        plugins.finish_editor_action(
+            receiver_binding,
+            1,
+            EditorAction::Reopen(Some(position)),
+            Ok(PluginEditorState::Open),
+            Some(after_move),
+        );
+        assert!(plugins.sources[1].editor_open);
+        let mut undo_target = source(third_binding, after_undo_or_second_move, false);
+        undo_target.owner = ProcessorChainOwner::Track(10);
+        plugins.sources.push(undo_target);
+        plugins.edit = Some(after_undo_or_second_move);
+        plugins.finish_edit(after_undo_or_second_move, true);
+        plugins.queue_next_editor_transfer(Some(after_undo_or_second_move));
+        assert!(plugins.editor_holds(receiver_binding));
+        plugins.finish_editor_action(
+            receiver_binding,
+            1,
+            EditorAction::Detach,
+            Ok(PluginEditorState::Detached(position)),
+            Some(after_undo_or_second_move),
+        );
+        assert!(
+            matches!(
+                plugins.editor,
+                Some(EditorOperation::Pending {
+                    binding,
+                    action: EditorAction::Reopen(Some(p)),
+                    ..
+                }) if binding == third_binding && p == position && p.content_size() == Some((540, 360))
+            ),
+            "undo must preserve resized placement on restored track successor"
+        );
+        plugins.finish_editor_action(
+            third_binding,
+            1,
+            EditorAction::Reopen(Some(position)),
+            Ok(PluginEditorState::Open),
+            Some(after_undo_or_second_move),
+        );
+        assert!(plugins.sources[2].editor_open);
+        let after_redo = AudioSourceContext {
+            editor_revision: 5,
+            ..before
+        };
+        let redo_binding = Binding {
+            graph: 5,
+            epoch: 4,
+            ..donor_binding
+        };
+        let mut redo_target = source(redo_binding, after_redo, false);
+        redo_target.owner = ProcessorChainOwner::Track(20);
+        plugins.sources.push(redo_target);
+        plugins.edit = Some(after_redo);
+        plugins.finish_edit(after_redo, true);
+        plugins.queue_next_editor_transfer(Some(after_redo));
+        assert!(plugins.editor_holds(third_binding));
+        plugins.finish_editor_action(
+            third_binding,
+            1,
+            EditorAction::Detach,
+            Ok(PluginEditorState::Detached(position)),
+            Some(after_redo),
+        );
+        assert!(
+            matches!(
+                plugins.editor,
+                Some(EditorOperation::Pending {
+                    binding,
+                    action: EditorAction::Reopen(Some(p)),
+                    ..
+                }) if binding == redo_binding && p == position && p.content_size() == Some((540, 360))
+            ),
+            "redo must preserve resized placement on destination track successor"
+        );
         assert_eq!(
             plugins.editor_successor(receiver_binding),
-            Some(third_binding)
+            Some(redo_binding)
         );
     }
 
