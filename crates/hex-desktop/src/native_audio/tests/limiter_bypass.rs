@@ -84,8 +84,15 @@ fn check(lookahead: u32, mode: u32, routing: u32, owner: u8) {
     (applied, _) = h.applied(applied);
     let control = &mut h.audio.as_mut().unwrap().control;
     let output = control.output_identity();
-    control.command(PlaybackCommand::PlayFrom(0)).unwrap();
-    for _ in 0..32 {
+    // At 48 kHz the three lookaheads are 1.5, 3 and 6 ms. True peak
+    // adds a 31-frame reconstruction delay; mid/side cascades two stages.
+    let stage_delay = [72_usize, 144, 288][lookahead as usize] + if mode == 2 { 31 } else { 0 };
+    let latency = stage_delay * if routing == 1 { 2 } else { 1 };
+    const FADE: usize = 24;
+    let reference_blocks = (latency + FADE).div_ceil(64) + 1;
+    control.command(PlaybackCommand::PlayFrom(4096)).unwrap();
+    let fresh_wet: Vec<_> = (0..reference_blocks).map(|_| h.render()).collect();
+    for _ in reference_blocks..32 {
         h.render();
     }
     let mut previous = h.render()[63][0];
@@ -94,7 +101,12 @@ fn check(lookahead: u32, mode: u32, routing: u32, owner: u8) {
         previous > dry + 0.1,
         "audible limiting fixture {lookahead}/{mode}/{routing}/{owner}: {previous}"
     );
-    for (bypassed, blocks) in [(true, 1), (false, 1), (true, 5), (false, 5)] {
+    for (bypassed, blocks, cold_reference) in [
+        (true, 1, None),
+        (false, 1, None),
+        (true, 5, None),
+        (false, fresh_wet.len(), Some(&fresh_wet)),
+    ] {
         let cut = h
             .audio
             .as_ref()
@@ -104,18 +116,32 @@ fn check(lookahead: u32, mode: u32, routing: u32, owner: u8) {
             .position
             .load(Acquire);
         h.run(Request::Edit(Command::SetDeviceBypass { device, bypassed }));
-        for _ in 0..blocks {
-            for frame in h.render() {
-                assert!(
-                    (frame[0] - previous).abs() < 0.01,
-                    "{lookahead}/{mode}/{routing}/{owner} bypassed={bypassed}: {previous} -> {frame:?}"
-                );
+        for block_index in 0..blocks {
+            let actual = h.render();
+            for (index, frame) in actual.iter().enumerate() {
+                if let Some(reference) = cold_reference {
+                    let elapsed = block_index * actual.len() + index + 1;
+                    let mix = elapsed.saturating_sub(latency).min(FADE) as f32 / FADE as f32;
+                    for (lane, fresh) in reference[block_index][index].iter().enumerate() {
+                        let expected = dry + (fresh - dry) * mix;
+                        assert!(
+                            (frame[lane] - expected).abs() < 1e-5,
+                            "{lookahead}/{mode}/{routing}/{owner} at {elapsed} lane {lane}: {} != {expected}",
+                            frame[lane]
+                        );
+                    }
+                } else {
+                    assert!(
+                        (frame[0] - previous).abs() < 0.01,
+                        "{lookahead}/{mode}/{routing}/{owner} bypassed={bypassed}: {previous} -> {frame:?}"
+                    );
+                }
                 previous = frame[0];
             }
         }
         let audio = h.audio.as_ref().unwrap();
         let status = audio.status().unwrap();
-        assert_eq!(status.position.load(Acquire), cut + 64 * blocks);
+        assert_eq!(status.position.load(Acquire), cut + 64 * blocks as u64);
         assert_eq!(audio.control.output_identity(), output);
         let revision = status.applied_revision.load(Acquire);
         assert!(revision > applied);
