@@ -60,7 +60,7 @@ pub(super) fn preferences_path_for_home(home: Option<&std::path::Path>) -> Optio
 
 #[cfg(not(test))]
 pub(super) fn default_preferences_path() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = super::user_home_directory();
     preferences_path_for_home(home.as_deref())
 }
 

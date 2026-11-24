@@ -683,9 +683,8 @@ fn parameter_origin(
 fn cache_location(view: &EditorView, device: DeviceId) -> Option<(String, PathBuf)> {
     let state = view.state.as_ref()?.project.device(device)?.state();
     let key = hex_session::service::vst3_parameter_cache_key(state)?;
-    let home = std::env::var_os("HOME")?;
-    let root = hex_preferences::browser_places_path(std::path::Path::new(&home))
-        .with_file_name("vst3-parameters");
+    let home = super::super::user_home_directory()?;
+    let root = hex_preferences::browser_places_path(&home).with_file_name("vst3-parameters");
     Some((key.clone(), root.join(format!("{key}.json"))))
 }
 
