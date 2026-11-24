@@ -191,24 +191,20 @@ impl Control {
         )
     }
 
-    /// Owning fixture access only: production bound capture remains timing-only.
-    #[cfg(all(
-        test,
-        feature = "vst3-sdk-tests",
-        target_os = "macos",
-        target_arch = "aarch64"
-    ))]
-    pub(crate) fn start_bound_main_for_test(
-        &mut self,
-        source: crate::prepared::AppliedAudioSource,
-    ) -> Result<Reader, Invalid> {
-        self.start_inner(
-            source.context.project_generation,
-            &[],
-            true,
-            Some(source),
-            false,
-        )
+    crate::include_vst3_sdk_tests! {
+        /// Owning fixture access only: production bound capture remains timing-only.
+        pub(crate) fn start_bound_main_for_test(
+            &mut self,
+            source: crate::prepared::AppliedAudioSource,
+        ) -> Result<Reader, Invalid> {
+            self.start_inner(
+                source.context.project_generation,
+                &[],
+                true,
+                Some(source),
+                false,
+            )
+        }
     }
 
     fn start_inner(

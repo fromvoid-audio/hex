@@ -247,7 +247,7 @@ fn actual_unautomated_effect_delivers_in_block_and_boundary_transport_transition
         Split(FixtureClock, FixtureClock),
     }
 
-    let cases: [(&str, [Quantum; 6], [[f32; 8]; 4]); 2] = [
+    let cases = [
         (
             "running_to_paused_in_block_then_boundary_transitions",
             [
@@ -398,7 +398,7 @@ fn actual_unautomated_instrument_and_effect_receive_sdk_loop_wrap_origins() {
                 String::from_utf8_lossy(&result.stderr)
             );
             let bytes = std::fs::read(&trace_path).unwrap();
-            assert!(bytes.len() >= 8 && bytes.len() % 8 == 0);
+            assert!(bytes.len() >= 8 && bytes.len().is_multiple_of(8));
             let words: Vec<i64> = bytes
                 .chunks_exact(8)
                 .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
