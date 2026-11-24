@@ -87,6 +87,7 @@ impl GestureClient {
         };
         self.active = Some(plugin_snapshot(key, origin));
         self.accepted_pair = None;
+        self.stranded_commit = None;
         self.pending_begin = Some(GestureRequest::BeginPlugin {
             key,
             origin,
@@ -116,6 +117,7 @@ impl GestureClient {
         }
         active.sequence = active.sequence.saturating_add(1).max(1);
         active.plugin_value = Some(value);
+        self.stranded_commit = None;
         let request = if terminal {
             GestureRequest::CommitPlugin {
                 key: active.key,

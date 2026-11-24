@@ -608,7 +608,18 @@ impl EditorView {
             || !self.pending_requests.is_empty()
     }
 
+    pub(super) fn edit_pending_excluding_device_gesture(&self) -> bool {
+        self.edit_blocked_outside_request_queue_except_device_gesture()
+            || self.worker_requests_pending != 0
+            || !self.pending_requests.is_empty()
+    }
+
     pub(super) fn edit_blocked_outside_request_queue(&self) -> bool {
+        self.edit_blocked_outside_request_queue_except_device_gesture()
+            || self.device_gesture_pending()
+    }
+
+    fn edit_blocked_outside_request_queue_except_device_gesture(&self) -> bool {
         self.gain_recorder.blocks_edits()
             || self.midi_recorder.blocks_edits()
             || self.audio_recorder.blocks_edits()
@@ -616,7 +627,6 @@ impl EditorView {
             || self.sampler_parameter_pending()
             || self.opening_project
             || self.close_prompt_open
-            || self.device_gesture_pending()
     }
 
     pub(super) fn midi_clip(&self) -> Option<&MidiSource> {
