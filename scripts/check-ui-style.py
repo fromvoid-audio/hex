@@ -307,7 +307,7 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
         # Browser result wrappers contain the existing UniformList and a
         # text-free scrollbar. Keep these exceptions at their typed owners.
         browser_scrollbar_component = (
-            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/browser.rs'
+            path.relative_to(ROOT).as_posix() in ('crates/hex-ui/src/editor/browser.rs', 'crates/hex-ui/src/editor/browser/view.rs')
             and suffix.startswith('self.browser_results(')
         ) or (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/browser/scrollbar.rs'
