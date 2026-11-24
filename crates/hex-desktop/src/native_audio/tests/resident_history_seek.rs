@@ -295,13 +295,9 @@ fn streamed_pending_history_case(section: bool) {
 
         h.service.submit(action).unwrap();
         let refused = h.next();
-        assert!(
-            refused
-                .error
-                .as_deref()
-                .is_some_and(|error| error.contains("publication already pending")),
-            "{:?}",
-            refused.error
+        assert_eq!(
+            refused.error.as_deref(),
+            Some("edit cancelled · audio publication timed out")
         );
         assert_eq!(refused.state.revision, revision);
         assert_eq!(&refused.state.project.snapshot(), expected);
