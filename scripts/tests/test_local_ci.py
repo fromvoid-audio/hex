@@ -595,6 +595,10 @@ class SuppliedSelectionTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
         self.env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+        # Historical fixtures declare no native inputs. Use the same environment
+        # for the recorded selection and the candidate reuse decision.
+        for key in local_ci.ci_plan.python_tests.native_acceptance_inputs(self.env):
+            del self.env[key]
         self.git("init", "-q")
         (self.root / ".gitignore").write_text("artifacts/\ntarget/\n")
         (self.root / "Cargo.toml").write_text("[workspace]\nmembers = ['crates/fixture']\n")
