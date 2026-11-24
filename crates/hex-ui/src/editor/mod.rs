@@ -2376,7 +2376,7 @@ impl EditorView {
         true
     }
 
-    fn displayed_track_switches(&self, track: &hex_project::Track) -> (bool, bool) {
+    fn observed_track_switches(&self, track: TrackId) -> Option<(u64, (bool, bool))> {
         self.track_switch_observation
             .as_ref()
             .filter(|view| {
@@ -2389,10 +2389,14 @@ impl EditorView {
             .and_then(|view| {
                 view.tracks
                     .iter()
-                    .find(|switches| switches.track == track.id())
-                    .map(|switches| (switches.muted, switches.soloed))
+                    .find(|switches| switches.track == track)
+                    .map(|switches| (view.revision, (switches.muted, switches.soloed)))
             })
-            .unwrap_or_else(|| (track.muted(), track.soloed()))
+    }
+
+    fn displayed_track_switches(&self, track: &hex_project::Track) -> (bool, bool) {
+        self.observed_track_switches(track.id())
+            .map_or_else(|| (track.muted(), track.soloed()), |(_, switches)| switches)
     }
 
     pub(super) fn toggle_solo(&mut self, track: TrackId, exclusive: bool) {
