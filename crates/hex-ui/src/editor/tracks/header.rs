@@ -1306,7 +1306,11 @@ impl EditorView {
             hex_engine::OutputCaptureId::Track(track_id),
         );
         let resident_layout = self.document_audio_mode == hex_session::DocumentAudioMode::Resident;
-        let (muted, soloed) = self.displayed_track_switches(track);
+        let (switch_revision, (muted, soloed)) = self
+            .observed_track_switches(track_id)
+            .unwrap_or((state.revision, (track.muted(), track.soloed())));
+        let trace_paint = crate::diagnostics::actions_enabled(cx);
+        let generation = self.project_generation;
         let (active_background, active_text) = crate::editor::track_gain::activator_colors(!muted);
         let (solo_background, solo_text) = crate::editor::track_gain::activator_colors(soloed);
         let activator = toggle_button_with_style(
@@ -1319,6 +1323,16 @@ impl EditorView {
             ("track-mute", track_id.value()),
             theme::action_style().with_state_colors(active_background, active_text),
         )
+        .relative()
+        .children(trace_paint.then(|| {
+            crate::diagnostics::track_switch_paint(
+                generation,
+                switch_revision,
+                track_id,
+                "mute",
+                muted,
+            )
+        }))
         .debug_selector(move || format!("track-mute-{}", track_id.value()))
         .w(px(34.0))
         .flex_shrink_0()
@@ -1338,6 +1352,16 @@ impl EditorView {
             ("track-solo", track_id.value()),
             theme::action_style().with_state_colors(solo_background, solo_text),
         )
+        .relative()
+        .children(trace_paint.then(|| {
+            crate::diagnostics::track_switch_paint(
+                generation,
+                switch_revision,
+                track_id,
+                "solo",
+                soloed,
+            )
+        }))
         .debug_selector(move || format!("track-solo-{}", track_id.value()))
         .w(px(16.0))
         .h(px(14.0))
