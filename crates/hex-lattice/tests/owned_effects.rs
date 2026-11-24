@@ -52,15 +52,32 @@ fn registered_owned_factory_uses_real_chain_and_refuses_legacy_interface()
     );
     check_metadata(&owned_delay::DEFINITION, &state)?;
     check_effect(&owned_delay::DEFINITION, &state, 48_000)?;
-    let chain = chain(17, false)?;
+    let mut chain = chain(17, false)?;
     let view = chain.storage_view();
     let entry = view.entries().next().ok_or("entry missing")?;
     assert!(entry.is_owned_transaction());
-    assert_eq!(entry.runtime_box_identities(), (None, None));
+    let (primary, scratch) = entry.runtime_box_identities();
+    let primary = primary.ok_or("owned runtime identity missing")?;
+    assert_eq!(scratch, None);
     assert!(!entry.runtime_types_are::<NeverLegacy>());
+    chain.begin_block();
+    chain.process_block(&mut [[1.0, -0.5]; 7])?;
+    chain.commit_block();
+    let identities = |chain: &NativeRuntimeChain| {
+        chain
+            .storage_view()
+            .entries()
+            .next()
+            .map(|entry| entry.runtime_box_identities())
+    };
+    assert_eq!(identities(&chain), Some((Some(primary), None)));
     // Owned transactions have their own bounded capacity; the legacy twin
     // limit remains independent and no longer rejects this valid owned ring.
     let larger = self::chain(48_000, false)?;
+    let Some((Some(larger_primary), None)) = identities(&larger) else {
+        return Err("second owned runtime must have exactly one identity".into());
+    };
+    assert_ne!(primary, larger_primary);
     assert!(larger.declared_pair_bytes() > hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES * 2);
     assert!(larger.declared_pair_bytes() <= hex_lattice::MAX_OWNED_PROCESSOR_PAIR_BYTES);
     Ok(())
