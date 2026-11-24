@@ -220,6 +220,14 @@ pub struct DiagnosticsHandle {
     path: Arc<PathBuf>,
 }
 impl DiagnosticsHandle {
+    /// Map an already observed monotonic instant to the elapsed-nanosecond field
+    /// written by this session. A sample before the session has no elapsed time.
+    pub fn elapsed_nanos_at(&self, observed: Instant) -> Option<u128> {
+        observed
+            .checked_duration_since(self.shared.started)
+            .map(|elapsed| elapsed.as_nanos())
+    }
+
     /// Record a legacy unclassified message. This is control-side only.
     pub fn record(&self, message: &str) -> Result<(), PublishError> {
         self.record_typed(Level::Info, Category::Uncategorised, message)

@@ -469,10 +469,13 @@ pub(crate) fn record_audio(cx: &mut App, audio: Option<&mut crate::EditorAudio>)
         let Some(event) = audio.control.take_audio_diagnostic() else {
             break;
         };
+        let entry = event
+            .host_callback_entry
+            .and_then(|start| handle.elapsed_nanos_at(start));
         let _ = handle.record_typed(
             Level::Debug,
             Category::Audio,
-            &format!("audio_diag v=1 stage=callback event={event:?}"),
+            &format!("audio_diag v=1 stage=callback event={event:?} host_callback_entry_elapsed_nanos={entry:?}"),
         );
     }
     if diagnostics.audio_snapshot != Some(snapshot)
