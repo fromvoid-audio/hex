@@ -489,6 +489,7 @@ impl ExportLane {
         job.job_id = id;
         self.prepare_resident_job(job, session, None, snapshot, sink, seeks, preview, live)
     }
+    #[allow(clippy::result_large_err)] // Failed export submission returns the complete ExportEvent directly.
     pub(super) fn submit(&mut self, job: ExportJob) -> Result<(), ExportEvent> {
         let job_id = job.job_id;
         let control = job

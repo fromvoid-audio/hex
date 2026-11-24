@@ -118,9 +118,9 @@ pub(crate) fn apply_current_save_outcome(
 }
 
 pub(crate) fn tuning_library_directory() -> Result<PathBuf, String> {
-    let home = std::env::var_os("HOME")
+    let home = recovery::user_home_directory()
         .ok_or_else(|| "home directory is unavailable for tuning presets".to_owned())?;
-    Ok(PathBuf::from(home).join("Library/Application Support/PORTALSURFER/hex/scales"))
+    Ok(home.join("Library/Application Support/PORTALSURFER/hex/scales"))
 }
 
 pub(crate) struct TuningLibraryContext {
@@ -1331,7 +1331,11 @@ mod tests {
 
     #[test]
     fn tuning_library_directory_points_under_scales() {
-        if let Ok(path) = tuning_library_directory() {
+        if cfg!(windows) && std::env::var_os("USERPROFILE").is_some_and(|v| !v.is_empty()) {
+            let path = tuning_library_directory()
+                .expect("windows user profile resolves tuning library directory");
+            assert!(path.ends_with("scales"));
+        } else if let Ok(path) = tuning_library_directory() {
             assert!(path.ends_with("scales"));
         }
     }

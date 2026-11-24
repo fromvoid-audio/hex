@@ -1223,6 +1223,7 @@ fn desktop_export_refuses_open_project_and_source_media_including_aliases_withou
     let opened = next_event(&service);
     assert!(opened.error.is_none(), "{:?}", opened.error);
 
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut protected = vec![
         (source.clone(), "original media"),
         (source_hardlink, "original media"),

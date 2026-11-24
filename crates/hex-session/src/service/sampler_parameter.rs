@@ -68,6 +68,7 @@ pub(super) fn validate(
 
 /// The sole pending native edit: one fence, serial and final completion.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)] // Sole pending control-plane sampler edit.
 pub enum SamplerEdit {
     Parameter(SamplerParameterEdit),
     Midi(SamplerMidiEdit),
