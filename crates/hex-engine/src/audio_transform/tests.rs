@@ -1482,6 +1482,7 @@ fn shaped_outer_fades_follow_moved_event_output_coordinates_and_recursive_splits
     expected[2000..4000].copy_from_slice(&baseline[2000..4000]);
     expected[4000..6000].copy_from_slice(&baseline[0..2000]);
     expected[6000..8000].copy_from_slice(&baseline[6000..8000]);
+    let moved = expected.clone();
     for (index, frame) in expected.iter_mut().enumerate() {
         let gain = fade.gain_at(index as u64);
         frame[0] *= gain;
@@ -1502,6 +1503,28 @@ fn shaped_outer_fades_follow_moved_event_output_coordinates_and_recursive_splits
             frame: 6500,
         })
         .unwrap();
+    // Each cut discards its interior handle. The last piece is shorter
+    // than its surviving fade-out, so the ramp spans that entire piece.
+    let first_fade = ClipFade::new(5100, 0, 2300, 0)
+        .unwrap()
+        .with_shape(0, 0, 600, 0)
+        .unwrap();
+    let last_fade = ClipFade::new(1500, 0, 0, 1500)
+        .unwrap()
+        .with_shape(0, 0, 0, -500)
+        .unwrap();
+    let expected: Vec<_> = moved
+        .into_iter()
+        .enumerate()
+        .map(|(frame, pcm)| {
+            let gain = match frame {
+                0..5100 => first_fade.gain_at(frame as u64),
+                5100..6500 => 1.0,
+                _ => last_fade.gain_at((frame - 6500) as u64),
+            };
+            pcm.map(|sample| sample * gain)
+        })
+        .collect();
     assert_eq!(
         render(&prepare(&editor, &media, &context), 0, 8000, 127),
         expected
