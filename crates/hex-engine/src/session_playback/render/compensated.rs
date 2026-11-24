@@ -1,8 +1,7 @@
-//! Shared compensated/typed-route path. Upstream latency and typed audio routes
-//! normally use single-frame routing. Independent resident audio tracks can
-//! batch native stages, faders and alignment. Serial Main-only latency retains batched upstream
-//! rendering; its stamps, Main processors and retained tails still advance one
-//! sample at a time through the same compensation owner.
+//! Compensated track, Return and Main routing. Once the transport history is
+//! warm, current processors and retained bus tails read their delayed clocks
+//! from the same upcoming block before its stamps enter the history ring.
+//! Pre-roll and sources requiring frame routing use the scalar path.
 use super::*;
 use crate::compensation::{OriginWindow, TransportStamp};
 
@@ -1707,7 +1706,7 @@ impl SessionPlayback {
     /// sidechains, return buses, native effects, VST3 effects/instruments,
     /// Samplers, automation, metering and observers).
     ///
-    /// Requires the transport stamp ring to already hold `max_latency_frames()`
+    /// Requires the transport stamp ring to hold its retained horizon of
     /// consecutive running frames so every stage's `OriginWindow` is populated
     /// and running across the entire chunk `[0..count]`. Startup pre-roll and
     /// detached track tails retain the per-frame kernel. Track-owned MIDI releases
