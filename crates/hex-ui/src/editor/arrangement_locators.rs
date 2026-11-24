@@ -561,7 +561,7 @@ impl EditorView {
 
     /// Immediate clicks use interactive PlayFrom, including while playing;
     /// keyboard navigation retains the stricter stateful-seek guard.
-    fn locator_play_source(&self) -> Option<hex_audio::prepared::AppliedAudioSource> {
+    pub(super) fn locator_play_source(&self) -> Option<hex_audio::prepared::AppliedAudioSource> {
         self.locator_source_for_action(true)
     }
 
@@ -1350,13 +1350,19 @@ mod tests {
         editor.read_with(&visual, |view, _| {
             assert_eq!(
                 view.last_transport_command,
-                Some(PlaybackCommand::PlayFrom(24_000))
+                Some(PlaybackCommand::PlayFromWithNoteChase {
+                    frame: 24_000,
+                    note_chase: hex_engine::NoteChase::On
+                })
             );
             assert!(view.service.try_event().is_err());
         });
         fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
         editor.update(&mut visual, |view, cx| {
             view.tick(cx);
+            let status = view.audio_status().unwrap();
+            assert!(status.playing.load(Acquire));
+            assert_eq!(status.position.load(Acquire), 24_064);
             assert!(!view.seek_pending(), "click acknowledgment remains pending");
             assert!(
                 view.locator_applied_source().is_some(),
@@ -1499,7 +1505,10 @@ mod tests {
         editor.read_with(&visual, |view, _| {
             assert_eq!(
                 view.last_transport_command,
-                Some(PlaybackCommand::PlayFrom(24_000))
+                Some(PlaybackCommand::PlayFromWithNoteChase {
+                    frame: 24_000,
+                    note_chase: hex_engine::NoteChase::On
+                })
             );
             assert!(view.service.try_event().is_err());
         });
@@ -1553,7 +1562,10 @@ mod tests {
         editor.read_with(&visual, |view, _| {
             assert_eq!(
                 view.last_transport_command,
-                Some(PlaybackCommand::PlayFrom(24_000))
+                Some(PlaybackCommand::PlayFromWithNoteChase {
+                    frame: 24_000,
+                    note_chase: hex_engine::NoteChase::On
+                })
             );
             assert!(view.service.try_event().is_err());
         });
