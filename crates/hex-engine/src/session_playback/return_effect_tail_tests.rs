@@ -1130,6 +1130,83 @@ fn active_return_tail_moves_forward_across_later_revisions() {
 }
 
 #[test]
+fn compensated_return_tail_matches_scalar_through_completion() {
+    use hex_project::{Command, Editor};
+    let mut editor = Editor::new(prepared_return_project(true, 1.0), 4).unwrap();
+    let track = editor.project().tracks()[0].id();
+    let bus = editor.project().return_tracks()[0].id();
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 0.0,
+        })
+        .unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: crate::default_native_device_state(DeviceTypeId::from_static("hex.saturator"))
+                .unwrap(),
+        })
+        .unwrap();
+    let run = |scalar: bool| {
+        let mut runtime = playback(editor.project());
+        if scalar {
+            runtime.resident_source_scratch.clear();
+        }
+        warm(&mut runtime);
+        let route = &runtime.revision.arrangement().return_buses()[0];
+        runtime.return_effect_tails.slots_mut()[0] = Some(ReturnEffectTail::new(
+            active_chain(bus, StereoMatrix::identity()),
+            route,
+        ));
+        let observe = |runtime: &mut SessionPlayback| {
+            let mut width = 0;
+            let mut pcm = [[0.0; 2]; 2];
+            runtime
+                .render_with_node_signal_observer(
+                    &mut pcm,
+                    Some(&mut |_, _, _, frames| width = width.max(frames.len())),
+                )
+                .unwrap();
+            assert_eq!(width, if scalar { 1 } else { 2 });
+            pcm
+        };
+        let first = observe(&mut runtime);
+        assert!(
+            runtime.return_effect_tails.slots()[0]
+                .as_ref()
+                .unwrap()
+                .output_active
+        );
+        let mut mix = [[0.0; 2]; 257];
+        let mut captured = mix;
+        let plan = runtime
+            .output_capture_plan(&[OutputCaptureId::Return(bus)], mix.len())
+            .unwrap();
+        let mut buffers = [&mut captured[..]];
+        let mut capture = OutputCapture::new(&plan, &mut buffers);
+        runtime.render_with_capture(&mut mix, &mut capture).unwrap();
+        assert!(captured[..2].iter().all(|frame| *frame != [0.0; 2]));
+        assert!(captured[2..].iter().all(|frame| *frame == [0.0; 2]));
+        assert!(
+            !runtime.return_effect_tails.slots()[0]
+                .as_ref()
+                .unwrap()
+                .output_active
+        );
+        (
+            first.map(|frame| frame.map(f32::to_bits)),
+            mix.map(|frame| frame.map(f32::to_bits)),
+            captured.map(|frame| frame.map(f32::to_bits)),
+            observe(&mut runtime).map(|frame| frame.map(f32::to_bits)),
+        )
+    };
+    assert_eq!(run(false), run(true));
+}
+
+#[test]
 fn seek_resets_return_tail_state() {
     let project = prepared_return_project(true, 1.0);
     let return_id = project.return_tracks()[0].id();

@@ -1710,7 +1710,7 @@ impl SessionPlayback {
     /// Requires the transport stamp ring to already hold `max_latency_frames()`
     /// consecutive running frames so every stage's `OriginWindow` is populated
     /// and running across the entire chunk `[0..count]`. Startup pre-roll and
-    /// detached tails retain the per-frame kernel. Track-owned MIDI releases
+    /// detached track and Main tails retain the per-frame kernel. Track-owned MIDI releases
     /// are summed into their generators before source effects.
     pub(super) fn can_block_compensated_route(&self, count: usize) -> bool {
         if count <= 1
@@ -1730,7 +1730,12 @@ impl SessionPlayback {
             || self.tail_output_scratch.iter().any(|active| *active)
             || self.tail_groups.iter().any(Option::is_some)
             || self.tail_mutable_instruments.iter().any(Option::is_some)
-            || self.return_effect_tails.slots().iter().any(Option::is_some)
+            || self
+                .return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .any(|tail| tail.output_active && tail.return_id().is_none())
             || self
                 .native_parameter_state
                 .as_deref()
@@ -2379,6 +2384,9 @@ impl SessionPlayback {
         for scratch in &self.return_scratch {
             add_main_track(output, &scratch[..count]);
         }
+
+        self.return_effect_tails
+            .render_chunk(output, frame_offset, capture, foreign)?;
 
         let compensation = self
             .compensation
