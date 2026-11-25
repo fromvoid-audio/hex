@@ -1116,7 +1116,10 @@ impl EditorView {
         before: Option<hex_project::DeviceId>,
     ) -> Result<(PluginEffectDestination, Option<hex_project::DeviceId>), &'static str> {
         match (role, destination) {
-            (hex_plugin_catalog::PluginRole::Instrument, PluginEffectDestination::Track(track)) => {
+            (
+                hex_plugin_catalog::PluginRole::Instrument,
+                PluginEffectDestination::Track(track) | PluginEffectDestination::Instrument(track),
+            ) => {
                 let Some(target) = project.track(track) else {
                     return Err("select a track for the vst3 instrument");
                 };
@@ -1369,16 +1372,21 @@ mod tests {
         };
 
         let project = editor.project();
-        // Empty track -> Instrument(track).
-        assert_eq!(
-            EditorView::resolve_plugin_destination(
-                project,
-                PluginRole::Instrument,
-                PluginEffectDestination::Track(empty_track),
-                None,
-            ),
-            Ok((PluginEffectDestination::Instrument(empty_track), None))
-        );
+        // Empty track (from Track or pre-resolved Instrument drop target) -> Instrument(track).
+        for destination in [
+            PluginEffectDestination::Track(empty_track),
+            PluginEffectDestination::Instrument(empty_track),
+        ] {
+            assert_eq!(
+                EditorView::resolve_plugin_destination(
+                    project,
+                    PluginRole::Instrument,
+                    destination,
+                    None,
+                ),
+                Ok((PluginEffectDestination::Instrument(empty_track), None))
+            );
+        }
         // Occupied track (native or VST3) -> ReplaceInstrument { track, instrument }.
         assert_eq!(
             EditorView::resolve_plugin_destination(
@@ -1411,42 +1419,24 @@ mod tests {
             ))
         );
         // Group track, non-receiving contributor track, Return, and Main refuse VST3 instrument.
-        assert!(
-            EditorView::resolve_plugin_destination(
-                project,
-                PluginRole::Instrument,
-                PluginEffectDestination::Track(group),
-                None,
-            )
-            .is_err()
-        );
-        assert!(
-            EditorView::resolve_plugin_destination(
-                project,
-                PluginRole::Instrument,
-                PluginEffectDestination::Track(contributor),
-                None,
-            )
-            .is_err()
-        );
-        assert!(
-            EditorView::resolve_plugin_destination(
-                project,
-                PluginRole::Instrument,
-                PluginEffectDestination::Return(bus),
-                None,
-            )
-            .is_err()
-        );
-        assert!(
-            EditorView::resolve_plugin_destination(
-                project,
-                PluginRole::Instrument,
-                PluginEffectDestination::Main,
-                None,
-            )
-            .is_err()
-        );
+        for destination in [
+            PluginEffectDestination::Track(group),
+            PluginEffectDestination::Instrument(group),
+            PluginEffectDestination::Track(contributor),
+            PluginEffectDestination::Instrument(contributor),
+            PluginEffectDestination::Return(bus),
+            PluginEffectDestination::Main,
+        ] {
+            assert!(
+                EditorView::resolve_plugin_destination(
+                    project,
+                    PluginRole::Instrument,
+                    destination,
+                    None,
+                )
+                .is_err()
+            );
+        }
         // VST3 effect keeps Track(track) and preserves before == Some(instrument).
         assert_eq!(
             EditorView::resolve_plugin_destination(
