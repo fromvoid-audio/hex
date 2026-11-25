@@ -1262,14 +1262,28 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
     use std::sync::atomic::Ordering::Acquire;
     let _output_fixture_guard = graph_layout_tests::status_fixture_guard();
     let directory = Directory::new();
+    let parent = directory.0.join("not-a-recovery-directory");
+    let slot = parent.join("untitled.hexjournal");
+    let mut checkpoint =
+        recovery_error.then(|| hex_session::service::hold_next_checkpoint(slot.clone()).unwrap());
     let service = if recovery_error {
-        // A real worker-owned checkpoint failure, after a successful model edit.
-        // No fabricated Event.error, proof, callback ACK or preparation outcome.
-        let parent = directory.0.join("not-a-recovery-directory");
         std::fs::write(&parent, b"owned fixture obstruction").unwrap();
-        Service::with_recovery(48_000, 32, 0, parent.join("untitled.hexjournal")).unwrap()
+        Service::with_recovery(48_000, 32, 0, slot.clone()).unwrap()
     } else {
         Service::new(48_000, 32, 0).unwrap()
+    };
+    let terminal = |service: &Service| loop {
+        let event = receive_service_event(service);
+        if event.request_complete {
+            break event;
+        }
+        assert!(event.playback.is_none() && !event.project_replaced);
+        if let Some(error) = &event.error {
+            assert!(
+                recovery_error && error.contains("recovery directory must be a real directory"),
+                "{error}"
+            );
+        }
     };
     receive_service_event(&service);
     service
@@ -1280,13 +1294,13 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
             state: hex_project::default_instrument_state().unwrap(),
         }))
         .unwrap();
-    receive_service_event(&service);
+    terminal(&service);
     service
         .submit(Request::Edit(Command::AddScene {
             name: "launch".into(),
         }))
         .unwrap();
-    let mut initial = receive_service_event(&service);
+    let mut initial = terminal(&service);
     let scene = initial.state.project.scenes()[0].id();
     let state = Arc::clone(&initial.state);
     let track = state.project.tracks()[0].id();
@@ -1302,7 +1316,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
             input: keyboard.clone(),
         })
         .unwrap();
-    initial = receive_service_event(&service);
+    initial = terminal(&service);
     assert!(initial.error.is_none());
     let source = state.canonical_audio_source.as_ref().unwrap().clone();
     let prepared = initial
@@ -1388,7 +1402,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
                     action: hex_project::DeviceComparisonAction::Switch,
                 })
                 .unwrap();
-            let refused = receive_service_event(&view.service);
+            let refused = terminal(&view.service);
             assert!(refused.error.is_some());
             assert!(refused.state.comparison_audio.is_none());
             assert_eq!(refused.state.revision, state.revision);
@@ -1414,12 +1428,46 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
                 action: hex_project::DeviceComparisonAction::Switch,
             })
             .unwrap();
-        let event = receive_service_event(&view.service);
+        let event = terminal(&view.service);
         assert!(event.playback.is_none());
+        if let Some(mut gate) = checkpoint.take() {
+            // The edit completed while recovery was held. Let the genuine
+            // filesystem failure arrive while the audio candidate is pending.
+            let deadline = crate::test_wait::hang_deadline();
+            loop {
+                match gate.try_entered() {
+                    Ok(()) => break,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => assert!(
+                        std::time::Instant::now() < deadline,
+                        "checkpoint did not enter"
+                    ),
+                    Err(error) => panic!("checkpoint unavailable: {error}"),
+                }
+                std::thread::yield_now();
+            }
+            assert!(event.recovery_failure.is_none());
+            gate.release().unwrap();
+        }
+        let notice = if recovery_error {
+            let notice = receive_service_event(&view.service);
+            assert!(!notice.request_complete && notice.playback.is_none());
+            Some(notice)
+        } else {
+            None
+        };
         if recovery_error {
-            assert_eq!(
-                event.error.as_deref(),
-                Some("automatic recovery: recovery directory must be a real directory")
+            let failure = notice
+                .as_ref()
+                .unwrap_or(&event)
+                .recovery_failure
+                .as_ref()
+                .unwrap();
+            assert_eq!(failure.path, slot);
+            assert!(
+                failure
+                    .explanation
+                    .contains("recovery directory must be a real directory"),
+                "{failure:?}"
             );
             assert_eq!(event.state.revision, state.revision + 1);
             assert!(event.state.comparison_audio.as_ref().unwrap().follows(
@@ -1453,7 +1501,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
                     action: hex_project::DeviceComparisonAction::Switch,
                 })
                 .unwrap();
-            let invalid = receive_service_event(&view.service);
+            let invalid = terminal(&view.service);
             assert!(invalid.error.is_some()); // Wrong active slot: no new commit.
             assert_eq!(invalid.state.revision, event.state.revision);
             view.project_generation = 1;
@@ -1467,10 +1515,20 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
             );
         }
         view.receive(event);
+        if let Some(notice) = notice {
+            view.receive(notice);
+        }
         if recovery_error {
+            assert!(
+                view.recovery_failure
+                    .as_ref()
+                    .unwrap()
+                    .explanation
+                    .contains("recovery directory must be a real directory")
+            );
             assert_eq!(
-                view.error.as_deref(),
-                Some("automatic recovery: recovery directory must be a real directory")
+                std::fs::read(&parent).unwrap(),
+                b"owned fixture obstruction"
             );
         }
         let next = view.state.as_ref().unwrap();
@@ -1544,16 +1602,16 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
                 action: hex_project::DeviceComparisonAction::Switch,
             })
             .unwrap();
-        let event = receive_service_event(&view.service);
+        let event = terminal(&view.service);
         let next = event.state.clone();
         if recovery_error {
-            assert_eq!(event.error.as_deref(), Some("automatic recovery: recovery directory must be a real directory"));
+            assert!(event.recovery_failure.as_ref().unwrap().explanation.contains("recovery directory must be a real directory"));
             assert!(event.playback.is_none());
             assert!(next.comparison_audio.as_ref().unwrap().follows(&current, &next, 0));
         }
         view.receive(event);
         if recovery_error {
-            assert_eq!(view.error.as_deref(), Some("automatic recovery: recovery directory must be a real directory"));
+            assert!(view.recovery_failure.as_ref().unwrap().explanation.contains("recovery directory must be a real directory"));
             assert_eq!(view.computer_keyboard.target, Some((0, next.revision, track)));
             assert!(!keyboard.is_cancelled());
             assert!(Arc::ptr_eq(next.canonical_audio_source.as_ref().unwrap(), &source));
@@ -1581,7 +1639,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         if recovery_error {
             // A same-revision Save/status must not need to replay the lost edge.
             view.service.submit(Request::SaveNew(directory.0.join("after-recovery.hex"))).unwrap();
-            let saved = receive_service_event(&view.service);
+            let saved = terminal(&view.service);
             assert!(saved.error.is_none());
             assert!(saved.playback.is_none());
             assert_eq!(saved.state.revision, next.revision);
@@ -1619,7 +1677,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         view.service
             .submit(Request::Edit(Command::Mute { track, muted: true }))
             .unwrap();
-        let audio_event = receive_service_event(&view.service);
+        let audio_event = terminal(&view.service);
         let actual_prepared = audio_event
             .playback
             .as_ref()
@@ -1646,7 +1704,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
                 action: hex_project::DeviceComparisonAction::Switch,
             })
             .unwrap();
-        let metadata_event = receive_service_event(&view.service);
+        let metadata_event = terminal(&view.service);
         let metadata_state = metadata_event.state.clone();
         view.receive(metadata_event); // Deliberately out of order: cannot skip its actual audio source.
         assert_eq!(view.state.as_ref().unwrap().revision, next.revision);
@@ -1656,7 +1714,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         view.service
             .submit(Request::SaveNew(directory.0.join("queued.hex")))
             .unwrap();
-        let saved = receive_service_event(&view.service);
+        let saved = terminal(&view.service);
         view.receive(saved); // Persistent, ordered proof now correlates the pending graph.
         assert_eq!(
             view.state.as_ref().unwrap().revision,
@@ -1685,14 +1743,14 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
             "a pending graph cannot become applied through metadata"
         );
         view.service.submit(Request::SaveCurrent).unwrap();
-        let delayed_metadata = receive_service_event(&view.service);
+        let delayed_metadata = terminal(&view.service);
         view.service
             .submit(Request::Edit(Command::Mute {
                 track,
                 muted: false,
             }))
             .unwrap();
-        let later_audio = receive_service_event(&view.service);
+        let later_audio = terminal(&view.service);
         let later_state = later_audio.state.clone();
         view.receive(later_audio);
         view.receive(delayed_metadata); // Old proof cannot resurrect the retired pending graph.
