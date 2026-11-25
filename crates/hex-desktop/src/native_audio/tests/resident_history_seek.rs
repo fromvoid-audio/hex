@@ -60,12 +60,13 @@ fn held_locator_seek(case: HeldLocatorSeek) {
         "hex.reverb",
     ))
     .unwrap();
-    h.run(Request::Edit(Command::InsertDevice {
+    let prepared = h.run(Request::Edit(Command::InsertDevice {
         track,
         before: None,
         state: reverb,
     }));
     applied = h.applied(applied).0;
+    wait_for_recovery_project(&journal, &prepared.state.project);
     let mut gate = hex_session::service::hold_next_checkpoint(journal.clone()).unwrap();
     h.service
         .submit(Request::Edit(Command::AddArrangementLocator { frame: 129 }))
@@ -96,10 +97,12 @@ fn held_locator_seek(case: HeldLocatorSeek) {
         metadata.requires_preroll,
         "fixture must require a stateful seek"
     );
+    let locator_terminal = h.next();
+    assert!(locator_terminal.request_complete && locator_terminal.error.is_none());
     assert!(
-        h.service.try_event().is_err(),
-        "checkpoint terminal is still held"
+        matches!(locator_terminal.created, Some(Created::ArrangementLocator(id)) if id == locator.id())
     );
+    assert_eq!(locator_terminal.state.revision, state.revision);
     let mut intent = h.seek_intent(1, state.revision, None, None);
     let expected_output = intent.fence.output_identity;
     intent.destination_frame = locator.frame();
@@ -121,10 +124,6 @@ fn held_locator_seek(case: HeldLocatorSeek) {
     assert_eq!(result.request_id, 1);
     assert_eq!(result.project_generation, view.project_generation);
     assert_eq!(result.project_revision, requested_revision);
-    assert!(
-        h.service.try_event().is_err(),
-        "seek terminal must remain ordered"
-    );
     match case {
         HeldLocatorSeek::Accepted => {
             let hex_session::service::ResidentPublicationAcceptance::Submitted {
@@ -165,17 +164,8 @@ fn held_locator_seek(case: HeldLocatorSeek) {
             assert!(!status.playing.load(Acquire));
         }
     }
-    assert!(
-        h.service.try_event().is_err(),
-        "checkpoint terminal remains held after seek"
-    );
-    gate.release().unwrap();
-    let locator_terminal = h.next();
-    assert!(
-        matches!(locator_terminal.created, Some(Created::ArrangementLocator(id)) if id == locator.id())
-    );
-    assert_eq!(locator_terminal.state.revision, state.revision);
     let seek_terminal = h.next();
+    assert!(seek_terminal.request_complete);
     assert_eq!(
         seek_terminal.error.is_some(),
         matches!(
@@ -183,7 +173,12 @@ fn held_locator_seek(case: HeldLocatorSeek) {
             HeldLocatorSeek::StaleRevision | HeldLocatorSeek::Cancelled
         )
     );
-    assert_eq!(hex_storage::load_journal(&journal).unwrap(), *state.project);
+    assert_eq!(
+        hex_storage::load_journal(&journal).unwrap(),
+        *prepared.state.project
+    );
+    gate.release().unwrap();
+    wait_for_recovery_project(&journal, &state.project);
 }
 
 #[test]
