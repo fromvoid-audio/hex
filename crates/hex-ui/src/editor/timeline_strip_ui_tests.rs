@@ -100,8 +100,8 @@ fn arrangement_audio_and_midi_share_timeline_surface_styling(cx: &mut TestAppCon
         assert!(visual.debug_bounds("midi-loop-start-marker").is_some());
         assert!(visual.debug_bounds("midi-loop-end-marker").is_some());
         editor.update(&mut visual, |v, cx| {
-            v.piano_beat_start = i128::from(hex_project::BeatTime::ONE.raw());
-            v.piano_beat_span = hex_project::BeatTime::from_quarters(2).unwrap();
+            v.midi_editor.piano_beat_start = i128::from(hex_project::BeatTime::ONE.raw());
+            v.midi_editor.piano_beat_span = hex_project::BeatTime::from_quarters(2).unwrap();
             cx.notify();
         });
         visual.run_until_parked();
@@ -119,8 +119,8 @@ fn arrangement_audio_and_midi_share_timeline_surface_styling(cx: &mut TestAppCon
             let track = &v.state.as_ref().unwrap().project.tracks()[0];
             v.selected_track = Some(track.id());
             v.selected_clip = Some(track.clips()[0].id());
-            v.clip_view_open = true;
-            v.device_panel_active = false;
+            v.audio_detail.clip_view_open = true;
+            v.device_panel.active = false;
             cx.notify();
         });
         visual.simulate_resize(size(px(1280.0), px(800.0)));
@@ -129,7 +129,7 @@ fn arrangement_audio_and_midi_share_timeline_surface_styling(cx: &mut TestAppCon
         surface(&mut visual, "audio-events-time-ruler", 24.0);
         surface(&mut visual, "audio-loop-ruler", 18.0);
         editor.update(&mut visual, |v, cx| {
-            v.audio_event_editor.source_view = true;
+            v.audio_detail.event.source_view = true;
             cx.notify();
         });
         visual.run_until_parked();
@@ -161,9 +161,9 @@ fn loop_endpoints_exactly_at_viewport_edges_remain_painted(cx: &mut TestAppConte
         (4, "midi-loop-end-marker", "midi-loop-start-marker", false),
     ] {
         editor.update(&mut visual, |v, cx| {
-            v.piano_beat_start =
+            v.midi_editor.piano_beat_start =
                 i128::from(hex_project::BeatTime::from_quarters(first).unwrap().raw());
-            v.piano_beat_span = hex_project::BeatTime::from_quarters(2).unwrap();
+            v.midi_editor.piano_beat_span = hex_project::BeatTime::from_quarters(2).unwrap();
             cx.notify();
         });
         visual.run_until_parked();

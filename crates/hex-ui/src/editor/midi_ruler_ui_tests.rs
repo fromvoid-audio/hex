@@ -220,7 +220,7 @@ fn marker_drag_at_nonzero_arrangement_placement_acks_once_and_preserves_other_st
         (
             v.state.as_ref().unwrap().project.snapshot(),
             v.state.as_ref().unwrap().revision,
-            v.midi_marker,
+            v.midi_editor.marker,
             v.offline_cursor,
         )
     });
@@ -231,7 +231,7 @@ fn marker_drag_at_nonzero_arrangement_placement_acks_once_and_preserves_other_st
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before.0);
         assert_eq!(
-            v.midi_ruler.gesture.unwrap().preview.source_start,
+            v.midi_editor.ruler.gesture.unwrap().preview.source_start,
             beat(2).raw()
         );
         assert!(!v.edit_pending());
@@ -262,8 +262,11 @@ fn marker_drag_at_nonzero_arrangement_placement_acks_once_and_preserves_other_st
                 .collect::<Vec<_>>(),
             vec![(60, 2, 37), (64, 2, 93)]
         );
-        assert_eq!((v.midi_marker, v.offline_cursor), (before.2, before.3));
-        assert!(v.last_transport_command.is_none());
+        assert_eq!(
+            (v.midi_editor.marker, v.offline_cursor),
+            (before.2, before.3)
+        );
+        assert!(v.test_probes.last_transport_command.is_none());
         let events = hex_engine::midi_compile::midi_events(&state.project).unwrap();
         assert_eq!(events[0].pitch, 64);
         assert_eq!(
@@ -357,7 +360,7 @@ fn one_shot_marker_drag_moves_the_arrangement_region_and_keeps_notes_at_their_so
             "material before the marker is outside"
         );
         assert!(matches!(
-            v.last_enqueued_edit,
+            v.test_probes.last_enqueued_edit,
             Some(Command::ResizeMidiClipView {
                 operation: hex_project::MidiViewResizeOperation::PlayStart { .. },
                 ..
@@ -418,10 +421,10 @@ fn session_marker_uses_its_own_source_and_blank_click_and_unchanged_drag_are_noo
         };
         let clip = cell.id();
         v.mode = crate::editor::EditorMode::Session;
-        v.selected_scene = Some(scene);
-        v.selected_cell = Some((track, scene));
+        v.session_grid.selected_scene = Some(scene);
+        v.session_grid.selected_cell = Some((track, scene));
         v.selected_clip = Some(clip);
-        v.piano_view_clip = None;
+        v.midi_editor.piano_view_clip = None;
         cx.notify();
         clip
     });
@@ -441,7 +444,7 @@ fn session_marker_uses_its_own_source_and_blank_click_and_unchanged_drag_are_noo
         let p = &v.state.as_ref().unwrap().project;
         assert_eq!(p.midi_source(clip).unwrap().source_start(), beat(1));
         assert_eq!(p.midi_source(arrangement).unwrap().source_start(), beat(0));
-        assert!(v.last_transport_command.is_none());
+        assert!(v.test_probes.last_transport_command.is_none());
         p.snapshot()
     });
     visual.simulate_keystrokes("cmd-z");
@@ -464,8 +467,8 @@ fn marker_cancels_on_escape_focus_viewport_competing_ack_and_clip_retirement(
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     for cancel in 0..5 {
         editor.update(&mut visual, |v, cx| {
-            v.piano_beat_start = 0;
-            v.piano_beat_span = beat(4);
+            v.midi_editor.piano_beat_start = 0;
+            v.midi_editor.piano_beat_span = beat(4);
             cx.notify();
         });
         visual.run_until_parked();
@@ -473,7 +476,9 @@ fn marker_cancels_on_escape_focus_viewport_competing_ack_and_clip_retirement(
         let up = marker_at(&mut visual, 0.5);
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(up, Some(MouseButton::Left), Modifiers::default());
-        editor.read_with(&visual, |v, _| assert!(v.midi_ruler.gesture.is_some()));
+        editor.read_with(&visual, |v, _| {
+            assert!(v.midi_editor.ruler.gesture.is_some())
+        });
         match cancel {
             0 => visual.simulate_keystrokes("escape"),
             1 => visual.update(|window, cx| editor.update(cx, |v, _| v.focus.focus(window))),
@@ -500,7 +505,9 @@ fn marker_cancels_on_escape_focus_viewport_competing_ack_and_clip_retirement(
             }
         };
         visual.run_until_parked();
-        editor.read_with(&visual, |v, _| assert!(v.midi_ruler.gesture.is_none()));
+        editor.read_with(&visual, |v, _| {
+            assert!(v.midi_editor.ruler.gesture.is_none())
+        });
         if matches!(cancel, 0 | 1 | 3) {
             assert_marker(&mut visual, 0.0);
         }
@@ -533,7 +540,7 @@ fn marker_cancels_on_escape_focus_viewport_competing_ack_and_clip_retirement(
                 .source_length(),
             beat(4)
         );
-        assert_eq!(v.midi_marker, Some(0));
+        assert_eq!(v.midi_editor.marker, Some(0));
     });
 }
 
@@ -556,7 +563,7 @@ fn stale_rendered_generation_cannot_capture_a_start_marker(cx: &mut TestAppConte
             cx,
         );
         assert!(
-            editor.read(cx).midi_ruler.gesture.is_none(),
+            editor.read(cx).midi_editor.ruler.gesture.is_none(),
             "old rendered marker cannot capture a new generation"
         );
         assert!(!editor.read(cx).edit_pending());
@@ -598,7 +605,7 @@ fn saved_start_marker_lights_up_only_at_its_grab_target_without_editing(cx: &mut
 #[gpui::test]
 fn held_two_at_saved_start_selects_time_without_moving_midi_start(cx: &mut TestAppContext) {
     let (mut visual, editor, _environment, _clip) = fixture(cx);
-    visual.update(|window, cx| editor.read(cx).midi_focus.focus(window));
+    visual.update(|window, cx| editor.read(cx).midi_editor.focus.focus(window));
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     let down = marker_at(&mut visual, 0.0);
     let up = marker_at(&mut visual, 0.25);
@@ -610,7 +617,7 @@ fn held_two_at_saved_start_selects_time_without_moving_midi_start(cx: &mut TestA
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     editor.read_with(&visual, |v, _| {
         assert!(
-            !v.midi_ruler.held(),
+            !v.midi_editor.ruler.held(),
             "held 2 owns time selection at the marker"
         )
     });

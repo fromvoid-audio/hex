@@ -19,25 +19,31 @@ fn middle_drag_moves_both_axes_without_editing_and_ack_keeps_blank_space(cx: &mu
     );
     visual.simulate_mouse_down(down, MouseButton::Middle, Modifiers::default());
     editor.read_with(&visual, |v, _| {
-        assert!(v.midi_pan.gesture.is_some(), "middle press must capture")
+        assert!(
+            v.midi_editor.pan.gesture.is_some(),
+            "middle press must capture"
+        )
     });
     visual.simulate_mouse_move(end, Some(MouseButton::Middle), Modifiers::default());
     editor.read_with(&visual, |v, _| {
         assert!(
-            v.piano_beat_start > 0,
+            v.midi_editor.piano_beat_start > 0,
             "middle move must pan; captured={}",
-            v.midi_pan.gesture.is_some()
+            v.midi_editor.pan.gesture.is_some()
         )
     });
     visual.run_until_parked();
     visual.simulate_mouse_up(end, MouseButton::Middle, Modifiers::default());
     visual.run_until_parked();
     let viewport = editor.read_with(&visual, |v, _| {
-        assert!((v.piano_beat_start as f64 / BeatTime::ONE.raw() as f64 - 3.0).abs() < 0.000001);
+        assert!(
+            (v.midi_editor.piano_beat_start as f64 / BeatTime::ONE.raw() as f64 - 3.0).abs()
+                < 0.000001
+        );
         assert_eq!(
             (
-                v.piano_pitch.first_test_pitch(),
-                v.piano_pitch.test_row_count()
+                v.midi_editor.piano_pitch.first_test_pitch(),
+                v.midi_editor.piano_pitch.test_row_count()
             ),
             (54, 24)
         );
@@ -48,9 +54,9 @@ fn middle_drag_moves_both_axes_without_editing_and_ack_keeps_blank_space(cx: &mu
         );
         assert!(!v.edit_pending());
         (
-            v.piano_beat_start,
-            v.piano_beat_span,
-            v.piano_pitch.first_test_pitch(),
+            v.midi_editor.piano_beat_start,
+            v.midi_editor.piano_beat_span,
+            v.midi_editor.piano_pitch.first_test_pitch(),
         )
     });
     visual.simulate_mouse_down(down, MouseButton::Middle, Modifiers::default());
@@ -68,15 +74,15 @@ fn middle_drag_moves_both_axes_without_editing_and_ack_keeps_blank_space(cx: &mu
     editor.read_with(&visual, |v, _| {
         assert_eq!(
             (
-                v.piano_beat_start,
-                v.piano_beat_span,
-                v.piano_pitch.first_test_pitch()
+                v.midi_editor.piano_beat_start,
+                v.midi_editor.piano_beat_span,
+                v.midi_editor.piano_pitch.first_test_pitch()
             ),
             viewport
         );
         assert_eq!(v.detail_clip_id(), Some(clip));
         assert!(
-            v.midi_pan.gesture.is_none(),
+            v.midi_editor.pan.gesture.is_none(),
             "ACK retires capture, preserving viewport"
         );
     });
@@ -117,13 +123,13 @@ fn pan_mode_intercepts_drawing_and_cancelled_creation_never_commits(cx: &mut Tes
     let (mut visual, editor, _environment, clip) = fixture(cx);
     let roll = visual.debug_bounds("midi-note-roll").unwrap();
     double_down(&mut visual, roll.center(), Modifiers::default());
-    editor.read_with(&visual, |v, _| assert!(v.midi_creation.is_some()));
+    editor.read_with(&visual, |v, _| assert!(v.midi_editor.creation.is_some()));
     // Creation now owns its held left press; a secondary middle press cannot
     // preempt it. End that gesture before starting fresh middle navigation.
     visual.simulate_mouse_down(roll.center(), MouseButton::Middle, Modifiers::default());
     editor.read_with(&visual, |v, _| {
-        assert!(v.midi_creation.is_some());
-        assert!(v.midi_pan.gesture.is_none());
+        assert!(v.midi_editor.creation.is_some());
+        assert!(v.midi_editor.pan.gesture.is_none());
         assert!(!v.edit_pending());
     });
     visual.simulate_mouse_up(roll.center(), MouseButton::Middle, Modifiers::default());
@@ -131,8 +137,8 @@ fn pan_mode_intercepts_drawing_and_cancelled_creation_never_commits(cx: &mut Tes
     visual.simulate_mouse_up(roll.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_down(roll.center(), MouseButton::Middle, Modifiers::default());
     editor.read_with(&visual, |v, _| {
-        assert!(v.midi_creation.is_none());
-        assert!(v.midi_pan.gesture.is_some());
+        assert!(v.midi_editor.creation.is_none());
+        assert!(v.midi_editor.pan.gesture.is_some());
     });
     visual.simulate_mouse_move(
         point(roll.center().x - px(20.0), roll.center().y),
@@ -152,24 +158,30 @@ fn pan_mode_intercepts_drawing_and_cancelled_creation_never_commits(cx: &mut Tes
     visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert!(v.midi_pan.enabled);
-        assert!(v.midi_pan.gesture.is_some());
-        assert_eq!(v.piano_pitch.first_test_pitch(), 24);
-        assert!(v.midi_stroke.is_none());
-        assert!(v.midi_creation.is_none());
+        assert!(v.midi_editor.pan.enabled);
+        assert!(v.midi_editor.pan.gesture.is_some());
+        assert_eq!(v.midi_editor.piano_pitch.first_test_pitch(), 24);
+        assert!(v.midi_editor.stroke.is_none());
+        assert!(v.midi_editor.creation.is_none());
     });
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     let viewport = editor.read_with(&visual, |v, _| {
-        assert!(v.midi_pan.gesture.is_none());
-        (v.piano_beat_start, v.piano_pitch.first_test_pitch())
+        assert!(v.midi_editor.pan.gesture.is_none());
+        (
+            v.midi_editor.piano_beat_start,
+            v.midi_editor.piano_pitch.first_test_pitch(),
+        )
     });
     visual.simulate_mouse_move(roll.center(), Some(MouseButton::Left), Modifiers::default());
     visual.simulate_mouse_up(roll.center(), MouseButton::Left, Modifiers::default());
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(
-            (v.piano_beat_start, v.piano_pitch.first_test_pitch()),
+            (
+                v.midi_editor.piano_beat_start,
+                v.midi_editor.piano_pitch.first_test_pitch()
+            ),
             viewport
         );
         assert!(
@@ -194,9 +206,9 @@ fn pan_bounds_and_focus_cancel_are_view_only_at_pitch_and_time_extremes(cx: &mut
         (16 * BeatTime::ONE.raw(), 128),
     ] {
         editor.update(&mut visual, |v, cx| {
-            v.piano_beat_span = BeatTime::from_raw(span);
-            v.piano_beat_start = 0;
-            v.piano_pitch = crate::editor::PitchViewport::from_rows(0, rows).unwrap();
+            v.midi_editor.piano_beat_span = BeatTime::from_raw(span);
+            v.midi_editor.piano_beat_start = 0;
+            v.midi_editor.piano_pitch = crate::editor::PitchViewport::from_rows(0, rows).unwrap();
             cx.notify();
         });
         visual.run_until_parked();
@@ -205,7 +217,7 @@ fn pan_bounds_and_focus_cancel_are_view_only_at_pitch_and_time_extremes(cx: &mut
             (-1.0e30, 0, i128::from(u64::MAX - span)),
         ] {
             editor.update(&mut visual, |v, cx| {
-                v.piano_beat_start = 0;
+                v.midi_editor.piano_beat_start = 0;
                 cx.notify();
             });
             visual.run_until_parked();
@@ -214,8 +226,8 @@ fn pan_bounds_and_focus_cancel_are_view_only_at_pitch_and_time_extremes(cx: &mut
             visual.simulate_mouse_move(end, Some(MouseButton::Middle), Modifiers::default());
             visual.run_until_parked();
             editor.read_with(&visual, |v, _| {
-                assert_eq!(v.piano_pitch.first_test_pitch(), expected_low);
-                assert_eq!(v.piano_beat_start, expected_start);
+                assert_eq!(v.midi_editor.piano_pitch.first_test_pitch(), expected_low);
+                assert_eq!(v.midi_editor.piano_beat_start, expected_start);
             });
             visual.simulate_mouse_up(end, MouseButton::Middle, Modifiers::default());
             visual.run_until_parked();
@@ -224,7 +236,7 @@ fn pan_bounds_and_focus_cancel_are_view_only_at_pitch_and_time_extremes(cx: &mut
     visual.simulate_mouse_down(roll.center(), MouseButton::Middle, Modifiers::default());
     visual.update(|window, cx| editor.update(cx, |v, _| v.focus.focus(window)));
     visual.run_until_parked();
-    editor.read_with(&visual, |v, _| assert!(v.midi_pan.gesture.is_none()));
+    editor.read_with(&visual, |v, _| assert!(v.midi_editor.pan.gesture.is_none()));
     visual.simulate_mouse_down(roll.center(), MouseButton::Middle, Modifiers::default());
     editor.update(&mut visual, |v, cx| {
         v.selected_clip = None;
@@ -233,7 +245,7 @@ fn pan_bounds_and_focus_cancel_are_view_only_at_pitch_and_time_extremes(cx: &mut
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert!(
-            v.midi_pan.gesture.is_none(),
+            v.midi_editor.pan.gesture.is_none(),
             "retire capture even when no midi canvas is rendered"
         )
     });
@@ -282,10 +294,10 @@ fn panned_note_and_velocity_hits_align_and_draw_can_grow_a_fully_blank_view(
     visual.simulate_click(note_at, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_selection.primary(), Some(note_id))
+        assert_eq!(v.midi_editor.selection.primary(), Some(note_id))
     });
     editor.update(&mut visual, |v, cx| {
-        v.midi_selection.clear();
+        v.midi_editor.selection.clear();
         cx.notify();
     });
     visual.run_until_parked();
@@ -297,13 +309,13 @@ fn panned_note_and_velocity_hits_align_and_draw_can_grow_a_fully_blank_view(
     visual.simulate_click(velocity_at, Modifiers::default());
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_selection.primary(), Some(note_id))
+        assert_eq!(v.midi_editor.selection.primary(), Some(note_id))
     });
     editor.update(&mut visual, |v, cx| {
         v.pan_piano(true);
         v.pan_piano(true);
         v.pan_piano(true);
-        v.midi_draw_mode = true;
+        v.midi_editor.draw_mode = true;
         cx.notify();
     });
     visual.run_until_parked();
@@ -316,7 +328,7 @@ fn panned_note_and_velocity_hits_align_and_draw_can_grow_a_fully_blank_view(
             .midi_source(clip)
             .unwrap()
             .source_length();
-        assert!(v.piano_beat_start >= i128::from(length.raw()));
+        assert!(v.midi_editor.piano_beat_start >= i128::from(length.raw()));
         length
     });
     visual.simulate_mouse_down(roll.center(), MouseButton::Left, Modifiers::default());

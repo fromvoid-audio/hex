@@ -1,7 +1,2 @@
-#[allow(dead_code)]
-#[path = "../../src/editor/tracks/clone_source_window.rs"]
-mod clone_source_window;
-
-#[allow(dead_code)]
-#[path = "../../src/editor/tracks/group_overlap.rs"]
-mod group_overlap;
+#[allow(unused_imports)]
+use hex_ui_model::{clone_source_window, group_overlap};

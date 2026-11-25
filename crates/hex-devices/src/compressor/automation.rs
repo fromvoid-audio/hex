@@ -3,7 +3,7 @@
 use super::*;
 
 fn time_alpha(milliseconds: f32, sample_rate: u32) -> f64 {
-    (-1.0 / (f64::from(milliseconds) * (f64::from(sample_rate) / 1_000.0))).exp()
+    hex_dsp::one_pole_pole(sample_rate, f64::from(milliseconds) * 0.001).unwrap_or(0.0)
 }
 
 impl CompressorSettings {
@@ -63,8 +63,10 @@ impl PreparedCompressor {
             sample_rate,
             attack_alpha: time_alpha(settings.attack_ms, sample_rate),
             release_alpha: time_alpha(settings.release_ms, sample_rate),
-            gain_alpha: (-1.0 / (GAIN_SMOOTH_MS * (f64::from(sample_rate) / 1_000.0))).exp(),
-            rms_alpha: (-1.0 / (RMS_INTEGRATION_SECONDS * f64::from(sample_rate))).exp(),
+            gain_alpha: hex_dsp::one_pole_pole(sample_rate, GAIN_SMOOTH_MS * 0.001)
+                .map_err(|_| DeviceContractError::InvalidParameterValue)?,
+            rms_alpha: hex_dsp::one_pole_pole(sample_rate, RMS_INTEGRATION_SECONDS)
+                .map_err(|_| DeviceContractError::InvalidParameterValue)?,
         })
     }
     fn check_inline(&self) {
@@ -102,31 +104,28 @@ impl CompressorRuntime {
             gain_alpha,
             rms_alpha,
             energy,
-            detector_mix,
-            detector_remaining,
+            detector_ramp,
             envelope,
             gain_db,
             reduction_db,
             meter,
-            mix,
-            mix_remaining,
+            mix_ramp,
         } = self;
         base.check_inline();
         controls.check_inline(CompressorSettings::check_inline);
         settings.check_inline();
         let _: &[f64; 2] = energy;
-        let _: [&u32; 3] = [sample_rate, detector_remaining, mix_remaining];
+        let _: &u32 = sample_rate;
+        let _: [&hex_dsp::LinearRamp; 2] = [detector_ramp, mix_ramp];
         let _: &hex_lattice::DynamicsMeter = meter;
-        let _: [&f64; 9] = [
+        let _: [&f64; 7] = [
             attack_alpha,
             release_alpha,
             gain_alpha,
             rms_alpha,
-            detector_mix,
             envelope,
             gain_db,
             reduction_db,
-            mix,
         ];
     }
 
@@ -147,19 +146,14 @@ impl CompressorRuntime {
             self.release_alpha = time_alpha(settings.release_ms, self.sample_rate);
         }
         if settings.dry_wet != self.settings.dry_wet {
-            self.mix_remaining = if self.mix != f64::from(settings.dry_wet) {
-                self.sample_rate.div_ceil(200)
-            } else {
-                0
-            };
+            self.mix_ramp
+                .retarget(f64::from(settings.dry_wet), self.sample_rate.div_ceil(200));
         }
         if settings.detector != self.settings.detector {
-            self.detector_remaining =
-                if self.detector_mix != f64::from(settings.detector == Detector::Rms) {
-                    self.sample_rate.div_ceil(200)
-                } else {
-                    0
-                };
+            self.detector_ramp.retarget(
+                f64::from(settings.detector == Detector::Rms),
+                self.sample_rate.div_ceil(200),
+            );
         }
         self.controls.install(next);
         self.settings = settings;

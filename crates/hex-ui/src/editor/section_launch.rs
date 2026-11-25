@@ -165,7 +165,7 @@ impl EditorView {
         match region {
             Ok(region) => self.prepare_section_launch(SectionLaunch {
                 region,
-                quantization: self.session_quantization,
+                quantization: self.session_grid.quantization,
             }),
             Err(error) => self.error = Some(error.into()),
         }
@@ -265,8 +265,8 @@ impl EditorView {
             return false;
         };
         if self.mode != super::EditorMode::Arrangement
-            || self.opening_project
-            || self.close_prompt_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
             || self
                 .audio
                 .as_ref()
@@ -304,7 +304,7 @@ impl EditorView {
     }
 
     pub(super) fn cancel_section_launch_wait(&mut self) {
-        self.playback_settings.pending = None;
+        self.settings.playback.pending = None;
         self.section_launch_after_loop = None;
         self.cancel_pending_loop_launch();
     }

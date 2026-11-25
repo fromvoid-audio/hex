@@ -64,19 +64,18 @@ impl Clip {
         }
     }
 }
-impl Project {
-    /// Restore a bounded retained processing tree against this media catalog.
-    /// This does not register its provenance ID or change project/history state.
-    pub fn restore_retained_audio_root(
-        &self,
+impl RetainedAudioRoot {
+    /// Construct a retained root from snapshot metadata for full validation by
+    /// [`Project::from_snapshot`]. Does not validate media catalog or depth alone.
+    pub fn from_snapshot(
         id: u64,
         snapshot: ClipSnapshot,
         tempo: Arc<TempoMap>,
-    ) -> Result<RetainedAudioRoot, Invalid> {
+    ) -> Result<Self, Invalid> {
         // The snapshot is public input. Bound its label before allocating the
         // shared backing, as ordinary snapshot admission does.
         crate::edit::name_valid(&snapshot.name)?;
-        let root = RetainedAudioRoot {
+        Ok(Self {
             id,
             tempo,
             clip: Clip {
@@ -95,7 +94,19 @@ impl Project {
                 fade: snapshot.fade,
                 gain: snapshot.gain,
             },
-        };
+        })
+    }
+}
+impl Project {
+    /// Restore a bounded retained processing tree against this media catalog.
+    /// This does not register its provenance ID or change project/history state.
+    pub fn restore_retained_audio_root(
+        &self,
+        id: u64,
+        snapshot: ClipSnapshot,
+        tempo: Arc<TempoMap>,
+    ) -> Result<RetainedAudioRoot, Invalid> {
+        let root = RetainedAudioRoot::from_snapshot(id, snapshot, tempo)?;
         self.validate_retained_audio_root(&root, 1, &mut 0)?;
         Ok(root)
     }

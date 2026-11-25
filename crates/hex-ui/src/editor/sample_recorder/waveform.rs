@@ -66,7 +66,7 @@ impl EditorView {
         }
         let cancel = Arc::new(AtomicBool::new(false));
         let range = Range::full(take.frames);
-        self.sample_recorder.waveform = Some(Waveform {
+        self.device_panel.sample_recorder.waveform = Some(Waveform {
             take: take.clone(),
             name: row.name,
             peaks: None,
@@ -90,12 +90,12 @@ impl EditorView {
                 .spawn(async move { take_audio::peaks(take_source(&take), &worker_cancel) })
                 .await;
             let _ = this.update(cx, |view, cx| {
-                if let Some(wave) = view.sample_recorder.waveform.as_mut()
+                if let Some(wave) = view.device_panel.sample_recorder.waveform.as_mut()
                     && Arc::ptr_eq(&wave.cancel, &cancel)
                 {
                     match peaks {
                         Ok(peaks) => wave.peaks = Some(peaks.into()),
-                        Err(reason) => view.sample_recorder.error = Some(reason),
+                        Err(reason) => view.device_panel.sample_recorder.error = Some(reason),
                     }
                     cx.notify();
                 }
@@ -107,6 +107,7 @@ impl EditorView {
 
     pub(super) fn stop_take_preview(&mut self) {
         let preview = self
+            .device_panel
             .sample_recorder
             .waveform
             .as_mut()
@@ -125,6 +126,7 @@ impl EditorView {
 
     fn play_take_range(&mut self, cx: &mut Context<Self>) {
         let preview = self
+            .device_panel
             .sample_recorder
             .waveform
             .as_ref()
@@ -143,17 +145,19 @@ impl EditorView {
             cx.notify();
             return;
         }
-        if self.sample_recorder.audition_job {
-            self.sample_recorder.error = Some("previous take audition is still preparing".into());
+        if self.device_panel.sample_recorder.audition_job {
+            self.device_panel.sample_recorder.error =
+                Some("previous take audition is still preparing".into());
             cx.notify();
             return;
         }
-        self.sample_recorder.error = None;
-        let Some(wave) = self.sample_recorder.waveform.as_mut() else {
+        self.device_panel.sample_recorder.error = None;
+        let Some(wave) = self.device_panel.sample_recorder.waveform.as_mut() else {
             return;
         };
         let Some(audio) = self.audio.as_mut() else {
-            self.sample_recorder.error = Some("take audition requires an audio output".into());
+            self.device_panel.sample_recorder.error =
+                Some("take audition requires an audio output".into());
             cx.notify();
             return;
         };
@@ -163,14 +167,14 @@ impl EditorView {
         let generation = match audio.control.preview_request() {
             Ok(generation) => generation,
             Err(error) => {
-                self.sample_recorder.error = Some(error.to_string());
+                self.device_panel.sample_recorder.error = Some(error.to_string());
                 cx.notify();
                 return;
             }
         };
         let _ = audio.control.preview_set_gain(1.0);
         wave.preview = Some((output, generation));
-        self.sample_recorder.audition_job = true;
+        self.device_panel.sample_recorder.audition_job = true;
         let rate = audio.sample_rate;
         let (take, range, repeat) = (wave.take.clone(), wave.range, wave.repeat);
         let this = cx.entity().downgrade();
@@ -182,8 +186,8 @@ impl EditorView {
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
-                view.sample_recorder.audition_job = false;
-                let Some(wave) = view.sample_recorder.waveform.as_mut() else {
+                view.device_panel.sample_recorder.audition_job = false;
+                let Some(wave) = view.device_panel.sample_recorder.waveform.as_mut() else {
                     return;
                 };
                 let Some(audio) = view.audio.as_mut() else {
@@ -209,7 +213,7 @@ impl EditorView {
                 if let Err(error) = result {
                     audio.control.preview_cancel();
                     wave.preview = None;
-                    view.sample_recorder.error = Some(error);
+                    view.device_panel.sample_recorder.error = Some(error);
                 }
                 cx.notify();
             });
@@ -219,7 +223,7 @@ impl EditorView {
     }
 
     pub(super) fn tick_take_preview(&mut self) -> bool {
-        let Some(wave) = self.sample_recorder.waveform.as_mut() else {
+        let Some(wave) = self.device_panel.sample_recorder.waveform.as_mut() else {
             return false;
         };
         let snapshot = wave.preview.and_then(|(output, generation)| {
@@ -231,12 +235,12 @@ impl EditorView {
         });
         let changed = wave.snapshot != snapshot;
         wave.snapshot = snapshot;
-        changed && self.sample_recorder.visible
+        changed && self.device_panel.sample_recorder.visible
     }
 
     fn take_drag_start(&mut self, position: Point<Pixels>, modifiers: Modifiers) {
         self.stop_take_preview();
-        let Some(wave) = self.sample_recorder.waveform.as_mut() else {
+        let Some(wave) = self.device_panel.sample_recorder.waveform.as_mut() else {
             return;
         };
         let Some(bounds) = wave.bounds.get() else {
@@ -285,7 +289,7 @@ impl EditorView {
     }
 
     fn take_drag_move(&mut self, position: Point<Pixels>, modifiers: Modifiers) {
-        let Some(wave) = self.sample_recorder.waveform.as_mut() else {
+        let Some(wave) = self.device_panel.sample_recorder.waveform.as_mut() else {
             return;
         };
         let Some(gesture) = wave.gesture else { return };
@@ -341,6 +345,7 @@ impl EditorView {
     ) {
         self.take_drag_move(position, modifiers);
         if self
+            .device_panel
             .sample_recorder
             .waveform
             .as_mut()
@@ -351,14 +356,15 @@ impl EditorView {
     }
 
     pub(super) fn selecting(&self) -> bool {
-        self.sample_recorder
+        self.device_panel
+            .sample_recorder
             .waveform
             .as_ref()
             .is_some_and(|wave| wave.gesture.is_some())
     }
 
     pub(super) fn take_waveform_panel(&self, cx: &mut Context<Self>) -> Option<Div> {
-        let wave = self.sample_recorder.waveform.as_ref()?;
+        let wave = self.device_panel.sample_recorder.waveform.as_ref()?;
         let full = Range::full(wave.take.frames);
         let view = wave.view;
         let range = wave.range;
@@ -403,7 +409,7 @@ impl EditorView {
                 )
                 .on_click(cx.listener(|view, _, _, cx| {
                     view.stop_take_preview();
-                    if let Some(wave) = view.sample_recorder.waveform.as_mut() {
+                    if let Some(wave) = view.device_panel.sample_recorder.waveform.as_mut() {
                         wave.repeat = !wave.repeat;
                     }
                     cx.notify();
@@ -420,7 +426,7 @@ impl EditorView {
                     ("take-snap", 0),
                 )
                 .on_click(cx.listener(|view, _, _, cx| {
-                    if let Some(wave) = view.sample_recorder.waveform.as_mut() {
+                    if let Some(wave) = view.device_panel.sample_recorder.waveform.as_mut() {
                         wave.snap = !wave.snap;
                     }
                     cx.notify();
@@ -433,7 +439,7 @@ impl EditorView {
                     ("take-zoom", u64::from(inward)),
                 )
                 .on_click(cx.listener(move |view, _, _, cx| {
-                    if let Some(wave) = view.sample_recorder.waveform.as_mut() {
+                    if let Some(wave) = view.device_panel.sample_recorder.waveform.as_mut() {
                         let center = wave.range.start + wave.range.frames() / 2;
                         wave.view = wave.view.zoom(center, wave.take.frames, inward);
                     }
@@ -461,6 +467,7 @@ impl EditorView {
             .on_mouse_move(cx.listener(|view, event: &gpui::MouseMoveEvent, _, cx| {
                 if event.pressed_button == Some(MouseButton::Left)
                     && view
+                        .device_panel
                         .sample_recorder
                         .waveform
                         .as_ref()
@@ -481,6 +488,7 @@ impl EditorView {
                 MouseButton::Left,
                 cx.listener(|view, event: &gpui::MouseUpEvent, _, cx| {
                     if view
+                        .device_panel
                         .sample_recorder
                         .waveform
                         .as_ref()
@@ -509,7 +517,7 @@ impl EditorView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|view, event: &gpui::MouseDownEvent, _, cx| {
-                    if let Some(wave) = view.sample_recorder.waveform.as_mut()
+                    if let Some(wave) = view.device_panel.sample_recorder.waveform.as_mut()
                         && let Some(bounds) = wave.overview.get()
                     {
                         let at = frame_at(Range::full(wave.take.frames), bounds, event.position);
@@ -658,9 +666,9 @@ mod tests {
         let (handle, editor) = editor_window(cx, project, Default::default());
         let mut visual = VisualTestContext::from_window(handle, cx);
         editor.update(cx, |view, cx| {
-            view.sample_recorder.visible = true;
+            view.device_panel.sample_recorder.visible = true;
             let full = Range::full(1024);
-            view.sample_recorder.waveform = Some(Waveform {
+            view.device_panel.sample_recorder.waveform = Some(Waveform {
                 take: Take {
                     source: Source::Main,
                     path: "unused.wav".into(),
@@ -693,7 +701,7 @@ mod tests {
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
-            let wave = view.sample_recorder.waveform.as_ref().unwrap();
+            let wave = view.device_panel.sample_recorder.waveform.as_ref().unwrap();
             assert_eq!(
                 wave.range,
                 Range {

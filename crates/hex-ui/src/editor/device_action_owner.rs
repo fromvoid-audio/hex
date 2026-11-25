@@ -51,7 +51,7 @@ impl Target {
         device: DeviceId,
         class: NativeDeviceClass,
     ) -> Option<Self> {
-        if !view.clip_view_open || !view.device_panel_active {
+        if !view.audio_detail.clip_view_open || !view.device_panel.active {
             return None;
         }
         let state = view.state.as_ref()?;

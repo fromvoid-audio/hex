@@ -480,7 +480,7 @@ fn shift_click_extent_loop_bar_uses_exact_unquantized_bounds_without_transport_o
                 end_frame: 222,
             });
             view.time_selection_project_scope = false;
-            view.last_enqueued_edit = None;
+            view.test_probes.last_enqueued_edit = None;
             cx.notify();
         });
         let mut visual = VisualTestContext::from_window(handle, cx);
@@ -527,7 +527,7 @@ fn shift_click_extent_loop_bar_uses_exact_unquantized_bounds_without_transport_o
                 ),
                 (before.can_undo, before.can_redo)
             );
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
             assert!(
                 view.pending_audio_commands.is_empty()
                     && view.prepared_seek.is_none()
@@ -647,9 +647,9 @@ fn shift_click_extent_refuses_empty_missing_stale_and_owned_context_without_side
                 before
             );
         }
-        view.save_dialog_open = true;
+        view.persistence.save_dialog_open = true;
         assert!(!view.select_project_time_range(1, 2, generation, state.revision));
-        view.save_dialog_open = false;
+        view.persistence.save_dialog_open = false;
         assert_eq!(
             (
                 view.time_selection,

@@ -26,23 +26,23 @@ impl EditorView {
         modifiers: gpui::Modifiers,
         window: &Window,
     ) -> bool {
-        self.tuning.open
-            && self.tuning.focus.is_focused(window)
+        self.settings.tuning.open
+            && self.settings.tuning.focus.is_focused(window)
             && !modifiers.modified()
-            && !self.opening_project
-            && !self.close_prompt_open
-            && self.tuning.audition_keyboard.accepts_key(key)
+            && !self.persistence.opening_project
+            && !self.persistence.close_prompt_open
+            && self.settings.tuning.audition_keyboard.accepts_key(key)
     }
     pub(in crate::editor) fn cancel_tuning_audition(&mut self) {
-        self.tuning.audition_preparing = false;
-        if let Some(input) = self.tuning.audition_input.take() {
+        self.settings.tuning.audition_preparing = false;
+        if let Some(input) = self.settings.tuning.audition_input.take() {
             input.cancel();
         }
-        self.tuning.audition_keyboard.release_all();
-        self.tuning.held_keys = [0; 2];
-        self.tuning.midi_keys = [0; 2];
-        self.tuning.midi_last_query = None;
-        self.tuning.recent_keys = [None; 128];
+        self.settings.tuning.audition_keyboard.release_all();
+        self.settings.tuning.held_keys = [0; 2];
+        self.settings.tuning.midi_keys = [0; 2];
+        self.settings.tuning.midi_last_query = None;
+        self.settings.tuning.recent_keys = [None; 128];
     }
     pub(in crate::editor) fn tuning_audition_down(
         &mut self,
@@ -54,6 +54,7 @@ impl EditorView {
             return false;
         }
         if !self
+            .settings
             .tuning
             .audition_keyboard
             .key_down(&event.keystroke.key, event.is_held)
@@ -61,6 +62,7 @@ impl EditorView {
             return false;
         }
         if self
+            .settings
             .tuning
             .audition_input
             .as_ref()
@@ -80,11 +82,11 @@ impl EditorView {
                 revision,
                 input: Arc::clone(&input),
             }) {
-                self.tuning.audition_input = Some(input);
-                self.tuning.audition_preparing = true;
+                self.settings.tuning.audition_input = Some(input);
+                self.settings.tuning.audition_preparing = true;
             } else {
                 input.cancel();
-                self.tuning.error = Some("audition preparation queue is full".into());
+                self.settings.tuning.error = Some("audition preparation queue is full".into());
             }
         }
         self.publish_tuning_audition();
@@ -93,15 +95,16 @@ impl EditorView {
         true
     }
     pub(in crate::editor) fn tuning_audition_up(&mut self, key: &str) -> bool {
-        let released = self.tuning.audition_keyboard.key_up(key);
+        let released = self.settings.tuning.audition_keyboard.key_up(key);
         if released {
             self.publish_tuning_audition();
         }
         released
     }
     fn publish_tuning_audition(&mut self) {
-        if let Some(input) = &self.tuning.audition_input {
+        if let Some(input) = &self.settings.tuning.audition_input {
             for (slot, note) in self
+                .settings
                 .tuning
                 .audition_keyboard
                 .desired_notes()
@@ -110,21 +113,21 @@ impl EditorView {
             {
                 if let Err(error) = input.set_key(slot, note) {
                     input.cancel();
-                    self.tuning.error = Some(error.to_string());
+                    self.settings.tuning.error = Some(error.to_string());
                     break;
                 }
             }
         }
     }
     pub(in crate::editor) fn tick_tuning_audition(&mut self) -> bool {
-        let Some(input) = self.tuning.audition_input.as_ref() else {
+        let Some(input) = self.settings.tuning.audition_input.as_ref() else {
             return false;
         };
         if input.is_cancelled() {
             // Worker refusal cancels before sending its completion. Keep this
             // owner until receive consumes that completion, even across ticks.
             // Explicit Stop/focus/close cancellation takes the owner immediately.
-            if self.tuning.audition_preparing {
+            if self.settings.tuning.audition_preparing {
                 return false;
             }
             self.cancel_tuning_audition();
@@ -132,22 +135,24 @@ impl EditorView {
         }
         let held = input.held_keys();
         let now = Instant::now();
-        let mut changed = held != self.tuning.held_keys;
+        let mut changed = held != self.settings.tuning.held_keys;
         for key in 0..128 {
             if held[key / 64] & (1_u64 << (key % 64)) != 0 {
-                self.tuning.recent_keys[key] = Some(now);
-            } else if self.tuning.recent_keys[key]
+                self.settings.tuning.recent_keys[key] = Some(now);
+            } else if self.settings.tuning.recent_keys[key]
                 .is_some_and(|at| now.duration_since(at) > Duration::from_millis(400))
             {
-                self.tuning.recent_keys[key] = None;
+                self.settings.tuning.recent_keys[key] = None;
                 changed = true;
             }
         }
-        self.tuning.held_keys = held;
+        self.settings.tuning.held_keys = held;
         if input.take_rejection()
-            && self.tuning.error.as_deref() != Some("audition note refused · pitch or voice limit")
+            && self.settings.tuning.error.as_deref()
+                != Some("audition note refused · pitch or voice limit")
         {
-            self.tuning.error = Some("audition note refused · pitch or voice limit".into());
+            self.settings.tuning.error =
+                Some("audition note refused · pitch or voice limit".into());
             changed = true;
         }
         changed

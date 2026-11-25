@@ -234,12 +234,12 @@ pub(super) fn render_body(
         );
     }
     reconcile_creation(view, device, canonical);
-    let creation_idle = !view.opening_project
-        && !view.close_prompt_open
+    let creation_idle = !view.persistence.opening_project
+        && !view.persistence.close_prompt_open
         && view.worker_requests_pending == 0
         && view.pending_requests.is_empty()
-        && view.device_gesture_barriers.is_empty()
-        && view.device_gesture.snapshot().is_none()
+        && view.device_panel.gesture_barriers.is_empty()
+        && view.device_panel.gesture.snapshot().is_none()
         && !view.device_panel.has_pending_draft(cx);
     let Some(panel) = view.device_panel.eq_panels.get_mut(&device) else {
         return div().id("eq-unavailable");
@@ -612,8 +612,8 @@ fn ready_with_excluded_graph(
     }
     if view.worker_requests_pending != 0
         || !view.pending_requests.is_empty()
-        || !view.device_gesture_barriers.is_empty()
-        || view.device_gesture.snapshot().is_some()
+        || !view.device_panel.gesture_barriers.is_empty()
+        || view.device_panel.gesture.snapshot().is_some()
     {
         view.device_panel.message = Some("wait for the current device edit, then retry".into());
         return false;
@@ -974,19 +974,20 @@ fn reconcile_creation(view: &mut EditorView, device: DeviceId, canonical: &Nativ
         return;
     };
     let owns_key = view
-        .device_gesture
+        .device_panel
+        .gesture
         .snapshot()
         .is_some_and(|snapshot| snapshot.key == key);
     if owns_key && finishing {
         return;
     }
-    if owns_key && valid && view.device_gesture.terminal().is_none() {
+    if owns_key && valid && view.device_panel.gesture.terminal().is_none() {
         return;
     }
-    if owns_key && !valid && !view.device_gesture.has_pending_terminal() {
+    if owns_key && !valid && !view.device_panel.gesture.has_pending_terminal() {
         let _ = view.cancel_device_gesture();
     }
-    let terminal = view.device_gesture.terminal();
+    let terminal = view.device_panel.gesture.terminal();
     if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
         panel.cancel_creation_capture = true;
         if owns_key {
@@ -1009,7 +1010,7 @@ fn begin_creation(
     position: [f32; 2],
     bank: u8,
 ) {
-    if view.device_gesture.is_recovery_pending() && view.device_gesture.snapshot().is_some_and(|snapshot| matches!(snapshot.target, GestureTarget::EqNodeCreation { device: target } if target == device)) {
+    if view.device_panel.gesture.is_recovery_pending() && view.device_panel.gesture.snapshot().is_some_and(|snapshot| matches!(snapshot.target, GestureTarget::EqNodeCreation { device: target } if target == device)) {
         let _ = view.cancel_eq_creation();
         view.device_panel.message = Some("previous eq edit is canceling · retry after it finishes".into());
         cx.notify();
@@ -1047,7 +1048,7 @@ fn begin_creation(
         let key = view
             .begin_eq_creation_gesture(device, snapshot)
             .map_err(str::to_owned)?;
-        if let Err(error) = view.device_gesture.change_eq_creation(snapshot) {
+        if let Err(error) = view.device_panel.gesture.change_eq_creation(snapshot) {
             let _ = view.cancel_device_gesture();
             return Err(error.to_owned());
         }
@@ -1103,7 +1104,7 @@ fn creation_event(
         }
         return;
     }
-    let owns_key = view.device_gesture.snapshot().is_some_and(|snapshot| snapshot.key == creation.key
+    let owns_key = view.device_panel.gesture.snapshot().is_some_and(|snapshot| snapshot.key == creation.key
         && matches!(snapshot.target, GestureTarget::EqNodeCreation { device: target } if target == device));
     let valid = owns_key
         && current(view, device).as_ref() == Some(&creation.expected)
@@ -1125,10 +1126,10 @@ fn creation_event(
                         .is_ok_and(|node| node.bank == panel.bank)
             });
     if !valid || event.phase == ResponseGraphPhase::Cancel {
-        if owns_key && !view.device_gesture.has_pending_terminal() {
+        if owns_key && !view.device_panel.gesture.has_pending_terminal() {
             let _ = view.cancel_device_gesture();
         }
-        creation.terminal = view.device_gesture.terminal();
+        creation.terminal = view.device_panel.gesture.terminal();
         if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
             if panel.selected == Some(creation.id) {
                 panel.selected = creation.selected_before;
@@ -1146,28 +1147,29 @@ fn creation_event(
             | ResponseGraphPhase::Release
             | ResponseGraphPhase::ReleaseOutside
     ) {
-        if !view.device_gesture.has_pending_terminal() {
+        if !view.device_panel.gesture.has_pending_terminal() {
             creation.update(event.position);
             let result = creation
                 .snapshot()
-                .and_then(|snapshot| view.device_gesture.finish_eq_creation(snapshot));
+                .and_then(|snapshot| view.device_panel.gesture.finish_eq_creation(snapshot));
             if let Err(error) = result {
                 view.device_panel.message = Some(error.into());
             } else {
                 view.pump_device_gesture();
             }
         }
-        creation.terminal = view.device_gesture.terminal();
+        creation.terminal = view.device_panel.gesture.terminal();
         if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
             panel.creation = Some(creation);
         }
     } else {
-        if event.phase == ResponseGraphPhase::Change && !view.device_gesture.has_pending_terminal()
+        if event.phase == ResponseGraphPhase::Change
+            && !view.device_panel.gesture.has_pending_terminal()
         {
             creation.update(event.position);
             let result = creation
                 .snapshot()
-                .and_then(|snapshot| view.device_gesture.change_eq_creation(snapshot));
+                .and_then(|snapshot| view.device_panel.gesture.change_eq_creation(snapshot));
             if let Err(error) = result {
                 view.device_panel.message = Some(error.into());
             } else {
@@ -1326,16 +1328,16 @@ pub(super) fn graph_for_test(view: &EditorView, device: DeviceId) -> Entity<Resp
 
 impl EditorView {
     pub(in crate::editor) fn cancel_eq_creation(&mut self) -> bool {
-        let Some(snapshot) = self.device_gesture.snapshot() else {
+        let Some(snapshot) = self.device_panel.gesture.snapshot() else {
             return false;
         };
         let GestureTarget::EqNodeCreation { device } = snapshot.target else {
             return false;
         };
-        if !self.device_gesture.has_pending_terminal() {
+        if !self.device_panel.gesture.has_pending_terminal() {
             let _ = self.cancel_device_gesture();
         }
-        let terminal = self.device_gesture.terminal();
+        let terminal = self.device_panel.gesture.terminal();
         if let Some(panel) = self.device_panel.eq_panels.get_mut(&device)
             && let Some(creation) = panel
                 .creation
@@ -1355,8 +1357,12 @@ impl EditorView {
         &mut self,
         event: &hex_session::service::Event,
     ) {
-        let terminal = self.device_gesture.terminal();
-        let client_key = self.device_gesture.snapshot().map(|snapshot| snapshot.key);
+        let terminal = self.device_panel.gesture.terminal();
+        let client_key = self
+            .device_panel
+            .gesture
+            .snapshot()
+            .map(|snapshot| snapshot.key);
         for (device, panel) in &mut self.device_panel.eq_panels {
             let Some(mut creation) = panel.creation.take() else {
                 continue;

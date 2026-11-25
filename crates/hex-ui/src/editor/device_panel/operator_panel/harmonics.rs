@@ -218,15 +218,19 @@ fn effective_overview_input(
         ParameterValue::Choice(choice) => Some(choice),
         _ => None,
     };
-    let preview_owned = view.device_gesture.snapshot().is_some_and(|snapshot| {
-        snapshot.target == GestureTarget::DeviceParameterSnapshot { device: key.0 }
-            && snapshot.parameters.is_some_and(|parameters| {
-                parameters
-                    .entries()
-                    .iter()
-                    .any(|(parameter, _)| *parameter == partial(key.1, 0))
-            })
-    });
+    let preview_owned = view
+        .device_panel
+        .gesture
+        .snapshot()
+        .is_some_and(|snapshot| {
+            snapshot.target == GestureTarget::DeviceParameterSnapshot { device: key.0 }
+                && snapshot.parameters.is_some_and(|parameters| {
+                    parameters
+                        .entries()
+                        .iter()
+                        .any(|(parameter, _)| *parameter == partial(key.1, 0))
+                })
+        });
     Some(OverviewInput {
         amplitudes,
         count,
@@ -529,7 +533,7 @@ fn tool_action(view: &mut EditorView, key: Key, index: usize, cx: &mut Context<E
         cx.notify();
         return;
     }
-    if view.device_gesture.snapshot().is_some() {
+    if view.device_panel.gesture.snapshot().is_some() {
         return;
     }
     let Some((mut values, count)) = values(view, key) else {
@@ -547,7 +551,7 @@ fn tool_action(view: &mut EditorView, key: Key, index: usize, cx: &mut Context<E
     };
     match view.begin_device_snapshot_gesture(key.0, snapshot) {
         Ok(_) => {
-            let _ = view.device_gesture.finish_snapshot(snapshot);
+            let _ = view.device_panel.gesture.finish_snapshot(snapshot);
         }
         Err(error) => view.device_panel.message = Some(error.into()),
     }
@@ -582,7 +586,7 @@ fn handle(view: &mut EditorView, key: Key, event: BarEditorEvent, cx: &mut Conte
     if event.phase == BarEditorPhase::Begin {
         if !super::context::Owner::capture(view, key.0).is_some_and(|o| o.is_current(view))
             || !finalize_controls(view, cx)
-            || view.device_gesture.snapshot().is_some()
+            || view.device_panel.gesture.snapshot().is_some()
         {
             return;
         }
@@ -630,10 +634,11 @@ fn handle(view: &mut EditorView, key: Key, event: BarEditorEvent, cx: &mut Conte
         return;
     };
     if !view
-        .device_gesture
+        .device_panel
+        .gesture
         .snapshot()
         .is_some_and(|s| s.key == stroke.key)
-        || view.device_gesture.has_pending_terminal()
+        || view.device_panel.gesture.has_pending_terminal()
     {
         return;
     }
@@ -658,11 +663,11 @@ fn handle(view: &mut EditorView, key: Key, event: BarEditorEvent, cx: &mut Conte
             return;
         };
         if event.phase == BarEditorPhase::Commit {
-            if view.device_gesture.finish_snapshot(values).is_ok() {
+            if view.device_panel.gesture.finish_snapshot(values).is_ok() {
                 view.pump_device_gesture();
             }
         } else {
-            if view.device_gesture.change_snapshot(values).is_ok() {
+            if view.device_panel.gesture.change_snapshot(values).is_ok() {
                 view.pump_device_gesture();
             }
             if let Some(control) = view.device_panel.operator_harmonics.get_mut(&key) {
@@ -691,10 +696,11 @@ pub(super) fn hide_painter(
     let stroke = control.stroke.take();
     control.entity.update(cx, |editor, cx| editor.cancel(cx));
     if stroke.is_some_and(|stroke| {
-        view.device_gesture
+        view.device_panel
+            .gesture
             .snapshot()
             .is_some_and(|snapshot| snapshot.key == stroke.key)
-    }) && !view.device_gesture.has_pending_terminal()
+    }) && !view.device_panel.gesture.has_pending_terminal()
     {
         let _ = view.cancel_device_gesture();
     }
@@ -716,10 +722,11 @@ pub(in crate::editor::device_panel) fn retire(
         if let Some(control) = view.device_panel.operator_harmonics.remove(&key) {
             control.entity.update(cx, |editor, cx| editor.cancel(cx));
             if control.stroke.is_some_and(|s| {
-                view.device_gesture
+                view.device_panel
+                    .gesture
                     .snapshot()
                     .is_some_and(|a| a.key == s.key)
-            }) && !view.device_gesture.has_pending_terminal()
+            }) && !view.device_panel.gesture.has_pending_terminal()
             {
                 let _ = view.cancel_device_gesture();
             }

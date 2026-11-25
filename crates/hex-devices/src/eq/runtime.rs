@@ -1069,10 +1069,7 @@ fn stages_used(stages: &BandStages) -> u8 {
 
 fn filter(mut input: f64, stages: &[Coefficients], history: &mut [[f64; 2]]) -> f64 {
     for (c, h) in stages.iter().zip(history) {
-        let output = c.b0 * input + h[0];
-        h[0] = quiet(c.b1 * input - c.a1 * output + h[1]);
-        h[1] = quiet(c.b2 * input - c.a2 * output);
-        input = quiet(output);
+        input = c.process_tdf2_with_floor(input, h, hex_dsp::POWER_FLOOR);
     }
     input
 }
@@ -1318,42 +1315,24 @@ impl NativeProcessorAudition for EqRuntime {
 /// ordinary Q alpha law. Imported S shelves are preflighted and cannot automate
 /// gain/Q/shape before explicitly converting to the new law.
 fn design(node: Node, sample_rate: u32) -> BandStages {
-    let frequency = f64::from(node.frequency_hz).min(f64::from(sample_rate) * 0.49);
-    let omega = std::f64::consts::TAU * frequency / f64::from(sample_rate);
-    let (sine, cosine) = omega.sin_cos();
+    let rate = f64::from(sample_rate);
+    let frequency = f64::from(node.frequency_hz).min(rate * 0.49);
     let q = f64::from(node.q);
     let gain = f64::from(node.gain_db);
     let mut result = [Coefficients::IDENTITY; 4];
-    let norm = |b0: f64, b1: f64, b2: f64, a0: f64, a1: f64, a2: f64| Coefficients {
-        b0: b0 / a0,
-        b1: b1 / a0,
-        b2: b2 / a0,
-        a1: a1 / a0,
-        a2: a2 / a0,
+    let invalid = Coefficients {
+        b0: f64::NAN,
+        b1: f64::NAN,
+        b2: f64::NAN,
+        a1: f64::NAN,
+        a2: f64::NAN,
     };
     match node.kind {
         NodeKind::Bell => {
-            let a = 10.0_f64.powf(gain / 40.0);
-            let alpha = sine / (2.0 * q);
-            result[0] = norm(
-                1.0 + alpha * a,
-                -2.0 * cosine,
-                1.0 - alpha * a,
-                1.0 + alpha / a,
-                -2.0 * cosine,
-                1.0 - alpha / a,
-            );
+            result[0] = Coefficients::peaking(frequency, rate, q, gain).unwrap_or(invalid);
         }
         NodeKind::Notch => {
-            let alpha = sine / (2.0 * q);
-            result[0] = norm(
-                1.0,
-                -2.0 * cosine,
-                1.0,
-                1.0 + alpha,
-                -2.0 * cosine,
-                1.0 - alpha,
-            );
+            result[0] = Coefficients::notch(frequency, rate, q).unwrap_or(invalid);
         }
         NodeKind::LowCut | NodeKind::HighCut => {
             let count = usize::from(node.slope) + 1;
@@ -1369,10 +1348,8 @@ fn design(node: Node, sample_rate: u32) -> BandStages {
                             1.0
                         }
                 } else {
-                    let butterworth = 1.0
-                        / (2.0
-                            * ((2 * index + 1) as f64 * std::f64::consts::PI / (4 * count) as f64)
-                                .cos());
+                    let butterworth =
+                        Coefficients::butterworth_section_q(count, index).unwrap_or(f64::NAN);
                     butterworth
                         * if index + 1 == count {
                             q / f64::from(std::f32::consts::FRAC_1_SQRT_2)
@@ -1380,55 +1357,29 @@ fn design(node: Node, sample_rate: u32) -> BandStages {
                             1.0
                         }
                 };
-                let alpha = sine / (2.0 * section_q);
                 *stage = if node.kind == NodeKind::LowCut {
-                    norm(
-                        (1.0 + cosine) * 0.5,
-                        -(1.0 + cosine),
-                        (1.0 + cosine) * 0.5,
-                        1.0 + alpha,
-                        -2.0 * cosine,
-                        1.0 - alpha,
-                    )
+                    Coefficients::high_pass(frequency, rate, section_q)
                 } else {
-                    norm(
-                        (1.0 - cosine) * 0.5,
-                        1.0 - cosine,
-                        (1.0 - cosine) * 0.5,
-                        1.0 + alpha,
-                        -2.0 * cosine,
-                        1.0 - alpha,
-                    )
-                };
+                    Coefficients::low_pass(frequency, rate, section_q)
+                }
+                .unwrap_or(invalid);
             }
         }
-        NodeKind::LowShelf | NodeKind::HighShelf => {
-            let a = 10.0_f64.powf(gain / 40.0);
-            let alpha = if node.legacy_shelf {
-                sine * 0.5 * (((a + 1.0 / a) * (1.0 / q - 1.0)) + 2.0).sqrt()
+        NodeKind::LowShelf => {
+            result[0] = if node.legacy_shelf {
+                Coefficients::low_shelf_slope(frequency, rate, q, gain)
             } else {
-                sine / (2.0 * q)
-            };
-            let beta = 2.0 * a.sqrt() * alpha;
-            result[0] = if node.kind == NodeKind::LowShelf {
-                norm(
-                    a * ((a + 1.0) - (a - 1.0) * cosine + beta),
-                    2.0 * a * ((a - 1.0) - (a + 1.0) * cosine),
-                    a * ((a + 1.0) - (a - 1.0) * cosine - beta),
-                    (a + 1.0) + (a - 1.0) * cosine + beta,
-                    -2.0 * ((a - 1.0) + (a + 1.0) * cosine),
-                    (a + 1.0) + (a - 1.0) * cosine - beta,
-                )
+                Coefficients::low_shelf_q(frequency, rate, q, gain)
+            }
+            .unwrap_or(invalid);
+        }
+        NodeKind::HighShelf => {
+            result[0] = if node.legacy_shelf {
+                Coefficients::high_shelf_slope(frequency, rate, q, gain)
             } else {
-                norm(
-                    a * ((a + 1.0) + (a - 1.0) * cosine + beta),
-                    -2.0 * a * ((a - 1.0) + (a + 1.0) * cosine),
-                    a * ((a + 1.0) + (a - 1.0) * cosine - beta),
-                    (a + 1.0) - (a - 1.0) * cosine + beta,
-                    2.0 * ((a - 1.0) - (a + 1.0) * cosine),
-                    (a + 1.0) - (a - 1.0) * cosine - beta,
-                )
-            };
+                Coefficients::high_shelf_q(frequency, rate, q, gain)
+            }
+            .unwrap_or(invalid);
         }
     }
     result

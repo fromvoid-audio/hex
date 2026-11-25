@@ -1133,7 +1133,7 @@ mod tests {
                 wet_reference.inherit_from(&actual);
                 // Independent full-wet DSP oracle: only the output mix changes.
                 wet_reference.primary.parameters[crate::reverb::index(p::DRY_WET).unwrap()] =
-                    Ramp::steady(100.0);
+                    Ramp::settled(100.0);
                 let frames = smoothing_frames(rate, mode) as usize;
                 let input = signal(frames + 17);
                 let mut wet = input.clone();
@@ -1148,7 +1148,7 @@ mod tests {
                     .unwrap();
                 canonical_source.inherit_from(&actual);
                 canonical_source.primary.parameters[crate::reverb::index(p::DRY_WET).unwrap()] =
-                    Ramp::steady(start * 100.0);
+                    Ramp::settled(start * 100.0);
                 oracle_settings.0[crate::reverb::index(p::DRY_WET).unwrap()] = 100.0;
                 let mut canonical = PreparedReverb::new(rate, oracle_settings)
                     .unwrap()

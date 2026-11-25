@@ -99,7 +99,8 @@ impl EditorView {
         y: f32,
     ) {
         let owns = self
-            .active_native_device_drag
+            .device_panel
+            .active_native_drag
             .as_ref()
             .is_some_and(|active| {
                 std::rc::Rc::ptr_eq(&active.destination, &drag.destination)
@@ -110,7 +111,7 @@ impl EditorView {
         if !owns {
             return;
         }
-        self.arrangement_device_preview = None;
+        self.device_panel.arrangement_drop_preview = None;
         let plugin_role = match &drag.source {
             NativeDeviceDragSource::Browser { .. } => None,
             NativeDeviceDragSource::Existing { .. }
@@ -119,7 +120,7 @@ impl EditorView {
                 None
             }
             NativeDeviceDragSource::PluginEffect(selection)
-                if self.pending_plugin_effect.is_none() =>
+                if self.device_panel.pending_plugin_effect.is_none() =>
             {
                 Some(selection.role)
             }
@@ -160,7 +161,7 @@ impl EditorView {
                 ArrangementDeviceDestination::ExistingTrack { track, instrument }
             }
         };
-        self.arrangement_device_preview = Some(ArrangementDevicePreview {
+        self.device_panel.arrangement_drop_preview = Some(ArrangementDevicePreview {
             destination,
             target,
         });
@@ -174,7 +175,8 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         let owns = self
-            .active_native_device_drag
+            .device_panel
+            .active_native_drag
             .as_ref()
             .is_some_and(|active| {
                 std::rc::Rc::ptr_eq(&active.destination, &drag.destination)
@@ -182,10 +184,10 @@ impl EditorView {
                     && active.revision == drag.revision
                     && active.project_generation == drag.project_generation
             });
-        let captured = self.arrangement_device_preview;
+        let captured = self.device_panel.arrangement_drop_preview;
         let pointer = window.mouse_position();
         self.update_arrangement_device_drop(drag, f32::from(pointer.x), f32::from(pointer.y));
-        let current = self.arrangement_device_preview;
+        let current = self.device_panel.arrangement_drop_preview;
         let valid = owns
             && self.native_device_drag_is_current(drag)
             && captured.is_some_and(|preview| {
@@ -193,13 +195,13 @@ impl EditorView {
                     current.destination == preview.destination && current.target == preview.target
                 })
             })
-            && !self.save_dialog_open
-            && !self.export_dialog_open
-            && !self.export_pending
+            && !self.persistence.save_dialog_open
+            && !self.persistence.export_dialog_open
+            && !self.persistence.export_pending
             && self.worker_requests_pending == 0
             && self.pending_requests.is_empty()
-            && self.device_gesture_barriers.is_empty()
-            && self.device_gesture.snapshot().is_none()
+            && self.device_panel.gesture_barriers.is_empty()
+            && self.device_panel.gesture.snapshot().is_none()
             && !self.device_panel.has_pending_draft(cx);
         let source = &drag.source;
         let copy = window.modifiers().alt;
@@ -279,8 +281,8 @@ impl EditorView {
         cx.notify();
     }
     pub(super) fn arrangement_device_drop_preview(&self) -> Option<gpui::Stateful<Div>> {
-        let preview = self.arrangement_device_preview?;
-        let drag = self.active_native_device_drag.as_ref()?;
+        let preview = self.device_panel.arrangement_drop_preview?;
+        let drag = self.device_panel.active_native_drag.as_ref()?;
         if !self.native_device_drag_is_current(drag) {
             return None;
         }

@@ -250,9 +250,9 @@ impl Directory {
                     assert_eq!(view.browser.directory, self.0.join("samples"));
                     view.state = Some(state);
                     view.selected_track = Some(track);
-                    view.focused_return = bus;
-                    view.device_panel_active = true;
-                    view.clip_view_open = true;
+                    view.session_grid.focused_return = bus;
+                    view.device_panel.active = true;
+                    view.audio_detail.clip_view_open = true;
                     view.mode = crate::editor::EditorMode::Session;
                     cx.notify();
                 });
@@ -1350,7 +1350,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
     let client = output.take_client().unwrap();
     let (_handle, editor) = directory.window(cx, service, state.clone(), track, None);
     cx.run_until_parked();
-    assert!(editor.read_with(cx, |view, _| !view.playback_settings.loading));
+    assert!(editor.read_with(cx, |view, _| !view.settings.playback.loading));
     editor.update(cx, |view, _| {
         view.audio = Some(crate::editor_backend::EditorAudio {
             control: client,
@@ -1664,7 +1664,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
             hex_engine::playback::PlaybackAction::LaunchAndPlay(hex_engine::SessionPlaybackCommand::LaunchSceneWithNoteChase { scene: target, note_chase: hex_engine::NoteChase::On, .. }) if target == scene)),
             "launch must queue exactly its actual scene: error={:?}", view.error);
         view.tick(cx); // The normal pump assigns the real command ticket.
-        assert!(view.pending_session_ticket.is_some(),
+        assert!(view.session_grid.pending_session_ticket.is_some(),
             "current equivalent audio must submit actual Session launch: error={:?}", view.error);
         assert_eq!(view.worker_requests_pending, pending);
         view.stop();
@@ -1901,9 +1901,9 @@ fn auto_pan_banks_roundtrip(cx: &mut TestAppContext, on_return: bool) {
     editor.update(cx, |view, cx| {
         assert!(view.project_generation > generation);
         view.selected_track = Some(track);
-        view.focused_return = bus;
-        view.clip_view_open = true;
-        view.device_panel_active = true;
+        view.session_grid.focused_return = bus;
+        view.audio_detail.clip_view_open = true;
+        view.device_panel.active = true;
         cx.notify();
     });
     auto_pan_pair(&mut visual, &editor, cx, device, DeviceVariant::B, 4, 1);
@@ -2182,9 +2182,9 @@ fn compressor_rms_banks_roundtrip(cx: &mut TestAppContext, on_return: bool) {
     editor.update(cx, |view, cx| {
         assert!(view.project_generation > generation);
         view.selected_track = Some(track);
-        view.focused_return = bus;
-        view.clip_view_open = true;
-        view.device_panel_active = true;
+        view.session_grid.focused_return = bus;
+        view.audio_detail.clip_view_open = true;
+        view.device_panel.active = true;
         cx.notify();
     });
     assert_rms_banks(

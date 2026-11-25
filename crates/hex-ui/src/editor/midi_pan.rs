@@ -63,20 +63,26 @@ impl Gesture {
 impl EditorView {
     /// Retire capture after a canonical context change without resetting navigation.
     pub(super) fn reconcile_piano_pan(&mut self) {
-        if self.midi_pan.gesture.as_ref().is_some_and(|capture| {
-            let gesture = capture.origin;
-            self.piano_pitch != capture.applied_pitch
-                || gesture.generation != self.project_generation
-                || self.detail_clip_id() != Some(gesture.clip)
-                || self.state.as_ref().is_none_or(|state| {
-                    state.revision != gesture.revision
-                        || state
-                            .project
-                            .midi_source(gesture.clip)
-                            .is_none_or(|source| source.source_length().raw() != gesture.length)
-                })
-        }) {
-            self.midi_pan.gesture = None;
+        if self
+            .midi_editor
+            .pan
+            .gesture
+            .as_ref()
+            .is_some_and(|capture| {
+                let gesture = capture.origin;
+                self.midi_editor.piano_pitch != capture.applied_pitch
+                    || gesture.generation != self.project_generation
+                    || self.detail_clip_id() != Some(gesture.clip)
+                    || self.state.as_ref().is_none_or(|state| {
+                        state.revision != gesture.revision
+                            || state
+                                .project
+                                .midi_source(gesture.clip)
+                                .is_none_or(|source| source.source_length().raw() != gesture.length)
+                    })
+            })
+        {
+            self.midi_editor.pan.gesture = None;
         }
     }
 
@@ -92,7 +98,7 @@ impl EditorView {
             || !bounds.is_valid()
             || !pointer.iter().all(|value| value.is_finite())
             || !(button == MouseButton::Middle
-                || (button == MouseButton::Left && self.midi_pan.enabled))
+                || (button == MouseButton::Left && self.midi_editor.pan.enabled))
         {
             return false;
         }
@@ -107,9 +113,9 @@ impl EditorView {
         };
         let length = source.source_length().raw();
         let viewport = Viewport {
-            start: self.piano_beat_start,
-            span: self.piano_beat_span.raw(),
-            pitch: self.piano_pitch,
+            start: self.midi_editor.piano_beat_start,
+            span: self.midi_editor.piano_beat_span.raw(),
+            pitch: self.midi_editor.piano_pitch,
         };
         if length == 0
             || viewport.span == 0
@@ -139,8 +145,8 @@ impl EditorView {
             return false;
         }
         self.cancel_midi_note_gesture();
-        self.midi_hover = None;
-        self.midi_pan.gesture = Some(Capture {
+        self.midi_editor.hover = None;
+        self.midi_editor.pan.gesture = Some(Capture {
             origin: gesture,
             applied_pitch: viewport.pitch,
         });
@@ -166,14 +172,14 @@ impl EditorView {
                     return;
                 };
                 let _ = owner.update(cx, |view, cx| {
-                    if view.midi_pan.gesture.as_ref().map(|c| c.origin) != Some(gesture) {
+                    if view.midi_editor.pan.gesture.as_ref().map(|c| c.origin) != Some(gesture) {
                         return;
                     }
-                    let changed = if !view.clip_view_open
-                        || view.device_panel_active
-                        || !view.midi_focus.is_focused(window)
+                    let changed = if !view.audio_detail.clip_view_open
+                        || view.device_panel.active
+                        || !view.midi_editor.focus.is_focused(window)
                     {
-                        view.midi_pan.gesture.take().is_some()
+                        view.midi_editor.pan.gesture.take().is_some()
                     } else if released.is_some() {
                         view.finish_piano_pan(
                             gesture.bounds,
@@ -194,8 +200,8 @@ impl EditorView {
             },
             move |_, cx| {
                 let _ = cancelled.update(cx, |view, cx| {
-                    if view.midi_pan.gesture.as_ref().map(|c| c.origin) == Some(gesture) {
-                        view.midi_pan.gesture = None;
+                    if view.midi_editor.pan.gesture.as_ref().map(|c| c.origin) == Some(gesture) {
+                        view.midi_editor.pan.gesture = None;
                         cx.notify();
                     }
                 });
@@ -212,11 +218,11 @@ impl EditorView {
         owner: gpui::EntityId,
         window: &mut Window,
     ) {
-        if self.clip_view_open
-            && !self.device_panel_active
-            && self.midi_focus.is_focused(window)
-            && let Some(capture) = self.midi_pan.gesture.as_ref()
-            && self.piano_pitch == capture.applied_pitch
+        if self.audio_detail.clip_view_open
+            && !self.device_panel.active
+            && self.midi_editor.focus.is_focused(window)
+            && let Some(capture) = self.midi_editor.pan.gesture.as_ref()
+            && self.midi_editor.piano_pitch == capture.applied_pitch
             && capture.origin.bounds == bounds
             && capture.origin.clip == clip
             && capture.origin.generation == self.project_generation
@@ -235,11 +241,11 @@ impl EditorView {
         pointer: [f32; 2],
         button: Option<MouseButton>,
     ) -> bool {
-        let Some(capture) = self.midi_pan.gesture.as_ref() else {
+        let Some(capture) = self.midi_editor.pan.gesture.as_ref() else {
             return false;
         };
         let gesture = capture.origin;
-        if self.piano_pitch != capture.applied_pitch
+        if self.midi_editor.piano_pitch != capture.applied_pitch
             || button != Some(gesture.button)
             || gesture.bounds != bounds
             || gesture.generation != self.project_generation
@@ -252,17 +258,18 @@ impl EditorView {
                         .is_none_or(|source| source.source_length().raw() != gesture.length)
             })
         {
-            self.midi_pan.gesture = None;
+            self.midi_editor.pan.gesture = None;
             return true;
         }
         let Some(next) = gesture.resolve(pointer) else {
-            self.midi_pan.gesture = None;
+            self.midi_editor.pan.gesture = None;
             return true;
         };
-        let changed = next.start != self.piano_beat_start || next.pitch != self.piano_pitch;
-        self.piano_beat_start = next.start;
-        self.piano_pitch = next.pitch;
-        self.midi_pan.gesture = Some(Capture {
+        let changed = next.start != self.midi_editor.piano_beat_start
+            || next.pitch != self.midi_editor.piano_pitch;
+        self.midi_editor.piano_beat_start = next.start;
+        self.midi_editor.piano_pitch = next.pitch;
+        self.midi_editor.pan.gesture = Some(Capture {
             origin: gesture,
             applied_pitch: next.pitch,
         });
@@ -276,7 +283,8 @@ impl EditorView {
         button: MouseButton,
     ) -> bool {
         if self
-            .midi_pan
+            .midi_editor
+            .pan
             .gesture
             .as_ref()
             .is_none_or(|capture| capture.origin.button != button)
@@ -284,7 +292,7 @@ impl EditorView {
             return false;
         }
         self.update_piano_pan(bounds, pointer, Some(button));
-        self.midi_pan.gesture = None;
+        self.midi_editor.pan.gesture = None;
         true
     }
 }

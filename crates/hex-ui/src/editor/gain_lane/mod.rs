@@ -185,7 +185,7 @@ impl EditorView {
         }
         self.cancel_gain_draft(cx);
         // This compact editor replaces the open detail body, leaving real track rows at minimum size.
-        self.clip_view_open = false;
+        self.audio_detail.clip_view_open = false;
         self.select_track(track, window);
         self.automation_view
             .devices
@@ -253,9 +253,9 @@ impl EditorView {
         }
         if self.edit_pending()
             || self.gain_lane.pending.is_some()
-            || self.opening_project
-            || self.close_prompt_open
-            || self.device_gesture.snapshot().is_some()
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
+            || self.device_panel.gesture.snapshot().is_some()
         {
             return false;
         }

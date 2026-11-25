@@ -2785,6 +2785,7 @@ dependencies = [
  "hex-devices",
  "hex-preferences",
  "hex-project",
+ "hex-ui-kit",
  "hex-ui-model",
  "hex-widgets",
 ]
@@ -2824,6 +2825,7 @@ dependencies = [
  "hex-lattice-contract",
  "hex-plugin-state",
  "hex-project",
+ "hex-text",
  "hex-tuning",
  "libc",
  "rustix 1.1.5",
@@ -2846,6 +2848,10 @@ dependencies = [
  "rtrb",
  "sha2 0.11.0",
 ]
+
+[[package]]
+name = "hex-text"
+version = "0.1.0"
 
 [[package]]
 name = "hex-tuning"
@@ -2872,12 +2878,26 @@ dependencies = [
  "hex-session",
  "hex-storage",
  "hex-tuning",
+ "hex-ui-kit",
  "hex-ui-model",
  "hex-widgets",
  "image",
  "resvg",
  "serde_json",
  "usvg",
+]
+
+[[package]]
+name = "hex-ui-kit"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "hex-devices",
+ "hex-preferences",
+ "hex-project",
+ "hex-text",
+ "hex-ui-model",
+ "hex-widgets",
 ]
 
 [[package]]

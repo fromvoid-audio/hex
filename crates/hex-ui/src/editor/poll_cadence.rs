@@ -215,10 +215,11 @@ impl EditorView {
         if changed {
             cx.notify();
         }
-        let spectrum_active = self.project_spectrum.take_tick_activity();
+        let spectrum_active = self.device_panel.project_spectrum.take_tick_activity();
+        let playback_active = self.playback_subviews.take_tick_activity();
         let busy = self.poll_busy() || window.is_pointer_dragging();
         self.poll_cadence
-            .after_tick(changed || spectrum_active, busy)
+            .after_tick(changed || spectrum_active || playback_active, busy)
     }
 
     /// Activity that needs the 16 ms cadence even without a visible change.
@@ -237,8 +238,8 @@ impl EditorView {
             || self.play_intent.desired_playing(actual_playing)
             || self.audio_recorder.needs_poll()
             || self.edit_pending()
-            || !self.pending_browser_insertions.is_empty()
-            || self.automation_close_preflight.waiting()
+            || !self.browser.pending_insertions.is_empty()
+            || self.persistence.automation_close_preflight.waiting()
             || self.automation_take_recovery.polling()
             || matches!(
                 self.paused_republish,
@@ -257,7 +258,7 @@ impl EditorView {
         !self.pending_audio_commands.is_empty()
             || self.pending_seek_ticket.is_some()
             || self.pending_metronome_ticket.is_some()
-            || self.pending_session_ticket.is_some()
+            || self.session_grid.pending_session_ticket.is_some()
             || self.deferred_play.is_some()
             || self.deferred_toggle_play.is_some()
             || self.deferred_metadata_seek.is_some()

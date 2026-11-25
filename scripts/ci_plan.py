@@ -57,10 +57,9 @@ DEVICE_STORAGE_TEST_FILTERS = (
     "schema::serial_units::",
     "schema::sidechain::",
 )
-# Both consumers compile this exact storage source through theme.rs by path.
-PATH_RUNTIME_CONSUMERS = {"crates/hex-storage/src/text.rs": {"hex-ui", "hex-sandbox"},
-                          "crates/hex-ui/src/theme.rs": {"hex-sandbox"},
-                          "crates/hex-ui/src/theme/device.rs": {"hex-sandbox"}}
+# No cross-crate #[path] shims remain: hex-text and hex-ui-kit are normal
+# Cargo dependencies, so owner-boundary selection follows the Cargo graph.
+PATH_RUNTIME_CONSUMERS: dict[str, set[str]] = {}
 RUNTIME_CONSUMER_NAMES = {name for names in RUNTIME_CONSUMERS.values() for name in names}
 TOOLING = {
     ".config/nextest.toml",
@@ -334,7 +333,6 @@ CONTROLLER_SESSION_ACTION_UNIT = "editor::controller::session_action_unit_tests:
 CONTROLLER_SOURCE_BINDING_UNIT = "editor::controller::source_binding_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/update.rs": ("update::tests::cancelled_ready_cannot_block_or_replace_a_new_request",),
-    "src/context_menu.rs": ("context_menu::tests::",),
     "src/editor/export.rs": ("editor::export::status_tests::",),
     "src/editor/header.rs": ("editor::header::tests::",),
     "src/editor/automation_take_recovery.rs": ("editor::automation_take_recovery::unit_tests::",),
@@ -351,8 +349,6 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/controller_input/monitoring.rs": ("editor::controller_input::monitoring::unit_tests::",),
     "src/editor/controller_input.rs": ("editor::controller_input::tests::",),
     "src/editor/clip_range_fit.rs": ("editor::clip_range_fit::tests::",),
-    "src/section_surface/focus.rs": ("section_surface::focus::tests::",),
-    "src/output_meter/tests.rs": ("output_meter::tests::unit_tests::",),
     "src/editor/selection.rs": ("editor::selection::tests::",),
     "src/editor/clip_header_loop.rs": ("editor::clip_header_loop::tests::",),
     "src/editor/clip_loop_handles.rs": ("editor::trim::loop_handles::tests::",),
@@ -641,7 +637,6 @@ UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
                    "editor::drag::geometry::": "unit_timeline",
                    "editor::drag::logic::": "unit_timeline",
                    "editor::loop_rail::geometry::": "unit_timeline",
-                   "output_meter::logic::": "unit_editor_logic",
                    "editor::overview_waveform::": "unit_editor_logic",
                    "editor::waveform_columns::": "unit_editor_logic",
                    "editor::device_panel::device_meter::logic::": "unit_device",
@@ -706,16 +701,7 @@ UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
                    "editor::tracks::clone_source_window::": "unit_editor_logic",
                    "editor::tracks::group_overlap::": "unit_editor_logic",
                    "editor::user_errors::": "unit_editor_logic",
-                   "editor::viewport::": "unit_editor_state",
-                   "section_appearance::": "unit_section",
-                   "section_hit::": "unit_section",
-                   "section_input::": "unit_section",
-                   "section_reorder::": "unit_section",
-                   "section_surface::focus::geometry::": "unit_section",
-                   "section_surface::geometry::": "unit_section",
-                   "section_resize::": "unit_section",
-                   "section_selection::": "unit_section",
-                   "theme::": "unit_editor_logic"}
+                   "editor::viewport::": "unit_editor_state"}
 UI_UNIT_HARNESS_FILES = {"tests/piano_roll_unit/editor.rs": "unit_piano_roll",
                          "tests/piano_roll_unit/midi_canvas.rs": "unit_piano_roll"}
 UI_UNIT_HARNESS_MODULES = {
@@ -758,11 +744,6 @@ UI_MODULE_TEST_DEPENDENCIES = {
         "editor::browser::unit_tests::",
         "editor::browser::ui_test::arrangement_wheel_zoom_is_pointer_anchored_and_does_not_escape_its_timeline",
     ),
-    "context_menu::": (
-        "editor::context_menu::tests::global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits",
-        "editor::context_menu::tests::menu_escape_outside_click_and_enter_do_not_leak_to_editor",
-    ),
-    "editor::context_menu::": ("context_menu::tests::",),
     "editor::device_panel::rattle_panel::": (
         "editor::device_panel::tests::rattle_ui_tests::rattle_display_reads_authored_automation_and_manual_draft_precedence",
         "editor::device_panel::tests::rattle_ui_tests::rattle_track_return_panel_fits_and_drive_draft_commits_one_undo",
@@ -841,18 +822,6 @@ UI_MODULE_TEST_DEPENDENCIES = {
     "editor::arrangement_seek::admission::": ("editor::arrangement_seek::unit_tests::",),
     "editor::arrangement_seek::admission::tests::": ("editor::arrangement_seek::unit_tests::",),
     "editor::arrangement_sections::": ("editor::arrangement_seek::unit_tests::",),
-    "section_appearance::": (
-        "editor::arrangement_sections::tests::section_insertion_uses_edges_and_does_not_move_a_clicked_source",
-        "editor::arrangement_sections::tests::first_section_can_be_inserted_after_last",
-        "editor::arrangement_sections::tests::painted_section_release_uses_stamped_queue_and_keeps_success_preview",
-        "editor::arrangement_sections::tests::stationary_non_grid_content_edge_click_does_not_change_music",
-    ),
-    "section_reorder::": (
-        "editor::arrangement_sections::tests::section_insertion_uses_edges_and_does_not_move_a_clicked_source",
-        "editor::arrangement_sections::tests::first_section_can_be_inserted_after_last",
-        "editor::arrangement_sections::tests::painted_section_release_uses_stamped_queue_and_keeps_success_preview",
-        "editor::arrangement_sections::tests::stationary_non_grid_content_edge_click_does_not_change_music",
-    ),
     "editor::edit_cursor::": (
         "editor::edit_cursor_ui_test::clicked_audio_cursor_is_visible_and_e_uses_it_offline",
         "editor::edit_cursor_ui_test::completed_time_selection_survives_idle_ticks_and_remains_rendered",
@@ -1004,14 +973,10 @@ UI_PREFIX_COHORTS = [{"editor::device_panel::utility_panel::tests::",
                       "editor::group_overview::model::",
                       "editor::group_overview::tests::",
                       "editor::arrangement_sections::tests::section_lower_body_paints_all_tracks_without_section_edit_even_when_focused"},
-                    {"section_surface::geometry::",
-                     "editor::arrangement_sections::tests::section_has_opaque_chamfered_fill_and_compact_header_across_palettes_and_layouts",
+                    {"editor::arrangement_sections::tests::section_has_opaque_chamfered_fill_and_compact_header_across_palettes_and_layouts",
                      "editor::arrangement_main_track_ui_test::clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resize",
                      "editor::group_overview::tests::native_group_preview_tracks_viewport_content_removal_and_undo",
                      "editor::arrangement_map::tests::main_lane_paints_canonical_intervals_at_the_ruler_scale"},
-                    {"section_surface::focus::geometry::",
-                     "section_surface::focus::tests::theme_hatch_style_produces_bounded_visible_segments",
-                     "editor::arrangement_focus::tests::only_selected_sections_in_q_focus_receive_the_pattern"},
                     {"editor::section_launch::geometry::",
                      "editor::arrangement_sections::tests::launch_action_geometry_matches_raw_exclusion_without_enlarging_tiny_sections",
                      "editor::arrangement_sections::tests::section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels"},
@@ -1088,8 +1053,7 @@ UI_UNIT_COHORTS = [{"editor::device_panel::eq_panel::axes::", "editor::device_pa
                    {"editor::midi_canvas::geometry::", "editor::midi_drag::", "editor::midi_group_drag::", "editor::midi_scene::", "editor::midi_selection::", "editor::midi_stroke::", "editor::midi_velocity::", "editor::midi_viewport_grid::"},
                    {"editor::device_panel::eq_panel::group_move::", "editor::device_panel::eq_panel::gestures::"},
                    {"editor::musical_time::", "editor::seek::", "editor::signed_frame_viewport::", "editor::viewport::"},
-                   {"output_meter::logic::", "editor::refresh_state::", "editor::track_meters::decay::", "editor::track_meters::follower::", "editor::track_meters::scale::"},
-                   {"section_appearance::", "section_reorder::"},
+                   {"editor::refresh_state::", "editor::track_meters::decay::", "editor::track_meters::follower::", "editor::track_meters::scale::"},
                    {"editor::midi_cue::", "editor::midi_cue::timing::", "editor::clip_range_fit::"},
                    {"editor::device_panel::vst3_parameters::", "editor::device_panel::vst3_parameters::row_projection::"},
                    {"editor::session_audio_panel::", "editor::session_audio_panel::playhead::"},
@@ -1109,7 +1073,6 @@ UI_INTEGRATION_PAIRS = {"editor::automation_take_recovery::unit_tests::": "edito
                         "editor::selection::tests::": "editor::controller::project_replacement_tests::worker_snapshots_and_undo_keep_the_last_user_detail_focus",
                         "editor::session_audio_panel::unit_tests::": "editor::session_audio_panel::tests::",
                         "editor::waveform_geometry::grid::": "editor::waveform_geometry::tests::",
-                        "output_meter::logic::": "output_meter::tests::",
                         "editor::overview_waveform::": "editor::browser::ui_test::browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable",
                         "editor::waveform_columns::": "editor::sampler_parameter::tests::source_hints_and_paint_require_same_view_source_facts_and_context",
                         "editor::device_panel::eq_panel::response::": "editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map",
@@ -1127,8 +1090,7 @@ UI_INTEGRATION_PAIRS = {"editor::automation_take_recovery::unit_tests::": "edito
                         "editor::track_meters::selection::": "editor::track_meters::tests::",
                         "editor::track_meters::decay::": "editor::track_meters::tests::",
                         "editor::track_meters::follower::": "editor::track_meters::main_output::tests::",
-                        "editor::poll_cadence::tests::": "editor::poll_cadence::ui_tests::",
-                        "theme::": "editor::theme_settings::tests::"}
+                        "editor::poll_cadence::tests::": "editor::poll_cadence::ui_tests::"}
 MOD_LINE = re.compile(r"(pub(\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
 INLINE_MOD_LINE = re.compile(r"(pub(\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{")
 PATH_ATTRIBUTE = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
@@ -1305,12 +1267,6 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
         package = next(p for p in inventory if p["name"] == owner)
         directory = (root / Path(package["manifest"]).parent).resolve()
         file = (root / path).resolve()
-        if owner == "hex-storage" and path == "crates/hex-storage/src/text.rs":
-            if file.is_file() and (directory / "src" / "text_tests.rs").is_file():
-                filters.setdefault(owner, set()).add("text_tests::")
-            else:
-                whole.add(owner)
-            continue
         if owner == "hex-ui":
             # This target compiles the real focus source by path. Keep mixed
             # owner-and-harness changes scoped while selecting its full binary.
@@ -1405,16 +1361,6 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
         ))
     if "hex-ui" in tested and WAVEFORM_PAINT_GEOMETRY_CONSUMERS.intersection(executable):
         filters.setdefault("hex-ui", set()).add(WAVEFORM_PAINT_GEOMETRY_UNIT)
-    # The theme source is compiled by path in each consumer. Run its own text
-    # contract alongside storage's test, without widening other storage edits.
-    if "crates/hex-storage/src/text.rs" in executable:
-        for consumer in PATH_RUNTIME_CONSUMERS["crates/hex-storage/src/text.rs"] & set(tested):
-            filters.setdefault(consumer, set()).add("theme::tests::")
-    if "hex-sandbox" in tested:
-        if "crates/hex-ui/src/theme.rs" in executable:
-            filters.setdefault("hex-sandbox", set()).add("theme::")
-        if "crates/hex-ui/src/theme/device.rs" in executable:
-            filters.setdefault("hex-sandbox", set()).add("theme::device::")
     selected = {}
     for owner, names in filters.items():
         if owner in whole:
@@ -1493,8 +1439,6 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                     "editor::device_panel::tests::header_style_tests::device_shell_outline_is_visible_rounded_and_tracks_selection_across_owners",
                     "editor::device_panel::tests::sine_and_effect_place_their_shared_header_to_the_left_of_the_body",
                 ))
-            if "crates/hex-ui/src/theme.rs" in executable:
-                names.update(("output_meter::tests::unit_tests::", "output_meter::tests::rendered::output_meter_uses_shared_level_colors_and_click_clear_clipping_caps"))
             if "crates/hex-ui/src/editor/time_selection.rs" in executable:
                 names.update(("editor::clip_range_fit::tests::", "editor::clip_range_fit::ui_tests::"))
             if any("editor::controller_input::monitoring::unit_tests::".startswith(name) for name in names):
@@ -1713,9 +1657,9 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
     if missing:
         raise ValueError("reviewed path consumers missing from affected packages: " + ", ".join(sorted(missing)))
     compressor = {"crates/hex-devices/src/compressor.rs", "crates/hex-devices/src/compressor/tests.rs"}
-    # hex-sandbox (design tool over hex-engine/hex-widgets) has no compressor
-    # code, fixtures or tests; it is linted with every other Cargo consumer.
-    known_consumers = {"hex-devices", "hex-engine", "hex-audio", "hex-ui", "hex-storage",
+    # hex-sandbox and hex-ui-kit have no compressor code, fixtures or tests;
+    # both are linted with every other Cargo consumer.
+    known_consumers = {"hex-devices", "hex-engine", "hex-audio", "hex-ui", "hex-ui-kit", "hex-storage",
                        "hex-desktop", "hex-cli", "hex-export", "hex-session", "hex-media", "hex-stream",
                        "hex-sandbox"}
     # Derive reviewed consumer features from the authoritative reviewed feature
@@ -1726,6 +1670,7 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
         for name in known_consumers
     }
     reviewed_features["hex-sandbox"] |= {"ui-test-support", "ui-unit-tier"}
+    reviewed_features["hex-ui-kit"] |= {"ui-test-support", "ui-unit-tier"}
     narrow = bool(executable) and set(executable) <= compressor and set(affected) <= known_consumers
     narrow = narrow and all(set(p["features"]) <= reviewed_features.get(p["name"], set())
                             for p in inventory if p["name"] in affected)

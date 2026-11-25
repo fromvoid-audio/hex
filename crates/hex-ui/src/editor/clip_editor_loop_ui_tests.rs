@@ -66,7 +66,7 @@ fn check_midi_loop_keys(cx: &mut TestAppContext, console: bool) {
             };
             let id = source.id();
             v.mode = EditorMode::Session;
-            v.selected_cell = Some((track, scene));
+            v.session_grid.selected_cell = Some((track, scene));
             v.selected_clip = Some(id);
             cx.notify();
             id
@@ -148,13 +148,13 @@ fn clip_editor_audio_w_l_and_brace_align_scope_and_keep_released_paint(cx: &mut 
         let clip = t.clips()[0].id();
         v.selected_track = Some(t.id());
         v.selected_clip = Some(clip);
-        v.clip_view_open = true;
-        v.device_panel_active = false;
+        v.audio_detail.clip_view_open = true;
+        v.device_panel.active = false;
         cx.notify();
         clip
     });
     visual.run_until_parked();
-    visual.update(|window, cx| editor.read_with(cx, |v, _| v.audio_event_focus.focus(window)));
+    visual.update(|window, cx| editor.read_with(cx, |v, _| v.audio_detail.focus.focus(window)));
     visual.run_until_parked();
     // A legacy source loop remains that same canonical loop when no range is
     // selected; toggling must not capture its already-repeated output as a view.

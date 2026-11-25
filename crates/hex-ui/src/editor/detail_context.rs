@@ -29,7 +29,8 @@ impl EditorView {
     /// The clip editor subject: the whole-clip selection, else a current context.
     pub(super) fn detail_clip_id(&self) -> Option<ClipId> {
         self.selected_clip.or_else(|| {
-            self.detail_context
+            self.audio_detail
+                .detail_context
                 .filter(|context| {
                     self.mode == super::EditorMode::Arrangement
                         && context.generation == self.project_generation
@@ -73,7 +74,7 @@ impl EditorView {
     /// Clip-local editor state resets on a change.
     pub(super) fn set_detail_context(&mut self, clip: Option<ClipId>) {
         let Some(clip) = clip else {
-            self.detail_context = None;
+            self.audio_detail.detail_context = None;
             return;
         };
         let Some(revision) = self.state.as_ref().map(|state| state.revision) else {
@@ -83,7 +84,7 @@ impl EditorView {
         // its editor viewport when it changes from selection to context.
         self.retire_clip_detail_state_for(clip);
         self.selected_clip = None;
-        self.detail_context = Some(DetailContext {
+        self.audio_detail.detail_context = Some(DetailContext {
             clip,
             generation: self.project_generation,
             revision,
@@ -100,21 +101,21 @@ impl EditorView {
 
     /// Retire a context whose document or clip no longer exists.
     pub(super) fn reconcile_detail_context(&mut self) {
-        let Some(context) = self.detail_context else {
+        let Some(context) = self.audio_detail.detail_context else {
             return;
         };
         let Some(state) = self.state.as_ref() else {
-            self.detail_context = None;
+            self.audio_detail.detail_context = None;
             return;
         };
         if context.generation != self.project_generation
             || context.intent != self.selection_intent_epoch
         {
-            self.detail_context = None;
+            self.audio_detail.detail_context = None;
         } else if context.revision != state.revision {
             let exists = state.project.clip(context.clip).is_some()
                 || state.project.midi_clip(context.clip).is_some();
-            self.detail_context = exists.then_some(DetailContext {
+            self.audio_detail.detail_context = exists.then_some(DetailContext {
                 revision: state.revision,
                 ..context
             });

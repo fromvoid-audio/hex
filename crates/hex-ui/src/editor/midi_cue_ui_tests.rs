@@ -93,7 +93,7 @@ fn rendered_ruler_case(cx: &mut TestAppContext, stateful: bool) {
     let before = editor.read_with(cx, |view, _| {
         (
             view.state.as_ref().unwrap().revision,
-            view.midi_marker,
+            view.midi_editor.marker,
             view.state
                 .as_ref()
                 .unwrap()
@@ -101,7 +101,7 @@ fn rendered_ruler_case(cx: &mut TestAppContext, stateful: bool) {
                 .midi_source(clip)
                 .unwrap()
                 .clone(),
-            view.midi_selection.ids().to_vec(),
+            view.midi_editor.selection.ids().to_vec(),
         )
     });
     assert_eq!(
@@ -148,7 +148,7 @@ fn rendered_ruler_case(cx: &mut TestAppContext, stateful: bool) {
         assert_eq!(view.audio_status().unwrap().position.load(Acquire), 216_000);
         assert!(!view.audio_status().unwrap().playing.load(Acquire));
         assert_eq!(view.state.as_ref().unwrap().revision, before.0);
-        assert_eq!(view.midi_marker, before.1);
+        assert_eq!(view.midi_editor.marker, before.1);
         assert_eq!(
             view.state
                 .as_ref()
@@ -158,7 +158,7 @@ fn rendered_ruler_case(cx: &mut TestAppContext, stateful: bool) {
                 .unwrap(),
             &before.2
         );
-        assert_eq!(view.midi_selection.ids(), before.3.as_slice());
+        assert_eq!(view.midi_editor.selection.ids(), before.3.as_slice());
     });
     editor.update(cx, |view, cx| {
         view.selected_clip = None;

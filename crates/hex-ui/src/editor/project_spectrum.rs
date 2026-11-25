@@ -613,7 +613,7 @@ impl EditorView {
         134.0
             + super::header::toolbar_height(f32::from(window.viewport_size().width))
             + self.workspace_panel_chrome()
-            + if self.clip_view_open && !self.device_panel_active {
+            + if self.audio_detail.clip_view_open && !self.device_panel.active {
                 4.0
             } else {
                 0.0
@@ -622,25 +622,33 @@ impl EditorView {
     }
 
     fn project_spectrum_compact(&self, window: &Window) -> bool {
-        self.project_spectrum.expanded
-            && self.project_spectrum.detail_height.is_some_and(|detail| {
-                f32::from(window.viewport_size().height)
-                    - self.project_spectrum_chrome(window)
-                    - detail
-                    - 60.0
-                    < 72.0
-            })
+        self.device_panel.project_spectrum.expanded
+            && self
+                .device_panel
+                .project_spectrum
+                .detail_height
+                .is_some_and(|detail| {
+                    f32::from(window.viewport_size().height)
+                        - self.project_spectrum_chrome(window)
+                        - detail
+                        - 60.0
+                        < 72.0
+                })
     }
 
     fn project_spectrum_height(&self, window: &Window) -> f32 {
-        if !self.project_spectrum.expanded || self.project_spectrum_compact(window) {
+        if !self.device_panel.project_spectrum.expanded || self.project_spectrum_compact(window) {
             return 22.0 + 2.0 * hex_widgets::PANEL_FRAME_INSET;
         }
         let viewport = f32::from(window.viewport_size().height);
-        let desired = bounded_height(self.project_spectrum.height, window.viewport_size());
+        let desired = bounded_height(
+            self.device_panel.project_spectrum.height,
+            window.viewport_size(),
+        );
         // Keep complete populated details whenever a useful graph fits. At the
         // minimum window, the detail viewport scrolls instead of crushing tracks.
-        self.project_spectrum
+        self.device_panel
+            .project_spectrum
             .detail_height
             .map_or(desired, |detail| {
                 desired.min(
@@ -652,8 +660,9 @@ impl EditorView {
     /// Empty space yields to the timeline; real controls remain scrollable.
     pub(super) fn project_spectrum_detail_height(&self, window: &Window, preferred: f32) -> f32 {
         let viewport = f32::from(window.viewport_size().height);
-        let workspace = if self.project_spectrum.detail_height.is_some()
-            && (!self.project_spectrum.expanded || self.project_spectrum_compact(window))
+        let workspace = if self.device_panel.project_spectrum.detail_height.is_some()
+            && (!self.device_panel.project_spectrum.expanded
+                || self.project_spectrum_compact(window))
         {
             44.0
         } else {
@@ -679,10 +688,11 @@ impl EditorView {
     }
 
     fn update_max_peak_from(&mut self, master: &SpectrumFrame) {
-        if self.project_spectrum.options.peak_mode != PeakMode::Hold {
+        if self.device_panel.project_spectrum.options.peak_mode != PeakMode::Hold {
             return;
         }
         let peaks = self
+            .device_panel
             .project_spectrum
             .max_peak_dbfs
             .get_or_insert([FLOOR_DBFS; SPECTRUM_BANDS]);
@@ -694,8 +704,11 @@ impl EditorView {
             }
         }
         if changed {
-            self.project_spectrum.max_peak_epoch =
-                self.project_spectrum.max_peak_epoch.wrapping_add(1);
+            self.device_panel.project_spectrum.max_peak_epoch = self
+                .device_panel
+                .project_spectrum
+                .max_peak_epoch
+                .wrapping_add(1);
         }
     }
 
@@ -706,9 +719,9 @@ impl EditorView {
             self.audio_admission
                 .published_audio_revision(generation, state.revision)
         });
-        let expanded = self.project_spectrum.expanded
-            && !self.opening_project
-            && !self.sample_recorder.visible;
+        let expanded = self.device_panel.project_spectrum.expanded
+            && !self.persistence.opening_project
+            && !self.device_panel.sample_recorder.visible;
         let mut result = None;
         let mut output_identity = None;
         if let Some(audio) = self.audio.as_mut() {
@@ -725,7 +738,7 @@ impl EditorView {
                     // Clear old identity immediately while a new canonical
                     // revision is still waiting for its real audio publication.
                     let _ = audio.control.project_spectrum_clear();
-                    self.project_spectrum.clear_max_peak();
+                    self.device_panel.project_spectrum.clear_max_peak();
                     if let Some(floor) = floor {
                         let _ = audio.control.project_spectrum_select(
                             &ids,
@@ -750,20 +763,26 @@ impl EditorView {
         }
 
         // Preserve frozen snapshot while project/output identity remain valid.
-        if self.project_spectrum.options.frozen {
-            let context_valid = self.project_spectrum.result.as_ref().is_some_and(|saved| {
-                saved.selection.generation == generation
-                    && saved.selection.tracks() == ids
-                    && (output_identity.is_none()
-                        || self.project_spectrum.output_identity == output_identity)
-            });
+        if self.device_panel.project_spectrum.options.frozen {
+            let context_valid = self
+                .device_panel
+                .project_spectrum
+                .result
+                .as_ref()
+                .is_some_and(|saved| {
+                    saved.selection.generation == generation
+                        && saved.selection.tracks() == ids
+                        && (output_identity.is_none()
+                            || self.device_panel.project_spectrum.output_identity
+                                == output_identity)
+                });
             if context_valid {
                 return false;
             }
-            self.project_spectrum.options.frozen = false;
+            self.device_panel.project_spectrum.options.frozen = false;
         }
 
-        let same_result = match (&self.project_spectrum.result, &result) {
+        let same_result = match (&self.device_panel.project_spectrum.result, &result) {
             (Some(a), Some(b)) => {
                 Arc::ptr_eq(&a.frames, &b.frames)
                     && a.processed_at == b.processed_at
@@ -774,17 +793,17 @@ impl EditorView {
             (None, None) => true,
             _ => false,
         };
-        if !same_result || self.project_spectrum.output_identity != output_identity {
-            self.project_spectrum.plot_cache = None;
+        if !same_result || self.device_panel.project_spectrum.output_identity != output_identity {
+            self.device_panel.project_spectrum.plot_cache = None;
             if let Some(master) = result.as_ref().and_then(|r| r.frames().first()) {
                 self.update_max_peak_from(master);
             }
-            self.project_spectrum.result = result;
-            self.project_spectrum.output_identity = output_identity;
-            self.project_spectrum.tick_activity = true;
+            self.device_panel.project_spectrum.result = result;
+            self.device_panel.project_spectrum.output_identity = output_identity;
+            self.device_panel.project_spectrum.tick_activity = true;
             // Repaint ONLY the isolated spectrum canvas when already mounted,
             // avoiding full-window EditorView::render() at 60 Hz!
-            if self.project_spectrum.canvas.is_some() {
+            if self.device_panel.project_spectrum.canvas.is_some() {
                 self.sync_project_spectrum_canvas(std::time::Instant::now(), cx);
                 return false;
             }
@@ -795,7 +814,7 @@ impl EditorView {
     }
 
     fn sync_project_spectrum_canvas(&mut self, now: std::time::Instant, cx: &mut Context<Self>) {
-        let Some(canvas) = self.project_spectrum.canvas.clone() else {
+        let Some(canvas) = self.device_panel.project_spectrum.canvas.clone() else {
             return;
         };
         let (layers, legend) = self.project_spectrum_layers_and_legend(now);
@@ -809,76 +828,84 @@ impl EditorView {
     }
 
     fn notify_project_spectrum_options(&mut self, cx: &mut Context<Self>) {
-        self.project_spectrum.plot_cache = None;
+        self.device_panel.project_spectrum.plot_cache = None;
         self.sync_project_spectrum_canvas(std::time::Instant::now(), cx);
         cx.notify();
     }
 
     fn cycle_project_spectrum_slope(&mut self, cx: &mut Context<Self>) {
-        self.project_spectrum.options.slope = self.project_spectrum.options.slope.next();
+        self.device_panel.project_spectrum.options.slope =
+            self.device_panel.project_spectrum.options.slope.next();
         self.notify_project_spectrum_options(cx);
     }
 
     fn cycle_project_spectrum_smoothing(&mut self, cx: &mut Context<Self>) {
-        self.project_spectrum.options.smoothing = self.project_spectrum.options.smoothing.next();
+        self.device_panel.project_spectrum.options.smoothing =
+            self.device_panel.project_spectrum.options.smoothing.next();
         self.notify_project_spectrum_options(cx);
     }
 
     fn cycle_project_spectrum_range(&mut self, cx: &mut Context<Self>) {
-        self.project_spectrum.options.range = self.project_spectrum.options.range.next();
+        self.device_panel.project_spectrum.options.range =
+            self.device_panel.project_spectrum.options.range.next();
         self.notify_project_spectrum_options(cx);
     }
 
     fn zoom_project_spectrum_range(&mut self, zoom_in: bool, cx: &mut Context<Self>) {
         let next = if zoom_in {
-            self.project_spectrum.options.range.zoom_in()
+            self.device_panel.project_spectrum.options.range.zoom_in()
         } else {
-            self.project_spectrum.options.range.zoom_out()
+            self.device_panel.project_spectrum.options.range.zoom_out()
         };
-        if next != self.project_spectrum.options.range {
-            self.project_spectrum.options.range = next;
+        if next != self.device_panel.project_spectrum.options.range {
+            self.device_panel.project_spectrum.options.range = next;
             self.notify_project_spectrum_options(cx);
         }
     }
 
     fn cycle_project_spectrum_peak_mode(&mut self, cx: &mut Context<Self>) {
-        let next = self.project_spectrum.options.peak_mode.next();
-        self.project_spectrum.options.peak_mode = next;
+        let next = self.device_panel.project_spectrum.options.peak_mode.next();
+        self.device_panel.project_spectrum.options.peak_mode = next;
         if next == PeakMode::Hold {
-            self.project_spectrum.max_peak_dbfs = self
+            self.device_panel.project_spectrum.max_peak_dbfs = self
+                .device_panel
                 .project_spectrum
                 .result
                 .as_ref()
                 .and_then(|r| r.frames().first())
                 .map(|m| m.peak_dbfs);
-            self.project_spectrum.max_peak_epoch =
-                self.project_spectrum.max_peak_epoch.wrapping_add(1);
+            self.device_panel.project_spectrum.max_peak_epoch = self
+                .device_panel
+                .project_spectrum
+                .max_peak_epoch
+                .wrapping_add(1);
         } else {
-            self.project_spectrum.clear_max_peak();
+            self.device_panel.project_spectrum.clear_max_peak();
         }
         self.notify_project_spectrum_options(cx);
     }
 
     fn toggle_project_spectrum_freeze(&mut self, cx: &mut Context<Self>) {
-        self.project_spectrum.options.frozen = !self.project_spectrum.options.frozen;
-        if !self.project_spectrum.options.frozen {
+        self.device_panel.project_spectrum.options.frozen =
+            !self.device_panel.project_spectrum.options.frozen;
+        if !self.device_panel.project_spectrum.options.frozen {
             self.tick_project_spectrum(cx);
         }
         self.notify_project_spectrum_options(cx);
     }
 
     fn reset_project_spectrum_peaks(&mut self, cx: &mut Context<Self>) {
-        self.project_spectrum.clear_max_peak();
+        self.device_panel.project_spectrum.clear_max_peak();
         self.notify_project_spectrum_options(cx);
     }
 
     fn toggle_project_spectrum(&mut self, cx: &mut Context<Self>) {
         self.cancel_project_spectrum_resize(cx);
-        self.project_spectrum.expanded = !self.project_spectrum.expanded;
-        self.project_spectrum.result = None;
-        self.project_spectrum.options.frozen = false;
-        self.project_spectrum.clear_max_peak();
-        if !self.project_spectrum.expanded
+        self.device_panel.project_spectrum.expanded = !self.device_panel.project_spectrum.expanded;
+        self.device_panel.project_spectrum.result = None;
+        self.device_panel.project_spectrum.options.frozen = false;
+        self.device_panel.project_spectrum.clear_max_peak();
+        if !self.device_panel.project_spectrum.expanded
             && let Some(audio) = self.audio.as_ref()
         {
             let _ = audio.control.project_spectrum_clear();
@@ -888,8 +915,8 @@ impl EditorView {
     }
 
     pub(super) fn cancel_project_spectrum_resize(&mut self, cx: &mut Context<Self>) -> bool {
-        if let Some(resize) = self.project_spectrum.resize.take() {
-            self.project_spectrum.height = resize.preferred;
+        if let Some(resize) = self.device_panel.project_spectrum.resize.take() {
+            self.device_panel.project_spectrum.height = resize.preferred;
             cx.notify();
             true
         } else {
@@ -903,7 +930,7 @@ impl EditorView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(resize) = self.project_spectrum.resize.as_ref() else {
+        let Some(resize) = self.device_panel.project_spectrum.resize.as_ref() else {
             return false;
         };
         if resize.generation != self.project_generation
@@ -912,7 +939,7 @@ impl EditorView {
         {
             return self.cancel_project_spectrum_resize(cx);
         }
-        self.project_spectrum.height =
+        self.device_panel.project_spectrum.height =
             bounded_height(resize.original + delta, window.viewport_size());
         cx.notify();
         true
@@ -924,7 +951,13 @@ impl EditorView {
     ) -> SplitterInput<Self> {
         SplitterInput::new(
             cx.entity(),
-            |view| view.project_spectrum.resize.as_ref().map(|r| r.gesture),
+            |view| {
+                view.device_panel
+                    .project_spectrum
+                    .resize
+                    .as_ref()
+                    .map(|r| r.gesture)
+            },
             Self::project_spectrum_splitter_event,
         )
     }
@@ -939,23 +972,26 @@ impl EditorView {
             SplitterEvent::Begin(gesture) => {
                 self.cancel_clip_detail_resize(cx);
                 window.focus(&self.focus);
-                self.project_spectrum.resize = Some(Resize {
+                self.device_panel.project_spectrum.resize = Some(Resize {
                     gesture,
                     // Restore the preference even when responsive layout clamps paint.
-                    preferred: self.project_spectrum.height,
-                    original: bounded_height(self.project_spectrum.height, window.viewport_size()),
+                    preferred: self.device_panel.project_spectrum.height,
+                    original: bounded_height(
+                        self.device_panel.project_spectrum.height,
+                        window.viewport_size(),
+                    ),
                     generation: self.project_generation,
                 });
                 cx.notify();
                 true
             }
             SplitterEvent::Change(delta) | SplitterEvent::Commit(delta) => {
-                if self.project_spectrum.resize.is_none() {
+                if self.device_panel.project_spectrum.resize.is_none() {
                     return false;
                 }
                 self.resize_project_spectrum(delta, window, cx);
                 if matches!(event, SplitterEvent::Commit(_)) {
-                    self.project_spectrum.resize = None;
+                    self.device_panel.project_spectrum.resize = None;
                     cx.notify();
                 }
                 true
@@ -977,16 +1013,22 @@ impl EditorView {
             .as_ref()
             .map_or(48_000, |s| s.project.sample_rate());
         let max_hz = 20_000.0_f32.min(sample_rate as f32 * 0.5);
-        let (min_dbfs, max_dbfs) = self.project_spectrum.options.range.bounds_dbfs();
+        let (min_dbfs, max_dbfs) = self
+            .device_panel
+            .project_spectrum
+            .options
+            .range
+            .bounds_dbfs();
         SpectrumPlotConfig {
             min_hz: MIN_PLOT_HZ,
             max_hz,
             min_dbfs,
             max_dbfs,
             show_axes: true,
-            peak_ribbon: self.project_spectrum.options.peak_mode != PeakMode::Off,
+            peak_ribbon: self.device_panel.project_spectrum.options.peak_mode != PeakMode::Off,
             crosshair: None,
             badge: self
+                .device_panel
                 .project_spectrum
                 .options
                 .frozen
@@ -1004,7 +1046,7 @@ impl EditorView {
         &mut self,
         now: std::time::Instant,
     ) -> (SpectrumPlotLayers, Vec<SpectrumPlotLegendItem>) {
-        if self.project_spectrum.output_identity
+        if self.device_panel.project_spectrum.output_identity
             != self
                 .audio
                 .as_ref()
@@ -1012,16 +1054,22 @@ impl EditorView {
         {
             return (SpectrumPlotLayers::default(), Vec::new());
         }
-        if !self.project_spectrum.expanded {
+        if !self.device_panel.project_spectrum.expanded {
             return (SpectrumPlotLayers::default(), Vec::new());
         }
         let ids = self.project_spectrum_ids();
-        let frozen = self.project_spectrum.options.frozen;
-        let Some(result) = self.project_spectrum.result.as_ref().filter(|r| {
-            r.selection.generation == self.project_generation
-                && r.selection.tracks() == ids
-                && (frozen || r.is_fresh_at(now))
-        }) else {
+        let frozen = self.device_panel.project_spectrum.options.frozen;
+        let Some(result) = self
+            .device_panel
+            .project_spectrum
+            .result
+            .as_ref()
+            .filter(|r| {
+                r.selection.generation == self.project_generation
+                    && r.selection.tracks() == ids
+                    && (frozen || r.is_fresh_at(now))
+            })
+        else {
             return (SpectrumPlotLayers::default(), Vec::new());
         };
         let Some(state) = self.state.as_ref() else {
@@ -1037,9 +1085,9 @@ impl EditorView {
             result.selection,
         );
         let palette = theme::preferences();
-        let options = self.project_spectrum.options;
-        let max_peak_epoch = self.project_spectrum.max_peak_epoch;
-        if let Some(cache) = self.project_spectrum.plot_cache.as_ref()
+        let options = self.device_panel.project_spectrum.options;
+        let max_peak_epoch = self.device_panel.project_spectrum.max_peak_epoch;
+        if let Some(cache) = self.device_panel.project_spectrum.plot_cache.as_ref()
             && cache.generation == self.project_generation
             && cache.source == source
             && cache.revision == state.revision
@@ -1088,7 +1136,7 @@ impl EditorView {
         }
 
         // Unrelated edits update the lookup key without converting points again.
-        if let Some(cache) = self.project_spectrum.plot_cache.as_mut()
+        if let Some(cache) = self.device_panel.project_spectrum.plot_cache.as_mut()
             && cache.generation == self.project_generation
             && cache.source == source
             && cache.options == options
@@ -1139,6 +1187,7 @@ impl EditorView {
             }
             PeakMode::Hold => {
                 let raw_hold = self
+                    .device_panel
                     .project_spectrum
                     .max_peak_dbfs
                     .as_ref()
@@ -1153,7 +1202,7 @@ impl EditorView {
             color: master_color,
         });
         let layers = SpectrumPlotLayers::new(layers).unwrap_or_default();
-        self.project_spectrum.plot_cache = Some(PlotCache {
+        self.device_panel.project_spectrum.plot_cache = Some(PlotCache {
             generation: self.project_generation,
             revision: state.revision,
             theme: palette,
@@ -1225,21 +1274,27 @@ impl EditorView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        if self.project_spectrum.resize.as_ref().is_some_and(|r| {
-            r.generation != self.project_generation
-                || !r.gesture.matches_window(window)
-                || !self.focus.is_focused(window)
-        }) {
+        if self
+            .device_panel
+            .project_spectrum
+            .resize
+            .as_ref()
+            .is_some_and(|r| {
+                r.generation != self.project_generation
+                    || !r.gesture.matches_window(window)
+                    || !self.focus.is_focused(window)
+            })
+        {
             self.cancel_project_spectrum_resize(cx);
         }
-        let expanded = self.project_spectrum.expanded;
+        let expanded = self.device_panel.project_spectrum.expanded;
         let height = self.project_spectrum_height(window);
-        if self.sample_recorder.visible {
+        if self.device_panel.sample_recorder.visible {
             return self.sample_recorder_panel(height, cx);
         }
         let style = theme::device_style(theme::DeviceStyleRole::Display);
         let compact = self.project_spectrum_compact(window);
-        let options = self.project_spectrum.options;
+        let options = self.device_panel.project_spectrum.options;
         let show_analyzer_pills =
             expanded && !compact && self.workspace_body_width(window) >= 480.0;
 
@@ -1360,12 +1415,12 @@ impl EditorView {
             .text_xs();
         if expanded && !compact {
             let now = std::time::Instant::now();
-            let entity = match self.project_spectrum.canvas.clone() {
+            let entity = match self.device_panel.project_spectrum.canvas.clone() {
                 Some(existing) => existing,
                 None => {
                     let weak = cx.entity().downgrade();
                     let created = cx.new(|_| ProjectSpectrumCanvas::new(weak, style));
-                    self.project_spectrum.canvas = Some(created.clone());
+                    self.device_panel.project_spectrum.canvas = Some(created.clone());
                     created
                 }
             };

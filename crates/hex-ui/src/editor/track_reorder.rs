@@ -117,17 +117,17 @@ impl EditorView {
             || self.context_menu.is_some()
             || self.active_clip_drag.is_some()
             || self.active_trim_drag.is_some()
-            || self.active_midi_trim_drag.is_some()
+            || self.midi_editor.active_trim_drag.is_some()
             || self.active_fade_drag.is_some()
             || self.time_range_move_gesture.is_some()
             || self.time_selection_gesture.is_some()
             || self.gain_lane.draft.is_some()
             || self.sections.naming()
-            || self.tuning.open
-            || self.theme_settings.open
-            || self.save_dialog_open
-            || self.export_dialog_open
-            || self.changelog.is_open()
+            || self.settings.tuning.open
+            || self.settings.theme.open
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
+            || self.settings.changelog.is_open()
         {
             return;
         }
@@ -870,7 +870,7 @@ impl EditorView {
         if x < left || x > end || y < top || y > bottom {
             return false;
         }
-        let size = self.session_visible_columns.max(1);
+        let size = self.session_grid.visible_columns.max(1);
         let maximum = self
             .arrangement_focus
             .projection
@@ -894,7 +894,7 @@ impl EditorView {
             g.destination = None;
         }
         self.track_reorder.painted_gap = None;
-        self.session_track_start = next;
+        self.session_grid.track_start = next;
         true
     }
 

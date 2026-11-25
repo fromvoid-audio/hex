@@ -82,11 +82,11 @@ fn decoder_and_computer_chord_paint_matches_right_arrow_after_real_ack(cx: &mut 
     let (mut visual, editor, _environment, clip) = fixture(cx);
     let input = Arc::new(hex_midi::HeldNoteInput::default());
     editor.update(&mut visual, |view, cx| {
-        view.midi_step.enabled = true;
+        view.midi_editor.step.enabled = true;
         view.controller_input.channel = 2;
         view.controller_input.held_notes = Some(Arc::clone(&input));
         view.controller_input.target = view.controller_target();
-        view.piano_pitch = crate::editor::PitchViewport::from_rows(48, 36).unwrap();
+        view.midi_editor.piano_pitch = crate::editor::PitchViewport::from_rows(48, 36).unwrap();
         cx.notify();
     });
     visual.run_until_parked();
@@ -119,10 +119,11 @@ fn decoder_and_computer_chord_paint_matches_right_arrow_after_real_ack(cx: &mut 
         ),
     ] {
         editor.update(&mut visual, |view, cx| {
-            view.midi_marker = Some(cursor);
-            view.piano_beat_start = i128::from(start);
-            view.piano_beat_span = BeatTime::from_raw(span);
-            view.piano_pitch = crate::editor::PitchViewport::from_rows(low, rows).unwrap();
+            view.midi_editor.marker = Some(cursor);
+            view.midi_editor.piano_beat_start = i128::from(start);
+            view.midi_editor.piano_beat_span = BeatTime::from_raw(span);
+            view.midi_editor.piano_pitch =
+                crate::editor::PitchViewport::from_rows(low, rows).unwrap();
             cx.notify();
         });
         visual.run_until_parked();
@@ -242,7 +243,7 @@ fn live_feedback_clears_on_release_context_and_endpoint_cancellation(cx: &mut Te
     editor.read_with(&visual, |v, _| assert!(!v.midi_live_pitches()[60]));
     visual.update(|window, cx| {
         editor.update(cx, |v, cx| {
-            v.midi_focus.focus(window);
+            v.midi_editor.focus.focus(window);
             cx.notify();
         })
     });

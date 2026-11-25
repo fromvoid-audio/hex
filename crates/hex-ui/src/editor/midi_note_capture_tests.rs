@@ -49,9 +49,9 @@ fn open(cx: &mut TestAppContext, group: bool, copy: bool, edge: i8) -> Fixture {
             .iter()
             .map(|n| n.id())
             .collect();
-        v.midi_selection.set_single(ids[0]);
+        v.midi_editor.selection.set_single(ids[0]);
         if group {
-            v.midi_selection.toggle(ids[1]).unwrap();
+            v.midi_editor.selection.toggle(ids[1]).unwrap();
         }
         cx.notify();
     });
@@ -124,8 +124,8 @@ fn note_move_edges_group_and_copy_own_input_then_release_to_receipt(cx: &mut Tes
         let mods = modifiers(copy);
         visual.simulate_mouse_down(down, MouseButton::Left, mods);
         assert!(
-            editor.read_with(&visual, |v, _| v.midi_note_gesture.is_some()
-                || v.midi_group_gesture.is_some())
+            editor.read_with(&visual, |v, _| v.midi_editor.note_gesture.is_some()
+                || v.midi_editor.group_gesture.is_some())
         );
         let outside = point(px(640.), px(10.));
         visual.simulate_mouse_down(outside, MouseButton::Right, mods);
@@ -154,7 +154,9 @@ fn note_move_edges_group_and_copy_own_input_then_release_to_receipt(cx: &mut Tes
             assert_eq!(bodies(&editor, &mut visual), held);
             assert!(!visual.update(|w, _| w.is_pointer_dragging()));
             editor.read_with(&visual, |v, _| {
-                assert!(v.midi_note_gesture.is_none() && v.midi_group_gesture.is_none());
+                assert!(
+                    v.midi_editor.note_gesture.is_none() && v.midi_editor.group_gesture.is_none()
+                );
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             });
         }
@@ -167,7 +169,9 @@ fn note_move_edges_group_and_copy_own_input_then_release_to_receipt(cx: &mut Tes
         });
         repaint(&editor, &mut visual);
         assert_eq!(bodies(&editor, &mut visual), held);
-        editor.read_with(&visual, |v, _| assert!(v.pending_midi_drag.is_none()));
+        editor.read_with(&visual, |v, _| {
+            assert!(v.midi_editor.pending_drag.is_none())
+        });
         editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
@@ -237,7 +241,7 @@ fn note_input_loss_discards_matching_draft_without_stale_edit_or_late_up(cx: &mu
                     cx.notify();
                 }),
                 "hidden" => editor.update(&mut visual, |v, cx| {
-                    v.clip_view_open = false;
+                    v.audio_detail.clip_view_open = false;
                     cx.notify();
                 }),
                 "bounds" => visual.simulate_resize(gpui::size(px(1000.), px(700.))),
@@ -277,8 +281,10 @@ fn note_input_loss_discards_matching_draft_without_stale_edit_or_late_up(cx: &mu
             visual.run_until_parked();
             assert_eq!(actions.get(), 0, "group={group}/{loss}: trailing action");
             editor.read_with(&visual, |v, _| {
-                assert!(v.midi_note_gesture.is_none() && v.midi_group_gesture.is_none());
-                assert!(v.pending_midi_drag.is_none());
+                assert!(
+                    v.midi_editor.note_gesture.is_none() && v.midi_editor.group_gesture.is_none()
+                );
+                assert!(v.midi_editor.pending_drag.is_none());
                 assert!(!v.edit_pending());
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             });

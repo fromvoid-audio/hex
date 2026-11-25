@@ -190,9 +190,18 @@ impl ClaimedAudioCandidateRuntime {
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
         project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
     ) -> Result<(), crate::Invalid> {
+        self.render_with_signal_observers_and_wave(output, observer, project, None)
+    }
+    pub fn render_with_signal_observers_and_wave(
+        &mut self,
+        output: &mut [crate::Frame],
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        wave: Option<&mut dyn crate::wave_executor::WaveExecutor>,
+    ) -> Result<(), crate::Invalid> {
         self.current_runtime_mut()
             .ok_or(crate::Invalid("candidate runtime is not current"))?
-            .render_with_signal_observers(output, observer, project)
+            .render_with_signal_observers_and_wave(output, observer, project, wave)
     }
     /// Render live input through the current closed runtime and retained resources.
     #[allow(clippy::too_many_arguments)]
@@ -225,12 +234,28 @@ impl ClaimedAudioCandidateRuntime {
         project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), crate::Invalid> {
+        self.render_with_foreign_processors_and_wave(
+            output, pages, observer, project, foreign, None,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_foreign_processors_and_wave(
+        &mut self,
+        output: &mut [crate::Frame],
+        pages: Option<&mut dyn crate::MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+        wave: Option<&mut dyn crate::wave_executor::WaveExecutor>,
+    ) -> Result<(), crate::Invalid> {
         let Some(runtime) = self.current_runtime_mut() else {
             foreign.reject_callback();
             output.fill([0.0; 2]);
             return Err(crate::Invalid("candidate runtime is not current"));
         };
-        runtime.render_with_foreign_processors(output, pages, observer, project, foreign)
+        runtime.render_with_foreign_processors_and_wave(
+            output, pages, observer, project, foreign, wave,
+        )
     }
     pub fn project_output_supported(&self, tracks: &[u64]) -> bool {
         self.current_playback()
@@ -367,6 +392,10 @@ impl ClaimedAudioCandidateRuntime {
         };
         playback.set_device_metering(enabled);
         true
+    }
+    pub fn arrangement_loop_pass(&self) -> u64 {
+        self.current_playback()
+            .map_or(0, |playback| playback.arrangement_loop_pass())
     }
     pub fn arm_midi_capture(
         &mut self,

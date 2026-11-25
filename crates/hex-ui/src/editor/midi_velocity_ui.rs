@@ -87,12 +87,12 @@ impl EditorView {
                 generation: self.project_generation,
                 revision: state.revision,
                 clip,
-                start: self.piano_beat_start,
-                span: self.piano_beat_span.raw(),
+                start: self.midi_editor.piano_beat_start,
+                span: self.midi_editor.piano_beat_span.raw(),
             },
             bounds,
             source_length: state.project.midi_source(clip)?.source_length().raw(),
-            selection_epoch: self.midi_selection.epoch(),
+            selection_epoch: self.midi_editor.selection.epoch(),
         })
     }
     pub(super) fn velocity_marquee_context(
@@ -107,19 +107,19 @@ impl EditorView {
                 clip: context.scene.clip,
                 beat_start: context.scene.start,
                 beat_span: context.scene.span,
-                pitch: self.piano_pitch,
+                pitch: self.midi_editor.piano_pitch,
             },
             bounds,
             selection_epoch: context.selection_epoch,
         })
     }
     pub(super) fn velocity_marquee_active(&self) -> bool {
-        self.midi_velocity.marquee.is_some()
+        self.midi_editor.velocity.marquee.is_some()
     }
     pub(super) fn velocity_marquee_highlight(&self) -> Option<Arc<[NoteId]>> {
-        let marquee = self.midi_velocity.marquee.as_ref()?;
+        let marquee = self.midi_editor.velocity.marquee.as_ref()?;
         let captured = marquee.context();
-        (self.midi_velocity.open
+        (self.midi_editor.velocity.open
             && self.velocity_marquee_context(captured.bounds) == Some(captured))
         .then(|| marquee.highlighted())
     }
@@ -131,29 +131,31 @@ impl EditorView {
             generation: self.project_generation,
             revision: state.revision,
             clip,
-            start: self.piano_beat_start,
-            span: self.piano_beat_span.raw(),
+            start: self.midi_editor.piano_beat_start,
+            span: self.midi_editor.piano_beat_span.raw(),
         };
         if self
-            .midi_velocity
+            .midi_editor
+            .velocity
             .scene
             .as_ref()
             .is_none_or(|scene| scene.key != key)
         {
             self.cancel_all_midi_marquees();
-            self.midi_velocity.cancel_value_state();
-            self.midi_velocity.cycle = None;
+            self.midi_editor.velocity.cancel_value_state();
+            self.midi_editor.velocity.cycle = None;
             match Scene::build(key, source.notes()) {
-                Ok(scene) => self.midi_velocity.scene = Some(Arc::new(scene)),
+                Ok(scene) => self.midi_editor.velocity.scene = Some(Arc::new(scene)),
                 Err(error) => {
                     self.error = Some(error.into());
                     return None;
                 }
             }
         }
-        let scene = Arc::clone(self.midi_velocity.scene.as_ref()?);
+        let scene = Arc::clone(self.midi_editor.velocity.scene.as_ref()?);
         let label = self
-            .midi_velocity
+            .midi_editor
+            .velocity
             .hover
             .and_then(|id| scene.points().iter().find(|p| p.note.id == id))
             .map_or_else(
@@ -162,7 +164,8 @@ impl EditorView {
                     format!(
                         "p{} · v{} · ch{}",
                         point.note.pitch,
-                        self.midi_velocity
+                        self.midi_editor
+                            .velocity
                             .gesture
                             .as_ref()
                             .and_then(|g| g.preview(point.note.id))
@@ -184,7 +187,7 @@ impl EditorView {
                     .debug_selector(|| "midi-velocity-toggle".into())
                     .h(px(18.0))
                     .cursor_pointer()
-                    .child(theme::text(if self.midi_velocity.open {
+                    .child(theme::text(if self.midi_editor.velocity.open {
                         format!("▾ {label}")
                     } else {
                         "▸ velocity".to_string()
@@ -192,16 +195,16 @@ impl EditorView {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|view, _, _, cx| {
-                            view.midi_velocity.open = !view.midi_velocity.open;
+                            view.midi_editor.velocity.open = !view.midi_editor.velocity.open;
                             view.cancel_midi_note_gesture();
                             cx.stop_propagation();
                             cx.notify();
                         }),
                     ),
             )
-            .when(self.midi_velocity.open, |left| {
+            .when(self.midi_editor.velocity.open, |left| {
                 let captured = self.velocity_random_context();
-                let enabled = !self.edit_pending() && !self.midi_selection.is_empty();
+                let enabled = !self.edit_pending() && !self.midi_editor.selection.is_empty();
                 left.child(
                     div()
                         .flex()
@@ -259,14 +262,17 @@ impl EditorView {
                                     .into()
                                 })
                                 .on_click(cx.listener(|view, _, _, cx| {
-                                    view.midi_velocity_randomize.amount =
-                                        view.midi_velocity_randomize.amount.saturating_sub(8);
+                                    view.midi_editor.velocity_randomize.amount = view
+                                        .midi_editor
+                                        .velocity_randomize
+                                        .amount
+                                        .saturating_sub(8);
                                     cx.notify();
                                 })),
                         )
                         .child(theme::text(format!(
                             "±{}",
-                            self.midi_velocity_randomize.amount
+                            self.midi_editor.velocity_randomize.amount
                         )))
                         .child(
                             div()
@@ -287,8 +293,9 @@ impl EditorView {
                                     .into()
                                 })
                                 .on_click(cx.listener(|view, _, _, cx| {
-                                    view.midi_velocity_randomize.amount = view
-                                        .midi_velocity_randomize
+                                    view.midi_editor.velocity_randomize.amount = view
+                                        .midi_editor
+                                        .velocity_randomize
                                         .amount
                                         .saturating_add(8)
                                         .min(126);
@@ -301,24 +308,24 @@ impl EditorView {
             .flex()
             .flex_row()
             .flex_shrink_0()
-            .h(px(if self.midi_velocity.open {
-                self.midi_velocity.height
+            .h(px(if self.midi_editor.velocity.open {
+                self.midi_editor.velocity.height
             } else {
                 18.0
             }))
             .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .child(left);
-        if !self.midi_velocity.open {
+        if !self.midi_editor.velocity.open {
             return Some(row);
         }
-        let gesture = self.midi_velocity.gesture.clone();
+        let gesture = self.midi_editor.velocity.gesture.clone();
         let pending = self.pending_midi_velocity(clip).cloned();
-        let marquee = self.midi_velocity.marquee.clone();
+        let marquee = self.midi_editor.velocity.marquee.clone();
         let time_selection = self.midi_time_selection_bounds();
         let selection = self
             .velocity_marquee_highlight()
-            .unwrap_or_else(|| self.midi_selection.shared_ids());
-        let selection_epoch = self.midi_selection.epoch();
+            .unwrap_or_else(|| self.midi_editor.selection.shared_ids());
+        let selection_epoch = self.midi_editor.selection.epoch();
         let source_length = source.source_length().raw();
         let entity = cx.entity();
         let paint_scene = Arc::clone(&scene);
@@ -332,7 +339,7 @@ impl EditorView {
             .min_w_0()
             .overflow_hidden()
             .bg(rgb(theme::color(theme::PaletteRole::Background)))
-            .track_focus(&self.midi_focus)
+            .track_focus(&self.midi_editor.focus)
             .key_context("hex_midi")
             .child(
                 canvas(
@@ -532,7 +539,7 @@ impl EditorView {
                                 }
                                 if view.time_selection_key_held {
                                     view.cancel_all_midi_marquees();
-                                    view.midi_focus.focus(window);
+                                    view.midi_editor.focus.focus(window);
                                     if view.begin_midi_velocity_time_selection(
                                         captured.bounds,
                                         f32::from(event.position.x),
@@ -550,7 +557,8 @@ impl EditorView {
                                     f32::from(event.position.y - bounds.origin.y),
                                 ];
                                 let after = view
-                                    .midi_velocity
+                                    .midi_editor
+                                    .velocity
                                     .cycle
                                     .filter(|(previous, at, _)| {
                                         *previous == key
@@ -561,7 +569,7 @@ impl EditorView {
                                 let Some(id) = down_scene.hit(position, [width, height], after)
                                 else {
                                     view.cancel_midi_note_gesture();
-                                    view.midi_focus.focus(window);
+                                    view.midi_editor.focus.focus(window);
                                     view.cancel_midi_audition();
                                     view.clear_midi_time_selection();
                                     if let Some(marquee) = view
@@ -571,7 +579,7 @@ impl EditorView {
                                                 context,
                                                 position,
                                                 event.modifiers.shift,
-                                                &view.midi_selection,
+                                                &view.midi_editor.selection,
                                             )
                                         })
                                         && view.capture_midi_marquee_pointer(
@@ -583,32 +591,32 @@ impl EditorView {
                                             cx,
                                         )
                                     {
-                                        view.midi_velocity.install_marquee(marquee);
+                                        view.midi_editor.velocity.install_marquee(marquee);
                                     }
                                     cx.stop_propagation();
                                     cx.notify();
                                     return;
                                 };
                                 view.cancel_midi_note_gesture();
-                                view.midi_focus.focus(window);
-                                view.midi_velocity.cycle = Some((key, position, id));
-                                view.midi_velocity.hover = Some(id);
+                                view.midi_editor.focus.focus(window);
+                                view.midi_editor.velocity.cycle = Some((key, position, id));
+                                view.midi_editor.velocity.hover = Some(id);
                                 if event.modifiers.shift {
-                                    if let Err(error) = view.midi_selection.toggle(id) {
+                                    if let Err(error) = view.midi_editor.selection.toggle(id) {
                                         view.error = Some(error.into());
                                         return;
                                     }
-                                } else if !view.midi_selection.contains(id) {
-                                    view.midi_selection.set_single(id);
+                                } else if !view.midi_editor.selection.contains(id) {
+                                    view.midi_editor.selection.set_single(id);
                                 }
                                 view.clear_midi_time_selection();
                                 view.audition_midi_selection();
-                                if view.midi_selection.contains(id) {
+                                if view.midi_editor.selection.contains(id) {
                                     let Some(context) = view.velocity_context(captured.bounds)
                                     else {
                                         return;
                                     };
-                                    let selected = view.midi_selection.shared_ids();
+                                    let selected = view.midi_editor.selection.shared_ids();
                                     let originals = view
                                         .state
                                         .as_ref()
@@ -642,7 +650,8 @@ impl EditorView {
                                                     window,
                                                     cx,
                                                 ) {
-                                                    view.midi_velocity.gesture = Some(gesture);
+                                                    view.midi_editor.velocity.gesture =
+                                                        Some(gesture);
                                                 }
                                             }
                                             Err(error) => view.error = Some(error.into()),
@@ -673,8 +682,8 @@ impl EditorView {
                                     } else {
                                         None
                                     };
-                                if view.midi_velocity.hover != hover {
-                                    view.midi_velocity.hover = hover;
+                                if view.midi_editor.velocity.hover != hover {
+                                    view.midi_editor.velocity.hover = hover;
                                     cx.notify();
                                 }
                             });

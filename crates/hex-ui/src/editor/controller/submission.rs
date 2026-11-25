@@ -96,7 +96,7 @@ impl EditorView {
                 loop_region: self.pending_loop_matches(request),
                 group_copy: self.pending_group_copy_matches(request),
                 group_selection: self.pending_group_selection_matches(request),
-                clip_detail: self.audio_clip_controls.matches(request),
+                clip_detail: self.audio_detail.clip_controls.matches(request),
                 audio_events: self.pending_audio_events_matches(request),
                 clip_loop: self.pending_clip_loop_matches(request),
                 bypass: match request {
@@ -131,10 +131,11 @@ impl EditorView {
                 time_duplicate: self.pending_time_duplicate_matches(request),
                 sample_drop: self.pending_sample_drop_matches(request),
                 browser_insertion: self
-                    .browser_insertion_flight
+                    .browser
+                    .insertion_flight
                     .as_ref()
                     .is_some_and(|flight| flight.matches(request)),
-                project_rate: self.project_rate_settings.matches(request),
+                project_rate: self.settings.project_rate.matches(request),
             },
             import_intent: ImportIntent::capture(request),
         }
@@ -169,14 +170,15 @@ impl EditorView {
             self.worker_submitted();
         }
         if kinds.project_rate {
-            self.project_rate_settings
+            self.settings
+                .project_rate
                 .submitted(self.worker_requests_pending);
         }
         if kinds.sample_drop {
             self.sample_drop_submitted();
         }
         if kinds.browser_insertion
-            && let Some(flight) = &mut self.browser_insertion_flight
+            && let Some(flight) = &mut self.browser.insertion_flight
         {
             flight.submitted(self.worker_requests_pending);
         }
@@ -200,7 +202,8 @@ impl EditorView {
             self.group_selection_submitted();
         }
         if kinds.clip_detail {
-            self.audio_clip_controls
+            self.audio_detail
+                .clip_controls
                 .submitted(self.worker_requests_pending);
         }
         if kinds.audio_events {
@@ -326,7 +329,7 @@ impl EditorView {
             visible |= self.stopped_playback_restore.take().is_some();
         }
         if kinds.sample_drop {
-            visible |= self.pending_sample_drop.take().is_some();
+            visible |= self.browser.pending_sample_drop.take().is_some();
         }
         self.midi_take_not_submitted(request);
         self.gain_take_not_submitted(request);
@@ -338,25 +341,27 @@ impl EditorView {
         self.retire_unsubmitted_export(request);
         if let Request::BounceArrangement { control, .. } = request
             && self
+                .persistence
                 .bounce_control
                 .as_ref()
                 .is_some_and(|active| active.same_job(control))
         {
             visible |= self.abandon_bounce();
         }
-        clear_rejected_scene_duplicate(&mut self.pending_scene_duplicate, request);
+        clear_rejected_scene_duplicate(&mut self.session_grid.pending_scene_duplicate, request);
         if let Request::ImportAudioBatch { control, .. } = request
             && self
+                .persistence
                 .audio_batch
                 .as_ref()
                 .is_some_and(|active| std::sync::Arc::ptr_eq(active, control))
         {
             control.request_cancel();
-            self.audio_batch = None;
-            self.audio_batch_progress = None;
+            self.persistence.audio_batch = None;
+            self.persistence.audio_batch_progress = None;
         }
         if kinds.browser_insertion {
-            self.browser_insertion_flight = None;
+            self.browser.insertion_flight = None;
         }
         if matches!(
             request,
@@ -365,14 +370,14 @@ impl EditorView {
                 | Request::SaveCurrent
                 | Request::SaveCurrentWithFormatUpgrade { .. }
         ) {
-            self.saving_project = false;
+            self.persistence.saving_project = false;
             self.cancel_open_after_save();
         }
         if request.is_project_open() {
-            self.opening_project = false;
+            self.persistence.opening_project = false;
         }
         if kinds.time_copy {
-            self.pending_created_note_selection = None;
+            self.midi_editor.pending_created_note_selection = None;
         }
         if kinds.time_duplicate {
             visible |= self.refuse_time_duplicate(request);
@@ -432,7 +437,7 @@ impl EditorView {
             visible |= self.duplicate_intent.reject();
         }
         if kinds.midi_drag {
-            visible |= self.retire_pending_midi_drag();
+            visible |= self.retire_unsubmitted_midi_drag(request);
         }
         if kinds.fade {
             visible |= self.retire_pending_fade();
@@ -463,9 +468,10 @@ impl EditorView {
         }
         if kinds.project_rate {
             if let Some(message) = message {
-                self.project_rate_settings.refused(message.into());
+                self.settings.project_rate.refused(message.into());
             } else {
-                self.project_rate_settings
+                self.settings
+                    .project_rate
                     .refused("audio recovery did not complete".into());
             }
             visible = true;

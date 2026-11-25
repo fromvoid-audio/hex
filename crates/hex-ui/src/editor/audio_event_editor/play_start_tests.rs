@@ -50,7 +50,7 @@ fn audio_start_drag_submits_held_marker_and_escape_cancels(cx: &mut TestAppConte
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
-        v.audio_event_editor.grid = super::super::SnapGrid::Off;
+        v.audio_detail.event.grid = super::super::SnapGrid::Off;
         cx.notify();
     });
     visual.run_until_parked();
@@ -154,8 +154,8 @@ fn audio_start_recovery(
             .unwrap()
             .render_fault
             .store(true, std::sync::atomic::Ordering::Release);
-        v.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![99]);
-        v.audio_event_editor.grid = SnapGrid::Off;
+        v.device_panel.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![99]);
+        v.audio_detail.event.grid = SnapGrid::Off;
         let state = v.state.as_ref().unwrap();
         let source = state.project.clip(clip).unwrap();
         cx.notify();
@@ -258,7 +258,7 @@ fn audio_start_recovery(
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
-        v.degraded_plugins = Default::default();
+        v.device_panel.degraded_plugins = Default::default();
         v.applied_project_revision = Some(revision);
         assert!(v.recovery.opened(recovery));
         assert!(v.recovery.restored(recovery));
@@ -379,18 +379,18 @@ fn audio_saved_start_hover_drag_delayed_ack_history_and_reopen(cx: &mut TestAppC
         });
         let (before, first, last, cursor, expected) = editor.update(&mut visual, |v, cx| {
             let (_, root, _) = v.event_context().unwrap();
-            v.audio_event_editor.grid = super::super::SnapGrid::Off;
-            v.audio_event_editor.range = Some((
+            v.audio_detail.event.grid = super::super::SnapGrid::Off;
+            v.audio_detail.event.range = Some((
                 root.view_start,
                 root.view_start + (root.view_end - root.view_start) / 8,
             ));
-            v.audio_event_editor.cursor = root.view_start + 1;
+            v.audio_detail.event.cursor = root.view_start + 1;
             cx.notify();
             (
                 v.state.as_ref().unwrap().project.snapshot(),
                 root.view_start,
                 root.view_end,
-                v.audio_event_editor.cursor,
+                v.audio_detail.event.cursor,
                 {
                     let tempo = v.state.as_ref().unwrap().project.tempo_map();
                     let first = root.root_frame_at(root.view_start, tempo).unwrap();
@@ -436,9 +436,9 @@ fn audio_saved_start_hover_drag_delayed_ack_history_and_reopen(cx: &mut TestAppC
             repaint(&mut visual, &editor);
             assert!((marker_fraction(&mut visual) - 0.25).abs() < 0.002);
             editor.read_with(&visual, |v, _| {
-                assert!(v.audio_event_editor.gesture.is_none());
+                assert!(v.audio_detail.event.gesture.is_none());
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
-                assert_eq!(v.audio_event_editor.cursor, cursor);
+                assert_eq!(v.audio_detail.event.cursor, cursor);
                 assert_region_fixed(span, v.pending_clip_loop_audio(clip).unwrap());
             });
         }
@@ -462,7 +462,7 @@ fn audio_saved_start_hover_drag_delayed_ack_history_and_reopen(cx: &mut TestAppC
                 .unwrap()
                 .unwrap();
             assert!((i128::from(position) - i128::from(expected)).abs() <= 1);
-            assert_eq!(v.audio_event_editor.cursor, cursor);
+            assert_eq!(v.audio_detail.event.cursor, cursor);
             let root_first = root
                 .root_frame_at(first, state.project.tempo_map())
                 .unwrap();
@@ -484,7 +484,7 @@ fn audio_saved_start_hover_drag_delayed_ack_history_and_reopen(cx: &mut TestAppC
                     .all(|frame| *frame == [0.0; 2])
             );
             assert!(matches!(
-                v.last_enqueued_edit,
+                v.test_probes.last_enqueued_edit,
                 Some(Command::ResizeAudioClipView {
                     operation: AudioViewResizeOperation::PlayStart { .. },
                     ..
@@ -530,7 +530,7 @@ fn audio_saved_start_release_modifier_and_outside_clamp_use_final_pointer(cx: &m
         let cx = &mut cx.new_app();
         let (_files, mut visual, editor, clip) = open(cx);
         editor.update(&mut visual, |v, cx| {
-            v.audio_event_editor.grid = super::super::SnapGrid::Quarter;
+            v.audio_detail.event.grid = super::super::SnapGrid::Quarter;
             cx.notify();
         });
         visual.run_until_parked();
@@ -675,7 +675,7 @@ fn injected_refused_start_terminal_retires_preview_with_old_canonical_camera(
     assert!(marker_fraction(&mut visual).abs() < 0.002);
     editor.read_with(&visual, |v, _| {
         assert!(v.pending_clip_loop_audio(clip).is_none());
-        assert!(v.audio_event_editor.gesture.is_none());
+        assert!(v.audio_detail.event.gesture.is_none());
         assert_eq!(
             v.state.as_ref().unwrap().project.snapshot(),
             before.project.snapshot()
@@ -704,7 +704,7 @@ fn held_two_at_saved_start_selects_time_without_moving_audio_start(cx: &mut Test
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     editor.read_with(&visual, |v, _| {
         assert!(matches!(
-            v.audio_event_editor.gesture.as_ref().map(|g| g.kind),
+            v.audio_detail.event.gesture.as_ref().map(|g| g.kind),
             Some(Kind::Select)
         ))
     });
@@ -713,7 +713,7 @@ fn held_two_at_saved_start_selects_time_without_moving_audio_start(cx: &mut Test
     visual.simulate_event(gpui::KeyUpEvent { keystroke: key });
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert!(v.audio_event_editor.range.is_some_and(|(a, b)| a < b));
+        assert!(v.audio_detail.event.range.is_some_and(|(a, b)| a < b));
         assert!(v.pending_clip_loop_audio(clip).is_none());
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
@@ -752,7 +752,7 @@ fn directed_audio_saved_start_is_explicitly_readonly_until_its_read_contract_is_
         Modifiers::default(),
     );
     editor.read_with(&visual, |v, _| {
-        assert!(v.audio_event_editor.gesture.is_none());
+        assert!(v.audio_detail.event.gesture.is_none());
         assert!(v.pending_clip_loop_audio(clip).is_none());
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
@@ -780,7 +780,7 @@ fn frozen_start_outside_release_retains_a_readable_last_source_frame(cx: &mut Te
         (source.start(), source.duration())
     });
     editor.update(&mut visual, |v, cx| {
-        v.audio_event_editor.grid = super::super::SnapGrid::Off;
+        v.audio_detail.event.grid = super::super::SnapGrid::Off;
         cx.notify();
     });
     visual.run_until_parked();
@@ -845,7 +845,7 @@ fn live_musical_start_keeps_grabbed_marker_visible_through_ack_and_history(
         pump(&editor, &mut visual);
     }
     let (before, span) = editor.update(&mut visual, |v, cx| {
-        v.audio_event_editor.grid = super::super::SnapGrid::Off;
+        v.audio_detail.event.grid = super::super::SnapGrid::Off;
         let state = v.state.as_ref().unwrap();
         let source = state.project.clip(clip).unwrap();
         assert!(matches!(
@@ -922,7 +922,7 @@ fn live_musical_outside_start_release_keeps_a_readable_source_quantum(cx: &mut T
         pump(&editor, &mut visual);
     }
     let (before, span) = editor.update(&mut visual, |v, cx| {
-        v.audio_event_editor.grid = super::super::SnapGrid::Off;
+        v.audio_detail.event.grid = super::super::SnapGrid::Off;
         let source = v.state.as_ref().unwrap().project.clip(clip).unwrap();
         assert!(matches!(
             source.audio_event_root().timing,
@@ -1056,7 +1056,7 @@ fn directed_frame_repeat_start_matches_processed_pcm_through_receipt_and_roundtr
             pump(&editor, &mut visual);
         }
         let (before, old, original) = editor.update(&mut visual, |v, cx| {
-            v.audio_event_editor.grid = super::super::SnapGrid::Off;
+            v.audio_detail.event.grid = super::super::SnapGrid::Off;
             let state = v.state.as_ref().unwrap();
             let source = state.project.clip(clip).unwrap();
             let old = AudioViewProjection::new(source, state.project.tempo_map())
@@ -1094,7 +1094,7 @@ fn directed_frame_repeat_start_matches_processed_pcm_through_receipt_and_roundtr
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             assert_eq!(v.audio_play_start_position(), Some(old));
-            assert!(v.audio_event_editor.gesture.is_none());
+            assert!(v.audio_detail.event.gesture.is_none());
             assert!(v.pending_clip_loop_audio(clip).is_none());
         });
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
@@ -1177,7 +1177,7 @@ fn audio_play_start_realigns_event_grid_through_drag_delayed_ack_and_history(
 ) {
     let (_files, mut visual, editor, clip) = open(cx);
     editor.update(&mut visual, |v, cx| {
-        v.audio_event_editor.grid = super::super::SnapGrid::Quarter;
+        v.audio_detail.event.grid = super::super::SnapGrid::Quarter;
         cx.notify();
     });
     visual.run_until_parked();
@@ -1275,7 +1275,7 @@ fn audio_play_start_realigns_event_grid_through_drag_delayed_ack_and_history(
             Some(play_start + 24_000),
             "event snapping uses the play-start-aligned quarter-note grid",
         );
-        v.audio_event_editor.cursor = play_start;
+        v.audio_detail.event.cursor = play_start;
         assert_eq!(
             v.audio_editor_cursor_play_start(),
             Some(source.start()),

@@ -1095,7 +1095,7 @@ fn selected_sections_l_uses_outer_bounds_and_one_history_edit(cx: &mut TestAppCo
         }
         editor.read_with(cx, |v, _| {
             assert!(
-                matches!(v.last_enqueued_edit,
+                matches!(v.test_probes.last_enqueued_edit,
             Some(Command::SetLoopRegion { start: a, end: b, enabled: true }) if (a,b)==(start,end)),
                 "selected sections must dispatch a loop request"
             )
@@ -1153,7 +1153,7 @@ fn lost_section_button_records_cancel_and_allows_loop_before_late_release(cx: &m
     editor.read_with(cx, |v, _| {
         assert!(v.sections.held());
         assert!(
-            v.last_enqueued_edit.is_none(),
+            v.test_probes.last_enqueued_edit.is_none(),
             "a real held gesture still blocks loop creation"
         );
     });
@@ -1168,7 +1168,7 @@ fn lost_section_button_records_cancel_and_allows_loop_before_late_release(cx: &m
     crate::editor::section_launch::test_tap_loop_key(&mut visual);
     editor.read_with(cx, |v, _| {
         assert!(matches!(
-            v.last_enqueued_edit,
+            v.test_probes.last_enqueued_edit,
             Some(Command::SetLoopRegion { .. })
         ))
     });
@@ -1215,13 +1215,13 @@ fn selected_sections_loop_resolves_current_tempo_and_respects_input_custody(
     visual.run_until_parked();
     editor.update(cx, |v, _| {
         assert_eq!(v.section_loop_bounds(), Ok(Some((288_000, 480_000))));
-        v.last_enqueued_edit = None;
+        v.test_probes.last_enqueued_edit = None;
         v.computer_keyboard.enabled = true;
     });
     crate::editor::section_launch::test_tap_loop_key(&mut visual);
     editor.update(cx, |v, _| {
         assert!(
-            v.last_enqueued_edit.is_none(),
+            v.test_probes.last_enqueued_edit.is_none(),
             "L retains computer MIDI priority"
         );
         v.computer_keyboard.enabled = false;
@@ -1230,7 +1230,9 @@ fn selected_sections_loop_resolves_current_tempo_and_respects_input_custody(
     visual.run_until_parked();
     editor.read_with(cx, |v, _| assert!(v.sections.naming()));
     visual.simulate_keystrokes("l cmd-l");
-    editor.read_with(cx, |v, _| assert!(v.last_enqueued_edit.is_none()));
+    editor.read_with(cx, |v, _| {
+        assert!(v.test_probes.last_enqueued_edit.is_none())
+    });
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     let chorus = editor.read_with(cx, |v, _| position(v, 10));
@@ -1239,7 +1241,7 @@ fn selected_sections_loop_resolves_current_tempo_and_respects_input_custody(
     editor.read_with(cx, |v, _| {
         assert!(v.sections.held());
         assert!(
-            v.last_enqueued_edit.is_none(),
+            v.test_probes.last_enqueued_edit.is_none(),
             "held section capture cannot set a loop"
         );
     });
@@ -1275,7 +1277,7 @@ fn selected_sections_loop_resolves_current_tempo_and_respects_input_custody(
     crate::editor::section_launch::test_tap_loop_key(&mut visual);
     editor.read_with(cx, |v, _| {
         assert!(matches!(
-            v.last_enqueued_edit,
+            v.test_probes.last_enqueued_edit,
             Some(Command::SetLoopRegion {
                 start: 288_000,
                 end: 480_000,
@@ -1828,7 +1830,7 @@ fn section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels(
             device_preview_identity: None,
             tuning_preview_identity: None,
         });
-        view.session_quantization = hex_engine::LaunchQuantization::QuarterTriplet;
+        view.session_grid.quantization = hex_engine::LaunchQuantization::QuarterTriplet;
         view.toggle_section_autoplay();
         cx.notify();
     });
@@ -1927,7 +1929,7 @@ fn section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels(
     editor.update(cx, |view, _| {
         view.cancel_section_launch_wait();
         view.invalidate_prepared_seek();
-        view.save_dialog_open = true;
+        view.persistence.save_dialog_open = true;
     });
     visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
@@ -1941,7 +1943,7 @@ fn section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels(
         );
     });
     editor.update(cx, |view, _| {
-        view.save_dialog_open = false;
+        view.persistence.save_dialog_open = false;
         view.audio = None;
     });
 }
@@ -2062,6 +2064,7 @@ fn reorder_pending_keeps_completed_frames_until_its_exact_terminal(cx: &mut Test
             cut_clipboard: None,
             cut_cursor: None,
             receipt,
+            deferred_submission: false,
         });
         v.worker_requests_pending = 2;
     });
@@ -2341,9 +2344,9 @@ fn section_name_palette_delete_and_text_focus_are_guarded(cx: &mut TestAppContex
             assert!(!v.finalize_section_name_for_open(window, cx));
             assert!(v.sections.naming());
             v.new_project(hex_session::DocumentAudioMode::Resident, window, cx);
-            assert!(!v.project_open.busy());
+            assert!(!v.persistence.project_open.busy());
             assert!(v.sections.naming());
-            assert!(!v.opening_project);
+            assert!(!v.persistence.opening_project);
         })
     });
     visual.simulate_keystrokes("escape");
@@ -3235,7 +3238,7 @@ fn section_lower_body_paints_all_tracks_without_section_edit_even_when_focused(
             assert!(event.error.is_none());
             view.receive(event);
             view.section_autoplay = false;
-            view.last_enqueued_edit = None;
+            view.test_probes.last_enqueued_edit = None;
             cx.notify();
         });
         let mut visual = VisualTestContext::from_window(handle, cx);
@@ -3311,7 +3314,7 @@ fn section_lower_body_paints_all_tracks_without_section_edit_even_when_focused(
             );
             assert!(view.time_selection_project_scope);
             assert!(view.sections.pending.is_none());
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
             assert_eq!(view.state.as_ref().unwrap().project, before);
             assert_eq!(view.arrangement_focus.projection.enabled, focused);
             assert!(
@@ -3325,7 +3328,7 @@ fn section_lower_body_paints_all_tracks_without_section_edit_even_when_focused(
         );
         visual.simulate_keystrokes("cmd-c");
         editor.read_with(cx, |view, _| {
-            assert_eq!(view.last_time_request, Some(("copy", None)))
+            assert_eq!(view.test_probes.last_time_request, Some(("copy", None)))
         });
     }
 }
@@ -3479,7 +3482,7 @@ fn shift_click_selects_section_blocks_in_header_and_body_without_time_ranges(
             });
             view.time_selection_project_scope = false;
             view.section_autoplay = true;
-            view.last_enqueued_edit = None;
+            view.test_probes.last_enqueued_edit = None;
             cx.notify();
         });
         visual.run_until_parked();
@@ -3514,7 +3517,7 @@ fn shift_click_selects_section_blocks_in_header_and_body_without_time_ranges(
                     && view.sections.cursor.is_none()
             );
             assert!(view.time_selection_gesture.is_none());
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
             assert!(
                 view.pending_audio_commands.is_empty()
                     && view.prepared_seek.is_none()
@@ -3821,6 +3824,7 @@ fn consecutive_keyboard_section_copies_keep_both_receipts_and_latest_rows(cx: &m
             cut_cursor: None,
             receipt: Receipt::new(primary.generation),
             selection_intent_epoch: primary.selection_intent_epoch,
+            deferred_submission: false,
         });
         assert!(view.refuse_section(&Request::EditArrangementSection {
             project_generation: view.project_generation,
@@ -4235,7 +4239,7 @@ fn play_uses_applied_successor_while_both_section_receipts_wait(cx: &mut TestApp
         ));
         view.toggle_play();
         assert_eq!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(
                 hex_engine::playback::PlaybackCommand::PlayFromWithNoteChase {
                     frame: expected,
@@ -4493,7 +4497,7 @@ fn held_recovery_allows_queued_duplicate(cx: &mut TestAppContext, copy_kind: u8)
     editor.update(&mut visual, |view, cx| {
         view.toggle_play();
         assert_eq!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(
                 hex_engine::playback::PlaybackCommand::PlayFromWithNoteChase {
                     frame: expected,
@@ -4797,7 +4801,7 @@ fn pointer_section_copy_plays_from_the_selected_copy(cx: &mut TestAppContext, co
         view.play_start_at_beginning = false;
         view.toggle_play();
         assert_eq!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(
                 hex_engine::playback::PlaybackCommand::PlayFromWithNoteChase {
                     frame: expected,
@@ -4855,7 +4859,7 @@ fn applied_keyboard_section_copy_starts_before_its_terminal(cx: &mut TestAppCont
         view.section_metadata(Command::DuplicateArrangementSection(section));
         view.toggle_play();
         assert!(
-            view.last_transport_command.is_none(),
+            view.test_probes.last_transport_command.is_none(),
             "unapplied source cannot start"
         );
         cx.notify();
@@ -4977,7 +4981,7 @@ fn applied_keyboard_section_copy_starts_before_its_terminal(cx: &mut TestAppCont
             .store(false, std::sync::atomic::Ordering::Release);
         view.toggle_play();
         assert_eq!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(
                 hex_engine::playback::PlaybackCommand::PlayFromWithNoteChase {
                     frame: expected,
@@ -4998,7 +5002,7 @@ fn applied_keyboard_section_copy_starts_before_its_terminal(cx: &mut TestAppCont
             .output_identity += 1;
         view.toggle_play();
         assert_eq!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(hex_engine::playback::PlaybackCommand::Pause)
         );
         view.pending_publication_observation
@@ -5396,8 +5400,116 @@ fn off_target_clip_release_does_not_block_section_loop_scope(cx: &mut TestAppCon
     editor.read_with(cx, |v, _| {
         assert_eq!(v.error, None);
         assert!(matches!(
-            v.last_enqueued_edit,
+            v.test_probes.last_enqueued_edit,
             Some(Command::SetLoopRegion { .. })
         ));
+    });
+}
+
+#[gpui::test]
+fn section_copy_then_immediate_pointer_edit_succeeds_without_refusal_or_flicker(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, ids) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+
+    // Select section 0 (beats 0..4) and trigger Cmd+D section copy without settling yet.
+    let section_a = editor.read_with(cx, |v, _| position(v, 2));
+    visual.simulate_mouse_down(section_a, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(section_a, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("cmd-d");
+
+    editor.read_with(cx, |v, _| {
+        assert!(v.sections.pending.is_some(), "section copy is in flight");
+        assert_eq!(v.worker_requests_pending, 1);
+        assert!(
+            v.section_pointer_available(),
+            "section pointer gestures must stay available during section copy"
+        );
+        assert!(
+            v.drag_available(),
+            "clip dragging must stay available during section copy"
+        );
+        assert!(
+            !v.track_gain_edit_blocked(),
+            "track volume must stay available during section copy"
+        );
+        assert_eq!(v.error, None);
+    });
+
+    // Immediately drag section 0's trailing edge (beat 4 -> beat 6) with Option+Cmd
+    // (marker-only resize) BEFORE the section copy terminal arrives.
+    let edge = editor.read_with(cx, |v, _| {
+        let p = position(v, 4);
+        point(p.x - px(2.0), p.y)
+    });
+    let target = editor.read_with(cx, |v, _| position(v, 6));
+    let marker_only = Modifiers {
+        alt: true,
+        platform: true,
+        ..Modifiers::default()
+    };
+    visual.simulate_mouse_down(edge, MouseButton::Left, marker_only);
+    visual.simulate_mouse_move(target, Some(MouseButton::Left), marker_only);
+    visual.run_until_parked();
+    let held_end = editor.read_with(cx, |v, _| {
+        v.sections
+            .gesture
+            .as_ref()
+            .and_then(|g| g.display.markers.iter().find(|m| m.id == Some(ids[0])))
+            .map(|m| m.end)
+    });
+    assert_eq!(
+        held_end,
+        Some(BeatTime::from_quarters(6).unwrap()),
+        "pointer drag during pending section copy must preview new edge"
+    );
+
+    visual.simulate_mouse_up(target, MouseButton::Left, marker_only);
+    visual.run_until_parked();
+    editor.read_with(cx, |v, _| {
+        assert_eq!(
+            v.error, None,
+            "section pointer edit during section copy must not show SECTION_BUSY refusal"
+        );
+        assert!(
+            v.sections.queued.is_some(),
+            "released section edit must queue behind the in-flight copy"
+        );
+        let queued_end = v
+            .sections
+            .queued
+            .as_ref()
+            .and_then(|q| q.display.as_ref())
+            .and_then(|d| d.markers.iter().find(|m| m.id == Some(ids[0])))
+            .map(|m| m.end);
+        assert_eq!(
+            queued_end,
+            Some(BeatTime::from_quarters(6).unwrap()),
+            "queued pointer edit must keep its frozen display without release flicker"
+        );
+    });
+
+    // Settle both the section copy and the queued resize edit.
+    settle(&editor, &mut visual);
+    editor.read_with(cx, |v, _| {
+        assert_eq!(v.error, None);
+        assert!(v.sections.pending.is_none());
+        assert!(v.sections.queued.is_none());
+        let project = &v.state.as_ref().unwrap().project;
+        assert_eq!(
+            project.arrangement_sections().len(),
+            3,
+            "section copy must commit canonically"
+        );
+        let first = project.arrangement_section(ids[0]).unwrap();
+        assert_eq!(
+            first.end(),
+            BeatTime::from_quarters(6).unwrap(),
+            "immediate follow-up resize must commit canonically"
+        );
     });
 }

@@ -111,7 +111,7 @@ pub(super) fn view(
         lowercase_path_tail(asset.path())
     };
     let mut details = div()
-        .h(px(view.clip_detail_body_height))
+        .h(px(view.audio_detail.detail_body_height))
         .w_full()
         .flex_shrink_0()
         .flex()
@@ -191,11 +191,11 @@ pub(super) fn view(
         .gap(px(2.0))
         .debug_selector(|| "arrangement-audio-waveform-panel".into());
     view.sync_audio_navigation();
-    if grouped_audio && view.audio_event_editor.source_view {
-        view.audio_event_editor.source_view = false;
+    if grouped_audio && view.audio_detail.event.source_view {
+        view.audio_detail.event.source_view = false;
     }
-    let source_view = view.audio_event_editor.source_view;
-    let decibels = view.clip_waveform_geometry_cache.amplitude_scale()
+    let source_view = view.audio_detail.event.source_view;
+    let decibels = view.audio_detail.waveform_geometry_cache.amplitude_scale()
         == super::waveform::WaveformAmplitudeScale::Decibel;
     let control = if grouped_audio {
         div()
@@ -222,9 +222,9 @@ pub(super) fn view(
         .w(px(56.0))
         .debug_selector(|| "audio-source-tab".into())
         .on_click(cx.listener(|view, _, window, cx| {
-            view.audio_event_editor.gesture = None;
-            view.audio_event_editor.source_view = true;
-            view.audio_event_focus.focus(window);
+            view.audio_detail.event.gesture = None;
+            view.audio_detail.event.source_view = true;
+            view.audio_detail.focus.focus(window);
             cx.notify();
         }))
     };
@@ -239,8 +239,8 @@ pub(super) fn view(
                     .w(px(56.0))
                     .debug_selector(|| "audio-events-tab".into())
                     .on_click(cx.listener(|view, _, window, cx| {
-                        view.audio_event_editor.source_view = false;
-                        view.audio_event_focus.focus(window);
+                        view.audio_detail.event.source_view = false;
+                        view.audio_detail.focus.focus(window);
                         cx.notify();
                     })),
             )
@@ -258,11 +258,13 @@ pub(super) fn view(
                 .w(px(56.0))
                 .debug_selector(|| "audio-waveform-scale".into())
                 .on_click(cx.listener(|view, _, _, cx| {
-                    let decibels = view.clip_waveform_geometry_cache.amplitude_scale()
+                    let decibels = view.audio_detail.waveform_geometry_cache.amplitude_scale()
                         != super::waveform::WaveformAmplitudeScale::Decibel;
-                    view.clip_waveform_geometry_cache.set_amplitude_scale(
-                        super::waveform::WaveformAmplitudeScale::from_decibels(decibels),
-                    );
+                    view.audio_detail
+                        .waveform_geometry_cache
+                        .set_amplitude_scale(
+                            super::waveform::WaveformAmplitudeScale::from_decibels(decibels),
+                        );
                     cx.notify();
                 })),
             )
@@ -283,7 +285,7 @@ pub(super) fn view(
                 prepared,
                 clip,
                 display_gain,
-                std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
+                std::rc::Rc::clone(&view.audio_detail.waveform_geometry_cache),
                 waveform_ink,
             ),
         ));
@@ -319,7 +321,7 @@ pub(super) fn view(
         .border_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Border)))
         .debug_selector(|| "arrangement-audio-waveform".into())
-        .track_focus(&view.audio_event_focus)
+        .track_focus(&view.audio_detail.focus)
         .on_action(cx.listener(|view, _: &super::ZoomIn, _, cx| {
             view.event_zoom(true);
             cx.stop_propagation();
@@ -347,14 +349,14 @@ pub(super) fn view(
         }))
         .on_mouse_down(
             gpui::MouseButton::Left,
-            cx.listener(|view, _, window, _| view.audio_event_focus.focus(window)),
+            cx.listener(|view, _, window, _| view.audio_detail.focus.focus(window)),
         );
     let measure = cx.entity().clone();
     canvas_region = canvas_region.children([gpui::canvas(
         |_, _, _| (),
         move |bounds, _, window, cx| {
             measure.update(cx, |view, _| {
-                view.audio_event_editor.source_bounds = Some(bounds);
+                view.audio_detail.event.source_bounds = Some(bounds);
                 view.renew_audio_pan(true, bounds, window, measure.entity_id());
             });
         },
@@ -371,7 +373,7 @@ pub(super) fn view(
                 first..end,
                 display_gain.linear(),
                 false,
-                std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
+                std::rc::Rc::clone(&view.audio_detail.waveform_geometry_cache),
                 waveform_ink,
             );
             canvas_region = canvas_region.child(
@@ -400,11 +402,13 @@ pub(super) fn view(
         );
     }
     let display_source_start = view
-        .audio_clip_controls
+        .audio_detail
+        .clip_controls
         .play_start_preview_clip(view, clip_id)
         .map_or(window.source_start, hex_project::Clip::source_offset);
     let display_play_start = view
-        .audio_clip_controls
+        .audio_detail
+        .clip_controls
         .play_start_source_frame(view, clip_id)
         .unwrap_or_else(|| window.source_start.saturating_add(window.source_phase));
     if window.asset_frames > 0 {
@@ -716,7 +720,7 @@ fn source_navigation(view: &EditorView, cx: &mut Context<EditorView>) -> Div {
         toolbar = toolbar.child(
             super::waveform::button(label, "zoom original audio source", (id, 0)).on_click(
                 cx.listener(move |view, _, window, cx| {
-                    view.audio_event_focus.focus(window);
+                    view.audio_detail.focus.focus(window);
                     view.event_zoom(inward);
                     cx.notify();
                 }),
@@ -795,7 +799,7 @@ mod tests {
                 );
                 view.selected_track = Some(track);
                 view.selected_clip = Some(clip);
-                view.clip_view_open = true;
+                view.audio_detail.clip_view_open = true;
                 view.focus.focus(window);
                 cx.notify();
             })
@@ -854,19 +858,19 @@ mod tests {
                 mode
             );
             assert!(
-                matches!(view.last_enqueued_edit,
+                matches!(view.test_probes.last_enqueued_edit,
                     Some(Command::SetClipLooping { clip: id, looping })
                     if id == clip && looping == (mode == hex_project::AudioViewMode::Once)
                 ),
                 "loaded mode={mode:?}, retained source looping={raw_looping}, dispatched={:?}",
-                view.last_enqueued_edit
+                view.test_probes.last_enqueued_edit
             );
             // Apply the actual UI command through canonical history, without
             // claiming this injected-view fixture proves a worker acknowledgement.
             let mut model = hex_project::Editor::new((*state.project).clone(), 8).unwrap();
             let before = model.project().snapshot();
             model
-                .execute(view.last_enqueued_edit.clone().unwrap())
+                .execute(view.test_probes.last_enqueued_edit.clone().unwrap())
                 .unwrap();
             let current = model.project().clip(clip).unwrap();
             assert_eq!(current.looping(), raw_looping);
@@ -959,7 +963,7 @@ mod tests {
                 document_path: old.document_path.clone(),
             }));
             assert!(!clip_window_is_current(view, captured));
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
             assert_eq!(view.worker_requests_pending, 0);
             cx.notify(); // Model mutation above stands in for a received state.
         });
@@ -968,7 +972,7 @@ mod tests {
         visual.simulate_click(button, Modifiers::default());
         editor.read_with(&visual, |view, _| {
             assert!(matches!(
-                view.last_enqueued_edit,
+                view.test_probes.last_enqueued_edit,
                 Some(Command::SetClipLooping { looping: true, .. })
             ));
         });
@@ -1351,8 +1355,8 @@ mod tests {
                         v.receive(event);
                         v.selected_track = Some(track);
                         v.selected_clip = Some(clip);
-                        v.clip_view_open = true;
-                        v.device_panel_active = false;
+                        v.audio_detail.clip_view_open = true;
+                        v.device_panel.active = false;
                         v.focus.focus(window);
                         cx.notify();
                     });
@@ -1436,7 +1440,7 @@ mod tests {
                 editor.read_with(&visual, |v, _| {
                     assert_eq!(v.worker_requests_pending, 0);
                     assert!(v.pending_requests.is_empty());
-                    assert!(v.last_enqueued_edit.is_none());
+                    assert!(v.test_probes.last_enqueued_edit.is_none());
                     let state = v.state.as_ref().unwrap();
                     assert_eq!(state.project, before.project);
                     assert_eq!(

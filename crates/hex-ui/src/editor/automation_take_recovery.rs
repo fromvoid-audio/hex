@@ -259,7 +259,7 @@ impl EditorView {
     }
 
     pub(super) fn start_automation_recovery(&mut self, cx: &mut Context<Self>) {
-        if self.automation_close_preflight.frozen() || self.update_preparing() {
+        if self.persistence.automation_close_preflight.frozen() || self.update_preparing() {
             return;
         }
         let phase = std::mem::take(&mut self.automation_take_recovery.phase);
@@ -316,7 +316,9 @@ impl EditorView {
                         return;
                     }
                     let destination = match result {
-                        Ok(Ok(destination)) if !view.automation_close_preflight.frozen() => {
+                        Ok(Ok(destination))
+                            if !view.persistence.automation_close_preflight.frozen() =>
+                        {
                             destination
                         }
                         Ok(Err(error)) => {
@@ -336,11 +338,11 @@ impl EditorView {
     }
 
     pub(super) fn open_automation_recovery_file(&mut self, cx: &mut Context<Self>) {
-        if self.automation_close_preflight.frozen()
+        if self.persistence.automation_close_preflight.frozen()
             || self.update_preparing()
-            || self.project_open.busy()
-            || self.save_dialog_open
-            || self.close_prompt_open
+            || self.persistence.project_open.busy()
+            || self.persistence.save_dialog_open
+            || self.persistence.close_prompt_open
             || self.native_automation_recorder.busy()
             || self.device_gesture_pending()
             || !matches!(self.automation_take_recovery.phase, Phase::Idle)
@@ -372,7 +374,7 @@ impl EditorView {
                     return;
                 }
                 view.automation_take_recovery.phase = match result {
-                    Ok(Ok(Some(paths))) if !view.automation_close_preflight.frozen() => {
+                    Ok(Ok(Some(paths))) if !view.persistence.automation_close_preflight.frozen() => {
                         if let [path] = paths.as_slice() {
                             // An explicit new file replaces the former choice,
                             // even if inspection later refuses its contents.
@@ -416,7 +418,7 @@ impl EditorView {
             self.automation_take_recovery.request = None;
             return true;
         }
-        if self.automation_close_preflight.frozen()
+        if self.persistence.automation_close_preflight.frozen()
             || self.automation_take_recovery.request.is_some()
             || !self.automation_take_recovery.phase.is_work()
         {

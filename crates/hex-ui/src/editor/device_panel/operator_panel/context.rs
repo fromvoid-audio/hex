@@ -85,12 +85,12 @@ impl Owner {
             && match self.owner {
                 InstrumentOwner::Track(track) => {
                     view.selected_track == Some(track)
-                        && view.focused_return.is_none()
+                        && view.session_grid.focused_return.is_none()
                         && view.device_panel.owner == Some(DevicePanelOwner::Track(track))
                 }
                 InstrumentOwner::Source(source) => {
-                    view.clip_view_open
-                        && view.device_panel_active
+                    view.audio_detail.clip_view_open
+                        && view.device_panel.active
                         && view.device_panel.owner == Some(DevicePanelOwner::Source(source))
                         && view.state.as_ref().is_some_and(|state| {
                             view.device_panel.source_manager.source_view.is_some_and(

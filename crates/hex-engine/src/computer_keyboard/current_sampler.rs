@@ -82,6 +82,8 @@ impl ComputerKeyboardRuntime {
             live_consumed: 0,
             live_activation: None,
             scratch_live_activation: None,
+            hardware_sustain: 0,
+            scratch_hardware_sustain: 0,
             capture: None,
         }))
     }

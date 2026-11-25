@@ -245,7 +245,7 @@ impl super::EditorView {
             // Source validity follows the installed canonical state. Harmless
             // worker work does not retire a held gesture; existing-track release
             // also validates this captured revision on the worker before editing.
-            if self.opening_project || self.close_prompt_open {
+            if self.persistence.opening_project || self.persistence.close_prompt_open {
                 return false;
             }
             let Some(state) = self.state.as_ref() else {
@@ -441,7 +441,7 @@ impl super::EditorView {
 
     pub(super) fn retire_active_clip_drag(&mut self) -> bool {
         self.cancel_held_clip_move_audition();
-        self.drag_bounce_held = false;
+        self.persistence.drag_bounce_held = false;
         let Some(drag) = self.active_clip_drag.take() else {
             return false;
         };
@@ -497,9 +497,13 @@ impl super::EditorView {
                 target: None,
             });
         }
-        self.active_native_device_drag = None;
+        self.device_panel.active_native_drag = None;
+        drag.group.borrow_mut().source_project = self
+            .state
+            .as_ref()
+            .map(|s| std::sync::Arc::clone(&s.project));
         self.active_clip_drag = Some(drag.clone());
-        self.active_browser_audio_drag = None;
+        self.browser.active_audio_drag = None;
     }
 
     /// Submit only changed, valid targets. The worker owns preparation and
@@ -510,7 +514,7 @@ impl super::EditorView {
         };
         let eligible = self.mode == super::EditorMode::Arrangement
             && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
-            && !self.drag_bounce_held
+            && !self.persistence.drag_bounce_held
             && self
                 .audio_status()
                 .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire))
@@ -544,8 +548,10 @@ impl super::EditorView {
                 ) if drag.group.borrow().ids.len() == 1 => {
                     if let Some(audition) = self.clip_move_audition.as_mut() {
                         if audition.new_track_defaults.is_none()
-                            && let (Ok(gain), Some(state)) =
-                                (self.track_defaults.captured_gain(), self.state.as_ref())
+                            && let (Ok(gain), Some(state)) = (
+                                self.settings.track_defaults.captured_gain(),
+                                self.state.as_ref(),
+                            )
                         {
                             audition.new_track_defaults = Some((
                                 format!("track {}", state.project.tracks().len() + 1).into(),
@@ -610,7 +616,7 @@ impl super::EditorView {
         let target = hex_session::service::ArrangementMoveAudition {
             context: hex_engine::AudioSourceContext {
                 project_generation: drag.project_generation,
-                editor_revision: drag.revision,
+                editor_revision: drag.effective_revision(),
             },
             gesture: audition.gesture,
             sequence,
@@ -643,6 +649,20 @@ impl super::EditorView {
         {
             self.service.finish_arrangement_move_audition();
         }
+    }
+
+    /// Revision-advancing requests must settle before `MoveExistingClips` is
+    /// dispatched because the worker checks `captured_revision == worker.revision`.
+    /// Same-revision worker work (such as tuning audition) does not need deferral.
+    pub(super) fn clip_move_must_defer(&self) -> bool {
+        self.pending_requests.len() < super::UI_REQUEST_CAPACITY
+            && (!self.pending_requests.is_empty()
+                || self.duplicate_intent.is_pending()
+                || self.sections.pending()
+                || self.pending_track_clipboard.is_some()
+                || self.track_reorder_active()
+                || self.midi_editor.pending_drag.is_some()
+                || self.gain_lane.pending.is_some())
     }
 
     pub(super) fn drop_clip_to_new_track(
@@ -689,11 +709,7 @@ impl super::EditorView {
             self.clear_clip_drag(drag.project_generation, drag.clip);
             return;
         };
-        if self.opening_project
-            || self.close_prompt_open
-            || self.worker_requests_pending != 0
-            || !self.pending_requests.is_empty()
-        {
+        if self.edit_blocked_outside_request_queue() || self.pending_clip_move_active() {
             self.error = Some("clip move canceled · project work pending".into());
             self.clear_clip_drag(drag.project_generation, drag.clip);
             cx.notify();
@@ -707,7 +723,7 @@ impl super::EditorView {
         let (name, gain) = if let Some((name, gain)) = defaults {
             (name.to_string(), gain)
         } else {
-            let gain = match self.track_defaults.captured_gain() {
+            let gain = match self.settings.track_defaults.captured_gain() {
                 Ok(gain) => gain,
                 Err(error) => {
                     self.error = Some(error.into());
@@ -744,6 +760,22 @@ impl super::EditorView {
             self.clear_clip_drag(drag.project_generation, drag.clip);
             return;
         };
+        let defer = self.clip_move_must_defer();
+        self.finish_held_clip_move_audition();
+        if defer {
+            self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
+                super::pending_clip_move::Pending::new_deferred(
+                    drag,
+                    command.clone(),
+                    source,
+                    self.selection_intent_epoch,
+                    copy_intent,
+                )
+            });
+            cx.notify();
+            return;
+        }
+        let revision = drag.effective_revision();
         self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
             super::pending_clip_move::Pending::new(
                 drag,
@@ -753,10 +785,9 @@ impl super::EditorView {
             )
         });
         let before_pending = self.worker_requests_pending;
-        self.finish_held_clip_move_audition();
         if self.enqueue(Request::MoveExistingClips {
             project_generation: drag.project_generation,
-            revision: drag.revision,
+            revision,
             command,
         }) {
             if let Some(mut intent) = copy_intent {
@@ -808,15 +839,15 @@ impl super::EditorView {
 
     pub(super) fn begin_browser_audio_drag(&mut self, drag: &BrowserAudioDrag) {
         self.retire_active_clip_drag();
-        self.active_native_device_drag = None;
-        self.sampler_load.header_insertion_line_y = None;
-        self.active_browser_audio_drag = Some(drag.clone());
+        self.device_panel.active_native_drag = None;
+        self.device_panel.sampler_load.header_insertion_line_y = None;
+        self.browser.active_audio_drag = Some(drag.clone());
     }
 
     pub(super) fn begin_native_device_drag(&mut self, drag: &NativeDeviceDrag) {
-        self.arrangement_device_preview = None;
+        self.device_panel.arrangement_drop_preview = None;
         self.retire_active_clip_drag();
-        self.active_browser_audio_drag = None;
+        self.browser.active_audio_drag = None;
         if matches!(
             drag.source,
             NativeDeviceDragSource::Browser { .. } | NativeDeviceDragSource::PluginEffect(_)
@@ -824,14 +855,14 @@ impl super::EditorView {
             // Make the native-device receiver visible as soon as a catalog drag
             // becomes active. Keep the selected track/clip untouched: a missing
             // target remains an empty device pane and the eventual drop can refuse.
-            self.device_panel_active = true;
-            self.clip_view_open = true;
+            self.device_panel.active = true;
+            self.audio_detail.clip_view_open = true;
         }
-        self.active_native_device_drag = Some(drag.clone());
+        self.device_panel.active_native_drag = Some(drag.clone());
     }
 
     pub(super) fn native_device_drag_is_current(&self, drag: &NativeDeviceDrag) -> bool {
-        if self.opening_project || self.close_prompt_open {
+        if self.persistence.opening_project || self.persistence.close_prompt_open {
             return false;
         }
         let Some(state) = self.state.as_ref() else {
@@ -879,7 +910,8 @@ impl super::EditorView {
 
     pub(super) fn clear_native_device_drag(&mut self, drag: &NativeDeviceDrag) {
         if self
-            .active_native_device_drag
+            .device_panel
+            .active_native_drag
             .as_ref()
             .is_some_and(|active| {
                 active.project_generation == drag.project_generation
@@ -888,8 +920,8 @@ impl super::EditorView {
                     && Rc::ptr_eq(&active.destination, &drag.destination)
             })
         {
-            self.arrangement_device_preview = None;
-            self.active_native_device_drag = None;
+            self.device_panel.arrangement_drop_preview = None;
+            self.device_panel.active_native_drag = None;
             self.device_panel.drag_selection = None;
         }
         drag.destination.set(None);
@@ -897,8 +929,8 @@ impl super::EditorView {
     }
 
     pub(super) fn cancel_active_native_device_drag(&mut self) -> bool {
-        self.arrangement_device_preview = None;
-        let Some(drag) = self.active_native_device_drag.take() else {
+        self.device_panel.arrangement_drop_preview = None;
+        let Some(drag) = self.device_panel.active_native_drag.take() else {
             return false;
         };
         self.device_panel.drag_selection = None;
@@ -909,11 +941,12 @@ impl super::EditorView {
 
     pub(super) fn browser_audio_drag_is_current(&self, drag: &BrowserAudioDrag) -> bool {
         if !self
-            .active_browser_audio_drag
+            .browser
+            .active_audio_drag
             .as_ref()
             .is_some_and(|active| Rc::ptr_eq(&active.destination, &drag.destination))
-            || self.opening_project
-            || self.close_prompt_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
             || self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()
             || drag
@@ -1168,7 +1201,7 @@ impl super::EditorView {
         pointer_x: f32,
         pointer_y: f32,
     ) -> (Option<DropPreview>, bool) {
-        self.sampler_load.header_insertion_line_y = if drag.project_asset.is_none() {
+        self.device_panel.sampler_load.header_insertion_line_y = if drag.project_asset.is_none() {
             self.painted_sampler_track_gap(gpui::point(gpui::px(pointer_x), gpui::px(pointer_y)))
                 .map(|(_, line)| line)
         } else {
@@ -1284,12 +1317,13 @@ impl super::EditorView {
 
     pub(super) fn clear_browser_audio_drag(&mut self, drag: &BrowserAudioDrag) {
         if self
-            .active_browser_audio_drag
+            .browser
+            .active_audio_drag
             .as_ref()
             .is_some_and(|active| Rc::ptr_eq(&active.destination, &drag.destination))
         {
-            self.active_browser_audio_drag = None;
-            self.sampler_load.header_insertion_line_y = None;
+            self.browser.active_audio_drag = None;
+            self.device_panel.sampler_load.header_insertion_line_y = None;
         }
         drag.preview.set(None);
         drag.destination.set(None);
@@ -1300,7 +1334,7 @@ impl super::EditorView {
     }
 
     pub(super) fn cancel_active_browser_audio_drag(&mut self) -> bool {
-        let Some(drag) = self.active_browser_audio_drag.clone() else {
+        let Some(drag) = self.browser.active_audio_drag.clone() else {
             return false;
         };
         self.clear_browser_audio_drag(&drag);
@@ -1324,13 +1358,13 @@ impl super::EditorView {
         drag.preview.set(preview);
         drag.lane_hovered.set(lane_hovered);
         if !current {
-            self.active_browser_audio_drag = None;
+            self.browser.active_audio_drag = None;
             cx.notify();
             return;
         }
         let destination = drag.destination.get();
         if destination.is_none() {
-            self.active_browser_audio_drag = None;
+            self.browser.active_audio_drag = None;
             cx.notify();
             return;
         }
@@ -1346,13 +1380,13 @@ impl super::EditorView {
                 }
         });
         if !metadata_valid {
-            self.active_browser_audio_drag = None;
+            self.browser.active_audio_drag = None;
             self.error = Some("audio drop canceled · preview duration is invalid".into());
             cx.notify();
             return;
         }
         let Some(destination) = destination else {
-            self.active_browser_audio_drag = None;
+            self.browser.active_audio_drag = None;
             cx.notify();
             return;
         };
@@ -1434,7 +1468,7 @@ impl super::EditorView {
             return;
         }
         let clear = |view: &mut Self| view.clear_clip_drag(drag.project_generation, drag.clip);
-        if self.opening_project || self.close_prompt_open {
+        if self.persistence.opening_project || self.persistence.close_prompt_open {
             clear(self);
             return;
         }
@@ -1444,13 +1478,13 @@ impl super::EditorView {
             .painted_track_insertion_target(pointer.0, pointer.1)
             .is_some()
         {
-            if self.worker_requests_pending != 0 || !self.pending_requests.is_empty() {
+            if self.edit_blocked_outside_request_queue() || self.pending_clip_move_active() {
                 self.error = Some("clip move canceled · project work pending".into());
                 clear(self);
                 cx.notify();
                 return;
             }
-            if self.drag_bounce_held {
+            if self.persistence.drag_bounce_held {
                 self.error = Some("bounce drop needs an existing track".into());
                 clear(self);
                 cx.notify();
@@ -1516,7 +1550,7 @@ impl super::EditorView {
         }
         drag.destination
             .set(Some(ClipDropDestination::ExistingTrack(target_track)));
-        if std::mem::take(&mut self.drag_bounce_held) {
+        if std::mem::take(&mut self.persistence.drag_bounce_held) {
             self.drop_clip_bounce(drag, target_track, preview);
             cx.notify();
             return;
@@ -1551,6 +1585,22 @@ impl super::EditorView {
         drag.preview.set(Some(preview));
         let source = std::sync::Arc::clone(&state.project);
         self.sync_held_clip_move_audition();
+        let defer = self.clip_move_must_defer();
+        self.finish_held_clip_move_audition();
+        if defer {
+            self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
+                super::pending_clip_move::Pending::new_deferred(
+                    drag,
+                    command.clone(),
+                    source,
+                    self.selection_intent_epoch,
+                    copy_intent,
+                )
+            });
+            cx.notify();
+            return;
+        }
+        let revision = drag.effective_revision();
         self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
             super::pending_clip_move::Pending::new(
                 drag,
@@ -1560,10 +1610,9 @@ impl super::EditorView {
             )
         });
         let before_pending = self.worker_requests_pending;
-        self.finish_held_clip_move_audition();
         if self.enqueue(Request::MoveExistingClips {
             project_generation: drag.project_generation,
-            revision: drag.revision,
+            revision,
             command,
         }) {
             if let Some(mut intent) = copy_intent {
@@ -1601,7 +1650,7 @@ impl super::EditorView {
                 cx.notify();
             }
         }
-        if let Some(drag) = self.active_browser_audio_drag.clone() {
+        if let Some(drag) = self.browser.active_audio_drag.clone() {
             let snap_changed = drag.snap_modifier.replace(held) != held;
             let copy_changed = drag.copy_modifier.replace(copy) != copy;
             cx.set_active_drag_cursor_style(copy_cursor(copy), window);

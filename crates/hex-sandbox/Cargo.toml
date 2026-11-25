@@ -16,6 +16,7 @@ hex-devices = { path = "../hex-devices" }
 hex-preferences = { path = "../hex-preferences" }
 hex-project = { path = "../hex-project" }
 hex-ui-model = { path = "../hex-ui-model" }
+hex-ui-kit = { path = "../hex-ui-kit" }
 hex-widgets = { path = "../hex-widgets" }
 
 [lints]

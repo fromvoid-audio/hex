@@ -171,7 +171,7 @@ fn navigation_capture_loss_keeps_last_offset_and_isolates_late_up(cx: &mut TestA
                     cx.notify();
                 }),
                 "hidden" => editor.update(&mut visual, |v, cx| {
-                    v.clip_view_open = false;
+                    v.audio_detail.clip_view_open = false;
                     cx.notify();
                 }),
                 "focus" => visual.update(|w, cx| {
@@ -207,7 +207,7 @@ fn navigation_capture_loss_keeps_last_offset_and_isolates_late_up(cx: &mut TestA
                     );
                 }
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
-                assert!(v.last_enqueued_edit.is_none());
+                assert!(v.test_probes.last_enqueued_edit.is_none());
             });
         }
     }
@@ -269,7 +269,7 @@ fn profile_navigation_pointer(cx: &mut TestAppContext) {
             visual.run_until_parked();
             editor.read_with(&visual, |v, _| {
                 assert!(!v.device_panel.navigation.is_active());
-                assert!(v.last_enqueued_edit.is_none());
+                assert!(v.test_probes.last_enqueued_edit.is_none());
             });
             if round >= warmup {
                 timings.push(elapsed);

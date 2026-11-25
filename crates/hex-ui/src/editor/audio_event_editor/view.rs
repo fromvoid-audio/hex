@@ -46,27 +46,30 @@ pub(in crate::editor) fn view(
             );
         }
     };
-    if view.audio_event_editor.selected.is_some_and(|id| {
+    if view.audio_detail.event.selected.is_some_and(|id| {
         !events.events.iter().any(|e| {
             e.id == id && e.start >= content_bounds(&root).0 && e.end <= content_bounds(&root).1
         })
     }) {
-        view.audio_event_editor.selected = None;
-        view.audio_event_editor.retained_selection = None;
+        view.audio_detail.event.selected = None;
+        view.audio_detail.event.retained_selection = None;
     }
     let pending = view
-        .audio_event_editor
+        .audio_detail
+        .event
         .pending
         .as_ref()
         .filter(|p| p.owner == owner);
     let operation = pending.map(|p| &p.operation).or_else(|| {
-        view.audio_event_editor
+        view.audio_detail
+            .event
             .gesture
             .as_ref()
             .and_then(|g| g.operation.as_ref())
     });
     let placement = pending.and_then(|p| p.placement.as_ref()).or_else(|| {
-        view.audio_event_editor
+        view.audio_detail
+            .event
             .gesture
             .as_ref()
             .and_then(|g| g.placement.as_ref())
@@ -104,7 +107,8 @@ pub(in crate::editor) fn view(
     let frame_at = |position: u64| root.root_frame_at(position, state.project.tempo_map()).ok();
     let frame_to_x = |frame: u64| root_window.fraction(i128::from(frame)).unwrap_or(0.0) as f32;
     let width = view
-        .audio_event_editor
+        .audio_detail
+        .event
         .bounds
         .map_or(640.0, |bounds| f32::from(bounds.size.width));
     let mut body = div()
@@ -136,13 +140,13 @@ pub(in crate::editor) fn view(
         &state.project,
         viewport,
         width * (viewport.length as f64 / project_window.length.max(1) as f64) as f32,
-        view.audio_event_editor.grid,
+        view.audio_detail.event.grid,
     );
     let negative_grid = super::super::musical_time::signed::negative_grid_lines(
         &state.project,
         project_window,
         width,
-        view.audio_event_editor.grid,
+        view.audio_detail.event.grid,
     );
     for line in &grid {
         let x = project_window.fraction(i128::from(line.frame))? as f32;
@@ -248,7 +252,7 @@ pub(in crate::editor) fn view(
         };
         let event_id = event.id;
         let event_active = event.active;
-        let selected = view.audio_event_editor.selected == Some(event.id);
+        let selected = view.audio_detail.event.selected == Some(event.id);
         let mut element = div()
             .id(("audio-event", event.id))
             .debug_selector(move || format!("audio-event-{}", event_id))
@@ -274,7 +278,7 @@ pub(in crate::editor) fn view(
                     if event.pressed_button.is_some() {
                         return;
                     }
-                    let editor = &mut view.audio_event_editor;
+                    let editor = &mut view.audio_detail.event;
                     let content = editor.bounds.is_some_and(|bounds| {
                         event.position.y >= bounds.top() + px(EVENT_TOP + fades::CONTENT_TOP)
                     });
@@ -286,14 +290,16 @@ pub(in crate::editor) fn view(
             .on_hover(cx.listener(move |view, hovered: &bool, _, cx| {
                 if !*hovered
                     && view
-                        .audio_event_editor
+                        .audio_detail
+                        .event
                         .set_fade_hover(owner, revision, event_id, false)
                 {
                     cx.notify();
                 }
             }));
         let handle_height = view
-            .audio_event_editor
+            .audio_detail
+            .event
             .bounds
             .and_then(|bounds| {
                 RangeSelectionZones::new(f32::from(bounds.size.height) - EVENT_RULER_HEIGHT, 0.0)
@@ -309,7 +315,8 @@ pub(in crate::editor) fn view(
                 .cursor(gpui::CursorStyle::OpenHand),
         );
         if let Some(pasted) = view
-            .audio_event_editor
+            .audio_detail
+            .event
             .pending
             .as_ref()
             .filter(|p| p.owner == owner)
@@ -324,7 +331,7 @@ pub(in crate::editor) fn view(
                         ..visible_end.saturating_sub(pasted.frame_start),
                     clip_gain,
                     true,
-                    std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
+                    std::rc::Rc::clone(&view.audio_detail.waveform_geometry_cache),
                     ink,
                 )
                 .debug_selector(move || format!("audio-event-waveform-{event_id}")),
@@ -334,7 +341,7 @@ pub(in crate::editor) fn view(
                 event.id,
                 visible_start,
                 visible_end,
-                std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
+                std::rc::Rc::clone(&view.audio_detail.waveform_geometry_cache),
                 ink,
             ) {
                 element = element.child(waveform);
@@ -431,7 +438,7 @@ pub(in crate::editor) fn view(
                     displayed.mapping,
                     displayed.visible.start,
                     displayed.visible.end,
-                    Rc::clone(&view.clip_waveform_geometry_cache),
+                    Rc::clone(&view.audio_detail.waveform_geometry_cache),
                     None,
                     ink,
                 );
@@ -491,11 +498,12 @@ pub(in crate::editor) fn view(
             );
         }
         let retained_gain = view
-            .audio_event_editor
+            .audio_detail
+            .event
             .retained_selection
             .as_ref()
             .filter(|(path, _)| {
-                view.audio_event_editor.selected == Some(event_id)
+                view.audio_detail.event.selected == Some(event_id)
                     && path.first() == Some(&event.source)
             })
             .and_then(|(path, id)| {
@@ -526,7 +534,7 @@ pub(in crate::editor) fn view(
                     ))),
             );
         }
-        if !view.audio_event_editor.fade_key_held && !view.time_selection_key_held {
+        if !view.audio_detail.event.fade_key_held && !view.time_selection_key_held {
             let gain = display_gain.millidb();
             element = element.child(
                 div()
@@ -568,12 +576,14 @@ pub(in crate::editor) fn view(
     }
     let direct_warp_event = markers::direct_event(&root, &clip);
     let scoped_warp = view
-        .audio_event_editor
+        .audio_detail
+        .event
         .selected
         .filter(|_| direct_warp_event.is_none())
         .and_then(|event| markers::EventWarp::new(&preview, &root, event));
     let warp = view
-        .audio_clip_controls
+        .audio_detail
+        .clip_controls
         .pending_warp_settings(clip_id)
         .or_else(|| {
             root.domain
@@ -582,7 +592,8 @@ pub(in crate::editor) fn view(
                 .filter(|_| root.domain.warp_enabled)
         });
     let held_marker = view
-        .audio_event_editor
+        .audio_detail
+        .event
         .gesture
         .as_ref()
         .and_then(|gesture| {
@@ -688,11 +699,12 @@ pub(in crate::editor) fn view(
             )]);
         }
     }
-    if let Some(analysis) = view.audio_event_editor.transients.as_ref()
+    if let Some(analysis) = view.audio_detail.event.transients.as_ref()
         && let Some(event) = preview.events.iter().copied().find(|event| {
             event.active
                 && view
-                    .audio_event_editor
+                    .audio_detail
+                    .event
                     .selected
                     .is_none_or(|selected| event.id == selected)
         })
@@ -814,7 +826,8 @@ pub(in crate::editor) fn view(
         }
     }
     let selected_range = match view
-        .audio_event_editor
+        .audio_detail
+        .event
         .gesture
         .as_ref()
         .and_then(|g| g.operation.as_ref())
@@ -824,7 +837,7 @@ pub(in crate::editor) fn view(
             end,
             destination,
         }) => Some((*destination, *destination + (*end - *start))),
-        _ => view.audio_event_editor.range,
+        _ => view.audio_detail.event.range,
     };
     let placed_range = placement
         .zip(operation)
@@ -864,7 +877,8 @@ pub(in crate::editor) fn view(
     let cursor = match placed_range {
         Some((start, _)) => frame_at(start)?,
         None => frame_at(display_position(
-            view.audio_event_editor
+            view.audio_detail
+                .event
                 .cursor
                 .min(canonical_root.domain.clock.length()),
         )?)?,
@@ -911,10 +925,10 @@ pub(in crate::editor) fn view(
             |_, _, _| (),
             move |bounds, _, window, cx| {
                 entity.update(cx, |view, cx| {
-                    let changed = view.audio_event_editor.bounds != Some(bounds);
-                    view.audio_event_editor.bounds = Some(bounds);
+                    let changed = view.audio_detail.event.bounds != Some(bounds);
+                    view.audio_detail.event.bounds = Some(bounds);
                     if changed {
-                        view.audio_event_editor.gesture = None;
+                        view.audio_detail.event.gesture = None;
                         cx.notify();
                     }
                 });
@@ -922,8 +936,8 @@ pub(in crate::editor) fn view(
                 // the lease witness itself only reads current held state.
                 let view = entity.read(cx);
                 view.renew_audio_pan(false, bounds, window, entity.entity_id());
-                if let Some(gesture) = view.audio_event_editor.gesture.as_ref()
-                    && view.audio_event_focus.is_focused(window)
+                if let Some(gesture) = view.audio_detail.event.gesture.as_ref()
+                    && view.audio_detail.focus.is_focused(window)
                 {
                     window.renew_pointer_capture(
                         entity.entity_id(),
@@ -947,7 +961,7 @@ pub(in crate::editor) fn view(
                 return;
             };
             view.advance_selection_intent();
-            view.audio_event_focus.focus(window);
+            view.audio_detail.focus.focus(window);
             let Some((clip_id, root, _)) = view.event_context() else {
                 return;
             };
@@ -957,13 +971,13 @@ pub(in crate::editor) fn view(
             let Some(clip) = state.project.clip(clip_id) else {
                 return;
             };
-            let Some(bounds) = view.audio_event_editor.bounds else {
+            let Some(bounds) = view.audio_detail.event.bounds else {
                 return;
             };
             let local_y = f32::from(event.position.y - bounds.origin.y);
             if event.click_count == 2
                 && !view.time_selection_key_held
-                && !view.audio_event_editor.fade_key_held
+                && !view.audio_detail.event.fade_key_held
                 && (EVENT_TOP..EVENT_TOP + 9.0).contains(&local_y)
                 && markers::direct_event(&root, clip).is_some()
                 && let Some(position) = view.event_hit_position(&root, f32::from(event.position.x))
@@ -1000,7 +1014,8 @@ pub(in crate::editor) fn view(
                     .copied()
             });
             let range_hit = view
-                .audio_event_editor
+                .audio_detail
+                .event
                 .range
                 .filter(|(a, b)| raw.is_some_and(|raw| *a <= raw && raw < *b));
             let kind = if view.time_selection_key_held {
@@ -1021,7 +1036,7 @@ pub(in crate::editor) fn view(
                 let Some(local) = view.event_root_window(&root) else {
                     return;
                 };
-                let bounds = view.audio_event_editor.bounds;
+                let bounds = view.audio_detail.event.bounds;
                 let width = bounds.map_or(1.0, |b| f32::from(b.size.width));
                 let offset = bounds.map_or(0.0, |b| f32::from(event.position.x - b.origin.x));
                 let x = |raw: u64| {
@@ -1046,16 +1061,17 @@ pub(in crate::editor) fn view(
                 {
                     Kind::Trailing(hit)
                 } else if event.modifiers.alt
-                    && !view.audio_event_editor.fade_key_held
+                    && !view.audio_detail.event.fade_key_held
                     && (EVENT_RULER_HEIGHT..EVENT_RULER_HEIGHT + 5.0).contains(&local_y)
                 {
                     let target = if let Some((path, id)) = view
-                        .audio_event_editor
+                        .audio_detail
+                        .event
                         .retained_selection
                         .as_ref()
                         .filter(|(path, _)| {
                             path.first() == Some(&hit.source)
-                                && view.audio_event_editor.selected == Some(hit.id)
+                                && view.audio_detail.event.selected == Some(hit.id)
                         }) {
                         let Some(inner) = super::retained_events(clip, path).and_then(|events| {
                             events.events.into_iter().find(|event| event.id == *id)
@@ -1099,26 +1115,27 @@ pub(in crate::editor) fn view(
                 return;
             }
             if !matches!(kind, Kind::Gain { .. })
-                || view.audio_event_editor.selected != hit.map(|event| event.id)
+                || view.audio_detail.event.selected != hit.map(|event| event.id)
                 || view
-                    .audio_event_editor
+                    .audio_detail
+                    .event
                     .retained_selection
                     .as_ref()
                     .is_some_and(|(path, _)| {
                         hit.is_none_or(|event| path.first() != Some(&event.source))
                     })
             {
-                view.audio_event_editor.retained_selection = None;
+                view.audio_detail.event.retained_selection = None;
             }
             if matches!(kind, Kind::Select) {
-                view.audio_event_editor.range = Some((position, position));
-                view.audio_event_editor.selected = None;
+                view.audio_detail.event.range = Some((position, position));
+                view.audio_detail.event.selected = None;
             } else if !matches!(kind, Kind::RangeMove { .. } | Kind::FreeRangeMove { .. }) {
-                view.audio_event_editor.range = None;
-                view.audio_event_editor.selected = hit.map(|event| event.id);
+                view.audio_detail.event.range = None;
+                view.audio_detail.event.selected = hit.map(|event| event.id);
             }
-            view.audio_event_editor.cursor = position;
-            view.audio_event_editor.gesture = Some(Gesture {
+            view.audio_detail.event.cursor = position;
+            view.audio_detail.event.gesture = Some(Gesture {
                 pointer_x: f32::from(event.position.x),
                 origin_x: f32::from(event.position.x),
                 moved: false,
@@ -1137,12 +1154,14 @@ pub(in crate::editor) fn view(
     );
 
     let retained = view
-        .audio_event_editor
+        .audio_detail
+        .event
         .selected
         .and_then(|id| preview.events.iter().find(|event| event.id == id))
         .and_then(|event| preview.sources.iter().find(|root| root.id == event.source));
     let retained_label = view
-        .audio_event_editor
+        .audio_detail
+        .event
         .retained_selection
         .as_ref()
         .and_then(|(path, id)| {
@@ -1169,15 +1188,15 @@ pub(in crate::editor) fn view(
                 )
                 .debug_selector(|| "audio-retained-source".into())
                 .on_click(cx.listener(|view, _, window, cx| {
-                    view.audio_event_focus.focus(window);
+                    view.audio_detail.focus.focus(window);
                     if view.activation_gesture_blocked()
-                        || view.audio_event_editor.pending.is_some()
-                        || view.audio_event_editor.gesture.is_some()
+                        || view.audio_detail.event.pending.is_some()
+                        || view.audio_detail.event.gesture.is_some()
                     {
                         return;
                     }
-                    if view.audio_event_editor.retained_selection.is_some() {
-                        view.audio_event_editor.retained_selection = None;
+                    if view.audio_detail.event.retained_selection.is_some() {
+                        view.audio_detail.event.retained_selection = None;
                     } else {
                         view.event_retained_step(true);
                     }
@@ -1193,7 +1212,7 @@ pub(in crate::editor) fn view(
                         waveform::button("↑", "parent retained source", ("audio-retained-up", 0))
                             .debug_selector(|| "audio-retained-up".into())
                             .on_click(cx.listener(|view, _, window, cx| {
-                                view.audio_event_focus.focus(window);
+                                view.audio_detail.focus.focus(window);
                                 view.event_retained_depth(false);
                                 cx.notify();
                             })),
@@ -1205,7 +1224,7 @@ pub(in crate::editor) fn view(
                             ("audio-retained-prev", 0),
                         )
                         .on_click(cx.listener(|view, _, window, cx| {
-                            view.audio_event_focus.focus(window);
+                            view.audio_detail.focus.focus(window);
                             view.event_retained_step(false);
                             cx.notify();
                         })),
@@ -1214,7 +1233,7 @@ pub(in crate::editor) fn view(
                         waveform::button("↓", "open retained source", ("audio-retained-down", 0))
                             .debug_selector(|| "audio-retained-down".into())
                             .on_click(cx.listener(|view, _, window, cx| {
-                                view.audio_event_focus.focus(window);
+                                view.audio_detail.focus.focus(window);
                                 view.event_retained_depth(true);
                                 cx.notify();
                             })),
@@ -1232,14 +1251,14 @@ pub(in crate::editor) fn view(
                             ("audio-retained-next", 0),
                         )
                         .on_click(cx.listener(|view, _, window, cx| {
-                            view.audio_event_focus.focus(window);
+                            view.audio_detail.focus.focus(window);
                             view.event_retained_step(true);
                             cx.notify();
                         })),
                     )
             }))
     });
-    let grid = view.audio_event_editor.grid;
+    let grid = view.audio_detail.event.grid;
     let toolbar = div()
         .h(px(22.0))
         .flex_shrink_0()
@@ -1249,7 +1268,7 @@ pub(in crate::editor) fn view(
         .child(
             waveform::button("✂", "split audio event · e", ("audio-event-split", 0)).on_click(
                 cx.listener(|view, _, window, cx| {
-                    view.audio_event_focus.focus(window);
+                    view.audio_detail.focus.focus(window);
                     view.event_split();
                     cx.notify();
                 }),
@@ -1262,7 +1281,7 @@ pub(in crate::editor) fn view(
                 ("audio-event-delete", 0),
             )
             .on_click(cx.listener(|view, _, window, cx| {
-                view.audio_event_focus.focus(window);
+                view.audio_detail.focus.focus(window);
                 view.event_delete();
                 cx.notify();
             })),
@@ -1275,9 +1294,9 @@ pub(in crate::editor) fn view(
             )
             .w(px(72.0))
             .on_click(cx.listener(|view, _, window, cx| {
-                view.audio_event_focus.focus(window);
-                view.audio_event_editor.grid = view.audio_event_editor.grid.toggled();
-                view.audio_event_editor.gesture = None;
+                view.audio_detail.focus.focus(window);
+                view.audio_detail.event.grid = view.audio_detail.event.grid.toggled();
+                view.audio_detail.event.gesture = None;
                 cx.notify();
             })),
         )
@@ -1288,7 +1307,7 @@ pub(in crate::editor) fn view(
                 ("audio-event-zoom-in", 0),
             )
             .on_click(cx.listener(|view, _, window, cx| {
-                view.audio_event_focus.focus(window);
+                view.audio_detail.focus.focus(window);
                 view.event_zoom(true);
                 cx.notify();
             })),
@@ -1300,7 +1319,7 @@ pub(in crate::editor) fn view(
                 ("audio-event-zoom-out", 0),
             )
             .on_click(cx.listener(|view, _, window, cx| {
-                view.audio_event_focus.focus(window);
+                view.audio_detail.focus.focus(window);
                 view.event_zoom(false);
                 cx.notify();
             })),
@@ -1323,7 +1342,7 @@ pub(in crate::editor) fn view(
     let root = div()
         .id("audio-event-editor")
         .debug_selector(|| "audio-event-editor".into())
-        .track_focus(&view.audio_event_focus)
+        .track_focus(&view.audio_detail.focus)
         .key_context("hex_audio_events")
         .min_w_0()
         .flex_1()
@@ -1334,12 +1353,12 @@ pub(in crate::editor) fn view(
         .children(view.audio_loop_ruler(cx))
         .child(body)
         .on_action(cx.trace(|view, _: &super::super::ToggleSnapGrid, _, cx| {
-            view.audio_event_editor.grid = if view.audio_event_editor.grid == SnapGrid::Off {
+            view.audio_detail.event.grid = if view.audio_detail.event.grid == SnapGrid::Off {
                 SnapGrid::Adaptive
             } else {
                 SnapGrid::Off
             };
-            view.audio_event_editor.gesture = None;
+            view.audio_detail.event.gesture = None;
             cx.stop_propagation();
             cx.notify();
         }))
@@ -1452,8 +1471,8 @@ pub(in crate::editor) fn view(
             }
             if !view.cancel_audio_loop_gesture() {
                 view.advance_selection_intent();
-                view.audio_event_editor.gesture = None;
-                view.audio_event_editor.range = None;
+                view.audio_detail.event.gesture = None;
+                view.audio_detail.event.range = None;
                 view.sync_held_play_start_audition();
             }
             cx.stop_propagation();

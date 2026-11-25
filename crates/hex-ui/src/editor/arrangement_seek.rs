@@ -37,13 +37,13 @@ impl EditorView {
                 .state
                 .as_ref()
                 .is_some_and(|state| state.revision == revision)
-            && !(self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits())
-            && !self.opening_project
-            && !self.close_prompt_open
+            && !(self.gain_recorder.blocks_edits() || self.midi_editor.recorder.blocks_edits())
+            && !self.persistence.opening_project
+            && !self.persistence.close_prompt_open
             && self.recovery.permits_seek(recovery)
-            && !self.device_gesture.has_pending_terminal()
-            && self.device_gesture_barriers.is_empty()
-            && self.tuning.client.snapshot().is_none()
+            && !self.device_panel.gesture.has_pending_terminal()
+            && self.device_panel.gesture_barriers.is_empty()
+            && self.settings.tuning.client.snapshot().is_none()
             && self
                 .audio
                 .as_ref()
@@ -52,8 +52,8 @@ impl EditorView {
 
     fn active_seek_preview(&self) -> Option<DevicePreviewIdentity> {
         let state = self.state.as_ref()?;
-        let snapshot = self.device_gesture.snapshot()?;
-        (!self.device_gesture.has_pending_terminal()
+        let snapshot = self.device_panel.gesture.snapshot()?;
+        (!self.device_panel.gesture.has_pending_terminal()
             && snapshot.key.generation == self.project_generation)
             .then_some(DevicePreviewIdentity {
                 project_generation: self.project_generation,
@@ -78,7 +78,7 @@ impl EditorView {
             && match preview {
                 Some(identity) => self.active_seek_preview() == Some(identity),
                 None => {
-                    self.device_gesture.snapshot().is_none()
+                    self.device_panel.gesture.snapshot().is_none()
                         && !self.device_gesture_pending()
                         && self.audible_playback.as_ref().is_some_and(|audible| {
                             audible.device_preview_identity.is_none()
@@ -275,7 +275,7 @@ impl EditorView {
     }
 
     pub(super) fn request_history_playback(&mut self, frame: u64) {
-        self.playback_settings.pending = None;
+        self.settings.playback.pending = None;
         self.request_prepared_seek_with_kind(frame, true, SeekKind::History);
     }
 
@@ -737,7 +737,7 @@ impl EditorView {
                         // output. End this attempt with an explicit cursor retry.
                         self.clear_recovery();
                         self.pending_recovery_generation = None;
-                        self.playback_settings.pending = None;
+                        self.settings.playback.pending = None;
                         self.deferred_play = None;
                         self.status = "audio ready · playback position needs retry".into();
                         self.error = Some("audio changed again · recovery cancelled · set playback position and retry play".into());
@@ -782,10 +782,10 @@ impl EditorView {
             || !seek_source_matches(audible, &intent.prepared_revision)
             || self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()
-            || self.opening_project
-            || self.close_prompt_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
             || !self.recovery.permits_seek(intent.recovery_generation)
-            || !self.device_gesture_barriers.is_empty()
+            || !self.device_panel.gesture_barriers.is_empty()
             || !self.seek_source_is_current(
                 intent.project_generation,
                 intent.project_revision,
@@ -1002,10 +1002,10 @@ impl EditorView {
             && super::arrangement_seek::routes_are_current(&entries[..routes.count], &state.project)
             && self.worker_requests_pending == 0
             && self.pending_requests.is_empty()
-            && !self.opening_project
-            && !self.close_prompt_open
+            && !self.persistence.opening_project
+            && !self.persistence.close_prompt_open
             && self.recovery.permits_seek(pending.recovery_generation)
-            && self.device_gesture_barriers.is_empty()
+            && self.device_panel.gesture_barriers.is_empty()
             && self.seek_source_is_current(
                 pending.project_generation,
                 pending.project_revision,
@@ -1161,11 +1161,11 @@ impl Drop for EditorView {
         // Request cancellation before Service shutdown; native custody remains
         // with its worker even when publication admission has already won.
         self.cancel_plugin_effect();
-        if let Some(control) = &self.bounce_control {
+        if let Some(control) = &self.persistence.bounce_control {
             control.cancel();
         }
         self.cancel_browser_sample_playback();
-        if let Some(control) = &self.audio_batch {
+        if let Some(control) = &self.persistence.audio_batch {
             control.request_cancel();
         }
         // CandidateReady still lives in PendingPlayback, so convert it into

@@ -21,7 +21,7 @@ pub(super) fn notched_label_is_clipped(width: f32, rem: f32, scale: f32) -> bool
 }
 
 pub(super) struct NameEdit {
-    clip: ClipId,
+    pub(super) clip: ClipId,
     generation: u64,
     revision: u64,
     original: String,
@@ -59,7 +59,7 @@ impl EditorView {
 
     fn clip_name_target(&self) -> Option<ClipId> {
         if self.mode == EditorMode::Session {
-            let (track, scene) = self.selected_cell?;
+            let (track, scene) = self.session_grid.selected_cell?;
             match self.state.as_ref()?.project.session_cell(track, scene)? {
                 SessionCellContent::Audio(c) => Some(c.id()),
                 SessionCellContent::Midi(c) => Some(c.id()),
@@ -73,7 +73,7 @@ impl EditorView {
         if self.edit_pending()
             || self.active_clip_drag.is_some()
             || self.active_trim_drag.is_some()
-            || self.active_midi_trim_drag.is_some()
+            || self.midi_editor.active_trim_drag.is_some()
             || self.time_range_move_gesture.is_some()
             || self.clip_paint_gesture.is_some()
             || self.clip_name_edit.is_some()
@@ -145,8 +145,8 @@ impl EditorView {
         };
         let name = edit.input.read(cx).text();
         if self.edit_pending()
-            || self.project_open.busy()
-            || self.pending_open_path.is_some()
+            || self.persistence.project_open.busy()
+            || self.persistence.pending_open_path.is_some()
             || edit.generation != self.project_generation
             || !self.state.as_ref().is_some_and(|state| {
                 state.revision == edit.revision
@@ -529,7 +529,7 @@ mod tests {
         editor.read_with(&visual, |view, _| {
             assert!(view.clip_name_edit.is_none());
             assert_eq!(view.selected_clip, Some(clip));
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
         });
         assert_eq!(visual.rendered_monochrome_colors(name), wide_glyphs);
     }
@@ -572,8 +572,8 @@ mod tests {
                     .unwrap()
                     .soloed()
             );
-            assert!(v.last_enqueued_edit.is_none());
-            assert!(v.last_transport_command.is_none());
+            assert!(v.test_probes.last_enqueued_edit.is_none());
+            assert!(v.test_probes.last_transport_command.is_none());
         });
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
@@ -583,13 +583,13 @@ mod tests {
                 v.state.as_ref().unwrap().project.clip_name(clip),
                 Some("clip")
             );
-            assert!(v.last_enqueued_edit.is_none());
+            assert!(v.test_probes.last_enqueued_edit.is_none());
         });
         visual.simulate_keystrokes("cmd-r");
         visual.run_until_parked();
         visual.simulate_input("Chorus");
         visual.simulate_keystrokes("enter");
-        editor.read_with(cx, |v, _| assert!(matches!(&v.last_enqueued_edit, Some(Command::RenameClip {clip: id, name}) if *id==clip && name=="Chorus")));
+        editor.read_with(cx, |v, _| assert!(matches!(&v.test_probes.last_enqueued_edit, Some(Command::RenameClip {clip: id, name}) if *id==clip && name=="Chorus")));
     }
 
     #[gpui::test]
@@ -681,7 +681,7 @@ mod tests {
                         document_path: None,
                     }));
                     v.mode = EditorMode::Session;
-                    v.selected_cell = Some((track, scene));
+                    v.session_grid.selected_cell = Some((track, scene));
                     v.focus.focus(window);
                     cx.notify();
                 })
@@ -697,7 +697,7 @@ mod tests {
             visual.run_until_parked();
             editor.read_with(cx, |v, _| {
                 assert!(v.clip_name_edit.is_some());
-                assert!(v.last_transport_command.is_none());
+                assert!(v.test_probes.last_transport_command.is_none());
             });
             visual.simulate_keystrokes("escape");
         }
@@ -723,7 +723,7 @@ mod tests {
             editor.update(cx, |v, cx| {
                 v.project_generation += 1;
                 v.finish_clip_name(true, window, cx);
-                assert!(v.last_enqueued_edit.is_none());
+                assert!(v.test_probes.last_enqueued_edit.is_none());
             })
         });
     }

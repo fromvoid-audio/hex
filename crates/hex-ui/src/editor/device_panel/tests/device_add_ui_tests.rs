@@ -47,7 +47,7 @@ fn focus_owner(
             DevicePanelOwner::Track(id) => Some(id),
             _ => None,
         };
-        view.focused_return = match owner {
+        view.session_grid.focused_return = match owner {
             DevicePanelOwner::Return(id) => Some(id),
             _ => None,
         };

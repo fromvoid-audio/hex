@@ -92,7 +92,7 @@ impl EditorView {
         };
         Some((
             current,
-            self.project_rate_settings.draft.unwrap_or(current),
+            self.settings.project_rate.draft.unwrap_or(current),
             rate,
         ))
     }
@@ -102,7 +102,7 @@ impl EditorView {
     }
 
     fn rate_can_apply(&self) -> bool {
-        !self.project_rate_settings.applying()
+        !self.settings.project_rate.applying()
             && self.rate_choices().is_some_and(|(current, draft, rate)| {
                 current != draft
                     || (draft == ProjectSampleRate::FollowInterface
@@ -120,15 +120,15 @@ impl EditorView {
             return;
         };
         if self.edit_pending() {
-            self.project_rate_settings.error =
+            self.settings.project_rate.error =
                 Some("finish the current edit before applying a sample rate".into());
             cx.notify();
             return;
         }
         let generation = self.project_generation;
         let revision = state.revision;
-        self.project_rate_settings.error = None;
-        self.project_rate_settings.pending = Some(Pending {
+        self.settings.project_rate.error = None;
+        self.settings.project_rate.pending = Some(Pending {
             generation,
             revision,
             choice,
@@ -144,7 +144,7 @@ impl EditorView {
                 .as_deref()
                 .unwrap_or("sample rate request refused")
                 .to_owned();
-            self.project_rate_settings.refused(reason);
+            self.settings.project_rate.refused(reason);
         }
         cx.notify();
     }
@@ -167,7 +167,7 @@ impl EditorView {
                 rate_label(self.interface_rate())
             )));
         let style = theme::control_style();
-        let applying = self.project_rate_settings.applying();
+        let applying = self.settings.project_rate.applying();
         let available = choices.is_some() && !applying;
         let selectors = CHOICES.into_iter().map(|choice| {
             let label = match choice {
@@ -185,9 +185,9 @@ impl EditorView {
                 .text_xs()
                 .opacity(if available { 1.0 } else { 0.45 })
                 .on_click(cx.listener(move |view, _, _, cx| {
-                    if view.rate_choices().is_some() && !view.project_rate_settings.applying() {
-                        view.project_rate_settings.draft = Some(choice);
-                        view.project_rate_settings.error = None;
+                    if view.rate_choices().is_some() && !view.settings.project_rate.applying() {
+                        view.settings.project_rate.draft = Some(choice);
+                        view.settings.project_rate.error = None;
                         cx.notify();
                     }
                 }))
@@ -220,7 +220,7 @@ impl EditorView {
             .gap(px(3.0))
             .children([rates, controls])
             .when_some(
-                self.project_rate_settings.error.as_deref(),
+                self.settings.project_rate.error.as_deref(),
                 |row, reason| row.child(div().text_xs().child(theme::text(reason))),
             )
     }

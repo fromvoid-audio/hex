@@ -16,6 +16,12 @@ pub(crate) struct ClipDragGroup {
     pub(crate) selection_epoch: Option<u64>,
     pub(crate) ids: Vec<ClipId>,
     pub(super) capture: Option<hex_project::ClipGroupMovePreview>,
+    /// Revision updated when a non-conflicting canonical edit (e.g. clip
+    /// duplication or track volume) lands while this drag is still held.
+    pub(crate) rebased_revision: Option<u64>,
+    /// Project snapshot captured when this drag began, for checking whether an
+    /// intervening revision touched any dragged clip.
+    pub(crate) source_project: Option<std::sync::Arc<Project>>,
 }
 
 impl ClipDragGroup {
@@ -79,6 +85,13 @@ pub(crate) struct ClipDrag {
 }
 
 impl ClipDrag {
+    pub(crate) fn effective_revision(&self) -> u64 {
+        self.group
+            .borrow()
+            .rebased_revision
+            .unwrap_or(self.revision)
+    }
+
     pub(crate) fn alias_copy(&self) -> bool {
         self.copy_modifier.get() && self.snap_modifier.get()
     }
@@ -370,7 +383,7 @@ pub(crate) struct DropState<'a> {
 
 pub(super) fn context_is_current(drag: &ClipDrag, state: &DropState<'_>) -> bool {
     if drag.project_generation != state.project_generation
-        || drag.revision != state.revision
+        || drag.effective_revision() != state.revision
         || drag.viewport().start != state.viewport_start
         || drag.viewport().length != state.viewport_length
         || drag.snap_grid != state.snap_grid

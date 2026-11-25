@@ -53,7 +53,7 @@ impl EditorView {
                 action: EditorContextAction::HistoryPlayback(action),
             });
         }
-        let settings = &self.playback_settings;
+        let settings = &self.settings.playback;
         items.push(MenuItem {
             label: "note chase",
             swatch: None,
@@ -83,7 +83,7 @@ impl EditorView {
     }
 
     pub(super) fn note_chase_menu_current(&self, action: &NoteChaseAction) -> bool {
-        let state = &self.playback_settings;
+        let state = &self.settings.playback;
         action.generation == self.project_generation
             && action.checked == state.preferences.note_chase
             && action.enabled == (!state.loading && !state.saving && state.writable)
@@ -98,7 +98,7 @@ impl EditorView {
             self.error = Some("playback settings changed · open the menu again".into());
         } else if action.enabled {
             self.save_note_chase(!action.checked, cx);
-        } else if let Some(error) = &self.playback_settings.error {
+        } else if let Some(error) = &self.settings.playback.error {
             self.error = Some(error.clone().into());
         }
         cx.notify();

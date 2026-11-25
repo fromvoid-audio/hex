@@ -3,7 +3,8 @@ use gpui::{TestAppContext, VisualTestContext};
 use hex_project::{Command, Created, Editor, Project};
 
 pub(in crate::editor) fn sampler_text(view: &EditorView, cx: &gpui::App) -> String {
-    view.sampler_parameter
+    view.device_panel
+        .sampler_parameter
         .controls
         .get(&SamplerParameter::AttackMs)
         .unwrap()
@@ -70,8 +71,8 @@ fn numeric_sampler_fixture(
         view.selected_track = Some(track);
         view.selected_clip = Some(clip);
         view.device_panel.owner = Some(device_panel::DevicePanelOwner::Track(track));
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         cx.notify();
     });
     visual.run_until_parked();
@@ -88,6 +89,7 @@ fn unrelated_edit_preserves_sampler_numeric_text_and_valid_commit(cx: &mut TestA
     visual.simulate_input("invalid");
     editor.update(&mut visual, |view, cx| {
         let control = view
+            .device_panel
             .sampler_parameter
             .controls
             .get(&SamplerParameter::AttackMs)
@@ -131,6 +133,7 @@ fn unrelated_edit_preserves_sampler_numeric_text_and_valid_commit(cx: &mut TestA
         view.duplicate_selected();
         assert!(!view.duplicate_intent.is_pending());
         let control = view
+            .device_panel
             .sampler_parameter
             .controls
             .get(&SamplerParameter::AttackMs)
@@ -143,7 +146,7 @@ fn unrelated_edit_preserves_sampler_numeric_text_and_valid_commit(cx: &mut TestA
     visual.simulate_keystrokes("enter");
     visual.run_until_parked();
     editor.update(&mut visual, |view, _| {
-        assert!(view.sampler_parameter.pending.is_some());
+        assert!(view.device_panel.sampler_parameter.pending.is_some());
         assert_eq!(view.worker_requests_pending, 1);
     });
 }
@@ -205,7 +208,8 @@ fn unrelated_edit_refuses_during_sampler_drag_and_release_commits(cx: &mut TestA
     );
     editor.update(&mut visual, |view, _| {
         assert!(
-            view.sampler_parameter
+            view.device_panel
+                .sampler_parameter
                 .controls
                 .get(&SamplerParameter::AttackMs)
                 .unwrap()
@@ -218,7 +222,7 @@ fn unrelated_edit_refuses_during_sampler_drag_and_release_commits(cx: &mut TestA
     visual.simulate_mouse_up(moved, gpui::MouseButton::Left, gpui::Modifiers::default());
     visual.run_until_parked();
     editor.update(&mut visual, |view, _| {
-        assert!(view.sampler_parameter.pending.is_some());
+        assert!(view.device_panel.sampler_parameter.pending.is_some());
         assert_eq!(view.worker_requests_pending, 1);
     });
 }
@@ -370,8 +374,8 @@ fn source_hints_and_paint_require_same_view_source_facts_and_context(cx: &mut Te
             view.project_generation = 2;
             view.selected_track = Some(track);
             view.device_panel.owner = Some(device_panel::DevicePanelOwner::Track(track));
-            view.device_panel_active = true;
-            view.clip_view_open = true;
+            view.device_panel.active = true;
+            view.audio_detail.clip_view_open = true;
             let metadata = view.state.as_ref().unwrap().project.asset(asset).unwrap();
             assert_eq!(
                 view.sampler_source_overview(metadata).is_some(),
@@ -512,7 +516,7 @@ fn source_hints_and_paint_require_same_view_source_facts_and_context(cx: &mut Te
 pub(in crate::editor) fn pending_request(
     view: &EditorView,
 ) -> Option<hex_session::service::SamplerParameterEdit> {
-    let pending = view.sampler_parameter.pending.as_ref()?;
+    let pending = view.device_panel.sampler_parameter.pending.as_ref()?;
     let PendingTarget::Parameter(target) = pending.target else {
         return None;
     };
@@ -533,7 +537,8 @@ pub(in crate::editor) fn rendered_control_value(
     parameter: SamplerParameter,
     cx: &gpui::App,
 ) -> Option<f64> {
-    view.sampler_parameter
+    view.device_panel
+        .sampler_parameter
         .controls
         .get(&parameter)
         .map(|control| control.entity.read(cx).value())
@@ -619,7 +624,8 @@ pub(in crate::editor) fn control_editing(
     parameter: SamplerParameter,
     cx: &gpui::App,
 ) -> bool {
-    view.sampler_parameter
+    view.device_panel
+        .sampler_parameter
         .controls
         .get(&parameter)
         .is_some_and(|control| control.entity.read(cx).is_editing())

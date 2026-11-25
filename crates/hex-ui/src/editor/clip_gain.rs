@@ -72,14 +72,14 @@ impl Drag {
             && view.active_fade_drag.is_none()
             && view.active_clip_drag.is_none()
             && view.active_trim_drag.is_none()
-            && view.active_midi_trim_drag.is_none()
+            && view.midi_editor.active_trim_drag.is_none()
             && view.time_selection_gesture.is_none()
             && view.time_range_move_gesture.is_none()
             && view.clip_paint_gesture.is_none()
-            && !view.save_dialog_open
-            && !view.export_dialog_open
-            && !view.theme_settings.open
-            && !view.tuning.open
+            && !view.persistence.save_dialog_open
+            && !view.persistence.export_dialog_open
+            && !view.settings.theme.open
+            && !view.settings.tuning.open
             && view.context_menu.is_none()
             && view.state.as_ref().is_some_and(|s| {
                 s.revision == self.revision
@@ -109,6 +109,28 @@ impl State {
     pub(super) fn has_displayed(&self) -> bool {
         self.held.is_some() || self.pending.is_some()
     }
+    pub(super) fn affects_track(
+        &self,
+        track: &hex_project::Track,
+        selection: &super::clip_selection::ClipSelection,
+    ) -> bool {
+        let Some(drag) = self
+            .held
+            .as_ref()
+            .or_else(|| self.pending.as_ref().map(|pending| &pending.drag))
+        else {
+            return false;
+        };
+        if drag.track == track.id() {
+            return true;
+        }
+        // Multi-clip selection gain drag adjusts every selected audio clip.
+        selection.contains(drag.clip.id())
+            && track
+                .clips()
+                .iter()
+                .any(|clip| selection.contains(clip.id()))
+    }
 }
 impl EditorView {
     pub(super) fn set_held_gain_audition(&mut self, edit: Option<GainEdit>) {
@@ -137,7 +159,7 @@ impl EditorView {
     pub(super) fn reconcile_gain_audition(&mut self) {
         if self.clip_gain.audition_held
             && !self.clip_gain.held()
-            && self.audio_clip_controls.gain_preview(self).is_none()
+            && self.audio_detail.clip_controls.gain_preview(self).is_none()
             && !self.event_gain_held()
         {
             self.set_held_gain_audition(None);
@@ -227,7 +249,7 @@ impl EditorView {
         {
             return ClipGain::new(clip.gain().millidb() + millidb).ok();
         }
-        let (anchor, original, gain) = self.audio_clip_controls.gain_preview(self)?;
+        let (anchor, original, gain) = self.audio_detail.clip_controls.gain_preview(self)?;
         if anchor == id {
             Some(gain)
         } else if self.clip_is_selected(id) && self.clip_is_selected(anchor) {

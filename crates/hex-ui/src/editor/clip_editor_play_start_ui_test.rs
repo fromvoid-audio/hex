@@ -15,7 +15,7 @@ fn focused_audio_clip_cursor_replaces_the_arrangement_play_start_marker(cx: &mut
     visual.simulate_click(ruler.center(), Modifiers::default());
     visual.run_until_parked();
     visual.update(|window, cx| {
-        assert!(editor.read(cx).audio_event_focus.is_focused(window));
+        assert!(editor.read(cx).audio_detail.focus.is_focused(window));
     });
     let projected = visual.debug_bounds("clip-editor-play-start-top");
     assert!(
@@ -115,7 +115,7 @@ fn focused_piano_cursor_starts_playback_until_arrangement_focus_or_lock_wins(
                 .id();
             view.select_arrangement_clip(track, clip);
             view.focus_clip_details(window, cx);
-            view.clip_view_open = true;
+            view.audio_detail.clip_view_open = true;
             cx.notify();
         })
     });
@@ -128,8 +128,8 @@ fn focused_piano_cursor_starts_playback_until_arrangement_focus_or_lock_wins(
     visual.run_until_parked();
     visual.update(|window, cx| {
         let view = editor.read(cx);
-        assert!(view.midi_focus.is_focused(window));
-        assert_eq!(view.midi_marker, Some(beat(2).raw()));
+        assert!(view.midi_editor.focus.is_focused(window));
+        assert_eq!(view.midi_editor.marker, Some(beat(2).raw()));
     });
 
     let play = |fixture: &mut worker_ui_fixture::WorkerUiFixture,

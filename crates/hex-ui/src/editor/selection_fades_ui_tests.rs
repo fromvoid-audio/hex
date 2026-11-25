@@ -56,7 +56,7 @@ fn actual_cmd_f_uses_arranger_range_before_browser_search_and_one_undo(cx: &mut 
             v.time_selection_gesture.is_some(),
             "held range retains input custody"
         );
-        assert!(v.last_enqueued_edit.is_none());
+        assert!(v.test_probes.last_enqueued_edit.is_none());
     });
     visual.update(|window, cx| {
         assert!(
@@ -71,7 +71,7 @@ fn actual_cmd_f_uses_arranger_range_before_browser_search_and_one_undo(cx: &mut 
     assert!(range.end() > 4_000 && range.end() < 12_000);
     visual.simulate_keystrokes("cmd-f");
     editor.read_with(&visual, |v, _| {
-        assert!(matches!(&v.last_enqueued_edit, Some(Command::CreateArrangementFades { range: queued }) if queued == &range), "Command-F must dispatch the canonical fade intent");
+        assert!(matches!(&v.test_probes.last_enqueued_edit, Some(Command::CreateArrangementFades { range: queued }) if queued == &range), "Command-F must dispatch the canonical fade intent");
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
     pump(&editor, &mut visual);
@@ -156,12 +156,12 @@ fn cmd_f_respects_focused_context_and_explicit_search_intent(cx: &mut TestAppCon
                 anchor_frame: 0,
                 end_frame: 6_000,
             });
-            v.last_enqueued_edit = None;
+            v.test_probes.last_enqueued_edit = None;
             if let Some((track, clip)) = midi {
                 v.selected_track = Some(track);
                 v.selected_clip = Some(clip);
-                v.clip_view_open = true;
-                v.device_panel_active = false;
+                v.audio_detail.clip_view_open = true;
+                v.device_panel.active = false;
             }
             if context == "automation" {
                 v.automation_view.enabled = true;
@@ -180,7 +180,7 @@ fn cmd_f_respects_focused_context_and_explicit_search_intent(cx: &mut TestAppCon
                     window,
                 ),
                 "browser" => v.search_browser(window, cx),
-                "midi" => v.midi_focus.focus(window),
+                "midi" => v.midi_editor.focus.focus(window),
                 _ => v.focus.focus(window),
             });
         });
@@ -195,11 +195,14 @@ fn cmd_f_respects_focused_context_and_explicit_search_intent(cx: &mut TestAppCon
         editor.read_with(&visual, |v, _| {
             if context == "header" {
                 assert!(matches!(
-                    v.last_enqueued_edit,
+                    v.test_probes.last_enqueued_edit,
                     Some(Command::CreateArrangementFades { .. })
                 ));
             } else {
-                assert!(v.last_enqueued_edit.is_none(), "context {context}");
+                assert!(
+                    v.test_probes.last_enqueued_edit.is_none(),
+                    "context {context}"
+                );
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             }
         });

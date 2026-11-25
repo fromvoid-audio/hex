@@ -76,7 +76,7 @@ impl EditorView {
                 );
         }
         if show_main {
-            let active_gain = self.device_gesture.snapshot().and_then(|snapshot| {
+            let active_gain = self.device_panel.gesture.snapshot().and_then(|snapshot| {
                 if snapshot.key.generation != self.project_generation {
                     return None;
                 }
@@ -129,8 +129,8 @@ impl EditorView {
                 ("routing-toggle", 0),
             )
             .on_click(cx.listener(|view, _, _, cx| {
-                view.routing_open = !view.routing_open;
-                view.routing_page = 0;
+                view.session_grid.routing_open = !view.session_grid.routing_open;
+                view.session_grid.routing_page = 0;
                 cx.notify();
             })),
         );
@@ -179,7 +179,7 @@ mod tests {
         });
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            assert_eq!(view.session_visible_columns, 1)
+            assert_eq!(view.session_grid.visible_columns, 1)
         });
         let field_id = Box::leak(format!("track-volume-{}-value", first.value()).into_boxed_str());
         let field = visual.debug_bounds(field_id).unwrap().center();
@@ -193,14 +193,14 @@ mod tests {
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
             assert_eq!(
-                view.session_track_start, 0,
+                view.session_grid.track_start, 0,
                 "paging cannot hide an invalid draft"
             )
         });
         // A retained/programmatic selection may still move the page. Its draft
         // then moves into the existing footer instead of being mounted twice.
         editor.update(&mut visual, |view, cx| {
-            view.session_track_start = 1;
+            view.session_grid.track_start = 1;
             view.selected_track = Some(second);
             cx.notify();
         });
@@ -222,7 +222,10 @@ mod tests {
         visual.simulate_mouse_up(previous, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            assert_eq!(view.session_track_start, 0, "paging resumes after cancel")
+            assert_eq!(
+                view.session_grid.track_start, 0,
+                "paging resumes after cancel"
+            )
         });
     }
 }

@@ -46,8 +46,8 @@ fn open(cx: &mut TestAppContext) -> Fixture {
             actions: actions.clone(),
         });
         editor.update(cx, |v, cx| {
-            v.tuning.open = true;
-            v.tuning.focus.focus(window);
+            v.settings.tuning.open = true;
+            v.settings.tuning.focus.focus(window);
             v.sync_tuning(cx);
             cx.notify();
         });
@@ -56,7 +56,7 @@ fn open(cx: &mut TestAppContext) -> Fixture {
     let visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(gpui::size(px(1280.), px(800.)));
     visual.run_until_parked();
-    let bounds = editor.read_with(&visual, |v, _| v.tuning.pitch_bounds.unwrap());
+    let bounds = editor.read_with(&visual, |v, _| v.settings.tuning.pitch_bounds.unwrap());
     // Degree three is away from both clamped endpoints and the reference degree.
     let start = point(bounds.left() + bounds.size.width * 0.25, bounds.center().y);
     Fixture {
@@ -76,7 +76,7 @@ fn pitch_pointer_isolates_input_and_releases_before_canonical_ack(cx: &mut TestA
     } = open(cx);
     let outside = point(px(140.), px(10.));
     visual.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::default());
-    assert!(editor.read_with(&visual, |v, _| v.tuning.drag.is_some()));
+    assert!(editor.read_with(&visual, |v, _| v.settings.tuning.drag.is_some()));
     visual.simulate_mouse_down(outside, MouseButton::Right, gpui::Modifiers::default());
     visual.simulate_event(gpui::ScrollWheelEvent {
         position: outside,
@@ -101,17 +101,17 @@ fn pitch_pointer_isolates_input_and_releases_before_canonical_ack(cx: &mut TestA
     assert!(!visual.update(|w, _| w.is_pointer_dragging()));
     assert_eq!(visual.rendered_cursor_style(), Some(CursorStyle::Crosshair));
     let terminal = editor.read_with(&visual, |v, _| {
-        assert!(v.tuning.drag.is_none());
-        assert!(v.tuning.client.has_pending_terminal());
-        v.tuning.client.snapshot().unwrap()
+        assert!(v.settings.tuning.drag.is_none());
+        assert!(v.settings.tuning.client.has_pending_terminal());
+        v.settings.tuning.client.snapshot().unwrap()
     });
     // Pending canonical custody must neither retain the old pointer nor accept
     // a new pitch edit that the already-finishing client cannot consume.
     visual.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::default());
     assert!(!visual.update(|w, _| w.is_pointer_dragging()));
     editor.read_with(&visual, |v, _| {
-        assert!(v.tuning.drag.is_none());
-        assert_eq!(v.tuning.client.snapshot(), Some(terminal));
+        assert!(v.settings.tuning.drag.is_none());
+        assert_eq!(v.settings.tuning.client.snapshot(), Some(terminal));
     });
     visual.simulate_mouse_up(start, MouseButton::Left, gpui::Modifiers::default());
     visual.simulate_mouse_down(outside, MouseButton::Right, gpui::Modifiers::default());
@@ -141,7 +141,8 @@ fn pitch_capture_loss_cancels_without_late_commit_or_new_source_edit(cx: &mut Te
         let outside = point(px(140.), px(10.));
         visual.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::default());
         visual.simulate_mouse_move(moved, MouseButton::Left, gpui::Modifiers::default());
-        let snapshot = editor.read_with(&visual, |v, _| v.tuning.client.snapshot().unwrap());
+        let snapshot =
+            editor.read_with(&visual, |v, _| v.settings.tuning.client.snapshot().unwrap());
         match loss {
             "button" => visual.simulate_mouse_move(moved, None, gpui::Modifiers::default()),
             "focus" => visual.update(|w, cx| editor.update(cx, |v, _| v.focus.focus(w))),
@@ -179,13 +180,13 @@ fn pitch_capture_loss_cancels_without_late_commit_or_new_source_edit(cx: &mut Te
         );
         assert!(!visual.update(|w, _| w.is_pointer_dragging()));
         editor.read_with(&visual, |v, _| {
-            assert!(v.tuning.drag.is_none(), "loss={loss}");
+            assert!(v.settings.tuning.drag.is_none(), "loss={loss}");
             if loss == "generation" {
-                assert!(v.tuning.client.snapshot().is_none());
+                assert!(v.settings.tuning.client.snapshot().is_none());
             } else {
-                assert!(v.tuning.client.has_pending_terminal());
+                assert!(v.settings.tuning.client.has_pending_terminal());
                 assert_eq!(
-                    v.tuning.client.snapshot().unwrap().sequence,
+                    v.settings.tuning.client.snapshot().unwrap().sequence,
                     snapshot.sequence,
                     "cancel must not increment the commit sequence"
                 );
@@ -202,7 +203,7 @@ fn created_pitch_node_owns_pointer_and_keeps_admitted_terminal(cx: &mut TestAppC
         actions,
         ..
     } = open(cx);
-    let bounds = editor.read_with(&visual, |v, _| v.tuning.pitch_bounds.unwrap());
+    let bounds = editor.read_with(&visual, |v, _| v.settings.tuning.pitch_bounds.unwrap());
     let start = point(
         bounds.left() + bounds.size.width * (3.5 / 12.),
         bounds.center().y,
@@ -214,8 +215,8 @@ fn created_pitch_node_owns_pointer_and_keeps_admitted_terminal(cx: &mut TestAppC
         ..Default::default()
     });
     editor.read_with(&visual, |v, _| {
-        assert!(v.tuning.drag.is_some());
-        assert_eq!(v.tuning.value.scale().count(), 13);
+        assert!(v.settings.tuning.drag.is_some());
+        assert_eq!(v.settings.tuning.value.scale().count(), 13);
         assert_eq!(
             v.state.as_ref().unwrap().project.tuning().scale().count(),
             12
@@ -229,10 +230,17 @@ fn created_pitch_node_owns_pointer_and_keeps_admitted_terminal(cx: &mut TestAppC
     visual.simulate_mouse_up(outside, MouseButton::Right, gpui::Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert!(v.tuning.drag.is_none());
-        assert!(v.tuning.client.has_pending_terminal());
+        assert!(v.settings.tuning.drag.is_none());
+        assert!(v.settings.tuning.client.has_pending_terminal());
         assert_eq!(
-            v.tuning.client.snapshot().unwrap().tuning.scale().count(),
+            v.settings
+                .tuning
+                .client
+                .snapshot()
+                .unwrap()
+                .tuning
+                .scale()
+                .count(),
             13
         );
     });
@@ -260,20 +268,20 @@ fn profile_tuning_pointer(cx: &mut TestAppContext) {
     let mut timings = Vec::with_capacity(samples);
     for round in 0..warmup + samples {
         editor.update(&mut visual, |v, cx| {
-            v.tuning.client.reset();
-            v.tuning.value = v.state.as_ref().unwrap().project.tuning();
-            v.tuning.drag = None;
+            v.settings.tuning.client.reset();
+            v.settings.tuning.value = v.state.as_ref().unwrap().project.tuning();
+            v.settings.tuning.drag = None;
             // Freeze asynchronous analysis and exclude worker/terminal setup;
             // local gesture changes and actual overlay paint remain timed.
-            v.tuning.analysis_pending = true;
-            v.tuning.analysis_queued = None;
-            v.tuning.last_variations = Instant::now();
+            v.settings.tuning.analysis_pending = true;
+            v.settings.tuning.analysis_queued = None;
+            v.settings.tuning.last_variations = Instant::now();
             cx.notify();
         });
         visual.run_until_parked();
         visual.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::default());
         visual.run_until_parked();
-        assert!(editor.read_with(&visual, |v, _| v.tuning.drag.is_some()));
+        assert!(editor.read_with(&visual, |v, _| v.settings.tuning.drag.is_some()));
         let clock = Instant::now();
         let mut at = start;
         for step in 0..8 {

@@ -57,13 +57,13 @@ fn place_icon_preferences_window(
     editor.read_with(cx, |view, _| {
         assert!(std::sync::Arc::ptr_eq(&directory.1, &view.test_environment));
         assert_eq!(view.browser.test_preferences_path(), config);
-        assert_eq!(view.recent_projects.test_path(), recent);
+        assert_eq!(view.settings.recent_projects.test_path(), recent);
         assert_eq!(
-            view.theme_settings.test_path(),
+            view.settings.theme.test_path(),
             directory.0.join("icon-theme.json")
         );
         assert_eq!(
-            view.project_directory.test_path(),
+            view.settings.project_directory.test_path(),
             directory.0.join("project-directory.json")
         );
         assert_eq!(view.browser.home, directory.0.join("icon-home"));

@@ -142,6 +142,14 @@ pub(crate) enum Owner {
     Return(usize),
 }
 
+/// Contiguous slice `[start..end)` of `SignalGraph::owner_order` whose owners have
+/// no inter-owner dependencies between each other and may execute in parallel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OwnerWave {
+    pub start: usize,
+    pub end: usize,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct KeyStage {
     source_track: usize,
@@ -155,6 +163,7 @@ pub(crate) struct SignalGraph {
     pub tracks: Vec<TrackPlan>,
     pub returns: Vec<ReturnPlan>,
     pub owner_order: Vec<Owner>,
+    pub owner_waves: Vec<OwnerWave>,
     track_indices: Vec<(TrackId, usize)>,
     has_group_outputs: bool,
     pub main: usize,
@@ -280,6 +289,7 @@ impl SignalGraph {
             tracks,
             returns,
             owner_order: self.owner_order.clone(),
+            owner_waves: self.owner_waves.clone(),
             track_indices: self.track_indices.clone(),
             has_group_outputs: self.has_group_outputs,
             main: self.main,
@@ -793,6 +803,10 @@ impl SignalGraph {
         for device in &mut main_devices {
             *device = node_index(*device)?;
         }
+        let track_count = tracks.len();
+        let owner_count = track_count
+            .checked_add(returns.len())
+            .ok_or(Invalid("signal graph owner count overflow"))?;
         let mut order: Vec<_> = tracks
             .iter()
             .enumerate()
@@ -809,6 +823,87 @@ impl SignalGraph {
             ranks[node] = rank;
         }
         order.sort_by_key(|(node, _)| ranks[*node]);
+
+        // Partition owners into topological waves so owners within each wave have
+        // zero inter-owner dependencies and may execute in parallel.
+        let owner_slot = |owner: Owner| match owner {
+            Owner::Track(index) => index,
+            Owner::Return(index) => track_count + index,
+        };
+        let mut wave_depth = vec![0usize; owner_count];
+        for &(_, owner) in &order {
+            let src_slot = owner_slot(owner);
+            let next_depth = wave_depth[src_slot].saturating_add(1);
+            match owner {
+                Owner::Track(index) => {
+                    let track = &tracks[index];
+                    if let TrackOutput::Group { target, .. } = track.output {
+                        wave_depth[target] = wave_depth[target].max(next_depth);
+                    }
+                    for send in &track.sends {
+                        let dst = track_count + send.target;
+                        wave_depth[dst] = wave_depth[dst].max(next_depth);
+                    }
+                    for feed in &track.audio_feeds {
+                        wave_depth[feed.target] = wave_depth[feed.target].max(next_depth);
+                    }
+                }
+                Owner::Return(index) => {
+                    let bus = &returns[index];
+                    for feed in &bus.feeds {
+                        let dst = track_count + feed.target;
+                        wave_depth[dst] = wave_depth[dst].max(next_depth);
+                    }
+                    for feed in &bus.audio_feeds {
+                        wave_depth[feed.target] = wave_depth[feed.target].max(next_depth);
+                    }
+                }
+            }
+            // Sidechain key edges tap a track's output into another owner's device.
+            if let Owner::Track(source_index) = owner
+                && !key_stages.is_empty()
+            {
+                for (dst_track, track) in tracks.iter().enumerate() {
+                    if dst_track != source_index
+                        && track.devices.iter().any(|&node| {
+                            key_stages
+                                .get(node)
+                                .and_then(|stage| *stage)
+                                .is_some_and(|stage| stage.source_track == source_index)
+                        })
+                    {
+                        wave_depth[dst_track] = wave_depth[dst_track].max(next_depth);
+                    }
+                }
+                for (dst_return, bus) in returns.iter().enumerate() {
+                    if bus.devices.iter().any(|&node| {
+                        key_stages
+                            .get(node)
+                            .and_then(|stage| *stage)
+                            .is_some_and(|stage| stage.source_track == source_index)
+                    }) {
+                        let dst = track_count + dst_return;
+                        wave_depth[dst] = wave_depth[dst].max(next_depth);
+                    }
+                }
+            }
+        }
+        order.sort_by_key(|&(node, owner)| (wave_depth[owner_slot(owner)], ranks[node]));
+        let mut owner_waves = Vec::new();
+        let mut wave_start = 0;
+        while wave_start < order.len() {
+            let depth = wave_depth[owner_slot(order[wave_start].1)];
+            let mut wave_end = wave_start + 1;
+            while wave_end < order.len() && wave_depth[owner_slot(order[wave_end].1)] == depth {
+                wave_end += 1;
+            }
+            owner_waves.push(OwnerWave {
+                start: wave_start,
+                end: wave_end,
+            });
+            wave_start = wave_end;
+        }
+        owner_waves.shrink_to_fit();
         let owner_order = order.into_iter().map(|(_, owner)| owner).collect();
         let has_group_outputs = tracks
             .iter()
@@ -835,6 +930,7 @@ impl SignalGraph {
             tracks,
             returns,
             owner_order,
+            owner_waves,
             typed: keys.into_keys().collect(),
         };
         // Charge actual prepared table capacity before admitting runtime owners.
@@ -860,6 +956,7 @@ impl SignalGraph {
             tracks,
             returns,
             owner_order,
+            owner_waves,
             track_indices,
             has_group_outputs: _,
             main: _,
@@ -875,6 +972,7 @@ impl SignalGraph {
             .checked_add(tracks.capacity().checked_mul(size_of::<TrackPlan>())?)?
             .checked_add(returns.capacity().checked_mul(size_of::<ReturnPlan>())?)?
             .checked_add(owner_order.capacity().checked_mul(size_of::<Owner>())?)?
+            .checked_add(owner_waves.capacity().checked_mul(size_of::<OwnerWave>())?)?
             .checked_add(
                 track_indices
                     .capacity()
@@ -995,6 +1093,14 @@ impl SignalGraph {
     }
     pub(crate) fn has_group_outputs(&self) -> bool {
         self.has_group_outputs
+    }
+    /// Contiguous slices of `owner_order` partitioned into dependency-free waves.
+    pub(crate) fn owner_waves(&self) -> &[OwnerWave] {
+        &self.owner_waves
+    }
+    /// Whether `node` consumes a sidechain key tap from another track.
+    pub(crate) fn stage_has_key(&self, node: usize) -> bool {
+        self.key_stages.get(node).and_then(|stage| *stage).is_some()
     }
     /// Stable ID lookup is prepared off callback; the returned slot belongs to
     /// this exact immutable graph and its matching Arrangement track inventory.

@@ -21,12 +21,14 @@ ALLOWED = {
     # Ordinary control/worker client; never callback, process-global signals or graph authority.
     'hex-plugin-host': {'hex-plugin-scan', 'hex-plugin-state', 'hex-lattice-contract'},
     'hex-diagnostics': set(),
+    # Verbatim span markup and lowercase normalization shared by storage and UI theme.
+    'hex-text': set(),
     'hex-lattice-contract': set(),
     'hex-project': {'hex-lattice-contract', 'hex-plugin-state', 'hex-tuning'},
     'hex-lattice': {'hex-lattice-contract', 'hex-dsp', 'hex-tuning'},
     'hex-devices': {'hex-lattice', 'hex-lattice-contract', 'hex-dsp'},
     'hex-media': {'hex-engine', 'hex-project'},
-    'hex-storage': {'hex-project', 'hex-lattice-contract', 'hex-tuning', 'hex-plugin-state'},
+    'hex-storage': {'hex-project', 'hex-text', 'hex-lattice-contract', 'hex-tuning', 'hex-plugin-state'},
     # Pure captured-save envelope validation; no native runtime/ABI ownership.
     'hex-session': {'hex-tuning', 'hex-project', 'hex-media', 'hex-engine', 'hex-storage', 'hex-export', 'hex-lattice-contract', 'hex-plugin-state'},
     'hex-warp': set(),
@@ -36,13 +38,15 @@ ALLOWED = {
     'hex-library': set(),
     'hex-preferences': set(),
     'hex-widgets': set(),
-    # Pure GPUI-free UI geometry, viewport, and display-handoff state math.
+    # Pure GPUI-free UI geometry, viewport, musical time, MIDI/section models, and display-handoff state math.
     'hex-ui-model': {'hex-project'},
-    # Disposable native preview mounts the production UI owners, without audio/session.
-    'hex-sandbox': {'hex-devices', 'hex-preferences', 'hex-project', 'hex-ui-model', 'hex-widgets'},
+    # Reusable product-themed GPUI chrome, fonts, assets, meters, EQ panel math, and section surfaces shared by hex-ui and hex-sandbox.
+    'hex-ui-kit': {'hex-devices', 'hex-preferences', 'hex-project', 'hex-text', 'hex-ui-model', 'hex-widgets'},
+    # Disposable native preview mounts the production UI owners via Cargo edges, without audio/session.
+    'hex-sandbox': {'hex-devices', 'hex-preferences', 'hex-project', 'hex-ui-model', 'hex-ui-kit', 'hex-widgets'},
     # Concrete catalog/pair custody and control disposal, never an engine->stream edge.
     'hex-audio': {'hex-engine', 'hex-stream', 'hex-plugin-host', 'hex-plugin-state', 'hex-plugin-scan', 'hex-lattice', 'hex-lattice-contract'},
-    'hex-ui': {'hex-plugin-catalog', 'hex-mts', 'hex-tuning', 'hex-midi', 'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-ui-model', 'hex-widgets'},
+    'hex-ui': {'hex-plugin-catalog', 'hex-mts', 'hex-tuning', 'hex-midi', 'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-ui-model', 'hex-ui-kit', 'hex-widgets'},
     # Desktop injects the Session sink and binds neutral source facts to actual
     # audio/stream constructor custody; Session has no device/stream edge.
     'hex-desktop': {'hex-mts', 'hex-midi', 'hex-diagnostics', 'hex-ui', 'hex-audio', 'hex-engine', 'hex-session', 'hex-stream', 'hex-media', 'hex-export', 'hex-plugin-catalog', 'hex-preferences'},
@@ -65,8 +69,8 @@ DEV_ALLOWED = {
     'hex-audio': {'hex-project', 'hex-storage', 'hex-lattice-contract', 'hex-lattice', 'hex-media', 'hex-tuning', 'hex-devices', 'hex-plugin-scan', 'hex-plugin-state'},
     'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-tuning'},
 }
-BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'libloading': set(), 'coremidi': {'hex-midi'}, 'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets', 'hex-sandbox'},
-              'gpui_platform': {'hex-ui', 'hex-desktop', 'hex-widgets', 'hex-sandbox'},
+BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'libloading': set(), 'coremidi': {'hex-midi'}, 'gpui': {'hex-ui', 'hex-ui-kit', 'hex-desktop', 'hex-widgets', 'hex-sandbox'},
+              'gpui_platform': {'hex-ui', 'hex-ui-kit', 'hex-desktop', 'hex-widgets', 'hex-sandbox'},
               'cpal': {'hex-audio'}, 'rtrb': {'hex-audio', 'hex-stream', 'hex-plugin-host'},
               # Safe macOS joining-transport scheduling, never callback calls.
               'qos-threads': {'hex-audio'},

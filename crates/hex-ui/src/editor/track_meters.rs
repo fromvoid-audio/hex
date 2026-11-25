@@ -105,6 +105,22 @@ impl State {
     pub(super) fn main_reading(&self) -> MeterReading {
         self.main.reading()
     }
+    pub(super) fn track_count(&self) -> usize {
+        self.levels.len()
+    }
+    pub(super) fn return_count(&self) -> usize {
+        self.returns.len()
+    }
+    pub(super) fn iter_track_readings(&self) -> impl Iterator<Item = (TrackId, MeterReading)> + '_ {
+        self.levels.iter().map(|(&id, state)| (id, state.reading()))
+    }
+    pub(super) fn iter_return_readings(
+        &self,
+    ) -> impl Iterator<Item = (ReturnId, MeterReading)> + '_ {
+        self.returns
+            .iter()
+            .map(|(&id, state)| (id, state.reading()))
+    }
     pub(super) fn observe_main(
         &mut self,
         frame: Option<super::refresh::AudioFrame>,
@@ -161,8 +177,8 @@ impl EditorView {
                     project,
                     frozen.as_deref(),
                     &self.arrangement_focus.projection.console_indices,
-                    self.session_track_start,
-                    self.session_visible_columns,
+                    self.session_grid.track_start,
+                    self.session_grid.visible_columns,
                     self.selected_track,
                     visible,
                 );
@@ -268,12 +284,19 @@ pub(super) fn render(track: TrackId, reading: MeterReading, height: f32) -> Div 
 }
 
 pub(super) fn render_arrangement(track: TrackId, reading: MeterReading, row_height: f32) -> Div {
+    render_arrangement_bars(track, reading, row_height).mt(px(2.0))
+}
+
+pub(super) fn render_arrangement_bars(
+    track: TrackId,
+    reading: MeterReading,
+    row_height: f32,
+) -> Div {
     render_meter(
         format!("track-output-meter-{}", track.value()),
         reading,
         row_height - 6.0,
     )
-    .mt(px(2.0))
 }
 
 pub(super) fn render_return(id: ReturnId, reading: MeterReading, height: f32) -> Div {
@@ -729,8 +752,8 @@ mod tests {
                 );
             }
             view.mode = super::super::EditorMode::Session;
-            view.session_track_start = 1;
-            view.session_visible_columns = 1;
+            view.session_grid.track_start = 1;
+            view.session_grid.visible_columns = 1;
             view.selected_track = Some(track);
             let other = view.state.as_ref().unwrap().project.tracks()[1].id();
             view.audible_playback

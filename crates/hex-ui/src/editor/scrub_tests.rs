@@ -250,7 +250,7 @@ mod ui {
             Modifiers::default(),
         );
         visual.update(|window, cx| {
-            editor.update(cx, |view, _| view.midi_focus.focus(window));
+            editor.update(cx, |view, _| view.midi_editor.focus.focus(window));
         });
         // GPUI publishes focus-path changes during its next draw phase.
         visual.run_until_parked();

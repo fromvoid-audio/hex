@@ -90,6 +90,7 @@ pub mod audio_transform;
 mod effect_clock;
 mod main_chain;
 mod native_device_view;
+pub mod wave_executor;
 pub use audio_input_storage::{
     AudioInputStorageAndObligations, AudioInputStorageRefusal, AudioInputStorageSummary,
 };
@@ -98,6 +99,8 @@ pub use audio_only_inputs::{
     AudioStorageReservation, OwnedAudioInputs, OwnedAudioSource, OwnedAudioSourceView,
     ResidentSourceRefusal, StreamedSourceRefusal,
 };
+pub use signal_graph::OwnerWave;
+pub use wave_executor::{SerialWaveExecutor, WaveExecutor};
 pub mod native_device_resources;
 /// The loaded Sampler's existing authored gain control.
 pub use hex_devices::sampler::catalog::GAIN as SAMPLER_GAIN_PARAMETER;
@@ -123,6 +126,7 @@ pub use sparse_audio::SparseFrameMap;
 mod device_automation;
 mod device_modulation;
 pub use device_modulation::foreign_modulation_target as project_vst3_modulation_target;
+pub use device_modulation::foreign_modulation_targets as project_vst3_modulation_targets;
 pub use device_modulation::{
     device_available_modulation_outputs, fm4_note_pressure_parameter_supported,
     project_device_can_add_note_pressure, project_device_has_modulation_note_events,

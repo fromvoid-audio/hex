@@ -90,14 +90,14 @@ impl Capture {
 }
 impl EditorView {
     pub(in crate::editor) fn shift_midi_time_selection_origin(&mut self, delta: i128) {
-        self.midi_time_selection.gesture = None;
-        if let Some(selection) = self.midi_time_selection.selection.as_mut() {
+        self.midi_editor.time_selection.gesture = None;
+        if let Some(selection) = self.midi_editor.time_selection.selection.as_mut() {
             let shift = |raw: u64| u64::try_from(i128::from(raw).saturating_add(delta)).ok();
             if let Some((start, end)) = shift(selection.start).zip(shift(selection.end)) {
                 selection.start = start;
                 selection.end = end;
             } else {
-                self.midi_time_selection.clear();
+                self.midi_editor.time_selection.clear();
             }
         }
     }
@@ -112,11 +112,11 @@ impl EditorView {
     }
 
     pub(in crate::editor) fn clear_midi_time_selection(&mut self) -> bool {
-        self.midi_time_selection.clear()
+        self.midi_editor.time_selection.clear()
     }
     pub(in crate::editor) fn midi_time_selection_epoch_matches(&self, epoch: u64) -> bool {
-        self.midi_time_selection.epoch == epoch
-            && self.midi_time_selection.selection.is_some_and(|s| {
+        self.midi_editor.time_selection.epoch == epoch
+            && self.midi_editor.time_selection.selection.is_some_and(|s| {
                 s.generation == self.project_generation && self.detail_clip_id() == Some(s.clip)
             })
     }
@@ -126,18 +126,18 @@ impl EditorView {
         start: u64,
         end: u64,
     ) -> Option<u64> {
-        let s = self.midi_time_selection.selection?;
+        let s = self.midi_editor.time_selection.selection?;
         (s.generation == self.project_generation
             && s.clip == clip
             && s.start == start
             && s.end == end)
-            .then_some(self.midi_time_selection.epoch)
+            .then_some(self.midi_editor.time_selection.epoch)
     }
     pub(in crate::editor) fn apply_midi_time_copy(&mut self, clip: ClipId, start: u64, end: u64) {
         if self.detail_clip_id() != Some(clip) {
             return;
         }
-        if let Err(error) = self.midi_time_selection.set(Selection {
+        if let Err(error) = self.midi_editor.time_selection.set(Selection {
             generation: self.project_generation,
             clip,
             start,
@@ -146,12 +146,12 @@ impl EditorView {
             self.error = Some(error.into());
             return;
         }
-        self.midi_selection.clear();
-        self.midi_marker = Some(start);
+        self.midi_editor.selection.clear();
+        self.midi_editor.marker = Some(start);
         // A successful duplicate must remain visible even after it grows beyond
         // the old viewport. Move only as far as needed; this is view state.
-        let span = self.piano_beat_span.raw().max(end - start);
-        let old = self.piano_beat_start;
+        let span = self.midi_editor.piano_beat_span.raw().max(end - start);
+        let old = self.midi_editor.piano_beat_start;
         let reveal = if i128::from(start) < old {
             i128::from(start)
         } else if i128::from(end) > old.saturating_add(i128::from(span)) {
@@ -160,20 +160,20 @@ impl EditorView {
             old
         };
         if self.midi_clip().is_some() {
-            self.piano_beat_span = BeatTime::from_raw(span);
-            self.piano_beat_start = super::super::midi_scene::clamp_start(reveal, span);
+            self.midi_editor.piano_beat_span = BeatTime::from_raw(span);
+            self.midi_editor.piano_beat_start = super::super::midi_scene::clamp_start(reveal, span);
         }
     }
     pub(in crate::editor) fn midi_time_selection_bounds(&self) -> Option<(u64, u64)> {
-        if let Some(capture) = self.midi_time_selection.gesture {
+        if let Some(capture) = self.midi_editor.time_selection.gesture {
             return capture.interval();
         }
-        let s = self.midi_time_selection.selection?;
+        let s = self.midi_editor.time_selection.selection?;
         (s.generation == self.project_generation && self.detail_clip_id() == Some(s.clip))
             .then_some((s.start, s.end))
     }
     pub(in crate::editor) fn duplicate_midi_time_selection(&mut self) -> bool {
-        let Some(s) = self.midi_time_selection.selection.filter(|s| {
+        let Some(s) = self.midi_editor.time_selection.selection.filter(|s| {
             s.generation == self.project_generation && self.detail_clip_id() == Some(s.clip)
         }) else {
             return false;
@@ -230,12 +230,14 @@ impl EditorView {
     }
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(in crate::editor) fn midi_velocity_time_selection_active(&self) -> bool {
-        self.midi_time_selection
+        self.midi_editor
+            .time_selection
             .gesture
             .is_some_and(|g| g.surface == Surface::Velocity)
     }
     fn owns_midi_time_capture(&self, context: Context, surface: Surface, down_x: f32) -> bool {
-        self.midi_time_selection
+        self.midi_editor
+            .time_selection
             .gesture
             .is_some_and(|g| g.context == context && g.surface == surface && g.down_x == down_x)
     }
@@ -275,13 +277,13 @@ impl EditorView {
                     if !view.owns_midi_time_capture(context, surface, x) {
                         return;
                     }
-                    if !view.clip_view_open
-                        || view.device_panel_active
-                        || !view.midi_focus.is_focused(window)
+                    if !view.audio_detail.clip_view_open
+                        || view.device_panel.active
+                        || !view.midi_editor.focus.is_focused(window)
                         || !f32::from(position.x).is_finite()
                         || !f32::from(position.y).is_finite()
                     {
-                        view.midi_time_selection.cancel();
+                        view.midi_editor.time_selection.cancel();
                     } else {
                         let invert = moved
                             .map(|e| e.modifiers.platform)
@@ -307,7 +309,7 @@ impl EditorView {
             move |_, cx| {
                 let _ = cancelled.update(cx, |view, cx| {
                     if view.owns_midi_time_capture(context, surface, x) {
-                        view.midi_time_selection.cancel();
+                        view.midi_editor.time_selection.cancel();
                         cx.notify();
                     }
                 });
@@ -317,10 +319,10 @@ impl EditorView {
             return false;
         }
         self.cancel_midi_note_gesture();
-        self.midi_hover = None;
-        self.midi_time_selection.gesture = Some(Capture {
+        self.midi_editor.hover = None;
+        self.midi_editor.time_selection.gesture = Some(Capture {
             context,
-            note_epoch: self.midi_selection.epoch(),
+            note_epoch: self.midi_editor.selection.epoch(),
             down_x: x,
             last_x: x,
             invert,
@@ -337,19 +339,19 @@ impl EditorView {
         owner: gpui::EntityId,
         window: &mut gpui::Window,
     ) {
-        if self.clip_view_open
-            && !self.device_panel_active
-            && self.midi_focus.is_focused(window)
-            && let Some(g) = self.midi_time_selection.gesture
+        if self.audio_detail.clip_view_open
+            && !self.device_panel.active
+            && self.midi_editor.focus.is_focused(window)
+            && let Some(g) = self.midi_editor.time_selection.gesture
             && g.context.bounds == bounds
             && g.context.generation == self.project_generation
             && clip == g.context.clip
             && !self.edit_pending()
             && self.context_menu.is_none()
-            && self.piano_beat_start == g.context.start
-            && self.piano_beat_span.raw() == g.context.span
-            && self.midi_snap_grid == g.context.grid
-            && self.midi_selection.epoch() == g.note_epoch
+            && self.midi_editor.piano_beat_start == g.context.start
+            && self.midi_editor.piano_beat_span.raw() == g.context.span
+            && self.midi_editor.snap_grid == g.context.grid
+            && self.midi_editor.selection.epoch() == g.note_epoch
             && self
                 .state
                 .as_ref()
@@ -367,19 +369,19 @@ impl EditorView {
         x: f32,
         invert: bool,
     ) -> bool {
-        let Some(capture) = self.midi_time_selection.gesture else {
+        let Some(capture) = self.midi_editor.time_selection.gesture else {
             return false;
         };
         if self.midi_ruler_context(bounds) != Some(capture.context)
-            || self.midi_selection.epoch() != capture.note_epoch
+            || self.midi_editor.selection.epoch() != capture.note_epoch
             || !x.is_finite()
         {
-            return self.midi_time_selection.cancel();
+            return self.midi_editor.time_selection.cancel();
         }
         let mut next = capture;
         next.last_x = x;
         next.invert = invert;
-        self.midi_time_selection.gesture = Some(next);
+        self.midi_editor.time_selection.gesture = Some(next);
         true
     }
     pub(in crate::editor) fn finish_midi_time_selection(
@@ -389,7 +391,7 @@ impl EditorView {
         invert: bool,
     ) {
         self.update_midi_time_selection(bounds, x, invert);
-        let Some(capture) = self.midi_time_selection.gesture.take() else {
+        let Some(capture) = self.midi_editor.time_selection.gesture.take() else {
             return;
         };
         let Some((start, end)) = capture.interval() else {
@@ -402,13 +404,13 @@ impl EditorView {
                     self.request_midi_source_cue(capture.context.clip, beat);
                 } else {
                     self.clear_midi_time_selection();
-                    self.midi_selection.clear();
-                    self.midi_marker = Some(beat);
+                    self.midi_editor.selection.clear();
+                    self.midi_editor.marker = Some(beat);
                 }
             }
             return;
         };
-        if let Err(error) = self.midi_time_selection.set(Selection {
+        if let Err(error) = self.midi_editor.time_selection.set(Selection {
             generation: self.project_generation,
             clip: capture.context.clip,
             start,
@@ -417,7 +419,7 @@ impl EditorView {
             self.error = Some(error.into());
             return;
         }
-        self.midi_selection.clear();
-        self.midi_marker = Some(start);
+        self.midi_editor.selection.clear();
+        self.midi_editor.marker = Some(start);
     }
 }

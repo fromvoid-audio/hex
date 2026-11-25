@@ -284,9 +284,9 @@ pub(super) fn requires_close_confirmation(
 
 impl EditorView {
     fn release_automation_close(&mut self, cx: &Context<Self>) {
-        let update = self.automation_close_preflight.update.take();
-        self.automation_close_preflight.state = PreflightState::Idle;
-        self.automation_close_preflight.vst3 = None;
+        let update = self.persistence.automation_close_preflight.update.take();
+        self.persistence.automation_close_preflight.state = PreflightState::Idle;
+        self.persistence.automation_close_preflight.vst3 = None;
         if let Some(id) = update {
             self.cancel_update(id, cx);
         }
@@ -298,15 +298,15 @@ impl EditorView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Result<(), &'static str> {
-        if self.automation_close_preflight.frozen() {
+        if self.persistence.automation_close_preflight.frozen() {
             return Err("another close decision is pending");
         }
         let deadline = std::time::Instant::now()
             .checked_add(Duration::from_secs(5))
             .ok_or("automation safety deadline unavailable")?;
-        self.automation_close_preflight.update = Some(id);
-        self.automation_close_preflight.window = Some(window.window_handle());
-        self.automation_close_preflight.state = PreflightState::Draining {
+        self.persistence.automation_close_preflight.update = Some(id);
+        self.persistence.automation_close_preflight.window = Some(window.window_handle());
+        self.persistence.automation_close_preflight.state = PreflightState::Draining {
             quit: false,
             deadline,
         };
@@ -328,9 +328,9 @@ impl EditorView {
     }
 
     fn begin_automation_close(&mut self, quit: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.automation_close_preflight.frozen() {
+        if self.persistence.automation_close_preflight.frozen() {
             let quit_already_pending = matches!(
-                self.automation_close_preflight.state,
+                self.persistence.automation_close_preflight.state,
                 PreflightState::Draining { quit: true, .. }
                     | PreflightState::Waiting { quit: true, .. }
                     | PreflightState::Ready { quit: true, .. }
@@ -345,14 +345,14 @@ impl EditorView {
         if self.update_blocks_close()
             || super::device_panel::source_naming(self)
             || self.gain_recorder.blocks_edits()
-            || self.midi_recorder.blocks_edits()
+            || self.midi_editor.recorder.blocks_edits()
             || self.audio_recorder.blocks_edits()
             || self.native_automation_recorder.busy()
             || self.automation_take_recovery.unresolved()
-            || self.close_prompt_open
-            || self.save_dialog_open
-            || self.project_open.busy()
-            || self.pending_open_path.is_some()
+            || self.persistence.close_prompt_open
+            || self.persistence.save_dialog_open
+            || self.persistence.project_open.busy()
+            || self.persistence.pending_open_path.is_some()
         {
             self.error =
                 Some("finish pending work or recover the automation take before closing".into());
@@ -380,8 +380,9 @@ impl EditorView {
             }
             return;
         };
-        self.automation_close_preflight.window = Some(window.window_handle());
-        self.automation_close_preflight.state = PreflightState::Draining { quit, deadline };
+        self.persistence.automation_close_preflight.window = Some(window.window_handle());
+        self.persistence.automation_close_preflight.state =
+            PreflightState::Draining { quit, deadline };
         self.wake_poll();
         cx.notify();
     }
@@ -410,7 +411,7 @@ impl EditorView {
             cx.notify();
             return;
         };
-        self.automation_close_preflight.state = PreflightState::Waiting {
+        self.persistence.automation_close_preflight.state = PreflightState::Waiting {
             request,
             quit,
             generation: self.project_generation,
@@ -418,6 +419,7 @@ impl EditorView {
             deadline,
         };
         let attempt = self
+            .persistence
             .automation_close_preflight
             .vst3
             .get_or_insert_with(Arc::default);
@@ -472,7 +474,7 @@ impl EditorView {
             }
             _ => CloseSafety::AutomationBlocked,
         };
-        self.automation_close_preflight.observe(
+        self.persistence.automation_close_preflight.observe(
             completion.request_id,
             safety,
             self.project_generation,
@@ -482,7 +484,8 @@ impl EditorView {
 
     pub(super) fn tick_automation_close(&mut self, cx: &mut Context<Self>) -> bool {
         if let PreflightState::Draining { quit, deadline }
-        | PreflightState::Waiting { quit, deadline, .. } = self.automation_close_preflight.state
+        | PreflightState::Waiting { quit, deadline, .. } =
+            self.persistence.automation_close_preflight.state
             && std::time::Instant::now() >= deadline
         {
             self.release_automation_close(cx);
@@ -492,13 +495,14 @@ impl EditorView {
             }
             return true;
         }
-        if let PreflightState::Draining { quit, deadline } = self.automation_close_preflight.state
+        if let PreflightState::Draining { quit, deadline } =
+            self.persistence.automation_close_preflight.state
             && self.pending_requests.is_empty()
             && self.worker_requests_pending == 0
             && !self.device_gesture_pending()
             && !self.native_automation_recorder.busy()
             && !self.automation_take_recovery.unresolved()
-            && self.tuning.client.snapshot().is_none()
+            && self.settings.tuning.client.snapshot().is_none()
         {
             self.submit_automation_close_query(quit, deadline, cx);
             return true;
@@ -509,9 +513,9 @@ impl EditorView {
             generation,
             revision,
             safety,
-        } = self.automation_close_preflight.state
+        } = self.persistence.automation_close_preflight.state
         {
-            let Some(handle) = self.automation_close_preflight.window else {
+            let Some(handle) = self.persistence.automation_close_preflight.window else {
                 self.release_automation_close(cx);
                 if quit {
                     quit_refused(cx);
@@ -519,7 +523,7 @@ impl EditorView {
                 self.error = Some("close window unavailable · close cancelled".into());
                 return true;
             };
-            self.automation_close_preflight.state = PreflightState::Dispatching {
+            self.persistence.automation_close_preflight.state = PreflightState::Dispatching {
                 request,
                 quit,
                 generation,
@@ -552,8 +556,8 @@ impl EditorView {
             .detach();
             return true;
         }
-        if let PreflightState::Held { quit, .. } = self.automation_close_preflight.state
-            && !self.close_prompt_open
+        if let PreflightState::Held { quit, .. } = self.persistence.automation_close_preflight.state
+            && !self.persistence.close_prompt_open
             && !self.update_preparing()
         {
             self.release_automation_close(cx);
@@ -565,7 +569,7 @@ impl EditorView {
     }
 
     pub(super) fn automation_close_disconnected(&mut self, cx: &mut Context<Self>) -> bool {
-        let quit = match self.automation_close_preflight.state {
+        let quit = match self.persistence.automation_close_preflight.state {
             PreflightState::Draining { quit, .. }
             | PreflightState::Waiting { quit, .. }
             | PreflightState::Ready { quit, .. }
@@ -593,7 +597,7 @@ impl EditorView {
             generation,
             revision,
             safety,
-        } = self.automation_close_preflight.state
+        } = self.persistence.automation_close_preflight.state
         else {
             return;
         };
@@ -601,7 +605,10 @@ impl EditorView {
             return;
         }
         let valid = matches!(safety, CloseSafety::Safe { .. })
-            && self.automation_close_preflight.native_hold_valid()
+            && self
+                .persistence
+                .automation_close_preflight
+                .native_hold_valid()
             && self.project_generation == generation
             && self
                 .state
@@ -633,7 +640,7 @@ impl EditorView {
             cx.notify();
             return;
         }
-        self.automation_close_preflight.state = PreflightState::Held {
+        self.persistence.automation_close_preflight.state = PreflightState::Held {
             quit,
             context: AudioSourceContext {
                 project_generation: generation,
@@ -646,13 +653,16 @@ impl EditorView {
                 }
             ),
         };
-        if self.automation_close_preflight.update.is_some() {
+        if self.persistence.automation_close_preflight.update.is_some() {
             self.reconcile_update_ready(window, cx);
             cx.notify();
             return;
         }
         if self.requires_close_confirmation(cx)
-            || self.automation_close_preflight.admitted_vst3_edits()
+            || self
+                .persistence
+                .automation_close_preflight
+                .admitted_vst3_edits()
         {
             self.show_close_prompt(window, cx, quit);
         } else if self.prepare_update_quit(false, cx) {
@@ -691,21 +701,21 @@ impl EditorView {
             self.worker_requests_pending,
             self.pending_requests.len(),
             self.duplicate_intent.is_pending(),
-            self.opening_project,
-            self.export_pending,
+            self.persistence.opening_project,
+            self.persistence.export_pending,
             self.device_gesture_pending()
-                || self.pending_plugin_effect.is_some()
+                || self.device_panel.pending_plugin_effect.is_some()
                 || self.device_panel.has_pending_draft(cx)
-                || self.tuning.client.snapshot().is_some(),
+                || self.settings.tuning.client.snapshot().is_some(),
         )
     }
 
     fn finalize_device_gesture_for_close(&mut self) {
-        if self.device_gesture.has_pending_terminal() {
+        if self.device_panel.gesture.has_pending_terminal() {
             return;
         }
-        if self.device_gesture.snapshot().is_some() {
-            match self.device_gesture.finish_current() {
+        if self.device_panel.gesture.snapshot().is_some() {
+            match self.device_panel.gesture.finish_current() {
                 Ok(()) => {
                     self.pump_device_gesture();
                 }
@@ -718,13 +728,17 @@ impl EditorView {
 
     fn show_close_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>, quit: bool) {
         self.invalidate_prepared_seek();
-        self.close_prompt_open = true;
+        self.persistence.close_prompt_open = true;
         let answer = window.prompt(
             PromptLevel::Warning,
             "discard unsaved work?",
-            Some(if self.export_pending {
+            Some(if self.persistence.export_pending {
                 "pending edits or project changes will be discarded. an export may not finish."
-            } else if self.automation_close_preflight.admitted_vst3_edits() {
+            } else if self
+                .persistence
+                .automation_close_preflight
+                .admitted_vst3_edits()
+            {
                 "vst3 editor changes may be unsaved."
             } else {
                 "pending edits or project changes will be discarded."
@@ -744,14 +758,15 @@ impl EditorView {
             let discard_requested = answer.await.ok() == Some(1);
             if let Err(error) = cx.update_window(handle, move |_, window, cx| {
                 let (discard, preparing_update) = editor.update(cx, |view, cx| {
-                    view.close_prompt_open = false;
+                    view.persistence.close_prompt_open = false;
                     let discard = discard_requested
                         && view.state.as_ref().is_some_and(|state| {
-                            view.automation_close_preflight
-                                .held_for(AudioSourceContext {
+                            view.persistence.automation_close_preflight.held_for(
+                                AudioSourceContext {
                                     project_generation: view.project_generation,
                                     editor_revision: state.revision,
-                                })
+                                },
+                            )
                         });
                     if discard {
                         if view.update_armed() {
@@ -759,7 +774,7 @@ impl EditorView {
                         }
                         view.cancel_plugin_effect();
                         view.cancel_browser_sample_playback();
-                        if let Some(control) = &view.export_control {
+                        if let Some(control) = &view.persistence.export_control {
                             control.cancel();
                         }
                         view.stop();
@@ -982,7 +997,7 @@ mod window_tests {
                     if let Some(editor) = window.root::<EditorView>().flatten() {
                         editor.update(cx, |view, cx| {
                             if matches!(
-                                view.automation_close_preflight.state,
+                                view.persistence.automation_close_preflight.state,
                                 PreflightState::Draining { .. }
                                     | PreflightState::Waiting { .. }
                                     | PreflightState::Ready { .. }
@@ -1074,7 +1089,7 @@ mod window_tests {
                         request,
                         quit: true,
                         ..
-                    } = view.automation_close_preflight.state
+                    } = view.persistence.automation_close_preflight.state
                     else {
                         panic!("quit did not query the Session");
                     };
@@ -1096,7 +1111,7 @@ mod window_tests {
         assert_eq!(cx.windows().len(), 1);
         assert!(!cx.has_pending_prompt());
         editor.read_with(cx, |view, _| {
-            assert!(!view.automation_close_preflight.frozen());
+            assert!(!view.persistence.automation_close_preflight.frozen());
             assert_eq!(
                 view.error.as_deref(),
                 Some("original vst3 editor changes need recovery · close cancelled")
@@ -1122,7 +1137,12 @@ mod window_tests {
         settle_close(cx);
         assert!(cx.has_pending_prompt());
         let attempt = editor.read_with(cx, |view, _| {
-            let owner = view.automation_close_preflight.vst3.as_ref().unwrap();
+            let owner = view
+                .persistence
+                .automation_close_preflight
+                .vst3
+                .as_ref()
+                .unwrap();
             owner.invalidate();
             Arc::downgrade(owner)
         });
@@ -1141,7 +1161,7 @@ mod window_tests {
         cx.update_window(handle, |_, window, cx| {
             editor.update(cx, |view, cx| {
                 view.request_quit(window, cx);
-                assert!(view.automation_close_preflight.frozen());
+                assert!(view.persistence.automation_close_preflight.frozen());
                 let track = view.state.as_ref().unwrap().project.tracks()[0].id();
                 let target = hex_session::device_gesture::GestureTarget::TrackGain { track };
                 assert!(
@@ -1164,19 +1184,25 @@ mod window_tests {
         settle_close(cx);
         assert!(cx.has_pending_prompt());
         let attempt = editor.read_with(cx, |view, _| {
-            assert!(view.automation_close_preflight.frozen());
-            Arc::downgrade(view.automation_close_preflight.vst3.as_ref().unwrap())
+            assert!(view.persistence.automation_close_preflight.frozen());
+            Arc::downgrade(
+                view.persistence
+                    .automation_close_preflight
+                    .vst3
+                    .as_ref()
+                    .unwrap(),
+            )
         });
         cx.simulate_prompt_answer("cancel");
         settle_close(cx);
         editor.read_with(cx, |view, _| {
-            assert!(!view.automation_close_preflight.frozen())
+            assert!(!view.persistence.automation_close_preflight.frozen())
         });
         assert!(attempt.upgrade().is_none());
         assert_eq!(cx.windows().len(), 1);
         editor.update(cx, |view, cx| {
             let revision = view.state.as_ref().unwrap().revision;
-            view.automation_close_preflight.state = PreflightState::Waiting {
+            view.persistence.automation_close_preflight.state = PreflightState::Waiting {
                 request: 1000,
                 quit: false,
                 generation: view.project_generation,
@@ -1184,8 +1210,8 @@ mod window_tests {
                 deadline: Instant::now(),
             };
             assert!(view.tick_automation_close(cx));
-            assert!(!view.automation_close_preflight.frozen());
-            view.automation_close_preflight.observe(
+            assert!(!view.persistence.automation_close_preflight.frozen());
+            view.persistence.automation_close_preflight.observe(
                 1000,
                 CloseSafety::Safe {
                     admitted_edits: false,
@@ -1194,17 +1220,17 @@ mod window_tests {
                 revision,
             );
             assert!(
-                !view.automation_close_preflight.frozen(),
+                !view.persistence.automation_close_preflight.frozen(),
                 "late safe response stays retired"
             );
-            view.automation_close_preflight.state = PreflightState::Waiting {
+            view.persistence.automation_close_preflight.state = PreflightState::Waiting {
                 request: 1001,
                 quit: false,
                 generation: view.project_generation,
                 revision,
                 deadline: Instant::now() + Duration::from_secs(1),
             };
-            view.automation_close_preflight.observe(
+            view.persistence.automation_close_preflight.observe(
                 1001,
                 CloseSafety::AutomationBlocked,
                 view.project_generation,
@@ -1215,7 +1241,7 @@ mod window_tests {
         settle_close(cx);
         assert!(!cx.has_pending_prompt());
         editor.read_with(cx, |view, _| {
-            assert!(!view.automation_close_preflight.frozen())
+            assert!(!view.persistence.automation_close_preflight.frozen())
         });
         assert_eq!(cx.windows().len(), 1);
     }
@@ -1306,7 +1332,7 @@ mod window_tests {
         settle_close(cx);
         assert_eq!(cx.windows().len(), 1);
         editor.read_with(cx, |view, _| {
-            assert!(!view.close_prompt_open);
+            assert!(!view.persistence.close_prompt_open);
             assert!(view.state.as_ref().is_some_and(|state| state.unsaved));
             assert_eq!(view.worker_requests_pending, 0);
         });
@@ -1337,7 +1363,7 @@ mod window_tests {
         cx.simulate_prompt_answer("cancel");
         settle_close(cx);
         assert_eq!(cx.windows().len(), 1);
-        assert!(!editor.read_with(cx, |view, _| view.close_prompt_open));
+        assert!(!editor.read_with(cx, |view, _| view.persistence.close_prompt_open));
         cx.update_window(handle, |_, window, cx| {
             editor.update(cx, |view, cx| view.request_quit(window, cx));
         })
@@ -1439,7 +1465,7 @@ mod window_tests {
         editor.read_with(cx, |view, _| {
             assert!(view.state.as_ref().is_some_and(|state| state.unsaved));
             assert!(
-                view.device_gesture.snapshot().is_none(),
+                view.device_panel.gesture.snapshot().is_none(),
                 "close finalized the draft"
             );
             view.service.submit(Request::Undo).unwrap();
@@ -1601,10 +1627,10 @@ mod window_tests {
                 format: hex_session::service::ExportFormat::Pcm16,
                 publication: hex_session::service::ExportPublication::CreateNew,
             }));
-            view.export_control = Some(export_control.clone());
-            view.export_window = Some(handle);
-            view.saving_project = true;
-            view.export_pending = true;
+            view.persistence.export_control = Some(export_control.clone());
+            view.persistence.export_window = Some(handle);
+            view.persistence.saving_project = true;
+            view.persistence.export_pending = true;
             assert_eq!(view.worker_requests_pending, pending_before + 1);
         });
         let commit = next_editor_service_event(&editor, cx);
@@ -1612,11 +1638,11 @@ mod window_tests {
         assert!(!commit_ack.accepted);
         editor.update(cx, |view, _| {
             assert!(view.acknowledge_device_gesture(&commit_ack));
-            assert!(!view.saving_project);
-            assert!(!view.export_pending);
-            assert!(view.export_control.is_none());
-            assert!(view.export_window.is_none());
-            assert!(view.device_gesture_barriers.is_empty());
+            assert!(!view.persistence.saving_project);
+            assert!(!view.persistence.export_pending);
+            assert!(view.persistence.export_control.is_none());
+            assert!(view.persistence.export_window.is_none());
+            assert!(view.device_panel.gesture_barriers.is_empty());
             assert!(view.pending_requests.is_empty());
             assert!(view.error.is_some());
         });
@@ -1672,7 +1698,7 @@ mod window_tests {
         settle_close(cx);
         assert_eq!(cx.quit_replies(), [false]);
         assert_eq!(cx.windows().len(), 1);
-        assert!(!editor.read_with(cx, |view, _| view.close_prompt_open));
+        assert!(!editor.read_with(cx, |view, _| view.persistence.close_prompt_open));
 
         assert!(cx.simulate_should_quit());
         settle_close(cx);

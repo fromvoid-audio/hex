@@ -44,7 +44,7 @@ impl Directory {
             .unwrap();
         let mut visual = VisualTestContext::from_window(handle, cx);
         pump(&editor, &mut visual, |view| {
-            settled(view) && !view.project_directory.loading
+            settled(view) && !view.settings.project_directory.loading
         });
         visual.update(|window, _| window.activate_window());
         editor.update_in(&mut visual, |view, window, _| view.focus.focus(window));
@@ -62,7 +62,7 @@ fn settled(view: &EditorView) -> bool {
     view.state.is_some()
         && view.worker_requests_pending == 0
         && view.pending_requests.is_empty()
-        && !view.opening_project
+        && !view.persistence.opening_project
 }
 fn pump(
     editor: &gpui::Entity<EditorView>,
@@ -89,8 +89,8 @@ fn pump(
 }
 fn flush(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext) {
     pump(editor, cx, |view| {
-        settled(view) && !view.project_directory.loading && {
-            let writes = view.project_directory.writes.lock().unwrap();
+        settled(view) && !view.settings.project_directory.loading && {
+            let writes = view.settings.project_directory.writes.lock().unwrap();
             !writes.running && writes.pending.is_none()
         }
     });
@@ -161,7 +161,7 @@ fn saved(
 ) {
     pump(editor, visual, |view| {
         settled(view)
-            && !view.saving_project
+            && !view.persistence.saving_project
             && view.state.as_ref().unwrap().document_path.as_deref() == Some(path)
     });
 }
@@ -280,7 +280,7 @@ fn project_directory_cancel_platform_error_and_invalid_load_preserve_document_an
             (state.can_undo, state.can_redo),
             (before.can_undo, before.can_redo)
         );
-        assert!(!view.project_open.busy());
+        assert!(!view.persistence.project_open.busy());
     });
     assert_eq!(std::fs::read(owned.preferences()).unwrap(), original);
 }
@@ -306,7 +306,7 @@ fn project_directory_cancel_platform_error_and_save_failure_keep_original_files(
     save_as(&mut visual, &editor, false);
     cx.simulate_new_path_selection(|_| Some(existing.clone()));
     pump(&editor, &mut visual, |view| {
-        settled(view) && !view.saving_project && view.error.is_some()
+        settled(view) && !view.persistence.saving_project && view.error.is_some()
     });
     flush(&editor, &mut visual);
     editor.read_with(&visual, |view, _| {
@@ -314,7 +314,7 @@ fn project_directory_cancel_platform_error_and_save_failure_keep_original_files(
         assert_eq!(state.project, before.project);
         assert_eq!(state.document_path, before.document_path);
         assert_eq!(view.status, "project was not saved");
-        assert!(!view.save_dialog_open);
+        assert!(!view.persistence.save_dialog_open);
     });
     assert_eq!(std::fs::read(owned.preferences()).unwrap(), original);
     assert_eq!(
@@ -352,7 +352,9 @@ fn project_directory_dirty_open_cancel_save_as_cancel_and_dont_save_failure_keep
     cx.simulate_paths_selection(Some(vec![target]));
     visual.run_until_parked();
     cx.simulate_prompt_answer("save");
-    pump(&editor, &mut visual, |view| view.save_dialog_open);
+    pump(&editor, &mut visual, |view| {
+        view.persistence.save_dialog_open
+    });
     let until = crate::test_wait::hang_deadline();
     while cx.pending_save_options().is_none() {
         visual.run_until_parked();
@@ -380,7 +382,7 @@ fn project_directory_dirty_open_cancel_save_as_cancel_and_dont_save_failure_keep
         assert_eq!(state.project, before.project);
         assert_eq!(state.unsaved, before.unsaved);
         assert_eq!(state.can_undo, before.can_undo);
-        assert!(!view.project_open.busy());
+        assert!(!view.persistence.project_open.busy());
     });
     assert_eq!(std::fs::read(owned.preferences()).unwrap(), original);
 }
@@ -494,7 +496,7 @@ fn project_directory_owned_writer_persists_latest_success_after_view_drop(cx: &m
     let (mut visual, editor) = owned.window(cx);
     let gate = Arc::new(TestGate::default());
     editor.update(&mut visual, |view, _| {
-        view.project_directory.save_gate = Some(gate.clone())
+        view.settings.project_directory.save_gate = Some(gate.clone())
     });
     save_as(&mut visual, &editor, true);
     cx.simulate_new_path_selection(|_| Some(first.clone()));
@@ -511,7 +513,7 @@ fn project_directory_owned_writer_persists_latest_success_after_view_drop(cx: &m
     let latest = latest.with_extension("").join("Two.hex");
     saved(&mut visual, &editor, &latest);
     let writes = editor.read_with(&visual, |view, _| {
-        Arc::clone(&view.project_directory.writes)
+        Arc::clone(&view.settings.project_directory.writes)
     });
     close(visual, editor);
     gate.release();
@@ -588,7 +590,7 @@ fn project_directory_named_save_uses_actual_document_path_without_a_chooser(
         .unwrap();
     let mut visual = VisualTestContext::from_window(handle, cx);
     pump(&editor, &mut visual, |view| {
-        settled(view) && !view.project_directory.loading
+        settled(view) && !view.settings.project_directory.loading
     });
     editor.update(&mut visual, |view, _| {
         assert!(view.enqueue(Request::Edit(hex_project::Command::AddTrack {
@@ -603,7 +605,7 @@ fn project_directory_named_save_uses_actual_document_path_without_a_chooser(
     visual.dispatch_action(SaveProject);
     saved(&mut visual, &editor, &current);
     pump(&editor, &mut visual, |view| {
-        settled(view) && !view.saving_project && !view.state.as_ref().unwrap().unsaved
+        settled(view) && !view.persistence.saving_project && !view.state.as_ref().unwrap().unsaved
     });
     flush(&editor, &mut visual);
     assert!(cx.pending_save_options().is_none());
@@ -625,7 +627,7 @@ fn project_directory_stale_preparation_clears_only_its_owned_open_intent(cx: &mu
     let gate = Arc::new(TestGate::default());
     let generation = editor.read_with(&visual, |view, _| view.project_generation);
     editor.update(&mut visual, |view, _| {
-        view.project_directory.directory_gate = Some(gate.clone())
+        view.settings.project_directory.directory_gate = Some(gate.clone())
     });
     visual.dispatch_action(OpenProject);
     pump(&editor, &mut visual, |_| {
@@ -645,7 +647,9 @@ fn project_directory_stale_preparation_clears_only_its_owned_open_intent(cx: &mu
         settled(view) && view.project_generation == generation + 1
     });
     gate.release();
-    pump(&editor, &mut visual, |view| !view.project_open.busy());
+    pump(&editor, &mut visual, |view| {
+        !view.persistence.project_open.busy()
+    });
     assert!(cx.pending_open_directory().is_none());
     open(&mut visual, &editor);
     assert_eq!(cx.pending_open_directory(), Some(Some(folder)));
@@ -663,7 +667,7 @@ fn project_directory_closed_window_does_not_receive_a_late_native_open(cx: &mut 
     let (mut visual, editor) = owned.window(cx);
     let gate = Arc::new(TestGate::default());
     editor.update(&mut visual, |view, _| {
-        view.project_directory.directory_gate = Some(gate.clone())
+        view.settings.project_directory.directory_gate = Some(gate.clone())
     });
     visual.dispatch_action(OpenProject);
     pump(&editor, &mut visual, |_| {
@@ -671,7 +675,7 @@ fn project_directory_closed_window_does_not_receive_a_late_native_open(cx: &mut 
     });
     visual.update(|window, _| window.remove_window());
     gate.release();
-    pump(&editor, cx, |view| !view.project_open.busy());
+    pump(&editor, cx, |view| !view.persistence.project_open.busy());
     assert!(cx.pending_open_directory().is_none());
     assert_eq!(std::fs::read(owned.preferences()).unwrap(), original);
 }
@@ -703,7 +707,7 @@ fn project_directory_stale_save_response_cannot_save_into_the_replacement_docume
     visual.run_until_parked();
     assert!(!late.exists());
     editor.read_with(&visual, |view, _| {
-        assert!(!view.save_dialog_open);
+        assert!(!view.persistence.save_dialog_open);
         assert!(view.state.as_ref().unwrap().document_path.is_none());
     });
     save_as(&mut visual, &editor, false);
@@ -727,20 +731,26 @@ fn project_directory_ordinary_constructor_resolves_fourth_path_before_any_job(
         })
         .unwrap();
     pump(&editor, cx, |view| {
-        settled(view) && !view.project_directory.loading
+        settled(view) && !view.settings.project_directory.loading
     });
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.project_directory.path,
+            view.settings.project_directory.path,
             Some(
                 view.test_environment
                     .root()
                     .join("config/project-directory.json"),
             )
         );
-        assert!(view.project_directory.directory.is_none());
+        assert!(view.settings.project_directory.directory.is_none());
         assert!(
-            !view.project_directory.path.as_ref().unwrap().exists(),
+            !view
+                .settings
+                .project_directory
+                .path
+                .as_ref()
+                .unwrap()
+                .exists(),
             "merely opening a picker/starting up must not create preference data"
         );
     });
@@ -808,7 +818,7 @@ fn startup_named_document(
     let mut visual = VisualTestContext::from_window(handle, cx);
     let save_gate = Arc::new(TestGate::default());
     editor.update(&mut visual, |view, _| {
-        view.project_directory.save_gate = Some(save_gate.clone())
+        view.settings.project_directory.save_gate = Some(save_gate.clone())
     });
     pump(&editor, &mut visual, |view| {
         settled(view) && gate.reached.load(Ordering::Acquire)
@@ -833,7 +843,7 @@ fn named_startup_success(
     let before = std::fs::read(current).unwrap();
     visual.dispatch_action(SaveProject);
     pump(editor, visual, |view| {
-        settled(view) && !view.saving_project && !view.state.as_ref().unwrap().unsaved
+        settled(view) && !view.persistence.saving_project && !view.state.as_ref().unwrap().unsaved
     });
     assert!(
         visual.pending_save_options().is_none(),
@@ -846,11 +856,12 @@ fn named_startup_success(
     );
     editor.read_with(visual, |view, _| {
         assert!(
-            view.project_directory.loading,
+            view.settings.project_directory.loading,
             "startup load remains held through actual success"
         );
         assert_eq!(
-            view.project_directory
+            view.settings
+                .project_directory
                 .writes
                 .lock()
                 .unwrap()
@@ -883,7 +894,7 @@ fn project_directory_named_save_during_initial_load_persists_after_view_drop(
         save_gate.reached.load(Ordering::Acquire)
     });
     let writes = editor.read_with(&visual, |view, _| {
-        Arc::clone(&view.project_directory.writes)
+        Arc::clone(&view.settings.project_directory.writes)
     });
     let weak = editor.downgrade();
     close(visual, editor);
@@ -912,12 +923,18 @@ fn project_directory_startup_malformed_and_unsupported_stores_survive_save_and_v
                 save_gate.reached.load(Ordering::Acquire)
             });
             let writes = editor.read_with(&visual, |view, _| {
-                Arc::clone(&view.project_directory.writes)
+                Arc::clone(&view.settings.project_directory.writes)
             });
             if !drop_first {
                 save_gate.release();
                 pump(&editor, &mut visual, |view| {
-                    !view.project_directory.writes.lock().unwrap().running
+                    !view
+                        .settings
+                        .project_directory
+                        .writes
+                        .lock()
+                        .unwrap()
+                        .running
                         && view
                             .error
                             .as_deref()
@@ -970,7 +987,8 @@ fn project_directory_startup_latest_canonical_success_and_old_load_cannot_replac
     );
     editor.read_with(&visual, |view, _| {
         assert_eq!(
-            view.project_directory
+            view.settings
+                .project_directory
                 .writes
                 .lock()
                 .unwrap()
@@ -981,12 +999,17 @@ fn project_directory_startup_latest_canonical_success_and_old_load_cannot_replac
     });
     // Complete the old startup load while the live view still holds newer success.
     gate.release();
-    pump(&editor, &mut visual, |view| !view.project_directory.loading);
+    pump(&editor, &mut visual, |view| {
+        !view.settings.project_directory.loading
+    });
     editor.read_with(&visual, |view, _| {
-        assert_eq!(view.project_directory.directory.as_deref(), latest.parent())
+        assert_eq!(
+            view.settings.project_directory.directory.as_deref(),
+            latest.parent()
+        )
     });
     let writes = editor.read_with(&visual, |view, _| {
-        Arc::clone(&view.project_directory.writes)
+        Arc::clone(&view.settings.project_directory.writes)
     });
     close(visual, editor);
     save_gate.release();
@@ -1006,26 +1029,35 @@ fn project_directory_failed_named_save_during_startup_does_not_remember(cx: &mut
     std::fs::create_dir(&current).unwrap();
     visual.dispatch_action(SaveProject);
     pump(&editor, &mut visual, |view| {
-        settled(view) && !view.saving_project && view.error.is_some()
+        settled(view) && !view.persistence.saving_project && view.error.is_some()
     });
     editor.read_with(&visual, |view, _| {
         assert!(view.state.as_ref().unwrap().unsaved);
         assert!(
-            view.project_directory
+            view.settings
+                .project_directory
                 .writes
                 .lock()
                 .unwrap()
                 .pending
                 .is_none()
         );
-        assert!(!view.project_directory.writes.lock().unwrap().running);
+        assert!(
+            !view
+                .settings
+                .project_directory
+                .writes
+                .lock()
+                .unwrap()
+                .running
+        );
     });
     assert!(
         !save_gate.reached.load(Ordering::Acquire),
         "failed Save cannot start folder writer"
     );
     let writes = editor.read_with(&visual, |view, _| {
-        Arc::clone(&view.project_directory.writes)
+        Arc::clone(&view.settings.project_directory.writes)
     });
     close(visual, editor);
     gate.release();

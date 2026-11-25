@@ -33,6 +33,7 @@ mod modulation_runtime;
 mod modulation_source_routes;
 mod modulation_sources;
 mod modulation_steps;
+mod modulator_registry;
 mod native_move;
 mod native_reorder;
 mod owned_processor;
@@ -62,7 +63,8 @@ pub use tail_split::{TailSplit, TailSplitObserver};
 mod resources;
 mod runtime_ownership;
 pub use foreign_modulation::{
-    ForeignModulationRuntime, ForeignModulationSamples, PreparedForeignModulation,
+    ForeignModulationRuntime, ForeignModulationSamples, ForeignModulationTarget,
+    MAX_FOREIGN_MODULATION_TARGETS, PreparedForeignModulation,
 };
 pub use hex_dsp::LfoWaveform;
 pub use hex_lattice_contract::ModulationSourceId;
@@ -72,9 +74,9 @@ use hex_lattice_contract::{NativeDeviceMetadata, NativeDeviceState};
 pub use hex_tuning::{TuningTable, Waveform as TuningWaveform};
 pub use meter::{DeviceMeter, DevicePeaks, DynamicsMeter, RenderWorkMeter, RenderWorkSample};
 pub use modulation::{
-    ForeignModulationRoute, HostGainModulationRoute, MAX_MODULATION_BLOCK_FRAMES,
-    MAX_MODULATION_ROUTES, MAX_MODULATION_SOURCES, ModulationBlock, ModulationRoute,
-    ModulationTarget, PreparedModulation, PreparedPressureRoute,
+    ForeignModulationRoute, ForeignTargetModulationRoute, HostGainModulationRoute,
+    MAX_MODULATION_BLOCK_FRAMES, MAX_MODULATION_ROUTES, MAX_MODULATION_SOURCES, ModulationBlock,
+    ModulationRoute, ModulationTarget, PreparedModulation, PreparedPressureRoute,
 };
 pub use modulation_ramp::ModulationRampCurve;
 pub use modulation_runtime::ModulationRuntime;
@@ -83,6 +85,10 @@ pub use modulation_sources::{
     ModulationMathOperation, ModulationSourceBank, PreparedModulationSource,
 };
 pub use modulation_steps::{MAX_MODULATION_STEPS, ModulationStepDirection};
+pub use modulator_registry::{
+    ModulatorPreparationContext, ModulatorPreparedOutput, NativeModulatorDefinition,
+    NativeModulatorRegistry,
+};
 pub use owned_processor::{
     MAX_RESERVED_BYPASS_FRAMES, OwnedProcessorRuntime, PreparedOwnedProcessorRuntime,
     PreparedProcessorFactory, PreparedRuntimeDevice, PreparedRuntimeInstance,

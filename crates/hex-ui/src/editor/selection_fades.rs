@@ -10,7 +10,7 @@ impl EditorView {
         if self.mode != EditorMode::Arrangement {
             return false;
         }
-        let events_focused = self.audio_event_focus.is_focused(window);
+        let events_focused = self.audio_detail.focus.is_focused(window);
         let arranger_focused = self.focus.is_focused(window) || self.track_header_focused(window);
         if events_focused {
             let Some((start, end)) = self.audio_loop_time_selection().filter(|(a, b)| a < b) else {
@@ -18,7 +18,7 @@ impl EditorView {
             };
             if !self.arrangement_view_change_available(cx)
                 || self.device_panel.has_pending_draft(cx)
-                || self.audio_event_editor.gesture.is_some()
+                || self.audio_detail.event.gesture.is_some()
             {
                 return true;
             }

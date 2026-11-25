@@ -81,7 +81,7 @@ fn exercise(
             unsaved: false,
             document_path: None,
         }));
-        view.focused_return = return_id;
+        view.session_grid.focused_return = return_id;
         view.device_panel.owner =
             Some(return_id.map_or(DevicePanelOwner::Track(track), DevicePanelOwner::Return));
         view.device_panel.views.insert(
@@ -225,7 +225,8 @@ fn exercise(
             },
             ParameterValue::Float(0.5),
         );
-        view.device_gesture
+        view.device_panel
+            .gesture
             .begin_pair(
                 view.project_generation,
                 device,
@@ -249,8 +250,9 @@ fn exercise(
     // Current main also owns whole-device snapshot gestures (for example
     // harmonic edits). Keep their owner mounted until the gesture retires.
     editor.update(cx, |view, cx| {
-        view.device_gesture.reset();
-        view.device_gesture
+        view.device_panel.gesture.reset();
+        view.device_panel
+            .gesture
             .begin_snapshot(
                 view.project_generation,
                 device,
@@ -270,7 +272,7 @@ fn exercise(
             "snapshot row {row}"
         );
     }
-    editor.update(cx, |view, _| view.device_gesture.reset());
+    editor.update(cx, |view, _| view.device_panel.gesture.reset());
     // Selector dropdown state pins independently of keyboard focus.
     scroll_rows(&editor, &mut visual, device, 0.0);
     let choice_key = ParameterKey {

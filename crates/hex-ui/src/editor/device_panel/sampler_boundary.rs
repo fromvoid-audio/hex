@@ -146,8 +146,8 @@ pub(super) fn begin(
                 if !owns(view, source, target) {
                     return;
                 }
-                if !view.clip_view_open
-                    || !view.device_panel_active
+                if !view.audio_detail.clip_view_open
+                    || !view.device_panel.active
                     || !view.focus.is_focused(window)
                 {
                     cancel(view);
@@ -207,8 +207,8 @@ pub(super) fn renew(
     owner: gpui::EntityId,
     window: &mut Window,
 ) {
-    if view.clip_view_open
-        && view.device_panel_active
+    if view.audio_detail.clip_view_open
+        && view.device_panel.active
         && view.focus.is_focused(window)
         && view
             .device_panel

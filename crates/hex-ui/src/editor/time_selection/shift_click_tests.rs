@@ -90,7 +90,8 @@ fn shift_click_extends_from_cursor_forward_backward_and_plain_click_resets(
                             && view.time_range_move_gesture.is_none()
                     );
                     assert!(
-                        view.last_enqueued_edit.is_none() && view.last_transport_command.is_none()
+                        view.test_probes.last_enqueued_edit.is_none()
+                            && view.test_probes.last_transport_command.is_none()
                     );
                     assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
                 });
@@ -199,7 +200,7 @@ fn shift_click_without_cursor_places_one_and_clip_headers_keep_selection_precede
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.time_selection.unwrap().anchor_frame, anchor);
-        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.test_probes.last_enqueued_edit.is_none());
     });
     let header = visual
         .debug_bounds(Box::leak(
@@ -212,7 +213,7 @@ fn shift_click_without_cursor_places_one_and_clip_headers_keep_selection_precede
         assert_eq!(view.selected_clip_ids(), vec![clip]);
         assert!(view.normalized_time_selection().is_none());
         assert!(view.time_selection_gesture.is_none() && view.time_range_move_gesture.is_none());
-        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.test_probes.last_enqueued_edit.is_none());
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
     });
 }

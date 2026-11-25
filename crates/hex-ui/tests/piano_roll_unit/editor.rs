@@ -12,7 +12,7 @@ mod midi_group_drag;
 #[allow(dead_code)]
 #[path = "../../src/editor/midi_scene.rs"]
 mod midi_scene;
-#[allow(dead_code)]
+#[allow(dead_code, unused_imports)]
 #[path = "../../src/editor/midi_selection.rs"]
 mod midi_selection;
 #[allow(dead_code)]

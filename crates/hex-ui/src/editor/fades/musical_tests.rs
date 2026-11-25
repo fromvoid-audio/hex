@@ -90,7 +90,10 @@ fn transformed_cropped_musical_fades_keep_readouts_reset_adjust_and_projected_cu
         visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
         let command = editor.read_with(cx, |view, _| {
-            view.last_enqueued_edit.clone().expect("fade edit")
+            view.test_probes
+                .last_enqueued_edit
+                .clone()
+                .expect("fade edit")
         });
         let expected = if reset { (0, 0) } else { (240, 9_600) };
         let mut history = Editor::new(project.clone(), 4).unwrap();
@@ -136,7 +139,10 @@ fn detail_fade_length_control_creates_an_s_curve(cx: &mut TestAppContext) {
     visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     let command = editor.read_with(cx, |view, _| {
-        view.last_enqueued_edit.clone().expect("fade edit")
+        view.test_probes
+            .last_enqueued_edit
+            .clone()
+            .expect("fade edit")
     });
     let mut history = Editor::new(project, 4).unwrap();
     history.execute(command).unwrap();

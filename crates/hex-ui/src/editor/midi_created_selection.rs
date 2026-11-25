@@ -88,15 +88,16 @@ impl EditorView {
             revision: state.revision,
             source,
             clip,
-            selection_epoch: self.midi_selection.epoch(),
+            selection_epoch: self.midi_editor.selection.epoch(),
             target,
             remaining: None,
-            tuning_key: self.tuning.client.snapshot().map(|s| s.key),
+            tuning_key: self.settings.tuning.client.snapshot().map(|s| s.key),
             tuning_barrier: self
+                .settings
                 .tuning
                 .client
                 .snapshot()
-                .filter(|_| self.tuning.client.has_pending_terminal())
+                .filter(|_| self.settings.tuning.client.has_pending_terminal())
                 .map(|s| s.key),
         })
     }
@@ -104,15 +105,16 @@ impl EditorView {
         // enqueue_request may finalize an active gesture after intent capture.
         // Bind only the terminal actually reserved for that exact captured key.
         pending.tuning_barrier = self
+            .settings
             .tuning
             .client
             .snapshot()
-            .filter(|_| self.tuning.client.has_pending_terminal())
+            .filter(|_| self.settings.tuning.client.has_pending_terminal())
             .map(|s| s.key)
             .filter(|key| Some(*key) == pending.tuning_key);
     }
     pub(super) fn pending_time_copy_matches(&self, request: &Request) -> bool {
-        let Some(pending) = self.pending_created_note_selection.as_ref() else {
+        let Some(pending) = self.midi_editor.pending_created_note_selection.as_ref() else {
             return false;
         };
         if pending.remaining.is_some() {
@@ -127,7 +129,7 @@ impl EditorView {
         )
     }
     pub(super) fn time_copy_submitted(&mut self) {
-        if let Some(pending) = self.pending_created_note_selection.as_mut()
+        if let Some(pending) = self.midi_editor.pending_created_note_selection.as_mut()
             && matches!(pending.target, Target::TimeRange { .. })
         {
             pending.remaining = Some(self.worker_requests_pending);
@@ -137,22 +139,23 @@ impl EditorView {
     /// tuning terminal may have rebased this exact pending creation to that revision.
     pub(super) fn cancel_stale_midi_creation_gestures(&mut self, revision: u64) {
         let rebased = self
+            .midi_editor
             .pending_created_note_selection
             .take()
             .filter(|p| p.revision == revision);
         self.cancel_midi_note_gesture();
-        self.pending_created_note_selection = rebased;
+        self.midi_editor.pending_created_note_selection = rebased;
     }
     pub(super) fn take_created_note_selection(&mut self, event: &Event) -> Option<Completion> {
         if event.project_replaced {
-            self.pending_created_note_selection = None;
+            self.midi_editor.pending_created_note_selection = None;
             return None;
         }
         // Only the exact already-reserved terminal may advance this intent's
         // source revision. Nonterminal overlay updates do not change canonical MIDI.
         if event.tuning_gesture_request {
             let ack = event.tuning_gesture_ack.as_ref()?;
-            let pending = self.pending_created_note_selection.as_ref()?;
+            let pending = self.midi_editor.pending_created_note_selection.as_ref()?;
             if pending.tuning_barrier != Some(ack.key)
                 || !matches!(
                     ack.phase,
@@ -175,7 +178,7 @@ impl EditorView {
                 && event.error.is_none()
                 && self.project_generation == pending.generation
                 && self.detail_clip_id() == Some(pending.clip)
-                && self.midi_selection.epoch() == pending.selection_epoch
+                && self.midi_editor.selection.epoch() == pending.selection_epoch
                 && pending.target.is_current(self)
                 && current.is_some_and(|s| {
                     s.revision == pending.revision
@@ -184,12 +187,12 @@ impl EditorView {
                             == Some(pending.source.clone())
                 });
             if valid {
-                if let Some(pending) = self.pending_created_note_selection.as_mut() {
+                if let Some(pending) = self.midi_editor.pending_created_note_selection.as_mut() {
                     pending.revision = event.state.revision;
                     pending.tuning_barrier = None;
                 }
             } else {
-                self.pending_created_note_selection = None;
+                self.midi_editor.pending_created_note_selection = None;
             }
             return None;
         }
@@ -197,11 +200,12 @@ impl EditorView {
             return None;
         }
         let time_terminal = if self
+            .midi_editor
             .pending_created_note_selection
             .as_ref()
             .is_some_and(|pending| matches!(pending.target, Target::TimeRange { .. }))
         {
-            let pending = self.pending_created_note_selection.as_mut()?;
+            let pending = self.midi_editor.pending_created_note_selection.as_mut()?;
             let remaining = pending.remaining.as_mut()?;
             *remaining = remaining.saturating_sub(1);
             if *remaining != 0 {
@@ -211,12 +215,12 @@ impl EditorView {
         } else {
             false
         };
-        let pending = self.pending_created_note_selection.as_ref()?;
+        let pending = self.midi_editor.pending_created_note_selection.as_ref()?;
         // Metadata/duplicate old terminals cannot consume the outstanding edit.
         if !time_terminal && event.error.is_none() && event.state.revision <= pending.revision {
             return None;
         }
-        let pending = self.pending_created_note_selection.take()?;
+        let pending = self.midi_editor.pending_created_note_selection.take()?;
         if pending.tuning_barrier.is_some()
             || event.error.is_some()
             || !(pending.revision.checked_add(1) == Some(event.state.revision)
@@ -228,10 +232,10 @@ impl EditorView {
             })
             || self.project_generation != pending.generation
             || self.detail_clip_id() != Some(pending.clip)
-            || self.midi_selection.epoch() != pending.selection_epoch
-            || !self.clip_view_open
-            || self.opening_project
-            || self.close_prompt_open
+            || self.midi_editor.selection.epoch() != pending.selection_epoch
+            || !self.audio_detail.clip_view_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
         {
             return None;
         }
@@ -306,7 +310,7 @@ impl EditorView {
         );
         match result {
             Ok(Some(ids)) => {
-                if let Err(error) = self.midi_selection.select_created(ids, last) {
+                if let Err(error) = self.midi_editor.selection.select_created(ids, last) {
                     self.error = Some(error.into());
                 } else {
                     self.clear_midi_time_selection();

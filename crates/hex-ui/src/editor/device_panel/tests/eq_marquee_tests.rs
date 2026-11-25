@@ -171,7 +171,7 @@ fn eq_double_click_drag_creates_one_node_at_release_and_undoes_in_one_step(
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(read(view, device), before, "creation is still held");
-        assert!(view.device_gesture.snapshot().is_some());
+        assert!(view.device_panel.gesture.snapshot().is_some());
     });
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     pump_until(&editor, cx, |view| {

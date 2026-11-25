@@ -69,7 +69,7 @@ pub(super) fn paired_event(
             view.device_panel.message = Some(error.into());
             return;
         }
-        let Some(snapshot) = view.device_gesture.snapshot() else {
+        let Some(snapshot) = view.device_panel.gesture.snapshot() else {
             return;
         };
         let plan = PairDrag {
@@ -101,7 +101,7 @@ pub(super) fn paired_event(
         return;
     };
     if node.id != plan.node.id || node.kind != plan.node.kind
-        || !view.device_gesture.snapshot().is_some_and(|snapshot|
+        || !view.device_panel.gesture.snapshot().is_some_and(|snapshot|
             snapshot.key == plan.key && snapshot.key.generation == view.project_generation
             && matches!(snapshot.target, GestureTarget::DeviceParameterPair {device:d,first:f,second:s}
                 if d == device && f == plan.first && s == plan.second)) { return; }
@@ -232,7 +232,7 @@ pub(super) fn group_event(
         if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
             panel.group_drag = None;
         }
-        if view.device_gesture.snapshot().is_some() {
+        if view.device_panel.gesture.snapshot().is_some() {
             view.device_panel.message = Some("wait for the current device edit, then retry".into());
             return;
         }
@@ -274,11 +274,16 @@ pub(super) fn group_event(
     else {
         return;
     };
-    let owned = view.device_gesture.snapshot().is_some_and(|snapshot| {
-        snapshot.key == plan.key
-            && snapshot.key.generation == view.project_generation
-            && snapshot.target == GestureTarget::DeviceParameterSnapshot { device }
-    }) && !view.device_gesture.has_pending_terminal();
+    let owned = view
+        .device_panel
+        .gesture
+        .snapshot()
+        .is_some_and(|snapshot| {
+            snapshot.key == plan.key
+                && snapshot.key.generation == view.project_generation
+                && snapshot.target == GestureTarget::DeviceParameterSnapshot { device }
+        })
+        && !view.device_panel.gesture.has_pending_terminal();
     if !owned || node.id != plan.grabbed {
         return;
     }
@@ -289,12 +294,17 @@ pub(super) fn group_event(
     let result = match event.phase {
         ResponseGraphPhase::Cancel => view.cancel_device_gesture(),
         ResponseGraphPhase::Commit => group_snapshot(&plan.nodes, delta, rate)
-            .and_then(|values| view.device_gesture.finish_snapshot(values))
+            .and_then(|values| view.device_panel.gesture.finish_snapshot(values))
             .map(|()| {
                 view.pump_device_gesture();
             }),
         ResponseGraphPhase::Change => group_snapshot(&plan.nodes, delta, rate)
-            .and_then(|values| view.device_gesture.change_snapshot(values).map(|_| ()))
+            .and_then(|values| {
+                view.device_panel
+                    .gesture
+                    .change_snapshot(values)
+                    .map(|_| ())
+            })
             .map(|()| {
                 view.pump_device_gesture();
             }),
@@ -409,8 +419,8 @@ pub(super) fn scroll_event_core(
                 .is_some_and(|panel| panel.authored_state == expected)
             || view.worker_requests_pending != 0
             || !view.pending_requests.is_empty()
-            || !view.device_gesture_barriers.is_empty()
-            || view.device_gesture.snapshot().is_some()
+            || !view.device_panel.gesture_barriers.is_empty()
+            || view.device_panel.gesture.snapshot().is_some()
         {
             view.device_panel.message = Some("wait for the current device edit, then retry".into());
             return;
@@ -426,7 +436,7 @@ pub(super) fn scroll_event_core(
             view.device_panel.message = Some(error.into());
             return;
         }
-        let Some(snapshot) = view.device_gesture.snapshot() else {
+        let Some(snapshot) = view.device_panel.gesture.snapshot() else {
             return;
         };
         let scroll = SlopeScroll {
@@ -451,7 +461,7 @@ pub(super) fn scroll_event_core(
     else {
         return;
     };
-    let owns_key = view.device_gesture.snapshot().is_some_and(|snapshot| {
+    let owns_key = view.device_panel.gesture.snapshot().is_some_and(|snapshot| {
         snapshot.key == scroll.key
             && snapshot.key.generation == generation
             && matches!(snapshot.target, GestureTarget::DeviceParameter { device: d, parameter: p }

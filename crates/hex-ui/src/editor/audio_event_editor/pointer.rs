@@ -38,10 +38,10 @@ impl EditorView {
         window: &mut Window,
         cx: &Context<Self>,
     ) -> bool {
-        let Some(source) = self.audio_event_editor.owner else {
+        let Some(source) = self.audio_detail.event.owner else {
             return false;
         };
-        let revision = self.audio_event_editor.revision;
+        let revision = self.audio_detail.event.revision;
         let owner = cx.entity().downgrade();
         let cancelled = owner.clone();
         window.capture_pointer(
@@ -60,27 +60,27 @@ impl EditorView {
                     return;
                 };
                 let _ = owner.update(cx, |view, cx| {
-                    if view.audio_event_editor.owner != Some(source)
-                        || view.audio_event_editor.revision != revision
+                    if view.audio_detail.event.owner != Some(source)
+                        || view.audio_detail.event.revision != revision
                     {
                         return;
                     }
                     // Existing pointer operations validate canonical source/revision.
                     // This boundary guards the captured display owner and focus.
-                    if !view.audio_event_focus.is_focused(window) {
-                        if view.audio_event_editor.gesture.take().is_some() {
+                    if !view.audio_detail.focus.is_focused(window) {
+                        if view.audio_detail.event.gesture.take().is_some() {
                             view.sync_held_play_start_audition();
                             view.reconcile_gain_audition();
                             cx.notify();
                         }
-                        view.audio_event_editor.fade_key_held = false;
+                        view.audio_detail.event.fade_key_held = false;
                         return;
                     }
-                    let Some(gesture) = view.audio_event_editor.gesture.as_ref() else {
+                    let Some(gesture) = view.audio_detail.event.gesture.as_ref() else {
                         return;
                     };
                     if !f32::from(position.x).is_finite() || !f32::from(position.y).is_finite() {
-                        view.audio_event_editor.gesture = None;
+                        view.audio_detail.event.gesture = None;
                         view.sync_held_play_start_audition();
                         view.reconcile_gain_audition();
                         cx.notify();
@@ -122,12 +122,12 @@ impl EditorView {
                                 f32::from(event.position.y),
                                 event.modifiers.shift,
                             );
-                            if let Some(gesture) = view.audio_event_editor.gesture.take()
+                            if let Some(gesture) = view.audio_detail.event.gesture.take()
                                 && let Some(operation) = gesture.operation
                             {
                                 view.finish_gain_audition();
                                 view.event_commit(operation);
-                                if view.audio_event_editor.pending.is_none() {
+                                if view.audio_detail.event.pending.is_none() {
                                     view.service.retire_arrangement_gain_audition();
                                 }
                             } else {
@@ -146,14 +146,14 @@ impl EditorView {
             },
             move |window, cx| {
                 let _ = cancelled.update(cx, |view, cx| {
-                    if view.audio_event_editor.owner == Some(source)
-                        && view.audio_event_editor.revision == revision
-                        && view.audio_event_editor.gesture.take().is_some()
+                    if view.audio_detail.event.owner == Some(source)
+                        && view.audio_detail.event.revision == revision
+                        && view.audio_detail.event.gesture.take().is_some()
                     {
                         view.sync_held_play_start_audition();
                         view.reconcile_gain_audition();
-                        if !view.audio_event_focus.is_focused(window) {
-                            view.audio_event_editor.fade_key_held = false;
+                        if !view.audio_detail.focus.is_focused(window) {
+                            view.audio_detail.event.fade_key_held = false;
                         }
                         cx.notify();
                     }

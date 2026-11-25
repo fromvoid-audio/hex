@@ -96,7 +96,7 @@ pub(super) fn handle_shape(curve: bool, state: theme::FadeHandleState) -> impl g
 pub(super) struct FadeDrag {
     generation: u64,
     revision: u64,
-    track: TrackId,
+    pub(super) track: TrackId,
     clip: Rc<Clip>,
     viewport: Viewport,
     lane: LaneBounds,
@@ -175,7 +175,7 @@ impl EditorView {
         {
             return false;
         }
-        if self.audio_event_focus.is_focused(window) {
+        if self.audio_detail.focus.is_focused(window) {
             return self.event_fade_key_down(event, window, cx);
         }
         if event.keystroke.key == "escape" && self.active_fade_drag.take().is_some() {
@@ -188,14 +188,14 @@ impl EditorView {
             || !self.focus.is_focused(window)
             || self.mode != super::EditorMode::Arrangement
             || self.computer_keyboard.enabled
-            || self.theme_settings.open
-            || self.tuning.open
+            || self.settings.theme.open
+            || self.settings.tuning.open
             || self.context_menu.is_some()
             || self.gain_numeric_editing(cx)
-            || self.opening_project
-            || self.close_prompt_open
-            || self.save_dialog_open
-            || self.export_dialog_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
         {
             return false;
         }
@@ -220,11 +220,11 @@ impl EditorView {
             && self.clip_paint_gesture.is_none()
             && self.active_clip_drag.is_none()
             && self.active_trim_drag.is_none()
-            && self.active_midi_trim_drag.is_none()
-            && !self.save_dialog_open
-            && !self.export_dialog_open
-            && !self.theme_settings.open
-            && !self.tuning.open
+            && self.midi_editor.active_trim_drag.is_none()
+            && !self.persistence.save_dialog_open
+            && !self.persistence.export_dialog_open
+            && !self.settings.theme.open
+            && !self.settings.tuning.open
             && self.context_menu.is_none()
             && self.state.as_ref().is_some_and(|state| {
                 self.project_generation == drag.generation
@@ -793,6 +793,9 @@ pub(super) struct PendingFade {
     drag: FadeDrag,
 }
 impl PendingFade {
+    pub(super) fn track(&self) -> TrackId {
+        self.drag.track
+    }
     fn source_current(&self, view: &EditorView) -> bool {
         self.drag.generation == view.project_generation
             && view.state.as_ref().is_some_and(|s| {

@@ -131,7 +131,7 @@ fn session_group_band_survives_paging_past_its_parent(cx: &mut TestAppContext) {
             .iter()
             .position(|&index| project.tracks()[index].id() == ids[5])
             .unwrap();
-        view.session_track_start = index;
+        view.session_grid.track_start = index;
         cx.notify();
     });
     visual.run_until_parked();
@@ -153,7 +153,7 @@ fn deepest_session_group_keeps_label_below_colour_bands(cx: &mut TestAppContext)
     switch(&mut visual, &editor);
     editor.update(&mut visual, |view, cx| {
         let project = &view.state.as_ref().unwrap().project;
-        view.session_track_start = view
+        view.session_grid.track_start = view
             .arrangement_focus
             .projection
             .console_indices
@@ -276,8 +276,8 @@ fn console_group_drop_keeps_target_until_ack_and_undo(cx: &mut TestAppContext) {
             .is_some(),
         "undo must expose the restored ungrouped track: {:?}",
         editor.read_with(&visual, |view, _| (
-            view.session_track_start,
-            view.session_visible_columns,
+            view.session_grid.track_start,
+            view.session_grid.visible_columns,
             view.arrangement_focus.projection.console_indices.clone(),
             view.mode
         ))
@@ -342,7 +342,7 @@ fn console_invalid_group_target_and_stale_page_do_not_edit(cx: &mut TestAppConte
             .is_some()
     );
     editor.update(&mut visual, |view, cx| {
-        view.session_track_start = 1;
+        view.session_grid.track_start = 1;
         cx.notify();
     });
     visual.run_until_parked();
@@ -435,17 +435,17 @@ fn console_track_drag_turns_left_to_a_group_and_undoes(cx: &mut TestAppContext) 
     let (mut visual, editor, ids) = live_tracks(cx, 8, false);
     let target_group = group(&mut visual, &editor, &ids[..1]);
     switch(&mut visual, &editor);
-    let size = editor.read_with(&visual, |v, _| v.session_visible_columns);
+    let size = editor.read_with(&visual, |v, _| v.session_grid.visible_columns);
     assert!(size > 1 && size < 8);
     editor.update(&mut visual, |v, cx| {
-        v.session_track_start = size;
+        v.session_grid.track_start = size;
         cx.notify();
     });
     visual.run_until_parked();
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     let from = header(&mut visual, ids[size - 1]).center();
     let first = editor.read_with(&visual, |v, _| {
-        let index = v.arrangement_focus.projection.console_indices[v.session_track_start];
+        let index = v.arrangement_focus.projection.console_indices[v.session_grid.track_start];
         v.state.as_ref().unwrap().project.tracks()[index].id()
     });
     let first_bounds = header(&mut visual, first);
@@ -460,7 +460,7 @@ fn console_track_drag_turns_left_to_a_group_and_undoes(cx: &mut TestAppContext) 
     );
     turn_page(&mut visual, &editor);
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.session_track_start, 0);
+        assert_eq!(v.session_grid.track_start, 0);
         assert!(v.track_reorder_active());
     });
     editor.update(&mut visual, |v, _| {
@@ -504,13 +504,13 @@ fn console_track_drag_turns_left_to_a_group_and_undoes(cx: &mut TestAppContext) 
     });
     // Repeat the cross-page gesture at the group's boundary to reorder instead.
     editor.update(&mut visual, |v, cx| {
-        v.session_track_start = size;
+        v.session_grid.track_start = size;
         cx.notify();
     });
     visual.run_until_parked();
     let from = header(&mut visual, ids[size - 1]).center();
     let first = editor.read_with(&visual, |v, _| {
-        let index = v.arrangement_focus.projection.console_indices[v.session_track_start];
+        let index = v.arrangement_focus.projection.console_indices[v.session_grid.track_start];
         v.state.as_ref().unwrap().project.tracks()[index].id()
     });
     let first_bounds = header(&mut visual, first);
@@ -564,7 +564,7 @@ fn console_track_drag_turns_right_and_refuses_unpainted_transition(cx: &mut Test
         cx.notify();
     });
     switch(&mut visual, &editor);
-    let size = editor.read_with(&visual, |v, _| v.session_visible_columns);
+    let size = editor.read_with(&visual, |v, _| v.session_grid.visible_columns);
     assert!(size > 1 && size < 8);
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     let from = header(&mut visual, ids[0]).center();
@@ -588,7 +588,7 @@ fn console_track_drag_turns_right_and_refuses_unpainted_transition(cx: &mut Test
         assert!(!v.track_reorder_active());
     });
     editor.update(&mut visual, |v, cx| {
-        v.session_track_start = 0;
+        v.session_grid.track_start = 0;
         cx.notify();
     });
     visual.run_until_parked();
@@ -600,7 +600,7 @@ fn console_track_drag_turns_right_and_refuses_unpainted_transition(cx: &mut Test
     visual.run_until_parked();
     turn_page(&mut visual, &editor);
     editor.read_with(&visual, |v, _| {
-        assert!(v.session_track_start > 0);
+        assert!(v.session_grid.track_start > 0);
         assert!(v.track_reorder_active());
     });
     let target = header(&mut visual, target_group).center();
@@ -627,7 +627,7 @@ fn console_track_drag_turns_right_and_refuses_unpainted_transition(cx: &mut Test
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
     });
     editor.update(&mut visual, |v, cx| {
-        v.session_track_start = 0;
+        v.session_grid.track_start = 0;
         cx.notify();
     });
     visual.run_until_parked();
@@ -677,7 +677,7 @@ fn console_page_turn_rejects_fold_and_window_changes(cx: &mut TestAppContext) {
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     for change in ["fold", "window"] {
         editor.update(&mut visual, |v, cx| {
-            v.session_track_start = 0;
+            v.session_grid.track_start = 0;
             cx.notify();
         });
         visual.run_until_parked();

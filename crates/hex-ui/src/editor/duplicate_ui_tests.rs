@@ -404,7 +404,7 @@ fn close_prompt_preserves_previously_accepted_duplicate_continuations(cx: &mut T
     visual.update(|window, cx| {
         editor.update(cx, |v, cx| {
             assert!(!v.request_window_close(window, cx));
-            assert!(v.automation_close_preflight.frozen());
+            assert!(v.persistence.automation_close_preflight.frozen());
             assert_eq!(v.duplicate_intent.queued.len(), 1);
             v.duplicate_selected();
             assert_eq!(
@@ -422,7 +422,7 @@ fn close_prompt_preserves_previously_accepted_duplicate_continuations(cx: &mut T
             }
         });
         visual.run_until_parked();
-        if editor.read_with(&visual, |v, _| v.close_prompt_open) {
+        if editor.read_with(&visual, |v, _| v.persistence.close_prompt_open) {
             break;
         }
         assert!(
@@ -432,7 +432,7 @@ fn close_prompt_preserves_previously_accepted_duplicate_continuations(cx: &mut T
         std::thread::yield_now();
     }
     editor.read_with(&visual, |v, _| {
-        assert!(v.close_prompt_open);
+        assert!(v.persistence.close_prompt_open);
         assert!(!v.duplicate_intent.is_pending());
         let state = v.state.as_ref().unwrap();
         assert_eq!(state.revision, revision + 2);
@@ -446,7 +446,7 @@ fn close_prompt_preserves_previously_accepted_duplicate_continuations(cx: &mut T
     });
     cx.simulate_prompt_answer("cancel");
     cx.run_until_parked();
-    editor.read_with(cx, |v, _| assert!(!v.close_prompt_open));
+    editor.read_with(cx, |v, _| assert!(!v.persistence.close_prompt_open));
 }
 
 #[gpui::test]
@@ -596,7 +596,7 @@ fn confirmed_new_project_cancels_repeats_without_stranding_future_duplication(
         editor.update(cx, |v, cx| {
             v.new_project(hex_session::DocumentAudioMode::Resident, window, cx);
             v.new_project(hex_session::DocumentAudioMode::Resident, window, cx);
-            assert!(v.project_open.busy() && !v.opening_project);
+            assert!(v.persistence.project_open.busy() && !v.persistence.opening_project);
             assert!(
                 v.duplicate_intent.is_pending(),
                 "admitted edit still owns its terminal"
@@ -775,7 +775,7 @@ fn console_alias_duplicate_selects_committed_cell_and_repeats_in_order(cx: &mut 
         visual.simulate_keystrokes("cmd-d cmd-d");
         editor.read_with(&visual, |v, _| {
             assert_eq!(
-                v.selected_cell,
+                v.session_grid.selected_cell,
                 Some((track, scene)),
                 "source selection owns held terminal"
             );
@@ -786,7 +786,7 @@ fn console_alias_duplicate_selects_committed_cell_and_repeats_in_order(cx: &mut 
             assert!(v.error.is_none(), "{:?}", v.error);
             assert!(!v.duplicate_intent.is_pending());
             let p = &v.state.as_ref().unwrap().project;
-            let (owner, destination) = v.selected_cell.unwrap();
+            let (owner, destination) = v.session_grid.selected_cell.unwrap();
             assert_eq!(owner, track);
             assert_ne!(destination, scene);
             let id = match p.session_cell(track, destination).unwrap() {
@@ -813,7 +813,7 @@ fn console_alias_duplicate_selects_committed_cell_and_repeats_in_order(cx: &mut 
         editor.read_with(&visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error);
             let p = &v.state.as_ref().unwrap().project;
-            let (track, scene) = v.selected_cell.unwrap();
+            let (track, scene) = v.session_grid.selected_cell.unwrap();
             let id = match p.session_cell(track, scene).unwrap() {
                 SessionCellContent::Audio(c) => c.id(),
                 SessionCellContent::Midi(c) => c.id(),

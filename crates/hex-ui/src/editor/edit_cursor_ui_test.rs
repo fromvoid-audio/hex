@@ -20,7 +20,7 @@ fn plugin_transport_space_uses_the_current_arrangement_play_start(cx: &mut TestA
         })
         .unwrap();
         assert!(!view.poll_editor_audio_events(cx));
-        assert_eq!(view.last_transport_command, None);
+        assert_eq!(view.test_probes.last_transport_command, None);
 
         tx.send(crate::EditorAudioEvent::PluginTransportToggle {
             project_generation: generation,
@@ -28,7 +28,7 @@ fn plugin_transport_space_uses_the_current_arrangement_play_start(cx: &mut TestA
         .unwrap();
         assert!(view.poll_editor_audio_events(cx));
         assert_eq!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(hex_engine::PlaybackCommand::PlayFrom(
                 view.playback_start_frame()
             ))
@@ -107,7 +107,10 @@ fn double_stop_starts_at_zero_and_preserves_each_arrangement_selection(cx: &mut 
         });
         visual.simulate_keystrokes("space");
         editor.read_with(&visual, |view, _| {
-            assert_eq!(view.last_transport_command, Some(PlayFrom(placed)));
+            assert_eq!(
+                view.test_probes.last_transport_command,
+                Some(PlayFrom(placed))
+            );
         });
 
         visual.simulate_click(stop, modifiers);
@@ -138,7 +141,7 @@ fn double_stop_starts_at_zero_and_preserves_each_arrangement_selection(cx: &mut 
         visual.simulate_keystrokes("space");
         editor.read_with(&visual, |view, _| {
             assert_eq!(
-                view.last_transport_command,
+                view.test_probes.last_transport_command,
                 Some(PlayFrom(0)),
                 "{start_source}"
             );
@@ -348,12 +351,12 @@ fn empty_arrangement_space_matches_a_scrolled_zoomed_lane_and_keeps_selection(
     );
     let placed = frames[1];
     editor.read_with(&visual, |view, _| {
-        assert_eq!(view.last_transport_command, None)
+        assert_eq!(view.test_probes.last_transport_command, None)
     });
     visual.simulate_keystrokes("space");
     editor.read_with(&visual, |view, _| {
         assert_eq!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(hex_engine::PlaybackCommand::PlayFrom(placed))
         );
     });
@@ -378,14 +381,14 @@ fn empty_arrangement_space_matches_a_scrolled_zoomed_lane_and_keeps_selection(
 
     for opening in [true, false] {
         editor.update(&mut visual, |view, _| {
-            view.opening_project = opening;
-            view.close_prompt_open = !opening;
+            view.persistence.opening_project = opening;
+            view.persistence.close_prompt_open = !opening;
         });
         visual.simulate_click(other, Modifiers::default());
         assert_still_placed(&visual);
     }
     editor.update(&mut visual, |view, _| {
-        view.close_prompt_open = false;
+        view.persistence.close_prompt_open = false;
         view.mode = super::EditorMode::Session;
     });
     visual.simulate_click(other, Modifiers::default());
@@ -458,7 +461,7 @@ fn dragging_below_the_last_track_selects_project_time(cx: &mut TestAppContext) {
                 (range.start(), range.end()),
                 (frame_at(f32::from(end.x)), frame_at(f32::from(start.x)))
             );
-            assert_eq!(view.last_transport_command, None);
+            assert_eq!(view.test_probes.last_transport_command, None);
         });
     };
     assert_range(&visual);
@@ -505,7 +508,7 @@ fn empty_project_click_places_a_visible_play_start_without_tracks(cx: &mut TestA
     visual.simulate_keystrokes("space");
     editor.read_with(&visual, |view, _| {
         assert_eq!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(hex_engine::PlaybackCommand::PlayFrom(frame.1))
         );
     });
@@ -594,10 +597,12 @@ fn clicked_audio_cursor_is_visible_and_e_uses_it_offline(cx: &mut TestAppContext
             < 0.002
     );
     visual.simulate_keystrokes("cmd-e");
-    editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
+    editor.read_with(cx, |view, _| {
+        assert!(view.test_probes.last_enqueued_edit.is_none())
+    });
     visual.simulate_keystrokes("e");
     editor.read_with(cx, |view, _| {
-        assert!(matches!(view.last_enqueued_edit, Some(Command::SplitClip { clip: id, frame: position }) if id == clip && position == frame));
+        assert!(matches!(view.test_probes.last_enqueued_edit, Some(Command::SplitClip { clip: id, frame: position }) if id == clip && position == frame));
     });
 }
 
@@ -652,7 +657,7 @@ fn command_click_is_free_and_e_routes_midi_split(cx: &mut TestAppContext) {
     });
     visual.simulate_keystrokes("e");
     editor.read_with(cx, |view, _| {
-        assert!(matches!(view.last_enqueued_edit, Some(Command::SplitMidiClip { clip: id, beat: position }) if id == clip && position == beat));
+        assert!(matches!(view.test_probes.last_enqueued_edit, Some(Command::SplitMidiClip { clip: id, beat: position }) if id == clip && position == beat));
     });
 }
 
@@ -737,7 +742,7 @@ fn main_cursor_keeps_track_overlays_but_section_lane_gap_refuses_e(cx: &mut Test
     visual.simulate_keystrokes("e");
     editor.read_with(cx, |view, _| {
         assert!(
-            view.last_enqueued_edit.is_none(),
+            view.test_probes.last_enqueued_edit.is_none(),
             "a gap must not fall through to song-wide clip splitting"
         );
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
@@ -757,7 +762,9 @@ fn empty_position_and_missing_cursor_do_not_dispatch_a_split(cx: &mut TestAppCon
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     visual.simulate_keystrokes("e");
-    editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
+    editor.read_with(cx, |view, _| {
+        assert!(view.test_probes.last_enqueued_edit.is_none())
+    });
     let lane = visual
         .debug_bounds(Box::leak(
             format!("arrangement-lane-{}", target.value()).into_boxed_str(),
@@ -776,7 +783,7 @@ fn empty_position_and_missing_cursor_do_not_dispatch_a_split(cx: &mut TestAppCon
             view.edit_cursor.expect("cursor on empty track").track,
             Some(target)
         );
-        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.test_probes.last_enqueued_edit.is_none());
         assert!(
             view.error
                 .as_ref()
@@ -823,7 +830,7 @@ fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &m
         last_lane.origin.y + last_lane.size.height / 2.0,
     );
     cx.update_window(handle, |_, window, window_cx| {
-        editor.update(window_cx, |view, _| view.midi_focus.focus(window));
+        editor.update(window_cx, |view, _| view.midi_editor.focus.focus(window));
     })
     .expect("focus prior editor");
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
@@ -929,7 +936,7 @@ fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &m
             "repainting shrinks explicit track membership"
         );
         assert!(
-            view.last_enqueued_edit.is_none(),
+            view.test_probes.last_enqueued_edit.is_none(),
             "reselection does not edit project content"
         );
     });
@@ -973,7 +980,7 @@ fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &m
             view.state.as_ref().unwrap().project.as_ref(),
             model.project()
         );
-        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.test_probes.last_enqueued_edit.is_none());
     });
 }
 
@@ -1046,7 +1053,7 @@ fn selected_time_range_drag_shows_and_dispatches_a_contiguous_move(cx: &mut Test
         view.project_generation = generation.wrapping_add(1);
         assert!(view.finish_time_range_move_gesture());
         assert!(
-            view.last_enqueued_edit.is_none(),
+            view.test_probes.last_enqueued_edit.is_none(),
             "stale generation must not submit a move"
         );
         assert!(view.pending_time_range_move.is_none());
@@ -1064,7 +1071,7 @@ fn selected_time_range_drag_shows_and_dispatches_a_contiguous_move(cx: &mut Test
     visual.simulate_mouse_up(destination, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
         assert!(matches!(
-            view.last_enqueued_edit,
+            view.test_probes.last_enqueued_edit,
             Some(Command::MoveTimeRange { track, .. }) if track == ids[1]
         ));
         assert!(
@@ -1155,7 +1162,7 @@ fn option_drag_copies_time_range_and_keeps_source_preview_visible(cx: &mut TestA
     visual.simulate_mouse_up(destination, MouseButton::Left, option);
     editor.read_with(cx, |view, _| {
         assert!(matches!(
-            view.last_enqueued_edit.as_ref(),
+            view.test_probes.last_enqueued_edit.as_ref(),
             Some(Command::CopyTimeRangeTo { range, track, .. })
                 if range.tracks() == [source] && *track == target_track
         ));
@@ -1552,7 +1559,7 @@ fn completed_time_selection_survives_idle_ticks_and_remains_rendered(cx: &mut Te
                     assert_eq!(view.visible_viewport(384_000), viewport);
                 }
                 assert!(
-                    view.last_enqueued_edit.is_none(),
+                    view.test_probes.last_enqueued_edit.is_none(),
                     "selection does not edit history"
                 );
                 cx.notify();
@@ -1993,11 +2000,11 @@ fn selection_handle_and_reselect_zones_own_gestures_over_selected_clips(cx: &mut
         editor.read_with(cx, |view, _| {
             if moving {
                 assert!(matches!(
-                    view.last_enqueued_edit,
+                    view.test_probes.last_enqueued_edit,
                     Some(Command::MoveTimeRange { .. })
                 ));
             } else {
-                assert!(view.last_enqueued_edit.is_none());
+                assert!(view.test_probes.last_enqueued_edit.is_none());
                 let range = view
                     .normalized_time_selection()
                     .expect("new selection over clip");
@@ -2028,30 +2035,32 @@ fn ripple_shortcuts_route_to_insert_and_respect_editor_focus(cx: &mut TestAppCon
     });
     visual.simulate_keystrokes("cmd-shift-c");
     editor.read_with(cx, |view, _| {
-        assert_eq!(view.last_time_request, Some(("copy", None)))
+        assert_eq!(view.test_probes.last_time_request, Some(("copy", None)))
     });
     visual.simulate_keystrokes("cmd-shift-v");
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.last_time_request,
+            view.test_probes.last_time_request,
             Some(("insert", Some((source, 48_000))))
         )
     });
     visual.simulate_keystrokes("cmd-v");
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.last_time_request,
+            view.test_probes.last_time_request,
             Some(("paste", Some((source, 48_000))))
         )
     });
     visual.update(|window, cx| {
         editor.update(cx, |view, _| {
-            view.last_time_request = None;
-            window.focus(&view.midi_focus);
+            view.test_probes.last_time_request = None;
+            window.focus(&view.midi_editor.focus);
         })
     });
     visual.simulate_keystrokes("cmd-shift-v");
-    editor.read_with(cx, |view, _| assert!(view.last_time_request.is_none()));
+    editor.read_with(cx, |view, _| {
+        assert!(view.test_probes.last_time_request.is_none())
+    });
 }
 
 #[gpui::test]
@@ -2099,7 +2108,7 @@ fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
     visual.simulate_keystrokes("space");
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(hex_engine::playback::PlaybackCommand::PlayFrom(28_000)),
             "reverse time selection supplies its normalized start, even outside an enabled loop"
         );
@@ -2113,14 +2122,14 @@ fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
                 anchor_frame: 41_000,
                 end_frame: 41_000,
             });
-            view.last_transport_command = None;
+            view.test_probes.last_transport_command = None;
             window.focus(&view.focus);
         })
     });
     visual.simulate_keystrokes("space");
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(hex_engine::playback::PlaybackCommand::PlayFrom(73_000)),
             "a point selection falls back to the edit cursor, even outside an enabled loop"
         );
@@ -2130,14 +2139,14 @@ fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
         editor.update(cx, |view, _| {
             view.edit_cursor = None;
             view.time_selection = None;
-            view.last_transport_command = None;
+            view.test_probes.last_transport_command = None;
             window.focus(&view.focus);
         })
     });
     visual.simulate_keystrokes("space");
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(hex_engine::playback::PlaybackCommand::PlayFrom(
                 if enabled { 32_000 } else { 0 }
             )),
@@ -2149,14 +2158,14 @@ fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
         editor.update(cx, |view, _| {
             let token = view.play_intent.reserve_token().expect("play intent token");
             view.play_intent.admit(token, true);
-            view.last_transport_command = None;
+            view.test_probes.last_transport_command = None;
             window.focus(&view.focus);
         })
     });
     visual.simulate_keystrokes("space");
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(hex_engine::playback::PlaybackCommand::Pause),
             "Space pauses when the latest pending transport intent is Play"
         );
@@ -2176,14 +2185,14 @@ fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
                 pulse_color: crate::theme::color(crate::theme::PaletteRole::Text),
                 pulse_started: std::time::Instant::now(),
             });
-            view.last_transport_command = None;
+            view.test_probes.last_transport_command = None;
             window.focus(&view.focus);
         })
     });
     visual.simulate_keystrokes("space");
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(hex_engine::playback::PlaybackCommand::PlayFrom(73_000)),
             "Space after Pause uses the edit cursor rather than the paused playhead"
         );
@@ -2195,14 +2204,14 @@ fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
 
     visual.update(|window, cx| {
         editor.update(cx, |view, _| {
-            view.last_transport_command = None;
-            window.focus(&view.midi_focus);
+            view.test_probes.last_transport_command = None;
+            window.focus(&view.midi_editor.focus);
         })
     });
     visual.simulate_keystrokes("space");
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(hex_engine::playback::PlaybackCommand::PlayFrom(73_000)),
             "Space reaches transport even if a retained focus is no longer mounted"
         );
@@ -2217,11 +2226,13 @@ fn space_starts_from_the_focused_piano_roll_without_repeating(cx: &mut TestAppCo
         keystroke: gpui::Keystroke::parse("space").unwrap(),
         is_held: true,
     });
-    editor.read_with(cx, |view, _| assert!(view.last_transport_command.is_none()));
+    editor.read_with(cx, |view, _| {
+        assert!(view.test_probes.last_transport_command.is_none())
+    });
     visual.simulate_keystrokes("space");
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(hex_engine::PlaybackCommand::PlayFrom(0))
         );
     });
@@ -2264,7 +2275,7 @@ fn stateful_space_queues_play_from_without_a_seek_worker(cx: &mut TestAppContext
     visual.simulate_keystrokes("space");
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(hex_engine::PlaybackCommand::PlayFrom(48_000_000))
         );
         assert!(view.prepared_seek.is_none());
@@ -2318,14 +2329,14 @@ fn sampler_space_preserves_edit_cursor_time_selection_and_pause(cx: &mut TestApp
                     anchor_frame: 52_000,
                     end_frame: 28_000,
                 });
-                view.last_transport_command = None;
+                view.test_probes.last_transport_command = None;
                 window.focus(&view.focus);
             })
         });
         visual.simulate_keystrokes("space");
         editor.read_with(cx, |view, _| {
             assert_eq!(
-                view.last_transport_command,
+                view.test_probes.last_transport_command,
                 Some(hex_engine::playback::PlaybackCommand::PlayFrom(
                     if selection { 28_000 } else { 73_000 }
                 )),
@@ -2336,12 +2347,12 @@ fn sampler_space_preserves_edit_cursor_time_selection_and_pause(cx: &mut TestApp
     editor.update(cx, |view, _| {
         let token = view.play_intent.reserve_token().unwrap();
         view.play_intent.admit(token, true);
-        view.last_transport_command = None;
+        view.test_probes.last_transport_command = None;
     });
     visual.simulate_keystrokes("space");
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(hex_engine::playback::PlaybackCommand::Pause),
             "sampler uses ordinary pause without resetting the cursor"
         );
@@ -2501,7 +2512,7 @@ fn time_selection_binary_dot_follows_drag_corner_and_true_visible_endpoint(
                 }
                 editor.read_with(cx, |v, _| {
                     assert_eq!(*v.state.as_ref().unwrap().project, before);
-                    assert!(v.last_enqueued_edit.is_none());
+                    assert!(v.test_probes.last_enqueued_edit.is_none());
                 });
             }
         }
@@ -2685,7 +2696,7 @@ fn e_splits_both_time_selection_edges_in_scope_with_one_undo(cx: &mut TestAppCon
                 length: 96_000,
             });
             v.snap_grid = SnapGrid::Off;
-            v.last_enqueued_edit = None;
+            v.test_probes.last_enqueued_edit = None;
             cx.notify();
         });
         visual.update(|window, cx| {
@@ -2716,7 +2727,7 @@ fn e_splits_both_time_selection_edges_in_scope_with_one_undo(cx: &mut TestAppCon
         visual.simulate_keystrokes("e");
         editor.read_with(&visual, |v, _| {
             assert!(
-                v.last_enqueued_edit.is_none(),
+                v.test_probes.last_enqueued_edit.is_none(),
                 "held range keeps input custody"
             )
         });
@@ -2738,7 +2749,7 @@ fn e_splits_both_time_selection_edges_in_scope_with_one_undo(cx: &mut TestAppCon
         visual.simulate_keystrokes("e");
         visual.simulate_input("e");
         editor.read_with(&visual, |v, cx| {
-            assert!(v.last_enqueued_edit.is_none());
+            assert!(v.test_probes.last_enqueued_edit.is_none());
             assert!(v.browser.search.read(cx).text().contains('e'));
         });
         visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
@@ -2748,19 +2759,25 @@ fn e_splits_both_time_selection_edges_in_scope_with_one_undo(cx: &mut TestAppCon
         });
         visual.simulate_keystrokes("e");
         editor.read_with(&visual, |v, _| {
-            assert!(v.last_enqueued_edit.is_none(), "computer midi owns e")
+            assert!(
+                v.test_probes.last_enqueued_edit.is_none(),
+                "computer midi owns e"
+            )
         });
         editor.update(&mut visual, |v, cx| {
             v.computer_keyboard.enabled = false;
-            v.theme_settings.open = true;
+            v.settings.theme.open = true;
             cx.notify();
         });
         visual.simulate_keystrokes("e");
         editor.read_with(&visual, |v, _| {
-            assert!(v.last_enqueued_edit.is_none(), "modal owns input")
+            assert!(
+                v.test_probes.last_enqueued_edit.is_none(),
+                "modal owns input"
+            )
         });
         editor.update(&mut visual, |v, cx| {
-            v.theme_settings.open = false;
+            v.settings.theme.open = false;
             cx.notify();
         });
         visual.run_until_parked();
@@ -2776,7 +2793,7 @@ fn e_splits_both_time_selection_edges_in_scope_with_one_undo(cx: &mut TestAppCon
         visual.simulate_keystrokes("cmd-e");
         editor.read_with(&visual, |v, _| {
             assert!(
-                v.last_enqueued_edit.is_none(),
+                v.test_probes.last_enqueued_edit.is_none(),
                 "existing cmd-e remains unbound"
             )
         });
@@ -2885,7 +2902,7 @@ fn split_does_not_escape_a_held_tempo_control(cx: &mut TestAppContext) {
     visual.simulate_keystrokes("e");
     editor.read_with(&visual, |v, _| {
         assert!(
-            v.last_enqueued_edit.is_none(),
+            v.test_probes.last_enqueued_edit.is_none(),
             "held tempo must retain input custody"
         )
     });
@@ -2917,7 +2934,7 @@ fn transport_split_vector_dispatches_the_edit_cursor_command(cx: &mut TestAppCon
     );
     visual.update(|window, cx| window.dispatch_action(Box::new(super::SplitClip), cx));
     editor.read_with(cx, |view, _| {
-        assert!(matches!(view.last_enqueued_edit, Some(Command::SplitClip { clip: id, frame: position }) if id == clip && position == frame));
+        assert!(matches!(view.test_probes.last_enqueued_edit, Some(Command::SplitClip { clip: id, frame: position }) if id == clip && position == frame));
     });
 }
 
@@ -2968,13 +2985,13 @@ fn selected_clips_move_both_triangles_to_the_earliest_play_start(cx: &mut TestAp
     let play = |visual: &mut VisualTestContext| {
         visual.update(|window, cx| {
             editor.update(cx, |view, _| {
-                view.last_transport_command = None;
+                view.test_probes.last_transport_command = None;
                 window.focus(&view.focus);
             })
         });
         visual.simulate_keystrokes("space");
         visual.run_until_parked();
-        editor.read_with(visual, |view, _| view.last_transport_command)
+        editor.read_with(visual, |view, _| view.test_probes.last_transport_command)
     };
     let markers = |visual: &mut VisualTestContext, frame, locked| {
         let viewport = editor.read_with(visual, |view, _| {
@@ -3175,7 +3192,7 @@ fn assert_cursor_keeps_clip_detail(cx: &mut TestAppContext, midi: bool) {
     let cursor = editor.read_with(&visual, |view, _| {
         assert!(view.selected_clip.is_none(), "no whole-clip selection");
         assert_eq!(view.detail_clip_id(), Some(clip), "midi={midi}");
-        assert!(!view.device_panel_active, "the clip editor stays shown");
+        assert!(!view.device_panel.active, "the clip editor stays shown");
         view.edit_cursor.expect("cursor").frame
     });
     assert!(visual.debug_bounds("edit-cursor-layer").is_some());
@@ -3189,7 +3206,7 @@ fn assert_cursor_keeps_clip_detail(cx: &mut TestAppContext, midi: bool) {
             "delete does not treat the editor subject as a selected clip"
         );
         assert_eq!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(hex_engine::playback::PlaybackCommand::PlayFrom(cursor)),
             "play starts from the visible cursor, not the clip start"
         );
@@ -3220,18 +3237,21 @@ fn either_cursor_triangle_locks_play_start_across_selection_and_unlocks(cx: &mut
     visual.run_until_parked();
     let start = editor.read_with(&visual, |v, _| v.edit_cursor.unwrap().frame);
     let top = visual.debug_bounds("time-marker-top-start").unwrap();
-    editor.update(&mut visual, |v, _| v.close_prompt_open = true);
+    editor.update(&mut visual, |v, _| v.persistence.close_prompt_open = true);
     visual.simulate_click(top.center(), Modifiers::default());
     editor.read_with(&visual, |v, _| {
         assert!(v.valid_locked_play_start().is_none())
     });
-    editor.update(&mut visual, |v, _| v.close_prompt_open = false);
+    editor.update(&mut visual, |v, _| v.persistence.close_prompt_open = false);
     visual.simulate_click(top.center(), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.valid_locked_play_start().unwrap().frame, start);
         assert_eq!(v.playback_start_frame(), start);
-        assert!(v.last_transport_command.is_none(), "locking never seeks");
+        assert!(
+            v.test_probes.last_transport_command.is_none(),
+            "locking never seeks"
+        );
     });
     assert!(visual.debug_bounds("locked-play-start-top").is_some());
     assert!(visual.debug_bounds("locked-play-start-bottom").is_some());
@@ -3271,7 +3291,7 @@ fn either_cursor_triangle_locks_play_start_across_selection_and_unlocks(cx: &mut
     visual.simulate_keystrokes("space");
     editor.read_with(&visual, |v, _| {
         assert_eq!(
-            v.last_transport_command,
+            v.test_probes.last_transport_command,
             Some(PlaybackCommand::PlayFrom(start))
         )
     });
@@ -3281,7 +3301,7 @@ fn either_cursor_triangle_locks_play_start_across_selection_and_unlocks(cx: &mut
         assert!(v.valid_locked_play_start().is_none());
         assert_ne!(v.playback_start_frame(), start);
         assert_eq!(
-            v.last_transport_command,
+            v.test_probes.last_transport_command,
             Some(PlaybackCommand::PlayFrom(start)),
             "unlocking must not seek active playback"
         );
@@ -3804,14 +3824,18 @@ fn ruler_option_click_and_drag_places_locked_play_start_with_cmd_snap_and_escape
         assert!(view.valid_locked_play_start().is_none());
         assert!(!view.scrub_active());
     });
-    editor.update(&mut visual, |view, _| view.close_prompt_open = true);
+    editor.update(&mut visual, |view, _| {
+        view.persistence.close_prompt_open = true
+    });
     visual.simulate_click(ruler_at(0.313), opt);
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         assert!(view.valid_locked_play_start().is_none());
         assert!(!view.scrub_active());
     });
-    editor.update(&mut visual, |view, _| view.close_prompt_open = false);
+    editor.update(&mut visual, |view, _| {
+        view.persistence.close_prompt_open = false
+    });
 
     // Escape during a fresh Option-drag restores the unlocked state cleanly.
     let cancel_point = ruler_at(0.313);
@@ -3870,7 +3894,7 @@ fn ruler_option_click_and_drag_places_locked_play_start_with_cmd_snap_and_escape
         assert_eq!(view.valid_locked_play_start().unwrap().frame, first_snapped);
         assert_eq!(view.playback_start_frame(), first_snapped);
         assert!(view.edit_cursor.is_none());
-        assert!(view.last_transport_command.is_none());
+        assert!(view.test_probes.last_transport_command.is_none());
     });
 
     // Place an edit cursor on the track, start playback, and verify playback starts

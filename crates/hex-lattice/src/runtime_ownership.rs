@@ -205,11 +205,11 @@ impl RuntimeOwnership {
                     && new
                         .modulation
                         .as_deref()
-                        .map(ForeignModulationRuntime::target_id)
+                        .map(ForeignModulationRuntime::target_ids)
                         == old
                             .modulation
                             .as_deref()
-                            .map(ForeignModulationRuntime::target_id)
+                            .map(ForeignModulationRuntime::target_ids)
             }
             (Self::Legacy { primary, scratch }, Self::Legacy { primary: old, .. }) => {
                 primary.can_copy_history_from(old.as_ref())
@@ -241,11 +241,11 @@ impl RuntimeOwnership {
                     && new
                         .modulation
                         .as_deref()
-                        .map(ForeignModulationRuntime::target_id)
+                        .map(ForeignModulationRuntime::target_ids)
                         == old
                             .modulation
                             .as_deref()
-                            .map(ForeignModulationRuntime::target_id)
+                            .map(ForeignModulationRuntime::target_ids)
             }
             (Self::Foreign(_), _) | (_, Self::Foreign(_)) => false,
             _ => true,
@@ -311,7 +311,7 @@ impl RuntimeOwnership {
                 new.committed_drained = old.committed_drained;
                 new.scratch_drained = old.committed_drained;
                 if let (Some(current), Some(previous)) = (&mut new.modulation, &old.modulation)
-                    && current.target_id() == previous.target_id()
+                    && current.target_ids() == previous.target_ids()
                 {
                     current.inherit_committed(previous);
                 }

@@ -76,14 +76,14 @@ impl EditorView {
             && self.browser_audio_drag_is_current(drag)
             && self.console_target_exists(target)
             && !self.edit_pending()
-            && !self.save_dialog_open
-            && !self.export_dialog_open
-            && self.audio_batch.is_none()
-            && !self.tuning.open
-            && !self.theme_settings.open
-            && !self.changelog.is_open()
+            && !self.persistence.save_dialog_open
+            && !self.persistence.export_dialog_open
+            && self.persistence.audio_batch.is_none()
+            && !self.settings.tuning.open
+            && !self.settings.theme.open
+            && !self.settings.changelog.is_open()
             && !self.device_panel.has_pending_draft(cx)
-            && self.tuning.client.snapshot().is_none();
+            && self.settings.tuning.client.snapshot().is_none();
         // The worker control owns cancellation after admission. The paint is
         // copied before retiring the pointer payload.
         if !current {
@@ -135,8 +135,8 @@ impl EditorView {
         };
         if self.enqueue_sample_drop(request, drag, BrowserDropDestination::Console(target)) {
             self.stop_browser_preview_for_drop();
-            self.audio_batch = Some(control);
-            self.audio_batch_progress = None;
+            self.persistence.audio_batch = Some(control);
+            self.persistence.audio_batch_progress = None;
             self.error = None;
             self.poll_audio_batch();
         }
@@ -172,18 +172,18 @@ impl EditorView {
             let valid = current
                 && self.console_target_exists(target)
                 && self.console_column_clip_valid(drag)
-                && !self.save_dialog_open
-                && !self.export_dialog_open
-                && !self.export_pending
-                && self.audio_batch.is_none()
-                && !self.tuning.open
-                && !self.theme_settings.open
-                && !self.changelog.is_open()
+                && !self.persistence.save_dialog_open
+                && !self.persistence.export_dialog_open
+                && !self.persistence.export_pending
+                && self.persistence.audio_batch.is_none()
+                && !self.settings.tuning.open
+                && !self.settings.theme.open
+                && !self.settings.changelog.is_open()
                 && !self.device_panel.has_pending_draft(cx)
-                && self.tuning.client.snapshot().is_none();
+                && self.settings.tuning.client.snapshot().is_none();
             self.retire_console_clip_drag(drag);
             if valid {
-                let gain = match self.track_defaults.captured_gain() {
+                let gain = match self.settings.track_defaults.captured_gain() {
                     Ok(gain) => gain,
                     Err(error) => {
                         self.error = Some(error.into());

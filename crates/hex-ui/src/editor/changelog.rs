@@ -213,14 +213,14 @@ pub(super) fn bind_keys(cx: &mut App) {
 
 impl EditorView {
     pub(super) fn open_changelog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.changelog.open = true;
-        self.changelog.focus.focus(window);
+        self.settings.changelog.open = true;
+        self.settings.changelog.focus.focus(window);
         cx.notify();
     }
 
     pub(super) fn close_changelog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.changelog.open {
-            self.changelog.open = false;
+        if self.settings.changelog.open {
+            self.settings.changelog.open = false;
             self.focus.focus(window);
             cx.notify();
         }
@@ -230,7 +230,7 @@ impl EditorView {
     // GPUI paint. It neither supplies hover state nor changes production input.
     #[cfg(all(test, feature = "ui-test-support"))]
     fn changelog_paint_probe(&self, key: String) -> impl gpui::IntoElement {
-        let painted = std::rc::Rc::clone(&self.changelog.painted);
+        let painted = std::rc::Rc::clone(&self.settings.changelog.painted);
         gpui::canvas(
             |_, _, _| {},
             move |_, _, window, _| {
@@ -315,7 +315,7 @@ impl EditorView {
     }
 
     pub(super) fn changelog_overlay(&self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
-        if !self.changelog.open {
+        if !self.settings.changelog.open {
             return None;
         }
         let mut notes = div()
@@ -325,11 +325,11 @@ impl EditorView {
             .min_h_0()
             .min_w_0()
             .overflow_y_scroll()
-            .track_scroll(&self.changelog.scroll)
+            .track_scroll(&self.settings.changelog.scroll)
             .flex()
             .flex_col()
             .gap_3();
-        if let Some(message) = &self.changelog.document.message {
+        if let Some(message) = &self.settings.changelog.document.message {
             notes = notes.child(
                 div()
                     .debug_selector(|| "changelog-unavailable".into())
@@ -338,7 +338,7 @@ impl EditorView {
                     .child(theme::text(message)),
             );
         }
-        for (batch_index, batch) in self.changelog.document.batches.iter().enumerate() {
+        for (batch_index, batch) in self.settings.changelog.document.batches.iter().enumerate() {
             let details = theme::text(&batch.details);
             let mut body = div()
                 .id(("changelog-batch", batch_index))
@@ -410,11 +410,11 @@ impl EditorView {
                 .flex()
                 .justify_center()
                 .bg(rgb(theme::color(PaletteRole::Background)))
-                .track_focus(&self.changelog.focus)
+                .track_focus(&self.settings.changelog.focus)
                 .key_context("hex_changelog")
                 .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
                     if event.keystroke.key == "tab" {
-                        view.changelog.close_focus.focus(window);
+                        view.settings.changelog.close_focus.focus(window);
                         cx.notify();
                     }
                     cx.stop_propagation();
@@ -448,7 +448,7 @@ impl EditorView {
                                     div()
                                         .id("close-changelog")
                                         .debug_selector(|| "close-changelog".into())
-                                        .track_focus(&self.changelog.close_focus)
+                                        .track_focus(&self.settings.changelog.close_focus)
                                         .tab_index(0)
                                         .key_context("hex_changelog_close")
                                         .focus(|style| {
@@ -582,16 +582,16 @@ mod ui_tests {
         assert!(button.origin.x >= log.origin.x + log.size.width);
         assert!(button.origin.x + button.size.width <= px(960.0));
         editor.update(&mut visual, |view, cx| {
-            view.changelog.document = notes(r#"{"format":1,"batches":[{"input":{"version":"0.1.0","source":"0123456789012345678901234567890123456789"},"result":{"entries":[{"category":"fixes","text":"project opening responds on the first click"}]}}]}"#).unwrap();
+            view.settings.changelog.document = notes(r#"{"format":1,"batches":[{"input":{"version":"0.1.0","source":"0123456789012345678901234567890123456789"},"result":{"entries":[{"category":"fixes","text":"project opening responds on the first click"}]}}]}"#).unwrap();
             cx.notify();
         });
         click(&mut visual, "open-changelog");
         assert!(visual.debug_bounds("changelog-notes").is_some());
-        editor.read_with(&visual, |view, _| assert!(view.changelog.open));
+        editor.read_with(&visual, |view, _| assert!(view.settings.changelog.open));
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
         editor.update_in(&mut visual, |view, window, _cx| {
-            assert!(!view.changelog.open);
+            assert!(!view.settings.changelog.open);
             assert!(view.focus.is_focused(window));
         });
     }
@@ -608,18 +608,18 @@ mod ui_tests {
             serde_json::from_str(include_str!(concat!(env!("OUT_DIR"), "/changelog.json")))
                 .unwrap();
         editor.read_with(&visual, |view, _| {
-            assert_projection(&view.changelog.document, &embedded);
-            assert!(view.changelog.open);
-            assert!(!view.changelog.document.batches.is_empty());
+            assert_projection(&view.settings.changelog.document, &embedded);
+            assert!(view.settings.changelog.open);
+            assert!(!view.settings.changelog.document.batches.is_empty());
             assert!(
-                view.changelog.document.batches[0]
+                view.settings.changelog.document.batches[0]
                     .details
                     .contains("notes through")
             );
-            assert!(view.changelog.document.message.is_none());
+            assert!(view.settings.changelog.document.message.is_none());
         });
         visual.simulate_keystrokes("escape");
-        editor.read_with(&visual, |view, _| assert!(!view.changelog.open));
+        editor.read_with(&visual, |view, _| assert!(!view.settings.changelog.open));
     }
 
     #[gpui::test]
@@ -640,11 +640,11 @@ mod ui_tests {
         visual.simulate_keystrokes("enter");
         visual.run_until_parked();
         assert!(visual.debug_bounds("changelog-notes").is_some());
-        editor.read_with(&visual, |view, _| assert!(view.changelog.open));
+        editor.read_with(&visual, |view, _| assert!(view.settings.changelog.open));
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
         editor.update_in(&mut visual, |view, window, _cx| {
-            assert!(!view.changelog.open);
+            assert!(!view.settings.changelog.open);
             assert!(view.focus.is_focused(window));
         });
     }
@@ -672,7 +672,7 @@ mod ui_tests {
             visual.simulate_keystrokes(activate);
             visual.run_until_parked();
             editor.update_in(&mut visual, |view, window, _| {
-                assert!(!view.changelog.open);
+                assert!(!view.settings.changelog.open);
                 assert!(view.focus.is_focused(window));
                 assert_eq!(view.worker_requests_pending, before);
             });
@@ -683,7 +683,7 @@ mod ui_tests {
     fn long_notes_scroll_panel_is_bounded_and_close_does_not_edit_project(cx: &mut TestAppContext) {
         let (_directory, mut visual, editor) = fixture(cx);
         editor.update(&mut visual, |view, cx| {
-            view.changelog.document = notes(&raw_entries(serde_json::json!(
+            view.settings.changelog.document = notes(&raw_entries(serde_json::json!(
                 (0..100)
                     .map(|n| serde_json::json!({
                         "category":"fixes",
@@ -711,14 +711,14 @@ mod ui_tests {
         });
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            assert!(view.changelog.scroll.offset().y < px(0.0))
+            assert!(view.settings.changelog.scroll.offset().y < px(0.0))
         });
         visual.simulate_keystrokes("backspace space cmd-z");
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            assert!(view.changelog.open);
+            assert!(view.settings.changelog.open);
             assert_eq!(
-                view.last_transport_command,
+                view.test_probes.last_transport_command,
                 Some(hex_engine::PlaybackCommand::PlayFrom(0))
             );
             assert_eq!(
@@ -731,11 +731,11 @@ mod ui_tests {
             );
         });
         click(&mut visual, "close-changelog");
-        editor.read_with(&visual, |view, _| assert!(!view.changelog.open));
+        editor.read_with(&visual, |view, _| assert!(!view.settings.changelog.open));
     }
     fn painted(editor: &Entity<EditorView>, visual: &VisualTestContext, key: &str) -> gpui::Hsla {
         editor.read_with(visual, |view, _| {
-            let samples = view.changelog.painted.borrow();
+            let samples = view.settings.changelog.painted.borrow();
             let (color, family) = samples
                 .get(key)
                 .unwrap_or_else(|| panic!("no actual paint for {key}"));
@@ -831,7 +831,7 @@ mod ui_tests {
         // Match every newest-first displayed batch to its oldest-first input,
         // not just whichever release happened to be embedded when this test began.
         editor.read_with(&visual, |view, _| {
-            assert_projection(&view.changelog.document, &original);
+            assert_projection(&view.settings.changelog.document, &original);
         });
         for (selector, present) in [
             ("changelog-heading-1-features", false),
@@ -854,7 +854,7 @@ mod ui_tests {
         let first = visual.debug_bounds("changelog-note-0-features-0").unwrap();
         let second = visual.debug_bounds("changelog-note-0-features-1").unwrap();
         let header = visual.debug_bounds("changelog-heading-0-features").unwrap();
-        let scroll = editor.read_with(&visual, |view, _| view.changelog.scroll.offset());
+        let scroll = editor.read_with(&visual, |view, _| view.settings.changelog.scroll.offset());
         // Hover the padded far edge below the first line, not merely a text glyph.
         visual.simulate_mouse_move(
             point(first.right() - px(2.0), first.bottom() - px(2.0)),
@@ -911,16 +911,19 @@ mod ui_tests {
             Some(header)
         );
         assert_eq!(
-            editor.read_with(&visual, |view, _| view.changelog.scroll.offset()),
+            editor.read_with(&visual, |view, _| view.settings.changelog.scroll.offset()),
             scroll
         );
     }
     fn install(editor: &Entity<EditorView>, visual: &mut VisualTestContext, raw: &str) {
         editor.update(visual, |view, cx| {
-            view.changelog.document = notes(raw).unwrap_or_else(|error| {
+            view.settings.changelog.document = notes(raw).unwrap_or_else(|error| {
                 Document::message(format!("changelog unavailable · {error}"))
             });
-            view.changelog.scroll.set_offset(point(px(0.0), px(0.0)));
+            view.settings
+                .changelog
+                .scroll
+                .set_offset(point(px(0.0), px(0.0)));
             cx.notify();
         });
         visual.run_until_parked();
@@ -1034,7 +1037,10 @@ mod ui_tests {
             ..Default::default()
         });
         visual.run_until_parked();
-        assert!(editor.read_with(&visual, |view, _| view.changelog.scroll.offset().y) < px(0.0));
+        assert!(
+            editor.read_with(&visual, |view, _| view.settings.changelog.scroll.offset().y)
+                < px(0.0)
+        );
         let mut hovered = None;
         for n in 1..15 {
             let selector: &'static str =
@@ -1092,6 +1098,6 @@ mod ui_tests {
         });
         visual.simulate_keystrokes("tab enter");
         visual.run_until_parked();
-        editor.read_with(&visual, |view, _| assert!(!view.changelog.open));
+        editor.read_with(&visual, |view, _| assert!(!view.settings.changelog.open));
     }
 }

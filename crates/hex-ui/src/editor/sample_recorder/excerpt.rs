@@ -59,7 +59,7 @@ impl EditorView {
         let Some(rate) = self.state.as_ref().map(|state| state.project.sample_rate()) else {
             return;
         };
-        let Some(wave) = self.sample_recorder.waveform.as_mut() else {
+        let Some(wave) = self.device_panel.sample_recorder.waveform.as_mut() else {
             return;
         };
         let range = wave.range;
@@ -83,7 +83,7 @@ impl EditorView {
             rate,
             cancel: cancel.clone(),
         });
-        self.sample_recorder.error = None;
+        self.device_panel.sample_recorder.error = None;
         let take = wave.take.clone();
         let entity = cx.entity().downgrade();
         let executor = cx.background_executor().clone();
@@ -108,7 +108,7 @@ impl EditorView {
                     })
                 });
             let _ = entity.update(cx, |view, cx| {
-                let Some(wave) = view.sample_recorder.waveform.as_mut() else {
+                let Some(wave) = view.device_panel.sample_recorder.waveform.as_mut() else {
                     return;
                 };
                 if !wave
@@ -131,7 +131,7 @@ impl EditorView {
                 }
                 match result {
                     Ok(ready) => wave.excerpt.ready = Some(ready),
-                    Err(error) => view.sample_recorder.error = Some(error),
+                    Err(error) => view.device_panel.sample_recorder.error = Some(error),
                 }
                 cx.notify();
             });
@@ -141,7 +141,7 @@ impl EditorView {
     }
 
     pub(super) fn take_excerpt_grip(&self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
-        let wave = self.sample_recorder.waveform.as_ref()?;
+        let wave = self.device_panel.sample_recorder.waveform.as_ref()?;
         if self.selecting() {
             return None;
         }
@@ -186,15 +186,20 @@ impl EditorView {
                 payload.snap_modifier.set(window.modifiers().platform);
                 payload.copy_modifier.set(window.modifiers().alt);
                 let active = entity.update(cx, |view, cx| {
-                    let current = view.sample_recorder.waveform.as_ref().is_some_and(|wave| {
-                        wave.range == ready.range
-                            && wave
-                                .excerpt
-                                .ready
-                                .as_ref()
-                                .is_some_and(|value| Rc::ptr_eq(value, &ready))
-                    });
-                    if !current || view.selecting() || view.opening_project {
+                    let current = view
+                        .device_panel
+                        .sample_recorder
+                        .waveform
+                        .as_ref()
+                        .is_some_and(|wave| {
+                            wave.range == ready.range
+                                && wave
+                                    .excerpt
+                                    .ready
+                                    .as_ref()
+                                    .is_some_and(|value| Rc::ptr_eq(value, &ready))
+                        });
+                    if !current || view.selecting() || view.persistence.opening_project {
                         return false;
                     }
                     ready.offered.set(true);

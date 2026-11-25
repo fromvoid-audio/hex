@@ -77,8 +77,8 @@ fn audio_playhead_case(cx: &mut TestAppContext, warped: bool) {
         let clip = track.clips()[0].id();
         v.selected_track = Some(track.id());
         v.selected_clip = Some(clip);
-        v.clip_view_open = true;
-        v.device_panel_active = false;
+        v.audio_detail.clip_view_open = true;
+        v.device_panel.active = false;
         cx.notify();
         clip
     });
@@ -181,8 +181,8 @@ fn audio_playhead_case(cx: &mut TestAppContext, warped: bool) {
     let before = editor.read_with(cx, |v, _| {
         (
             v.state.as_ref().unwrap().project.clone(),
-            v.audio_event_editor.cursor,
-            v.audio_event_editor.range,
+            v.audio_detail.event.cursor,
+            v.audio_detail.event.range,
         )
     });
     for (viewport, fraction) in [
@@ -204,7 +204,7 @@ fn audio_playhead_case(cx: &mut TestAppContext, warped: bool) {
         (None, Some(0.3)),
     ] {
         editor.update(cx, |v, cx| {
-            v.audio_event_editor.viewport = viewport;
+            v.audio_detail.event.viewport = viewport;
             cx.notify();
         });
         visual.run_until_parked();
@@ -217,7 +217,7 @@ fn audio_playhead_case(cx: &mut TestAppContext, warped: bool) {
         editor.read_with(cx, |v, _| {
             assert_eq!(*v.state.as_ref().unwrap().project, *before.0);
             assert_eq!(
-                (v.audio_event_editor.cursor, v.audio_event_editor.range),
+                (v.audio_detail.event.cursor, v.audio_detail.event.range),
                 (before.1, before.2)
             );
         });
@@ -238,7 +238,7 @@ fn audio_playhead_case(cx: &mut TestAppContext, warped: bool) {
     });
     // The source tab is in original-media coordinates, including its 12k offset.
     editor.update(cx, |v, cx| {
-        v.audio_event_editor.source_view = true;
+        v.audio_detail.event.source_view = true;
         cx.notify();
     });
     visual.run_until_parked();
@@ -253,7 +253,7 @@ fn audio_playhead_case(cx: &mut TestAppContext, warped: bool) {
         }),
     );
     editor.update(cx, |v, cx| {
-        v.audio_event_editor.source_view = false;
+        v.audio_detail.event.source_view = false;
         cx.notify();
     });
     for fault in [0, 1, 2, 3, 4] {
@@ -470,7 +470,7 @@ fn audio_playhead_case(cx: &mut TestAppContext, warped: bool) {
     // clock: the route publishes its launch frame with the owner it accepted.
     let (launch, performance) = editor.update(cx, |v, cx| {
         v.mode = crate::editor::EditorMode::Session;
-        v.selected_cell = Some((track, scene));
+        v.session_grid.selected_cell = Some((track, scene));
         cx.notify();
         let status = v.audio_status().unwrap();
         let mut entries = [hex_audio::prepared::SessionRouteEntry::default();

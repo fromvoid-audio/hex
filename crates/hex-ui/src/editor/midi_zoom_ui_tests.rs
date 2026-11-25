@@ -27,10 +27,11 @@ fn wheel_zoom_anchors_pointer_and_does_not_mutate_project(cx: &mut TestAppContex
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert!(
-            v.piano_beat_span.raw() < 4 * BeatTime::ONE.raw(),
+            v.midi_editor.piano_beat_span.raw() < 4 * BeatTime::ONE.raw(),
             "real piano wheel must zoom"
         );
-        let anchor = v.piano_beat_start as f64 + 0.75 * v.piano_beat_span.raw() as f64;
+        let anchor = v.midi_editor.piano_beat_start as f64
+            + 0.75 * v.midi_editor.piano_beat_span.raw() as f64;
         assert!((anchor / BeatTime::ONE.raw() as f64 - 3.0).abs() < 0.01);
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
@@ -49,9 +50,9 @@ fn newly_selected_clip_fits_once_and_worker_ack_keeps_manual_zoom(cx: &mut TestA
     pump(&editor, &mut visual);
     let selected = editor.read_with(&visual, |v, _| {
         assert_ne!(v.selected_clip, Some(original));
-        assert_eq!(v.piano_beat_start, 0);
+        assert_eq!(v.midi_editor.piano_beat_start, 0);
         assert_eq!(
-            v.piano_beat_span,
+            v.midi_editor.piano_beat_span,
             BeatTime::from_quarters(32).unwrap(),
             "selecting a long clip must fit its editable source"
         );
@@ -65,7 +66,12 @@ fn newly_selected_clip_fits_once_and_worker_ack_keeps_manual_zoom(cx: &mut TestA
         ..Default::default()
     });
     visual.run_until_parked();
-    let zoom = editor.read_with(&visual, |v, _| (v.piano_beat_start, v.piano_beat_span));
+    let zoom = editor.read_with(&visual, |v, _| {
+        (
+            v.midi_editor.piano_beat_start,
+            v.midi_editor.piano_beat_span,
+        )
+    });
     editor.update(&mut visual, |v, _| {
         assert!(v.enqueue(Request::Edit(Command::RenameTrack {
             track: v.selected_track.unwrap(),
@@ -76,7 +82,10 @@ fn newly_selected_clip_fits_once_and_worker_ack_keeps_manual_zoom(cx: &mut TestA
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.selected_clip, Some(selected));
         assert_eq!(
-            (v.piano_beat_start, v.piano_beat_span),
+            (
+                v.midi_editor.piano_beat_start,
+                v.midi_editor.piano_beat_span
+            ),
             zoom,
             "same clip ACK must preserve manual zoom"
         );
@@ -92,7 +101,10 @@ fn newly_selected_clip_fits_once_and_worker_ack_keeps_manual_zoom(cx: &mut TestA
     });
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.piano_beat_span, BeatTime::from_quarters(32).unwrap())
+        assert_eq!(
+            v.midi_editor.piano_beat_span,
+            BeatTime::from_quarters(32).unwrap()
+        )
     });
     visual.update(|window, cx| {
         editor.update(cx, |v, cx| {
@@ -102,7 +114,10 @@ fn newly_selected_clip_fits_once_and_worker_ack_keeps_manual_zoom(cx: &mut TestA
     });
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.piano_beat_span, BeatTime::from_quarters(4).unwrap())
+        assert_eq!(
+            v.midi_editor.piano_beat_span,
+            BeatTime::from_quarters(4).unwrap()
+        )
     });
 }
 
@@ -127,7 +142,10 @@ fn wheel_accumulates_precise_motion_and_creation_hits_after_zoom(cx: &mut TestAp
         });
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
-            assert_eq!(v.piano_beat_span, BeatTime::from_quarters(4).unwrap())
+            assert_eq!(
+                v.midi_editor.piano_beat_span,
+                BeatTime::from_quarters(4).unwrap()
+            )
         });
     }
     visual.simulate_event(ScrollWheelEvent {
@@ -137,14 +155,25 @@ fn wheel_accumulates_precise_motion_and_creation_hits_after_zoom(cx: &mut TestAp
         ..Default::default()
     });
     visual.run_until_parked();
-    let viewport = editor.read_with(&visual, |v, _| (v.piano_beat_start, v.piano_beat_span));
+    let viewport = editor.read_with(&visual, |v, _| {
+        (
+            v.midi_editor.piano_beat_start,
+            v.midi_editor.piano_beat_span,
+        )
+    });
     double_down(&mut visual, at(0.25), Modifiers::default());
     // Held cmd snaps the new note's end; it is free by default.
     visual.simulate_mouse_move(at(0.5), Some(MouseButton::Left), Modifiers::command());
     visual.simulate_mouse_up(at(0.5), MouseButton::Left, Modifiers::command());
     pump(&editor, &mut visual);
     let (note_center, after) = editor.read_with(&visual, |v, _| {
-        assert_eq!((v.piano_beat_start, v.piano_beat_span), viewport);
+        assert_eq!(
+            (
+                v.midi_editor.piano_beat_start,
+                v.midi_editor.piano_beat_span
+            ),
+            viewport
+        );
         let state = v.state.as_ref().unwrap();
         let notes = state.project.midi_source(clip).unwrap().notes();
         assert_eq!(notes.len(), 1);
@@ -193,7 +222,10 @@ fn wheel_accumulates_precise_motion_and_creation_hits_after_zoom(cx: &mut TestAp
     });
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.piano_beat_span, BeatTime::from_quarters(4).unwrap())
+        assert_eq!(
+            v.midi_editor.piano_beat_span,
+            BeatTime::from_quarters(4).unwrap()
+        )
     });
 }
 
@@ -208,7 +240,7 @@ fn wheel_can_zoom_out_past_source_and_ack_keeps_view(cx: &mut TestAppContext) {
         ..Default::default()
     });
     visual.run_until_parked();
-    let span = editor.read_with(&visual, |v, _| v.piano_beat_span);
+    let span = editor.read_with(&visual, |v, _| v.midi_editor.piano_beat_span);
     assert!(
         span.raw() > 4 * BeatTime::ONE.raw(),
         "must see space beyond a full-source note"
@@ -220,7 +252,9 @@ fn wheel_can_zoom_out_past_source_and_ack_keeps_view(cx: &mut TestAppContext) {
         })));
     });
     pump(&editor, &mut visual);
-    editor.read_with(&visual, |v, _| assert_eq!(v.piano_beat_span, span));
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.midi_editor.piano_beat_span, span)
+    });
 }
 
 /// Real gutter drag changes pitch geometry; plain wheel stays horizontal and edits
@@ -233,7 +267,10 @@ fn piano_key_drag_zooms_pitch_and_preserves_note_editing(cx: &mut TestAppContext
     let keys = visual.debug_bounds("midi-piano-keys").unwrap();
     let roll = visual.debug_bounds("midi-note-roll").unwrap();
     let (prior, before) = editor.read_with(&visual, |v, _| {
-        (v.piano_pitch, v.state.as_ref().unwrap().project.snapshot())
+        (
+            v.midi_editor.piano_pitch,
+            v.state.as_ref().unwrap().project.snapshot(),
+        )
     });
     let grid_height = f32::from(roll.size.height - px(2.0));
     assert_eq!(keys.size.height, px(grid_height));
@@ -246,7 +283,7 @@ fn piano_key_drag_zooms_pitch_and_preserves_note_editing(cx: &mut TestAppContext
         Modifiers::default(),
     );
     visual.run_until_parked();
-    editor.read_with(&visual, |v, _| assert_eq!(v.piano_pitch, prior));
+    editor.read_with(&visual, |v, _| assert_eq!(v.midi_editor.piano_pitch, prior));
 
     for dx in [1.0, 120.0] {
         visual.simulate_mouse_move(
@@ -257,10 +294,17 @@ fn piano_key_drag_zooms_pitch_and_preserves_note_editing(cx: &mut TestAppContext
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
             let expected = prior.zoom_at(grid_height, 0.5, dx).unwrap();
-            assert!(v.piano_pitch.span() < prior.span());
-            assert_eq!(v.piano_pitch, expected);
-            assert!((v.piano_pitch.low() + v.piano_pitch.span() / 2.0 - 60.0).abs() < 1.0 / 4096.0);
-            assert_eq!(v.piano_beat_span, BeatTime::from_quarters(4).unwrap());
+            assert!(v.midi_editor.piano_pitch.span() < prior.span());
+            assert_eq!(v.midi_editor.piano_pitch, expected);
+            assert!(
+                (v.midi_editor.piano_pitch.low() + v.midi_editor.piano_pitch.span() / 2.0 - 60.0)
+                    .abs()
+                    < 1.0 / 4096.0
+            );
+            assert_eq!(
+                v.midi_editor.piano_beat_span,
+                BeatTime::from_quarters(4).unwrap()
+            );
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });
     }
@@ -272,7 +316,9 @@ fn piano_key_drag_zooms_pitch_and_preserves_note_editing(cx: &mut TestAppContext
     );
     visual.simulate_mouse_move(keys.center(), None, Modifiers::default());
     visual.run_until_parked();
-    editor.read_with(&visual, |v, _| assert!(v.piano_pitch_zoom.is_none()));
+    editor.read_with(&visual, |v, _| {
+        assert!(v.midi_editor.piano_pitch_zoom.is_none())
+    });
     visual.simulate_event(ScrollWheelEvent {
         position: roll.center(),
         delta: ScrollDelta::Pixels(point(px(0.0), px(80.0))),
@@ -281,8 +327,8 @@ fn piano_key_drag_zooms_pitch_and_preserves_note_editing(cx: &mut TestAppContext
     });
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.piano_pitch, zoomed);
-        assert!(v.piano_beat_span.raw() < 4 * BeatTime::ONE.raw());
+        assert_eq!(v.midi_editor.piano_pitch, zoomed);
+        assert!(v.midi_editor.piano_beat_span.raw() < 4 * BeatTime::ONE.raw());
     });
     let at = point(
         roll.origin.x + roll.size.width * 0.25,
@@ -316,9 +362,9 @@ fn piano_key_drag_zooms_pitch_and_preserves_note_editing(cx: &mut TestAppContext
             .midi_source(clip)
             .unwrap()
             .notes()[0];
-        let x = (i128::from(note.start().raw() + note.duration().raw() / 2) - v.piano_beat_start)
-            as f64
-            / v.piano_beat_span.raw() as f64;
+        let x = (i128::from(note.start().raw() + note.duration().raw() / 2)
+            - v.midi_editor.piano_beat_start) as f64
+            / v.midi_editor.piano_beat_span.raw() as f64;
         point(roll.origin.x + roll.size.width * x as f32, at.y)
     });
     double_down(&mut visual, note_at, Modifiers::default());
@@ -342,7 +388,7 @@ fn piano_key_drag_zooms_pitch_and_preserves_note_editing(cx: &mut TestAppContext
         visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
-            let rows = v.piano_pitch.span();
+            let rows = v.midi_editor.piano_pitch.span();
             let row_height = f64::from(grid_height) / rows;
             assert!(rows >= 3.0);
             assert!((row_height - bound).abs() < 0.01);
@@ -353,7 +399,9 @@ fn piano_key_drag_zooms_pitch_and_preserves_note_editing(cx: &mut TestAppContext
     visual.simulate_mouse_down(keys.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
-    editor.read_with(&visual, |v, _| assert!(v.piano_pitch_zoom.is_none()));
+    editor.read_with(&visual, |v, _| {
+        assert!(v.midi_editor.piano_pitch_zoom.is_none())
+    });
 }
 
 #[gpui::test]
@@ -398,9 +446,9 @@ fn short_source_long_arrangement_notes_visibly_shrink_when_zooming_out(cx: &mut 
                 generation: v.project_generation,
                 revision: state.revision,
                 clip,
-                beat_start: v.piano_beat_start,
-                beat_span: v.piano_beat_span.raw(),
-                pitch: v.piano_pitch,
+                beat_start: v.midi_editor.piano_beat_start,
+                beat_span: v.midi_editor.piano_beat_span.raw(),
+                pitch: v.midi_editor.piano_pitch,
             },
             state.project.midi_source(clip).unwrap().notes(),
         );
@@ -460,9 +508,9 @@ fn option_wheel_zooms_pitch_under_pointer_and_preserves_time_and_history(cx: &mu
         let keys = visual.debug_bounds("midi-piano-keys").unwrap();
         let before = editor.read_with(&visual, |v, _| {
             (
-                v.piano_pitch,
-                v.piano_beat_start,
-                v.piano_beat_span,
+                v.midi_editor.piano_pitch,
+                v.midi_editor.piano_beat_start,
+                v.midi_editor.piano_beat_span,
                 v.state.as_ref().unwrap().project.snapshot(),
             )
         });
@@ -479,19 +527,23 @@ fn option_wheel_zooms_pitch_under_pointer_and_preserves_time_and_history(cx: &mu
         visual.run_until_parked();
         let pitch_view = editor.read_with(&visual, |v, _| {
             assert!(
-                v.piano_pitch.span() < before.0.span(),
+                v.midi_editor.piano_pitch.span() < before.0.span(),
                 "tiny Option-wheel on {surface}"
             );
-            assert!(before.0.span() - v.piano_pitch.span() < 1.0);
+            assert!(before.0.span() - v.midi_editor.piano_pitch.span() < 1.0);
             let old_anchor = before.0.low() + before.0.span() * 0.25;
-            let new_anchor = v.piano_pitch.low() + v.piano_pitch.span() * 0.25;
+            let new_anchor =
+                v.midi_editor.piano_pitch.low() + v.midi_editor.piano_pitch.span() * 0.25;
             assert!((new_anchor - old_anchor).abs() < 1.0 / 4096.0);
             assert_eq!(
-                (v.piano_beat_start, v.piano_beat_span),
+                (
+                    v.midi_editor.piano_beat_start,
+                    v.midi_editor.piano_beat_span
+                ),
                 (before.1, before.2)
             );
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before.3);
-            v.piano_pitch
+            v.midi_editor.piano_pitch
         });
         editor.update(&mut visual, |v, _| {
             assert!(v.enqueue(Request::Edit(Command::RenameTrack {
@@ -500,7 +552,9 @@ fn option_wheel_zooms_pitch_under_pointer_and_preserves_time_and_history(cx: &mu
             })))
         });
         pump(&editor, &mut visual);
-        editor.read_with(&visual, |v, _| assert_eq!(v.piano_pitch, pitch_view));
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.midi_editor.piano_pitch, pitch_view)
+        });
         let roll = visual.debug_bounds("midi-note-roll").unwrap();
         visual.simulate_event(ScrollWheelEvent {
             position: roll.center(),
@@ -510,8 +564,11 @@ fn option_wheel_zooms_pitch_under_pointer_and_preserves_time_and_history(cx: &mu
         });
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
-            assert_eq!(v.piano_pitch, pitch_view);
-            assert!(v.piano_beat_span < before.2, "cmd-wheel zooms time");
+            assert_eq!(v.midi_editor.piano_pitch, pitch_view);
+            assert!(
+                v.midi_editor.piano_beat_span < before.2,
+                "cmd-wheel zooms time"
+            );
         });
     }
 }
@@ -526,8 +583,8 @@ fn option_wheel_zooms_continuously_independent_of_time_and_respects_held_marquee
     let roll = visual.debug_bounds("midi-note-roll").unwrap();
     let before = editor.read_with(&visual, |v, _| {
         (
-            v.piano_pitch,
-            v.piano_beat_span,
+            v.midi_editor.piano_pitch,
+            v.midi_editor.piano_beat_span,
             v.state.as_ref().unwrap().project.snapshot(),
         )
     });
@@ -547,14 +604,14 @@ fn option_wheel_zooms_continuously_independent_of_time_and_respects_held_marquee
     wheel(&mut visual, 20.0, false);
     wheel(&mut visual, 1.0, true);
     let pitch = editor.read_with(&visual, |v, _| {
-        assert!(v.piano_pitch.span() < before.0.span());
-        assert_eq!(v.piano_beat_span, before.1);
-        v.piano_pitch
+        assert!(v.midi_editor.piano_pitch.span() < before.0.span());
+        assert_eq!(v.midi_editor.piano_beat_span, before.1);
+        v.midi_editor.piano_pitch
     });
     wheel(&mut visual, 60.0, false);
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.piano_pitch, pitch);
-        assert!(v.piano_beat_span < before.1);
+        assert_eq!(v.midi_editor.piano_pitch, pitch);
+        assert!(v.midi_editor.piano_beat_span < before.1);
     });
     let grid_height = f32::from(roll.size.height - px(2.0));
     for (delta, edge) in [(-320.0, 10.0), (320.0, 48.0)] {
@@ -562,11 +619,11 @@ fn option_wheel_zooms_continuously_independent_of_time_and_respects_held_marquee
             wheel(&mut visual, delta, true);
         }
         editor.read_with(&visual, |v, _| {
-            let height = f64::from(grid_height) / v.piano_pitch.span();
+            let height = f64::from(grid_height) / v.midi_editor.piano_pitch.span();
             assert!((height - edge).abs() < 0.01);
         });
     }
-    let saved = editor.read_with(&visual, |v, _| v.piano_pitch);
+    let saved = editor.read_with(&visual, |v, _| v.midi_editor.piano_pitch);
     editor.update(&mut visual, |v, _| {
         for (bounds, y, delta) in [
             ([0.0, 0.0, 100.0, 100.0], -1.0, 80.0),
@@ -576,7 +633,7 @@ fn option_wheel_zooms_continuously_independent_of_time_and_respects_held_marquee
             ([0.0, 0.0, 100.0, 100.0], 50.0, f32::INFINITY),
         ] {
             assert!(!v.zoom_piano_pitch_wheel_at(bounds, y, delta));
-            assert_eq!(v.piano_pitch, saved);
+            assert_eq!(v.midi_editor.piano_pitch, saved);
         }
     });
     visual.simulate_mouse_down(
@@ -595,23 +652,26 @@ fn option_wheel_zooms_continuously_independent_of_time_and_respects_held_marquee
             ..Default::default()
         },
     );
-    editor.read_with(&visual, |v, _| assert!(v.midi_marquee.is_some()));
+    editor.read_with(&visual, |v, _| assert!(v.midi_editor.marquee.is_some()));
     wheel(&mut visual, -80.0, true);
     editor.read_with(&visual, |v, _| {
         assert!(
-            v.midi_marquee.is_some(),
+            v.midi_editor.marquee.is_some(),
             "wheel cannot cancel held selection"
         );
-        assert_eq!(v.piano_pitch, saved, "wheel cannot zoom during capture");
+        assert_eq!(
+            v.midi_editor.piano_pitch, saved,
+            "wheel cannot zoom during capture"
+        );
     });
     visual.simulate_keystrokes("escape");
     visual.simulate_mouse_up(roll.center(), MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     wheel(&mut visual, -80.0, true);
     editor.read_with(&visual, |v, _| {
-        assert!(v.midi_marquee.is_none());
+        assert!(v.midi_editor.marquee.is_none());
         assert!(
-            v.piano_pitch.span() > saved.span(),
+            v.midi_editor.piano_pitch.span() > saved.span(),
             "fresh wheel works after release"
         );
     });
@@ -643,7 +703,8 @@ fn option_wheel_pitch_geometry_creates_the_displayed_note_through_worker_and_und
     });
     visual.run_until_parked();
     let expected_pitch = editor.read_with(&visual, |v, _| {
-        v.piano_pitch
+        v.midi_editor
+            .piano_pitch
             .pitch_at_y(
                 f32::from(at.y - roll.origin.y - px(1.0)),
                 f32::from(roll.size.height - px(2.0)),
@@ -711,7 +772,9 @@ fn resized_grid_rebounds_manual_zoom_and_keeps_the_full_note_fit(cx: &mut TestAp
     assert!(smaller.size.height < earlier.size.height);
     editor.read_with(&visual, |view, _| {
         assert!(
-            (f64::from(f32::from(smaller.size.height)) / view.piano_pitch.span() - 10.0).abs()
+            (f64::from(f32::from(smaller.size.height)) / view.midi_editor.piano_pitch.span()
+                - 10.0)
+                .abs()
                 < 0.01
         );
     });
@@ -740,14 +803,16 @@ fn resized_grid_rebounds_manual_zoom_and_keeps_the_full_note_fit(cx: &mut TestAp
     visual.simulate_keystrokes("z");
     visual.run_until_parked();
     let full = editor.read_with(&visual, |view, _| {
-        assert!(view.piano_pitch_note_fit);
-        assert_eq!(view.piano_pitch.coverage(), 0..128);
-        view.piano_pitch
+        assert!(view.midi_editor.piano_pitch_note_fit);
+        assert_eq!(view.midi_editor.piano_pitch.coverage(), 0..128);
+        view.midi_editor.piano_pitch
     });
     let resize_down = visual.debug_bounds("clip-detail-resize").unwrap().center();
     let resize_up = resize_down - point(px(0.0), px(30.0));
     visual.simulate_mouse_down(resize_down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(resize_up, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
-    editor.read_with(&visual, |view, _| assert_eq!(view.piano_pitch, full));
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.midi_editor.piano_pitch, full)
+    });
 }

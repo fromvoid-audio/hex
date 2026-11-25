@@ -13,8 +13,8 @@ fn shared_splitters_cancel_button_loss_and_replaced_source_without_edits(cx: &mu
     editor.update(&mut visual, |view, cx| {
         view.selected_track = Some(track);
         view.selected_clip = Some(clip);
-        view.clip_view_open = true;
-        view.device_panel_active = false;
+        view.audio_detail.clip_view_open = true;
+        view.device_panel.active = false;
         cx.notify();
     });
     visual.run_until_parked();
@@ -32,7 +32,9 @@ fn shared_splitters_cancel_button_loss_and_replaced_source_without_edits(cx: &mu
         Modifiers::default(),
     );
     assert!(visual.debug_bounds("clip-detail-resize").is_none());
-    assert!(editor.read_with(&visual, |view, _| view.clip_detail_resize.is_active()));
+    assert!(editor.read_with(&visual, |view, _| {
+        view.audio_detail.detail_resize.is_active()
+    }));
     // Capture stays mounted outside the hidden handle and can reopen the preview.
     visual.simulate_mouse_move(
         down - point(px(0.0), px(20.0)),
@@ -61,7 +63,8 @@ fn shared_splitters_cancel_button_loss_and_replaced_source_without_edits(cx: &mu
             visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
             editor.read_with(&visual, |view, _| {
                 assert!(
-                    view.clip_detail_resize.is_active() || view.project_spectrum.resize_is_active()
+                    view.audio_detail.detail_resize.is_active()
+                        || view.device_panel.project_spectrum.resize_is_active()
                 );
             });
             if replace_source {
@@ -80,8 +83,8 @@ fn shared_splitters_cancel_button_loss_and_replaced_source_without_edits(cx: &mu
             );
             assert_eq!(visual.debug_bounds(panel).unwrap().size.height, original);
             editor.read_with(&visual, |view, _| {
-                assert!(!view.clip_detail_resize.is_active());
-                assert!(!view.project_spectrum.resize_is_active());
+                assert!(!view.audio_detail.detail_resize.is_active());
+                assert!(!view.device_panel.project_spectrum.resize_is_active());
                 assert_eq!(view.state.as_ref().unwrap().project, before.project);
                 assert_eq!(view.state.as_ref().unwrap().revision, before.revision);
                 assert!(view.pending_requests.is_empty());
@@ -100,8 +103,8 @@ fn held_splitter_isolates_second_press_until_cancellation(cx: &mut TestAppContex
     editor.update(&mut visual, |view, cx| {
         view.selected_track = Some(track);
         view.selected_clip = Some(clip);
-        view.clip_view_open = true;
-        view.device_panel_active = false;
+        view.audio_detail.clip_view_open = true;
+        view.device_panel.active = false;
         cx.notify();
     });
     visual.run_until_parked();
@@ -123,8 +126,8 @@ fn held_splitter_isolates_second_press_until_cancellation(cx: &mut TestAppContex
         .center();
     visual.simulate_mouse_down(spectrum, MouseButton::Left, Modifiers::default());
     editor.read_with(&visual, |view, _| {
-        assert!(view.clip_detail_resize.is_active());
-        assert!(!view.project_spectrum.resize_is_active());
+        assert!(view.audio_detail.detail_resize.is_active());
+        assert!(!view.device_panel.project_spectrum.resize_is_active());
     });
     // A second press cannot steal a held gesture. After actual button loss,
     // the next independent press starts the other sizing owner normally.
@@ -132,8 +135,8 @@ fn held_splitter_isolates_second_press_until_cancellation(cx: &mut TestAppContex
     visual.simulate_mouse_up(spectrum, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_down(spectrum, MouseButton::Left, Modifiers::default());
     editor.read_with(&visual, |view, _| {
-        assert!(!view.clip_detail_resize.is_active());
-        assert!(view.project_spectrum.resize_is_active());
+        assert!(!view.audio_detail.detail_resize.is_active());
+        assert!(view.device_panel.project_spectrum.resize_is_active());
     });
     assert_eq!(
         visual
@@ -145,7 +148,7 @@ fn held_splitter_isolates_second_press_until_cancellation(cx: &mut TestAppContex
     );
     visual.simulate_mouse_up(spectrum, MouseButton::Left, Modifiers::default());
     editor.read_with(&visual, |view, _| {
-        assert!(!view.project_spectrum.resize_is_active())
+        assert!(!view.device_panel.project_spectrum.resize_is_active())
     });
 }
 
@@ -198,11 +201,11 @@ fn clip_detail_pointer_resize_collapse_restore_and_fixed_devices(cx: &mut TestAp
             } else {
                 crate::editor::EditorMode::Arrangement
             };
-            view.selected_cell = scene.map(|scene| (track, scene));
+            view.session_grid.selected_cell = scene.map(|scene| (track, scene));
             view.selected_track = Some(track);
             view.selected_clip = Some(clip);
-            view.clip_view_open = true;
-            view.device_panel_active = false;
+            view.audio_detail.clip_view_open = true;
+            view.device_panel.active = false;
             cx.notify();
         });
         visual.run_until_parked();
@@ -235,7 +238,7 @@ fn clip_detail_pointer_resize_collapse_restore_and_fixed_devices(cx: &mut TestAp
             "canvas grows during capture"
         );
         visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
-        let remembered = editor.read_with(visual, |view, _| view.clip_detail_body_height);
+        let remembered = editor.read_with(visual, |view, _| view.audio_detail.detail_body_height);
         let down = visual.debug_bounds("clip-detail-resize").unwrap().center();
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         let closed = point(down.x, down.y + px(remembered + 40.0));
@@ -244,7 +247,7 @@ fn clip_detail_pointer_resize_collapse_restore_and_fixed_devices(cx: &mut TestAp
         let toggle = visual.debug_bounds("clip-view-toggle").unwrap().center();
         visual.simulate_click(toggle, Modifiers::default());
         assert_eq!(
-            editor.read_with(visual, |view, _| view.clip_detail_body_height),
+            editor.read_with(visual, |view, _| view.audio_detail.detail_body_height),
             remembered
         );
         let restored = visual.debug_bounds(body_selector).unwrap();
@@ -268,7 +271,10 @@ fn clip_detail_pointer_resize_collapse_restore_and_fixed_devices(cx: &mut TestAp
             "device pane has no resize affordance"
         );
         assert_eq!(
-            editor.read_with(visual, |view, _| view.project_spectrum.detail_height),
+            editor.read_with(visual, |view, _| view
+                .device_panel
+                .project_spectrum
+                .detail_height),
             Some(crate::editor::device_panel::DEVICE_PANEL_HEIGHT)
         );
         let device_pane = visual.debug_bounds("clip-view").unwrap();
@@ -297,8 +303,8 @@ fn clip_detail_resize_minimum_window_budget_blur_and_resize_cancel(cx: &mut Test
     editor.update(visual, |view, cx| {
         view.selected_track = Some(track);
         view.selected_clip = Some(clip);
-        view.clip_view_open = true;
-        view.device_panel_active = false;
+        view.audio_detail.clip_view_open = true;
+        view.device_panel.active = false;
         cx.notify();
     });
     visual.run_until_parked();
@@ -349,7 +355,9 @@ fn clip_detail_resize_minimum_window_budget_blur_and_resize_cancel(cx: &mut Test
         } else {
             visual.simulate_resize(gpui::size(px(1100.0), px(780.0)));
         }
-        assert!(!editor.read_with(visual, |view, _| view.clip_detail_resize.is_active()));
+        assert!(!editor.read_with(visual, |view, _| {
+            view.audio_detail.detail_resize.is_active()
+        }));
         assert_eq!(
             visual
                 .debug_bounds("arrangement-audio-clip-view")
@@ -392,7 +400,7 @@ fn clip_detail_resize_minimum_window_budget_blur_and_resize_cancel(cx: &mut Test
     let pane = visual.debug_bounds("clip-view").unwrap();
     assert!(pane.bottom() <= px(540.0));
     let down = visual.debug_bounds("clip-detail-resize").unwrap().center();
-    let height = editor.read_with(visual, |view, _| view.clip_detail_body_height);
+    let height = editor.read_with(visual, |view, _| view.audio_detail.detail_body_height);
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(
         point(down.x, down.y + px(height + 40.0)),
@@ -432,8 +440,8 @@ fn clip_detail_small_window_returns_scroll_useful_piano_instead_of_crushing_trac
     editor.update(visual, |view, cx| {
         view.selected_track = Some(track);
         view.selected_clip = Some(clip);
-        view.clip_view_open = true;
-        view.device_panel_active = false;
+        view.audio_detail.clip_view_open = true;
+        view.device_panel.active = false;
         cx.notify();
     });
     visual.run_until_parked();
@@ -464,8 +472,8 @@ fn editor_picker_fits_bottom_right_and_closed_pane_has_no_header(cx: &mut TestAp
                 view.mode = mode;
                 view.selected_track = Some(track);
                 view.selected_clip = Some(clip);
-                view.device_panel_active = false;
-                view.clip_view_open = false;
+                view.device_panel.active = false;
+                view.audio_detail.clip_view_open = false;
                 cx.notify();
             });
             visual.run_until_parked();
@@ -485,8 +493,8 @@ fn editor_picker_fits_bottom_right_and_closed_pane_has_no_header(cx: &mut TestAp
                 let target = visual.debug_bounds(selector).unwrap().center();
                 visual.simulate_click(target, Modifiers::default());
                 editor.read_with(&visual, |view, _| {
-                    assert!(view.clip_view_open);
-                    assert_eq!(view.device_panel_active, selector == "device-detail-tab");
+                    assert!(view.audio_detail.clip_view_open);
+                    assert_eq!(view.device_panel.active, selector == "device-detail-tab");
                 });
                 let frame = visual.debug_bounds("workspace-editor-panel").unwrap();
                 let main = visual.debug_bounds("workspace-main-panel").unwrap();
@@ -510,7 +518,7 @@ fn editor_picker_fits_bottom_right_and_closed_pane_has_no_header(cx: &mut TestAp
                 );
             }
             editor.read_with(&visual, |view, _| {
-                assert!(view.last_enqueued_edit.is_none());
+                assert!(view.test_probes.last_enqueued_edit.is_none());
                 assert!(view.pending_requests.is_empty());
             });
         }

@@ -82,7 +82,7 @@ fn browser_sample_drop_loads_the_target_sampler_not_the_selected_track(cx: &mut 
             let pending = view.worker_requests_pending;
             view.drop_browser_sample_on_sampler(&stale, tracks[0], sampler, cx);
             assert_eq!(view.worker_requests_pending, pending);
-            assert!(view.active_browser_audio_drag.is_none());
+            assert!(view.browser.active_audio_drag.is_none());
             assert!(!view.first_sampler_pending_matches(1));
             assert_eq!(view.browser.playback_output, Some((1, 1)));
 
@@ -96,14 +96,14 @@ fn browser_sample_drop_loads_the_target_sampler_not_the_selected_track(cx: &mut 
                 cx,
             );
             assert_eq!(view.worker_requests_pending, pending);
-            assert!(view.active_browser_audio_drag.is_none());
+            assert!(view.browser.active_audio_drag.is_none());
             assert_eq!(view.browser.playback_output, Some((1, 1)));
 
             let drag = sample_drag(view, path.clone());
             view.begin_browser_audio_drag(&drag);
             let preview_generation = view.browser.playback_generation;
             view.drop_browser_sample_on_sampler(&drag, tracks[1], sampler, cx);
-            assert!(view.active_browser_audio_drag.is_none());
+            assert!(view.browser.active_audio_drag.is_none());
             assert!(view.first_sampler_pending_matches(1));
             // The admitted load stops the preview through its ordinary cancel.
             assert!(view.browser.playback_output.is_none());
@@ -229,8 +229,8 @@ fn browser_sample_real_drop_targets_load_one_sampler_and_preserve_other_tracks(
                 track
             });
             view.device_panel.owner = Some(DevicePanelOwner::Track(track));
-            view.device_panel_active = true;
-            view.clip_view_open = true;
+            view.device_panel.active = true;
+            view.audio_detail.clip_view_open = true;
             view.browser.open = true;
             view.browser.auto_audition = false;
             view.browser.scans.generation += 1;
@@ -324,7 +324,7 @@ fn browser_sample_real_drop_targets_load_one_sampler_and_preserve_other_tracks(
             if let Some(id) = old_sampler {
                 assert_eq!(sampler.id(), id);
             }
-            assert!(view.active_browser_audio_drag.is_none());
+            assert!(view.browser.active_audio_drag.is_none());
         });
         if route == "panel" {
             let loaded = editor.read_with(&visual, |view, _| {
@@ -423,8 +423,8 @@ fn unassigned_sampler_real_browser_drop_loads_and_replaces_without_assignment(
     visual.simulate_resize(size(px(1500.0), px(850.0)));
     editor.update(&mut visual, |view, cx| {
         view.selected_track = Some(track);
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         cx.notify();
     });
     visual.run_until_parked();

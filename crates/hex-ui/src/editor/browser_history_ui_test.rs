@@ -42,9 +42,15 @@ fn fixture(
         assert_eq!(view.browser.directory, directory.0.join("samples"));
         for (actual, name) in [
             (view.browser.test_preferences_path(), "browser.json"),
-            (view.recent_projects.test_path(), "recent-projects.json"),
-            (view.theme_settings.test_path(), "theme.json"),
-            (view.project_directory.test_path(), "project-directory.json"),
+            (
+                view.settings.recent_projects.test_path(),
+                "recent-projects.json",
+            ),
+            (view.settings.theme.test_path(), "theme.json"),
+            (
+                view.settings.project_directory.test_path(),
+                "project-directory.json",
+            ),
         ] {
             assert_eq!(actual, directory.0.join("config").join(name));
         }
@@ -649,9 +655,15 @@ fn builtin_history_fixture(
         assert_eq!(view.browser.places, vec![music, home]);
         for (actual, name) in [
             (view.browser.test_preferences_path(), "browser.json"),
-            (view.recent_projects.test_path(), "recent-projects.json"),
-            (view.theme_settings.test_path(), "theme.json"),
-            (view.project_directory.test_path(), "project-directory.json"),
+            (
+                view.settings.recent_projects.test_path(),
+                "recent-projects.json",
+            ),
+            (view.settings.theme.test_path(), "theme.json"),
+            (
+                view.settings.project_directory.test_path(),
+                "project-directory.json",
+            ),
         ] {
             assert_eq!(actual, directory.0.join("config").join(name));
         }

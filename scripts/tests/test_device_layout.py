@@ -35,11 +35,10 @@ class DeviceLayoutGuardTests(unittest.TestCase):
         self.assertIn("resolve device styles", errors[0])
 
     def production_copy(self, root, *, gallery=False):
-        paths = list(guard.ENTRY_POINTS) + [guard.UI / "device_composition.rs", guard.PANEL / "operator_panel/preview.rs"]
+        paths = list(guard.ENTRY_POINTS) + [guard.UI_KIT / "device_composition.rs", guard.PANEL / "operator_panel/preview.rs"]
         paths += [path.relative_to(guard.ROOT) for path in (guard.ROOT / guard.PANEL).glob("*_panel.rs")]
         if gallery:
-            paths += [Path("crates/hex-ui/examples/layout_review") / name for name in ("gallery.rs", "compositions.rs")]
-            paths += [Path("crates/hex-ui/examples/layout_review.rs"), Path("crates/hex-sandbox/src/main.rs")]
+            paths += [guard.SANDBOX / name for name in ("gallery.rs", "compositions.rs", "main.rs")]
         for path in paths:
             (root / path).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(guard.ROOT / path, root / path)
@@ -106,20 +105,16 @@ class DeviceLayoutGuardTests(unittest.TestCase):
             root = Path(directory)
             self.production_copy(root, gallery=True)
             self.assertEqual(guard.analyze(root), [])
-            preview = root / "crates/hex-ui/examples/layout_review/compositions.rs"
+            preview = root / "crates/hex-sandbox/src/compositions.rs"
             original = preview.read_text()
             preview.write_text(original + "\nfn local_skin() { ControlStyle { surface: palette } }\n")
             self.assertTrue(any("resolve device styles" in error for error in guard.analyze(root)))
             preview.write_text(original.replace("composition::utility", "local_utility").replace("device_composition::utility", "local_utility"))
             self.assertTrue(any("missing shared call device_composition::utility" in error for error in guard.analyze(root)))
             preview.write_text(original)
-            entry = root / "crates/hex-ui/examples/layout_review.rs"
-            entry.write_text(entry.read_text().replace("../src/device_composition.rs", "layout_review/copied_composition.rs"))
-            self.assertTrue(any("include the owning" in error for error in guard.analyze(root)))
-            entry.write_text((guard.ROOT / entry.relative_to(root)).read_text())
             entry = root / "crates/hex-sandbox/src/main.rs"
-            entry.write_text(entry.read_text().replace("../../hex-ui/src/device_composition.rs", "copied_composition.rs"))
-            self.assertTrue(any("hex-sandbox" in error and "include the owning" in error for error in guard.analyze(root)))
+            entry.write_text(entry.read_text().replace("device_composition,", "/* removed */"))
+            self.assertTrue(any("hex-sandbox" in error and "hex_ui_kit::device_composition" in error for error in guard.analyze(root)))
 
 
 if __name__ == "__main__":

@@ -87,10 +87,10 @@ impl State {
 
 impl EditorView {
     pub(super) fn start_track_defaults_load(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.track_defaults.path.clone() else {
-            self.track_defaults.loading = false;
-            self.track_defaults.writable = false;
-            self.track_defaults.error =
+        let Some(path) = self.settings.track_defaults.path.clone() else {
+            self.settings.track_defaults.loading = false;
+            self.settings.track_defaults.writable = false;
+            self.settings.track_defaults.error =
                 Some("track defaults unavailable · home directory is unset".into());
             return;
         };
@@ -107,7 +107,7 @@ impl EditorView {
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
-                let state = &mut view.track_defaults;
+                let state = &mut view.settings.track_defaults;
                 state.loading = false;
                 match result {
                     Ok(preferences) => state.committed = preferences,
@@ -128,7 +128,7 @@ impl EditorView {
     }
 
     fn save_track_default_gain(&mut self, gain: f64, cx: &mut Context<Self>) {
-        let state = &mut self.track_defaults;
+        let state = &mut self.settings.track_defaults;
         if state.loading || state.saving || !state.writable {
             return;
         }
@@ -158,7 +158,7 @@ impl EditorView {
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
-                let state = &mut view.track_defaults;
+                let state = &mut view.settings.track_defaults;
                 state.saving = false;
                 match result {
                     Ok(()) => state.committed = preferences,
@@ -184,14 +184,14 @@ impl EditorView {
     ) -> Result<Option<f32>, &'static str> {
         match destination {
             hex_session::service::ArrangementDeviceDestination::NewTrack { .. } => {
-                self.track_defaults.captured_gain().map(Some)
+                self.settings.track_defaults.captured_gain().map(Some)
             }
             hex_session::service::ArrangementDeviceDestination::ExistingTrack { .. } => Ok(None),
         }
     }
 
     pub(super) fn insert_default_track(&mut self, before_track: Option<TrackId>) {
-        let gain = match self.track_defaults.captured_gain() {
+        let gain = match self.settings.track_defaults.captured_gain() {
             Ok(gain) => gain,
             Err(error) => {
                 self.error = Some(error.into());
@@ -364,7 +364,7 @@ impl EditorView {
     }
 
     pub(super) fn track_defaults_row(&mut self, cx: &mut Context<Self>) -> Div {
-        if self.track_defaults.binding.is_none() {
+        if self.settings.track_defaults.binding.is_none() {
             let config = NumericSpec::new(
                 0.0,
                 2.0,
@@ -379,7 +379,7 @@ impl EditorView {
                     theme::text("new track volume · db"),
                     NumericControlKind::HorizontalSlider,
                     spec,
-                    f64::from(self.track_defaults.committed.gain()),
+                    f64::from(self.settings.track_defaults.committed.gain()),
                     theme::control_style(),
                 )
             });
@@ -396,13 +396,13 @@ impl EditorView {
                             view.save_track_default_gain(event.value, cx);
                         }
                     });
-                self.track_defaults.binding = Some(Binding {
+                self.settings.track_defaults.binding = Some(Binding {
                     control,
                     _subscription: subscription,
                 });
             }
         }
-        let state = &self.track_defaults;
+        let state = &self.settings.track_defaults;
         let mut row = div().flex().flex_col().gap(px(3.0));
         if let Some(binding) = &state.binding {
             binding.control.update(cx, |control, cx| {
@@ -451,9 +451,9 @@ mod tests {
         loop {
             visual.run_until_parked();
             if editor.read_with(&*visual, |view, _| {
-                !view.track_defaults.loading
-                    && !view.track_defaults.saving
-                    && !view.audio_import_settings.is_loading()
+                !view.settings.track_defaults.loading
+                    && !view.settings.track_defaults.saving
+                    && !view.settings.audio_import.is_loading()
             }) {
                 return;
             }
@@ -479,22 +479,22 @@ mod tests {
             let context = AudioBatchContext { project_generation: v.project_generation, revision: v.state.as_ref().unwrap().revision, active_gesture: false };
             let make = |destination| Request::audio_batch(vec![PathBuf::from("/sample.wav")], destination, context).unwrap().0;
             let destination = AudioBatchDestination::NewTracks { before_track: None, start: 42 };
-            v.track_defaults.committed = TrackDefaults::new(0.5).unwrap();
+            v.settings.track_defaults.committed = TrackDefaults::new(0.5).unwrap();
             let legacy = v.capture_audio_import_policy(Request::Import(PathBuf::from("/legacy.wav"))).unwrap();
             let anchored = v.capture_audio_import_policy(Request::ImportToNewTrack { path: PathBuf::from("/anchored.wav"), before_track: Some(target), start: 123 }).unwrap();
             let captured = v.capture_audio_import_policy(make(destination)).unwrap();
             let console_new = AudioBatchDestination::Console(ConsoleDestination::NewTrack { before_track: Some(target), scene: hex_project::SessionSceneTarget::Insert { before: None } });
             let captured_console = v.capture_audio_import_policy(make(console_new)).unwrap();
-            v.track_defaults.committed = TrackDefaults::new(0.25).unwrap();
+            v.settings.track_defaults.committed = TrackDefaults::new(0.25).unwrap();
             assert!(matches!(captured_console, Request::ImportAudioBatch { options, .. } if options.new_track_gain == Some(0.5)));
             assert!(matches!(legacy, Request::ImportToNewTrackWithGain { before_track: None, start: 0, gain, .. } if gain == 0.5));
             assert!(matches!(anchored, Request::ImportToNewTrackWithGain { before_track: Some(id), start: 123, gain, .. } if id == target && gain == 0.5));
-            v.track_defaults.saving = true;
+            v.settings.track_defaults.saving = true;
             let during_save = v.capture_audio_import_policy(make(destination)).unwrap();
             assert!(matches!(during_save, Request::ImportAudioBatch { options, .. } if options.new_track_gain == Some(0.25)));
-            v.track_defaults.saving = false;
+            v.settings.track_defaults.saving = false;
             assert!(matches!(captured, Request::ImportAudioBatch { options, .. } if options.new_track_gain == Some(0.5)));
-            v.track_defaults.loading = true;
+            v.settings.track_defaults.loading = true;
             assert!(v.capture_audio_import_policy(make(destination)).unwrap_err().contains("loading"));
             assert!(v.capture_audio_import_policy(make(console_new)).unwrap_err().contains("loading"));
             let existing = v.capture_audio_import_policy(make(AudioBatchDestination::Track { track: target, start: 0 })).unwrap();
@@ -503,8 +503,8 @@ mod tests {
             let hex_project::Created::Scene(scene) = project.execute(Command::AddScene { name: "scene".into() }).unwrap() else { panic!("scene") };
             let console = v.capture_audio_import_policy(make(AudioBatchDestination::Console(ConsoleDestination::Cell { track: target, scene }))).unwrap();
             assert!(matches!(console, Request::ImportAudioBatch { options, .. } if options.new_track_gain.is_none()));
-            v.track_defaults.loading = false;
-            v.track_defaults.writable = false;
+            v.settings.track_defaults.loading = false;
+            v.settings.track_defaults.writable = false;
             assert!(v.capture_audio_import_policy(make(destination)).unwrap_err().contains("open settings"));
             assert!(v.capture_audio_import_policy(make(console_new)).unwrap_err().contains("open settings"));
             assert!(v.capture_audio_import_policy(Request::Import(PathBuf::from("/legacy.wav"))).unwrap_err().contains("open settings"));
@@ -527,17 +527,17 @@ mod tests {
                 track,
                 instrument: None,
             };
-            view.track_defaults.committed = TrackDefaults::new(0.5).unwrap();
+            view.settings.track_defaults.committed = TrackDefaults::new(0.5).unwrap();
             let captured = view.device_track_gain(new).unwrap();
-            view.track_defaults.committed = TrackDefaults::new(0.25).unwrap();
-            view.track_defaults.saving = true;
+            view.settings.track_defaults.committed = TrackDefaults::new(0.25).unwrap();
+            view.settings.track_defaults.saving = true;
             assert_eq!(captured, Some(0.5));
             assert_eq!(view.device_track_gain(new).unwrap(), Some(0.25));
-            view.track_defaults.loading = true;
+            view.settings.track_defaults.loading = true;
             assert!(view.device_track_gain(new).unwrap_err().contains("loading"));
             assert_eq!(view.device_track_gain(existing).unwrap(), None);
-            view.track_defaults.loading = false;
-            view.track_defaults.writable = false;
+            view.settings.track_defaults.loading = false;
+            view.settings.track_defaults.writable = false;
             assert!(
                 view.device_track_gain(new)
                     .unwrap_err()
@@ -576,13 +576,13 @@ mod tests {
                 .unwrap();
         assert!((20.0 * saved.gain().log10() + 6.0).abs() < 1e-4);
         editor.update(&mut visual, |v, cx| {
-            let path = v.track_defaults.path.clone();
-            v.track_defaults = State::new(path);
+            let path = v.settings.track_defaults.path.clone();
+            v.settings.track_defaults = State::new(path);
             v.start_track_defaults_load(cx);
         });
         wait(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
-            assert_eq!(v.track_defaults.committed, saved)
+            assert_eq!(v.settings.track_defaults.committed, saved)
         });
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
@@ -603,13 +603,16 @@ mod tests {
         let parent = files.root().join("not-a-directory");
         std::fs::write(&parent, b"keep").unwrap();
         editor.update(&mut visual, |v, cx| {
-            v.track_defaults.path = Some(parent.join("track-defaults.json"));
+            v.settings.track_defaults.path = Some(parent.join("track-defaults.json"));
             v.save_track_default_gain(0.5, cx);
         });
         wait(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
-            assert_eq!(v.track_defaults.committed, TrackDefaults::default());
-            assert!(v.track_defaults.error.is_some());
+            assert_eq!(
+                v.settings.track_defaults.committed,
+                TrackDefaults::default()
+            );
+            assert!(v.settings.track_defaults.error.is_some());
         });
         editor.update(&mut visual, |v, _| v.insert_default_track(None));
         super::super::loop_selection_ui_test::pump(&editor, &mut visual);
@@ -637,15 +640,15 @@ mod tests {
         let path = files.root().join("config/bad-track-defaults.json");
         std::fs::write(&path, b"invalid").unwrap();
         editor.update(&mut visual, |v, cx| {
-            v.track_defaults = State::new(Some(path.clone()));
+            v.settings.track_defaults = State::new(Some(path.clone()));
             v.start_track_defaults_load(cx);
         });
         wait(&editor, &mut visual);
         editor.update(&mut visual, |v, _| {
             let before = v.state.as_ref().unwrap().project.clone();
-            v.last_enqueued_edit = None;
+            v.test_probes.last_enqueued_edit = None;
             v.insert_default_track(None);
-            assert!(v.last_enqueued_edit.is_none());
+            assert!(v.test_probes.last_enqueued_edit.is_none());
             assert_eq!(v.state.as_ref().unwrap().project, before);
             assert!(
                 v.error

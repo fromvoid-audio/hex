@@ -40,9 +40,9 @@ fn host(
             .midi_source(v.detail_clip_id().unwrap())
             .unwrap();
         let ids: Vec<_> = source.notes().iter().map(|n| n.id()).collect();
-        v.midi_selection.set_single(ids[0]);
+        v.midi_editor.selection.set_single(ids[0]);
         if group {
-            v.midi_selection.toggle(ids[1]).unwrap();
+            v.midi_editor.selection.toggle(ids[1]).unwrap();
         }
         cx.notify();
     });
@@ -192,19 +192,19 @@ fn velocity_input_loss_cancels_only_held_value_and_suppresses_late_release(
                     cx.notify();
                 }),
                 "selection" => editor.update(&mut visual, |v, cx| {
-                    v.midi_selection.clear();
+                    v.midi_editor.selection.clear();
                     cx.notify();
                 }),
                 "viewport" => editor.update(&mut visual, |v, cx| {
-                    v.piano_beat_span = BeatTime::from_quarters(8).unwrap();
+                    v.midi_editor.piano_beat_span = BeatTime::from_quarters(8).unwrap();
                     cx.notify();
                 }),
                 "hidden" => editor.update(&mut visual, |v, cx| {
-                    v.midi_velocity.open = false;
+                    v.midi_editor.velocity.open = false;
                     cx.notify();
                 }),
                 "bounds" => editor.update(&mut visual, |v, cx| {
-                    v.midi_velocity.height = 90.;
+                    v.midi_editor.velocity.height = 90.;
                     cx.notify();
                 }),
                 "window" => visual.deactivate_window(),
@@ -221,8 +221,11 @@ fn velocity_input_loss_cancels_only_held_value_and_suppresses_late_release(
 
             assert_eq!(actions.get(), 0, "group={group}/{loss}: late release");
             editor.read_with(&visual, |v, _| {
-                assert!(v.midi_velocity.gesture.is_none(), "group={group}/{loss}");
-                assert!(v.pending_midi_drag.is_none());
+                assert!(
+                    v.midi_editor.velocity.gesture.is_none(),
+                    "group={group}/{loss}"
+                );
+                assert!(v.midi_editor.pending_drag.is_none());
                 assert!(!v.edit_pending());
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             });

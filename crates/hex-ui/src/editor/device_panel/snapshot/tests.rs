@@ -49,9 +49,10 @@ fn values() -> DeviceParameterSnapshot {
     .unwrap()
 }
 fn acknowledge_submitted_begin(view: &mut EditorView, key: GestureKey) {
-    assert!(view.device_gesture.next_request().is_none());
+    assert!(view.device_panel.gesture.next_request().is_none());
     assert!(
-        view.device_gesture
+        view.device_panel
+            .gesture
             .acknowledge(&hex_session::device_gesture::GestureAck {
                 key,
                 phase: GesturePhase::Begin,
@@ -68,7 +69,8 @@ fn acknowledge_submitted_begin(view: &mut EditorView, key: GestureKey) {
 fn snapshot_overlay_requires_exact_device_parameter_generation(cx: &mut TestAppContext) {
     let (editor, device, other) = fixture(cx);
     editor.update(cx, |view, _| {
-        view.device_gesture
+        view.device_panel
+            .gesture
             .begin_snapshot(view.project_generation, device, values())
             .unwrap();
         for &(id, value) in values().entries() {
@@ -108,7 +110,7 @@ fn snapshot_overlay_requires_exact_device_parameter_generation(cx: &mut TestAppC
             ParameterValue::Float(0.0)
         );
         retire_invalid_owner(view, &HashSet::from([device, other]));
-        assert!(view.device_gesture.has_pending_terminal());
+        assert!(view.device_panel.gesture.has_pending_terminal());
     });
 }
 
@@ -117,14 +119,15 @@ fn snapshot_removal_cancels_without_cached_scalar_controls(cx: &mut TestAppConte
     let (editor, device, other) = fixture(cx);
     editor.update(cx, |view, _| {
         let key = view
-            .device_gesture
+            .device_panel
+            .gesture
             .begin_snapshot(view.project_generation, device, values())
             .unwrap();
         view.device_panel.controls.clear();
         retire_invalid_owner(view, &HashSet::from([other]));
         acknowledge_submitted_begin(view, key);
         assert!(matches!(
-            view.device_gesture.next_request(),
+            view.device_panel.gesture.next_request(),
             Some(GestureRequest::Cancel { .. })
         ));
     });
@@ -136,15 +139,15 @@ fn snapshot_save_barrier_finalizes_full_values_and_refusal_preserves_overlay(
 ) {
     let (editor, device, _) = fixture(cx);
     editor.update(cx, |view, _| {
-        let key = view.device_gesture.begin_snapshot(view.project_generation, device, values()).unwrap();
-        for _ in 0..super::super::super::UI_REQUEST_CAPACITY { view.device_gesture_barriers.push_back(Request::Undo); }
+        let key = view.device_panel.gesture.begin_snapshot(view.project_generation, device, values()).unwrap();
+        for _ in 0..super::super::super::UI_REQUEST_CAPACITY { view.device_panel.gesture_barriers.push_back(Request::Undo); }
         assert!(!view.enqueue_device_barrier(Request::SaveCurrent));
-        assert!(!view.device_gesture.has_pending_terminal());
-        view.device_gesture_barriers.clear();
+        assert!(!view.device_panel.gesture.has_pending_terminal());
+        view.device_panel.gesture_barriers.clear();
         assert!(view.enqueue_device_barrier(Request::SaveCurrent));
-        assert!(view.device_gesture.has_pending_terminal());
+        assert!(view.device_panel.gesture.has_pending_terminal());
         acknowledge_submitted_begin(view, key);
-        assert!(matches!(view.device_gesture.next_request(), Some(GestureRequest::CommitSnapshot { snapshot, .. }) if snapshot == values()));
-        assert!(matches!(view.device_gesture_barriers.front(), Some(Request::SaveCurrent)));
+        assert!(matches!(view.device_panel.gesture.next_request(), Some(GestureRequest::CommitSnapshot { snapshot, .. }) if snapshot == values()));
+        assert!(matches!(view.device_panel.gesture_barriers.front(), Some(Request::SaveCurrent)));
     });
 }

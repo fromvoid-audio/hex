@@ -452,11 +452,8 @@ impl PreparedNativeProcessor for PreparedGate {
             hold_frames: self.hold_frames,
             release_frames: self.release_frames,
             open: false,
-            gain: self.floor_gain,
             hold_elapsed: 0,
-            ramp_target: self.floor_gain,
-            ramp_step: 0.0,
-            ramp_remaining: 0,
+            gain_ramp: hex_dsp::LinearRamp::settled(self.floor_gain),
         };
         runtime.check_inline_ownership();
         Box::new(runtime)
@@ -472,11 +469,8 @@ impl PreparedNativeProcessor for PreparedGate {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct GateHistory {
     open: bool,
-    gain: f64,
     hold_elapsed: u32,
-    ramp_target: f64,
-    ramp_step: f64,
-    ramp_remaining: u32,
+    gain_ramp: hex_dsp::LinearRamp,
 }
 
 /// Exact inline runtime recognized by the sealed constructor's storage ledger.
@@ -492,67 +486,33 @@ pub struct GateRuntime {
     hold_frames: u32,
     release_frames: u32,
     open: bool,
-    gain: f64,
     hold_elapsed: u32,
-    ramp_target: f64,
-    ramp_step: f64,
-    ramp_remaining: u32,
+    gain_ramp: hex_dsp::LinearRamp,
 }
 
 impl GateRuntime {
     fn history(&self) -> GateHistory {
         GateHistory {
             open: self.open,
-            gain: self.gain,
             hold_elapsed: self.hold_elapsed,
-            ramp_target: self.ramp_target,
-            ramp_step: self.ramp_step,
-            ramp_remaining: self.ramp_remaining,
+            gain_ramp: self.gain_ramp,
         }
     }
 
     fn set_history(&mut self, history: GateHistory) {
         self.open = history.open;
-        self.gain = history.gain;
         self.hold_elapsed = history.hold_elapsed;
-        self.ramp_target = history.ramp_target;
-        self.ramp_step = history.ramp_step;
-        self.ramp_remaining = history.ramp_remaining;
+        self.gain_ramp = history.gain_ramp;
     }
 
     fn reset_history(&mut self) {
         self.open = false;
-        self.gain = self.floor_gain;
         self.hold_elapsed = 0;
-        self.ramp_target = self.floor_gain;
-        self.ramp_step = 0.0;
-        self.ramp_remaining = 0;
+        self.gain_ramp.reset(self.floor_gain);
     }
 
     fn start_ramp(&mut self, target: f64, frames: u32) {
-        self.ramp_target = target;
-        if target == self.gain || frames == 0 {
-            self.gain = target;
-            self.ramp_step = 0.0;
-            self.ramp_remaining = 0;
-        } else {
-            self.ramp_step = (target - self.gain) / f64::from(frames);
-            self.ramp_remaining = frames;
-        }
-    }
-
-    fn advance_ramp(&mut self) {
-        if self.ramp_remaining == 0 {
-            return;
-        }
-        if self.ramp_remaining == 1 {
-            self.gain = self.ramp_target;
-            self.ramp_step = 0.0;
-            self.ramp_remaining = 0;
-        } else {
-            self.gain += self.ramp_step;
-            self.ramp_remaining -= 1;
-        }
+        self.gain_ramp.retarget(target, frames);
     }
 
     fn process_frame(&mut self, frame: &mut StereoFrame) {
@@ -584,9 +544,9 @@ impl GateRuntime {
                 self.hold_elapsed = 0;
             }
         }
-        self.advance_ramp();
-        frame[0] = (left * self.gain) as f32;
-        frame[1] = (right * self.gain) as f32;
+        let gain = self.gain_ramp.advance();
+        frame[0] = (left * gain) as f32;
+        frame[1] = (right * gain) as f32;
     }
 }
 

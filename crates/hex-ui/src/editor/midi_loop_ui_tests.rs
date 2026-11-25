@@ -81,7 +81,7 @@ fn loop_endpoints_and_body_preview_then_ack_once_with_undo_redo_and_saved_repeat
             (
                 v.state.as_ref().unwrap().project.snapshot(),
                 v.state.as_ref().unwrap().revision,
-                v.midi_marker,
+                v.midi_editor.marker,
                 v.offline_cursor,
             )
         });
@@ -91,7 +91,7 @@ fn loop_endpoints_and_body_preview_then_ack_once_with_undo_redo_and_saved_repeat
         visual.simulate_mouse_move(up, Some(MouseButton::Left), Modifiers::default());
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before.0);
-            let p = v.midi_ruler.gesture.unwrap().preview;
+            let p = v.midi_editor.ruler.gesture.unwrap().preview;
             assert_eq!(
                 (p.loop_start, p.loop_end),
                 (beat(first).raw(), beat(last).raw())
@@ -127,7 +127,10 @@ fn loop_endpoints_and_body_preview_then_ack_once_with_undo_redo_and_saved_repeat
             );
             assert_eq!(c.notes().len(), 1);
             assert_eq!(c.notes()[0].velocity(), 93);
-            assert_eq!((v.midi_marker, v.offline_cursor), (before.2, before.3));
+            assert_eq!(
+                (v.midi_editor.marker, v.offline_cursor),
+                (before.2, before.3)
+            );
             s.project.snapshot()
         });
         for _ in 0..3 {
@@ -308,10 +311,10 @@ fn disabled_loop_keeps_markers_and_refuses_invalid_enable_without_history(cx: &m
         };
         let clip = cell.id();
         v.mode = crate::editor::EditorMode::Session;
-        v.selected_scene = Some(scene);
-        v.selected_cell = Some((track, scene));
+        v.session_grid.selected_scene = Some(scene);
+        v.session_grid.selected_cell = Some((track, scene));
         v.selected_clip = Some(clip);
-        v.piano_view_clip = None;
+        v.midi_editor.piano_view_clip = None;
         cx.notify();
         clip
     });
@@ -379,7 +382,7 @@ fn loop_capture_cancel_and_stale_frame_preserve_source_and_transport(cx: &mut Te
         visual.simulate_mouse_move(up, Some(MouseButton::Left), Modifiers::default());
         editor.read_with(&visual, |v, _| {
             assert_eq!(
-                v.midi_ruler.gesture.unwrap().preview.loop_end,
+                v.midi_editor.ruler.gesture.unwrap().preview.loop_end,
                 beat(2).raw()
             )
         });
@@ -388,7 +391,7 @@ fn loop_capture_cancel_and_stale_frame_preserve_source_and_transport(cx: &mut Te
             1 => visual.update(|window, cx| editor.update(cx, |v, _| v.focus.focus(window))),
             _ => {
                 editor.update(&mut visual, |v, cx| {
-                    v.midi_snap_grid = v.midi_snap_grid.next();
+                    v.midi_editor.snap_grid = v.midi_editor.snap_grid.next();
                     cx.notify();
                 });
             }
@@ -414,7 +417,7 @@ fn loop_capture_cancel_and_stale_frame_preserve_source_and_transport(cx: &mut Te
             }),
             cx,
         );
-        assert!(editor.read(cx).midi_ruler.gesture.is_none());
+        assert!(editor.read(cx).midi_editor.ruler.gesture.is_none());
     });
     editor.read_with(&visual, |v, _| {
         assert_eq!(
@@ -427,7 +430,7 @@ fn loop_capture_cancel_and_stale_frame_preserve_source_and_transport(cx: &mut Te
                 .loop_end(),
             beat(4)
         );
-        assert!(v.last_transport_command.is_none());
+        assert!(v.test_probes.last_transport_command.is_none());
     });
 }
 
@@ -468,10 +471,10 @@ fn console_loop_resize_enable_and_roundtrip_leave_arrangement_source_unchanged(
         };
         let clip = cell.id();
         v.mode = crate::editor::EditorMode::Session;
-        v.selected_scene = Some(scene);
-        v.selected_cell = Some((track, scene));
+        v.session_grid.selected_scene = Some(scene);
+        v.session_grid.selected_cell = Some((track, scene));
         v.selected_clip = Some(clip);
-        v.piano_view_clip = None;
+        v.midi_editor.piano_view_clip = None;
         cx.notify();
         clip
     });

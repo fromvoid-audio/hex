@@ -46,6 +46,7 @@ mod device;
 pub mod input_capture;
 pub mod input_devices;
 mod open_outcome;
+pub mod output_devices;
 mod output_route;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod plugin_effects;
@@ -60,8 +61,13 @@ pub use lifecycle::{
     AudioLifecycleFailure, RecoveryOpen, RecoveryOpenError, WorkerRecoveryOpen,
     audio_lifecycle_failure, request_initial_open, request_recovery_open, request_worker_open,
     request_worker_open_with_profile, request_worker_open_with_reliable_action_outcomes,
+    request_worker_open_with_selection,
 };
 pub use open_outcome::{OutputOpenError, RateMismatch};
+pub use output_devices::{
+    OutputDeviceInfo, OutputDeviceSelection, OutputDevicesSnapshot, buffer_latency_ms,
+    probe_output_devices_on_control, probe_output_route_for_device_on_control,
+};
 pub use output_route::{OutputRoute, OutputRouteWatch, ROUTE_SAMPLE_INTERVAL};
 pub use render_fault::RenderFaultSnapshot;
 mod candidate_catalog;
@@ -150,6 +156,7 @@ pub mod processor_audition;
 pub mod spectrum;
 pub mod spectrum_target;
 pub mod spectrum_worker;
+pub mod worker_pool;
 use cpal::{
     FromSample, SizedSample,
     traits::{DeviceTrait, HostTrait, StreamTrait},
@@ -163,6 +170,7 @@ use std::{
     },
     time::Instant,
 };
+pub use worker_pool::AudioWorkerPool;
 
 pub struct AudioOutput {
     _stream: lifecycle::StreamOwner,

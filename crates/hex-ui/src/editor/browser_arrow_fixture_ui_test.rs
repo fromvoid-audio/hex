@@ -90,9 +90,9 @@ fn browser_arrows_fixture_catalog_job_owns_root_after_caller_and_view_drop(
         assert_eq!(view.test_environment.root(), root);
         [
             view.browser.test_preferences_path().to_owned(),
-            view.recent_projects.test_path().to_owned(),
-            view.theme_settings.test_path().to_owned(),
-            view.project_directory.test_path().to_owned(),
+            view.settings.recent_projects.test_path().to_owned(),
+            view.settings.theme.test_path().to_owned(),
+            view.settings.project_directory.test_path().to_owned(),
         ]
     });
     for (path, name) in paths.iter().zip([

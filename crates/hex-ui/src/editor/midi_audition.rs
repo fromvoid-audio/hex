@@ -53,9 +53,9 @@ impl MidiAudition {
 
 impl Intent {
     fn matches_pending(&self, view: &EditorView) -> bool {
-        view.midi_audition.enabled
+        view.midi_editor.audition.enabled
             && view.document_audio_mode == hex_session::DocumentAudioMode::Resident
-            && view.clip_view_open
+            && view.audio_detail.clip_view_open
             && view.project_generation == self.generation
             && view
                 .state
@@ -64,15 +64,15 @@ impl Intent {
             && view.detail_clip_id() == Some(self.clip)
             && self
                 .epoch
-                .is_none_or(|epoch| view.midi_selection.epoch() == epoch)
-            && !view.opening_project
-            && !view.close_prompt_open
+                .is_none_or(|epoch| view.midi_editor.selection.epoch() == epoch)
+            && !view.persistence.opening_project
+            && !view.persistence.close_prompt_open
     }
 
     fn matches_active(&self, view: &EditorView) -> bool {
-        view.midi_audition.enabled
+        view.midi_editor.audition.enabled
             && view.document_audio_mode == hex_session::DocumentAudioMode::Resident
-            && view.clip_view_open
+            && view.audio_detail.clip_view_open
             && view.project_generation == self.generation
             && view.state.as_ref().is_some_and(|state| {
                 if self.epoch.is_none() {
@@ -84,9 +84,9 @@ impl Intent {
             && view.detail_clip_id() == Some(self.clip)
             && self
                 .epoch
-                .is_none_or(|epoch| view.midi_selection.epoch() == epoch)
-            && !view.opening_project
-            && !view.close_prompt_open
+                .is_none_or(|epoch| view.midi_editor.selection.epoch() == epoch)
+            && !view.persistence.opening_project
+            && !view.persistence.close_prompt_open
     }
 }
 
@@ -193,7 +193,7 @@ impl EditorView {
 
     pub(super) fn cancel_midi_audition(&mut self) {
         self.cancel_pending_midi_edit_audition();
-        self.midi_audition.clear();
+        self.midi_editor.audition.clear();
         if self
             .computer_keyboard
             .input
@@ -201,7 +201,7 @@ impl EditorView {
             .is_some_and(|input| input.is_note_audition())
         {
             self.retire_computer_keyboard_audio();
-        } else if !self.midi_audition.enabled || !self.clip_view_open {
+        } else if !self.midi_editor.audition.enabled || !self.audio_detail.clip_view_open {
             self.retire_clip_audition_root_if_unneeded();
         }
     }
@@ -210,12 +210,13 @@ impl EditorView {
     /// selection/preview captured by the click that just moved focus into the piano roll.
     /// Hardware and reusable live audition keep their admitted route across piano-roll entry.
     pub(super) fn blur_computer_keyboard(&mut self, window: &gpui::Window) {
-        let entering_piano_roll = self.midi_focus.is_focused(window);
+        let entering_piano_roll = self.midi_editor.focus.is_focused(window);
         if !entering_piano_roll {
             self.cancel_pending_midi_edit_audition();
         }
         if entering_piano_roll {
-            let keep_live = (self.controller_wants_live_notes() || self.midi_audition.enabled)
+            let keep_live = (self.controller_wants_live_notes()
+                || self.midi_editor.audition.enabled)
                 && self.computer_keyboard.input.as_ref().is_some_and(|input| {
                     (input.live_notes().is_some() || input.has_live_audition())
                         && !input.is_cancelled()
@@ -224,12 +225,12 @@ impl EditorView {
                 self.clear_physical_keys_preserving_audition();
                 return;
             }
-            let pending = self.midi_audition.pending.take();
+            let pending = self.midi_editor.audition.pending.take();
             self.cancel_computer_keyboard();
-            if !self.midi_audition.enabled {
+            if !self.midi_editor.audition.enabled {
                 self.computer_keyboard.suspended = true;
             }
-            self.midi_audition.pending = pending;
+            self.midi_editor.audition.pending = pending;
             return;
         }
         if self.controller_wants_live_notes()
@@ -241,7 +242,7 @@ impl EditorView {
         {
             input.clear_keys_on_control();
             self.computer_keyboard.release_all();
-            self.midi_audition.clear();
+            self.midi_editor.audition.clear();
         } else {
             self.cancel_computer_keyboard();
             self.computer_keyboard.suspended = true;
@@ -251,14 +252,14 @@ impl EditorView {
     /// Capture at most 17 complete notes in one bounded pass over the selected source.
     /// More notes refuse the whole chord; no velocity quantization or truncation.
     pub(super) fn audition_midi_selection(&mut self) -> bool {
-        let selected = self.midi_selection.shared_ids();
+        let selected = self.midi_editor.selection.shared_ids();
         self.audition_midi_notes(&selected)
     }
 
     /// The marquee supplies only newly entered, sorted note identities; ordinary
     /// selection actions supply the complete selected bank. Both use one owner.
     pub(super) fn audition_midi_notes(&mut self, ids: &[hex_project::NoteId]) -> bool {
-        if !self.midi_audition.enabled {
+        if !self.midi_editor.audition.enabled {
             return false;
         }
         self.cancel_midi_audition();
@@ -308,7 +309,7 @@ impl EditorView {
             revision: state.revision,
             clip,
             track,
-            epoch: Some(self.midi_selection.epoch()),
+            epoch: Some(self.midi_editor.selection.epoch()),
             notes,
             len,
         })
@@ -321,7 +322,7 @@ impl EditorView {
         clip: ClipId,
         preview: &[(u8, u8)],
     ) -> bool {
-        if !self.midi_audition.enabled {
+        if !self.midi_editor.audition.enabled {
             return false;
         }
         if self.document_audio_mode != hex_session::DocumentAudioMode::Resident {
@@ -349,7 +350,7 @@ impl EditorView {
         };
         let mut notes = [(0, 0); MAX_NOTE_AUDITION_NOTES];
         notes[..len].copy_from_slice(preview);
-        self.midi_audition.clear();
+        self.midi_editor.audition.clear();
         self.queue_and_trigger_midi_audition(Intent {
             generation: self.project_generation,
             revision: state.revision,
@@ -362,7 +363,7 @@ impl EditorView {
     }
 
     fn queue_and_trigger_midi_audition(&mut self, intent: Intent) -> bool {
-        self.midi_audition.pending = Some(intent);
+        self.midi_editor.audition.pending = Some(intent);
         if self.try_trigger_midi_audition_now() {
             return true;
         }
@@ -371,11 +372,11 @@ impl EditorView {
     }
 
     pub(super) fn try_trigger_midi_audition_now(&mut self) -> bool {
-        let Some(intent) = self.midi_audition.pending.as_ref() else {
+        let Some(intent) = self.midi_editor.audition.pending.as_ref() else {
             return false;
         };
         if !intent.matches_pending(self) {
-            self.midi_audition.pending = None;
+            self.midi_editor.audition.pending = None;
             return false;
         }
         if self.computer_keyboard.physical_notes().next().is_some() {
@@ -393,7 +394,7 @@ impl EditorView {
             return false;
         };
         let gate_frames = u64::from(sample_rate / 4).max(1);
-        let intent = self.midi_audition.pending.take().unwrap();
+        let intent = self.midi_editor.audition.pending.take().unwrap();
         if self.worker_owns_keyboard_publication()
             && let Some((_, revision, _)) = self.computer_keyboard.target.as_mut()
             && let Some(state) = self.state.as_ref()
@@ -403,7 +404,7 @@ impl EditorView {
         match input.trigger_live_note_audition_on_control(&intent.notes[..intent.len], gate_frames)
         {
             Ok(trigger) => {
-                self.midi_audition.active = Some(Active {
+                self.midi_editor.audition.active = Some(Active {
                     trigger,
                     intent,
                     output: input,
@@ -426,9 +427,15 @@ impl EditorView {
                 && intent.clip == context.scene.clip
                 && intent.epoch == Some(context.selection_epoch)
         };
-        if self.midi_audition.pending.as_ref().is_some_and(matches)
+        if self
+            .midi_editor
+            .audition
+            .pending
+            .as_ref()
+            .is_some_and(matches)
             || self
-                .midi_audition
+                .midi_editor
+                .audition
                 .active
                 .as_ref()
                 .is_some_and(|active| matches(&active.intent))
@@ -451,12 +458,14 @@ impl EditorView {
         }
 
         let invalid_pending = self
-            .midi_audition
+            .midi_editor
+            .audition
             .pending
             .as_ref()
             .is_some_and(|intent| !intent.matches_pending(self));
         let invalid_active = self
-            .midi_audition
+            .midi_editor
+            .audition
             .active
             .as_ref()
             .is_some_and(|active| !active.intent.matches_active(self));
@@ -465,9 +474,9 @@ impl EditorView {
             return Some(true);
         }
 
-        if let Some(active) = &self.midi_audition.active {
+        if let Some(active) = &self.midi_editor.audition.active {
             if active.output.live_note_audition_refused(active.trigger) {
-                self.midi_audition.active = None;
+                self.midi_editor.audition.active = None;
                 self.error = Some("instrument could not play the complete audition chord".into());
                 return Some(true);
             }
@@ -487,10 +496,10 @@ impl EditorView {
             }
         }
 
-        if !self.midi_audition.enabled
-            || !self.clip_view_open
-            || self.opening_project
-            || self.close_prompt_open
+        if !self.midi_editor.audition.enabled
+            || !self.audio_detail.clip_view_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
             || self.document_audio_mode != hex_session::DocumentAudioMode::Resident
         {
             if self.is_clip_audition_only_root() {
@@ -509,9 +518,10 @@ impl EditorView {
         }
 
         if self.controller_wants_live_notes() {
-            if self.midi_audition.pending.is_some()
+            if self.midi_editor.audition.pending.is_some()
                 && self
-                    .midi_audition
+                    .midi_editor
+                    .audition
                     .pending
                     .as_ref()
                     .is_some_and(|intent| self.selected_track != Some(intent.track))
@@ -533,8 +543,8 @@ impl EditorView {
         };
 
         if !self.track_has_enabled_instrument(track) {
-            if self.midi_audition.pending.is_some() {
-                self.midi_audition.pending = None;
+            if self.midi_editor.audition.pending.is_some() {
+                self.midi_editor.audition.pending = None;
             }
             if self.is_clip_audition_only_root() {
                 self.retire_computer_keyboard_audio();
@@ -548,8 +558,8 @@ impl EditorView {
         if self.computer_keyboard.enabled
             && !self.computer_keyboard.suspended
             && self.selected_track != Some(track)
-            && self.midi_audition.pending.is_none()
-            && self.midi_audition.active.is_none()
+            && self.midi_editor.audition.pending.is_none()
+            && self.midi_editor.audition.active.is_none()
         {
             return None;
         }
@@ -571,36 +581,41 @@ impl EditorView {
 
         // Never tear down a currently sounding live-audition root just to re-prepare
         // a silent root across a non-worker-owned revision advance.
-        if self.midi_audition.pending.is_none()
-            && self.midi_audition.active.as_ref().is_some_and(|active| {
-                active.intent.track == track
-                    && !active.output.is_cancelled()
-                    && active.output.live_audition_id() == active.trigger
-            })
+        if self.midi_editor.audition.pending.is_none()
+            && self
+                .midi_editor
+                .audition
+                .active
+                .as_ref()
+                .is_some_and(|active| {
+                    active.intent.track == track
+                        && !active.output.is_cancelled()
+                        && active.output.live_audition_id() == active.trigger
+                })
         {
             return Some(false);
         }
 
         // Do not proactively spin up a fresh root while suspended (after focus loss
         // to Arrangement or Stop) until an explicit piano-roll audition intent arrives.
-        if self.computer_keyboard.suspended && self.midi_audition.pending.is_none() {
+        if self.computer_keyboard.suspended && self.midi_editor.audition.pending.is_none() {
             return Some(false);
         }
 
         // Only root preparation (which enqueues PrepareComputerKeyboard) waits for
         // idle worker/pointer state; once prepared, triggers are lock-free and immediate.
         if self.edit_pending()
-            || self.midi_note_gesture.is_some()
-            || self.midi_velocity.gesture.is_some()
-            || self.midi_group_gesture.is_some()
-            || self.midi_creation.is_some()
-            || self.midi_stroke.is_some()
+            || self.midi_editor.note_gesture.is_some()
+            || self.midi_editor.velocity.gesture.is_some()
+            || self.midi_editor.group_gesture.is_some()
+            || self.midi_editor.creation.is_some()
+            || self.midi_editor.stroke.is_some()
             || self.device_gesture_pending()
             || self.prepared_seek.is_some()
             || (self.stopped_playback_restore.is_some() && !self.worker_owns_keyboard_publication())
-            || self.tuning.client.snapshot().is_some()
-            || self.tuning.client.has_pending_requests()
-            || self.tuning.client.is_recovery_pending()
+            || self.settings.tuning.client.snapshot().is_some()
+            || self.settings.tuning.client.has_pending_requests()
+            || self.settings.tuning.client.is_recovery_pending()
         {
             return Some(false);
         }
@@ -642,16 +657,16 @@ impl EditorView {
             input,
         }) {
             self.retire_computer_keyboard_audio();
-            self.midi_audition.clear();
+            self.midi_editor.audition.clear();
         }
         Some(true)
     }
 
     pub(super) fn midi_audition_preparation_matches(&self, request: u64, revision: u64) -> bool {
-        self.midi_audition.enabled
-            && self.clip_view_open
-            && !self.opening_project
-            && !self.close_prompt_open
+        self.midi_editor.audition.enabled
+            && self.audio_detail.clip_view_open
+            && !self.persistence.opening_project
+            && !self.persistence.close_prompt_open
             && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && request == self.computer_keyboard.request_id
             && self.computer_keyboard.target
@@ -670,8 +685,8 @@ impl EditorView {
     /// A fresh physical press cancels sounding audition. Only an unplayed intent
     /// is deferred, and is restored after physical ownership has been captured.
     pub(super) fn pause_midi_audition_for_keyboard(&mut self) -> Option<Intent> {
-        let pending = self.midi_audition.pending.take();
-        self.midi_audition.clear();
+        let pending = self.midi_editor.audition.pending.take();
+        self.midi_editor.audition.clear();
         pending
     }
 
@@ -680,7 +695,7 @@ impl EditorView {
             && intent.matches_pending(self)
             && self.computer_keyboard.physical_notes().next().is_some()
         {
-            self.midi_audition.pending = Some(intent);
+            self.midi_editor.audition.pending = Some(intent);
         }
     }
 }

@@ -195,7 +195,10 @@ pub(in crate::editor) fn drop_track_key(
     cx: &mut Context<EditorView>,
 ) -> bool {
     let controls = &view.device_panel.compressor_sidechains;
-    if !view.device_panel_active || !view.clip_view_open || controls.epoch != epoch(view) {
+    if !view.device_panel.active
+        || !view.audio_detail.clip_view_open
+        || controls.epoch != epoch(view)
+    {
         return false;
     }
     let Some((device, eligible)) = controls.visible.iter().find_map(|&device| {

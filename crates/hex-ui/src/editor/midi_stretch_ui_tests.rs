@@ -35,7 +35,7 @@ fn preview(
     visual: &VisualTestContext,
 ) -> hex_project::MidiClipStretch {
     editor.read_with(visual, |v, _| {
-        let drag = v.active_midi_trim_drag.as_ref().unwrap();
+        let drag = v.midi_editor.active_trim_drag.as_ref().unwrap();
         assert!(drag.stretch_modifier.get());
         let super::MidiEdgePreview::Stretch(preview) = drag.preview.borrow().unwrap() else {
             panic!("actual Shift gesture must use stretch projection")
@@ -75,7 +75,8 @@ fn midi_shift_stretch_both_edges_projects_notes_through_release_ack_and_one_undo
             editor.read_with(&visual, |v, _| {
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
                 assert_eq!(
-                    v.active_midi_trim_drag
+                    v.midi_editor
+                        .active_trim_drag
                         .as_ref()
                         .unwrap()
                         .clip
@@ -106,10 +107,10 @@ fn midi_shift_stretch_both_edges_projects_notes_through_release_ack_and_one_undo
                 assert_eq!(trim_notes(&mut visual), held_note);
             }
             editor.read_with(&visual, |v, _| {
-                assert!(v.active_midi_trim_drag.is_none());
+                assert!(v.midi_editor.active_trim_drag.is_none());
                 assert!(v.pending_trim.is_some());
                 assert_eq!(v.worker_requests_pending, 1);
-                assert!(matches!(v.last_enqueued_edit, Some(Command::StretchMidiClipEdge {clip:id,edge:which,..}) if id == clip && which == edge));
+                assert!(matches!(v.test_probes.last_enqueued_edit, Some(Command::StretchMidiClipEdge {clip:id,edge:which,..}) if id == clip && which == edge));
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             });
             pump(&editor, &mut visual);
@@ -219,7 +220,8 @@ fn midi_shift_stretch_live_modifiers_and_browser_release_keep_the_last_note_proj
     );
     editor.read_with(&visual, |v, _| {
         assert!(matches!(
-            v.active_midi_trim_drag
+            v.midi_editor
+                .active_trim_drag
                 .as_ref()
                 .unwrap()
                 .preview
@@ -254,7 +256,8 @@ fn midi_shift_stretch_live_modifiers_and_browser_release_keep_the_last_note_proj
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert!(matches!(
-            v.active_midi_trim_drag
+            v.midi_editor
+                .active_trim_drag
                 .as_ref()
                 .unwrap()
                 .preview
@@ -310,7 +313,7 @@ fn midi_shift_stretch_escape_focus_and_real_document_replacement_retire_without_
         let target = capture(&mut visual, clip, TrimEdge::Right, 55.0, shift);
         preview(&editor, &visual);
         assert!(visual.debug_bounds("midi-trim-live-preview").is_some());
-        editor.update(&mut visual, |v, _| v.last_enqueued_edit = None);
+        editor.update(&mut visual, |v, _| v.test_probes.last_enqueued_edit = None);
         match terminal {
             0 => visual.simulate_keystrokes("escape"),
             1 => visual.update(|window, cx| editor.read(cx).browser.search.read(cx).focus(window)),
@@ -334,9 +337,9 @@ fn midi_shift_stretch_escape_focus_and_real_document_replacement_retire_without_
         visual.simulate_mouse_up(target, MouseButton::Left, shift);
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
-            assert!(v.active_midi_trim_drag.is_none() && v.pending_trim.is_none());
+            assert!(v.midi_editor.active_trim_drag.is_none() && v.pending_trim.is_none());
             assert!(!matches!(
-                v.last_enqueued_edit,
+                v.test_probes.last_enqueued_edit,
                 Some(Command::StretchMidiClipEdge { .. })
             ));
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), expected);
@@ -387,7 +390,7 @@ fn midi_shift_stretch_pending_receipt_ignores_earlier_ack_and_retires_real_worke
         // Controlled queue seam after a real capture: an earlier canonical
         // deletion makes this admitted resize fail in the actual worker.
         // Both events are consumed individually to verify exact FIFO custody.
-        let drag = v.active_midi_trim_drag.as_ref().unwrap().clone();
+        let drag = v.midi_editor.active_trim_drag.as_ref().unwrap().clone();
         let state = v.state.as_ref().unwrap();
         let request = Request::Edit(Command::StretchMidiClipEdge {
             clip,

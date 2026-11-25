@@ -134,7 +134,10 @@ impl EditorView {
         class: NativeDeviceClass,
         cx: &mut Context<Self>,
     ) -> Option<Owner> {
-        if self.preset_dialog_open || self.opening_project || self.close_prompt_open {
+        if self.device_panel.preset_dialog_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
+        {
             self.error = Some("finish the current dialog before opening a device preset".into());
             return None;
         }
@@ -143,8 +146,8 @@ impl EditorView {
         }
         if self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()
-            || !self.device_gesture_barriers.is_empty()
-            || self.device_gesture.snapshot().is_some()
+            || !self.device_panel.gesture_barriers.is_empty()
+            || self.device_panel.gesture.snapshot().is_some()
         {
             self.error = Some(
                 "device edit is still applying · open the preset dialog again when finished".into(),
@@ -242,7 +245,7 @@ impl EditorView {
         let Some(owner) = self.device_preset_ready(device, class, cx) else {
             return;
         };
-        self.preset_dialog_open = true;
+        self.device_panel.preset_dialog_open = true;
         if save {
             let directory = self
                 .state
@@ -255,7 +258,7 @@ impl EditorView {
             cx.spawn(async move |this, cx| {
                 let picked = response.await;
                 let _ = this.update(cx, |view, cx| {
-                    view.preset_dialog_open = false;
+                    view.device_panel.preset_dialog_open = false;
                     match picked {
                         Ok(Ok(Some(path))) => view.choose_device_preset(owner, path, true, cx),
                         Ok(Err(_)) => {
@@ -279,7 +282,7 @@ impl EditorView {
             cx.spawn(async move |this, cx| {
                 let picked = response.await;
                 let _ = this.update(cx, |view, cx| {
-                    view.preset_dialog_open = false;
+                    view.device_panel.preset_dialog_open = false;
                     match picked {
                         Ok(Ok(Some(mut paths))) if paths.len() == 1 => {
                             if let Some(path) = paths.pop() {

@@ -83,7 +83,7 @@ fn project_spectrum_layers_preserve_all_members_colors_and_clear_replaced_contex
                 view.track_selection.select(&project, *last, true, false);
             }
             let now = Instant::now();
-            view.project_spectrum.result = Some(result(view, now));
+            view.device_panel.project_spectrum.result = Some(result(view, now));
             let layers = view.project_spectrum_layers(now);
             assert_eq!(
                 layers.len(),
@@ -95,7 +95,12 @@ fn project_spectrum_layers_preserve_all_members_colors_and_clear_replaced_contex
                 std::ptr::eq(layers.as_ptr(), repeated.as_ptr()),
                 "steady repaint shares every layer and point allocation"
             );
-            view.project_spectrum.result.as_mut().unwrap().processed_at += Duration::from_nanos(1);
+            view.device_panel
+                .project_spectrum
+                .result
+                .as_mut()
+                .unwrap()
+                .processed_at += Duration::from_nanos(1);
             let updated = view.project_spectrum_layers(now);
             assert!(
                 !std::ptr::eq(layers.as_ptr(), updated.as_ptr()),
@@ -108,7 +113,12 @@ fn project_spectrum_layers_preserve_all_members_colors_and_clear_replaced_contex
                 std::ptr::eq(layers.as_ptr(), unrelated.as_ptr()),
                 "unchanged colors preserve points across canonical revisions"
             );
-            let (min_db, max_db) = view.project_spectrum.options.range.bounds_dbfs();
+            let (min_db, max_db) = view
+                .device_panel
+                .project_spectrum
+                .options
+                .range
+                .bounds_dbfs();
             let span_db = max_db - min_db;
             for (index, track) in project.tracks().iter().enumerate() {
                 assert_eq!(
@@ -171,10 +181,11 @@ fn project_spectrum_layers_preserve_all_members_colors_and_clear_replaced_contex
                     "removed IDs clear synchronously"
                 );
             }
-            view.project_spectrum.result = Some(result(view, now));
+            view.device_panel.project_spectrum.result = Some(result(view, now));
             assert!(
                 view.project_spectrum_layers(
                     now + view
+                        .device_panel
                         .project_spectrum
                         .result
                         .as_ref()
@@ -185,12 +196,12 @@ fn project_spectrum_layers_preserve_all_members_colors_and_clear_replaced_contex
                 )
                 .is_empty()
             );
-            view.project_spectrum.output_identity = Some(123);
+            view.device_panel.project_spectrum.output_identity = Some(123);
             assert!(
                 view.project_spectrum_layers(now).is_empty(),
                 "closed/replaced output clears even with reused project IDs"
             );
-            view.project_spectrum.output_identity = None;
+            view.device_panel.project_spectrum.output_identity = None;
             view.project_generation += 1;
             assert!(
                 view.project_spectrum_layers(now).is_empty(),
@@ -206,7 +217,7 @@ fn project_spectrum_cancel_narrow_resize_restores_wide_preferred_height(cx: &mut
     let (project, _, _, _) = audio_project();
     let (handle, editor) = editor_window(cx, project, Arc::default());
     editor.update(cx, |view, cx| {
-        view.project_spectrum.height = 140.0;
+        view.device_panel.project_spectrum.height = 140.0;
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -288,7 +299,7 @@ fn project_spectrum_collapse_resize_and_cancel_preserve_layout_and_history(
             px(72.0)
         );
         editor.read_with(cx, |view, _| {
-            assert!(view.project_spectrum.resize.is_none())
+            assert!(view.device_panel.project_spectrum.resize.is_none())
         });
         let grip = visual
             .debug_bounds("project-spectrum-resize")
@@ -370,8 +381,8 @@ fn project_spectrum_keeps_workspace_with_populated_details_and_returns(cx: &mut 
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(880.0), px(540.0)));
     editor.update(cx, |view, cx| {
-        view.clip_view_open = true;
-        view.device_panel_active = true;
+        view.audio_detail.clip_view_open = true;
+        view.device_panel.active = true;
         cx.notify();
     });
     visual.run_until_parked();
@@ -396,8 +407,8 @@ fn framed_workspace_keeps_compact_spectrum_and_complete_devices_at_minimum_size(
     let (handle, editor) = editor_window(cx, project, Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
     editor.update(cx, |view, cx| {
-        view.clip_view_open = true;
-        view.device_panel_active = true;
+        view.audio_detail.clip_view_open = true;
+        view.device_panel.active = true;
         cx.notify();
     });
     visual.simulate_resize(size(px(880.0), px(540.0)));
@@ -426,7 +437,9 @@ fn framed_workspace_keeps_compact_spectrum_and_complete_devices_at_minimum_size(
         visual.debug_bounds("project-spectrum").unwrap().size.height,
         px(120.0)
     );
-    editor.read_with(cx, |view, _| assert!(view.project_spectrum.expanded));
+    editor.read_with(cx, |view, _| {
+        assert!(view.device_panel.project_spectrum.expanded)
+    });
 }
 
 #[gpui::test]
@@ -444,20 +457,23 @@ fn workspace_three_returns_spectrum_resize_preserves_capture(cx: &mut TestAppCon
             .debug_bounds("project-spectrum-resize")
             .unwrap()
             .center();
-        let original = editor.read_with(&visual, |v, _| v.project_spectrum.height);
+        let original = editor.read_with(&visual, |v, _| v.device_panel.project_spectrum.height);
         let end = grip + point(px(0.0), px(12.0));
         visual.simulate_mouse_down(grip, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
         let (before, height) = editor.read_with(&visual, |v, _| {
-            assert!(v.project_spectrum.resize.is_some());
-            assert_ne!(v.project_spectrum.height, original);
-            (v.state.as_ref().unwrap().clone(), v.project_spectrum.height)
+            assert!(v.device_panel.project_spectrum.resize.is_some());
+            assert_ne!(v.device_panel.project_spectrum.height, original);
+            (
+                v.state.as_ref().unwrap().clone(),
+                v.device_panel.project_spectrum.height,
+            )
         });
         visual.simulate_keystrokes("tab");
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.mode, crate::editor::EditorMode::Arrangement);
-            assert!(v.project_spectrum.resize.is_some());
-            assert_eq!(v.project_spectrum.height, height);
+            assert!(v.device_panel.project_spectrum.resize.is_some());
+            assert_eq!(v.device_panel.project_spectrum.height, height);
             assert_eq!(v.state.as_ref().unwrap().project, before.project);
             assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
             assert_eq!(v.worker_requests_pending, 0);
@@ -468,9 +484,9 @@ fn workspace_three_returns_spectrum_resize_preserves_capture(cx: &mut TestAppCon
         }
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         editor.read_with(&visual, |v, _| {
-            assert!(v.project_spectrum.resize.is_none());
+            assert!(v.device_panel.project_spectrum.resize.is_none());
             assert_eq!(
-                v.project_spectrum.height,
+                v.device_panel.project_spectrum.height,
                 if cancel { original } else { height }
             );
         });
@@ -569,7 +585,7 @@ fn browser_and_spectrum_share_columns_in_both_workspaces(cx: &mut TestAppContext
                 assert_eq!(view.state.as_ref().unwrap().project, before.project);
                 assert_eq!(view.state.as_ref().unwrap().revision, before.revision);
                 assert!(view.pending_requests.is_empty());
-                assert!(view.last_enqueued_edit.is_none());
+                assert!(view.test_probes.last_enqueued_edit.is_none());
             });
         }
     }
@@ -607,12 +623,12 @@ fn project_spectrum_display_controls_freeze_max_hold_and_crosshair_work_without_
         )
         .unwrap();
         view.track_selection = Default::default();
-        view.project_spectrum.result = Some(published);
+        view.device_panel.project_spectrum.result = Some(published);
         view.sync_project_spectrum_canvas(now, cx);
 
         // Default smoothing is ERB (Human); constant -12 dB maps cleanly to 60/78.
         assert_eq!(
-            view.project_spectrum.options.smoothing,
+            view.device_panel.project_spectrum.options.smoothing,
             SmoothingPreset::Human
         );
         let base = view.project_spectrum_layers(now);
@@ -621,14 +637,20 @@ fn project_spectrum_display_controls_freeze_max_hold_and_crosshair_work_without_
 
         // Switching to Wide96 (-96..0) maps -12 dB to 84/96.
         view.cycle_project_spectrum_range(cx);
-        assert_eq!(view.project_spectrum.options.range, RangePreset::Wide96);
+        assert_eq!(
+            view.device_panel.project_spectrum.options.range,
+            RangePreset::Wide96
+        );
         let wide = view.project_spectrum_layers(now);
         assert!((wide[0].points[96][1] - 84.0 / 96.0).abs() < 1e-5);
 
         // Cycling slope to Steep (6 dB/oct) lifts high frequencies relative to 1 kHz.
         let prism_hi = wide[0].points.last().unwrap()[1];
         view.cycle_project_spectrum_slope(cx);
-        assert_eq!(view.project_spectrum.options.slope, SlopePreset::Steep);
+        assert_eq!(
+            view.device_panel.project_spectrum.options.slope,
+            SlopePreset::Steep
+        );
         let steep = view.project_spectrum_layers(now);
         assert!(steep[0].points.last().unwrap()[1] > prism_hi);
 
@@ -641,7 +663,10 @@ fn project_spectrum_display_controls_freeze_max_hold_and_crosshair_work_without_
             SmoothingPreset::Human,
         ] {
             view.cycle_project_spectrum_smoothing(cx);
-            assert_eq!(view.project_spectrum.options.smoothing, expected);
+            assert_eq!(
+                view.device_panel.project_spectrum.options.smoothing,
+                expected
+            );
             let smoothed = view.project_spectrum_layers(now);
             if expected == SmoothingPreset::Fine {
                 assert_eq!(
@@ -678,17 +703,20 @@ fn project_spectrum_display_controls_freeze_max_hold_and_crosshair_work_without_
 
         // Peak hold mode retains high peaks across quieter frames and resets cleanly.
         view.cycle_project_spectrum_peak_mode(cx);
-        assert_eq!(view.project_spectrum.options.peak_mode, PeakMode::Hold);
+        assert_eq!(
+            view.device_panel.project_spectrum.options.peak_mode,
+            PeakMode::Hold
+        );
         let held_peak_y = view.project_spectrum_layers(now)[0].peak.as_ref().unwrap()[96][1];
         let mut quieter = hex_audio::spectrum::SpectrumFrame::silent(48_000);
         quieter.bins_dbfs = [-48.0; hex_audio::spectrum::SPECTRUM_BANDS];
         quieter.peak_dbfs = [-48.0; hex_audio::spectrum::SPECTRUM_BANDS];
         view.update_max_peak_from(&quieter);
-        if let Some(res) = view.project_spectrum.result.as_mut() {
+        if let Some(res) = view.device_panel.project_spectrum.result.as_mut() {
             res.frames = Arc::from([quieter]);
             res.processed_at += Duration::from_millis(1);
         }
-        view.project_spectrum.plot_cache = None;
+        view.device_panel.project_spectrum.plot_cache = None;
         let still_held_y = view.project_spectrum_layers(now)[0].peak.as_ref().unwrap()[96][1];
         assert!(
             (still_held_y - held_peak_y).abs() < 1e-5,
@@ -703,12 +731,15 @@ fn project_spectrum_display_controls_freeze_max_hold_and_crosshair_work_without_
 
         // Peak Off removes peak curve cleanly.
         view.cycle_project_spectrum_peak_mode(cx);
-        assert_eq!(view.project_spectrum.options.peak_mode, PeakMode::Off);
+        assert_eq!(
+            view.device_panel.project_spectrum.options.peak_mode,
+            PeakMode::Off
+        );
         assert!(view.project_spectrum_layers(now)[0].peak.is_none());
 
         // Freeze preserves snapshot past stale_after().
         view.toggle_project_spectrum_freeze(cx);
-        assert!(view.project_spectrum.options.frozen);
+        assert!(view.device_panel.project_spectrum.options.frozen);
         let stale_time = now + Duration::from_secs(5);
         assert!(
             !view.project_spectrum_layers(stale_time).is_empty(),
@@ -724,7 +755,13 @@ fn project_spectrum_display_controls_freeze_max_hold_and_crosshair_work_without_
     visual.simulate_mouse_move(plot_bounds.center(), None, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |view, cx| {
-        let canvas = view.project_spectrum.canvas.as_ref().unwrap().read(cx);
+        let canvas = view
+            .device_panel
+            .project_spectrum
+            .canvas
+            .as_ref()
+            .unwrap()
+            .read(cx);
         let crosshair = canvas
             .build_crosshair()
             .expect("hover inside plot builds crosshair");
@@ -755,11 +792,11 @@ fn project_spectrum_control_clicks_do_not_bleed_into_plot_and_freeze_toggles_cle
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         assert_eq!(
-            view.project_spectrum.options.smoothing,
+            view.device_panel.project_spectrum.options.smoothing,
             SmoothingPreset::Fine
         );
         assert!(
-            !view.project_spectrum.options.frozen,
+            !view.device_panel.project_spectrum.options.frozen,
             "clicking smoothing pill must not toggle freeze"
         );
     });
@@ -783,9 +820,12 @@ fn project_spectrum_control_clicks_do_not_bleed_into_plot_and_freeze_toggles_cle
         visual.simulate_click(pos, Modifiers::default());
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            assert!(check(view.project_spectrum.options), "{selector} updated");
             assert!(
-                !view.project_spectrum.options.frozen,
+                check(view.device_panel.project_spectrum.options),
+                "{selector} updated"
+            );
+            assert!(
+                !view.device_panel.project_spectrum.options.frozen,
                 "clicking {selector} must not toggle freeze"
             );
         });
@@ -800,7 +840,7 @@ fn project_spectrum_control_clicks_do_not_bleed_into_plot_and_freeze_toggles_cle
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         assert!(
-            view.project_spectrum.options.frozen,
+            view.device_panel.project_spectrum.options.frozen,
             "first freeze pill click freezes"
         );
     });
@@ -808,7 +848,7 @@ fn project_spectrum_control_clicks_do_not_bleed_into_plot_and_freeze_toggles_cle
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         assert!(
-            !view.project_spectrum.options.frozen,
+            !view.device_panel.project_spectrum.options.frozen,
             "second freeze pill click unfreezes cleanly"
         );
     });
@@ -822,13 +862,16 @@ fn project_spectrum_control_clicks_do_not_bleed_into_plot_and_freeze_toggles_cle
     visual.simulate_click(plot_pos, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        assert!(view.project_spectrum.options.frozen, "plot click freezes");
+        assert!(
+            view.device_panel.project_spectrum.options.frozen,
+            "plot click freezes"
+        );
     });
     visual.simulate_click(plot_pos, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         assert!(
-            !view.project_spectrum.options.frozen,
+            !view.device_panel.project_spectrum.options.frozen,
             "immediate second plot click unfreezes cleanly"
         );
     });

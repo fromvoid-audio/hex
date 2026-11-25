@@ -174,8 +174,8 @@ fn assert_verified_effect_replacement(cx: &mut TestAppContext, owner: VerifiedEf
         rendered_test_fixture::editor_window(cx, model.project().clone(), Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
     editor.update(&mut visual, |view, cx| {
-        view.clip_view_open = true;
-        view.device_panel_active = true;
+        view.audio_detail.clip_view_open = true;
+        view.device_panel.active = true;
         view.select_browser_source(BrowserSection::Plugins, cx);
     });
     wait_for_plugin_scan(&mut visual, &editor);
@@ -186,7 +186,7 @@ fn assert_verified_effect_replacement(cx: &mut TestAppContext, owner: VerifiedEf
                 view.device_panel.main_selected = Some(view.project_generation);
             }
             PluginEffectDestination::ReplaceReturnEffect { return_track, .. } => {
-                view.focused_return = Some(return_track);
+                view.session_grid.focused_return = Some(return_track);
             }
             PluginEffectDestination::ReplaceTrackEffect { track, .. } => {
                 view.selected_track = Some(track);
@@ -227,7 +227,7 @@ fn assert_verified_effect_replacement(cx: &mut TestAppContext, owner: VerifiedEf
     visual.simulate_mouse_move(drop, left_button, modifiers);
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        let drag = view.active_native_device_drag.as_ref().unwrap();
+        let drag = view.device_panel.active_native_drag.as_ref().unwrap();
         if let PluginEffectDestination::ReplaceTrackEffect { track, .. } = destination {
             assert_eq!(
                 drag.destination.get(),
@@ -248,6 +248,7 @@ fn assert_verified_effect_replacement(cx: &mut TestAppContext, owner: VerifiedEf
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         let pending = view
+            .device_panel
             .pending_plugin_effect
             .as_ref()
             .unwrap_or_else(|| panic!("effect drop did not enqueue replacement: {:?}", view.error));
@@ -584,7 +585,7 @@ fn unavailable_effect_activation(cx: &mut TestAppContext, pointer: bool) {
     }
     editor.read_with(&visual, |view, _| {
         assert!(
-            view.pending_plugin_effect.is_some(),
+            view.device_panel.pending_plugin_effect.is_some(),
             "effect activation must reach the canonical worker: error={:?} status={} selected={:?} state={:?}",
             view.error, view.status, view.selected_track, view.state.as_ref().map(|s| (s.revision, s.project.tracks().len()))
         );
@@ -595,7 +596,7 @@ fn unavailable_effect_activation(cx: &mut TestAppContext, pointer: bool) {
             editor.update(&mut visual, |_, cx| cx.notify());
             visual.run_until_parked();
             editor.read_with(&visual, |view, _| {
-                assert!(view.pending_plugin_effect.is_some());
+                assert!(view.device_panel.pending_plugin_effect.is_some());
             });
             assert!(visual.debug_bounds("editor-status-message").is_some());
         }
@@ -605,7 +606,9 @@ fn unavailable_effect_activation(cx: &mut TestAppContext, pointer: bool) {
         cx.background_executor
             .advance_clock(std::time::Duration::from_millis(16));
         visual.run_until_parked();
-        if editor.read_with(&visual, |view, _| view.pending_plugin_effect.is_none()) {
+        if editor.read_with(&visual, |view, _| {
+            view.device_panel.pending_plugin_effect.is_none()
+        }) {
             break;
         }
         assert!(
@@ -694,7 +697,7 @@ fn browser_vst3_restores_searchable_typed_rows_and_enter_refuses_unavailable_inv
     visual.simulate_keystrokes("enter");
     editor.read_with(&visual, |view, _| {
         assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
-        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.test_probes.last_enqueued_edit.is_none());
         assert!(
             view.error.is_some(),
             "unavailable inventory must refuse explicitly"
@@ -1212,7 +1215,7 @@ fn browser_vst3_sidebar_visibility_selects_real_source_and_preserves_search_hist
         assert_eq!(view.browser.section, BrowserSection::Plugins);
         assert!(view.browser_visible_plugins(cx).is_empty());
         assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
-        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.test_probes.last_enqueued_edit.is_none());
         assert!(
             !view.browser.plugins.busy,
             "source navigation leaves the scan idle"
@@ -1325,8 +1328,8 @@ fn all_search_devices_precede_samples_and_refresh_keeps_activation_identity(
     visual.simulate_keystrokes("enter");
     editor.read_with(&visual, |view, _| {
         assert!(view.error.is_none(), "sample import: {:?}", view.error);
-        assert!(view.audio_batch.is_some());
-        assert!(matches!(view.last_enqueued_import_to_track.as_ref(), Some((path, target, _, _)) if path == &first && *target == track));
+        assert!(view.persistence.audio_batch.is_some());
+        assert!(matches!(view.test_probes.last_enqueued_import_to_track.as_ref(), Some((path, target, _, _)) if path == &first && *target == track));
     });
 }
 
@@ -1504,8 +1507,8 @@ fn check_vst_proposal(
             assert!(event.error.is_none(), "{:?}", event.error);
             let id = event.state.project.track(track).unwrap().devices()[0].id();
             view.receive(event);
-            view.clip_view_open = true;
-            view.device_panel_active = true;
+            view.audio_detail.clip_view_open = true;
+            view.device_panel.active = true;
             cx.notify();
             id
         })
@@ -1549,14 +1552,14 @@ fn check_vst_proposal(
             }
         };
         view.insert_plugin_effect(&selection, destination, before_device, cx);
-        assert!(view.pending_plugin_effect.is_some());
+        assert!(view.device_panel.pending_plugin_effect.is_some());
         cx.notify();
     });
     // Paint without advancing the editor's worker-receive timer.
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         assert!(
-            view.pending_plugin_effect.is_some(),
+            view.device_panel.pending_plugin_effect.is_some(),
             "pending load must reach repaint"
         );
         assert_eq!(view.state.as_ref().unwrap().project.tracks().len(), 1);
@@ -1608,7 +1611,11 @@ fn check_vst_proposal(
     if cancel_first {
         if existing_chain || session {
             let focus = editor.read_with(&visual, |view, _| {
-                view.proposed_plugin_action_focus.as_ref().unwrap().clone()
+                view.device_panel
+                    .proposed_plugin_action_focus
+                    .as_ref()
+                    .unwrap()
+                    .clone()
             });
             visual.update(|window, _| focus.focus(window));
             visual.simulate_keystrokes("space");
@@ -1618,7 +1625,7 @@ fn check_vst_proposal(
         visual.run_until_parked();
         assert!(visual.debug_bounds(surface).is_none());
         editor.read_with(&visual, |view, _| {
-            assert!(view.pending_plugin_effect.is_some())
+            assert!(view.device_panel.pending_plugin_effect.is_some())
         });
         release_tx.send(()).unwrap();
     }
@@ -1640,7 +1647,7 @@ fn check_vst_proposal(
             );
         }
         view.receive(event);
-        assert!(view.pending_plugin_effect.is_none());
+        assert!(view.device_panel.pending_plugin_effect.is_none());
         assert_eq!(view.selected_track, Some(track));
         let state = view.state.as_ref().unwrap();
         assert_eq!(state.revision, prior.revision);
@@ -1778,8 +1785,8 @@ fn vst_browser_drag_captures_the_header_lane_or_new_track(cx: &mut TestAppContex
             visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
             visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
             editor.update(&mut visual, |view, cx| {
-                assert!(view.pending_plugin_effect.is_none());
-                assert!(view.active_native_device_drag.is_none());
+                assert!(view.device_panel.pending_plugin_effect.is_none());
+                assert!(view.device_panel.active_native_drag.is_none());
                 if refusal == 0 {
                     view.worker_requests_pending = 0;
                 } else {
@@ -1809,15 +1816,19 @@ fn vst_browser_drag_captures_the_header_lane_or_new_track(cx: &mut TestAppContex
         }
         editor.read_with(&visual, |view, _| {
             assert!(
-                view.pending_plugin_effect.is_none(),
+                view.device_panel.pending_plugin_effect.is_none(),
                 "hover must not instantiate the plugin"
             )
         });
         visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
         editor.read_with(&visual, |view, _| {
-            let pending = view.pending_plugin_effect.as_ref().unwrap_or_else(|| {
-                panic!("header drop must reach the plugin worker: {:?}", view.error)
-            });
+            let pending = view
+                .device_panel
+                .pending_plugin_effect
+                .as_ref()
+                .unwrap_or_else(|| {
+                    panic!("header drop must reach the plugin worker: {:?}", view.error)
+                });
             assert_eq!(
                 pending.proposal.destination,
                 match new_track_slot {
@@ -1916,12 +1927,16 @@ fn vst3_browser_drop_on_arrangement_header_column_gaps_and_tail_inserts_tracks(
             );
             visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
             editor.read_with(&visual, |view, _| {
-                let pending = view.pending_plugin_effect.as_ref().unwrap_or_else(|| {
-                    panic!(
-                        "vst3 header-column drop must enqueue new track insertion: {:?}",
-                        view.error
-                    )
-                });
+                let pending = view
+                    .device_panel
+                    .pending_plugin_effect
+                    .as_ref()
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "vst3 header-column drop must enqueue new track insertion: {:?}",
+                            view.error
+                        )
+                    });
                 assert_eq!(
                     pending.proposal.destination,
                     PluginEffectDestination::NewTrack {

@@ -249,8 +249,9 @@ pub(super) fn palette_hit(
 }
 
 pub(super) fn palette(view: &EditorView, cx: &mut Context<EditorView>) -> Stateful<Div> {
-    let draw_positions = view.tuning.positions.clone();
+    let draw_positions = view.settings.tuning.positions.clone();
     let hovered = view
+        .settings
         .tuning
         .palette_hover
         .filter(|&i| i < draw_positions.len());
@@ -260,51 +261,53 @@ pub(super) fn palette(view: &EditorView, cx: &mut Context<EditorView>) -> Statef
         .w_full()
         .when(hovered.is_some(), |d| d.cursor_pointer())
         .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _, cx| {
-            let next = if view.tuning.analysis_pending || view.tuning.drag.is_some() {
-                None
-            } else {
-                view.tuning
-                    .palette_bounds
-                    .and_then(|bounds| palette_hit(bounds, &view.tuning.positions, event.position))
-            };
-            if view.tuning.palette_hover != next {
-                view.tuning.palette_hover = next;
+            let next =
+                if view.settings.tuning.analysis_pending || view.settings.tuning.drag.is_some() {
+                    None
+                } else {
+                    view.settings.tuning.palette_bounds.and_then(|bounds| {
+                        palette_hit(bounds, &view.settings.tuning.positions, event.position)
+                    })
+                };
+            if view.settings.tuning.palette_hover != next {
+                view.settings.tuning.palette_hover = next;
                 cx.notify();
             }
         }))
         .on_hover(cx.listener(|view, is_hovered: &bool, _, cx| {
-            if !*is_hovered && view.tuning.palette_hover.take().is_some() {
+            if !*is_hovered && view.settings.tuning.palette_hover.take().is_some() {
                 cx.notify();
             }
         }))
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(|view, event: &MouseDownEvent, window, cx| {
-                if view.tuning.analysis_pending || view.tuning.drag.is_some() {
+                if view.settings.tuning.analysis_pending || view.settings.tuning.drag.is_some() {
                     return;
                 }
                 // Pick against the exact painted geometry retained by canvas prepaint.
-                let Some(bounds) = view.tuning.palette_bounds else {
+                let Some(bounds) = view.settings.tuning.palette_bounds else {
                     return;
                 };
-                let Some(i) = palette_hit(bounds, &view.tuning.positions, event.position) else {
+                let Some(i) = palette_hit(bounds, &view.settings.tuning.positions, event.position)
+                else {
                     return;
                 };
-                let Some(&scale) = view.tuning.choices.get(i) else {
+                let Some(&scale) = view.settings.tuning.choices.get(i) else {
                     return;
                 };
-                view.tuning.focus.focus(window);
+                view.settings.tuning.focus.focus(window);
                 cx.stop_propagation();
-                if scale != view.tuning.value.scale()
+                if scale != view.settings.tuning.value.scale()
                     && let Ok(next) = ProjectTuning::new(
-                        view.tuning.value.enabled(),
+                        view.settings.tuning.value.enabled(),
                         scale,
-                        view.tuning.value.audition(),
+                        view.settings.tuning.value.audition(),
                     )
                 {
                     view.tuning_change(next, NumericEventPhase::Commit);
-                    if view.tuning.value == next {
-                        view.tuning.palette_hover = None;
+                    if view.settings.tuning.value == next {
+                        view.settings.tuning.palette_hover = None;
                         view.refresh_tuning_variations(cx);
                     }
                     cx.notify();
@@ -316,7 +319,9 @@ pub(super) fn palette(view: &EditorView, cx: &mut Context<EditorView>) -> Statef
                 {
                     let owner = cx.entity();
                     move |bounds, _, cx| {
-                        owner.update(cx, |view, _| view.tuning.palette_bounds = Some(bounds))
+                        owner.update(cx, |view, _| {
+                            view.settings.tuning.palette_bounds = Some(bounds)
+                        })
                     }
                 },
                 move |bounds, _, window, cx| {
@@ -383,9 +388,9 @@ pub(super) fn positions(choices: &[Scale]) -> Vec<(f32, f32)> {
         .collect()
 }
 pub(super) fn lattice(view: &EditorView, _cx: &mut Context<EditorView>) -> Div {
-    let s = view.tuning.value.scale();
-    let selected = view.tuning.selected;
-    let pair = view.tuning.pair.min(s.count() - 1);
+    let s = view.settings.tuning.value.scale();
+    let selected = view.settings.tuning.selected;
+    let pair = view.settings.tuning.pair.min(s.count() - 1);
     div().h(px(165.0)).w_full().child(
         canvas(
             |_, _, _| (),

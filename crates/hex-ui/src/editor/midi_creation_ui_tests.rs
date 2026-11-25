@@ -34,7 +34,7 @@ pub(in crate::editor) fn fixture(
     // Editing fixtures explicitly include the old 48–71 range. Tests of the
     // actual first viewport use first_open_fixture.
     editor.update(&mut visual, |view, cx| {
-        view.piano_pitch = crate::editor::PitchViewport::DEFAULT;
+        view.midi_editor.piano_pitch = crate::editor::PitchViewport::DEFAULT;
         cx.notify();
     });
     visual.run_until_parked();
@@ -86,10 +86,10 @@ pub(in crate::editor) fn first_open_fixture(
                 v.receive(event);
                 v.selected_track = Some(track);
                 v.selected_clip = Some(clip);
-                v.clip_view_open = true;
-                v.piano_beat_span = BeatTime::from_quarters(4).unwrap();
-                v.piano_beat_start = 0;
-                v.midi_focus.focus(window);
+                v.audio_detail.clip_view_open = true;
+                v.midi_editor.piano_beat_span = BeatTime::from_quarters(4).unwrap();
+                v.midi_editor.piano_beat_start = 0;
+                v.midi_editor.focus.focus(window);
                 cx.notify();
             });
             editor
@@ -147,7 +147,7 @@ fn fractional_edge_keys_agree_with_note_creation_and_exact_capture_identity(
         let (mut visual, editor, _environment, clip) = fixture(cx);
         let viewport = crate::editor::PitchViewport::new(low, span).unwrap();
         editor.update(&mut visual, |view, cx| {
-            view.piano_pitch = viewport;
+            view.midi_editor.piano_pitch = viewport;
             cx.notify();
         });
         visual.run_until_parked();
@@ -155,19 +155,21 @@ fn fractional_edge_keys_agree_with_note_creation_and_exact_capture_identity(
         let key = visual.debug_bounds(key_id).unwrap();
         let down = point(roll.center().x, key.center().y);
         double_down(&mut visual, down, Modifiers::default());
-        editor.read_with(&visual, |view, _| assert!(view.midi_creation.is_some()));
+        editor.read_with(&visual, |view, _| {
+            assert!(view.midi_editor.creation.is_some())
+        });
 
         let shifted = crate::editor::PitchViewport::new(low + 1.0 / 4096.0, span).unwrap();
         assert_eq!(shifted.coverage(), viewport.coverage());
         editor.update(&mut visual, |view, cx| {
-            view.piano_pitch = shifted;
+            view.midi_editor.piano_pitch = shifted;
             cx.notify();
         });
         visual.run_until_parked();
         visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
         pump(&editor, &mut visual);
         editor.read_with(&visual, |view, _| {
-            assert!(view.midi_creation.is_none());
+            assert!(view.midi_editor.creation.is_none());
             assert!(view.midi_clip().unwrap().notes().is_empty());
         });
 
@@ -248,7 +250,7 @@ fn held_creation_end_is_free_by_default_and_snaps_while_cmd_is_held(cx: &mut Tes
     ] {
         let (mut visual, editor, _environment, clip) = fixture(cx);
         editor.update(&mut visual, |v, cx| {
-            v.midi_snap_grid = grid;
+            v.midi_editor.snap_grid = grid;
             cx.notify();
         });
         visual.run_until_parked();
@@ -261,7 +263,7 @@ fn held_creation_end_is_free_by_default_and_snaps_while_cmd_is_held(cx: &mut Tes
         };
         double_down(&mut visual, at(0.25), Modifiers::default());
         let start = editor.read_with(&visual, |v, _| {
-            v.midi_creation.as_ref().unwrap().preview.start
+            v.midi_editor.creation.as_ref().unwrap().preview.start
         });
         let modifiers = Modifiers {
             platform: override_snap,
@@ -311,7 +313,13 @@ fn releasing_cmd_mid_creation_returns_end_to_free_motion(cx: &mut TestAppContext
     double_down(&mut visual, at(0.25), Modifiers::default());
     let gate = |visual: &mut VisualTestContext| {
         editor.read_with(visual, |v, _| {
-            v.midi_creation.as_ref().unwrap().preview.duration.raw() as f64
+            v.midi_editor
+                .creation
+                .as_ref()
+                .unwrap()
+                .preview
+                .duration
+                .raw() as f64
                 / BeatTime::ONE.raw() as f64
         })
     };
@@ -320,7 +328,9 @@ fn releasing_cmd_mid_creation_returns_end_to_free_motion(cx: &mut TestAppContext
     visual.simulate_mouse_move(at(0.64), Some(MouseButton::Left), Modifiers::default());
     let free = gate(&mut visual);
     assert!((free - 1.56).abs() < 0.01, "released cmd is free: {free}");
-    let preview = editor.read_with(&visual, |v, _| v.midi_creation.as_ref().unwrap().preview);
+    let preview = editor.read_with(&visual, |v, _| {
+        v.midi_editor.creation.as_ref().unwrap().preview
+    });
     visual.simulate_mouse_up(at(0.64), MouseButton::Left, Modifiers::default());
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
@@ -371,11 +381,11 @@ fn held_creation_cancels_without_partial_edit_on_escape_focus_outside_and_stale_
                 })));
             }),
             "zoom" => editor.update(&mut visual, |v, cx| {
-                v.piano_beat_span = BeatTime::from_quarters(2).unwrap();
+                v.midi_editor.piano_beat_span = BeatTime::from_quarters(2).unwrap();
                 cx.notify();
             }),
             "grid" => editor.update(&mut visual, |v, cx| {
-                v.midi_snap_grid = MidiGrid::Quarter;
+                v.midi_editor.snap_grid = MidiGrid::Quarter;
                 cx.notify();
             }),
             "resize" => visual.simulate_resize(gpui::size(gpui::px(1400.0), gpui::px(900.0))),
@@ -390,7 +400,7 @@ fn held_creation_cancels_without_partial_edit_on_escape_focus_outside_and_stale_
         visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
-            assert!(v.midi_creation.is_none(), "{reason}");
+            assert!(v.midi_editor.creation.is_none(), "{reason}");
             assert!(
                 v.state
                     .as_ref()
@@ -475,8 +485,8 @@ fn normal_delete_and_draw_mode_still_use_their_own_gestures(cx: &mut TestAppCont
     visual.simulate_mouse_down(at(0.25), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(at(0.5), Some(MouseButton::Left), Modifiers::default());
     editor.read_with(&visual, |v, _| {
-        assert!(v.midi_creation.is_none());
-        assert!(v.midi_stroke.is_some());
+        assert!(v.midi_editor.creation.is_none());
+        assert!(v.midi_editor.stroke.is_some());
     });
     visual.simulate_mouse_up(at(0.5), MouseButton::Left, Modifiers::default());
     pump(&editor, &mut visual);
@@ -535,7 +545,7 @@ fn held_creation_clamps_to_clip_end_and_positive_minimum(cx: &mut TestAppContext
         };
         let (mut visual, editor, _environment, clip) = fixture(cx);
         editor.update(&mut visual, |v, cx| {
-            v.midi_snap_grid = grid;
+            v.midi_editor.snap_grid = grid;
             cx.notify();
         });
         visual.run_until_parked();
@@ -597,7 +607,7 @@ fn zoomed_out_creation_continues_past_first_two_time_cells(cx: &mut TestAppConte
         });
         pump(&editor, &mut visual);
         editor.update(&mut visual, |v, cx| {
-            v.midi_draw_mode = draw;
+            v.midi_editor.draw_mode = draw;
             cx.notify();
         });
         visual.run_until_parked();

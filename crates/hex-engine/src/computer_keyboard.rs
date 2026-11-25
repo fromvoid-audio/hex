@@ -296,6 +296,8 @@ struct Voice {
     id: u64,
     // Input-local proof only; source custody must be checked before replay.
     muted_source_onset: bool,
+    // Hardware voice held past NoteOff while CC64 Sustain Pedal is down.
+    sustained: bool,
 }
 
 pub(crate) enum KeyboardClock<'a> {
@@ -468,6 +470,8 @@ pub(crate) struct ComputerKeyboardRuntime {
     live_consumed: usize,
     live_activation: Option<LiveNoteActivation>,
     scratch_live_activation: Option<LiveNoteActivation>,
+    hardware_sustain: u16,
+    scratch_hardware_sustain: u16,
     pub(crate) capture: Option<Box<crate::midi_capture::CaptureStorage>>,
 }
 impl ComputerKeyboardRuntime {
@@ -776,6 +780,8 @@ impl ComputerKeyboardRuntime {
             live_consumed: 0,
             live_activation: None,
             scratch_live_activation: None,
+            hardware_sustain: 0,
+            scratch_hardware_sustain: 0,
             capture,
         };
         if result
@@ -1148,6 +1154,8 @@ impl ComputerKeyboardRuntime {
         self.scratch_rejected_desired = previous.rejected_desired;
         self.live_activation = previous.live_activation;
         self.scratch_live_activation = previous.live_activation;
+        self.hardware_sustain = previous.hardware_sustain;
+        self.scratch_hardware_sustain = previous.hardware_sustain;
         self.activation_epoch = previous.activation_epoch;
         if let Some((next, old)) = self.capture.as_mut().zip(previous.capture.as_ref()) {
             next.next_keys = old.next_keys;
@@ -1216,6 +1224,8 @@ impl ComputerKeyboardRuntime {
         self.scratch.fill(None);
         self.live_activation = None;
         self.scratch_live_activation = None;
+        self.hardware_sustain = 0;
+        self.scratch_hardware_sustain = 0;
         self.desired.fill(0);
         self.rejected_desired.fill(0);
         self.scratch_rejected_desired.fill(0);
@@ -1367,6 +1377,7 @@ impl ComputerKeyboardRuntime {
             self.desired.fill(0);
         }
         self.scratch_live_activation = self.live_activation;
+        self.scratch_hardware_sustain = self.hardware_sustain;
         self.scratch_rejected_desired = self.rejected_desired;
         self.scratch = self.primary;
         self.scratch_next_id = self.next_id;
@@ -1411,6 +1422,7 @@ impl ComputerKeyboardRuntime {
             let _ = input.commit(batch, self.live_consumed);
         }
         self.live_activation = self.scratch_live_activation;
+        self.hardware_sustain = self.scratch_hardware_sustain;
         self.rejected_desired = self.scratch_rejected_desired;
         self.primary = self.scratch;
         self.next_id = self.scratch_next_id;
@@ -1478,6 +1490,7 @@ impl ComputerKeyboardRuntime {
         if let Some(activation) = self.live_batch.as_ref().map(|batch| batch.activation)
             && self.scratch_live_activation != Some(activation)
         {
+            self.scratch_hardware_sustain = 0;
             self.release_hardware(None, &mut events, &mut len);
             self.scratch_live_activation = Some(activation);
         }
@@ -1614,6 +1627,7 @@ impl ComputerKeyboardRuntime {
                     gate: None,
                     id: self.scratch_next_id,
                     muted_source_onset: false,
+                    sustained: false,
                 });
                 events[len] = NativeInstrumentEvent::NoteOn {
                     frame_offset: 0,

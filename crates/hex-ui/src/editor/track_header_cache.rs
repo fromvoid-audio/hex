@@ -38,6 +38,7 @@ struct HeaderKey {
     resident_layout: bool,
     show_track_latency: bool,
     send_menu_open: bool,
+    displayed_gain_bits: Option<u32>,
 }
 
 #[derive(Default)]
@@ -95,6 +96,10 @@ struct TrackHeaderView {
     key: HeaderKey,
     epoch: u64,
     fresh_last: bool,
+    /// GPUI bakes an active drag's window cursor style into any cached view
+    /// painted during the drag; invalidate once after the drag ends so stale
+    /// drag cursors cannot replay into idle frames.
+    painted_with_active_drag: bool,
     #[cfg(all(test, feature = "ui-test-support"))]
     render_count: usize,
 }
@@ -105,6 +110,7 @@ impl Render for TrackHeaderView {
         {
             self.render_count = self.render_count.saturating_add(1);
         }
+        self.painted_with_active_drag = cx.has_active_drag();
         self.parent
             .update(cx, |view, cx| {
                 if view.project_generation != self.key.generation
@@ -139,7 +145,8 @@ impl Render for TrackHeaderView {
 
 impl EditorView {
     fn arrangement_device_preview_affects(&self, track_id: TrackId) -> bool {
-        self.arrangement_device_preview
+        self.device_panel
+            .arrangement_drop_preview
             .is_some_and(|preview| match preview.target {
                 super::arrangement_device_drop::ArrangementDropTarget::ExistingTrack {
                     track,
@@ -157,15 +164,15 @@ impl EditorView {
             && !self.track_resize_affects(track_id)
             && !self.track_reorder_active()
             && !self.track_gain_controls.has_pending_draft_for(track_id, cx)
-            && !self.opening_project
-            && !self.close_prompt_open
-            && !self.save_dialog_open
-            && !self.export_dialog_open
+            && !self.persistence.opening_project
+            && !self.persistence.close_prompt_open
+            && !self.persistence.save_dialog_open
+            && !self.persistence.export_dialog_open
             && self.context_menu.is_none()
-            && self.active_native_device_drag.is_none()
-            && self.active_browser_audio_drag.is_none()
+            && self.device_panel.active_native_drag.is_none()
+            && self.browser.active_audio_drag.is_none()
             && !self.arrangement_device_preview_affects(track_id)
-            && !self.theme_settings.open
+            && !self.settings.theme.open
             && !self.track_performance.enabled
             && !self.show_track_latency
     }
@@ -262,17 +269,29 @@ impl EditorView {
                 .audio_recorder
                 .is_audio_armed(self.project_generation, track_id),
             sample_armed: self
+                .device_panel
                 .sample_recorder
                 .is_armed(self.project_generation, sample_source),
             resident_layout: self.document_audio_mode == hex_session::DocumentAudioMode::Resident,
             show_track_latency: self.show_track_latency,
-            send_menu_open: self.send_menu_track == Some(track_id),
+            send_menu_open: self.session_grid.send_menu_track == Some(track_id),
+            displayed_gain_bits: self
+                .track_gain_controls
+                .displayed_track_gain(self.project_generation, track_id)
+                .or_else(|| {
+                    self.device_panel
+                        .gesture
+                        .preview_track_gain(self.project_generation, track_id)
+                })
+                .map(f32::to_bits),
         };
         let parent = cx.weak_entity();
         let fresh = !self.track_header_cache_allowed_for(track_id, cx);
+        let has_active_drag = cx.has_active_drag();
         let entity = if let Some(entity) = self.track_header_cache.entries.get(&track_id).cloned() {
             entity.update(cx, |header, _| {
-                if header.key != key || fresh || header.fresh_last {
+                let stale_drag_cursor = header.painted_with_active_drag && !has_active_drag;
+                if header.key != key || fresh || header.fresh_last || stale_drag_cursor {
                     header.key = key;
                     header.epoch = header.epoch.wrapping_add(1);
                 }
@@ -286,6 +305,7 @@ impl EditorView {
                 key,
                 epoch: 0,
                 fresh_last: fresh,
+                painted_with_active_drag: has_active_drag,
                 #[cfg(all(test, feature = "ui-test-support"))]
                 render_count: 0,
             });
@@ -299,13 +319,11 @@ impl EditorView {
             .w(px(header_width))
             .h(px(header_height))
             .flex_shrink_0();
-        let meter_overlay = div().absolute().top_0().right(px(4.0)).children([
-            super::track_meters::render_arrangement(
-                track_id,
-                self.track_meters.reading(track_id),
-                header_height,
-            ),
-        ]);
+        let meter_overlay = div().absolute().top_0().right(px(4.0)).children([self
+            .meter_slot_or_inline(super::playback_subviews::MeterTarget::ArrangementTrack {
+                id: track_id,
+                height: header_height,
+            })]);
         div()
             .relative()
             .w(px(header_width))

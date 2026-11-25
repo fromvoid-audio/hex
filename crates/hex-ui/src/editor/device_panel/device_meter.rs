@@ -105,7 +105,7 @@ pub(super) fn compressor_reading(
 /// Keep repainting while a hovered device meter's slow-decay tooltip peak is
 /// still settling, even after transport stops.
 pub(in crate::editor) fn tick_hovered(view: &EditorView) -> bool {
-    if !view.clip_view_open || !view.device_panel_active {
+    if !view.audio_detail.clip_view_open || !view.device_panel.active {
         return false;
     }
     let Some(id) = view.device_panel.hovered_meter else {

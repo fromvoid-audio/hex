@@ -26,22 +26,22 @@ impl EditorView {
     }
 
     pub(super) fn export_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.export_pending {
+        if self.persistence.export_pending {
             self.cancel_export(cx);
             return;
         }
         if !super::device_panel::finalize_controls(self, cx) {
             return;
         }
-        if self.export_dialog_open {
+        if self.persistence.export_dialog_open {
             self.error = Some("an export is already pending".into());
             return;
         }
-        if self.close_prompt_open || self.opening_project {
+        if self.persistence.close_prompt_open || self.persistence.opening_project {
             self.error = Some("finish the current dialog before exporting".into());
             return;
         }
-        self.export_dialog_open = true;
+        self.persistence.export_dialog_open = true;
         // The selection is canonical frame timing, captured when requesting
         // the dialog. A time highlight never silently changes output scope.
         let range = self.normalized_time_selection();
@@ -118,10 +118,10 @@ impl EditorView {
                         cx,
                     ),
                     Ok(2..=4) => {
-                        view.export_dialog_open = false;
+                        view.persistence.export_dialog_open = false;
                         view.error = Some("export output selection is empty".into());
                     }
-                    _ => view.export_dialog_open = false,
+                    _ => view.persistence.export_dialog_open = false,
                 }
                 cx.notify();
             });
@@ -157,7 +157,7 @@ impl EditorView {
             )
         });
         let Ok(prompt) = prompt else {
-            self.export_dialog_open = false;
+            self.persistence.export_dialog_open = false;
             self.error = Some("export window closed before choosing a format".into());
             return;
         };
@@ -168,7 +168,7 @@ impl EditorView {
                     Some(format) => {
                         view.export_path_dialog(handle, start, frames, signal, format, cx)
                     }
-                    None => view.export_dialog_open = false,
+                    None => view.persistence.export_dialog_open = false,
                 }
                 cx.notify();
             });
@@ -187,7 +187,7 @@ impl EditorView {
     ) {
         let batch = matches!(&signal, ExportSignal::Stems(_));
         let Some(directory) = super::user_home_directory() else {
-            self.export_dialog_open = false;
+            self.persistence.export_dialog_open = false;
             self.error = Some("could not locate your user folder for export".into());
             cx.notify();
             return;
@@ -207,7 +207,7 @@ impl EditorView {
                 Ok(Ok(Some(path))) => path,
                 picked => {
                     let _ = this.update(cx, |view, cx| {
-                        view.export_dialog_open = false;
+                        view.persistence.export_dialog_open = false;
                         if let Ok(Err(error)) = picked {
                             view.error = Some(
                                 hex_session::service::text::lowercase_outside_verbatim(
@@ -222,7 +222,7 @@ impl EditorView {
                 }
             };
             let _ = this.update(cx, |view, cx| {
-                view.export_dialog_open = false;
+                view.persistence.export_dialog_open = false;
                 if path.as_os_str().len() > 4096 {
                     view.error = Some("export path exceeds the 4096-byte limit".into());
                     cx.notify();
@@ -258,10 +258,10 @@ impl EditorView {
                         format,
                         publication,
                     }) {
-                        view.export_pending = true;
-                        view.export_control = Some(control);
-                        view.export_progress = None;
-                        view.export_window = Some(handle);
+                        view.persistence.export_pending = true;
+                        view.persistence.export_control = Some(control);
+                        view.persistence.export_progress = None;
+                        view.persistence.export_window = Some(handle);
                         view.status = "export requested".into();
                         view.error = None;
                     }
@@ -273,8 +273,8 @@ impl EditorView {
     }
 
     fn cancel_export(&mut self, cx: &mut Context<Self>) {
-        if self.export_pending
-            && let Some(control) = &self.export_control
+        if self.persistence.export_pending
+            && let Some(control) = &self.persistence.export_control
         {
             self.status = if control.cancel() {
                 "cancelling export"
@@ -291,11 +291,13 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> Option<Stateful<Div>> {
         let control = self
+            .persistence
             .export_control
             .as_ref()
-            .filter(|_| self.export_pending)?;
+            .filter(|_| self.persistence.export_pending)?;
         let cancelled = control.is_cancelled();
         let progress = self
+            .persistence
             .export_progress
             .filter(|progress| progress.total_frames != 0);
         let label = match (cancelled, progress) {
@@ -355,17 +357,18 @@ impl EditorView {
 
     pub(super) fn poll_export(&mut self, cx: &mut Context<Self>) -> bool {
         let progress = self
+            .persistence
             .export_control
             .as_ref()
-            .filter(|_| self.export_pending)
+            .filter(|_| self.persistence.export_pending)
             .map(ExportControl::progress);
-        let changed = self.export_progress != progress;
-        self.export_progress = progress;
+        let changed = self.persistence.export_progress != progress;
+        self.persistence.export_progress = progress;
         match self.service.try_export_event() {
             Ok(event) => {
-                self.export_pending = false;
-                self.export_control = None;
-                self.export_progress = None;
+                self.persistence.export_pending = false;
+                self.persistence.export_control = None;
+                self.persistence.export_progress = None;
                 // Native message bodies preserve case-sensitive recovery paths;
                 // status chrome and the prompt normalize app text through theme::text.
                 let recovery_message = match &event.result {
@@ -377,7 +380,8 @@ impl EditorView {
                     }),
                     Err(error) => Some(error.to_string()),
                 };
-                if let (Some(handle), Some(message)) = (self.export_window.take(), recovery_message)
+                if let (Some(handle), Some(message)) =
+                    (self.persistence.export_window.take(), recovery_message)
                     && let Ok(response) = cx.update_window(handle, |_, window, cx| {
                         window.prompt(
                             PromptLevel::Info,
@@ -409,11 +413,11 @@ impl EditorView {
                 }
                 true
             }
-            Err(TryRecvError::Disconnected) if self.export_pending => {
-                self.export_pending = false;
-                self.export_control = None;
-                self.export_progress = None;
-                self.export_window = None;
+            Err(TryRecvError::Disconnected) if self.persistence.export_pending => {
+                self.persistence.export_pending = false;
+                self.persistence.export_control = None;
+                self.persistence.export_progress = None;
+                self.persistence.export_window = None;
                 self.error = Some("export worker stopped".into());
                 true
             }
@@ -517,7 +521,7 @@ mod tests {
         assert!(cx.has_pending_prompt());
         cx.simulate_prompt_answer("cancel");
         cx.run_until_parked();
-        assert!(!editor.read_with(cx, |view, _| view.export_dialog_open));
+        assert!(!editor.read_with(cx, |view, _| view.persistence.export_dialog_open));
         begin(cx);
         cx.simulate_prompt_answer("main mix");
         cx.run_until_parked();
@@ -525,7 +529,7 @@ mod tests {
         cx.simulate_prompt_answer("cancel");
         cx.run_until_parked();
         assert!(!cx.did_prompt_for_new_path());
-        assert!(!editor.read_with(cx, |view, _| view.export_dialog_open));
+        assert!(!editor.read_with(cx, |view, _| view.persistence.export_dialog_open));
         begin(cx);
         cx.simulate_prompt_answer("main mix");
         cx.run_until_parked();
@@ -537,7 +541,7 @@ mod tests {
             None
         });
         cx.run_until_parked();
-        assert!(!editor.read_with(cx, |view, _| view.export_dialog_open));
+        assert!(!editor.read_with(cx, |view, _| view.persistence.export_dialog_open));
         begin(cx);
         cx.simulate_prompt_answer("main mix");
         cx.run_until_parked();
@@ -551,9 +555,9 @@ mod tests {
         cx.run_until_parked();
         assert!(!cx.has_pending_prompt());
         editor.read_with(cx, |view, _| {
-            assert!(view.export_pending);
-            assert!(!view.export_dialog_open);
-            assert!(view.export_control.is_some());
+            assert!(view.persistence.export_pending);
+            assert!(!view.persistence.export_dialog_open);
+            assert!(view.persistence.export_control.is_some());
         });
     }
 
@@ -566,8 +570,8 @@ mod tests {
             clip_drag_ui_test::editor_window(cx, project, std::sync::Arc::default());
         let control = ExportControl::default();
         editor.update(cx, |view, _| {
-            view.export_pending = true;
-            view.export_control = Some(control.clone());
+            view.persistence.export_pending = true;
+            view.persistence.export_control = Some(control.clone());
         });
         cx.update_window(handle, |_, window, cx| {
             editor.update(cx, |view, cx| view.export_dialog(window, cx))
@@ -575,7 +579,7 @@ mod tests {
         .unwrap();
         assert!(control.is_cancelled());
         assert!(!cx.has_pending_prompt());
-        assert!(!editor.read_with(cx, |view, _| view.export_dialog_open));
+        assert!(!editor.read_with(cx, |view, _| view.persistence.export_dialog_open));
     }
 
     #[gpui::test]
@@ -589,8 +593,8 @@ mod tests {
         visual.simulate_resize(size(px(960.0), px(600.0)));
         let control = ExportControl::default();
         editor.update(cx, |view, cx| {
-            view.export_pending = true;
-            view.export_control = Some(control.clone());
+            view.persistence.export_pending = true;
+            view.persistence.export_control = Some(control.clone());
             cx.notify();
         });
         visual.run_until_parked();
@@ -599,7 +603,7 @@ mod tests {
 
         for (processed_frames, fraction) in [(25, 0.25), (75, 0.75), (125, 1.0)] {
             editor.update(cx, |view, cx| {
-                view.export_progress = Some(ExportProgress {
+                view.persistence.export_progress = Some(ExportProgress {
                     processed_frames,
                     total_frames: 100,
                 });
@@ -624,7 +628,7 @@ mod tests {
         assert!(visual.debug_bounds("cancel-export").is_none());
 
         editor.update(cx, |view, cx| {
-            view.export_pending = false;
+            view.persistence.export_pending = false;
             assert!(view.poll_export(cx));
             cx.notify();
         });

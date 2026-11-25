@@ -235,7 +235,7 @@ pub(super) fn render_body(
         automation_tint::native_device(view, device, NativeDeviceClass::Effect),
         [FREQUENCY, WIDTH],
     );
-    let client_key = view.device_gesture.snapshot().map(|s| s.key);
+    let client_key = view.device_panel.gesture.snapshot().map(|s| s.key);
     let Some(panel) = view.device_panel.delay_panels.get_mut(&device) else {
         return div().id("delay-unavailable");
     };
@@ -586,7 +586,7 @@ fn graph_event(
         if let Some(initial) = initial {
             if let Err(error) = view.begin_device_pair_gesture(device, FREQUENCY, WIDTH, initial) {
                 view.device_panel.message = Some(error.into());
-            } else if let Some(key) = view.device_gesture.snapshot().map(|s| s.key)
+            } else if let Some(key) = view.device_panel.gesture.snapshot().map(|s| s.key)
                 && let Some(panel) = view.device_panel.delay_panels.get_mut(&device)
             {
                 panel.gesture = Some(key);
@@ -599,7 +599,7 @@ fn graph_event(
         .delay_panels
         .get(&device)
         .and_then(|p| p.gesture);
-    if !view.device_gesture.snapshot().is_some_and(|s|Some(s.key)==key&&matches!(s.target,GestureTarget::DeviceParameterPair{device:d,first:FREQUENCY,second:WIDTH} if d==device)) || view.device_gesture.has_pending_terminal() {return;}
+    if !view.device_panel.gesture.snapshot().is_some_and(|s|Some(s.key)==key&&matches!(s.target,GestureTarget::DeviceParameterPair{device:d,first:FREQUENCY,second:WIDTH} if d==device)) || view.device_panel.gesture.has_pending_terminal() {return;}
     let result = match event.phase {
         ResponseGraphPhase::Change => view.change_device_pair_gesture(values),
         ResponseGraphPhase::Commit => view.finish_device_pair_gesture(values),

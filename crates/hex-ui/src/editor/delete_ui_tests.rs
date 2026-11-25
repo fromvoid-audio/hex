@@ -88,7 +88,7 @@ fn delete_mixed_clips(cx: &mut TestAppContext, key: &str) {
         editor.read_with(&visual, |v, _| {
             assert!(
                 matches!(
-                    &v.last_enqueued_edit,
+                    &v.test_probes.last_enqueued_edit,
                     Some(Command::EditClips { clips, edit: ClipEdit::Delete })
                         if clips == &expected_ids
                 ),

@@ -46,7 +46,8 @@ pub(super) fn render(
         })
         .collect();
     let active_target = view
-        .device_gesture
+        .device_panel
+        .gesture
         .snapshot()
         .map(|snapshot| snapshot.target);
     super::snapshot::retire_invalid_owner(view, &alive);
@@ -276,7 +277,7 @@ pub(super) fn render_return_effect(
             ));
     }
     if device.state().type_id().as_str() == Ok("hex.vst3")
-        && !view.degraded_plugins.contains(id.value())
+        && !view.device_panel.degraded_plugins.contains(id.value())
     {
         actions = actions.child(vst3_editor_button(view, id, selected, cx));
     }

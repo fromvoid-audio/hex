@@ -129,7 +129,10 @@ fn clipboard(
     cx: &mut Context<EditorView>,
 ) {
     use hex_session::service::DeviceClipboardAction as Action;
-    if view.edit_pending() || view.export_pending || view.device_panel.has_pending_draft(cx) {
+    if view.edit_pending()
+        || view.persistence.export_pending
+        || view.device_panel.has_pending_draft(cx)
+    {
         view.error = Some("finish pending edits before copying devices".into());
         cx.notify();
         return;
@@ -278,8 +281,8 @@ fn duplicate(
     if painted != current
         || view.device_panel.generation != stamp.generation
         || focused_device.is_some_and(|device| device != primary)
-        || !view.clip_view_open
-        || !view.device_panel_active
+        || !view.audio_detail.clip_view_open
+        || !view.device_panel.active
         || selected_owner(view, state) != Some(stamp.owner)
     {
         view.error = Some(STALE.into());
@@ -287,7 +290,7 @@ fn duplicate(
         return;
     }
     if view.edit_pending()
-        || view.export_pending
+        || view.persistence.export_pending
         || view.device_panel.pending_duplicate.is_some()
         || view.device_panel.has_pending_draft(cx)
     {
@@ -394,10 +397,10 @@ impl EditorView {
             || stamp.revision.checked_add(1) != Some(event.state.revision)
             || self.device_panel.owner != Some(stamp.owner)
             || selected_owner(self, &event.state) != Some(stamp.owner)
-            || !self.device_panel_active
-            || !self.clip_view_open
-            || self.opening_project
-            || self.close_prompt_open
+            || !self.device_panel.active
+            || !self.audio_detail.clip_view_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
         {
             return;
         }
@@ -562,8 +565,8 @@ pub(in crate::editor) fn key_up(
     let live = intent.generation == view.project_generation
         && intent.owner == view.device_panel.owner
         && view.device_panel.selected_device == Some(intent.device)
-        && view.clip_view_open
-        && view.device_panel_active
+        && view.audio_detail.clip_view_open
+        && view.device_panel.active
         && intent.owner.is_some_and(|owner| {
             view.state
                 .as_ref()
@@ -646,8 +649,8 @@ fn remove_selected_device(
     if generation != view.project_generation
         || owner != view.device_panel.owner
         || view.device_panel.selected_device != Some(device)
-        || !view.clip_view_open
-        || !view.device_panel_active
+        || !view.audio_detail.clip_view_open
+        || !view.device_panel.active
         || view.device_panel.chain_window.refused_delete.is_some()
     {
         suspend_until_release(view, intent, focus, window, cx);
@@ -661,13 +664,13 @@ fn remove_selected_device(
     }
     // Refuse unrelated work; an active numeric gesture may be finalized
     // through its existing terminal barrier before this exact removal.
-    if view.opening_project
-        || view.close_prompt_open
+    if view.persistence.opening_project
+        || view.persistence.close_prompt_open
         || view.gain_recorder.blocks_edits()
         || !view.pending_requests.is_empty()
-        || !view.device_gesture_barriers.is_empty()
+        || !view.device_panel.gesture_barriers.is_empty()
         || view.worker_requests_pending > 1
-        || (view.worker_requests_pending != 0 && view.device_gesture.snapshot().is_none())
+        || (view.worker_requests_pending != 0 && view.device_panel.gesture.snapshot().is_none())
     {
         view.error = Some("finish pending edits before removing the selected device".into());
         suspend_until_release(view, intent, focus, window, cx);
@@ -808,8 +811,8 @@ pub(super) fn card(
                 if generation != view.project_generation
                     || owner != view.device_panel.owner
                     || view.device_panel.selected_device != Some(device)
-                    || !view.clip_view_open
-                    || !view.device_panel_active
+                    || !view.audio_detail.clip_view_open
+                    || !view.device_panel.active
                 {
                     return;
                 }
@@ -818,14 +821,14 @@ pub(super) fn card(
                     cx.notify();
                     return;
                 }
-                if view.opening_project
-                    || view.close_prompt_open
+                if view.persistence.opening_project
+                    || view.persistence.close_prompt_open
                     || view.gain_recorder.blocks_edits()
                     || ((!view.pending_requests.is_empty()
-                        || !view.device_gesture_barriers.is_empty()
+                        || !view.device_panel.gesture_barriers.is_empty()
                         || view.worker_requests_pending > 1
                         || (view.worker_requests_pending != 0
-                            && view.device_gesture.snapshot().is_none()))
+                            && view.device_panel.gesture.snapshot().is_none()))
                         && !view.only_bypass_requests_pending())
                 {
                     view.error =

@@ -86,8 +86,8 @@ fn apply(
     let Some((state, owner)) = view.state.as_ref().zip(view.device_panel.owner) else {
         return;
     };
-    if !view.clip_view_open
-        || !view.device_panel_active
+    if !view.audio_detail.clip_view_open
+        || !view.device_panel.active
         || view.device_panel.generation != view.project_generation
         || selected_owner(view, state) != Some(owner)
         || !view.device_panel.is_selected(device)
@@ -110,10 +110,10 @@ fn apply(
     // A folded body cannot receive pointer release or finish a numeric draft.
     if collapse
         && (view.device_panel.has_pending_draft(cx)
-            || view.sampler_parameter.numeric_draft_active()
-            || view.device_gesture.snapshot().is_some()
-                && !view.device_gesture.has_pending_terminal()
-            || view.active_native_device_drag.is_some())
+            || view.device_panel.sampler_parameter.numeric_draft_active()
+            || view.device_panel.gesture.snapshot().is_some()
+                && !view.device_panel.gesture.has_pending_terminal()
+            || view.device_panel.active_native_drag.is_some())
     {
         return;
     }

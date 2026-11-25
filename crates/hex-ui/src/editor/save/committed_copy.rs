@@ -12,10 +12,10 @@ pub(super) struct Intent {
 
 impl Intent {
     fn current(view: &EditorView) -> Option<Self> {
-        if !view.device_gesture.has_stranded_commit() {
+        if !view.device_panel.gesture.has_stranded_commit() {
             return None;
         }
-        let active = view.device_gesture.snapshot()?;
+        let active = view.device_panel.gesture.snapshot()?;
         if active.key.generation != view.project_generation
             || !matches!(
                 active.target,
@@ -55,8 +55,8 @@ impl EditorView {
             return true;
         }
         self.cancel_open_after_save();
-        self.committed_copy.prompt = Some(intent);
-        self.save_dialog_open = true;
+        self.persistence.committed_copy.prompt = Some(intent);
+        self.persistence.save_dialog_open = true;
         true
     }
 
@@ -65,12 +65,12 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(intent) = self.committed_copy.prompt.take() else {
+        let Some(intent) = self.persistence.committed_copy.prompt.take() else {
             return;
         };
         cx.defer_in(window, move |view, window, cx| {
             if Intent::current(view) != Some(intent) {
-                view.save_dialog_open = false;
+                view.persistence.save_dialog_open = false;
                 return;
             }
             let title = theme::text("save a copy with the previous parameter setting?");
@@ -84,7 +84,7 @@ impl EditorView {
                 let answer = answer.await.ok();
                 let _ = cx.update_window(handle, |_, window, cx| {
                     let _ = this.update(cx, |view, cx| {
-                        view.save_dialog_open = false;
+                        view.persistence.save_dialog_open = false;
                         if window.focused(cx).is_none() { view.focus.focus(window); }
                         if answer == Some(0) {
                             if Intent::current(view) == Some(intent) {
@@ -125,14 +125,14 @@ impl EditorView {
             },
             false,
         ) {
-            self.committed_copy.receipt = Some((intent, receipt));
+            self.persistence.committed_copy.receipt = Some((intent, receipt));
             self.error = None;
             self.status = "saving committed copy".into();
         }
     }
 
     pub(in crate::editor) fn poll_committed_copy(&mut self) -> bool {
-        let Some((intent, receipt)) = &self.committed_copy.receipt else {
+        let Some((intent, receipt)) = &self.persistence.committed_copy.receipt else {
             return false;
         };
         let result = match receipt.try_recv() {
@@ -143,7 +143,7 @@ impl EditorView {
             }
         };
         let same_project = intent.key.generation == self.project_generation;
-        self.committed_copy.receipt = None;
+        self.persistence.committed_copy.receipt = None;
         if same_project {
             match result {
                 Ok(path) => {

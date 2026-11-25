@@ -101,7 +101,7 @@ pub(in crate::editor) fn naming(view: &EditorView) -> bool {
 }
 
 pub(in crate::editor) fn focus_from_workspace(view: &EditorView, window: &mut Window) -> bool {
-    if !view.clip_view_open || !view.device_panel_active || view.state.is_none() {
+    if !view.audio_detail.clip_view_open || !view.device_panel.active || view.state.is_none() {
         return false;
     }
     let visible = match view.device_panel.owner {
@@ -210,9 +210,9 @@ impl Action {
             Operation::Rename(source) => begin_name(view, source, window, cx),
             Operation::Edit(source) => {
                 if view.edit_pending()
-                    || view.sampler_parameter.numeric_draft_active()
-                    || view.tuning.client.snapshot().is_some()
-                    || view.tuning.client.has_pending_requests()
+                    || view.device_panel.sampler_parameter.numeric_draft_active()
+                    || view.settings.tuning.client.snapshot().is_some()
+                    || view.settings.tuning.client.has_pending_requests()
                 {
                     view.error = Some("finish the current edit before viewing a source".into());
                 } else if let Some(state) = view.state.as_ref() {
@@ -244,9 +244,9 @@ impl Action {
             }
             Operation::Navigate(_, track) => {
                 if view.edit_pending()
-                    || view.sampler_parameter.numeric_draft_active()
-                    || view.tuning.client.snapshot().is_some()
-                    || view.tuning.client.has_pending_requests()
+                    || view.device_panel.sampler_parameter.numeric_draft_active()
+                    || view.settings.tuning.client.snapshot().is_some()
+                    || view.settings.tuning.client.has_pending_requests()
                 {
                     view.error =
                         Some("source navigation canceled · finish the current edit".into());
@@ -258,8 +258,8 @@ impl Action {
             Operation::ChooseInstrument => instruments(view, self.position, window, cx),
             Operation::Create(type_id) => {
                 if view.edit_pending()
-                    || view.tuning.client.snapshot().is_some()
-                    || view.tuning.client.has_pending_requests()
+                    || view.settings.tuning.client.snapshot().is_some()
+                    || view.settings.tuning.client.has_pending_requests()
                 {
                     view.error = Some("finish the current edit before creating a source".into());
                     cx.notify();
@@ -275,8 +275,8 @@ impl Action {
             }
             Operation::Delete(source) => {
                 if view.edit_pending()
-                    || view.tuning.client.snapshot().is_some()
-                    || view.tuning.client.has_pending_requests()
+                    || view.settings.tuning.client.snapshot().is_some()
+                    || view.settings.tuning.client.has_pending_requests()
                 {
                     view.error = Some("finish the current edit before deleting a source".into());
                     cx.notify();
@@ -528,8 +528,8 @@ fn begin_name(
     cx: &mut Context<EditorView>,
 ) {
     if view.edit_pending()
-        || view.tuning.client.snapshot().is_some()
-        || view.tuning.client.has_pending_requests()
+        || view.settings.tuning.client.snapshot().is_some()
+        || view.settings.tuning.client.has_pending_requests()
         || !super::finalize_controls(view, cx)
         || view.edit_pending()
     {

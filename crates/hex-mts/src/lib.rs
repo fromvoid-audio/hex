@@ -31,13 +31,63 @@ pub struct Revision {
     pub project_revision: u64,
 }
 
+/// Default scale name published when no authored preset/scale name is supplied.
+pub const DEFAULT_SCALE_NAME: &str = "hex tuning";
+/// Maximum UTF-8 byte length accepted by MTS-ESP's 17-byte NUL-terminated scale name buffer.
+pub const MAX_SCALE_NAME_BYTES: usize = mts_esp_master_adapter::MAX_SCALE_NAME_BYTES;
+
+/// Sanitize and bound an authored project/preset scale name for MTS-ESP publication.
+/// Strips control/NUL characters, collapses/trims outer whitespace, truncates cleanly
+/// on a UTF-8 character boundary to at most [`MAX_SCALE_NAME_BYTES`] (16) bytes, and
+/// falls back to [`DEFAULT_SCALE_NAME`] if the result is empty.
+pub fn sanitize_scale_name(raw: &str) -> String {
+    let mut cleaned = String::with_capacity(MAX_SCALE_NAME_BYTES);
+    let mut pending_space = false;
+    for ch in raw.trim().chars() {
+        if ch.is_control() {
+            continue;
+        }
+        if ch.is_whitespace() {
+            pending_space = !cleaned.is_empty();
+            continue;
+        }
+        let extra = usize::from(pending_space) + ch.len_utf8();
+        if cleaned.len() + extra > MAX_SCALE_NAME_BYTES {
+            break;
+        }
+        if pending_space {
+            cleaned.push(' ');
+            pending_space = false;
+        }
+        cleaned.push(ch);
+    }
+    if cleaned.is_empty() {
+        DEFAULT_SCALE_NAME.to_owned()
+    } else {
+        cleaned
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Publication {
     revision: Revision,
     payload: TuningPublication,
+    name: [u8; MAX_SCALE_NAME_BYTES],
+    name_len: u8,
 }
 impl Publication {
     pub fn new(revision: Revision, tuning: ProjectTuning) -> Result<Self, NativeError> {
+        Self::new_named(revision, tuning, None)
+    }
+
+    /// Build one validated MTS-ESP publication with an optional authored scale/preset
+    /// name. Names are sanitized and bounded to [`MAX_SCALE_NAME_BYTES`] via
+    /// [`sanitize_scale_name`], falling back to [`DEFAULT_SCALE_NAME`] when absent/empty.
+    pub fn new_named(
+        revision: Revision,
+        tuning: ProjectTuning,
+        scale_name: Option<&str>,
+    ) -> Result<Self, NativeError> {
         let scale = if tuning.enabled() {
             tuning.scale()
         } else {
@@ -49,10 +99,23 @@ impl Publication {
             scale.root_key(),
             scale.root_degree() as u8,
         )?;
+        let sanitized = scale_name
+            .map(sanitize_scale_name)
+            .unwrap_or_else(|| DEFAULT_SCALE_NAME.to_owned());
+        let mut name = [0_u8; MAX_SCALE_NAME_BYTES];
+        let bytes = sanitized.as_bytes();
+        name[..bytes.len()].copy_from_slice(bytes);
         Ok(Self {
             revision,
-            payload: TuningPublication::new(tuning.frequencies(), "hex tuning", metadata)?,
+            payload: TuningPublication::new(tuning.frequencies(), &sanitized, metadata)?,
+            name,
+            name_len: bytes.len() as u8,
         })
+    }
+
+    /// Sanitized scale name encoded inside this publication's MTS-ESP payload.
+    pub fn scale_name(&self) -> &str {
+        std::str::from_utf8(&self.name[..usize::from(self.name_len)]).unwrap_or(DEFAULT_SCALE_NAME)
     }
 }
 

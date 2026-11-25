@@ -35,8 +35,8 @@ impl super::EditorView {
     }
 
     fn time_edit_admitted(&self) -> bool {
-        !self.opening_project
-            && !self.close_prompt_open
+        !self.persistence.opening_project
+            && !self.persistence.close_prompt_open
             && self.worker_requests_pending == 0
             && self.pending_requests.is_empty()
     }

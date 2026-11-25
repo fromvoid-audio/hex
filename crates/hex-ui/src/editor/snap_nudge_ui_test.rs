@@ -24,10 +24,10 @@ fn arrangement_nudge_uses_selected_grid_instead_of_legacy_free_step(cx: &mut Tes
         visual.simulate_keystrokes("right");
         editor.read_with(cx, |view, _| {
             if midi {
-                assert!(matches!(view.last_enqueued_edit,
+                assert!(matches!(view.test_probes.last_enqueued_edit,
                     Some(Command::MoveMidiClip { start, .. }) if start == BeatTime::from_raw(BeatTime::ONE.raw()*5/4)));
             } else {
-                assert!(matches!(view.last_enqueued_edit, Some(Command::MoveClip { start: 6000, .. })), "request={:?} bounds={:?} epoch={} layout={} pending={} mode={:?}", view.last_enqueued_edit, view.arrangement_bounds, view.arrangement_bounds_epoch, view.drag_layout_generation, view.edit_pending(), view.mode);
+                assert!(matches!(view.test_probes.last_enqueued_edit, Some(Command::MoveClip { start: 6000, .. })), "request={:?} bounds={:?} epoch={} layout={} pending={} mode={:?}", view.test_probes.last_enqueued_edit, view.arrangement_bounds, view.arrangement_bounds_epoch, view.drag_layout_generation, view.edit_pending(), view.mode);
             }
         });
     }
@@ -55,10 +55,10 @@ fn arrangement_nudge_free_modifier_and_busy_refusal_preserve_legacy_commands(
             }
             view.nudge_audio_clip(clip, true, platform);
             if busy {
-                assert!(view.last_enqueued_edit.is_none());
+                assert!(view.test_probes.last_enqueued_edit.is_none());
             } else {
                 assert!(matches!(
-                    view.last_enqueued_edit,
+                    view.test_probes.last_enqueued_edit,
                     Some(Command::NudgeClip { frames: 12000, .. })
                 ));
             }

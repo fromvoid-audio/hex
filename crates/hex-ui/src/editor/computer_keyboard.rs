@@ -14,7 +14,7 @@ impl super::EditorView {
     }
 
     pub(super) fn cancel_computer_keyboard(&mut self) {
-        self.midi_audition.clear();
+        self.midi_editor.audition.clear();
         self.retire_computer_keyboard_audio();
         self.computer_keyboard.release_all();
     }
@@ -25,7 +25,7 @@ impl super::EditorView {
     pub(super) fn stop_computer_keyboard(&mut self) {
         self.stop_controller_notes();
         self.invalidate_hardware_step();
-        self.midi_audition.clear();
+        self.midi_editor.audition.clear();
         if self.reusable_worker_keyboard_input(self.worker_owns_keyboard_publication())
             && self
                 .computer_keyboard
@@ -64,7 +64,7 @@ impl super::EditorView {
         }
         self.computer_keyboard.toggle();
         self.computer_keyboard.suspended = false;
-        if !self.midi_step.enabled || !self.midi_focus.is_focused(window) {
+        if !self.midi_editor.step.enabled || !self.midi_editor.focus.is_focused(window) {
             self.focus.focus(window);
         }
         self.tick_computer_keyboard();
@@ -96,8 +96,8 @@ impl super::EditorView {
                     .target
                     .is_some_and(|(generation, revision, track)| {
                         let track_matches = self.selected_track == Some(track)
-                            || (self.midi_audition.enabled
-                                && self.clip_view_open
+                            || (self.midi_editor.audition.enabled
+                                && self.audio_detail.clip_view_open
                                 && self.detail_midi_clip_owner_track() == Some(track)
                                 && self
                                     .computer_keyboard
@@ -214,7 +214,7 @@ impl super::EditorView {
             }
             return changed;
         }
-        let same_physical_target = self.midi_step.enabled
+        let same_physical_target = self.midi_editor.step.enabled
             && target
                 .zip(self.computer_keyboard.target)
                 .is_some_and(|(new, old)| new.0 == old.0 && new.2 == old.2);
@@ -271,7 +271,7 @@ impl super::EditorView {
                     return true;
                 }
             }
-        } else if self.midi_audition.enabled && self.clip_view_open {
+        } else if self.midi_editor.audition.enabled && self.audio_detail.clip_view_open {
             match input.with_live_audition() {
                 Ok(input) => input,
                 Err(error) => {
@@ -282,7 +282,7 @@ impl super::EditorView {
         } else {
             input
         };
-        let input = if self.midi_recorder.preparing() {
+        let input = if self.midi_editor.recorder.preparing() {
             match input.with_recording_support() {
                 Ok(input) => input,
                 Err(reason) => {
@@ -318,12 +318,12 @@ impl super::EditorView {
         _cx: &gpui::App,
     ) -> bool {
         !modifiers.modified()
-            && !self.theme_settings.open
-            && !self.tuning.open
+            && !self.settings.theme.open
+            && !self.settings.tuning.open
             && self.context_menu.is_none()
-            && !self.opening_project
-            && !self.close_prompt_open
-            && (self.focus.is_focused(window) || self.midi_focus.is_focused(window))
+            && !self.persistence.opening_project
+            && !self.persistence.close_prompt_open
+            && (self.focus.is_focused(window) || self.midi_editor.focus.is_focused(window))
             && (key == "m"
                 || (self.computer_keyboard.enabled
                     && (NOTE_KEYS.contains(&key) || matches!(key, "z" | "x" | "c" | "v"))))

@@ -48,12 +48,12 @@ impl EditorView {
         };
         if self.mode != super::EditorMode::Arrangement
             || self.context_menu.is_some()
-            || self.theme_settings.open
-            || self.tuning.open
+            || self.settings.theme.open
+            || self.settings.tuning.open
             || super::device_panel::picker_is_open(self)
             || self.active_clip_drag.is_some()
-            || self.active_browser_audio_drag.is_some()
-            || self.active_native_device_drag.is_some()
+            || self.browser.active_audio_drag.is_some()
+            || self.device_panel.active_native_drag.is_some()
             || self.loop_rail_gesture.is_some()
             || self.locked_play_start_drag_active()
             || self.track_resize_active()
@@ -442,10 +442,28 @@ impl EditorView {
                 }),
             );
         let header_width = self.track_header_width();
+        let playhead_viewport = self
+            .state
+            .as_ref()
+            .map(|state| self.visible_viewport(state.timeline_frames));
+        let playhead_slots = std::rc::Rc::clone(&self.playback_subviews.slots);
         let measure_entity = cx.entity();
         body = body.child(
             canvas(
-                |_, _, _| (),
+                move |bounds, _, _| {
+                    if let Some(viewport) = playhead_viewport
+                        && let Ok(mut slots) = playhead_slots.try_borrow_mut()
+                    {
+                        slots.arrangement_body = Some(super::drag::LaneBounds {
+                            left: f32::from(bounds.origin.x),
+                            width: f32::from(bounds.size.width),
+                            top: f32::from(bounds.origin.y),
+                            height: f32::from(bounds.size.height),
+                        });
+                        slots.arrangement_header_width = header_width;
+                        slots.arrangement_viewport = Some(viewport);
+                    }
+                },
                 move |bounds, _, window, cx| {
                     measure_entity.update(cx, |view, cx| {
                         if view.clip_paint_held() && view.focus.is_focused(window) {
@@ -482,8 +500,8 @@ impl EditorView {
                             return;
                         }
                         let view = zoom_entity.read(cx);
-                        if view.theme_settings.open
-                            || view.tuning.open
+                        if view.settings.theme.open
+                            || view.settings.tuning.open
                             || super::device_panel::picker_is_open(view)
                         {
                             return;
@@ -491,8 +509,8 @@ impl EditorView {
                         cx.stop_propagation();
                         zoom_entity.update(cx, |view, cx| {
                             if view.context_menu.is_some()
-                                || view.theme_settings.open
-                                || view.tuning.open
+                                || view.settings.theme.open
+                                || view.settings.tuning.open
                                 || super::device_panel::picker_is_open(view)
                             {
                                 return;
@@ -586,8 +604,8 @@ impl EditorView {
                         let started = cursor_down_entity.update(cx, |view, cx| {
                             // Foreground controls own the press while open.
                             if view.context_menu.is_some()
-                                || view.theme_settings.open
-                                || view.tuning.open
+                                || view.settings.theme.open
+                                || view.settings.tuning.open
                                 || super::device_panel::picker_is_open(view)
                                 || view.pointer_hits_bottom_play_start_marker(
                                     event.position,
@@ -841,9 +859,9 @@ impl EditorView {
             );
         }
         body = body.children(self.arrangement_device_drop_preview());
-        if let Some(drag) = self.active_browser_audio_drag.as_ref()
+        if let Some(drag) = self.browser.active_audio_drag.as_ref()
             && self.browser_sampler_drop_ready(drag, cx).is_ok()
-            && let Some(line_y) = self.sampler_load.header_insertion_line_y
+            && let Some(line_y) = self.device_panel.sampler_load.header_insertion_line_y
             && let Some(bounds) = self.arrangement_bounds
             && line_y >= bounds.top
             && line_y < bounds.top + bounds.height
@@ -866,7 +884,8 @@ impl EditorView {
         {
             None
         } else {
-            self.pending_sample_drop
+            self.browser
+                .pending_sample_drop
                 .as_ref()
                 .and_then(|drop| drop.insertion_line_y)
                 .or_else(|| self.displayed_browser_audio_drag()?.insertion_line_y.get())
@@ -997,56 +1016,8 @@ impl EditorView {
 
     /// Paint after the body and Main have measured their current-frame bounds.
     /// The shared timeline line spans gain/Return rows without owning any input.
-    fn arrangement_playback_layer(&self, cx: &Context<Self>) -> Div {
-        let entity = cx.entity();
-        div()
-            .debug_selector(|| "arrangement-playback-layer".into())
-            .absolute()
-            .inset_0()
-            .child(
-                canvas(
-                    |_, _, _| (),
-                    move |_, _, window, cx| {
-                        let view = entity.read(cx);
-                        let Some(state) = view.state.as_ref() else {
-                            return;
-                        };
-                        let (Some(body), Some(main)) =
-                            (view.arrangement_bounds, view.main_track_lane_bounds)
-                        else {
-                            return;
-                        };
-                        let width = body.width - view.track_header_width();
-                        let height = main.top - body.top;
-                        if !width.is_finite()
-                            || !height.is_finite()
-                            || width <= 0.0
-                            || height <= 0.0
-                        {
-                            return;
-                        }
-                        let viewport = view.visible_viewport(state.timeline_frames);
-                        // Use the audible position, compensated for Main latency.
-                        let Some(position) = viewport.fraction(view.audible_cursor_position())
-                        else {
-                            return;
-                        };
-                        let bounds = gpui::Bounds::new(
-                            gpui::point(
-                                px(body.left + width * position.clamp(0.0, 1.0)),
-                                px(body.top),
-                            ),
-                            gpui::size(px(1.0), px(height)),
-                        );
-                        window.paint_quad(gpui::fill(
-                            bounds,
-                            rgb(theme::color(theme::PaletteRole::Text)),
-                        ));
-                    },
-                )
-                .absolute()
-                .inset_0(),
-            )
+    fn arrangement_playback_layer(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        self.arrangement_playhead_element(cx)
     }
 
     fn arrangement_surface(
@@ -1170,7 +1141,8 @@ impl EditorView {
                 clip_entity.update(cx, |view, cx| {
                     #[cfg(test)]
                     {
-                        view.drag_move_event_count = view.drag_move_event_count.saturating_add(1);
+                        view.test_probes.drag_move_event_count =
+                            view.test_probes.drag_move_event_count.saturating_add(1);
                     }
                     view.sync_held_clip_move_audition();
                     cx.notify();
@@ -1242,7 +1214,14 @@ impl EditorView {
             .children(automation)
             .child(
                 canvas(
-                    |_, _, _| (),
+                    {
+                        let slots = std::rc::Rc::clone(&self.playback_subviews.slots);
+                        move |bounds, _, _| {
+                            if let Ok(mut slots) = slots.try_borrow_mut() {
+                                slots.arrangement_main_top = Some(f32::from(bounds.origin.y));
+                            }
+                        }
+                    },
                     move |bounds, _, _, cx| {
                         lane_entity.update(cx, |view, _| {
                             view.main_track_lane_bounds = Some(super::drag::LaneBounds {
@@ -1318,9 +1297,10 @@ impl EditorView {
                             .child(theme::text("main")),
                     )
                     .child(div().flex_1())
-                    .children([super::track_meters::render_main(
-                        self.track_meters.main_reading(),
-                        self.main_track_height(),
+                    .children([self.meter_slot_or_inline(
+                        super::playback_subviews::MeterTarget::Main {
+                            height: self.main_track_height(),
+                        },
                     )])
                     .children(self.track_latency_indicator(super::track_latency::Owner::Main))
                     .child(self.sample_arm_button(super::sample_recorder::Arm::Main, cx))
@@ -1559,8 +1539,8 @@ impl EditorView {
                             return;
                         }
                         let view = wheel_entity.read(cx);
-                        if view.theme_settings.open
-                            || view.tuning.open
+                        if view.settings.theme.open
+                            || view.settings.tuning.open
                             || super::device_panel::picker_is_open(view)
                         {
                             return;
@@ -1568,8 +1548,8 @@ impl EditorView {
                         cx.stop_propagation();
                         wheel_entity.update(cx, |view, cx| {
                             if view.context_menu.is_some()
-                                || view.theme_settings.open
-                                || view.tuning.open
+                                || view.settings.theme.open
+                                || view.settings.tuning.open
                                 || super::device_panel::picker_is_open(view)
                             {
                                 return;

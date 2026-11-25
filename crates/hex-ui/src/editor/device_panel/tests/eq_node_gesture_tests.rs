@@ -122,8 +122,8 @@ fn eq_graph_follows_authored_gain_on_the_applied_playback_source(cx: &mut TestAp
     editor.update(&mut visual, |view, cx| {
         view.selected_track = Some(track);
         view.device_panel.owner = Some(DevicePanelOwner::Track(track));
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         cx.notify();
     });
     visual.run_until_parked();
@@ -199,7 +199,7 @@ fn eq_graph_follows_authored_gain_on_the_applied_playback_source(cx: &mut TestAp
             view.audible_playback.as_ref().unwrap().audio_revision,
             before_preview
         );
-        assert!(view.device_gesture.snapshot().is_some());
+        assert!(view.device_panel.gesture.snapshot().is_some());
         cx.notify();
     });
     // Paint while the real callback is ahead of the view's metadata.
@@ -554,7 +554,7 @@ fn eq_wheel_over_bell_blank_or_modified_input_never_invents_a_shape_or_edit(
         editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone()),
         before
     );
-    assert!(editor.read_with(cx, |view, _| view.device_gesture.snapshot().is_none()));
+    assert!(editor.read_with(cx, |view, _| view.device_panel.gesture.snapshot().is_none()));
 }
 
 #[gpui::test]
@@ -596,7 +596,9 @@ fn eq_old_scroll_stream_cannot_finish_or_rebind_a_new_same_node_gesture(cx: &mut
         gpui::TouchPhase::Started,
         false,
     );
-    let key = editor.read_with(cx, |view, _| view.device_gesture.snapshot().unwrap().key);
+    let key = editor.read_with(cx, |view, _| {
+        view.device_panel.gesture.snapshot().unwrap().key
+    });
     graph.update(cx, |_, cx| {
         cx.emit(Event {
             phase: Phase::Commit,
@@ -607,7 +609,7 @@ fn eq_old_scroll_stream_cannot_finish_or_rebind_a_new_same_node_gesture(cx: &mut
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.device_gesture.snapshot().unwrap().key,
+            view.device_panel.gesture.snapshot().unwrap().key,
             key,
             "a delayed terminal from the previous stream cannot finish the new key"
         )
@@ -777,7 +779,7 @@ fn eq_option_drag_refused_begin_preserves_the_other_canonical_gesture_key(cx: &m
             ParameterValue::Float(before.output_gain),
         )
         .unwrap();
-        view.device_gesture.snapshot().unwrap().key
+        view.device_panel.gesture.snapshot().unwrap().key
     });
     let start = plot(&mut visual, device, 0.5, 0.5);
     let moved = plot(&mut visual, device, 0.7, 0.8);
@@ -790,7 +792,7 @@ fn eq_option_drag_refused_begin_preserves_the_other_canonical_gesture_key(cx: &m
     visual.simulate_mouse_up(moved, MouseButton::Left, option);
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert_eq!(view.device_gesture.snapshot().unwrap().key, key);
+        assert_eq!(view.device_panel.gesture.snapshot().unwrap().key, key);
         assert_eq!(read(view, device), before);
         assert!(
             view.device_panel.pending_values.is_empty(),
@@ -907,7 +909,7 @@ fn eq_review_horizontal_cut_wheel_bubbles_while_fractional_vertical_still_coales
         "horizontal-only cut hover must reach the real outer chain"
     );
     assert_eq!(editor.read_with(cx, |view, _| read(view, device)), before);
-    assert!(editor.read_with(cx, |view, _| view.device_gesture.snapshot().is_none()));
+    assert!(editor.read_with(cx, |view, _| view.device_panel.gesture.snapshot().is_none()));
     let position = plot(&mut visual, device, 0.02, 0.5);
     visual.simulate_event(gpui::ScrollWheelEvent {
         position,
@@ -924,7 +926,7 @@ fn eq_review_horizontal_cut_wheel_bubbles_while_fractional_vertical_still_coales
         "horizontal momentum bubbles to outer chain"
     );
     assert_eq!(editor.read_with(cx, |view, _| read(view, device)), before);
-    assert!(editor.read_with(cx, |view, _| view.device_gesture.snapshot().is_none()));
+    assert!(editor.read_with(cx, |view, _| view.device_panel.gesture.snapshot().is_none()));
     let moved = momentum_offset;
     // Re-resolve the actual moved plot. Fractional vertical intent remains owned,
     // even while no complete slope step has yet been accumulated.
@@ -1007,7 +1009,9 @@ fn eq_review_physical_end_then_momentum_never_restarts_slope_history(cx: &mut Te
             false,
         );
     }
-    let physical_key = editor.read_with(cx, |view, _| view.device_gesture.snapshot().unwrap().key);
+    let physical_key = editor.read_with(cx, |view, _| {
+        view.device_panel.gesture.snapshot().unwrap().key
+    });
     for phase in [gpui::TouchPhase::Moved, gpui::TouchPhase::Ended] {
         visual.simulate_event(gpui::ScrollWheelEvent {
             position,
@@ -1019,7 +1023,7 @@ fn eq_review_physical_end_then_momentum_never_restarts_slope_history(cx: &mut Te
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
             assert_eq!(
-                view.device_gesture.snapshot().unwrap().key,
+                view.device_panel.gesture.snapshot().unwrap().key,
                 physical_key,
                 "a momentum phase cannot terminate/rebind the physical key"
             );
@@ -1042,7 +1046,7 @@ fn eq_review_physical_end_then_momentum_never_restarts_slope_history(cx: &mut Te
         editor.read_with(cx, |view, _| {
             assert_eq!(read(view, device), after, "inertia phase={phase:?}");
             assert!(
-                view.device_gesture.snapshot().is_none(),
+                view.device_panel.gesture.snapshot().is_none(),
                 "inertia cannot allocate a second gesture"
             );
         });
@@ -1165,7 +1169,7 @@ fn eq_review_nearest_unsupported_node_blocks_nearby_cut_and_bubbles(cx: &mut Tes
             before,
             "nearest unsupported {kind:?} must not edit the obscured cut"
         );
-        assert!(editor.read_with(cx, |view, _| view.device_gesture.snapshot().is_none()));
+        assert!(editor.read_with(cx, |view, _| view.device_panel.gesture.snapshot().is_none()));
         editor.update(cx, |view, cx| {
             let scroll = &view.device_panel.chain_window.scroll;
             assert!(scroll.max_offset().width > px(48.0));
@@ -1327,7 +1331,7 @@ fn eq_review_stream_physical_pause_keeps_one_history_until_end_including_zero_st
             false,
         );
         if zero_start {
-            assert!(editor.read_with(cx, |view, _| view.device_gesture.snapshot().is_none()));
+            assert!(editor.read_with(cx, |view, _| view.device_panel.gesture.snapshot().is_none()));
             assert!(
                 events.borrow().is_empty(),
                 "zeroY start must not begin/consume a parameter edit"
@@ -1344,9 +1348,13 @@ fn eq_review_stream_physical_pause_keeps_one_history_until_end_including_zero_st
         pump_until(&editor, cx, |view| {
             view.worker_requests_pending == 0
                 && view.pending_requests.is_empty()
-                && view.device_gesture.snapshot().is_some_and(|snapshot| {
-                    snapshot.value == ParameterValue::Choice(u32::from(first_slope))
-                })
+                && view
+                    .device_panel
+                    .gesture
+                    .snapshot()
+                    .is_some_and(|snapshot| {
+                        snapshot.value == ParameterValue::Choice(u32::from(first_slope))
+                    })
         });
         cx.executor()
             .advance_clock(std::time::Duration::from_millis(300));
@@ -1354,10 +1362,10 @@ fn eq_review_stream_physical_pause_keeps_one_history_until_end_including_zero_st
         pump_until(&editor, cx, |view| {
             view.worker_requests_pending == 0
                 && view.pending_requests.is_empty()
-                && view.device_gesture_barriers.is_empty()
+                && view.device_panel.gesture_barriers.is_empty()
         });
         assert!(
-            editor.read_with(cx, |view, _| view.device_gesture.snapshot().is_some()),
+            editor.read_with(cx, |view, _| view.device_panel.gesture.snapshot().is_some()),
             "physical fingers still held after >250ms, zero_start={zero_start}"
         );
         assert_eq!(
@@ -1453,11 +1461,14 @@ fn eq_review_stream_end_outside_graph_retires_key_and_keeps_next_wheel_history_s
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
             && view
-                .device_gesture
+                .device_panel
+                .gesture
                 .snapshot()
                 .is_some_and(|snapshot| snapshot.value == ParameterValue::Choice(2))
     });
-    let key = editor.read_with(cx, |view, _| view.device_gesture.snapshot().unwrap().key);
+    let key = editor.read_with(cx, |view, _| {
+        view.device_panel.gesture.snapshot().unwrap().key
+    });
     assert!(visual.update(|window, cx| graph.read(cx).focus_handle(cx).is_focused(window)));
     let outside = visual
         .debug_bounds("session-scenes-header")
@@ -1473,22 +1484,31 @@ fn eq_review_stream_end_outside_graph_retires_key_and_keeps_next_wheel_history_s
     visual.run_until_parked();
     assert!(visual.update(|window, cx| graph.read(cx).focus_handle(cx).is_focused(window)));
     assert_eq!(
-        editor.read_with(cx, |view, _| view.device_gesture.snapshot().unwrap().key),
+        editor.read_with(cx, |view, _| view
+            .device_panel
+            .gesture
+            .snapshot()
+            .unwrap()
+            .key),
         key
     );
     end_wheel(&mut visual, outside);
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture_barriers.is_empty()
+            && view.device_panel.gesture_barriers.is_empty()
     });
     eprintln!(
         "outside_graph_end graph={graph_bounds:?} outside={outside:?} phases={:?} active_key={:?}",
         events.borrow().iter().map(|e| e.phase).collect::<Vec<_>>(),
-        editor.read_with(cx, |view, _| view.device_gesture.snapshot().map(|s| s.key))
+        editor.read_with(cx, |view, _| view
+            .device_panel
+            .gesture
+            .snapshot()
+            .map(|s| s.key))
     );
     assert!(
-        editor.read_with(cx, |view, _| view.device_gesture.snapshot().is_none()),
+        editor.read_with(cx, |view, _| view.device_panel.gesture.snapshot().is_none()),
         "physical Ended over another panel must retire the original graph's key"
     );
     assert_eq!(
@@ -1765,7 +1785,8 @@ fn four_review_queued_saturation_keeps_reversal_before_and_after_replay(cx: &mut
     // preserve its original cumulative steps when subsequent input arrives.
     pump_until(&editor, cx, |v| {
         v.worker_requests_pending == 0
-            && v.device_gesture
+            && v.device_panel
+                .gesture
                 .snapshot()
                 .is_some_and(|s| s.value == ParameterValue::Choice(2))
     });
@@ -1993,7 +2014,7 @@ fn four_review_real_worker_refusal_and_context_changes_never_replay_stale_queue(
                 "no stale successor authored for {mode}"
             );
             assert_eq!(v.state.as_ref().unwrap().revision, expected_revision);
-            assert!(v.device_gesture.snapshot().is_none());
+            assert!(v.device_panel.gesture.snapshot().is_none());
             if v.state.as_ref().unwrap().project.device(device).is_some() {
                 assert_eq!(eq_panel::queued_scrolls_for_test(v, device), (0, false));
                 assert_eq!(read(v, device).nodes[1].slope, 0);
@@ -2079,8 +2100,8 @@ fn pump_capacity_replay(
                 "worker={} queued={} gesture={:?} barriers={} error={:?} revision={:?}",
                 view.worker_requests_pending,
                 view.pending_requests.len(),
-                view.device_gesture.snapshot(),
-                view.device_gesture_barriers.len(),
+                view.device_panel.gesture.snapshot(),
+                view.device_panel.gesture_barriers.len(),
                 view.error,
                 view.state.as_ref().map(|state| state.revision),
             ))

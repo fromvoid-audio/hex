@@ -91,6 +91,11 @@ impl Snapshot {
 }
 
 impl Project {
+    /// Authored stereo Return-to-Return feeds in canonical storage order.
+    pub fn return_feeds(&self) -> &[ReturnFeed] {
+        &self.routing
+    }
+
     /// Validate global identities, endpoints, gain, pair uniqueness and the
     /// complete DAG. Returned records are metadata, not playback admission.
     pub fn validate_return_feed_snapshot(snapshot: &Snapshot) -> Result<Vec<ReturnFeed>, Invalid> {

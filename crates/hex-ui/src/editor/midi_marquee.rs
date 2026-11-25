@@ -26,12 +26,12 @@ impl EditorView {
                 generation: self.project_generation,
                 revision: self.state.as_ref()?.revision,
                 clip: self.detail_clip_id()?,
-                beat_start: self.piano_beat_start,
-                beat_span: self.piano_beat_span.raw(),
-                pitch: self.piano_pitch,
+                beat_start: self.midi_editor.piano_beat_start,
+                beat_span: self.midi_editor.piano_beat_span.raw(),
+                pitch: self.midi_editor.piano_pitch,
             },
             bounds,
-            selection_epoch: self.midi_selection.epoch(),
+            selection_epoch: self.midi_editor.selection.epoch(),
         })
     }
 
@@ -42,7 +42,7 @@ impl EditorView {
     ) -> Result<(), &'static str> {
         let hits = marquee.hits();
         if previous == hits.as_ref() {
-            marquee.apply_live(&mut self.midi_selection)?;
+            marquee.apply_live(&mut self.midi_editor.selection)?;
             return Ok(());
         }
         let removed = previous.iter().any(|id| hits.binary_search(id).is_err());
@@ -58,7 +58,7 @@ impl EditorView {
                 .filter(|id| previous.binary_search(id).is_err())
                 .take(hex_engine::computer_keyboard::MAX_NOTE_AUDITION_NOTES + 1),
         );
-        marquee.apply_live(&mut self.midi_selection)?;
+        marquee.apply_live(&mut self.midi_editor.selection)?;
         if !entered.is_empty() {
             self.audition_midi_notes(&entered);
         } else if removed {
@@ -72,15 +72,16 @@ impl EditorView {
         self.cancel_marquee_audition(context);
         if self.project_generation == context.scene.generation
             && self.detail_clip_id() == Some(context.scene.clip)
-            && self.midi_selection.epoch() == context.selection_epoch
+            && self.midi_editor.selection.epoch() == context.selection_epoch
         {
-            marquee.restore_baseline(&mut self.midi_selection);
+            marquee.restore_baseline(&mut self.midi_editor.selection);
             if let Some(source) = self
                 .state
                 .as_ref()
                 .and_then(|s| s.project.midi_source(context.scene.clip))
                 && let Err(error) = self
-                    .midi_selection
+                    .midi_editor
+                    .selection
                     .retain_valid(source.notes().iter().map(|note| note.id()))
             {
                 self.error = Some(error.into());
@@ -91,16 +92,16 @@ impl EditorView {
     /// An explicit musical/selection action adopts the already visible live
     /// membership. Retire its pointer owner before canceling other edit drafts.
     pub(super) fn finish_live_midi_marquees(&mut self) {
-        let grid = self.midi_marquee.take();
-        let velocity = self.midi_velocity.take_marquee();
+        let grid = self.midi_editor.marquee.take();
+        let velocity = self.midi_editor.velocity.take_marquee();
         for marquee in grid.into_iter().chain(velocity) {
             self.cancel_marquee_audition(marquee.context());
         }
     }
 
     pub(super) fn cancel_all_midi_marquees(&mut self) -> bool {
-        let grid = self.midi_marquee.take();
-        let velocity = self.midi_velocity.take_marquee();
+        let grid = self.midi_editor.marquee.take();
+        let velocity = self.midi_editor.velocity.take_marquee();
         let changed = grid.is_some() || velocity.is_some();
         for marquee in grid.into_iter().chain(velocity) {
             self.cancel_live_midi_marquee(marquee);

@@ -181,11 +181,13 @@ mod tests {
         begin(&mut visual);
         visual.simulate_input("120");
         visual.simulate_keystrokes("escape");
-        editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
+        editor.read_with(cx, |view, _| {
+            assert!(view.test_probes.last_enqueued_edit.is_none())
+        });
         begin(&mut visual);
         visual.simulate_input("120");
         visual.simulate_keystrokes("enter");
-        let command = editor.read_with(cx, |view, _| view.last_enqueued_edit.clone().expect("explicit global commit must clear later points even when the initial BPM is unchanged"));
+        let command = editor.read_with(cx, |view, _| view.test_probes.last_enqueued_edit.clone().expect("explicit global commit must clear later points even when the initial BPM is unchanged"));
         model.execute(command).unwrap();
         assert_eq!(model.project().tempo_map().points().len(), 1);
         assert_eq!(

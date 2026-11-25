@@ -32,7 +32,7 @@ impl EditorView {
         {
             return None;
         }
-        let snapshot = self.session_routes.matching_snapshot(
+        let snapshot = self.session_grid.routes.matching_snapshot(
             audio.control.output_identity()?,
             Some((
                 audible.audio_revision,
@@ -43,7 +43,8 @@ impl EditorView {
             self.project_generation,
         )?;
         let route = self
-            .session_routes
+            .session_grid
+            .routes
             .entry_for_track(snapshot, true, track.value())?;
         if route.owner != SessionRouteOwner::Arrangement {
             return None;

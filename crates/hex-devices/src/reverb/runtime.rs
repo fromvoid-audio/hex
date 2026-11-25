@@ -198,30 +198,13 @@ pub struct PreparedReverb {
 // Topology-preserving state-variable section. Positive g and damping remain
 // stable throughout bounded parameter ramps; no arbitrary biquad interpolation.
 #[derive(Clone, Copy)]
-struct InputFilter {
-    a1: f32,
-    a2: f32,
-    a3: f32,
-    damping: f32,
-}
+struct InputFilter(hex_dsp::SvfSectionF32);
 impl InputFilter {
     fn new(g: f32, damping: f32) -> Self {
-        let a1 = 1.0 / (1.0 + g * (g + damping));
-        let a2 = g * a1;
-        Self {
-            a1,
-            a2,
-            a3: g * a2,
-            damping,
-        }
+        Self(hex_dsp::SvfSectionF32::from_validated(g, damping))
     }
     fn apply(self, state: &mut [f32; 2], x: f32, high: bool) -> f32 {
-        let v3 = x - state[1];
-        let v1 = self.a1 * state[0] + self.a2 * v3;
-        let v2 = state[1] + self.a2 * state[0] + self.a3 * v3;
-        state[0] = clean(2.0 * v1 - state[0]);
-        state[1] = clean(2.0 * v2 - state[1]);
-        clean(if high { x - self.damping * v1 - v2 } else { v2 })
+        self.0.apply_bounded(state, x, high, 32.0)
     }
 }
 fn alpha(hz: f32, rate: f32) -> f32 {
@@ -325,8 +308,8 @@ impl PreparedReverb {
             automated_values: AutomatedValues::default(),
             scatter_cache: ScatterCache::default(),
             feedback_cache: FeedbackCache::default(),
-            parameters: self.settings.0.map(Ramp::steady),
-            coefficients: self.coefficients.map(Ramp::steady),
+            parameters: self.settings.0.map(Ramp::settled),
+            coefficients: self.coefficients.map(Ramp::settled),
             tank_ramp_remaining: 0,
             silence_limit: self.silence_limit,
             silent_frames: 0,
@@ -642,53 +625,13 @@ impl RingPair {
     }
 }
 fn clean(value: f32) -> f32 {
-    if value.is_nan() || value.abs() < 1e-20 {
+    if value.is_nan() {
         0.0
     } else {
-        value.clamp(-32.0, 32.0)
+        hex_dsp::flush_quiet_f32(value).clamp(-32.0, 32.0)
     }
 }
-#[derive(Clone, Copy)]
-struct Ramp {
-    current: f32,
-    target: f32,
-    step: f32,
-    remaining: u32,
-}
-impl Ramp {
-    fn steady(value: f32) -> Self {
-        Self {
-            current: value,
-            target: value,
-            step: 0.0,
-            remaining: 0,
-        }
-    }
-    fn retarget(&mut self, target: f32, frames: u32) {
-        self.target = target;
-        self.step = (target - self.current) / frames as f32;
-        self.remaining = frames;
-    }
-    fn advance(&mut self) {
-        if self.remaining > 0 {
-            self.remaining -= 1;
-            self.current = if self.remaining == 0 {
-                self.target
-            } else if self.step >= 0.0 {
-                (self.current + self.step).min(self.target)
-            } else {
-                (self.current + self.step).max(self.target)
-            };
-        }
-    }
-    fn inherit(&mut self, previous: Self, frames: u32) {
-        let target = self.target;
-        *self = previous;
-        if target != previous.target {
-            self.retarget(target, frames);
-        }
-    }
-}
+type Ramp = hex_dsp::LinearRampF32;
 /// Original exclusive requested allocations. This scalar observation is not a
 /// custody receipt and never adopts arbitrary provider-owned storage.
 #[derive(Clone, Copy)]
@@ -769,7 +712,7 @@ impl ReverbState {
         inline(chorus_phase);
     }
     fn v(&self, id: hex_lattice_contract::ParameterId) -> f32 {
-        self.parameters[(id.value() - 1) as usize].current
+        self.parameters[(id.value() - 1) as usize].value()
     }
     fn retime_canonical_ramps(&mut self, rate: u32, mode: u32) {
         if self.tank_ramp_remaining == 0 {
@@ -782,8 +725,8 @@ impl ReverbState {
             .iter_mut()
             .chain(self.coefficients.iter_mut())
         {
-            if ramp.remaining != 0 {
-                ramp.retarget(ramp.target, frames);
+            if ramp.is_active() {
+                ramp.retarget(ramp.target(), frames);
                 remaining = frames;
             }
         }
@@ -811,10 +754,10 @@ impl ReverbState {
         self.silence_limit = silence_deadline_frames(rate, settings.get(p::DECAY));
         self.clear_scalars();
         for v in &mut self.parameters {
-            *v = Ramp::steady(v.target);
+            *v = Ramp::settled(v.target());
         }
         for v in &mut self.coefficients {
-            *v = Ramp::steady(v.target);
+            *v = Ramp::settled(v.target());
         }
         self.tank_ramp_remaining = 0;
     }
@@ -958,11 +901,11 @@ impl ReverbRuntime {
         let mut ramp_remaining = 0;
         for (v, p) in self.primary.parameters.iter_mut().zip(old.parameters) {
             v.inherit(p, frames);
-            ramp_remaining = ramp_remaining.max(v.remaining);
+            ramp_remaining = ramp_remaining.max(v.remaining());
         }
         for (v, p) in self.primary.coefficients.iter_mut().zip(old.coefficients) {
             v.inherit(p, frames);
-            ramp_remaining = ramp_remaining.max(v.remaining);
+            ramp_remaining = ramp_remaining.max(v.remaining());
         }
         self.primary.tank_ramp_remaining = ramp_remaining;
         self.primary.input_low = old.input_low;
@@ -1016,28 +959,28 @@ impl ReverbRuntime {
             self.settled_tank.filters
         } else {
             [
-                InputFilter::new(s.coefficients[24].current, s.coefficients[30].current),
-                InputFilter::new(s.coefficients[25].current, s.coefficients[31].current),
+                InputFilter::new(s.coefficients[24].value(), s.coefficients[30].value()),
+                InputFilter::new(s.coefficients[25].value(), s.coefficients[31].value()),
             ]
         };
         let high_filter = if output.lo_g.is_some() || output.lo_damping.is_some() {
             InputFilter::new(
-                output.lo_g.unwrap_or(s.coefficients[24].current),
-                output.lo_damping.unwrap_or(s.coefficients[30].current),
+                output.lo_g.unwrap_or(s.coefficients[24].value()),
+                output.lo_damping.unwrap_or(s.coefficients[30].value()),
             )
         } else {
             high_filter
         };
         let low_filter = if output.hi_g.is_some() || output.hi_damping.is_some() {
             InputFilter::new(
-                output.hi_g.unwrap_or(s.coefficients[25].current),
-                output.hi_damping.unwrap_or(s.coefficients[31].current),
+                output.hi_g.unwrap_or(s.coefficients[25].value()),
+                output.hi_damping.unwrap_or(s.coefficients[31].value()),
             )
         } else {
             low_filter
         };
-        let lo_alpha = output.low_alpha.unwrap_or(s.coefficients[26].current);
-        let hi_alpha = output.high_alpha.unwrap_or(s.coefficients[27].current);
+        let lo_alpha = output.low_alpha.unwrap_or(s.coefficients[26].value());
+        let hi_alpha = output.high_alpha.unwrap_or(s.coefficients[27].value());
         let mut late_input = [0.0; 2];
         let mut early = [0.0; 2];
         let spin_scale =
@@ -1130,9 +1073,9 @@ impl ReverbRuntime {
                 self.settled_tank.feedback[i]
             } else {
                 shaping_gains(
-                    s.coefficients[i * 3].current,
-                    s.coefficients[i * 3 + 1].current,
-                    s.coefficients[i * 3 + 2].current,
+                    s.coefficients[i * 3].value(),
+                    s.coefficients[i * 3 + 1].value(),
+                    s.coefficients[i * 3 + 2].value(),
                 )
             };
             let low_shaped = sample * mid + s.feedback_low[i] * (low - mid);
@@ -1160,8 +1103,8 @@ impl ReverbRuntime {
                 self.allpasses[c][i].push(diffuse + a * out);
                 diffuse = out;
             }
-            s.next[c] = reflection * output.reflect.unwrap_or(s.coefficients[28].current)
-                + diffuse * output.diffuse.unwrap_or(s.coefficients[29].current);
+            s.next[c] = reflection * output.reflect.unwrap_or(s.coefficients[28].value())
+                + diffuse * output.diffuse.unwrap_or(s.coefficients[29].value());
         }
         let mid = (s.next[0] + s.next[1]) * 0.5;
         let side =
@@ -1704,14 +1647,14 @@ mod tests {
     }
     #[test]
     fn near_unity_feedback_ramps_never_overshoot_or_restart_when_copied() {
-        let mut r = Ramp::steady(0.9998);
+        let mut r = Ramp::settled(0.9998);
         r.retarget(1.0, 4800);
         for _ in 0..4800 {
-            let previous = r.current;
+            let previous = r.value();
             r.advance();
-            assert!((previous..=1.0).contains(&r.current));
+            assert!((previous..=1.0).contains(&r.value()));
         }
-        assert_eq!(r.current, 1.0);
+        assert_eq!(r.value(), 1.0);
     }
     #[test]
     fn shelf_product_bound_never_exceeds_unity_even_for_asynchronous_edits() {

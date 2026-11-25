@@ -22,12 +22,12 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.opening_project
-            || self.project_open.busy()
-            || self.pending_open_path.is_some()
-            || self.close_prompt_open
-            || self.saving_project
-            || self.save_dialog_open
+        if self.persistence.opening_project
+            || self.persistence.project_open.busy()
+            || self.persistence.pending_open_path.is_some()
+            || self.persistence.close_prompt_open
+            || self.persistence.saving_project
+            || self.persistence.save_dialog_open
         {
             self.error = Some("finish the current project operation first".into());
             return;
@@ -54,8 +54,8 @@ impl EditorView {
             None
         };
         let own_slot = self.service.recovery_slot().map(Path::to_path_buf);
-        self.opening_project = true;
-        self.pending_open_path = None;
+        self.persistence.opening_project = true;
+        self.persistence.pending_open_path = None;
         cx.spawn(async move |this, cx| {
             let result: Result<Option<ProjectSource>, String> = async {
                 if let Some(confirmation) = confirmation
@@ -103,7 +103,7 @@ impl EditorView {
             }
             .await;
             let _ = this.update(cx, |view, cx| {
-                view.opening_project = false;
+                view.persistence.opening_project = false;
                 match result {
                     // Missing files open the relink panel instead of failing.
                     Ok(Some(source)) => view.open_checking_missing_media(
@@ -129,11 +129,11 @@ impl EditorView {
 impl EditorView {
     pub(super) fn restart_recovery_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.recovery_prompt_open
-            || self.opening_project
-            || self.project_open.busy()
-            || self.close_prompt_open
-            || self.saving_project
-            || self.save_dialog_open
+            || self.persistence.opening_project
+            || self.persistence.project_open.busy()
+            || self.persistence.close_prompt_open
+            || self.persistence.saving_project
+            || self.persistence.save_dialog_open
             || self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()
             || self.device_gesture_pending()

@@ -250,6 +250,10 @@ pub(super) struct GroupGesture {
 }
 
 impl GroupGesture {
+    pub(super) fn rebase_revision(&mut self, revision: u64) {
+        self.revision = revision;
+    }
+
     pub(super) fn begin(mut start: GroupStart) -> Option<Self> {
         if start.originals.is_empty()
             || (!start.copy && start.originals.len() < 2)

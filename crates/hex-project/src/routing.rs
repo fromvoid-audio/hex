@@ -12,6 +12,16 @@ pub enum RoutingOwner {
     Return(ReturnId),
     Main,
 }
+impl RoutingOwner {
+    /// Construct a Track owner from a raw identifier for validated snapshot assembly.
+    pub fn track_from_raw(id: u64) -> Self {
+        Self::Track(TrackId(id))
+    }
+    /// Construct a Return owner from a raw identifier for validated snapshot assembly.
+    pub fn return_from_raw(id: u64) -> Self {
+        Self::Return(ReturnId(id))
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RoutingSignal {

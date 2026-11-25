@@ -13,7 +13,8 @@ struct Admission {
 }
 impl EditorView {
     fn owns_velocity_pointer(&self, key: Admission) -> bool {
-        self.midi_velocity
+        self.midi_editor
+            .velocity
             .gesture
             .as_ref()
             .is_some_and(|g| g.admission() == (key.context, key.start_y))
@@ -22,15 +23,15 @@ impl EditorView {
         if !self.owns_velocity_pointer(key) {
             return false;
         }
-        self.midi_velocity.gesture = None;
+        self.midi_editor.velocity.gesture = None;
         true
     }
     fn velocity_pointer_visible(&self, window: &Window) -> bool {
-        self.clip_view_open
-            && !self.device_panel_active
-            && self.midi_velocity.open
+        self.audio_detail.clip_view_open
+            && !self.device_panel.active
+            && self.midi_editor.velocity.open
             && self.context_menu.is_none()
-            && self.midi_focus.is_focused(window)
+            && self.midi_editor.focus.is_focused(window)
     }
     pub(super) fn capture_velocity_pointer(
         &self,
@@ -73,12 +74,12 @@ impl EditorView {
                         }
                         return;
                     }
-                    let Some(mut gesture) = view.midi_velocity.gesture.take() else {
+                    let Some(mut gesture) = view.midi_editor.velocity.gesture.take() else {
                         return;
                     };
                     match gesture.update(key.context, f32::from(at.y)) {
                         Ok(changed) if released.is_none() => {
-                            view.midi_velocity.gesture = Some(gesture);
+                            view.midi_editor.velocity.gesture = Some(gesture);
                             if changed {
                                 cx.notify();
                             }
@@ -131,11 +132,12 @@ impl EditorView {
                 .state
                 .as_ref()
                 .is_some_and(|s| s.revision == context.scene.revision)
-            && self.piano_beat_start == context.scene.start
-            && self.piano_beat_span.raw() == context.scene.span
-            && self.midi_selection.epoch() == context.selection_epoch
+            && self.midi_editor.piano_beat_start == context.scene.start
+            && self.midi_editor.piano_beat_span.raw() == context.scene.span
+            && self.midi_editor.selection.epoch() == context.selection_epoch
             && self
-                .midi_velocity
+                .midi_editor
+                .velocity
                 .gesture
                 .as_ref()
                 .is_some_and(|g| g.is_current(context))

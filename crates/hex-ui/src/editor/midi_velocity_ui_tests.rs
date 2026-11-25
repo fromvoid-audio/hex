@@ -64,9 +64,9 @@ fn setup(
     });
     pump(&editor, &mut visual);
     editor.update(&mut visual, |view, cx| {
-        view.midi_selection.clear();
-        view.piano_beat_start = 0;
-        view.piano_beat_span = BeatTime::from_quarters(4).unwrap();
+        view.midi_editor.selection.clear();
+        view.midi_editor.piano_beat_start = 0;
+        view.midi_editor.piano_beat_span = BeatTime::from_quarters(4).unwrap();
         cx.notify();
     });
     visual.run_until_parked();
@@ -119,7 +119,8 @@ fn velocity_pointer_preview_release_history_and_current_format_playback(cx: &mut
             "preview must not mutate canonical state"
         );
         assert_eq!(
-            view.midi_velocity
+            view.midi_editor
+                .velocity
                 .gesture
                 .as_ref()
                 .unwrap()
@@ -150,7 +151,7 @@ fn velocity_pointer_preview_release_history_and_current_format_playback(cx: &mut
                 .collect::<Vec<_>>(),
             [73, 93, 93]
         );
-        assert_eq!(view.midi_selection.ids(), [source.notes()[0].id()]);
+        assert_eq!(view.midi_editor.selection.ids(), [source.notes()[0].id()]);
         view.state.as_ref().unwrap().project.snapshot()
     });
     editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
@@ -188,7 +189,9 @@ fn velocity_hidden_pitch_handles_cycle_and_group_drag_preserves_offsets(cx: &mut
         visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
-        chosen.push(editor.read_with(&visual, |view, _| view.midi_selection.primary().unwrap()));
+        chosen.push(editor.read_with(&visual, |view, _| {
+            view.midi_editor.selection.primary().unwrap()
+        }));
     }
     assert_ne!(chosen[0], chosen[1]);
     editor.read_with(&visual, |view, _| {
@@ -230,7 +233,7 @@ fn velocity_hidden_pitch_handles_cycle_and_group_drag_preserves_offsets(cx: &mut
                 .collect::<Vec<_>>(),
             [53, 109, 109]
         );
-        assert_eq!(view.midi_selection.len(), 3);
+        assert_eq!(view.midi_editor.selection.len(), 3);
     });
 }
 #[gpui::test]
@@ -254,7 +257,7 @@ fn velocity_escape_blur_and_viewport_changes_cancel_without_note_edits(cx: &mut 
                 visual.update(|window, cx| editor.update(cx, |view, _| view.focus.focus(window)));
             }
             _ => editor.update(&mut visual, |view, cx| {
-                view.piano_beat_span = BeatTime::from_quarters(8).unwrap();
+                view.midi_editor.piano_beat_span = BeatTime::from_quarters(8).unwrap();
                 cx.notify();
             }),
         }
@@ -266,7 +269,7 @@ fn velocity_escape_blur_and_viewport_changes_cancel_without_note_edits(cx: &mut 
         );
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            assert!(view.midi_velocity.gesture.is_none());
+            assert!(view.midi_editor.velocity.gesture.is_none());
             assert!(!view.edit_pending());
             assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
         });
@@ -336,14 +339,14 @@ fn velocity_resize_collapse_and_wheel_keep_note_space_and_time_alignment(cx: &mu
     });
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        assert!(view.piano_beat_span.raw() < BeatTime::ONE.raw() * 4);
+        assert!(view.midi_editor.piano_beat_span.raw() < BeatTime::ONE.raw() * 4);
         assert_eq!(
-            view.midi_velocity.scene.as_ref().unwrap().key.span,
-            view.piano_beat_span.raw()
+            view.midi_editor.velocity.scene.as_ref().unwrap().key.span,
+            view.midi_editor.piano_beat_span.raw()
         );
         assert_eq!(
-            view.midi_velocity.scene.as_ref().unwrap().key.start,
-            view.piano_beat_start
+            view.midi_editor.velocity.scene.as_ref().unwrap().key.start,
+            view.midi_editor.piano_beat_start
         );
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
     });
@@ -469,11 +472,11 @@ fn velocity_session_clip_edit_round_trips_and_changes_launched_audio(cx: &mut Te
         };
         let clip = cell.id();
         view.mode = super::super::EditorMode::Session;
-        view.selected_scene = Some(scene);
-        view.selected_cell = Some((track, scene));
+        view.session_grid.selected_scene = Some(scene);
+        view.session_grid.selected_cell = Some((track, scene));
         view.selected_clip = Some(clip);
-        view.piano_view_clip = None;
-        view.midi_selection.clear();
+        view.midi_editor.piano_view_clip = None;
+        view.midi_editor.selection.clear();
         cx.notify();
         clip
     });
@@ -570,7 +573,7 @@ fn velocity_focus_blur_repaints_stationary_preview_without_another_input(cx: &mu
     visual.update(|window, cx| editor.read_with(cx, |view, _| view.focus.focus(window)));
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        assert!(view.midi_velocity.gesture.is_none())
+        assert!(view.midi_editor.velocity.gesture.is_none())
     });
     assert!(
         (top(&mut visual) - canonical).abs() < 0.05,
@@ -609,8 +612,10 @@ fn velocity_empty_drag_shares_time_range_and_duplicate_destination_after_ack(
     let (mut visual, editor, _environment, clip) = setup(cx);
     for (start, span, reverse) in [(0.0, 4.0, false), (0.25, 2.0, true)] {
         editor.update(&mut visual, |v, cx| {
-            v.piano_beat_start = i128::from((start * BeatTime::ONE.raw() as f32) as u64);
-            v.piano_beat_span = BeatTime::from_raw((span * BeatTime::ONE.raw() as f32) as u64);
+            v.midi_editor.piano_beat_start =
+                i128::from((start * BeatTime::ONE.raw() as f32) as u64);
+            v.midi_editor.piano_beat_span =
+                BeatTime::from_raw((span * BeatTime::ONE.raw() as f32) as u64);
             cx.notify();
         });
         visual.run_until_parked();
@@ -693,7 +698,7 @@ fn velocity_empty_drag_replaces_selection_with_marquee_hits(cx: &mut TestAppCont
             .iter()
             .map(|note| note.id())
             .collect::<Vec<_>>();
-        view.midi_selection.set_single(ids[0]);
+        view.midi_editor.selection.set_single(ids[0]);
         cx.notify();
         ids
     });
@@ -704,19 +709,19 @@ fn velocity_empty_drag_replaces_selection_with_marquee_hits(cx: &mut TestAppCont
     visual.simulate_mouse_move(last, Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        assert!(view.midi_velocity.marquee.is_some());
+        assert!(view.midi_editor.velocity.marquee.is_some());
         assert!(!view.midi_velocity_time_selection_active());
-        assert!(!view.midi_selection.contains(ids[0]));
-        assert!(view.midi_selection.contains(ids[1]));
-        assert!(view.midi_selection.contains(ids[2]));
+        assert!(!view.midi_editor.selection.contains(ids[0]));
+        assert!(view.midi_editor.selection.contains(ids[1]));
+        assert!(view.midi_editor.selection.contains(ids[2]));
     });
     visual.simulate_mouse_up(last, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        assert!(view.midi_velocity.marquee.is_none());
-        assert!(!view.midi_selection.contains(ids[0]));
-        assert!(view.midi_selection.contains(ids[1]));
-        assert!(view.midi_selection.contains(ids[2]));
+        assert!(view.midi_editor.velocity.marquee.is_none());
+        assert!(!view.midi_editor.selection.contains(ids[0]));
+        assert!(view.midi_editor.selection.contains(ids[1]));
+        assert!(view.midi_editor.selection.contains(ids[2]));
     });
 }
 
@@ -728,7 +733,7 @@ fn velocity_shift_marquee_highlights_both_views_and_selects_hidden_pitch_for_gro
     let (all_ids, before) = editor.update(&mut visual, |v, cx| {
         let source = v.state.as_ref().unwrap().project.midi_source(clip).unwrap();
         let ids = source.notes().iter().map(|n| n.id()).collect::<Vec<_>>();
-        v.midi_selection.set_single(ids[0]);
+        v.midi_editor.selection.set_single(ids[0]);
         cx.notify();
         (ids, v.state.as_ref().unwrap().project.snapshot())
     });
@@ -743,7 +748,7 @@ fn velocity_shift_marquee_highlights_both_views_and_selects_hidden_pitch_for_gro
     visual.simulate_mouse_move(last, Some(MouseButton::Left), shift);
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_selection.ids(), all_ids);
+        assert_eq!(v.midi_editor.selection.ids(), all_ids);
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
     let primary: gpui::Background = rgb(theme::color(theme::PaletteRole::Primary)).into();
@@ -759,7 +764,8 @@ fn velocity_shift_marquee_highlights_both_views_and_selects_hidden_pitch_for_gro
     );
     let roll = visual.debug_bounds("midi-note-roll").unwrap();
     let row_height = editor.read_with(&visual, |v, _| {
-        v.piano_pitch
+        v.midi_editor
+            .piano_pitch
             .row_height_pixels(f32::from(roll.size.height) - 2.0)
             .unwrap()
     });
@@ -776,7 +782,7 @@ fn velocity_shift_marquee_highlights_both_views_and_selects_hidden_pitch_for_gro
     visual.simulate_mouse_up(last, MouseButton::Left, shift);
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_selection.ids(), all_ids);
+        assert_eq!(v.midi_editor.selection.ids(), all_ids);
         assert!(
             v.state
                 .as_ref()
@@ -786,7 +792,7 @@ fn velocity_shift_marquee_highlights_both_views_and_selects_hidden_pitch_for_gro
                 .unwrap()
                 .notes()
                 .iter()
-                .any(|n| n.pitch() == 0 && v.midi_selection.contains(n.id()))
+                .any(|n| n.pitch() == 0 && v.midi_editor.selection.contains(n.id()))
         );
     });
     // A stem, below its handle, retains direct velocity editing priority.
@@ -828,7 +834,7 @@ fn velocity_shift_marquee_highlights_both_views_and_selects_hidden_pitch_for_gro
                 .len(),
             6
         );
-        assert_eq!(v.midi_selection.len(), 3);
+        assert_eq!(v.midi_editor.selection.len(), 3);
     });
     editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
     pump(&editor, &mut visual);
@@ -869,7 +875,7 @@ fn velocity_range_and_marquee_cancel_on_escape_blur_resize_and_stale_view(cx: &m
         for cancel in ["escape", "blur", "resize", "viewport", "revision", "clip"] {
             visual.update(|window, cx| {
                 editor.update(cx, |v, cx| {
-                    v.midi_focus.focus(window);
+                    v.midi_editor.focus.focus(window);
                     v.clear_midi_time_selection();
                     cx.notify();
                 })
@@ -920,7 +926,7 @@ fn velocity_range_and_marquee_cancel_on_escape_blur_resize_and_stale_view(cx: &m
                         .read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
                 }
                 _ => editor.update(&mut visual, |v, cx| {
-                    v.piano_beat_start = i128::from(BeatTime::ONE.raw());
+                    v.midi_editor.piano_beat_start = i128::from(BeatTime::ONE.raw());
                     cx.notify();
                 }),
             }
@@ -931,13 +937,13 @@ fn velocity_range_and_marquee_cancel_on_escape_blur_resize_and_stale_view(cx: &m
             }
             visual.run_until_parked();
             editor.read_with(&visual, |v, _| {
-                assert!(v.midi_velocity.marquee.is_none());
+                assert!(v.midi_editor.velocity.marquee.is_none());
                 assert!(!v.midi_velocity_time_selection_active());
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
                 assert!(
-                    v.midi_selection.is_empty(),
+                    v.midi_editor.selection.is_empty(),
                     "shift={shift} cancel={cancel} ids={:?}",
-                    v.midi_selection.ids()
+                    v.midi_editor.selection.ids()
                 );
                 assert!(
                     v.midi_time_selection_bounds().is_none(),
@@ -946,7 +952,7 @@ fn velocity_range_and_marquee_cancel_on_escape_blur_resize_and_stale_view(cx: &m
             });
             editor.update(&mut visual, |v, cx| {
                 v.selected_clip = Some(clip);
-                v.piano_beat_start = 0;
+                v.midi_editor.piano_beat_start = 0;
                 cx.notify();
             });
             visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
@@ -966,7 +972,7 @@ fn velocity_stationary_click_outside_release_and_collapse_keep_capture_bounded(
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert!(v.midi_time_selection_bounds().is_none());
-        assert_eq!(v.midi_marker, Some(7 * BeatTime::ONE.raw() / 4));
+        assert_eq!(v.midi_editor.marker, Some(7 * BeatTime::ONE.raw() / 4));
     });
     let bounds = visual.debug_bounds("midi-velocity-lane").unwrap();
     let outside = bounds.bottom_right() + point(px(40.0), px(20.0));
@@ -1000,9 +1006,9 @@ fn velocity_stationary_click_outside_release_and_collapse_keep_capture_bounded(
         visual.run_until_parked();
         // Both captured selection owners block a repeated press on collapse.
         editor.read_with(&visual, |v, _| {
-            assert!(v.midi_velocity.open);
+            assert!(v.midi_editor.velocity.open);
             if shift {
-                assert!(v.midi_velocity.marquee.is_some());
+                assert!(v.midi_editor.velocity.marquee.is_some());
             } else {
                 assert!(v.midi_velocity_time_selection_active());
             }
@@ -1015,8 +1021,8 @@ fn velocity_stationary_click_outside_release_and_collapse_keep_capture_bounded(
         visual.simulate_click(toggle.center(), Modifiers::default());
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
-            assert!(!v.midi_velocity.open);
-            assert!(v.midi_velocity.marquee.is_none());
+            assert!(!v.midi_editor.velocity.open);
+            assert!(v.midi_editor.velocity.marquee.is_none());
             assert!(!v.midi_velocity_time_selection_active());
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });
@@ -1039,7 +1045,7 @@ fn externally_collapsed_velocity_lane_retires_held_time_selection(cx: &mut TestA
     let prior = editor.read_with(&visual, |v, _| {
         (
             v.midi_time_selection_bounds(),
-            v.midi_marker,
+            v.midi_editor.marker,
             v.state.as_ref().unwrap().project.snapshot(),
         )
     });
@@ -1047,7 +1053,7 @@ fn externally_collapsed_velocity_lane_retires_held_time_selection(cx: &mut TestA
     assert!(visual.update(|w, _| w.is_pointer_dragging()));
     // External visibility changes do not dispatch through the pointer lease.
     editor.update(&mut visual, |v, cx| {
-        v.midi_velocity.open = false;
+        v.midi_editor.velocity.open = false;
         cx.notify();
     });
     visual.run_until_parked();
@@ -1060,7 +1066,7 @@ fn externally_collapsed_velocity_lane_retires_held_time_selection(cx: &mut TestA
         assert_eq!(
             (
                 v.midi_time_selection_bounds(),
-                v.midi_marker,
+                v.midi_editor.marker,
                 v.state.as_ref().unwrap().project.snapshot()
             ),
             prior

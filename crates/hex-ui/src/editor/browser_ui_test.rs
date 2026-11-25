@@ -864,7 +864,7 @@ fn command_f_commits_clip_name_draft_then_routes_typing_to_browser(cx: &mut Test
     cx.simulate_input(handle, "mix");
     editor.read_with(cx, |view, cx| {
         assert!(view.clip_name_edit.is_none());
-        assert!(matches!(&view.last_enqueued_edit,
+        assert!(matches!(&view.test_probes.last_enqueued_edit,
             Some(Command::RenameClip { clip: target, name }) if *target == clip && name == "verse"));
         assert_eq!(view.browser.search.read(cx).text(), "mix");
         assert_eq!(view.browser.section, BrowserSection::All);
@@ -1003,7 +1003,7 @@ fn command_f_category_click_keeps_query_but_moves_real_focus_in_session(cx: &mut
     visual.simulate_keystrokes("down enter");
     editor.read_with(visual, |view, _| {
         assert!(view.status.contains("drag a browser device"));
-        assert!(view.last_transport_command.is_none());
+        assert!(view.test_probes.last_transport_command.is_none());
     });
 }
 
@@ -1139,7 +1139,7 @@ fn command_f_device_click_retains_browser_keys_in_session(cx: &mut TestAppContex
     visual.simulate_keystrokes("enter escape");
     editor.read_with(visual, |view, cx| {
         assert!(
-            view.last_transport_command.is_none(),
+            view.test_probes.last_transport_command.is_none(),
             "browser enter must not launch session playback"
         );
         assert!(view.status.contains("drag a browser device"));
@@ -1292,8 +1292,8 @@ fn device_browser_lists_registered_devices_and_drag_starts_without_track_focus(
                     document_path: None,
                 }));
                 view.browser.section = BrowserSection::Instruments;
-                view.clip_view_open = false;
-                view.device_panel_active = false;
+                view.audio_detail.clip_view_open = false;
+                view.device_panel.active = false;
                 cx.notify();
             });
             editor
@@ -1330,13 +1330,17 @@ fn device_browser_lists_registered_devices_and_drag_starts_without_track_focus(
     assert!(visual.debug_bounds("device-panel-empty").is_some());
     editor.read_with(cx, |view, _| {
         assert!(view.selected_track.is_none());
-        assert!(view.clip_view_open, "browser drag reveals the closed pane");
         assert!(
-            view.device_panel_active,
+            view.audio_detail.clip_view_open,
+            "browser drag reveals the closed pane"
+        );
+        assert!(
+            view.device_panel.active,
             "browser drag selects device details"
         );
         let drag = view
-            .active_native_device_drag
+            .device_panel
+            .active_native_drag
             .as_ref()
             .expect("browser device drag begins without a focused track");
         assert!(matches!(
@@ -1351,9 +1355,12 @@ fn device_browser_lists_registered_devices_and_drag_starts_without_track_focus(
     visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(view.active_native_device_drag.is_none());
-        assert!(view.clip_view_open, "a no-target drop leaves the pane open");
-        assert!(view.device_panel_active);
+        assert!(view.device_panel.active_native_drag.is_none());
+        assert!(
+            view.audio_detail.clip_view_open,
+            "a no-target drop leaves the pane open"
+        );
+        assert!(view.device_panel.active);
         assert!(
             view.selected_track.is_none(),
             "drag does not invent a track"
@@ -1371,8 +1378,8 @@ fn browser_device_drag_reveals_devices_and_preserves_clip_selection_on_cancel(
     editor.update(cx, |view, cx| {
         view.selected_track = Some(track);
         view.selected_clip = Some(clip);
-        view.device_panel_active = false;
-        view.clip_view_open = true;
+        view.device_panel.active = false;
+        view.audio_detail.clip_view_open = true;
         view.browser.section = BrowserSection::Instruments;
         cx.notify();
     });
@@ -1394,19 +1401,22 @@ fn browser_device_drag_reveals_devices_and_preserves_clip_selection_on_cancel(
 
     assert!(visual.debug_bounds("device-panel").is_some());
     editor.read_with(cx, |view, _| {
-        assert!(view.clip_view_open);
-        assert!(view.device_panel_active);
+        assert!(view.audio_detail.clip_view_open);
+        assert!(view.device_panel.active);
         assert_eq!(view.selected_track, Some(track));
         assert_eq!(view.selected_clip, Some(clip));
-        assert!(view.active_native_device_drag.is_some());
+        assert!(view.device_panel.active_native_drag.is_some());
     });
 
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(view.active_native_device_drag.is_none());
-        assert!(view.clip_view_open, "cancel keeps the revealed pane open");
-        assert!(view.device_panel_active);
+        assert!(view.device_panel.active_native_drag.is_none());
+        assert!(
+            view.audio_detail.clip_view_open,
+            "cancel keeps the revealed pane open"
+        );
+        assert!(view.device_panel.active);
         assert_eq!(view.selected_track, Some(track));
         assert_eq!(view.selected_clip, Some(clip));
     });
@@ -1456,7 +1466,7 @@ fn browser_project_open_queues_selected_path_without_second_click_confirmation(
     cx.update_window(handle, |_, _, cx| {
         editor.update(cx, |view, cx| {
             view.open_browser_project(first.clone(), cx);
-            assert_eq!(view.pending_open_path.as_ref(), Some(&first));
+            assert_eq!(view.persistence.pending_open_path.as_ref(), Some(&first));
             assert!(view.pending_requests.is_empty());
         });
     })
@@ -1468,7 +1478,7 @@ fn browser_project_open_queues_selected_path_without_second_click_confirmation(
     cx.update_window(handle, |_, _, cx| {
         editor.update(cx, |view, cx| {
             view.open_browser_project(second.clone(), cx);
-            assert!(!view.opening_project);
+            assert!(!view.persistence.opening_project);
             assert!(view.pending_requests.is_empty());
             assert!(
                 view.error.is_some(),
@@ -1481,10 +1491,10 @@ fn browser_project_open_queues_selected_path_without_second_click_confirmation(
     cx.run_until_parked();
     cx.update_window(handle, |_, _, cx| {
         editor.update(cx, |view, cx| {
-            assert!(!view.project_open.busy());
-            assert!(view.pending_open_path.is_none());
+            assert!(!view.persistence.project_open.busy());
+            assert!(view.persistence.pending_open_path.is_none());
             view.open_browser_project(second.clone(), cx);
-            assert_eq!(view.pending_open_path.as_ref(), Some(&second));
+            assert_eq!(view.persistence.pending_open_path.as_ref(), Some(&second));
             assert!(view.pending_requests.is_empty());
         });
     })
@@ -1493,9 +1503,9 @@ fn browser_project_open_queues_selected_path_without_second_click_confirmation(
     cx.simulate_prompt_answer("cancel");
     cx.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(!view.opening_project);
-        assert!(!view.project_open.busy());
-        assert!(view.pending_open_path.is_none());
+        assert!(!view.persistence.opening_project);
+        assert!(!view.persistence.project_open.busy());
+        assert!(view.persistence.pending_open_path.is_none());
         assert!(view.state.as_ref().unwrap().unsaved);
         assert!(view.pending_requests.is_empty());
     });
@@ -1592,7 +1602,8 @@ fn browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candi
 
     editor.read_with(cx, |view, _| {
         let drag = view
-            .active_browser_audio_drag
+            .browser
+            .active_audio_drag
             .as_ref()
             .expect("browser drag active");
         assert!(!drag.lane_hovered.get());
@@ -1607,7 +1618,8 @@ fn browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candi
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let drag = view
-            .active_browser_audio_drag
+            .browser
+            .active_audio_drag
             .as_ref()
             .expect("drag remains active");
         assert!(drag.preview.get().is_none());
@@ -1621,7 +1633,8 @@ fn browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candi
     visual.run_until_parked();
     for _ in 0..8 {
         if editor.read_with(cx, |view, _| {
-            view.active_browser_audio_drag
+            view.browser
+                .active_audio_drag
                 .as_ref()
                 .is_some_and(|drag| drag.preview.get().is_some())
         }) {
@@ -1631,7 +1644,8 @@ fn browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candi
     }
     let expected = editor.read_with(cx, |view, _| {
         let drag = view
-            .active_browser_audio_drag
+            .browser
+            .active_audio_drag
             .as_ref()
             .expect("drag remains active");
         assert!(drag.lane_hovered.get());
@@ -1663,7 +1677,8 @@ fn browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candi
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let drag = view
-            .active_browser_audio_drag
+            .browser
+            .active_audio_drag
             .as_ref()
             .expect("drag remains active");
         assert!(!drag.lane_hovered.get());
@@ -1674,7 +1689,7 @@ fn browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candi
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.last_enqueued_import_to_track,
+            view.test_probes.last_enqueued_import_to_track,
             Some((path.clone(), track, expected, true)),
             "release imports at the previewed start with overwrite semantics"
         );
@@ -1716,7 +1731,8 @@ fn dropping_browser_audio_on_pinned_main_cancels_import_and_track_creation(
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let drag = view
-            .active_browser_audio_drag
+            .browser
+            .active_audio_drag
             .as_ref()
             .expect("browser drag remains captured");
         assert!(drag.destination.get().is_none());
@@ -1729,9 +1745,9 @@ fn dropping_browser_audio_on_pinned_main_cancels_import_and_track_creation(
             view.state.as_ref().unwrap().project.tracks().len(),
             track_count
         );
-        assert!(view.active_browser_audio_drag.is_none());
-        assert!(view.last_enqueued_import_to_track.is_none());
-        assert!(view.last_enqueued_import_to_new_track.is_none());
+        assert!(view.browser.active_audio_drag.is_none());
+        assert!(view.test_probes.last_enqueued_import_to_track.is_none());
+        assert!(view.test_probes.last_enqueued_import_to_new_track.is_none());
     });
 }
 
@@ -1763,7 +1779,8 @@ fn browser_audio_drag_uses_command_override_live_and_at_mouse_up(cx: &mut TestAp
     visual.run_until_parked();
     for _ in 0..8 {
         if editor.read_with(cx, |view, _| {
-            view.active_browser_audio_drag
+            view.browser
+                .active_audio_drag
                 .as_ref()
                 .is_some_and(|drag| drag.preview.get().is_some())
         }) {
@@ -1773,7 +1790,8 @@ fn browser_audio_drag_uses_command_override_live_and_at_mouse_up(cx: &mut TestAp
     }
     let pointer_start = editor.read_with(cx, |view, _| {
         let drag = view
-            .active_browser_audio_drag
+            .browser
+            .active_audio_drag
             .as_ref()
             .expect("active browser drag");
         assert!(drag.snap_modifier.get());
@@ -1796,7 +1814,8 @@ fn browser_audio_drag_uses_command_override_live_and_at_mouse_up(cx: &mut TestAp
     visual.run_until_parked();
     let snapped_start = editor.read_with(cx, |view, _| {
         let drag = view
-            .active_browser_audio_drag
+            .browser
+            .active_audio_drag
             .as_ref()
             .expect("active browser drag");
         assert!(!drag.snap_modifier.get());
@@ -1809,7 +1828,7 @@ fn browser_audio_drag_uses_command_override_live_and_at_mouse_up(cx: &mut TestAp
     visual.simulate_mouse_up(target, MouseButton::Left, command);
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.last_enqueued_import_to_track,
+            view.test_probes.last_enqueued_import_to_track,
             Some((path.clone(), track, pointer_start, true)),
             "mouse-up modifiers are authoritative even without a final pointer move"
         );
@@ -1880,7 +1899,8 @@ fn browser_sample_drop_between_tracks_shows_only_insertion_line_and_keeps_snappe
     visual.run_until_parked();
     let expected = editor.read_with(cx, |view, _| {
         let drag = view
-            .active_browser_audio_drag
+            .browser
+            .active_audio_drag
             .as_ref()
             .expect("browser drag active");
         assert!(drag.preview.get().is_none());
@@ -1918,7 +1938,7 @@ fn browser_sample_drop_between_tracks_shows_only_insertion_line_and_keeps_snappe
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.last_enqueued_import_to_new_track,
+            view.test_probes.last_enqueued_import_to_new_track,
             Some((path.clone(), Some(tracks[1]), expected)),
             "release uses the same stable anchor and snapped start as the preview"
         );
@@ -1980,7 +2000,8 @@ fn browser_sample_drop_below_last_track_appends_with_line_and_locked_ghost(
     visual.run_until_parked();
     let start = editor.read_with(cx, |view, _| {
         let drag = view
-            .active_browser_audio_drag
+            .browser
+            .active_audio_drag
             .as_ref()
             .expect("browser drag active");
         assert!(drag.lane_hovered.get());
@@ -2002,7 +2023,8 @@ fn browser_sample_drop_below_last_track_appends_with_line_and_locked_ghost(
     assert_eq!(line.size.width, body.size.width);
     editor.read_with(cx, |view, _| {
         let drag = view
-            .active_browser_audio_drag
+            .browser
+            .active_audio_drag
             .as_ref()
             .expect("browser drag active");
         assert!(matches!(
@@ -2014,7 +2036,8 @@ fn browser_sample_drop_below_last_track_appends_with_line_and_locked_ghost(
         ));
         assert!(view.browser_audio_drag_is_current(drag));
         assert!(
-            view.active_browser_audio_drag
+            view.browser
+                .active_audio_drag
                 .as_ref()
                 .filter(|drag| view.browser_audio_drag_is_current(drag))
                 .is_some_and(|drag| matches!(
@@ -2053,7 +2076,8 @@ fn browser_sample_drop_below_last_track_appends_with_line_and_locked_ghost(
     assert!(ghost.size.width > px(3.0));
     let (expected_left, expected_width, expected_top) = editor.read_with(cx, |view, _| {
         let drag = view
-            .active_browser_audio_drag
+            .browser
+            .active_audio_drag
             .as_ref()
             .expect("active drag");
         let metadata = drag
@@ -2089,7 +2113,7 @@ fn browser_sample_drop_below_last_track_appends_with_line_and_locked_ghost(
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.last_enqueued_import_to_new_track,
+            view.test_probes.last_enqueued_import_to_new_track,
             Some((path.clone(), None, start))
         );
     });
@@ -2127,7 +2151,8 @@ fn browser_sample_drop_in_empty_arrangement_creates_bottom_track(cx: &mut TestAp
     visual.run_until_parked();
     let start = editor.read_with(cx, |view, _| {
         let drag = view
-            .active_browser_audio_drag
+            .browser
+            .active_audio_drag
             .as_ref()
             .expect("browser drag active");
         assert!(drag.lane_hovered.get());
@@ -2170,7 +2195,7 @@ fn browser_sample_drop_in_empty_arrangement_creates_bottom_track(cx: &mut TestAp
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.last_enqueued_import_to_new_track,
+            view.test_probes.last_enqueued_import_to_new_track,
             Some((path.clone(), None, start))
         );
         assert!(view.browser.playback_output.is_none(), "drop stops preview");
@@ -2262,7 +2287,8 @@ fn browser_sample_gap_target_uses_only_currently_painted_rows_after_scroll(
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let drag = view
-            .active_browser_audio_drag
+            .browser
+            .active_audio_drag
             .as_ref()
             .expect("browser drag active");
         assert!(matches!(
@@ -2651,8 +2677,8 @@ fn browser_audio_drag_release_outside_arrangement_cancels_import(cx: &mut TestAp
     visual.run_until_parked();
     visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
-        assert!(view.last_enqueued_import_to_track.is_none());
-        assert!(view.active_browser_audio_drag.is_none());
+        assert!(view.test_probes.last_enqueued_import_to_track.is_none());
+        assert!(view.browser.active_audio_drag.is_none());
     });
     visual.run_until_parked();
 }
@@ -3123,12 +3149,13 @@ fn browser_sample_drop_above_first_track_shows_line_and_inserts_before_it(cx: &m
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
         let (dropped_path, anchor, _) = view
+            .test_probes
             .last_enqueued_import_to_new_track
             .as_ref()
             .expect("new track import");
         assert_eq!(dropped_path, &path);
         assert_eq!(*anchor, Some(tracks[0]));
-        assert!(view.last_enqueued_import_to_track.is_none());
+        assert!(view.test_probes.last_enqueued_import_to_track.is_none());
     });
 }
 
@@ -3176,8 +3203,8 @@ fn browser_click_and_right_request_preview_without_import_search_arrows_keep_car
                 view.pending_requests.is_empty(),
                 "double-click cannot enqueue import"
             );
-            assert!(view.last_enqueued_import_to_track.is_none());
-            assert!(view.last_enqueued_import_to_new_track.is_none());
+            assert!(view.test_probes.last_enqueued_import_to_track.is_none());
+            assert!(view.test_probes.last_enqueued_import_to_new_track.is_none());
             assert!(view.pending_audio_commands.is_empty());
             assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &state));
             assert!(view.browser.results_focused);
@@ -3232,6 +3259,7 @@ fn browser_click_and_right_request_preview_without_import_search_arrows_keep_car
     editor.read_with(visual, |view, _| {
         assert_eq!(view.browser.playback_generation, 5);
         let (imported_path, imported_track, _, _) = view
+            .test_probes
             .last_enqueued_import_to_track
             .as_ref()
             .expect("enter enqueues import to selected track");
@@ -3637,7 +3665,7 @@ fn all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refres
     cx.simulate_keystrokes(handle, "enter");
     editor.read_with(cx, |view, _| {
         assert!(view.status.contains("drag a browser device"));
-        assert!(view.last_enqueued_import_to_track.is_none());
+        assert!(view.test_probes.last_enqueued_import_to_track.is_none());
     });
     editor.update(cx, |view, cx| view.request_browser_scan(nested.clone(), cx));
     visual.run_until_parked();
@@ -4375,8 +4403,8 @@ fn browser_source_groups_have_exactly_one_persistent_selected_row(cx: &mut TestA
             visual.simulate_keystrokes("down");
             editor.read_with(&visual, |view, _| {
                 assert_eq!(view.browser.section, source);
-                assert!(view.last_enqueued_import_to_track.is_none());
-                assert!(view.last_enqueued_import_to_new_track.is_none());
+                assert!(view.test_probes.last_enqueued_import_to_track.is_none());
+                assert!(view.test_probes.last_enqueued_import_to_new_track.is_none());
             });
             for (index, selector) in selectors.iter().enumerate() {
                 assert_eq!(
@@ -4691,7 +4719,7 @@ fn browser_folder_double_click_expands_inline_without_replacing_surrounding_rows
             vec![&folder, &child, &sibling, &original]
         );
         assert!(view.pending_requests.is_empty());
-        assert!(view.last_enqueued_import_to_track.is_none());
+        assert!(view.test_probes.last_enqueued_import_to_track.is_none());
     });
     assert_eq!(
         before,
@@ -4989,7 +5017,7 @@ fn browser_tree_same_name_files_keep_distinct_preview_paths_and_bounded_labels(
                     .playback_frames,
                 frames
             );
-            assert!(view.last_enqueued_import_to_track.is_none());
+            assert!(view.test_probes.last_enqueued_import_to_track.is_none());
         });
     }
     editor.update(&mut visual, |view, cx| {
@@ -5109,7 +5137,7 @@ fn place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks(
         );
         view.insert_browser_audio(path.clone(), cx);
         assert!(
-            view.last_enqueued_import_to_track.is_none(),
+            view.test_probes.last_enqueued_import_to_track.is_none(),
             "old result callback admitted stale import"
         );
         let (current, fresh) = view.browser.scans.complete(old.generation);
@@ -5256,7 +5284,7 @@ fn browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query(cx: &mut
             "only the two already-expanded folders need enumeration"
         );
         assert!(view.pending_audio_commands.is_empty());
-        assert!(view.last_enqueued_import_to_track.is_none());
+        assert!(view.test_probes.last_enqueued_import_to_track.is_none());
     });
 }
 

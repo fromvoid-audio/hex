@@ -9,7 +9,8 @@ fn rectangle(c: StrokeContext) -> [f32; 4] {
 }
 impl EditorView {
     fn owns_draw_pointer(&self, key: Admission) -> bool {
-        self.midi_stroke
+        self.midi_editor
+            .stroke
             .as_ref()
             .is_some_and(|s| s.admission() == key)
     }
@@ -17,11 +18,11 @@ impl EditorView {
         self.owns_draw_pointer(key) && self.cancel_midi_stroke()
     }
     fn draw_pointer_visible(&self, window: &Window) -> bool {
-        self.clip_view_open
-            && !self.device_panel_active
-            && self.midi_draw_mode
+        self.audio_detail.clip_view_open
+            && !self.device_panel.active
+            && self.midi_editor.draw_mode
             && self.context_menu.is_none()
-            && self.midi_focus.is_focused(window)
+            && self.midi_editor.focus.is_focused(window)
     }
     pub(super) fn capture_midi_draw_pointer(
         &self,
@@ -99,7 +100,7 @@ impl EditorView {
         owner: gpui::EntityId,
         window: &mut Window,
     ) {
-        let Some(stroke) = &self.midi_stroke else {
+        let Some(stroke) = &self.midi_editor.stroke else {
             return;
         };
         let captured = stroke.admission().0;
@@ -110,11 +111,12 @@ impl EditorView {
                 .as_ref()
                 .is_some_and(|s| s.revision == captured.revision)
             && self.detail_clip_id() == Some(captured.clip)
-            && self.piano_beat_start == captured.view_start
-            && self.piano_beat_span.raw() == captured.view_span
-            && self.piano_pitch == captured.pitch
-            && self.midi_snap_grid == captured.grid
-            && captured.pitch_locked == (self.midi_draw_pitch_locked ^ captured.pitch_modifier)
+            && self.midi_editor.piano_beat_start == captured.view_start
+            && self.midi_editor.piano_beat_span.raw() == captured.view_span
+            && self.midi_editor.piano_pitch == captured.pitch
+            && self.midi_editor.snap_grid == captured.grid
+            && captured.pitch_locked
+                == (self.midi_editor.draw_pitch_locked ^ captured.pitch_modifier)
             && stroke.modifiers_match(window.modifiers().platform, window.modifiers().alt)
             && same_rendered_frame(captured, rendered)
         {

@@ -152,7 +152,7 @@ fn rendered_harmonic_stroke_is_atomic_and_shift_preserves_other_columns(cx: &mut
     visual.run_until_parked();
     visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
     pump_until(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none()
+        view.device_panel.gesture.snapshot().is_none()
             && view.state.as_ref().is_some_and(|s| {
                 operator_parameter_value(s, track, device, 156) != ParameterValue::Float(0.0)
             })
@@ -199,7 +199,7 @@ fn rendered_harmonic_stroke_is_atomic_and_shift_preserves_other_columns(cx: &mut
     visual.simulate_mouse_move(clear_to, Some(MouseButton::Right), shift);
     visual.simulate_mouse_up(outside, MouseButton::Right, shift);
     pump_until(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none()
+        view.device_panel.gesture.snapshot().is_none()
             && view
                 .state
                 .as_ref()
@@ -233,7 +233,7 @@ fn rendered_harmonic_stroke_is_atomic_and_shift_preserves_other_columns(cx: &mut
     visual.simulate_keystrokes("escape");
     visual.simulate_mouse_up(outside, MouseButton::Right, Modifiers::default());
     pump_until(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none() && view.worker_requests_pending == 0
+        view.device_panel.gesture.snapshot().is_none() && view.worker_requests_pending == 0
     });
     editor.read_with(cx, |view, _| {
         let state = view.state.as_ref().unwrap();
@@ -252,7 +252,7 @@ fn rendered_harmonic_stroke_is_atomic_and_shift_preserves_other_columns(cx: &mut
     });
     visual.simulate_keystrokes("up");
     pump_until(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none()
+        view.device_panel.gesture.snapshot().is_none()
             && view
                 .state
                 .as_ref()
@@ -318,7 +318,7 @@ fn rendered_harmonic_stroke_is_atomic_and_shift_preserves_other_columns(cx: &mut
     visual.simulate_mouse_move(to, MouseButton::Left, modifiers);
     visual.simulate_mouse_up(to, MouseButton::Left, modifiers);
     pump_until(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none()
+        view.device_panel.gesture.snapshot().is_none()
             && view.state.as_ref().is_some_and(|s| {
                 operator_parameter_value(s, track, device, 94) != ParameterValue::Float(0.0)
             })
@@ -367,14 +367,16 @@ fn rendered_harmonic_range_and_saved_values_drive_keyboard_edits(cx: &mut TestAp
         point(bounds.right() - px(1.0), bounds.center().y),
         Modifiers::default(),
     );
-    pump_until(&editor, cx, |view| view.device_gesture.snapshot().is_none());
+    pump_until(&editor, cx, |view| {
+        view.device_panel.gesture.snapshot().is_none()
+    });
     visual.run_until_parked();
     for _ in 0..64 {
         visual.simulate_keystrokes("right");
     }
     visual.simulate_keystrokes("up");
     pump_until(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none()
+        view.device_panel.gesture.snapshot().is_none()
             && view.state.as_ref().is_some_and(|state| {
                 operator_parameter_value(state, track, device, 108) != ParameterValue::Float(0.5)
             })
@@ -444,7 +446,9 @@ fn hiding_harmonic_field_cancels_stroke_and_keeps_the_preview(cx: &mut TestAppCo
     let graph = Box::leak(format!("operator-harmonics-{}-0", device.value()).into_boxed_str());
     let bounds = visual.debug_bounds(graph).unwrap();
     visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
-    pump_until(&editor, cx, |view| view.device_gesture.snapshot().is_some());
+    pump_until(&editor, cx, |view| {
+        view.device_panel.gesture.snapshot().is_some()
+    });
     // A page change can also be delivered by navigation rather than mouse-up.
     editor.update(cx, |view, cx| {
         view.device_panel
@@ -456,7 +460,7 @@ fn hiding_harmonic_field_cancels_stroke_and_keeps_the_preview(cx: &mut TestAppCo
     });
     visual.run_until_parked();
     pump_until(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none() && view.worker_requests_pending == 0
+        view.device_panel.gesture.snapshot().is_none() && view.worker_requests_pending == 0
     });
     editor.read_with(cx, |view, _| {
         assert_eq!(
@@ -479,7 +483,7 @@ fn hiding_harmonic_field_cancels_stroke_and_keeps_the_preview(cx: &mut TestAppCo
     let bounds = visual.debug_bounds(graph).unwrap();
     visual.simulate_click(bounds.center(), Modifiers::default());
     pump_until(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none()
+        view.device_panel.gesture.snapshot().is_none()
             && view.state.as_ref().is_some_and(|state| {
                 operator_parameter_value(state, track, device, 125) != ParameterValue::Float(0.0)
             })

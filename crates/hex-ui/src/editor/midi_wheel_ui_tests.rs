@@ -30,10 +30,10 @@ fn plain_vertical_wheel_scrolls_pitch_over_roll_and_keys(cx: &mut TestAppContext
         let at = visual.debug_bounds(surface).unwrap().center();
         let before = editor.read_with(&visual, |v, _| {
             (
-                v.piano_pitch.first_test_pitch(),
-                v.piano_pitch.test_row_count(),
-                v.piano_beat_start,
-                v.piano_beat_span,
+                v.midi_editor.piano_pitch.first_test_pitch(),
+                v.midi_editor.piano_pitch.test_row_count(),
+                v.midi_editor.piano_beat_start,
+                v.midi_editor.piano_beat_span,
                 v.state.as_ref().unwrap().project.snapshot(),
             )
         });
@@ -41,36 +41,39 @@ fn plain_vertical_wheel_scrolls_pitch_over_roll_and_keys(cx: &mut TestAppContext
         wheel(&mut visual, at, 0.0, 120.0, Modifiers::default());
         let raised = editor.read_with(&visual, |v, _| {
             assert!(
-                v.piano_pitch.first_test_pitch() > before.0,
+                v.midi_editor.piano_pitch.first_test_pitch() > before.0,
                 "{surface}: plain wheel scrolls pitch"
             );
             assert_eq!(
-                v.piano_pitch.test_row_count(),
+                v.midi_editor.piano_pitch.test_row_count(),
                 before.1,
                 "{surface}: rows unchanged"
             );
             assert_eq!(
-                (v.piano_beat_start, v.piano_beat_span),
+                (
+                    v.midi_editor.piano_beat_start,
+                    v.midi_editor.piano_beat_span
+                ),
                 (before.2, before.3),
                 "{surface}: time unchanged"
             );
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before.4);
-            v.piano_pitch.first_test_pitch()
+            v.midi_editor.piano_pitch.first_test_pitch()
         });
         wheel(&mut visual, at, 0.0, -240.0, Modifiers::default());
         editor.read_with(&visual, |v, _| {
-            assert!(v.piano_pitch.first_test_pitch() < raised)
+            assert!(v.midi_editor.piano_pitch.first_test_pitch() < raised)
         });
         // Scrolling far past the bottom clamps at MIDI 0 without banking motion.
         for _ in 0..40 {
             wheel(&mut visual, at, 0.0, -400.0, Modifiers::default());
         }
         editor.read_with(&visual, |v, _| {
-            assert_eq!(v.piano_pitch.first_test_pitch(), 0)
+            assert_eq!(v.midi_editor.piano_pitch.first_test_pitch(), 0)
         });
         wheel(&mut visual, at, 0.0, 120.0, Modifiers::default());
         editor.read_with(&visual, |v, _| {
-            assert!(v.piano_pitch.first_test_pitch() > 0)
+            assert!(v.midi_editor.piano_pitch.first_test_pitch() > 0)
         });
     }
 }
@@ -87,9 +90,9 @@ fn horizontal_swipe_and_shift_wheel_pan_time_without_zoom(cx: &mut TestAppContex
     let width = f32::from(roll.size.width);
     let before = editor.read_with(&visual, |v, _| {
         (
-            v.piano_pitch.first_test_pitch(),
-            v.piano_pitch.test_row_count(),
-            v.piano_beat_span,
+            v.midi_editor.piano_pitch.first_test_pitch(),
+            v.midi_editor.piano_pitch.test_row_count(),
+            v.midi_editor.piano_beat_span,
         )
     });
     // Negative x reveals later beats: a quarter of the width is one beat here.
@@ -101,12 +104,15 @@ fn horizontal_swipe_and_shift_wheel_pan_time_without_zoom(cx: &mut TestAppContex
         Modifiers::default(),
     );
     editor.read_with(&visual, |v, _| {
-        assert!(beats(v.piano_beat_start, 1.0), "swipe pans time");
+        assert!(
+            beats(v.midi_editor.piano_beat_start, 1.0),
+            "swipe pans time"
+        );
         assert_eq!(
             (
-                v.piano_pitch.first_test_pitch(),
-                v.piano_pitch.test_row_count(),
-                v.piano_beat_span
+                v.midi_editor.piano_pitch.first_test_pitch(),
+                v.midi_editor.piano_pitch.test_row_count(),
+                v.midi_editor.piano_beat_span
             ),
             before
         );
@@ -117,12 +123,15 @@ fn horizontal_swipe_and_shift_wheel_pan_time_without_zoom(cx: &mut TestAppContex
     };
     wheel(&mut visual, roll.center(), 0.0, -width / 4.0, shift);
     editor.read_with(&visual, |v, _| {
-        assert!(beats(v.piano_beat_start, 2.0), "shift pans time");
+        assert!(
+            beats(v.midi_editor.piano_beat_start, 2.0),
+            "shift pans time"
+        );
         assert_eq!(
             (
-                v.piano_pitch.first_test_pitch(),
-                v.piano_pitch.test_row_count(),
-                v.piano_beat_span
+                v.midi_editor.piano_pitch.first_test_pitch(),
+                v.midi_editor.piano_pitch.test_row_count(),
+                v.midi_editor.piano_beat_span
             ),
             before
         );
@@ -135,7 +144,9 @@ fn horizontal_swipe_and_shift_wheel_pan_time_without_zoom(cx: &mut TestAppContex
         0.0,
         Modifiers::default(),
     );
-    editor.read_with(&visual, |v, _| assert!(beats(v.piano_beat_start, -14.0)));
+    editor.read_with(&visual, |v, _| {
+        assert!(beats(v.midi_editor.piano_beat_start, -14.0))
+    });
     // Over the keys only the pitch axis applies; a swipe there is ignored.
     let keys = visual.debug_bounds("midi-piano-keys").unwrap();
     wheel(
@@ -145,7 +156,9 @@ fn horizontal_swipe_and_shift_wheel_pan_time_without_zoom(cx: &mut TestAppContex
         0.0,
         Modifiers::default(),
     );
-    editor.read_with(&visual, |v, _| assert!(beats(v.piano_beat_start, -14.0)));
+    editor.read_with(&visual, |v, _| {
+        assert!(beats(v.midi_editor.piano_beat_start, -14.0))
+    });
 }
 
 #[gpui::test]
@@ -161,16 +174,16 @@ fn held_note_gesture_survives_every_wheel_mapping_inside_the_roll(cx: &mut TestA
     let viewport = |visual: &mut VisualTestContext| {
         editor.read_with(visual, |v, _| {
             (
-                v.piano_pitch.first_test_pitch(),
-                v.piano_pitch.test_row_count(),
-                v.piano_beat_start,
-                v.piano_beat_span,
+                v.midi_editor.piano_pitch.first_test_pitch(),
+                v.midi_editor.piano_pitch.test_row_count(),
+                v.midi_editor.piano_beat_start,
+                v.midi_editor.piano_beat_span,
             )
         })
     };
     let before = viewport(&mut visual);
     double_down(&mut visual, at(0.25), Modifiers::default());
-    assert!(editor.read_with(&visual, |v, _| v.midi_creation.is_some()));
+    assert!(editor.read_with(&visual, |v, _| v.midi_editor.creation.is_some()));
     for modifiers in [
         Modifiers::default(),
         Modifiers {
@@ -185,7 +198,7 @@ fn held_note_gesture_survives_every_wheel_mapping_inside_the_roll(cx: &mut TestA
     ] {
         wheel(&mut visual, at(0.4), -60.0, 160.0, modifiers);
         assert!(
-            editor.read_with(&visual, |v, _| v.midi_creation.is_some()),
+            editor.read_with(&visual, |v, _| v.midi_editor.creation.is_some()),
             "{modifiers:?}: wheel must not cancel the held note"
         );
         assert_eq!(
@@ -207,7 +220,7 @@ fn held_note_gesture_survives_every_wheel_mapping_inside_the_roll(cx: &mut TestA
             .unwrap()
             .notes();
         assert_eq!(notes.len(), 1, "the held creation commits after scrolling");
-        assert!(v.midi_creation.is_none());
+        assert!(v.midi_editor.creation.is_none());
     });
     // Released input navigates normally again.
     wheel(&mut visual, at(0.4), 0.0, 120.0, Modifiers::default());

@@ -38,7 +38,7 @@ impl State {
 
 impl EditorView {
     pub(super) fn load_vst3_editor_settings(&mut self, cx: &mut Context<Self>) {
-        let state = &mut self.theme_settings.vst3_editor;
+        let state = &mut self.settings.theme.vst3_editor;
         if state.load_started {
             return;
         }
@@ -57,7 +57,7 @@ impl EditorView {
         cx.spawn(async move |this, cx| {
             let result = load.await;
             let _ = this.update(cx, |view, cx| {
-                let state = &mut view.theme_settings.vst3_editor;
+                let state = &mut view.settings.theme.vst3_editor;
                 match result {
                     Ok(preferences) => state.preferences = Some(preferences),
                     Err(error) => state.error = Some(setting_error("load", &error)),
@@ -69,7 +69,7 @@ impl EditorView {
     }
 
     fn save_vst3_space_setting(&mut self, checked: bool, cx: &mut Context<Self>) {
-        let state = &mut self.theme_settings.vst3_editor;
+        let state = &mut self.settings.theme.vst3_editor;
         let preferences = Vst3EditorPreferences {
             spacebar_controls_transport: checked,
         };
@@ -92,7 +92,7 @@ impl EditorView {
         cx.spawn(async move |this, cx| {
             let result = save.await;
             let _ = this.update(cx, |view, cx| {
-                let state = &mut view.theme_settings.vst3_editor;
+                let state = &mut view.settings.theme.vst3_editor;
                 state.saving = false;
                 match result {
                     Ok(()) => state.preferences = Some(preferences),
@@ -107,7 +107,7 @@ impl EditorView {
 
     pub(super) fn vst3_editor_settings_row(&mut self, cx: &mut Context<Self>) -> Div {
         let style = theme::control_style();
-        let state = &mut self.theme_settings.vst3_editor;
+        let state = &mut self.settings.theme.vst3_editor;
         let checked = state
             .preferences
             .unwrap_or_default()

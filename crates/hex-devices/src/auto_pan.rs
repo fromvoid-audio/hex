@@ -450,13 +450,13 @@ impl PreparedNativeProcessor for PreparedAutoPan {
                 sample_rate: self.sample_rate,
                 ramp_frames: self.ramp_frames,
                 phase_cycles: 0.0,
-                amount: ScalarRamp::steady(f64::from(self.settings.amount)),
-                rate_hz: ScalarRamp::steady(f64::from(self.settings.rate_hz)),
-                right_phase_degrees: ScalarRamp::steady(normalize_degrees(f64::from(
+                amount: hex_dsp::LinearRamp::settled(f64::from(self.settings.amount)),
+                rate_hz: hex_dsp::LinearRamp::settled(f64::from(self.settings.rate_hz)),
+                right_phase_degrees: hex_dsp::LinearRamp::settled(normalize_degrees(f64::from(
                     self.settings.right_phase_degrees,
                 ))),
                 waveform_weights: std::array::from_fn(|i| {
-                    ScalarRamp::steady(f64::from(i == self.settings.waveform as usize))
+                    hex_dsp::LinearRamp::settled(f64::from(i == self.settings.waveform as usize))
                 }),
                 targets: AutoPanTargets::from(self.settings),
             },
@@ -491,51 +491,6 @@ impl From<AutoPanSettings> for AutoPanTargets {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct ScalarRamp {
-    current: f64,
-    target: f64,
-    step: f64,
-    remaining: u32,
-}
-
-impl ScalarRamp {
-    const fn steady(value: f64) -> Self {
-        Self {
-            current: value,
-            target: value,
-            step: 0.0,
-            remaining: 0,
-        }
-    }
-
-    fn retarget(&mut self, target: f64, frames: u32) {
-        self.target = target;
-        if self.current == target || frames == 0 {
-            self.current = target;
-            self.step = 0.0;
-            self.remaining = 0;
-        } else {
-            self.step = (target - self.current) / f64::from(frames);
-            self.remaining = frames;
-        }
-    }
-
-    fn advance(&mut self) {
-        if self.remaining == 0 {
-            return;
-        }
-        if self.remaining == 1 {
-            self.current = self.target;
-            self.step = 0.0;
-            self.remaining = 0;
-        } else {
-            self.current += self.step;
-            self.remaining -= 1;
-        }
-    }
-}
-
 /// Closed DSP history and effective-control owner, without program or asset ownership.
 #[derive(Clone, Copy, Debug)]
 pub struct AutoPanRuntime {
@@ -552,10 +507,10 @@ struct AutoPanDspState {
     sample_rate: u32,
     ramp_frames: u32,
     phase_cycles: f64,
-    amount: ScalarRamp,
-    rate_hz: ScalarRamp,
-    right_phase_degrees: ScalarRamp,
-    waveform_weights: [ScalarRamp; 5],
+    amount: hex_dsp::LinearRamp,
+    rate_hz: hex_dsp::LinearRamp,
+    right_phase_degrees: hex_dsp::LinearRamp,
+    waveform_weights: [hex_dsp::LinearRamp; 5],
     targets: AutoPanTargets,
 }
 
@@ -563,11 +518,11 @@ impl AutoPanDspState {
     fn reset_history(&mut self) {
         self.phase_cycles = 0.0;
         self.waveform_weights = std::array::from_fn(|i| {
-            ScalarRamp::steady(f64::from(i == self.targets.waveform as usize))
+            hex_dsp::LinearRamp::settled(f64::from(i == self.targets.waveform as usize))
         });
-        self.amount = ScalarRamp::steady(self.targets.amount);
-        self.rate_hz = ScalarRamp::steady(self.targets.rate_hz);
-        self.right_phase_degrees = ScalarRamp::steady(self.targets.right_phase_degrees);
+        self.amount = hex_dsp::LinearRamp::settled(self.targets.amount);
+        self.rate_hz = hex_dsp::LinearRamp::settled(self.targets.rate_hz);
+        self.right_phase_degrees = hex_dsp::LinearRamp::settled(self.targets.right_phase_degrees);
     }
 
     fn process_frame(&mut self, frame: &mut StereoFrame) {
@@ -578,42 +533,39 @@ impl AutoPanDspState {
         }
 
         // Edits advance before this sample; phase is sampled before its clock advances.
-        self.amount.advance();
-        self.rate_hz.advance();
-        self.right_phase_degrees.advance();
+        let amount = self.amount.advance();
+        let rate_hz = self.rate_hz.advance();
+        let right_phase_degrees = self.right_phase_degrees.advance();
         for weight in &mut self.waveform_weights {
             weight.advance();
         }
-        let amount = self.amount.current;
         if amount != 0.0 && (frame[0].to_bits() | frame[1].to_bits()) != 0 {
             let left_lfo = self.lfo(self.phase_cycles);
-            let right_phase =
-                (self.phase_cycles + self.right_phase_degrees.current / 360.0).rem_euclid(1.0);
+            let right_phase = (self.phase_cycles + right_phase_degrees / 360.0).rem_euclid(1.0);
             let right_lfo = self.lfo(right_phase);
             let base_gain = 1.0 - amount;
             frame[0] = (left * (base_gain + amount * left_lfo)) as f32;
             frame[1] = (right * (base_gain + amount * right_lfo)) as f32;
         }
-        self.phase_cycles = (self.phase_cycles
-            + self.rate_hz.current / f64::from(self.sample_rate))
-        .rem_euclid(1.0);
+        self.phase_cycles =
+            (self.phase_cycles + rate_hz / f64::from(self.sample_rate)).rem_euclid(1.0);
     }
 
     fn lfo(&self, phase: f64) -> f64 {
-        let edge = self.rate_hz.current * EDGE_SECONDS;
+        let edge = self.rate_hz.value() * EDGE_SECONDS;
         // Preserve the original Sine arithmetic and avoid blending when steady.
         if let Some(index) = self
             .waveform_weights
             .iter()
-            .position(|weight| weight.current == 1.0)
+            .position(|weight| weight.value() == 1.0)
         {
             return Waveform::ALL[index].lfo_with_edge(phase, edge);
         }
         self.waveform_weights
             .iter()
             .zip(Waveform::ALL)
-            .filter(|(weight, _)| weight.current != 0.0)
-            .map(|(weight, waveform)| weight.current * waveform.lfo_with_edge(phase, edge))
+            .filter(|(weight, _)| weight.value() != 0.0)
+            .map(|(weight, waveform)| weight.value() * waveform.lfo_with_edge(phase, edge))
             .sum::<f64>()
             .clamp(0.0, 1.0)
     }
@@ -647,9 +599,9 @@ impl AutoPanDspState {
             self.rate_hz.retarget(targets.rate_hz, self.ramp_frames);
         }
         if targets.right_phase_degrees != self.targets.right_phase_degrees {
-            let from = normalize_degrees(self.right_phase_degrees.current);
+            let from = normalize_degrees(self.right_phase_degrees.value());
             // Start in the same wrapped coordinates used to choose the shortest arc.
-            self.right_phase_degrees.current = from;
+            self.right_phase_degrees.reset(from);
             let delta = shortest_degrees(from, targets.right_phase_degrees);
             self.right_phase_degrees
                 .retarget(from + delta, self.ramp_frames);

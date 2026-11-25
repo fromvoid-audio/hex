@@ -50,11 +50,11 @@ pub(super) fn default_preferences_path() -> Option<PathBuf> {
 
 impl EditorView {
     pub(super) fn start_recent_projects_load(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.recent_projects.path.clone() else {
-            self.recent_projects.loading = false;
-            self.recent_projects.writable = false;
+        let Some(path) = self.settings.recent_projects.path.clone() else {
+            self.settings.recent_projects.loading = false;
+            self.settings.recent_projects.writable = false;
             self.error = Some("recent projects unavailable · home directory is unset".into());
-            menus::install(cx, self.recent_projects.projects.paths());
+            menus::install(cx, self.settings.recent_projects.projects.paths());
             return;
         };
         #[cfg(test)]
@@ -82,10 +82,10 @@ impl EditorView {
         result: Result<RecentProjects, hex_preferences::PreferencesError>,
         cx: &mut Context<Self>,
     ) {
-        self.recent_projects.loading = false;
+        self.settings.recent_projects.loading = false;
         match result {
             Err(error) => {
-                self.recent_projects.writable = false;
+                self.settings.recent_projects.writable = false;
                 self.error = Some(
                     format!(
                         "could not load recent projects · {}",
@@ -95,11 +95,11 @@ impl EditorView {
                 );
             }
             Ok(loaded) => {
-                if self.recent_projects.changed_while_loading {
+                if self.settings.recent_projects.changed_while_loading {
                     let mut merged = loaded;
-                    for path in self.recent_projects.projects.paths().iter().rev() {
+                    for path in self.settings.recent_projects.projects.paths().iter().rev() {
                         if let Err(error) = merged.record_opened(path.clone()) {
-                            self.recent_projects.writable = false;
+                            self.settings.recent_projects.writable = false;
                             self.error = Some(
                                 hex_session::service::text::lowercase_outside_verbatim(
                                     &error.to_string(),
@@ -109,20 +109,20 @@ impl EditorView {
                             break;
                         }
                     }
-                    self.recent_projects.projects = merged;
+                    self.settings.recent_projects.projects = merged;
                 } else {
-                    self.recent_projects.projects = loaded;
+                    self.settings.recent_projects.projects = loaded;
                 }
-                if self.recent_projects.changed_while_loading {
+                if self.settings.recent_projects.changed_while_loading {
                     self.queue_recent_projects_save(cx);
                 }
             }
         }
-        menus::install(cx, self.recent_projects.projects.paths());
+        menus::install(cx, self.settings.recent_projects.projects.paths());
     }
 
     pub(super) fn record_opened_project(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        match self.recent_projects.projects.record_opened(path) {
+        match self.settings.recent_projects.projects.record_opened(path) {
             Ok(false) => return,
             Ok(true) => {}
             Err(error) => {
@@ -136,34 +136,35 @@ impl EditorView {
                 return;
             }
         }
-        if self.recent_projects.loading {
-            self.recent_projects.changed_while_loading = true;
+        if self.settings.recent_projects.loading {
+            self.settings.recent_projects.changed_while_loading = true;
         } else {
             self.queue_recent_projects_save(cx);
         }
-        menus::install(cx, self.recent_projects.projects.paths());
+        menus::install(cx, self.settings.recent_projects.projects.paths());
     }
 
     fn queue_recent_projects_save(&mut self, cx: &mut Context<Self>) {
-        if !self.recent_projects.writable {
+        if !self.settings.recent_projects.writable {
             return;
         }
-        self.recent_projects.pending_save = Some(self.recent_projects.projects.clone());
+        self.settings.recent_projects.pending_save =
+            Some(self.settings.recent_projects.projects.clone());
         self.start_recent_projects_save(cx);
     }
 
     fn start_recent_projects_save(&mut self, cx: &mut Context<Self>) {
-        if self.recent_projects.loading || self.recent_projects.save_in_flight {
+        if self.settings.recent_projects.loading || self.settings.recent_projects.save_in_flight {
             return;
         }
-        let Some(projects) = self.recent_projects.pending_save.take() else {
+        let Some(projects) = self.settings.recent_projects.pending_save.take() else {
             return;
         };
-        let Some(path) = self.recent_projects.path.clone() else {
-            self.recent_projects.writable = false;
+        let Some(path) = self.settings.recent_projects.path.clone() else {
+            self.settings.recent_projects.writable = false;
             return;
         };
-        self.recent_projects.save_in_flight = true;
+        self.settings.recent_projects.save_in_flight = true;
         #[cfg(test)]
         let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
@@ -189,8 +190,8 @@ impl EditorView {
         result: Result<(), hex_preferences::PreferencesError>,
         cx: &mut Context<Self>,
     ) {
-        self.recent_projects.save_in_flight = false;
-        if self.recent_projects.pending_save.is_some() {
+        self.settings.recent_projects.save_in_flight = false;
+        if self.settings.recent_projects.pending_save.is_some() {
             self.start_recent_projects_save(cx);
         } else if let Err(error) = result {
             self.error = Some(
@@ -204,10 +205,16 @@ impl EditorView {
     }
 
     pub(super) fn open_recent_project(&mut self, action: &OpenRecentProject) {
-        if self.opening_project {
+        if self.persistence.opening_project {
             return;
         }
-        if !self.recent_projects.projects.paths().contains(&action.path) {
+        if !self
+            .settings
+            .recent_projects
+            .projects
+            .paths()
+            .contains(&action.path)
+        {
             self.error = Some("recent project is no longer in the menu".into());
             return;
         }
@@ -302,14 +309,15 @@ mod tests {
         let first = directory.0.join("first.hex");
         let second = directory.0.join("second.hex");
         editor.update(cx, |view, _| {
-            view.recent_projects.projects =
+            view.settings.recent_projects.projects =
                 RecentProjects::new([first.clone(), second.clone()]).expect("recent paths");
         });
         let stale_menu_action = OpenRecentProject {
             path: first.clone(),
         };
         editor.update(cx, |view, _| {
-            view.recent_projects
+            view.settings
+                .recent_projects
                 .projects
                 .record_opened(second.clone())
                 .expect("reorder second path");
@@ -332,17 +340,17 @@ mod tests {
             };
             view.state = Some(Arc::new(dirty));
             view.open_recent_project(&stale_menu_action);
-            assert_eq!(view.pending_open_path.as_ref(), Some(&first));
-            assert!(!view.opening_project);
+            assert_eq!(view.persistence.pending_open_path.as_ref(), Some(&first));
+            assert!(!view.persistence.opening_project);
             view.open_recent_project(&stale_menu_action);
             assert!(
-                !view.opening_project,
+                !view.persistence.opening_project,
                 "another click must not bypass confirmation"
             );
-            assert_eq!(view.pending_open_path.as_ref(), Some(&first));
+            assert_eq!(view.persistence.pending_open_path.as_ref(), Some(&first));
             assert!(view.pending_requests.is_empty());
             let pending_count = view.pending_requests.len();
-            view.opening_project = true;
+            view.persistence.opening_project = true;
             view.open_recent_project(&OpenRecentProject {
                 path: second.clone(),
             });
@@ -364,14 +372,15 @@ mod tests {
         let (handle, editor) = editor_fixture(cx, &directory);
         let opened = directory.0.join("opened-before-load.hex");
         editor.update(cx, |view, cx| {
-            view.recent_projects.loading = true;
+            view.settings.recent_projects.loading = true;
             view.record_opened_project(opened.clone(), cx);
             view.recent_projects_loaded(Ok(persisted.clone()), cx);
-            assert!(view.recent_projects.writable);
-            assert_eq!(view.recent_projects.projects.paths().len(), 10);
-            assert_eq!(view.recent_projects.projects.paths()[0], opened);
+            assert!(view.settings.recent_projects.writable);
+            assert_eq!(view.settings.recent_projects.projects.paths().len(), 10);
+            assert_eq!(view.settings.recent_projects.projects.paths()[0], opened);
             assert!(
                 !view
+                    .settings
                     .recent_projects
                     .projects
                     .paths()
@@ -382,7 +391,7 @@ mod tests {
         visual.run_until_parked();
         assert_eq!(
             hex_preferences::load_recent_projects(&recent_path).expect("saved merged MRU"),
-            editor.read_with(cx, |view, _| view.recent_projects.projects.clone())
+            editor.read_with(cx, |view, _| view.settings.recent_projects.projects.clone())
         );
     }
 
@@ -404,10 +413,10 @@ mod tests {
                 visual.run_until_parked();
                 if editor.read_with(&*visual, |view, _| {
                     !view.edit_pending()
-                        && !view.save_dialog_open
-                        && !view.recent_projects.loading
-                        && !view.recent_projects.save_in_flight
-                        && view.recent_projects.pending_save.is_none()
+                        && !view.persistence.save_dialog_open
+                        && !view.settings.recent_projects.loading
+                        && !view.settings.recent_projects.save_in_flight
+                        && view.settings.recent_projects.pending_save.is_none()
                 }) {
                     return;
                 }
@@ -431,7 +440,10 @@ mod tests {
             assert!(path.is_file(), "the real save must publish the project");
             editor.read_with(&visual, |view, _| {
                 assert!(view.error.is_none(), "{:?}", view.error);
-                assert_eq!(view.recent_projects.projects.paths().first(), Some(path));
+                assert_eq!(
+                    view.settings.recent_projects.projects.paths().first(),
+                    Some(path)
+                );
             });
         }
         // Another recent entry can be promoted without changing this document.
@@ -471,7 +483,7 @@ mod tests {
                 view.state.as_ref().unwrap().document_path.as_ref(),
                 Some(&second)
             );
-            assert_eq!(view.recent_projects.projects, expected);
+            assert_eq!(view.settings.recent_projects.projects, expected);
         });
         assert!(!invalid.exists());
         assert_eq!(

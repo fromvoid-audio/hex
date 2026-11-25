@@ -309,3 +309,65 @@ fn project_switch_during_native_acquisition_cannot_publish_old_receipt() {
     worker.shutdown();
     assert_eq!(probe.releases.load(Ordering::SeqCst), 2);
 }
+
+#[test]
+fn publishes_sanitized_authored_scale_name_through_mock_transport() {
+    let (mut worker, handle, probe, owner) = fixture();
+    let tuning = ProjectTuning::new(
+        true,
+        hex_tuning::Scale::equal(19),
+        hex_tuning::Audition::default(),
+    )
+    .unwrap();
+    let metadata = ScaleMetadata::from_root(2.0, 19, 60, 0).unwrap();
+
+    // 1. Dynamic authored preset name is published cleanly.
+    let named = Publication::new_named(
+        Revision {
+            owner,
+            serial: 1,
+            project_revision: 1,
+        },
+        tuning,
+        Some("19-edo bright"),
+    )
+    .unwrap();
+    assert_eq!(named.scale_name(), "19-edo bright");
+    handle.enable(named).unwrap();
+    wait(&handle, |s| {
+        s.state == State::Active && s.published == Some(named.revision)
+    });
+
+    // 2. Oversized + control/NUL-bearing name is sanitized and truncated on UTF-8 boundary.
+    let long = Publication::new_named(
+        Revision {
+            owner,
+            serial: 2,
+            project_revision: 2,
+        },
+        tuning,
+        Some("  bohlen\0-pierce\nextended microtuning  "),
+    )
+    .unwrap();
+    assert_eq!(long.scale_name(), "bohlen-pierceext");
+    assert!(long.scale_name().len() <= MAX_SCALE_NAME_BYTES);
+    handle.publish(long).unwrap();
+    wait(&handle, |s| {
+        s.state == State::Active && s.published == Some(long.revision)
+    });
+
+    // 3. Empty/control-only name falls back to DEFAULT_SCALE_NAME safely.
+    assert_eq!(sanitize_scale_name("   \0\n\t  "), DEFAULT_SCALE_NAME);
+    assert_eq!(sanitize_scale_name("ééééééééé").len(), 16);
+
+    let published = probe.publications.lock().unwrap();
+    assert_eq!(
+        published.as_slice(),
+        &[
+            TuningPublication::new(tuning.frequencies(), "19-edo bright", metadata).unwrap(),
+            TuningPublication::new(tuning.frequencies(), "bohlen-pierceext", metadata).unwrap(),
+        ]
+    );
+    drop(published);
+    worker.shutdown();
+}

@@ -101,7 +101,10 @@ impl EditorView {
     /// Whole-clip selection fits the visible detail pane once. The user can
     /// still navigate freely until their next explicit clip selection.
     pub(super) fn fit_clip_editor_to_selected_clip(&mut self) {
-        if !self.clip_view_open || self.device_panel_active || self.selected_clip.is_none() {
+        if !self.audio_detail.clip_view_open
+            || self.device_panel.active
+            || self.selected_clip.is_none()
+        {
             return;
         }
         if let Some(length) = self.midi_clip().map(|clip| clip.source_length().raw()) {
@@ -386,7 +389,10 @@ mod ui_tests {
             .expect("mapped");
             assert!(expected.0 > 0 && expected.1 > expected.0);
             assert_eq!(
-                (view.piano_beat_start, view.piano_beat_span.raw()),
+                (
+                    view.midi_editor.piano_beat_start,
+                    view.midi_editor.piano_beat_span.raw()
+                ),
                 (i128::from(expected.0), expected.1 - expected.0)
             );
         });
@@ -394,7 +400,10 @@ mod ui_tests {
         editor.read_with(&visual, |view, _| {
             assert_eq!(view.selected_clip, Some(clip));
             assert_eq!(
-                (view.piano_beat_start, view.piano_beat_span.raw()),
+                (
+                    view.midi_editor.piano_beat_start,
+                    view.midi_editor.piano_beat_span.raw()
+                ),
                 (0, 4 * BeatTime::ONE.raw())
             );
         });
@@ -406,21 +415,27 @@ mod ui_tests {
         click_header(&mut visual, clip);
         editor.read_with(&visual, |view, _| {
             assert_eq!(
-                (view.piano_beat_start, view.piano_beat_span.raw()),
+                (
+                    view.midi_editor.piano_beat_start,
+                    view.midi_editor.piano_beat_span.raw()
+                ),
                 (0, 4 * BeatTime::ONE.raw())
             );
         });
         editor.update(&mut visual, |view, cx| {
-            view.clip_view_open = false;
+            view.audio_detail.clip_view_open = false;
             assert!(view.fit_midi_interval((BeatTime::ONE.raw(), 2 * BeatTime::ONE.raw()), false));
             cx.notify();
         });
         visual.run_until_parked();
         click_header(&mut visual, clip);
         editor.read_with(&visual, |view, _| {
-            assert!(!view.clip_view_open);
+            assert!(!view.audio_detail.clip_view_open);
             assert_eq!(
-                (view.piano_beat_start, view.piano_beat_span.raw()),
+                (
+                    view.midi_editor.piano_beat_start,
+                    view.midi_editor.piano_beat_span.raw()
+                ),
                 (i128::from(BeatTime::ONE.raw()), BeatTime::ONE.raw())
             );
         });
@@ -494,7 +509,7 @@ mod ui_tests {
             .unwrap();
         let (handle, editor) = editor_window(cx, model.project().clone(), Arc::default());
         editor.update(cx, |view, cx| {
-            view.audio_event_editor.source_view = true;
+            view.audio_detail.event.source_view = true;
             cx.notify();
         });
         let mut visual = VisualTestContext::from_window(handle, cx);

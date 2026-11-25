@@ -73,7 +73,7 @@ pub(crate) fn exercise(cx: &mut TestAppContext, root: std::path::PathBuf) {
         let panel = visual.debug_bounds("sample-recorder").unwrap();
         for (phase, label) in [(Some(Phase::Capturing), "stop"), (None, "record")] {
             editor.update(&mut visual, |view, cx| {
-                view.sample_recorder.phase = phase;
+                view.device_panel.sample_recorder.phase = phase;
                 cx.notify();
             });
             visual.run_until_parked();
@@ -86,7 +86,7 @@ pub(crate) fn exercise(cx: &mut TestAppContext, root: std::path::PathBuf) {
         visual.simulate_click(record.center(), Modifiers::default());
         editor.read_with(&visual, |view, _| {
             assert_eq!(
-                view.sample_recorder.error.as_deref(),
+                view.device_panel.sample_recorder.error.as_deref(),
                 Some("arm at least one source for sampling")
             );
         });

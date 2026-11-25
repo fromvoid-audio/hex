@@ -44,10 +44,10 @@ fn midi_fit_targets_current_selected_notes_or_all_notes_in_both_axes(cx: &mut Te
             .find(|n| n.pitch() == 64)
             .unwrap()
             .id();
-        v.midi_selection.set_single(selected);
-        v.piano_beat_start = 0;
-        v.piano_beat_span = BeatTime::from_quarters(4).unwrap();
-        v.piano_pitch = crate::editor::PitchViewport::from_rows(48, 24).unwrap();
+        v.midi_editor.selection.set_single(selected);
+        v.midi_editor.piano_beat_start = 0;
+        v.midi_editor.piano_beat_span = BeatTime::from_quarters(4).unwrap();
+        v.midi_editor.piano_pitch = crate::editor::PitchViewport::from_rows(48, 24).unwrap();
         cx.notify();
         let state = v.state.as_ref().unwrap();
         (
@@ -58,23 +58,24 @@ fn midi_fit_targets_current_selected_notes_or_all_notes_in_both_axes(cx: &mut Te
     visual.run_until_parked();
     visual.simulate_keystrokes("z");
     let (start, span, low, rows) = editor.read_with(&visual, |v, _| {
-        assert!(v.piano_beat_start < i128::from(beat));
+        assert!(v.midi_editor.piano_beat_start < i128::from(beat));
         assert!(
-            v.piano_beat_start + i128::from(v.piano_beat_span.raw()) > i128::from(beat * 3 / 2)
+            v.midi_editor.piano_beat_start + i128::from(v.midi_editor.piano_beat_span.raw())
+                > i128::from(beat * 3 / 2)
         );
-        assert!(v.piano_beat_span.raw() < 4 * beat);
-        assert_eq!(v.piano_pitch.test_row_count(), 12);
+        assert!(v.midi_editor.piano_beat_span.raw() < 4 * beat);
+        assert_eq!(v.midi_editor.piano_pitch.test_row_count(), 12);
         assert!(
-            v.piano_pitch.first_test_pitch() < 64
-                && u16::from(v.piano_pitch.first_test_pitch())
-                    + u16::from(v.piano_pitch.test_row_count())
+            v.midi_editor.piano_pitch.first_test_pitch() < 64
+                && u16::from(v.midi_editor.piano_pitch.first_test_pitch())
+                    + u16::from(v.midi_editor.piano_pitch.test_row_count())
                     > 65
         );
         (
-            v.piano_beat_start,
-            v.piano_beat_span.raw(),
-            v.piano_pitch.first_test_pitch(),
-            v.piano_pitch.test_row_count(),
+            v.midi_editor.piano_beat_start,
+            v.midi_editor.piano_beat_span.raw(),
+            v.midi_editor.piano_pitch.first_test_pitch(),
+            v.midi_editor.piano_pitch.test_row_count(),
         )
     });
     let roll = visual.debug_bounds("midi-note-roll").unwrap();
@@ -94,14 +95,14 @@ fn midi_fit_targets_current_selected_notes_or_all_notes_in_both_axes(cx: &mut Te
     editor.read_with(&visual, |v, _| {
         assert_eq!(
             (
-                v.piano_beat_start,
-                v.piano_beat_span.raw(),
-                v.piano_pitch.first_test_pitch(),
-                v.piano_pitch.test_row_count()
+                v.midi_editor.piano_beat_start,
+                v.midi_editor.piano_beat_span.raw(),
+                v.midi_editor.piano_pitch.first_test_pitch(),
+                v.midi_editor.piano_pitch.test_row_count()
             ),
             (0, 4 * beat, 48, 24)
         );
-        assert_eq!(v.midi_selection.ids(), &[selected]);
+        assert_eq!(v.midi_editor.selection.ids(), &[selected]);
     });
     editor.update(&mut visual, |v, cx| {
         let edge = v
@@ -112,32 +113,38 @@ fn midi_fit_targets_current_selected_notes_or_all_notes_in_both_axes(cx: &mut Te
             .find(|n| n.pitch() == 48)
             .unwrap()
             .id();
-        v.midi_selection.set_single(edge);
+        v.midi_editor.selection.set_single(edge);
         cx.notify();
     });
     visual.run_until_parked();
     visual.simulate_keystrokes("z");
     editor.read_with(&visual, |v, _| {
         assert_eq!(
-            (v.piano_beat_start, v.piano_beat_span.raw()),
+            (
+                v.midi_editor.piano_beat_start,
+                v.midi_editor.piano_beat_span.raw()
+            ),
             (0, beat / 4 + beat / 16),
             "left-edge singleton retains the minimum right margin"
         );
     });
     visual.simulate_keystrokes("v");
     editor.update(&mut visual, |v, cx| {
-        v.midi_selection.clear();
+        v.midi_editor.selection.clear();
         cx.notify();
     });
     visual.run_until_parked();
     click(&mut visual, "midi-zoom-fit");
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.piano_beat_start, 0);
-        assert!(v.piano_beat_span.raw() > beat * 7 / 2 && v.piano_beat_span.raw() < 4 * beat);
+        assert_eq!(v.midi_editor.piano_beat_start, 0);
+        assert!(
+            v.midi_editor.piano_beat_span.raw() > beat * 7 / 2
+                && v.midi_editor.piano_beat_span.raw() < 4 * beat
+        );
         assert_eq!(
             (
-                v.piano_pitch.first_test_pitch(),
-                v.piano_pitch.test_row_count()
+                v.midi_editor.piano_pitch.first_test_pitch(),
+                v.midi_editor.piano_pitch.test_row_count()
             ),
             (46, 47)
         );
@@ -153,12 +160,12 @@ fn midi_fit_targets_current_selected_notes_or_all_notes_in_both_axes(cx: &mut Te
     });
     pump(&editor, &mut visual);
     editor.update(&mut visual, |v, cx| {
-        v.midi_selection.set_single(selected);
+        v.midi_editor.selection.set_single(selected);
         assert!(v.apply_zoom_fit(Target::Midi, false));
         assert_eq!(
             (
-                v.piano_pitch.first_test_pitch(),
-                v.piano_pitch.test_row_count()
+                v.midi_editor.piano_pitch.first_test_pitch(),
+                v.midi_editor.piano_pitch.test_row_count()
             ),
             (46, 47)
         );
@@ -184,7 +191,7 @@ fn midi_fit_targets_current_selected_notes_or_all_notes_in_both_axes(cx: &mut Te
     });
     pump(&editor, &mut visual);
     editor.update(&mut visual, |v, cx| {
-        v.midi_selection.clear();
+        v.midi_editor.selection.clear();
         cx.notify();
     });
     visual.run_until_parked();
@@ -192,8 +199,8 @@ fn midi_fit_targets_current_selected_notes_or_all_notes_in_both_axes(cx: &mut Te
     editor.read_with(&visual, |v, _| {
         assert_eq!(
             (
-                v.piano_pitch.first_test_pitch(),
-                v.piano_pitch.test_row_count()
+                v.midi_editor.piano_pitch.first_test_pitch(),
+                v.midi_editor.piano_pitch.test_row_count()
             ),
             (0, 128)
         )
@@ -316,21 +323,24 @@ fn empty_midi_fit_keeps_ruler_selection_and_back_geometry_through_ack_and_reset(
     let before = editor.read_with(&visual, |v, _| {
         (
             v.state.as_ref().unwrap().project.snapshot(),
-            v.midi_marker,
-            v.piano_pitch.first_test_pitch(),
-            v.piano_pitch.test_row_count(),
+            v.midi_editor.marker,
+            v.midi_editor.piano_pitch.first_test_pitch(),
+            v.midi_editor.piano_pitch.test_row_count(),
         )
     });
     visual.simulate_keystrokes("z");
     editor.read_with(&visual, |v, _| {
         assert_eq!(
-            (v.piano_beat_start, v.piano_beat_span.raw()),
+            (
+                v.midi_editor.piano_beat_start,
+                v.midi_editor.piano_beat_span.raw()
+            ),
             (0, 4 * BeatTime::ONE.raw())
         );
         assert_eq!(
             (
-                v.piano_pitch.first_test_pitch(),
-                v.piano_pitch.test_row_count()
+                v.midi_editor.piano_pitch.first_test_pitch(),
+                v.midi_editor.piano_pitch.test_row_count()
             ),
             (54, 12)
         );
@@ -350,7 +360,7 @@ fn empty_midi_fit_keeps_ruler_selection_and_back_geometry_through_ack_and_reset(
     });
     visual.run_until_parked();
     editor.update(&mut visual, |v, cx| {
-        v.piano_pitch = crate::editor::PitchViewport::from_rows(36, 12).unwrap();
+        v.midi_editor.piano_pitch = crate::editor::PitchViewport::from_rows(36, 12).unwrap();
         cx.notify();
     });
     visual.run_until_parked();
@@ -358,10 +368,10 @@ fn empty_midi_fit_keeps_ruler_selection_and_back_geometry_through_ack_and_reset(
     editor.read_with(&visual, |v, _| {
         assert_eq!(
             (
-                v.piano_beat_start,
-                v.piano_beat_span.raw(),
-                v.piano_pitch.first_test_pitch(),
-                v.piano_pitch.test_row_count()
+                v.midi_editor.piano_beat_start,
+                v.midi_editor.piano_beat_span.raw(),
+                v.midi_editor.piano_pitch.first_test_pitch(),
+                v.midi_editor.piano_pitch.test_row_count()
             ),
             (0, 4 * BeatTime::ONE.raw(), before.2, before.3)
         )
@@ -381,12 +391,15 @@ fn empty_midi_fit_keeps_ruler_selection_and_back_geometry_through_ack_and_reset(
     visual.simulate_keystrokes("v");
     editor.read_with(&visual, |v, _| {
         assert_eq!(
-            (v.piano_beat_start, v.piano_beat_span.raw()),
+            (
+                v.midi_editor.piano_beat_start,
+                v.midi_editor.piano_beat_span.raw()
+            ),
             (0, 4 * BeatTime::ONE.raw())
         )
     });
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_marker, before.1);
+        assert_eq!(v.midi_editor.marker, before.1);
         assert!(
             v.state
                 .as_ref()
@@ -465,13 +478,13 @@ fn text_numeric_modal_and_musical_typing_keep_shortcuts_from_navigation(cx: &mut
     });
     editor.update(&mut visual, |v, _| {
         v.computer_keyboard.enabled = false;
-        v.close_prompt_open = true;
+        v.persistence.close_prompt_open = true;
     });
     visual.simulate_keystrokes("z x v");
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.viewport, original);
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
-        assert!(v.last_enqueued_edit.is_none());
+        assert!(v.test_probes.last_enqueued_edit.is_none());
     });
 }
 #[gpui::test]
@@ -544,7 +557,7 @@ fn console_midi_fit_back_is_local_and_explicit_clip_changes_retire_back(cx: &mut
     visual.update(|window, cx| {
         editor.update(cx, |v, cx| {
             v.select_session_midi(track, scene, clip);
-            v.midi_focus.focus(window);
+            v.midi_editor.focus.focus(window);
             cx.notify();
         })
     });
@@ -556,9 +569,10 @@ fn console_midi_fit_back_is_local_and_explicit_clip_changes_retire_back(cx: &mut
         20,
     );
     let before = editor.update(&mut visual, |v, cx| {
-        v.piano_beat_start = i128::from(prior.0.raw());
-        v.piano_beat_span = prior.1;
-        v.piano_pitch = crate::editor::PitchViewport::from_rows(prior.2, prior.3).unwrap();
+        v.midi_editor.piano_beat_start = i128::from(prior.0.raw());
+        v.midi_editor.piano_beat_span = prior.1;
+        v.midi_editor.piano_pitch =
+            crate::editor::PitchViewport::from_rows(prior.2, prior.3).unwrap();
         cx.notify();
         v.state.as_ref().unwrap().project.snapshot()
     });
@@ -568,10 +582,10 @@ fn console_midi_fit_back_is_local_and_explicit_clip_changes_retire_back(cx: &mut
     editor.read_with(&visual, |v, _| {
         assert_eq!(
             (
-                v.piano_beat_start,
-                v.piano_beat_span,
-                v.piano_pitch.first_test_pitch(),
-                v.piano_pitch.test_row_count()
+                v.midi_editor.piano_beat_start,
+                v.midi_editor.piano_beat_span,
+                v.midi_editor.piano_pitch.first_test_pitch(),
+                v.midi_editor.piano_pitch.test_row_count()
             ),
             (i128::from(prior.0.raw()), prior.1, prior.2, prior.3)
         )
@@ -582,7 +596,7 @@ fn console_midi_fit_back_is_local_and_explicit_clip_changes_retire_back(cx: &mut
             v.set_mode(EditorMode::Arrangement);
             assert!(v.set_selected_clip(track, original, window, cx));
             v.select_session_midi(track, scene, clip);
-            v.midi_focus.focus(window);
+            v.midi_editor.focus.focus(window);
             cx.notify();
         })
     });

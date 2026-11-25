@@ -53,9 +53,9 @@ impl EditorView {
         if self.clip_name_edit.is_some() {
             self.finish_clip_name(true, window, cx);
         }
-        if self.theme_settings.open {
+        if self.settings.theme.open {
             self.cancel_theme_settings(window, cx);
-            if self.theme_settings.open {
+            if self.settings.theme.open {
                 return;
             }
         }
@@ -205,7 +205,7 @@ impl EditorView {
                 cx.notify();
                 return;
             };
-            let gain = match self.track_defaults.captured_gain() {
+            let gain = match self.settings.track_defaults.captured_gain() {
                 Ok(gain) => gain,
                 Err(error) => {
                     self.error = Some(error.into());
