@@ -276,6 +276,7 @@ mod tests {
                 .map(|live| live.current_activation_on_control().unwrap()),
             first_frame: 0,
             end_frame: 48_000,
+            loop_region: None,
         }
     }
     #[test]
@@ -465,7 +466,12 @@ mod tests {
         // exercised without reaching through Playback's private graph field.
         keyboard.capture.as_mut().unwrap().binding = Some(binding);
         keyboard.capture.as_mut().unwrap().active = true;
-        keyboard.capture.as_mut().unwrap().begin(0, 0, 16).unwrap();
+        keyboard
+            .capture
+            .as_mut()
+            .unwrap()
+            .begin(0, 0, 0, 16)
+            .unwrap();
         keyboard.begin_block();
         struct Clock;
         impl hex_lattice::NativeInstrumentClock for Clock {
@@ -488,7 +494,12 @@ mod tests {
             input.ordered_keys.as_ref().unwrap().snapshot().unwrap().len,
             2
         );
-        keyboard.capture.as_mut().unwrap().begin(0, 0, 16).unwrap();
+        keyboard
+            .capture
+            .as_mut()
+            .unwrap()
+            .begin(0, 0, 0, 16)
+            .unwrap();
         keyboard.begin_block();
         let mut retry = [[0.0; 2]; 16];
         keyboard.render(&mut retry, Some(&Clock)).unwrap();

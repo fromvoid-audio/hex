@@ -169,6 +169,7 @@ impl Callback {
                     MidiCaptureClock {
                         content_frame: active.playback.position(),
                         performance_frame: active.playback.performance_frame(),
+                        loop_pass: active.playback.arrangement_loop_pass(),
                     },
                     active
                         .playback

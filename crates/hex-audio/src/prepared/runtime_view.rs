@@ -297,6 +297,12 @@ impl RuntimeMut<'_> {
     pub(super) fn position(&self) -> u64 {
         self.read().position()
     }
+    pub(super) fn arrangement_loop_pass(&self) -> u64 {
+        match self {
+            Self::Legacy(p) => p.arrangement_loop_pass(),
+            Self::Eligible(p) => p.arrangement_loop_pass(),
+        }
+    }
     pub(super) fn main_output_latency_frames(&self) -> Option<u32> {
         self.read()
             .status()

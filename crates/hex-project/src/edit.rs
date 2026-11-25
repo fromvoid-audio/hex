@@ -89,6 +89,8 @@ impl Project {
             midi_command @ (Command::AddMidiTrack { .. }
             | Command::PlaceMidiClip { .. }
             | Command::PlaceMidiClipWithOverwrite { .. }
+            | Command::PlaceMidiClipWithNotes { .. }
+            | Command::ExtendMidiClipWithNotes { .. }
             | Command::SetMidiClipSource { .. }
             | Command::ResizeMidiClipView { .. }
             | Command::TrimMidiClipEdge { .. }

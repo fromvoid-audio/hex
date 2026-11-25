@@ -49,11 +49,32 @@ impl HeldNotes {
     pub(crate) fn clear(&mut self) {
         self.words.fill(0);
     }
-    pub(crate) fn observe(&mut self, message: &[u8], channel: u8) -> Result<bool, HeldNoteFault> {
+    pub(crate) fn merge_from<'a>(
+        snapshots: impl IntoIterator<Item = &'a HeldNotes>,
+        through: u64,
+    ) -> Self {
+        let mut merged = Self {
+            words: [0; HELD_NOTE_COUNT],
+            through,
+        };
+        for snapshot in snapshots {
+            for (dst, &src) in merged.words.iter_mut().zip(snapshot.words.iter()) {
+                if src > *dst {
+                    *dst = src;
+                }
+            }
+        }
+        merged
+    }
+    pub(crate) fn observe_filtered(
+        &mut self,
+        message: &[u8],
+        filter: crate::ChannelFilter,
+    ) -> Result<bool, HeldNoteFault> {
         let [status, pitch, velocity] = message else {
             return Ok(false);
         };
-        if channel >= 16 || status & 15 != channel || *pitch > 127 || *velocity > 127 {
+        if filter.matches(*status).is_none() || *pitch > 127 || *velocity > 127 {
             return Ok(false);
         }
         match status & 0xf0 {
@@ -76,6 +97,65 @@ impl HeldNotes {
             0xb0 if crate::note_events::is_all_notes_off_cc(*pitch) => {
                 let changed = self.words.iter().any(|word| *word != 0);
                 self.clear();
+                Ok(changed)
+            }
+            _ => Ok(false),
+        }
+    }
+    pub(crate) fn observe_omni_with_channels(
+        &mut self,
+        held_channels: &mut [u16; HELD_NOTE_COUNT],
+        message: &[u8],
+        filter: crate::ChannelFilter,
+    ) -> Result<bool, HeldNoteFault> {
+        if matches!(filter, crate::ChannelFilter::Single(_)) {
+            return self.observe_filtered(message, filter);
+        }
+        let [status, pitch, velocity] = message else {
+            return Ok(false);
+        };
+        let Some(channel) = filter.matches(*status) else {
+            return Ok(false);
+        };
+        if *pitch > 127 || *velocity > 127 {
+            return Ok(false);
+        }
+        let bit = 1_u16 << channel;
+        match status & 0xf0 {
+            0x90 if *velocity != 0 => {
+                let next = self
+                    .through
+                    .checked_add(1)
+                    .filter(|value| *value <= MAX_TOKEN)
+                    .ok_or(HeldNoteFault::TokenLimit)?;
+                self.through = next;
+                held_channels[usize::from(*pitch)] |= bit;
+                self.words[usize::from(*pitch)] = (next << 8) | u64::from(*velocity);
+                Ok(true)
+            }
+            0x80 | 0x90 => {
+                let mask = &mut held_channels[usize::from(*pitch)];
+                *mask &= !bit;
+                if *mask == 0 {
+                    let word = &mut self.words[usize::from(*pitch)];
+                    let changed = *word != 0;
+                    *word = 0;
+                    Ok(changed)
+                } else {
+                    Ok(false)
+                }
+            }
+            0xb0 if crate::note_events::is_all_notes_off_cc(*pitch) => {
+                let mut changed = false;
+                for (mask, word) in held_channels.iter_mut().zip(self.words.iter_mut()) {
+                    if *mask & bit != 0 {
+                        *mask &= !bit;
+                        if *mask == 0 && *word != 0 {
+                            *word = 0;
+                            changed = true;
+                        }
+                    }
+                }
                 Ok(changed)
             }
             _ => Ok(false),

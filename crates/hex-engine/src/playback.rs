@@ -1946,6 +1946,12 @@ impl Playback {
         }
     }
 
+    pub fn arrangement_loop_pass(&self) -> u64 {
+        self.session_runtime
+            .as_ref()
+            .map_or(0, |runtime| runtime.arrangement_loop_pass())
+    }
+
     /// Admit capture against the installed engine graph. The caller still owns
     /// output/source/transport authority and must confirm delivered host output.
     pub fn arm_midi_capture(

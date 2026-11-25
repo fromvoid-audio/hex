@@ -13,6 +13,87 @@ use hex_project::{DeviceId, TrackId};
 
 /// At most 256 accepted onsets, their 256 releases, and 64 preexisting releases.
 pub const MAX_ACCEPTED_MIDI_NOTES_PER_RENDER: usize = 576;
+
+/// Sentinel upper bound for open-ended auto-created or extending MIDI captures.
+/// Leaves ample headroom for latency addition without overflowing `u64`.
+pub const OPEN_ENDED_CAPTURE_END_FRAME: u64 = u64::MAX / 2;
+
+/// Advance `(content_frame, loop_pass)` forward by `delta` frames under an optional
+/// enabled Arrangement loop region `(loop_start, loop_end)`.
+pub fn advance_midi_capture_clock(
+    content_frame: u64,
+    loop_pass: u64,
+    delta: u64,
+    loop_region: Option<(u64, u64)>,
+) -> Option<(u64, u64)> {
+    let Some((loop_start, loop_end)) = loop_region else {
+        return Some((content_frame.checked_add(delta)?, loop_pass));
+    };
+    if loop_start >= loop_end || content_frame >= loop_end {
+        return None;
+    }
+    let initial = loop_end - content_frame;
+    if delta < initial {
+        return Some((content_frame + delta, loop_pass));
+    }
+    let remaining = delta - initial;
+    let width = loop_end - loop_start;
+    let next_pass = loop_pass.checked_add(1)?.checked_add(remaining / width)?;
+    Some((loop_start + remaining % width, next_pass))
+}
+
+/// Subtract fixed output latency from a delivered `(raw_frame, raw_loop_pass)` under
+/// an optional enabled Arrangement loop region. Pre-roll before `first_frame` on the
+/// initial pass clamps to `first_frame`; wrapped passes step cleanly backward across
+/// prior loop passes.
+pub fn compensate_midi_capture_frame(
+    raw_frame: u64,
+    raw_loop_pass: u64,
+    latency_frames: u64,
+    first_frame: u64,
+    loop_region: Option<(u64, u64)>,
+) -> Option<(u64, u64)> {
+    let Some((loop_start, loop_end)) = loop_region else {
+        return Some((
+            raw_frame.saturating_sub(latency_frames).max(first_frame),
+            raw_loop_pass,
+        ));
+    };
+    if loop_start >= loop_end || raw_frame >= loop_end {
+        return None;
+    }
+    if raw_loop_pass == 0 || raw_frame < loop_start {
+        return Some((raw_frame.saturating_sub(latency_frames).max(first_frame), 0));
+    }
+    let into_pass = raw_frame - loop_start;
+    if latency_frames <= into_pass {
+        return Some((raw_frame - latency_frames, raw_loop_pass));
+    }
+    let back = latency_frames - into_pass;
+    let width = loop_end - loop_start;
+    let wraps = (back - 1) / width + 1;
+    if wraps <= raw_loop_pass {
+        let audible_pass = raw_loop_pass - wraps;
+        let rem = back % width;
+        let audible_frame = if rem == 0 { loop_start } else { loop_end - rem };
+        let clamped = if audible_pass == 0 {
+            audible_frame.max(first_frame)
+        } else {
+            audible_frame
+        };
+        Some((clamped, audible_pass))
+    } else {
+        let consumed = raw_loop_pass.checked_mul(width)?;
+        let before_loop_start = back.saturating_sub(consumed);
+        Some((
+            loop_start
+                .saturating_sub(before_loop_start)
+                .max(first_frame),
+            0,
+        ))
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MidiCaptureBinding {
     pub take_id: u64,
@@ -24,11 +105,14 @@ pub struct MidiCaptureBinding {
     pub hardware: Option<LiveNoteActivation>,
     pub first_frame: u64,
     pub end_frame: u64,
+    /// Enabled Arrangement loop interval `(start_frame, end_frame)`, if any.
+    pub loop_region: Option<(u64, u64)>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MidiCaptureClock {
     pub content_frame: u64,
     pub performance_frame: u64,
+    pub loop_pass: u64,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MidiCaptureSource {
@@ -117,6 +201,7 @@ impl Default for CaptureStorage {
             clock: MidiCaptureClock {
                 content_frame: 0,
                 performance_frame: 0,
+                loop_pass: 0,
             },
             frames: 0,
             events: [empty; MAX_ACCEPTED_MIDI_NOTES_PER_RENDER],
@@ -142,6 +227,7 @@ impl CaptureStorage {
         &mut self,
         content: u64,
         performance: u64,
+        loop_pass: u64,
         frames: usize,
     ) -> Result<(), Invalid> {
         self.invalidate();
@@ -151,24 +237,36 @@ impl CaptureStorage {
         let binding = self
             .binding
             .ok_or(Invalid("midi capture binding is unavailable"))?;
-        let end = binding
-            .end_frame
-            .checked_add(self.latency_frames)
-            .ok_or(Invalid("midi capture latency exceeds frame range"))?;
-        if content < binding.first_frame || content >= end {
-            self.fail(MidiCaptureFault::Clock);
-            return Err(Invalid("midi capture position left its clip"));
-        }
         let count =
             u64::try_from(frames).map_err(|_| Invalid("midi capture frame count is invalid"))?;
         performance
             .checked_add(count)
             .ok_or(Invalid("midi capture performance clock exhausted"))?;
+        let delivered_frames = if let Some((loop_start, loop_end)) = binding.loop_region {
+            if loop_start >= loop_end || content >= loop_end {
+                self.fail(MidiCaptureFault::Clock);
+                return Err(Invalid("midi capture position left its loop region"));
+            }
+            advance_midi_capture_clock(content, loop_pass, count, Some((loop_start, loop_end)))
+                .ok_or(Invalid("midi capture loop pass exhausted"))?;
+            frames
+        } else {
+            let end = binding
+                .end_frame
+                .checked_add(self.latency_frames)
+                .ok_or(Invalid("midi capture latency exceeds frame range"))?;
+            if content < binding.first_frame || content >= end {
+                self.fail(MidiCaptureFault::Clock);
+                return Err(Invalid("midi capture position left its clip"));
+            }
+            frames.min(usize::try_from(end - content).unwrap_or(usize::MAX))
+        };
         self.clock = MidiCaptureClock {
             content_frame: content,
             performance_frame: performance,
+            loop_pass,
         };
-        self.frames = frames.min(usize::try_from(end - content).unwrap_or(usize::MAX));
+        self.frames = delivered_frames;
         Ok(())
     }
     pub(crate) fn push(&mut self, event: AcceptedMidiNote) -> Result<(), Invalid> {
