@@ -159,7 +159,10 @@ fn eq8_marquee_group_move_and_disable_each_commit_one_undo(cx: &mut TestAppConte
     // fabricated acknowledgement may conceal release-to-commit repaint flicker.
     let mut terminal = None;
     for _ in 0..4 {
-        editor.update(cx, |v, _| assert!(v.pump_device_gesture()));
+        editor.update(cx, |v, _| {
+            let _ = v.pump_device_gesture();
+            assert!(v.worker_requests_pending > 0);
+        });
         let event = editor.read_with(cx, |v, _| receive_service_event(&v.service));
         assert!(event.error.is_none());
         let ack = event.gesture_ack.as_ref().unwrap();

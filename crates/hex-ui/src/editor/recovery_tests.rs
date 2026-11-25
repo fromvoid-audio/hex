@@ -3491,7 +3491,7 @@ fn install_eq_node_and_strand_pair_commit(
             },
         )
         .unwrap();
-        assert!(v.pump_device_gesture());
+        assert_eq!(v.worker_requests_pending, 1);
         let begin_ev = next_service_event(&v.service);
         v.receive(begin_ev);
 
@@ -3500,7 +3500,7 @@ fn install_eq_node_and_strand_pair_commit(
             second: ParameterValue::Float(preview_pair.1),
         })
         .unwrap();
-        assert!(v.pump_device_gesture());
+        assert_eq!(v.worker_requests_pending, 1);
         let change_ev = next_service_event(&v.service);
         v.receive(change_ev);
         let worker_preview = v
@@ -3509,13 +3509,16 @@ fn install_eq_node_and_strand_pair_commit(
             .expect("accepted worker preview");
 
         // A different VST3 endpoint faults before the user releases the drag.
+        // Stage Commit locally without submitting so this test can inject the
+        // exact degraded-source refusal ACK against the held commit request.
         v.degraded_plugins =
             crate::editor_backend::DegradedDevices::new(vec![other_faulted_device_id]);
-        v.finish_device_pair_gesture(ParameterPairValue {
-            first: ParameterValue::Float(released_pair.0),
-            second: ParameterValue::Float(released_pair.1),
-        })
-        .unwrap();
+        v.device_gesture
+            .finish_pair(ParameterPairValue {
+                first: ParameterValue::Float(released_pair.0),
+                second: ParameterValue::Float(released_pair.1),
+            })
+            .unwrap();
         let commit_req = v.device_gesture.next_request().expect("commit request");
         v.device_gesture.mark_submitted();
         let refused_ack = GestureAck {

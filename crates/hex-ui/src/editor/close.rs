@@ -704,10 +704,15 @@ impl EditorView {
         if self.device_gesture.has_pending_terminal() {
             return;
         }
-        if self.device_gesture.snapshot().is_some()
-            && let Err(error) = self.device_gesture.finish_current()
-        {
-            self.error = Some(error.into());
+        if self.device_gesture.snapshot().is_some() {
+            match self.device_gesture.finish_current() {
+                Ok(()) => {
+                    self.pump_device_gesture();
+                }
+                Err(error) => {
+                    self.error = Some(error.into());
+                }
+            }
         }
     }
 
@@ -1547,7 +1552,7 @@ mod window_tests {
             })
             .expect("device editor window");
 
-        editor.update(cx, |view, _| assert!(view.pump_device_gesture()));
+        editor.read_with(cx, |view, _| assert_eq!(view.worker_requests_pending, 1));
         let begin = next_editor_service_event(&editor, cx);
         let begin_ack = begin.gesture_ack.expect("begin acknowledgement");
         assert!(begin_ack.accepted);
@@ -1556,9 +1561,10 @@ mod window_tests {
         });
 
         editor.update(cx, |view, _| {
+            let pending_before = view.worker_requests_pending;
             view.change_device_gesture(invalid_value)
                 .expect("stage invalid final value");
-            assert!(view.pump_device_gesture());
+            assert_eq!(view.worker_requests_pending, pending_before + 1);
         });
         let preview = next_editor_service_event(&editor, cx);
         let preview_ack = preview.gesture_ack.expect("preview acknowledgement");
@@ -1569,6 +1575,7 @@ mod window_tests {
 
         let export_control = hex_session::service::ExportControl::default();
         editor.update(cx, |view, _| {
+            let pending_before = view.worker_requests_pending;
             assert!(view.enqueue_device_barrier(Request::SaveNew(save_path.clone())));
             let owner = hex_session::service::preset::Owner {
                 project_generation: view.project_generation,
@@ -1598,7 +1605,7 @@ mod window_tests {
             view.export_window = Some(handle);
             view.saving_project = true;
             view.export_pending = true;
-            assert!(view.pump_device_gesture());
+            assert_eq!(view.worker_requests_pending, pending_before + 1);
         });
         let commit = next_editor_service_event(&editor, cx);
         let commit_ack = commit.gesture_ack.expect("commit acknowledgement");

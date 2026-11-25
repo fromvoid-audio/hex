@@ -16,13 +16,14 @@
 //! cadence resumes. As a last line of defence, rendering wakes the poll when it
 //! finds busy work while idle, so a producer that only notifies is still caught.
 //!
-//! Unsolicited background notices have no wake source: hex-session, the audio
-//! status and MIDI port handles expose only non-blocking `try_*` polls, with no
-//! waker hook. Those notices (audio device loss/recovery, update checks,
-//! controller-port changes, hardware held-note display) therefore wait at most
-//! one [`IDLE_INTERVAL`] (100 ms) while idle. Every worker *response* is
-//! solicited: its request keeps `worker_requests_pending` non-zero, so the poll
-//! stays at 16 ms until the response arrives. Read-only parameter queries use
+//! `hex-session::service` registers a wake callback targeting [`PollSignal::wake`]
+//! whenever the worker enqueues an `Event` or status observation, and the poll
+//! loop awaits [`WakeOrTimer`] across both [`ACTIVE_INTERVAL`] and [`IDLE_INTERVAL`].
+//! Solicited edit ACKs and worker status updates therefore wake the editor
+//! immediately without waiting for the 16 ms active timer floor. Other
+//! non-service background notices (audio device loss/recovery, update checks,
+//! controller-port changes, hardware held-note display) remain bounded by
+//! [`IDLE_INTERVAL`] (100 ms) while idle. Read-only parameter queries use
 //! their panel's pending read instead of the mutation counter, so they cannot
 //! block editor gestures or add a pending-edit status badge. Live notes, monitoring and audio
 //! rendering do not depend on this poll.
@@ -131,6 +132,12 @@ impl PollCadence {
         self.quiet_ticks >= QUIET_TICKS_BEFORE_IDLE
     }
 
+    /// Control-side wake hook for `hex-session::service::Service::set_wake_callback`.
+    pub(super) fn wake_callback(&self) -> Arc<dyn Fn() + Send + Sync> {
+        let signal = self.signal.clone();
+        Arc::new(move || signal.wake())
+    }
+
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn wakeups(&self) -> u64 {
         self.wakeups
@@ -151,17 +158,11 @@ impl EditorView {
             let mut interval = ACTIVE_INTERVAL;
             loop {
                 let timer = cx.background_executor().timer(interval);
-                if interval == IDLE_INTERVAL {
-                    WakeOrTimer {
-                        signal: &loop_signal,
-                        timer,
-                    }
-                    .await;
-                } else {
-                    timer.await;
+                WakeOrTimer {
+                    signal: &loop_signal,
+                    timer,
                 }
-                // Wakes during an active sleep add no extra tick.
-                loop_signal.take();
+                .await;
                 match this.update_in(cx, |view, window, cx| view.poll_tick(window, cx)) {
                     Ok(next) => interval = next,
                     // The editor or its window is gone.
@@ -199,6 +200,9 @@ impl EditorView {
     }
 
     fn poll_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Duration {
+        // Clear any pending wake latch before draining service events so an event
+        // enqueued during or after this tick still wakes the next WakeOrTimer wait.
+        self.poll_cadence.signal.take();
         super::device_panel::vst3_parameters::tick(self, cx);
         let overrange_changed = self
             .waveform_geometry_cache

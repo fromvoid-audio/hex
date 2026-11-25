@@ -64,6 +64,7 @@ pub(crate) fn run_export_worker(
     exporter: Exporter,
     finished: SyncSender<u64>,
     shutdown: Arc<AtomicBool>,
+    wake_hook: client::WakeHook,
     #[cfg(test)] test_hook: ExportTestHook,
 ) {
     while let Ok(work) = work.recv() {
@@ -210,7 +211,10 @@ pub(crate) fn run_export_worker(
         }
         loop {
             match events.try_send(event) {
-                Ok(()) => break,
+                Ok(()) => {
+                    wake_hook.wake();
+                    break;
+                }
                 Err(TrySendError::Disconnected(_)) => return,
                 Err(TrySendError::Full(returned)) => {
                     if shutdown.load(Ordering::Acquire) {

@@ -13,7 +13,10 @@ struct State {
     closed: bool,
 }
 
-pub(super) struct Sender(Arc<Mutex<State>>);
+pub(super) struct Sender {
+    state: Arc<Mutex<State>>,
+    wake_hook: super::client::WakeHook,
+}
 pub(super) struct Receiver(Arc<Mutex<State>>);
 
 pub(super) fn channel() -> (Sender, Receiver) {
@@ -22,45 +25,63 @@ pub(super) fn channel() -> (Sender, Receiver) {
         generation: None,
         closed: false,
     }));
-    (Sender(Arc::clone(&state)), Receiver(state))
+    (
+        Sender {
+            state: Arc::clone(&state),
+            wake_hook: super::client::WakeHook::default(),
+        },
+        Receiver(state),
+    )
 }
 
 impl Sender {
+    pub(super) fn with_wake(mut self, wake_hook: super::client::WakeHook) -> Self {
+        self.wake_hook = wake_hook;
+        self
+    }
+
     /// Only consecutive paste revisions coalesce; incompatible full slots fall
     /// back to the ordinary terminal. No callback touches this mailbox.
     pub(super) fn send(&self, mut observation: ArrangementEditViewObservation) {
-        let mut state = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state
-            .generation
-            .is_some_and(|generation| observation.project_generation < generation)
-        {
-            return;
-        }
-        if state.generation != Some(observation.project_generation) {
-            state.queue.clear();
-            state.generation = Some(observation.project_generation);
-        }
-        if let Some(last) = state.queue.back_mut()
-            && matches!(last.kind, ArrangementEditViewKind::Paste)
-            && matches!(observation.kind, ArrangementEditViewKind::Paste)
-            && last.previous_revision.checked_add(1) == Some(observation.previous_revision)
-        {
-            observation.first_previous_revision = last.first_previous_revision;
-            *last = observation;
-            return;
-        }
-        if state.queue.len() < CAPACITY {
-            state.queue.push_back(observation);
+        let updated = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state
+                .generation
+                .is_some_and(|generation| observation.project_generation < generation)
+            {
+                return;
+            }
+            if state.generation != Some(observation.project_generation) {
+                state.queue.clear();
+                state.generation = Some(observation.project_generation);
+            }
+            if let Some(last) = state.queue.back_mut()
+                && matches!(last.kind, ArrangementEditViewKind::Paste)
+                && matches!(observation.kind, ArrangementEditViewKind::Paste)
+                && last.previous_revision.checked_add(1) == Some(observation.previous_revision)
+            {
+                observation.first_previous_revision = last.first_previous_revision;
+                *last = observation;
+                true
+            } else if state.queue.len() < CAPACITY {
+                state.queue.push_back(observation);
+                true
+            } else {
+                false
+            }
+        };
+        if updated {
+            self.wake_hook.wake();
         }
     }
 }
 
 impl Drop for Sender {
     fn drop(&mut self) {
-        self.0
+        self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .closed = true;

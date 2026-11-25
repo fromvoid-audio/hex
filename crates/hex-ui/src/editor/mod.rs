@@ -321,7 +321,7 @@ use std::{collections::VecDeque, rc::Rc, sync::Arc};
 use viewport::Viewport;
 
 pub(super) const UI_REQUEST_CAPACITY: usize = 32;
-pub(super) const UI_EVENT_BUDGET: usize = 2;
+pub(super) const UI_EVENT_BUDGET: usize = 64;
 const PLAYBACK_CANDIDATE_CAPACITY: usize = 32;
 
 pub(super) use mode::EditorMode;
@@ -1242,12 +1242,19 @@ impl EditorView {
             backend.service,
             Err("preparing audio output".into()),
         );
+        view.attach_service_wake();
         view.audio_events = backend.audio_events;
         view.source_reservation = Some(backend.source_reservation);
         view.status = "preparing audio output".into();
         // A session that ended unexpectedly may have left untitled work.
         view.check_leftover_recovery(None);
         view
+    }
+
+    /// Wire the session service worker to wake this editor's poll loop immediately.
+    pub(super) fn attach_service_wake(&self) {
+        self.service
+            .set_wake_callback(Some(self.poll_cadence.wake_callback()));
     }
 
     fn new(
@@ -1561,6 +1568,14 @@ impl EditorView {
             ),
         };
         let poll_cadence = Self::spawn_poll(window, cx);
+        // Production attaches the worker wake callback unconditionally so solicited
+        // edits wake the UI without waiting for the 16 ms timer. Under `#[cfg(test)]`,
+        // GPUI's virtual-clock `TestDispatcher` runs delayed-ACK and disposable-service
+        // fixtures that expect `run_until_parked()` not to race the OS worker thread;
+        // `new_with_backend` (the production entrypoint) and wake-focused UI tests
+        // attach the callback directly.
+        #[cfg(not(test))]
+        service.set_wake_callback(Some(poll_cadence.wake_callback()));
         let keyboard_window_id = window.window_handle().window_id();
         let keyboard_entity = cx.entity().downgrade();
         let computer_keyboard_keys = cx.intercept_keystrokes(move |event, window, cx| {

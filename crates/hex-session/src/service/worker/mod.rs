@@ -327,10 +327,13 @@ pub(super) fn run_worker(
         worker = next_worker;
     }
     worker.flush_recovery_on_exit();
-    worker
+    if worker
         .core
         .pending_export_events
-        .flush(&worker.export_events);
+        .flush(&worker.export_events)
+    {
+        worker.events.wake_ui();
+    }
 }
 
 #[cfg(test)]

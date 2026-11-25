@@ -864,6 +864,7 @@ fn export_reservation_rolls_back_when_request_admission_fails() {
             Arc::new(std::sync::atomic::AtomicU64::new(0)),
         )),
         events: diagnostics::EventReceiver::new(events, Arc::new(diagnostics::Hooks::default())),
+        wake_hook: client::WakeHook::default(),
         track_switch_views,
         arrangement_edit_views,
         export_events,
