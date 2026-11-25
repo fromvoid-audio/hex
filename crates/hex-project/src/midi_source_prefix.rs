@@ -37,6 +37,13 @@ pub(crate) fn apply(
     };
     let source_length = shift(original.source_length())?;
     let volume = original.volume().shifted(prefix, source_length)?;
+    let mut expression_lanes = original.expression_lanes().to_vec();
+    for lane in &mut expression_lanes {
+        for point in &mut lane.points {
+            point.beat = shift(point.beat)?;
+        }
+    }
+    crate::midi::validate_expression_lanes(&expression_lanes, source_length)?;
     let source = project.midi_source_mut(clip)?;
     source.source_length = source_length;
     source.source_start = shift(source.source_start())?;
@@ -45,6 +52,7 @@ pub(crate) fn apply(
     for note in &mut source.notes {
         note.start = shift(note.start())?;
     }
+    source.expression_lanes = expression_lanes;
     project.replace_midi_clip_volume(clip, volume)?;
     // Reuse stable-ID, active-state and same-pitch overwrite semantics, including
     // a possible rightward extension in this same private Editor candidate.

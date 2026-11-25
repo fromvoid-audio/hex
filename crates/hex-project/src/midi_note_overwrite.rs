@@ -324,7 +324,11 @@ pub(crate) fn retain_gates(
         return Err(Invalid("midi overwrite source changed"));
     }
     for (note, gate) in source.notes.iter_mut().zip(gates) {
-        note.duration = gate.unwrap_or(BeatTime::ZERO);
+        let duration = gate.unwrap_or(BeatTime::ZERO);
+        note.duration = duration;
+        if duration != BeatTime::ZERO {
+            note.expression_points.retain(|p| p.offset <= duration);
+        }
     }
     source.notes.retain(|note| note.duration != BeatTime::ZERO);
     Ok(())
