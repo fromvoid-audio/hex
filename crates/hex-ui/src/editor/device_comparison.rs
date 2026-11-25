@@ -108,8 +108,8 @@ pub(super) fn card(
             cx.stop_propagation();
             if event.is_held
                 || view.device_panel.selected_device != Some(device)
-                || !view.clip_view_open
-                || !view.device_panel_active
+                || !view.audio_detail.clip_view_open
+                || !view.device_panel.active
             {
                 return;
             }
@@ -125,14 +125,14 @@ impl EditorView {
             cx.notify();
             return false;
         }
-        if self.opening_project
-            || self.close_prompt_open
-            || self.save_dialog_open
-            || self.export_dialog_open
-            || self.preset_dialog_open
-            || self.theme_settings.open
-            || self.tuning.open
-            || (self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits())
+        if self.persistence.opening_project
+            || self.persistence.close_prompt_open
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
+            || self.device_panel.preset_dialog_open
+            || self.settings.theme.open
+            || self.settings.tuning.open
+            || (self.gain_recorder.blocks_edits() || self.midi_editor.recorder.blocks_edits())
         {
             self.error = Some("finish the current action before comparing device settings".into());
             cx.notify();
@@ -143,10 +143,10 @@ impl EditorView {
         }
         if self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()
-            || !self.device_gesture_barriers.is_empty()
-            || self.device_gesture.snapshot().is_some()
-            || self.tuning.client.has_pending_requests()
-            || self.tuning.client.snapshot().is_some()
+            || !self.device_panel.gesture_barriers.is_empty()
+            || self.device_panel.gesture.snapshot().is_some()
+            || self.settings.tuning.client.has_pending_requests()
+            || self.settings.tuning.client.snapshot().is_some()
         {
             self.error =
                 Some("device edit is still applying · retry comparison when finished".into());

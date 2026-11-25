@@ -151,8 +151,8 @@ impl OperatorTabBrowser {
         assert_eq!(editor.browser.places, vec![self.root.join("samples")]);
         editor.state = Some(state);
         editor.selected_track = Some(track);
-        editor.device_panel_active = true;
-        editor.clip_view_open = true;
+        editor.device_panel.active = true;
+        editor.audio_detail.clip_view_open = true;
         editor.mode = crate::editor::EditorMode::Session;
         editor
     }

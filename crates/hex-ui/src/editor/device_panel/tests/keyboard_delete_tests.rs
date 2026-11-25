@@ -32,8 +32,8 @@ impl BrowserDirectory {
                     assert_eq!(view.browser.places.clone(), vec![self.0.join("samples")]);
                     view.state = Some(state);
                     view.selected_track = Some(track);
-                    view.device_panel_active = true;
-                    view.clip_view_open = true;
+                    view.device_panel.active = true;
+                    view.audio_detail.clip_view_open = true;
                     view.mode = super::super::super::EditorMode::Session;
                     cx.notify();
                 });
@@ -60,8 +60,8 @@ fn title(visual: &mut VisualTestContext, device: DeviceId) -> gpui::Point<gpui::
 fn settled(view: &EditorView) -> bool {
     view.worker_requests_pending == 0
         && view.pending_requests.is_empty()
-        && view.device_gesture.snapshot().is_none()
-        && view.device_gesture_barriers.is_empty()
+        && view.device_panel.gesture.snapshot().is_none()
+        && view.device_panel.gesture_barriers.is_empty()
 }
 
 #[gpui::test]
@@ -153,11 +153,11 @@ fn device_delete_key_history(cx: &mut TestAppContext, key: &str) {
     visual.simulate_event(gpui::KeyUpEvent {
         keystroke: gpui::Keystroke::parse(key).unwrap(),
     });
-    editor.update(cx, |view, _| view.last_transport_command = None);
+    editor.update(cx, |view, _| view.test_probes.last_transport_command = None);
     visual.simulate_keystrokes("space");
     editor.read_with(cx, |view, _| {
         assert!(
-            view.last_transport_command.is_some(),
+            view.test_probes.last_transport_command.is_some(),
             "real Space reaches transport"
         )
     });
@@ -241,7 +241,7 @@ fn device_header_backspace_removes_return_effect_with_one_undo(cx: &mut TestAppC
     let original = state.project.clone();
     let (handle, editor) = browser.window(cx, service, state, track);
     editor.update(cx, |view, cx| {
-        view.focused_return = Some(return_id);
+        view.session_grid.focused_return = Some(return_id);
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -588,7 +588,7 @@ fn device_backspace_keeps_eq_graph_removal_local(cx: &mut TestAppContext) {
     let before_modal = editor.read_with(cx, |view, _| {
         view.state.as_ref().unwrap().project.snapshot()
     });
-    editor.update(cx, |view, _| view.close_prompt_open = true);
+    editor.update(cx, |view, _| view.persistence.close_prompt_open = true);
     visual.simulate_keystrokes("x");
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
@@ -598,7 +598,7 @@ fn device_backspace_keeps_eq_graph_removal_local(cx: &mut TestAppContext) {
             before_modal
         );
     });
-    editor.update(cx, |view, _| view.close_prompt_open = false);
+    editor.update(cx, |view, _| view.persistence.close_prompt_open = false);
     visual.simulate_keystrokes("x");
     editor.read_with(cx, |view, _| {
         assert!(
@@ -803,7 +803,7 @@ fn pointer_remove_retains_keyboard(cx: &mut TestAppContext, kind: u8) {
     let original = state.project.clone();
     let (handle, editor) = browser.window(cx, service, state, track);
     editor.update(cx, |view, cx| {
-        view.focused_return = return_id;
+        view.session_grid.focused_return = return_id;
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -865,11 +865,11 @@ fn pointer_remove_retains_keyboard(cx: &mut TestAppContext, kind: u8) {
     editor.read_with(cx, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project, original)
     });
-    editor.update(cx, |view, _| view.last_transport_command = None);
+    editor.update(cx, |view, _| view.test_probes.last_transport_command = None);
     visual.simulate_keystrokes("space");
     editor.read_with(cx, |view, _| {
         assert!(
-            view.last_transport_command.is_some(),
+            view.test_probes.last_transport_command.is_some(),
             "real Space remains routed to transport"
         )
     });
@@ -1168,7 +1168,7 @@ fn device_zero_uses_return_and_main_owner_without_changing_track_or_chain(cx: &m
     ] {
         editor.update(cx, |view, cx| {
             view.selected_track = None;
-            view.focused_return = if matches!(owner, DevicePanelOwner::Return(_)) {
+            view.session_grid.focused_return = if matches!(owner, DevicePanelOwner::Return(_)) {
                 Some(return_id)
             } else {
                 None
@@ -1289,10 +1289,10 @@ fn device_zero_refuses_retired_hidden_pending_and_unselected_card_handlers(
             0 => view.worker_requests_pending = 1,
             1 => view.device_panel.selected_device = None,
             2 => view.project_generation += 1,
-            3 => view.device_panel_active = false,
-            4 => view.clip_view_open = false,
+            3 => view.device_panel.active = false,
+            4 => view.audio_detail.clip_view_open = false,
             5 => view.selected_track = None,
-            6 => view.opening_project = true,
+            6 => view.persistence.opening_project = true,
             7 => view.device_panel.owner = None,
             8 | 9 => {
                 let state = view.state.as_ref().unwrap();
@@ -1335,7 +1335,7 @@ fn device_zero_refuses_retired_hidden_pending_and_unselected_card_handlers(
                 "refusal {refusal}"
             );
             assert!(view.pending_requests.is_empty());
-            assert!(view.device_gesture_barriers.is_empty());
+            assert!(view.device_panel.gesture_barriers.is_empty());
             assert_eq!(view.worker_requests_pending, usize::from(refusal == 0));
         });
     }

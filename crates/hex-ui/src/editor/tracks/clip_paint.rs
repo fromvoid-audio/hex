@@ -309,18 +309,18 @@ impl EditorView {
                 || self.clip_name_edit.is_some()
                 || self.pending_trim.is_some()
                 || self.active_trim_drag.is_some()
-                || self.active_midi_trim_drag.is_some()
+                || self.midi_editor.active_trim_drag.is_some()
                 || self.fade_key_held
                 || self.hovered_fade_clip.is_some()
                 || self.hovered_fade_handle.is_some()
                 || self.active_fade_drag.is_some()
                 || self.pending_fade.is_some()
                 || self.clip_gain.has_displayed()
-                || self.audio_clip_controls.gain_preview(self).is_some()
-                || self.audio_clip_controls.has_play_start_preview()
+                || self.audio_detail.clip_controls.gain_preview(self).is_some()
+                || self.audio_detail.clip_controls.has_play_start_preview()
                 || self.shows_audio_clip_loop_preview()
                 || self.shows_midi_clip_loop_preview()
-                || self.audio_event_editor.gesture.is_some()
+                || self.audio_detail.event.gesture.is_some()
                 || self.held_arrangement_event_clip().is_some();
 
             if !has_potential_overlays {
@@ -973,7 +973,7 @@ impl EditorView {
                     pixel_width,
                     scale_factor,
                 );
-                let visible = match self.midi_visible_notes.try_borrow_mut() {
+                let visible = match self.midi_editor.visible_notes.try_borrow_mut() {
                     Ok(mut cache) => cache.get_tiled(
                         &state.project,
                         clip,
@@ -1011,7 +1011,7 @@ impl EditorView {
                 let (mut notes, _) = midi_note_body(midi_clip_id, note_shapes, fit, false);
                 // Tileable repeats paint one rasterized period per repeat.
                 if let Some(visible) = visible.filter(|visible| visible.tiles.is_some()) {
-                    let images = std::rc::Rc::clone(&self.midi_tile_images);
+                    let images = std::rc::Rc::clone(&self.midi_editor.tile_images);
                     let project = std::sync::Arc::clone(&state.project);
                     notes = notes.child(
                         div()

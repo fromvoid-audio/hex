@@ -693,7 +693,7 @@ impl EditorView {
                 quantization,
             } => {
                 if generation == self.project_generation {
-                    self.session_quantization = quantization;
+                    self.session_grid.quantization = quantization;
                     cx.notify();
                 }
             }
@@ -812,7 +812,7 @@ impl EditorView {
                     cx.notify();
                     return;
                 }
-                let gain = match self.track_defaults.captured_gain() {
+                let gain = match self.settings.track_defaults.captured_gain() {
                     Ok(gain) => gain,
                     Err(error) => {
                         self.error = Some(error.into());
@@ -896,7 +896,7 @@ impl EditorView {
             || self.track_resize_active()
             || self.active_clip_drag.is_some()
             || self.active_trim_drag.is_some()
-            || self.active_midi_trim_drag.is_some()
+            || self.midi_editor.active_trim_drag.is_some()
             || self.active_fade_drag.is_some()
             || self.time_selection_gesture.is_some()
         {
@@ -1374,7 +1374,7 @@ mod tests {
             visual.simulate_keystrokes("enter");
             editor.read_with(cx, |view, _| {
                 assert!(view.context_menu.is_none());
-                assert!(matches!(view.last_enqueued_edit, Some(Command::SetClipFlavor { clip: id, flavor: ClipFlavor::Accent }) if id == clip));
+                assert!(matches!(view.test_probes.last_enqueued_edit, Some(Command::SetClipFlavor { clip: id, flavor: ClipFlavor::Accent }) if id == clip));
                 assert_eq!(view.state.as_ref().unwrap().project.track(track).unwrap().color(), original_color);
             });
         }
@@ -1481,7 +1481,7 @@ mod tests {
         editor.read_with(cx, |view, _| {
             assert!(view.context_menu.is_none());
             assert_eq!(
-                view.session_quantization,
+                view.session_grid.quantization,
                 hex_engine::LaunchQuantization::Immediate
             );
             assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &before);
@@ -1499,7 +1499,7 @@ mod tests {
                     cx,
                 );
                 assert_eq!(
-                    view.session_quantization,
+                    view.session_grid.quantization,
                     hex_engine::LaunchQuantization::Immediate
                 );
             });
@@ -1593,11 +1593,11 @@ mod tests {
         visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
         editor.read_with(cx, |view, _| {
-            assert!(matches!(view.last_enqueued_edit, Some(Command::SetTrackColor { track: id, color: ElementColor::Cyan }) if id == track));
+            assert!(matches!(view.test_probes.last_enqueued_edit, Some(Command::SetTrackColor { track: id, color: ElementColor::Cyan }) if id == track));
         });
         visual.update(|window, cx| {
             editor.update(cx, |view, cx| {
-                view.last_enqueued_edit = None;
+                view.test_probes.last_enqueued_edit = None;
                 let old_generation = view.project_generation;
                 view.project_generation += 1;
                 view.select_context_item(
@@ -1610,7 +1610,7 @@ mod tests {
                     window,
                     cx,
                 );
-                assert!(view.last_enqueued_edit.is_none());
+                assert!(view.test_probes.last_enqueued_edit.is_none());
             })
         });
     }
@@ -1640,7 +1640,7 @@ mod tests {
         visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
         editor.read_with(cx, |view, _| {
             assert!(view.context_menu.is_none());
-            assert!(matches!(view.last_enqueued_edit, Some(Command::InsertDefaultTrackWithGain { before_track: Some(anchor), .. }) if anchor == target));
+            assert!(matches!(view.test_probes.last_enqueued_edit, Some(Command::InsertDefaultTrackWithGain { before_track: Some(anchor), .. }) if anchor == target));
         });
     }
 
@@ -1661,7 +1661,7 @@ mod tests {
         visual.simulate_keystrokes("escape");
         editor.read_with(cx, |view, _| {
             assert!(view.context_menu.is_none());
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
         });
         open(&mut visual);
         visual.simulate_mouse_down(
@@ -1676,14 +1676,14 @@ mod tests {
         );
         editor.read_with(cx, |view, _| {
             assert!(view.context_menu.is_none());
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
         });
         open(&mut visual);
         visual.simulate_keystrokes("down up enter");
         editor.read_with(cx, |view, _| {
             assert!(view.context_menu.is_none());
             assert!(matches!(
-                view.last_enqueued_edit,
+                view.test_probes.last_enqueued_edit,
                 Some(Command::InsertDefaultTrackWithGain {
                     before_track: None,
                     ..
@@ -1921,7 +1921,9 @@ mod tests {
         });
         visual.run_until_parked();
         editor.update(&mut visual, |view, _| {
-            view.track_defaults.set_test_state(0.5, false, true)
+            view.settings
+                .track_defaults
+                .set_test_state(0.5, false, true)
         });
         let original = editor.read_with(&visual, |view, _| {
             view.state.as_ref().unwrap().project.clone()
@@ -1955,7 +1957,9 @@ mod tests {
         });
         visual.simulate_keystrokes("down enter");
         editor.update(&mut visual, |view, _| {
-            view.track_defaults.set_test_state(0.25, false, true)
+            view.settings
+                .track_defaults
+                .set_test_state(0.25, false, true)
         });
         pump(&editor, &mut visual);
         let inserted = editor.read_with(&visual, |view, _| {
@@ -2016,7 +2020,9 @@ mod tests {
             let (mut visual, editor, _environment, _) = fixture(cx);
             visual.run_until_parked();
             editor.update(&mut visual, |view, _| {
-                view.track_defaults.set_test_state(0.5, loading, false)
+                view.settings
+                    .track_defaults
+                    .set_test_state(0.5, loading, false)
             });
             let before = editor.read_with(&visual, |view, _| {
                 view.state.as_ref().unwrap().project.clone()

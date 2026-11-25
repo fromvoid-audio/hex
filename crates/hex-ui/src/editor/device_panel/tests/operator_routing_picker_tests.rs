@@ -19,8 +19,8 @@ fn popup_pointer_choice_refuses_full_queue_and_tab_retires_the_popup(cx: &mut Te
         crate::editor::clip_drag_ui_test::editor_window(cx, (*original).clone(), Arc::default());
     editor.update(cx, |view, cx| {
         view.selected_track = Some(track);
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -121,7 +121,7 @@ fn diagrams_stage_keyboard_choices_without_context_or_transport_edits_and_commit
             view.device_panel.operator_pages[&device].page,
             operator_panel::OperatorPage::Envelope
         );
-        assert!(view.last_transport_command.is_none());
+        assert!(view.test_probes.last_transport_command.is_none());
         assert_eq!(view.worker_requests_pending, 0);
     });
     visual.simulate_keystrokes("escape");

@@ -502,12 +502,12 @@ impl EditorView {
         if self.mode != EditorMode::Arrangement
             || self.document_audio_mode != hex_session::DocumentAudioMode::Resident
             || self.edit_pending()
-            || self.audio_batch.is_some()
+            || self.persistence.audio_batch.is_some()
             || self.pending_playback.is_some()
             || !self.playback_candidates.is_empty()
-            || self.device_gesture.snapshot().is_some()
+            || self.device_panel.gesture.snapshot().is_some()
             || self.gain_recorder.blocks_edits()
-            || self.midi_recorder.blocks_edits()
+            || self.midi_editor.recorder.blocks_edits()
             || self.native_automation_recorder.busy()
             || self.automation_take_recovery.unresolved()
         {
@@ -1033,7 +1033,8 @@ impl EditorView {
     }
 
     fn commit_audio_take(&mut self, binding: Binding, path: PathBuf, timeline_start: u64) {
-        if self.audio_batch.is_some() || self.device_gesture.snapshot().is_some() {
+        if self.persistence.audio_batch.is_some() || self.device_panel.gesture.snapshot().is_some()
+        {
             self.error = Some(
                 format!(
                     "audio recording could not be committed · take retained at {}",
@@ -1060,8 +1061,8 @@ impl EditorView {
                 }
             };
         if self.enqueue_captured_audio_import(request) {
-            self.audio_batch = Some(control);
-            self.audio_batch_progress = None;
+            self.persistence.audio_batch = Some(control);
+            self.persistence.audio_batch_progress = None;
             self.audio_recorder.pending_commit_path = Some(path);
             self.status = "committing recorded audio".into();
         } else {
@@ -1899,7 +1900,7 @@ mod tests {
             };
             assert!(view.audio_recorder.blocks_edits());
             view.toggle_midi_recording();
-            assert!(!view.midi_recorder.blocks_edits());
+            assert!(!view.midi_editor.recorder.blocks_edits());
             assert!(
                 view.error
                     .as_ref()
@@ -1936,7 +1937,7 @@ mod tests {
                     .unwrap()
                     .contains("input recording was interrupted")
             );
-            assert!(view.audio_batch.is_none());
+            assert!(view.persistence.audio_batch.is_none());
             assert!(view.audio_recorder.pending_commit_path.is_none());
         });
         assert_eq!(std::fs::read(&path).unwrap(), b"retained");
@@ -1998,7 +1999,7 @@ mod tests {
                         context,
                     };
                     view.commit_audio_take(binding, path.clone(), 128);
-                    assert!(view.audio_batch.is_some());
+                    assert!(view.persistence.audio_batch.is_some());
                 });
                 editor
             })
@@ -2008,7 +2009,7 @@ mod tests {
         loop {
             let done = editor.update(&mut visual, |view, cx| {
                 view.tick(cx);
-                view.audio_batch.is_none() && view.worker_requests_pending == 0
+                view.persistence.audio_batch.is_none() && view.worker_requests_pending == 0
             });
             if done {
                 break;

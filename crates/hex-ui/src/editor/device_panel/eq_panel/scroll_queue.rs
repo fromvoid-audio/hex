@@ -184,7 +184,8 @@ pub(in crate::editor) fn after_worker_event(
             || terminal.is_some_and(|ack| !ack.accepted || ack.phase != GesturePhase::Commit)
             || (terminal.is_none()
                 && !view
-                    .device_gesture
+                    .device_panel
+                    .gesture
                     .snapshot()
                     .is_some_and(|s| s.key == waiting.key))
         {
@@ -199,8 +200,8 @@ pub(in crate::editor) fn after_worker_event(
         }
         if view.worker_requests_pending != 0
             || !view.pending_requests.is_empty()
-            || !view.device_gesture_barriers.is_empty()
-            || view.device_gesture.snapshot().is_some()
+            || !view.device_panel.gesture_barriers.is_empty()
+            || view.device_panel.gesture.snapshot().is_some()
         {
             cancel_queued(view, device);
             view.device_panel.message =

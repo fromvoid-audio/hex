@@ -67,8 +67,8 @@ pub(super) fn fixture(
         view.state = Some(Arc::new(state));
         view.selected_track = Some(track);
         view.device_panel.owner = Some(DevicePanelOwner::Track(track));
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         cx.notify();
     });
     (handle, editor, track, device)

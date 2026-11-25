@@ -34,12 +34,13 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         let Some(source) = source else {
-            self.audio_event_editor.transients = None;
+            self.audio_detail.event.transients = None;
             return;
         };
         let identity = Arc::downgrade(&source);
         if self
-            .audio_event_editor
+            .audio_detail
+            .event
             .transients
             .as_ref()
             .is_some_and(|entry| entry.source.ptr_eq(&identity))
@@ -47,7 +48,7 @@ impl EditorView {
             return;
         }
         let cancelled = Arc::new(AtomicBool::new(false));
-        self.audio_event_editor.transients = Some(Analysis {
+        self.audio_detail.event.transients = Some(Analysis {
             source: identity,
             cancelled: Arc::clone(&cancelled),
             frames: None,
@@ -60,7 +61,8 @@ impl EditorView {
             let result = task.await;
             let _ = this.update(cx, |view, cx| {
                 let Some(entry) = view
-                    .audio_event_editor
+                    .audio_detail
+                    .event
                     .transients
                     .as_mut()
                     .filter(|entry| Arc::ptr_eq(&entry.cancelled, &cancelled))
@@ -160,8 +162,8 @@ mod tests {
             }));
             view.selected_track = Some(track);
             view.selected_clip = Some(clip);
-            view.clip_view_open = true;
-            view.device_panel_active = false;
+            view.audio_detail.clip_view_open = true;
+            view.device_panel.active = false;
             cx.notify();
             before
         });

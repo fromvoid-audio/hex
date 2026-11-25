@@ -78,13 +78,13 @@ impl EditorView {
             return;
         }
         match self.save_admission() {
-            SaveAdmission::Current if self.document_format_upgrade_required => {
+            SaveAdmission::Current if self.persistence.document_format_upgrade_required => {
                 self.queue_save_confirmation();
                 cx.notify();
             }
             SaveAdmission::Current => {
                 if self.enqueue_device_barrier(Request::SaveCurrent) {
-                    self.saving_project = true;
+                    self.persistence.saving_project = true;
                     self.status = "saving project".into();
                     self.error = None;
                 }
@@ -100,9 +100,9 @@ impl EditorView {
             .as_ref()
             .and_then(|state| state.document_path.clone())
         {
-            self.save_dialog_open = true;
-            self.document_format_upgrade_required = true;
-            self.format_upgrade_prompt = Some(FormatUpgradeIntent {
+            self.persistence.save_dialog_open = true;
+            self.persistence.document_format_upgrade_required = true;
+            self.persistence.format_upgrade_prompt = Some(FormatUpgradeIntent {
                 generation: self.project_generation,
                 path,
             });
@@ -114,7 +114,7 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(intent) = self.format_upgrade_prompt.take() else {
+        let Some(intent) = self.persistence.format_upgrade_prompt.take() else {
             return;
         };
         cx.defer_in(window, move |view, window, cx| {
@@ -135,7 +135,7 @@ impl EditorView {
                 .and_then(|state| state.document_path.as_ref())
                 != Some(&intent.path)
         {
-            self.save_dialog_open = false;
+            self.persistence.save_dialog_open = false;
             self.cancel_open_after_save();
             self.error = Some("project changed · format upgrade cancelled".into());
             cx.notify();
@@ -161,7 +161,7 @@ impl EditorView {
             let answer = answer.await.ok();
             let _ = cx.update_window(handle, |_, window, cx| {
                 let _ = this.update(cx, |view, cx| {
-                    view.save_dialog_open = false;
+                    view.persistence.save_dialog_open = false;
                     if window.focused(cx).is_none() {
                         view.focus.focus(window);
                     }
@@ -186,14 +186,14 @@ impl EditorView {
                                         },
                                     )
                                 {
-                                    view.saving_project = true;
+                                    view.persistence.saving_project = true;
                                     view.status = "saving project".into();
                                     view.error = None;
                                 }
                             }
                             _ => view.status = "save cancelled".into(),
                         }
-                        if !view.saving_project && !view.save_dialog_open {
+                        if !view.persistence.saving_project && !view.persistence.save_dialog_open {
                             view.cancel_open_after_save();
                         }
                     }
@@ -237,7 +237,7 @@ impl EditorView {
             .to_path_buf();
         let suggested_name = if copy.is_some() {
             Some("committed copy.hex".into())
-        } else if self.document_format_upgrade_required {
+        } else if self.persistence.document_format_upgrade_required {
             self.state
                 .as_ref()
                 .and_then(|state| state.document_path.as_deref())
@@ -245,14 +245,14 @@ impl EditorView {
         } else {
             None
         };
-        self.save_dialog_open = true;
+        self.persistence.save_dialog_open = true;
         let generation = self.project_generation;
         self.with_project_picker_directory(cx, move |view, directory, cx| {
-            if !view.save_dialog_open {
+            if !view.persistence.save_dialog_open {
                 return;
             }
             if view.project_generation != generation {
-                view.save_dialog_open = false;
+                view.persistence.save_dialog_open = false;
                 cx.notify();
                 return;
             }
@@ -264,7 +264,7 @@ impl EditorView {
             cx.spawn(async move |this, cx| {
                 let picked = response.await;
                 let _ = this.update(cx, |view, cx| {
-                    view.save_dialog_open = false;
+                    view.persistence.save_dialog_open = false;
                     if view.project_generation != generation {
                         cx.notify();
                         return;
@@ -287,7 +287,7 @@ impl EditorView {
                         }
                         _ => {}
                     }
-                    if !view.saving_project {
+                    if !view.persistence.saving_project {
                         view.cancel_open_after_save();
                     }
                     cx.notify();
@@ -303,12 +303,13 @@ impl EditorView {
                 .as_ref()
                 .and_then(|state| state.document_path.as_ref())
                 .is_some(),
-            self.saving_project || self.committed_copy.pending(),
-            self.save_dialog_open,
-            self.close_prompt_open
-                || self.opening_project
-                || (self.project_open.busy() && !self.project_open.permits_save())
-                || self.pending_open_path.is_some(),
+            self.persistence.saving_project || self.persistence.committed_copy.pending(),
+            self.persistence.save_dialog_open,
+            self.persistence.close_prompt_open
+                || self.persistence.opening_project
+                || (self.persistence.project_open.busy()
+                    && !self.persistence.project_open.permits_save())
+                || self.persistence.pending_open_path.is_some(),
         )
     }
 
@@ -328,7 +329,7 @@ impl EditorView {
             path,
             extension_added,
         }) {
-            self.saving_project = true;
+            self.persistence.saving_project = true;
             self.status = "saving project as".into();
             self.error = None;
         }

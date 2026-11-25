@@ -86,7 +86,7 @@ fn project_tempo_stale_revision_and_project_switch_retire_drafts(cx: &mut TestAp
         visual.run_until_parked();
         visual.simulate_keystrokes("enter");
         editor.update(cx, |view, _| {
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
             assert_eq!(
                 view.state
                     .as_ref()
@@ -123,7 +123,9 @@ fn project_tempo_cursor_movement_cannot_retarget_an_active_draft(cx: &mut TestAp
     });
     visual.run_until_parked();
     visual.simulate_keystrokes("enter");
-    let command = editor.read_with(cx, |view, _| view.last_enqueued_edit.clone().unwrap());
+    let command = editor.read_with(cx, |view, _| {
+        view.test_probes.last_enqueued_edit.clone().unwrap()
+    });
     model.execute(command).unwrap();
     assert_eq!(
         model.project().tempo_map().points().len(),
@@ -164,7 +166,7 @@ fn project_tempo_direct_input_validation_cancel_focus_and_canonical_commit(
         visual.simulate_keystrokes("enter");
         editor.read_with(cx, |view, _| {
             assert!(
-                view.last_enqueued_edit.is_none(),
+                view.test_probes.last_enqueued_edit.is_none(),
                 "invalid {invalid:?} must not enqueue"
             );
             assert_eq!(
@@ -191,7 +193,7 @@ fn project_tempo_direct_input_validation_cancel_focus_and_canonical_commit(
     visual.simulate_keystrokes("escape");
     editor.read_with(cx, |view, _| {
         assert!(
-            view.last_enqueued_edit.is_none(),
+            view.test_probes.last_enqueued_edit.is_none(),
             "cancel leaves canonical tempo alone"
         )
     });
@@ -200,11 +202,15 @@ fn project_tempo_direct_input_validation_cancel_focus_and_canonical_commit(
     visual.simulate_keystrokes("cmd-a");
     visual.simulate_input("123.456789");
     editor.read_with(cx, |view, _| {
-        assert!(view.last_enqueued_edit.is_none(), "draft stays local")
+        assert!(
+            view.test_probes.last_enqueued_edit.is_none(),
+            "draft stays local"
+        )
     });
     visual.simulate_keystrokes("enter");
     let command = editor.read_with(cx, |view, _| {
-        view.last_enqueued_edit
+        view.test_probes
+            .last_enqueued_edit
             .clone()
             .expect("canonical tempo command")
     });
@@ -254,8 +260,8 @@ fn project_tempo_blur_commits_valid_text_and_invalid_blur_releases_editor_shortc
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
             match expected {
-                Some(micro) => assert!(matches!(view.last_enqueued_edit, Some(hex_project::Command::SetProjectTempo { tempo }) if tempo.micro_bpm() == micro)),
-                None => assert!(view.last_enqueued_edit.is_none()),
+                Some(micro) => assert!(matches!(view.test_probes.last_enqueued_edit, Some(hex_project::Command::SetProjectTempo { tempo }) if tempo.micro_bpm() == micro)),
+                None => assert!(view.test_probes.last_enqueued_edit.is_none()),
             }
         });
         if expected.is_none() {

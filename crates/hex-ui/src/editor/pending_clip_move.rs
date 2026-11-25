@@ -343,8 +343,8 @@ impl EditorView {
                 let state = self.state.as_ref()?;
                 self.active_clip_drag.as_ref().filter(|drag| {
                     let group = drag.group.borrow();
-                    !self.opening_project
-                        && !self.close_prompt_open
+                    !self.persistence.opening_project
+                        && !self.persistence.close_prompt_open
                         && drag.project_generation == self.project_generation
                         && drag.effective_revision() == state.revision
                         && drag.viewport() == viewport

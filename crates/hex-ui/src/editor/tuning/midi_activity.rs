@@ -51,18 +51,19 @@ impl ActivitySource<'_> {
 
 impl EditorView {
     pub(in crate::editor) fn tick_tuning_midi_activity(&mut self) -> bool {
-        if !self.tuning.open {
+        if !self.settings.tuning.open {
             return false;
         }
         let now = Instant::now();
         if self
+            .settings
             .tuning
             .midi_last_query
             .is_some_and(|last| now.saturating_duration_since(last) < Duration::from_millis(33))
         {
             return false;
         }
-        self.tuning.midi_last_query = Some(now);
+        self.settings.tuning.midi_last_query = Some(now);
         let keys = (|| {
             let audio = self.audio.as_ref()?;
             let status = audio.control.status()?;
@@ -84,8 +85,8 @@ impl EditorView {
                 None => ActivitySource::Prepared(audible.prepared_revision.as_ref()?),
             };
             let identity = audio.control.output_identity()?;
-            self.session_routes.poll(identity, status);
-            let snapshot = self.session_routes.matching_snapshot(
+            self.session_grid.routes.poll(identity, status);
+            let snapshot = self.session_grid.routes.matching_snapshot(
                 identity,
                 Some((
                     audible.audio_revision,
@@ -95,7 +96,7 @@ impl EditorView {
                 audible.state.revision,
                 audible.project_generation,
             )?;
-            if !self.session_routes.routes_available(
+            if !self.session_grid.routes.routes_available(
                 snapshot,
                 &audible.state.project,
                 audible.state.revision,
@@ -105,13 +106,15 @@ impl EditorView {
             }
             let frame = status.position.load(Acquire);
             let performance = status.performance_frame.load(Acquire);
-            let spans = self.tuning.midi_spans.as_mut()?;
+            let spans = self.settings.tuning.midi_spans.as_mut()?;
             let mut keys = [0; 2];
             for track in audible.state.project.tracks() {
                 let route_track = activity.route_track(track.id()).ok()?;
-                let route =
-                    self.session_routes
-                        .entry_for_track(snapshot, true, route_track.value())?;
+                let route = self.session_grid.routes.entry_for_track(
+                    snapshot,
+                    true,
+                    route_track.value(),
+                )?;
                 let owner = match route.owner {
                     SessionRouteOwner::Arrangement => SessionPlaybackOwner::Arrangement,
                     SessionRouteOwner::Silence => continue,
@@ -139,15 +142,17 @@ impl EditorView {
             (status.applied_revision.load(Acquire) == audible.audio_revision).then_some(keys)
         })()
         .unwrap_or([0; 2]);
-        let mut changed = self.tuning.midi_keys != keys;
-        self.tuning.midi_keys = keys;
+        let mut changed = self.settings.tuning.midi_keys != keys;
+        self.settings.tuning.midi_keys = keys;
         for key in 0..128 {
-            if (keys[key / 64] | self.tuning.held_keys[key / 64]) & (1_u64 << (key % 64)) != 0 {
-                self.tuning.recent_keys[key] = Some(now);
-            } else if self.tuning.recent_keys[key]
+            if (keys[key / 64] | self.settings.tuning.held_keys[key / 64]) & (1_u64 << (key % 64))
+                != 0
+            {
+                self.settings.tuning.recent_keys[key] = Some(now);
+            } else if self.settings.tuning.recent_keys[key]
                 .is_some_and(|at| now.duration_since(at) > Duration::from_millis(400))
             {
-                self.tuning.recent_keys[key] = None;
+                self.settings.tuning.recent_keys[key] = None;
                 changed = true;
             }
         }

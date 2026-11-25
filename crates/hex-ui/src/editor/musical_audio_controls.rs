@@ -230,7 +230,7 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
             0
         })
     });
-    let page = clamped_page(view.audio_point_page, point_count);
+    let page = clamped_page(view.audio_detail.point_page, point_count);
     let first = page.saturating_mul(PAGE);
     controls = controls.child(musical_control_row(
         capture,
@@ -479,8 +479,8 @@ fn button(
                                 0
                             })
                     });
-                let current = clamped_page(view.audio_point_page, count);
-                view.audio_point_page = clamped_page(
+                let current = clamped_page(view.audio_detail.point_page, count);
+                view.audio_detail.point_page = clamped_page(
                     if direction < 0 {
                         current.saturating_sub(1)
                     } else {

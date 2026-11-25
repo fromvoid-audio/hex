@@ -40,18 +40,18 @@ impl EditorView {
             && self.focus.is_focused(window))
             || !is_activation_key(event)
             || self.sections.naming()
-            || self.changelog.is_open()
+            || self.settings.changelog.is_open()
             || self.track_name.is_editing()
             || self.clip_name_edit.is_some()
             || self.context_menu.is_some()
-            || self.theme_settings.open
-            || self.tuning.open
-            || self.save_dialog_open
-            || self.export_dialog_open
+            || self.settings.theme.open
+            || self.settings.tuning.open
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
         {
             return false;
         }
-        if self.audio_event_focus.is_focused(window) {
+        if self.audio_detail.focus.is_focused(window) {
             let handled = self.event_toggle_active();
             if handled {
                 cx.notify();
@@ -161,33 +161,33 @@ impl EditorView {
             || self.time_selection_gesture.is_some()
             || self.time_range_move_gesture.is_some()
             || self.active_clip_drag.is_some()
-            || self.active_browser_audio_drag.is_some()
-            || self.active_native_device_drag.is_some()
+            || self.browser.active_audio_drag.is_some()
+            || self.device_panel.active_native_drag.is_some()
             || self.active_trim_drag.is_some()
-            || self.active_midi_trim_drag.is_some()
+            || self.midi_editor.active_trim_drag.is_some()
             || self.active_fade_drag.is_some()
             || self.track_resize_active()
             || self.loop_rail_gesture.is_some()
             || self.locked_play_start_drag_active()
             || self.sections.held()
             || self.section_install_pending()
-            || self.midi_note_gesture.is_some()
-            || self.midi_group_gesture.is_some()
-            || self.midi_stroke.is_some()
-            || self.midi_time_selection.gesture.is_some()
-            || self.midi_ruler.held()
-            || self.midi_velocity.gesture.is_some()
+            || self.midi_editor.note_gesture.is_some()
+            || self.midi_editor.group_gesture.is_some()
+            || self.midi_editor.stroke.is_some()
+            || self.midi_editor.time_selection.gesture.is_some()
+            || self.midi_editor.ruler.held()
+            || self.midi_editor.velocity.gesture.is_some()
     }
 
     fn activation_command(&self, window: &Window) -> Result<Option<Command>, String> {
         let Some(state) = &self.state else {
             return Ok(None);
         };
-        if self.midi_focus.is_focused(window) {
+        if self.midi_editor.focus.is_focused(window) {
             let Some(clip) = self.detail_midi_clip_data() else {
                 return Ok(None);
             };
-            let selected = self.midi_selection.ids();
+            let selected = self.midi_editor.selection.ids();
             if selected.is_empty() {
                 return Ok(None);
             }
@@ -216,7 +216,7 @@ impl EditorView {
                 Target::Track(track) => {
                     let tracks = self.selected_track_ids();
                     if self.selected_track != Some(track)
-                        || self.focused_return.is_some()
+                        || self.session_grid.focused_return.is_some()
                         || !tracks.contains(&track)
                     {
                         Err("focused track selection changed".into())
@@ -231,7 +231,7 @@ impl EditorView {
                     .return_tracks()
                     .iter()
                     .find(|track| track.id() == return_track)
-                    .filter(|_| self.focused_return == Some(return_track))
+                    .filter(|_| self.session_grid.focused_return == Some(return_track))
                     .map(|track| {
                         Some(Command::ReturnMute {
                             return_track,
@@ -307,7 +307,7 @@ impl EditorView {
                 }))
             }
             EditorMode::Session => {
-                let Some((track, scene)) = self.selected_cell else {
+                let Some((track, scene)) = self.session_grid.selected_cell else {
                     return Ok(None);
                 };
                 if state.project.track(track).is_none()

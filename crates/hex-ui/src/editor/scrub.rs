@@ -66,26 +66,26 @@ impl EditorView {
             && !self.edit_pending()
             && self.context_menu.is_none()
             // The raw ruler handlers also see pointer events over modal overlays.
-            && !self.theme_settings.open
-            && !self.tuning.open
-            && !self.changelog.is_open()
-            && !self.opening_project
-            && !self.close_prompt_open
-            && !self.save_dialog_open
-            && !self.export_dialog_open
+            && !self.settings.theme.open
+            && !self.settings.tuning.open
+            && !self.settings.changelog.is_open()
+            && !self.persistence.opening_project
+            && !self.persistence.close_prompt_open
+            && !self.persistence.save_dialog_open
+            && !self.persistence.export_dialog_open
             && self.recovery.generation().is_none()
             && self
                 .audio
                 .as_ref()
                 .is_none_or(|audio| super::arrangement_seek::audio_ready_for_seek(&audio.control))
             && !self.device_gesture_pending()
-            && self.device_gesture.snapshot().is_none()
+            && self.device_panel.gesture.snapshot().is_none()
             && self.active_clip_drag.is_none()
-            && self.active_browser_audio_drag.is_none()
-            && self.active_native_device_drag.is_none()
+            && self.browser.active_audio_drag.is_none()
+            && self.device_panel.active_native_drag.is_none()
             && self.active_trim_drag.is_none()
             && self.active_fade_drag.is_none()
-            && self.active_midi_trim_drag.is_none()
+            && self.midi_editor.active_trim_drag.is_none()
             && self.arrangement_pan.is_none()
             && self.loop_rail_gesture.is_none()
             && !self.locked_play_start_drag_active()

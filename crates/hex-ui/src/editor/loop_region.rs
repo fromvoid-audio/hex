@@ -21,26 +21,26 @@ impl EditorView {
 
     fn loop_shortcut_clear(&self) -> bool {
         !self.sections.naming()
-            && !self.changelog.is_open()
+            && !self.settings.changelog.is_open()
             && !self.track_name.is_editing()
             && self.clip_name_edit.is_none()
             && self.context_menu.is_none()
-            && !self.theme_settings.open
-            && !self.tuning.open
-            && !self.save_dialog_open
-            && !self.export_dialog_open
+            && !self.settings.theme.open
+            && !self.settings.tuning.open
+            && !self.persistence.save_dialog_open
+            && !self.persistence.export_dialog_open
     }
 
     /// Modified loop toggle is transport-wide and never derives new bounds.
     pub(super) fn toggle_active_loop_shortcut(&mut self, window: &Window, cx: &Context<Self>) {
         if !self.loop_shortcut_clear()
-            || self.opening_project
-            || self.close_prompt_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
             || self.controller_input_is_open()
-            || self.preset_dialog_open
-            || self.send_menu_track.is_some()
-            || (self.clip_view_open
-                && self.device_panel_active
+            || self.device_panel.preset_dialog_open
+            || self.session_grid.send_menu_track.is_some()
+            || (self.audio_detail.clip_view_open
+                && self.device_panel.active
                 && self.device_panel.add_menu_is_open(self.state.as_deref()))
             || window
                 .context_stack()
@@ -70,13 +70,13 @@ impl EditorView {
         [
             ("edit_pending", self.edit_pending()),
             ("gain_recording", self.gain_recorder.blocks_edits()),
-            ("midi_recording", self.midi_recorder.blocks_edits()),
+            ("midi_recording", self.midi_editor.recorder.blocks_edits()),
             (
                 "sampler_parameter_pending",
                 self.sampler_parameter_pending(),
             ),
-            ("opening_project", self.opening_project),
-            ("close_prompt", self.close_prompt_open),
+            ("opening_project", self.persistence.opening_project),
+            ("close_prompt", self.persistence.close_prompt_open),
             ("device_gesture_pending", self.device_gesture_pending()),
             ("arrangement_pan", self.arrangement_pan.is_some()),
             ("scrub", self.scrub_active()),
@@ -85,10 +85,19 @@ impl EditorView {
                 "device_automation_pointer",
                 self.automation_view.devices.pointer_active(),
             ),
-            ("device_gesture", self.device_gesture.snapshot().is_some()),
+            (
+                "device_gesture",
+                self.device_panel.gesture.snapshot().is_some(),
+            ),
             ("clip_paint", self.clip_paint_gesture.is_some()),
-            ("clip_detail_resize", self.clip_detail_resize.is_active()),
-            ("spectrum_resize", self.project_spectrum.resize_is_active()),
+            (
+                "clip_detail_resize",
+                self.audio_detail.detail_resize.is_active(),
+            ),
+            (
+                "spectrum_resize",
+                self.device_panel.project_spectrum.resize_is_active(),
+            ),
             (
                 "device_navigation",
                 self.device_panel.navigation.is_active(),
@@ -98,14 +107,17 @@ impl EditorView {
             ("clip_drag", self.active_clip_drag.is_some()),
             (
                 "browser_audio_drag",
-                self.active_browser_audio_drag.is_some(),
+                self.browser.active_audio_drag.is_some(),
             ),
             (
                 "native_device_drag",
-                self.active_native_device_drag.is_some(),
+                self.device_panel.active_native_drag.is_some(),
             ),
             ("trim_drag", self.active_trim_drag.is_some()),
-            ("midi_trim_drag", self.active_midi_trim_drag.is_some()),
+            (
+                "midi_trim_drag",
+                self.midi_editor.active_trim_drag.is_some(),
+            ),
             ("fade_drag", self.active_fade_drag.is_some()),
             ("track_resize", self.track_resize_active()),
             ("loop_rail_gesture", self.loop_rail_gesture.is_some()),

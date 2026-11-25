@@ -144,10 +144,10 @@ fn device_button_label(device: &OutputDeviceInfo, duplicate_name: bool) -> Strin
 
 impl EditorView {
     pub(super) fn start_audio_device_preferences_load(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.audio_device_settings.path.clone() else {
-            self.audio_device_settings.loading = false;
-            self.audio_device_settings.writable = false;
-            self.audio_device_settings.error =
+        let Some(path) = self.settings.audio_device.path.clone() else {
+            self.settings.audio_device.loading = false;
+            self.settings.audio_device.writable = false;
+            self.settings.audio_device.error =
                 Some("audio output settings unavailable · home directory is unset".into());
             return;
         };
@@ -164,7 +164,7 @@ impl EditorView {
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
-                let state = &mut view.audio_device_settings;
+                let state = &mut view.settings.audio_device;
                 state.loading = false;
                 match result {
                     Ok(preferences) => {
@@ -188,21 +188,21 @@ impl EditorView {
     }
 
     pub(super) fn prepare_audio_device_settings(&mut self, cx: &mut Context<Self>) {
-        if !self.audio_device_settings.saving {
-            self.audio_device_settings.draft = self.audio_device_settings.preferences.clone();
+        if !self.settings.audio_device.saving {
+            self.settings.audio_device.draft = self.settings.audio_device.preferences.clone();
         }
-        self.audio_device_settings.status = None;
-        if self.audio_device_settings.writable {
-            self.audio_device_settings.error = None;
+        self.settings.audio_device.status = None;
+        if self.settings.audio_device.writable {
+            self.settings.audio_device.error = None;
         }
         self.refresh_audio_output_devices(cx);
     }
 
     pub(super) fn refresh_audio_output_devices(&mut self, cx: &mut Context<Self>) {
-        if self.audio_device_settings.probing {
+        if self.settings.audio_device.probing {
             return;
         }
-        self.audio_device_settings.probing = true;
+        self.settings.audio_device.probing = true;
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let result = cx
@@ -219,7 +219,7 @@ impl EditorView {
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
-                let state = &mut view.audio_device_settings;
+                let state = &mut view.settings.audio_device;
                 state.probing = false;
                 match result {
                     Ok(snapshot) => {
@@ -241,39 +241,39 @@ impl EditorView {
     }
 
     fn apply_audio_device_settings(&mut self, cx: &mut Context<Self>) {
-        if !self.audio_device_settings.can_apply() {
+        if !self.settings.audio_device.can_apply() {
             return;
         }
         if self.audio_recorder.blocks_edits() {
-            self.audio_device_settings.error =
+            self.settings.audio_device.error =
                 Some("stop recording before changing the audio output device".into());
             cx.notify();
             return;
         }
-        let draft = self.audio_device_settings.draft.clone();
+        let draft = self.settings.audio_device.draft.clone();
         let advisory = match validate_draft_against_snapshot(
             &draft,
-            &self.audio_device_settings.snapshot,
-            self.audio_device_settings.probed,
+            &self.settings.audio_device.snapshot,
+            self.settings.audio_device.probed,
         ) {
             Ok(advisory) => advisory,
             Err(reason) => {
-                self.audio_device_settings.error = Some(reason);
+                self.settings.audio_device.error = Some(reason);
                 cx.notify();
                 return;
             }
         };
-        let Some(path) = self.audio_device_settings.path.clone() else {
-            self.audio_device_settings.writable = false;
-            self.audio_device_settings.error =
+        let Some(path) = self.settings.audio_device.path.clone() else {
+            self.settings.audio_device.writable = false;
+            self.settings.audio_device.error =
                 Some("audio output settings unavailable · home directory is unset".into());
             cx.notify();
             return;
         };
 
-        self.audio_device_settings.saving = true;
-        self.audio_device_settings.error = None;
-        self.audio_device_settings.status = Some("saving audio output settings…".into());
+        self.settings.audio_device.saving = true;
+        self.settings.audio_device.error = None;
+        self.settings.audio_device.status = Some("saving audio output settings…".into());
         #[cfg(test)]
         let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
@@ -288,12 +288,12 @@ impl EditorView {
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
-                view.audio_device_settings.saving = false;
+                view.settings.audio_device.saving = false;
                 match result {
                     Ok(()) => {
-                        view.audio_device_settings.preferences = draft;
+                        view.settings.audio_device.preferences = draft;
                         let restarted = view.restart_audio_for_current_document();
-                        view.audio_device_settings.status = Some(match (restarted, advisory) {
+                        view.settings.audio_device.status = Some(match (restarted, advisory) {
                             (true, Some(note)) => {
                                 format!("audio output saved · restarting stream · {note}")
                             }
@@ -305,8 +305,8 @@ impl EditorView {
                         });
                     }
                     Err(error) => {
-                        view.audio_device_settings.status = None;
-                        view.audio_device_settings.error = Some(format!(
+                        view.settings.audio_device.status = None;
+                        view.settings.audio_device.error = Some(format!(
                             "could not save audio output settings · {}",
                             hex_session::service::text::lowercase_outside_verbatim(
                                 &error.to_string()
@@ -322,7 +322,7 @@ impl EditorView {
     }
 
     pub(super) fn audio_device_settings_row(&self, cx: &mut Context<Self>) -> Div {
-        let state = &self.audio_device_settings;
+        let state = &self.settings.audio_device;
         let style = theme::control_style();
         let active_rate_hz = self
             .audio
@@ -400,10 +400,10 @@ impl EditorView {
                 .text_xs()
                 .opacity(if interactive { 1.0 } else { 0.45 })
                 .on_click(cx.listener(|view, _, _, cx| {
-                    if !view.audio_device_settings.loading && !view.audio_device_settings.saving {
-                        view.audio_device_settings.draft.output_device_uid = None;
-                        view.audio_device_settings.error = None;
-                        view.audio_device_settings.status = None;
+                    if !view.settings.audio_device.loading && !view.settings.audio_device.saving {
+                        view.settings.audio_device.draft.output_device_uid = None;
+                        view.settings.audio_device.error = None;
+                        view.settings.audio_device.status = None;
                         cx.notify();
                     }
                 })),
@@ -425,11 +425,11 @@ impl EditorView {
                     .text_xs()
                     .opacity(if interactive { 1.0 } else { 0.45 })
                     .on_click(cx.listener(move |view, _, _, cx| {
-                        if !view.audio_device_settings.loading && !view.audio_device_settings.saving
+                        if !view.settings.audio_device.loading && !view.settings.audio_device.saving
                         {
-                            view.audio_device_settings.draft.output_device_uid = Some(uid.clone());
-                            view.audio_device_settings.error = None;
-                            view.audio_device_settings.status = None;
+                            view.settings.audio_device.draft.output_device_uid = Some(uid.clone());
+                            view.settings.audio_device.error = None;
+                            view.settings.audio_device.status = None;
                             cx.notify();
                         }
                     })),
@@ -481,10 +481,10 @@ impl EditorView {
                 .text_xs()
                 .opacity(if interactive { 1.0 } else { 0.45 })
                 .on_click(cx.listener(move |view, _, _, cx| {
-                    if !view.audio_device_settings.loading && !view.audio_device_settings.saving {
-                        view.audio_device_settings.draft.sample_rate_hz = choice;
-                        view.audio_device_settings.error = None;
-                        view.audio_device_settings.status = None;
+                    if !view.settings.audio_device.loading && !view.settings.audio_device.saving {
+                        view.settings.audio_device.draft.sample_rate_hz = choice;
+                        view.settings.audio_device.error = None;
+                        view.settings.audio_device.status = None;
                         cx.notify();
                     }
                 }))
@@ -518,10 +518,10 @@ impl EditorView {
                 .text_xs()
                 .opacity(if interactive { 1.0 } else { 0.45 })
                 .on_click(cx.listener(move |view, _, _, cx| {
-                    if !view.audio_device_settings.loading && !view.audio_device_settings.saving {
-                        view.audio_device_settings.draft.buffer_size_frames = choice;
-                        view.audio_device_settings.error = None;
-                        view.audio_device_settings.status = None;
+                    if !view.settings.audio_device.loading && !view.settings.audio_device.saving {
+                        view.settings.audio_device.draft.buffer_size_frames = choice;
+                        view.settings.audio_device.error = None;
+                        view.settings.audio_device.status = None;
                         cx.notify();
                     }
                 }))

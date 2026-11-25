@@ -192,7 +192,7 @@ fn check_boundary(cx: &mut TestAppContext, edge: TrimEdge) {
             desired.start() + desired.duration(),
             p.clip(clip).map(|c| (c.start(), c.duration())),
             v.error,
-            v.last_enqueued_edit
+            v.test_probes.last_enqueued_edit
         );
         assert!(
             v.error.is_none(),
@@ -377,7 +377,7 @@ fn validated_reversal_and_final_mouseup_commit_exact_command_across_pitch_and_mo
         let after = editor.read_with(&visual, |view, _| {
             assert!(view.error.is_none(), "{:?}", view.error);
             assert_eq!(view.state.as_ref().unwrap().project.clip(clip), Some(&expected));
-            assert!(matches!(view.last_enqueued_edit, Some(Command::StretchAudioClipEdge { frame: actual, .. }) if actual == frame));
+            assert!(matches!(view.test_probes.last_enqueued_edit, Some(Command::StretchAudioClipEdge { frame: actual, .. }) if actual == frame));
             view.state.as_ref().unwrap().project.snapshot()
         });
         visual.simulate_keystrokes("cmd-z");
@@ -503,7 +503,7 @@ fn large_invalid_expansion_releases_last_validated_frame_both_edges(cx: &mut Tes
         editor.read_with(&visual, |view, _| {
             assert!(view.error.is_none(), "{:?}", view.error);
             assert_eq!(view.state.as_ref().unwrap().project.clip(clip), Some(&expected.clip));
-            assert!(matches!(view.last_enqueued_edit, Some(Command::StretchAudioClipEdge { frame, .. }) if frame == expected.command_frame));
+            assert!(matches!(view.test_probes.last_enqueued_edit, Some(Command::StretchAudioClipEdge { frame, .. }) if frame == expected.command_frame));
         });
         visual.simulate_keystrokes("cmd-z");
         pump(&editor, &mut visual);

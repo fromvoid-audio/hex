@@ -75,7 +75,7 @@ fn focus(editor: &Entity<EditorView>, visual: &mut VisualTestContext, selected: 
         editor.update(cx, |v, cx| {
             v.selected_track = selected;
             v.selected_clip = None;
-            v.focused_return = None;
+            v.session_grid.focused_return = None;
             v.device_panel.main_selected = None;
             v.focus.focus(window);
             cx.notify();
@@ -119,7 +119,7 @@ fn section_focus_keeps_new_active_track_through_authoring_then_filters_on_select
         editor.update(cx, |v, cx| {
             v.sections.selected =
                 Some(v.state.as_ref().unwrap().project.arrangement_sections()[0].id());
-            v.clip_view_open = false;
+            v.audio_detail.clip_view_open = false;
             v.focus.focus(window);
             v.toggle_arrangement_focus();
             cx.notify();
@@ -154,7 +154,7 @@ fn section_focus_keeps_new_active_track_through_authoring_then_filters_on_select
         // Keyboard focus in a track's authoring editor is not a change of active track.
         visual.update(|window, cx| {
             editor.update(cx, |v, cx| {
-                v.midi_focus.focus(window);
+                v.midi_editor.focus.focus(window);
                 cx.notify();
             });
         });
@@ -273,7 +273,8 @@ fn no_ordinary_selection_and_return_or_main_focus_append_before_pinned_buses(
         focus(&editor, &mut visual, (owner == "return").then_some(ids[0]));
         editor.update(&mut visual, |v, _| {
             if owner == "return" {
-                v.focused_return = Some(v.state.as_ref().unwrap().project.return_tracks()[0].id());
+                v.session_grid.focused_return =
+                    Some(v.state.as_ref().unwrap().project.return_tracks()[0].id());
             } else if owner == "main" {
                 v.device_panel.main_selected = Some(v.project_generation);
             }
@@ -297,7 +298,7 @@ fn no_ordinary_selection_and_return_or_main_focus_append_before_pinned_buses(
                 "{owner}"
             );
             assert_eq!(v.selected_track_ids(), vec![created]);
-            assert!(v.focused_return.is_none());
+            assert!(v.session_grid.focused_return.is_none());
             assert!(v.device_panel.main_selected.is_none());
         });
         editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));

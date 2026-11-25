@@ -97,7 +97,8 @@ fn device_titles_move_between_left_and_right_without_editing_on_hover(cx: &mut T
         editor.read_with(cx, |view, _| {
             assert_eq!(chain(view, owner), before, "hover does not edit project");
             assert!(
-                view.active_native_device_drag
+                view.device_panel
+                    .active_native_drag
                     .as_ref()
                     .expect("drag")
                     .destination
@@ -215,7 +216,7 @@ fn plain_drag_reorders_the_whole_selection_in_each_chain(cx: &mut TestAppContext
                     view.selected_track = None;
                     view.device_panel.main_selected = Some(view.project_generation)
                 }
-                DevicePanelOwner::Return(id) => view.focused_return = Some(id),
+                DevicePanelOwner::Return(id) => view.session_grid.focused_return = Some(id),
                 DevicePanelOwner::Source(_) => panic!("source view is not a reorder owner"),
             }
             cx.notify();
@@ -317,7 +318,7 @@ fn return_titles_reorder_with_undo_and_cancel_or_noop_without_history(cx: &mut T
     let initial_revision = state.revision;
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
-        view.focused_return = Some(owner);
+        view.session_grid.focused_return = Some(owner);
         cx.notify();
     });
     let panel_owner = DevicePanelOwner::Return(owner);
@@ -333,7 +334,8 @@ fn return_titles_reorder_with_undo_and_cancel_or_noop_without_history(cx: &mut T
         editor.read_with(cx, |view, _| {
             assert_eq!(chain(view, panel_owner), before);
             assert!(
-                view.active_native_device_drag
+                view.device_panel
+                    .active_native_drag
                     .as_ref()
                     .expect("drag")
                     .return_destination
@@ -373,7 +375,8 @@ fn return_titles_reorder_with_undo_and_cancel_or_noop_without_history(cx: &mut T
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
             assert!(
-                view.active_native_device_drag
+                view.device_panel
+                    .active_native_drag
                     .as_ref()
                     .is_none_or(|drag| drag.return_destination.get().is_none())
             );
@@ -382,7 +385,7 @@ fn return_titles_reorder_with_undo_and_cancel_or_noop_without_history(cx: &mut T
         visual.run_until_parked();
     }
     editor.read_with(cx, |view, _| {
-        assert!(view.active_native_device_drag.is_none());
+        assert!(view.device_panel.active_native_drag.is_none());
         assert_eq!(view.state.as_ref().expect("state").revision, revision);
         assert_eq!(chain(view, panel_owner), vec![third, second, first]);
         assert_eq!(view.worker_requests_pending, 0);
@@ -491,7 +494,7 @@ fn option_drag_copies_effects_on_return_and_main(cx: &mut TestAppContext) {
     let main_device = state.project.main_devices()[0].id();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
-        view.focused_return = Some(return_id);
+        view.session_grid.focused_return = Some(return_id);
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -511,7 +514,7 @@ fn option_drag_copies_effects_on_return_and_main(cx: &mut TestAppContext) {
         chain(view, owner) == vec![return_device]
     });
     editor.update(cx, |view, cx| {
-        view.focused_return = None;
+        view.session_grid.focused_return = None;
         view.selected_track = None;
         view.device_panel.main_selected = Some(view.project_generation);
         cx.notify();
@@ -599,7 +602,7 @@ fn option_drag_cancellation_keeps_the_chain_unchanged(cx: &mut TestAppContext) {
     editor.read_with(cx, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project, before);
         assert_eq!(view.state.as_ref().unwrap().revision, revision);
-        assert!(view.active_native_device_drag.is_none());
+        assert!(view.device_panel.active_native_drag.is_none());
     });
 }
 

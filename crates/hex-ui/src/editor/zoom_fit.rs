@@ -71,10 +71,10 @@ impl EditorView {
         let selected = source
             .notes()
             .iter()
-            .any(|note| self.midi_selection.contains(note.id()));
+            .any(|note| self.midi_editor.selection.contains(note.id()));
         let mut bounds: Option<(u64, u64, u8, u8)> = None;
         for note in source.notes() {
-            if selected && !self.midi_selection.contains(note.id()) {
+            if selected && !self.midi_editor.selection.contains(note.id()) {
                 continue;
             }
             let start = note.start().raw();
@@ -121,10 +121,10 @@ impl EditorView {
             return;
         };
         let current = PianoView {
-            start: self.piano_beat_start,
-            span: self.piano_beat_span,
-            pitch: self.piano_pitch,
-            note_fit: self.piano_pitch_note_fit,
+            start: self.midi_editor.piano_beat_start,
+            span: self.midi_editor.piano_beat_span,
+            pitch: self.midi_editor.piano_pitch,
+            note_fit: self.midi_editor.piano_pitch_note_fit,
         };
         self.zoom_fit.midi = Some(((self.project_generation, clip), current));
     }
@@ -142,8 +142,10 @@ impl EditorView {
         ) else {
             return false;
         };
-        if (self.piano_beat_start, self.piano_beat_span.raw())
-            == (i128::from(viewport.start), viewport.length)
+        if (
+            self.midi_editor.piano_beat_start,
+            self.midi_editor.piano_beat_span.raw(),
+        ) == (i128::from(viewport.start), viewport.length)
         {
             return false;
         }
@@ -151,9 +153,9 @@ impl EditorView {
             self.remember_midi_fit();
         }
         self.cancel_midi_note_gesture();
-        self.piano_zoom_wheel_accum = 0.0;
-        self.piano_beat_start = i128::from(viewport.start);
-        self.piano_beat_span = BeatTime::from_raw(viewport.length);
+        self.midi_editor.piano_zoom_wheel_accum = 0.0;
+        self.midi_editor.piano_beat_start = i128::from(viewport.start);
+        self.midi_editor.piano_beat_span = BeatTime::from_raw(viewport.length);
         true
     }
     pub(super) fn reconcile_zoom_fit(&mut self) {
@@ -181,15 +183,15 @@ impl EditorView {
             || self.project_tempo_editing(cx)
             || self.gain_numeric_editing(cx)
             || self.clip_numeric_editing(cx)
-            || self.tuning.open
-            || self.theme_settings.open
+            || self.settings.tuning.open
+            || self.settings.theme.open
             || self.context_menu.is_some()
             || self.controller_input_is_open()
-            || self.opening_project
-            || self.close_prompt_open
-            || self.save_dialog_open
-            || self.export_dialog_open
-            || self.preset_dialog_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
+            || self.device_panel.preset_dialog_open
             || window
                 .context_stack()
                 .iter()
@@ -197,9 +199,9 @@ impl EditorView {
         {
             return false;
         }
-        let target = if self.midi_focus.is_focused(window) {
+        let target = if self.midi_editor.focus.is_focused(window) {
             Target::Midi
-        } else if self.audio_event_focus.is_focused(window) {
+        } else if self.audio_detail.focus.is_focused(window) {
             Target::Audio
         } else if (self.focus.is_focused(window) || self.track_header_focused(window))
             && self.mode == EditorMode::Arrangement
@@ -251,9 +253,9 @@ impl EditorView {
                     return false;
                 };
                 if (
-                    self.piano_beat_start,
-                    self.piano_beat_span,
-                    self.piano_pitch,
+                    self.midi_editor.piano_beat_start,
+                    self.midi_editor.piano_beat_span,
+                    self.midi_editor.piano_pitch,
                 ) == (next.start, next.span, next.pitch)
                 {
                     return false;
@@ -262,11 +264,11 @@ impl EditorView {
                 next
             };
             self.cancel_midi_note_gesture();
-            self.piano_zoom_wheel_accum = 0.0;
-            self.piano_beat_start = next.start;
-            self.piano_beat_span = next.span;
-            self.piano_pitch = next.pitch;
-            self.piano_pitch_note_fit = next.note_fit;
+            self.midi_editor.piano_zoom_wheel_accum = 0.0;
+            self.midi_editor.piano_beat_start = next.start;
+            self.midi_editor.piano_beat_span = next.span;
+            self.midi_editor.piano_pitch = next.pitch;
+            self.midi_editor.piano_pitch_note_fit = next.note_fit;
             return true;
         }
         let Some(state) = self.state.as_ref() else {
@@ -456,8 +458,8 @@ impl EditorView {
             }
             match target {
                 Target::Arrange => view.focus.focus(window),
-                Target::Midi => view.midi_focus.focus(window),
-                Target::Audio => view.audio_event_focus.focus(window),
+                Target::Midi => view.midi_editor.focus.focus(window),
+                Target::Audio => view.audio_detail.focus.focus(window),
             }
         }))
         .w(px(21.0))

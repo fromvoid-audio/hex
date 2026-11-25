@@ -261,7 +261,7 @@ impl EditorView {
             return false;
         };
         if self.mode != EditorMode::Arrangement
-            || self.opening_project
+            || self.persistence.opening_project
             || pending.receipt.is_queued()
             || pending.generation != self.project_generation
             || observation.project_generation != pending.generation
@@ -459,13 +459,13 @@ impl EditorView {
         self.selected_track = None;
         self.arrangement_focus.observe_active_track(None);
         self.selected_clip = None;
-        self.detail_context = None;
-        self.focused_return = None;
+        self.audio_detail.detail_context = None;
+        self.session_grid.focused_return = None;
         // Use Main's existing view owner so ordinary worker snapshots cannot
         // reselect the first clip and open its inspector under a held preview.
         self.device_panel.main_selected = Some(self.project_generation);
-        self.selected_cell = None;
-        self.selected_scene = None;
+        self.session_grid.selected_cell = None;
+        self.session_grid.selected_scene = None;
         self.track_selection = Default::default();
         self.time_selection = None;
         self.time_selection_project_scope = false;
@@ -483,11 +483,11 @@ impl EditorView {
         self.selected_track = None;
         self.arrangement_focus.observe_active_track(None);
         self.selected_clip = None;
-        self.detail_context = None;
-        self.focused_return = None;
+        self.audio_detail.detail_context = None;
+        self.session_grid.focused_return = None;
         self.device_panel.main_selected = Some(self.project_generation);
-        self.selected_cell = None;
-        self.selected_scene = None;
+        self.session_grid.selected_cell = None;
+        self.session_grid.selected_scene = None;
         self.track_selection = Default::default();
     }
 
@@ -510,7 +510,7 @@ impl EditorView {
             })
             && self.selected_clip.is_none()
             && self.selected_track.is_none()
-            && self.focused_return.is_none()
+            && self.session_grid.focused_return.is_none()
             && self.device_panel.main_selected == Some(self.project_generation)
     }
     pub(super) fn sections_available(&self) -> bool {
@@ -555,28 +555,28 @@ impl EditorView {
             && !self.track_name.is_editing()
             && self.context_menu.is_none()
             && !crate::editor::device_panel::picker_is_open(self)
-            && !self.save_dialog_open
-            && !self.export_dialog_open
-            && !self.project_open.busy()
-            && !self.changelog.is_open()
-            && !self.tuning.open
-            && !self.theme_settings.open
+            && !self.persistence.save_dialog_open
+            && !self.persistence.export_dialog_open
+            && !self.persistence.project_open.busy()
+            && !self.settings.changelog.is_open()
+            && !self.settings.tuning.open
+            && !self.settings.theme.open
             && self.active_fade_drag.is_none()
             && !self.fade_key_held
             && self.clip_paint_gesture.is_none()
-            && self.midi_note_gesture.is_none()
-            && self.midi_group_gesture.is_none()
+            && self.midi_editor.note_gesture.is_none()
+            && self.midi_editor.group_gesture.is_none()
             && self.active_clip_drag.is_none()
             && self.active_trim_drag.is_none()
-            && self.active_midi_trim_drag.is_none()
-            && self.active_browser_audio_drag.is_none()
-            && self.active_native_device_drag.is_none()
+            && self.midi_editor.active_trim_drag.is_none()
+            && self.browser.active_audio_drag.is_none()
+            && self.device_panel.active_native_drag.is_none()
             && self.time_selection_gesture.is_none()
             && self.time_range_move_gesture.is_none()
             && self.gain_lane.draft.is_none()
-            && self.tuning.client.snapshot().is_none()
-            && !self.tuning.client.has_pending_requests()
-            && !self.tuning.client.is_recovery_pending()
+            && self.settings.tuning.client.snapshot().is_none()
+            && !self.settings.tuning.client.has_pending_requests()
+            && !self.settings.tuning.client.is_recovery_pending()
     }
 
     pub(super) fn section_current(&self, g: &Gesture) -> bool {
@@ -1523,7 +1523,7 @@ impl EditorView {
             && (self.mode != EditorMode::Arrangement
                 || self.selected_clip.is_some()
                 || self.selected_track.is_some()
-                || self.focused_return.is_some()
+                || self.session_grid.focused_return.is_some()
                 || self.device_panel.main_selected != Some(self.project_generation)
                 || (!self.focus.is_focused(window)
                     && !self.section_focus_toggle_focused(window, cx)
@@ -1642,8 +1642,8 @@ impl EditorView {
         };
         let draft = name.input.read(cx).text();
         if self.edit_pending()
-            || self.project_open.busy()
-            || self.pending_open_path.is_some()
+            || self.persistence.project_open.busy()
+            || self.persistence.pending_open_path.is_some()
             || !self.section_stamp_current(name.generation, name.revision, name.id)
             || draft.trim().is_empty()
             || draft.len() > hex_project::MAX_NAME_BYTES
@@ -1776,8 +1776,8 @@ impl EditorView {
             self.mode,
             self.focus.is_focused(window),
             self.section_has_focus(window),
-            self.audio_event_focus.is_focused(window),
-            self.midi_focus.is_focused(window),
+            self.audio_detail.focus.is_focused(window),
+            self.midi_editor.focus.is_focused(window),
             self.computer_keyboard.accepts_key("g"),
             self.sections.selection.len(),
             self.sections.selected.is_some(),
@@ -1788,7 +1788,7 @@ impl EditorView {
                 .is_some_and(|range| range.anchor_frame != range.end_frame),
             self.sections.cursor.is_some(),
             self.device_panel.main_selected == Some(self.project_generation),
-            self.focused_return.is_some(),
+            self.session_grid.focused_return.is_some(),
             self.edit_pending(),
         )
     }
@@ -1944,7 +1944,7 @@ impl EditorView {
         if self.sections.ahead.is_some()
             || self.worker_requests_pending != 1
             || !self.pending_requests.is_empty()
-            || !self.device_gesture_barriers.is_empty()
+            || !self.device_panel.gesture_barriers.is_empty()
             || !self.section_input_open()
         {
             return;

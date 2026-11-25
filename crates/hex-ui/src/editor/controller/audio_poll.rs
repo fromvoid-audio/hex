@@ -207,7 +207,7 @@ impl EditorView {
         self.pending_audio_commands.clear();
         self.pending_seek_ticket = None;
         self.pending_metronome_ticket = None;
-        self.pending_session_ticket = None;
+        self.session_grid.pending_session_ticket = None;
         self.playback_candidates.clear();
         self.audible_playback = None;
         self.deferred_toggle_play = None;
@@ -359,7 +359,8 @@ impl EditorView {
         {
             return None;
         }
-        self.resident_device_preview
+        self.device_panel
+            .resident_preview
             .as_ref()
             .filter(|preview| {
                 preview.identity == identity
@@ -415,11 +416,11 @@ impl EditorView {
         self.observed_rejected_revision = 0;
         self.paused_republish = None;
         self.audio_admission.reset_audio();
-        self.device_gesture.invalidate_accepted_preview();
+        self.device_panel.gesture.invalidate_accepted_preview();
         // A new output prepares fresh endpoints; it reports its own set.
-        self.degraded_plugins = Default::default();
-        self.reloading_plugins.clear();
-        self.plugin_editor_windows.clear();
+        self.device_panel.degraded_plugins = Default::default();
+        self.device_panel.reloading_plugins.clear();
+        self.device_panel.plugin_editor_windows.clear();
         if self
             .pending_publication_observation
             .as_ref()
@@ -689,8 +690,8 @@ impl EditorView {
                             .and_then(|audio| audio.control.output_identity())
                             == Some(output_identity)
                     {
-                        changed |= self.plugin_editor_windows != devices;
-                        self.plugin_editor_windows = devices;
+                        changed |= self.device_panel.plugin_editor_windows != devices;
+                        self.device_panel.plugin_editor_windows = devices;
                     }
                 }
                 crate::EditorAudioEvent::PluginParameterTouched {
@@ -1008,10 +1009,11 @@ impl EditorView {
                             .and_then(|audio| audio.control.output_identity())
                             == Some(output_identity)
                     {
-                        self.degraded_plugins =
+                        self.device_panel.degraded_plugins =
                             crate::editor_backend::DegradedDevices::with_reasons(devices, reasons);
-                        self.reloading_plugins
-                            .retain(|device| self.degraded_plugins.contains(device.value()));
+                        self.device_panel.reloading_plugins.retain(|device| {
+                            self.device_panel.degraded_plugins.contains(device.value())
+                        });
                         changed = true;
                     }
                 }
@@ -1134,18 +1136,18 @@ impl EditorView {
     }
 
     pub(in crate::editor) fn clear_route_telemetry(&mut self) {
-        self.session_routes.clear();
+        self.session_grid.routes.clear();
     }
 
     /// Retire editor export custody for an `Export` or `ExportRange` the
     /// service refused before admission; no export event will ever arrive.
     pub(super) fn retire_unsubmitted_export(&mut self, request: &Request) {
         if matches!(request, Request::Export(_) | Request::ExportRange { .. }) {
-            self.export_pending = false;
-            if let Some(control) = self.export_control.take() {
+            self.persistence.export_pending = false;
+            if let Some(control) = self.persistence.export_control.take() {
                 control.cancel();
             }
-            self.export_window = None;
+            self.persistence.export_window = None;
         }
     }
 }

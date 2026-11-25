@@ -259,7 +259,7 @@ fn g_groups_focused_track_headers_with_undo_and_redo(cx: &mut TestAppContext) {
     visual.simulate_keystrokes("g");
     editor.read_with(&visual, |view, _| {
         assert!(matches!(
-            view.last_enqueued_edit,
+            view.test_probes.last_enqueued_edit,
             Some(hex_project::Command::GroupTracks { .. })
         ));
     });
@@ -319,7 +319,7 @@ fn g_groups_session_track_headers(cx: &mut TestAppContext) {
     visual.simulate_keystrokes("g");
     editor.read_with(&visual, |view, _| {
         assert!(matches!(
-            view.last_enqueued_edit,
+            view.test_probes.last_enqueued_edit,
             Some(hex_project::Command::GroupTracks { .. })
         ));
     });
@@ -351,7 +351,7 @@ fn g_groups_a_single_track_in_arrangement_and_console(cx: &mut TestAppContext) {
         visual.simulate_keystrokes("g");
         editor.read_with(&visual, |view, _| {
             assert!(matches!(
-                &view.last_enqueued_edit,
+                &view.test_probes.last_enqueued_edit,
                 Some(hex_project::Command::GroupTracks { tracks, .. }) if tracks.ids() == &ids[..1]
             ));
         });
@@ -390,7 +390,7 @@ fn g_does_not_group_during_track_name_edit(cx: &mut TestAppContext) {
         assert!(view.track_name.is_editing());
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
         assert!(!matches!(
-            view.last_enqueued_edit,
+            view.test_probes.last_enqueued_edit,
             Some(hex_project::Command::GroupTracks { .. })
         ));
     });
@@ -696,7 +696,7 @@ fn console_fold_hides_cells_navigation_and_invalidates_column_frame(cx: &mut Tes
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
             view.set_mode(super::EditorMode::Session);
-            view.selected_cell = Some((ids[0], scene));
+            view.session_grid.selected_cell = Some((ids[0], scene));
             view.focus.focus(window);
             cx.notify();
         })
@@ -723,7 +723,7 @@ fn console_fold_hides_cells_navigation_and_invalidates_column_frame(cx: &mut Tes
                 "old drop geometry cannot survive a fold"
             );
             assert_eq!(
-                view.selected_cell,
+                view.session_grid.selected_cell,
                 Some((ids[0], scene)),
                 "fold retains hidden selection"
             );
@@ -740,18 +740,20 @@ fn console_fold_hides_cells_navigation_and_invalidates_column_frame(cx: &mut Tes
     visual.simulate_keystrokes("right");
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        assert_eq!(view.selected_cell, Some((ids[2], scene)))
+        assert_eq!(view.session_grid.selected_cell, Some((ids[2], scene)))
     });
     visual.simulate_keystrokes("left");
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        assert_eq!(view.selected_cell, Some((group, scene)))
+        assert_eq!(view.session_grid.selected_cell, Some((group, scene)))
     });
     let next_page = visual.debug_bounds("next tracks").unwrap().center();
     visual.simulate_mouse_down(next_page, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(next_page, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
-    editor.read_with(&visual, |view, _| assert!(view.session_track_start > 0));
+    editor.read_with(&visual, |view, _| {
+        assert!(view.session_grid.track_start > 0)
+    });
     let last_header = Box::leak(format!("session-track-{}", ids[7].value()).into_boxed_str());
     let last_cell =
         Box::leak(format!("console-cell-{}-{}", ids[7].value(), scene.value()).into_boxed_str());

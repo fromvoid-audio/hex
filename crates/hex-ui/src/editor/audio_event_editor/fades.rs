@@ -218,12 +218,13 @@ impl EditorView {
     ) -> bool {
         if event.keystroke.key == "escape"
             && self
-                .audio_event_editor
+                .audio_detail
+                .event
                 .gesture
                 .as_ref()
                 .is_some_and(|g| matches!(g.kind, Kind::Fade(_)))
         {
-            self.audio_event_editor.gesture = None;
+            self.audio_detail.event.gesture = None;
             cx.notify();
             cx.stop_propagation();
             return true;
@@ -231,20 +232,20 @@ impl EditorView {
         if event.keystroke.key != "f"
             || event.keystroke.modifiers.modified()
             || self.mode != crate::editor::EditorMode::Arrangement
-            || !self.audio_event_focus.is_focused(window)
+            || !self.audio_detail.focus.is_focused(window)
             || self.computer_keyboard.enabled
-            || self.theme_settings.open
+            || self.settings.theme.open
             || self.context_menu.is_some()
             || self.gain_numeric_editing(cx)
-            || self.opening_project
-            || self.close_prompt_open
-            || self.save_dialog_open
-            || self.export_dialog_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
         {
             return false;
         }
-        if !event.is_held && !self.audio_event_editor.fade_key_held {
-            self.audio_event_editor.fade_key_held = true;
+        if !event.is_held && !self.audio_detail.event.fade_key_held {
+            self.audio_detail.event.fade_key_held = true;
             cx.notify();
         }
         cx.stop_propagation();
@@ -256,7 +257,7 @@ impl EditorView {
         event: AudioEvent,
         x: f32,
     ) -> Option<f64> {
-        let bounds = self.audio_event_editor.bounds?;
+        let bounds = self.audio_detail.event.bounds?;
         let width = f64::from(f32::from(bounds.size.width));
         if !x.is_finite() || !width.is_finite() || width <= 0.0 {
             return None;
@@ -272,10 +273,10 @@ impl EditorView {
     pub(super) fn event_update_fade_pointer(&mut self, x: f32, y: f32, platform: bool) {
         if !x.is_finite() || !y.is_finite() || !self.event_context_current() || self.edit_pending()
         {
-            self.audio_event_editor.gesture = None;
+            self.audio_detail.event.gesture = None;
             return;
         }
-        let Some(mut gesture) = self.audio_event_editor.gesture.clone() else {
+        let Some(mut gesture) = self.audio_detail.event.gesture.clone() else {
             return;
         };
         let Kind::Fade(mut fade) = gesture.kind else {
@@ -288,13 +289,14 @@ impl EditorView {
             return;
         };
         let Some(pointer) = self.fade_pointer_source_frame(&root, fade.event, x) else {
-            self.audio_event_editor.gesture = None;
+            self.audio_detail.event.gesture = None;
             return;
         };
         let delta = pointer - fade.pointer_source_frame;
         let dy = y - fade.origin_y;
         let height = self
-            .audio_event_editor
+            .audio_detail
+            .event
             .bounds
             .map_or(8.0, |b| (f32::from(b.size.height) - 44.0).max(8.0));
         let bend = (dy * 2002.0 / height).round().clamp(-2000.0, 2000.0) as i16;
@@ -340,7 +342,7 @@ impl EditorView {
                     i128::from(editor_bounds(&root).1),
                 ) as u64;
                 let at = if platform {
-                    self.event_snap_position(at, self.audio_event_editor.grid == SnapGrid::Off)
+                    self.event_snap_position(at, self.audio_detail.event.grid == SnapGrid::Off)
                         .unwrap_or(at)
                 } else {
                     at
@@ -415,7 +417,7 @@ impl EditorView {
             })
         };
         gesture.kind = Kind::Fade(fade);
-        self.audio_event_editor.gesture = Some(gesture);
+        self.audio_detail.event.gesture = Some(gesture);
     }
     pub(in crate::editor) fn update_audio_event_fade_pointer(
         &mut self,
@@ -425,7 +427,8 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> bool {
         if !self
-            .audio_event_editor
+            .audio_detail
+            .event
             .gesture
             .as_ref()
             .is_some_and(|g| matches!(g.kind, Kind::Fade(_)))
@@ -434,9 +437,9 @@ impl EditorView {
         }
         // Focus effects are delivered after paint. Refuse a release against the
         // current focus immediately, even before the deferred blur listener.
-        if !self.audio_event_focus.is_focused(window) {
-            self.audio_event_editor.gesture = None;
-            self.audio_event_editor.fade_key_held = false;
+        if !self.audio_detail.focus.is_focused(window) {
+            self.audio_detail.event.gesture = None;
+            self.audio_detail.event.fade_key_held = false;
             cx.notify();
             return true;
         }
@@ -455,7 +458,8 @@ impl EditorView {
             return false;
         }
         if let Some(operation) = self
-            .audio_event_editor
+            .audio_detail
+            .event
             .gesture
             .as_ref()
             .filter(|gesture| gesture.moved)
@@ -463,7 +467,7 @@ impl EditorView {
         {
             self.event_commit(operation);
         }
-        self.audio_event_editor.gesture = None;
+        self.audio_detail.event.gesture = None;
         cx.notify();
         true
     }
@@ -476,9 +480,10 @@ impl EditorView {
         viewport_length: u64,
         cx: &mut Context<Self>,
     ) -> Vec<gpui::AnyElement> {
-        let held = self.audio_event_editor.fade_key_held;
+        let held = self.audio_detail.event.fade_key_held;
         let captured = self
-            .audio_event_editor
+            .audio_detail
+            .event
             .gesture
             .as_ref()
             .and_then(|g| match g.kind {
@@ -486,14 +491,15 @@ impl EditorView {
                 _ => None,
             })
             .or_else(|| {
-                self.audio_event_editor
+                self.audio_detail
+                    .event
                     .pending
                     .as_ref()
-                    .filter(|p| Some(p.owner) == self.audio_event_editor.owner)
+                    .filter(|p| Some(p.owner) == self.audio_detail.event.owner)
                     .and_then(|p| p.fade_handle)
             });
         let active = captured.is_some_and(|(id, _)| id == event.id);
-        let hovered = self.audio_event_editor.fade_hover == Some(event.id);
+        let hovered = self.audio_detail.event.fade_hover == Some(event.id);
         if !held && !active && !hovered && event.fade.is_none_or(|fade| fade.shape().is_neutral()) {
             return Vec::new();
         }
@@ -505,7 +511,7 @@ impl EditorView {
         };
         let visible_start = visible.start;
         let visible_end = visible.end;
-        let width = self.audio_event_editor.bounds.map_or(96.0, |bounds| {
+        let width = self.audio_detail.event.bounds.map_or(96.0, |bounds| {
             f32::from(bounds.size.width) * (visible_end - visible_start) as f32
                 / viewport_length.max(1) as f32
         });
@@ -585,7 +591,7 @@ impl EditorView {
                 .right_0()
                 .into_any_element(),
         ];
-        let Some(bounds) = self.audio_event_editor.bounds else {
+        let Some(bounds) = self.audio_detail.event.bounds else {
             return elements;
         };
         let height = f32::from(bounds.size.height) - 28.0;
@@ -664,14 +670,14 @@ impl EditorView {
             let paint_state = if captured == Some((event.id, handle)) {
                 theme::FadeHandleState::Active
             } else if captured.is_none()
-                && self.audio_event_editor.fade_handle_hover == Some((event.id, handle))
+                && self.audio_detail.event.fade_handle_hover == Some((event.id, handle))
             {
                 theme::FadeHandleState::Hover
             } else {
                 theme::FadeHandleState::Idle
             };
-            let owner = self.audio_event_editor.owner;
-            let revision = self.audio_event_editor.revision;
+            let owner = self.audio_detail.event.owner;
+            let revision = self.audio_detail.event.revision;
             elements.push(
                 div()
                     .id((handle.name(), event.id))
@@ -687,7 +693,7 @@ impl EditorView {
                     )])
                     .cursor(gpui::CursorStyle::Arrow)
                     .on_hover(cx.listener(move |view, hovered: &bool, _, cx| {
-                        let state = &mut view.audio_event_editor;
+                        let state = &mut view.audio_detail.event;
                         if state.owner != owner || state.revision != revision {
                             return;
                         }
@@ -725,14 +731,14 @@ impl EditorView {
                         cx.listener(move |v, e: &gpui::MouseDownEvent, window, cx| {
                             if !v.edit_pending()
                                 && v.event_context_current()
-                                && v.audio_event_editor.gesture.is_none()
+                                && v.audio_detail.event.gesture.is_none()
                                 && f32::from(e.position.x).is_finite()
                                 && f32::from(e.position.y).is_finite()
                             {
-                                v.audio_event_focus.focus(window);
+                                v.audio_detail.focus.focus(window);
                                 v.advance_selection_intent();
-                                v.audio_event_editor.selected = Some(event.id);
-                                v.audio_event_editor.range = None;
+                                v.audio_detail.event.selected = Some(event.id);
+                                v.audio_detail.event.range = None;
                                 if e.click_count >= 2 {
                                     let straightened = event.fade.and_then(|fade| {
                                         let out = handle.curve_side()?;
@@ -769,8 +775,8 @@ impl EditorView {
                                     {
                                         return;
                                     }
-                                    v.audio_event_editor.fade_hover = None;
-                                    v.audio_event_editor.gesture = Some(Gesture {
+                                    v.audio_detail.event.fade_hover = None;
+                                    v.audio_detail.event.gesture = Some(Gesture {
                                         anchor: 0,
                                         pointer_x: f32::from(e.position.x),
                                         origin_x: f32::from(e.position.x),

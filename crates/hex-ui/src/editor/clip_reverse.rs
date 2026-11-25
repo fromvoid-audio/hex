@@ -21,14 +21,14 @@ impl EditorView {
                 .iter()
                 .any(|context| context.contains("hex_text_editing"))
             || self.sections.naming()
-            || self.changelog.is_open()
+            || self.settings.changelog.is_open()
             || self.track_name.is_editing()
             || self.clip_name_edit.is_some()
             || self.context_menu.is_some()
-            || self.theme_settings.open
-            || self.tuning.open
-            || self.save_dialog_open
-            || self.export_dialog_open
+            || self.settings.theme.open
+            || self.settings.tuning.open
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
         {
             return false;
         }
@@ -39,7 +39,7 @@ impl EditorView {
         if self.edit_pending()
             || self.active_clip_drag.is_some()
             || self.active_trim_drag.is_some()
-            || self.active_midi_trim_drag.is_some()
+            || self.midi_editor.active_trim_drag.is_some()
             || self.active_fade_drag.is_some()
             || self.time_range_move_gesture.is_some()
             || self.time_selection_gesture.is_some()

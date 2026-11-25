@@ -334,15 +334,15 @@ fn toggle_fixture(
             root.join("config/browser.json")
         );
         assert_eq!(
-            view.recent_projects.test_path(),
+            view.settings.recent_projects.test_path(),
             root.join("config/recent-projects.json")
         );
         assert_eq!(
-            view.theme_settings.test_path(),
+            view.settings.theme.test_path(),
             root.join("config/theme.json")
         );
         assert_eq!(
-            view.project_directory.test_path(),
+            view.settings.project_directory.test_path(),
             root.join("config/project-directory.json")
         );
         assert_eq!(

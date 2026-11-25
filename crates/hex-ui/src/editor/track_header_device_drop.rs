@@ -30,7 +30,8 @@ impl EditorView {
             || revision != Some(drag.revision)
             || !self.native_device_drag_is_current(drag)
             || !self
-                .active_native_device_drag
+                .device_panel
+                .active_native_drag
                 .as_ref()
                 .is_some_and(|active| {
                     std::rc::Rc::ptr_eq(&active.destination, &drag.destination)
@@ -44,7 +45,7 @@ impl EditorView {
         match drag.source {
             NativeDeviceDragSource::PluginEffect(ref selection) => {
                 let target = self.check_device_append_target(track, cx)?;
-                if self.pending_plugin_effect.is_some() {
+                if self.device_panel.pending_plugin_effect.is_some() {
                     return Err("wait for the pending vst3 insertion");
                 }
                 if selection.role == hex_plugin_catalog::PluginRole::Instrument
@@ -134,18 +135,18 @@ impl EditorView {
     }
 
     pub(super) fn check_device_append_ready(&self, cx: &App) -> Result<(), &'static str> {
-        if self.save_dialog_open
-            || self.export_dialog_open
-            || self.export_pending
+        if self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
+            || self.persistence.export_pending
             || self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()
-            || !self.device_gesture_barriers.is_empty()
-            || self.device_gesture.snapshot().is_some()
+            || !self.device_panel.gesture_barriers.is_empty()
+            || self.device_panel.gesture.snapshot().is_some()
             || self.device_panel.has_pending_draft(cx)
             || self.track_gain_controls.has_pending_draft(cx)
             || self.gain_numeric_editing(cx)
             || self.gain_lane.draft.is_some()
-            || (self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits())
+            || (self.gain_recorder.blocks_edits() || self.midi_editor.recorder.blocks_edits())
         {
             return Err("finish pending edits before dropping a device");
         }
@@ -191,12 +192,15 @@ impl EditorView {
     fn header_device_insertion_gap_active(&self, drag: &NativeDeviceDrag) -> bool {
         self.mode == super::EditorMode::Arrangement
             && !matches!(drag.source, NativeDeviceDragSource::Existing { .. })
-            && self.arrangement_device_preview.is_some_and(|preview| {
-                matches!(
-                    preview.target,
-                    super::arrangement_device_drop::ArrangementDropTarget::NewTrack { .. }
-                )
-            })
+            && self
+                .device_panel
+                .arrangement_drop_preview
+                .is_some_and(|preview| {
+                    matches!(
+                        preview.target,
+                        super::arrangement_device_drop::ArrangementDropTarget::NewTrack { .. }
+                    )
+                })
     }
 
     pub(super) fn device_drop_header(
@@ -213,7 +217,11 @@ impl EditorView {
             .drag_over::<BrowserAudioDrag>(move |style, drag, _, cx| {
                 let view = sample_owner.read(cx);
                 let is_gap = view.mode == super::EditorMode::Arrangement
-                    && view.sampler_load.header_insertion_line_y.is_some();
+                    && view
+                        .device_panel
+                        .sampler_load
+                        .header_insertion_line_y
+                        .is_some();
                 if !is_gap
                     && view
                         .browser_sampler_drop_track(drag, Some(track), cx)
@@ -391,7 +399,7 @@ mod tests {
                 destination: Rc::new(Cell::new(None)),
                 return_destination: Rc::new(Cell::new(None)),
             };
-            view.active_native_device_drag = Some(inst_drag.clone());
+            view.device_panel.active_native_drag = Some(inst_drag.clone());
 
             assert_eq!(
                 view.header_device_request(
@@ -438,7 +446,7 @@ mod tests {
                 destination: Rc::new(Cell::new(None)),
                 return_destination: Rc::new(Cell::new(None)),
             };
-            view.active_native_device_drag = Some(fx_drag.clone());
+            view.device_panel.active_native_drag = Some(fx_drag.clone());
             assert!(
                 view.header_device_request(&fx_drag, generation, Some(revision), group, false, cx)
                     .is_ok(),

@@ -15,7 +15,7 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
             view.worker_requests_pending == 0
                 && view.pending_requests.is_empty()
                 && view.state.is_some()
-                && view.pending_open_path.is_none()
+                && view.persistence.pending_open_path.is_none()
         });
         visual.run_until_parked();
         if done {
@@ -86,9 +86,13 @@ fn moved_media_shows_panel_instead_of_failing_and_opens_with_relink(cx: &mut Tes
     pump(&editor, &mut visual);
     editor.read_with(&visual, |view, _| {
         assert!(view.error.is_none(), "{:?}", view.error);
-        assert!(view.opening_project);
+        assert!(view.persistence.opening_project);
         assert_eq!(view.project_generation, generation);
-        let panel = view.missing_media.as_ref().expect("missing-media panel");
+        let panel = view
+            .settings
+            .missing_media
+            .as_ref()
+            .expect("missing-media panel");
         assert_eq!(panel.rows.len(), 1);
         assert_eq!(panel.rows[0].media.expected_path, original);
         assert_eq!(panel.rows[0].media.usage_count, 1);
@@ -97,9 +101,9 @@ fn moved_media_shows_panel_instead_of_failing_and_opens_with_relink(cx: &mut Tes
 
     // The open stays disabled until every file is resolved.
     editor.update(&mut visual, |view, cx| view.missing_media_open(cx));
-    assert!(editor.read_with(&visual, |view, _| view.missing_media.is_some()));
+    assert!(editor.read_with(&visual, |view, _| view.settings.missing_media.is_some()));
     editor.update(&mut visual, |view, cx| {
-        let panel = view.missing_media.as_mut().unwrap();
+        let panel = view.settings.missing_media.as_mut().unwrap();
         let media = panel.rows[0].media.clone();
         let fit = missing_media::check_candidate(&media, &moved);
         apply_locate(&mut panel.rows, 0, moved.clone(), fit, Vec::new());
@@ -108,7 +112,7 @@ fn moved_media_shows_panel_instead_of_failing_and_opens_with_relink(cx: &mut Tes
     pump(&editor, &mut visual);
     editor.read_with(&visual, |view, _| {
         assert!(view.error.is_none(), "{:?}", view.error);
-        assert!(view.missing_media.is_none() && !view.opening_project);
+        assert!(view.settings.missing_media.is_none() && !view.persistence.opening_project);
         assert_eq!(view.project_generation, generation + 1);
         let state = view.state.as_ref().unwrap();
         assert!(state.unsaved);
@@ -181,7 +185,8 @@ fn sample_catalog_matches_are_offered_then_relinked_all_at_once(cx: &mut TestApp
     loop {
         pump(&editor, &mut visual);
         if editor.read_with(&visual, |view, _| {
-            view.missing_media
+            view.settings
+                .missing_media
                 .as_ref()
                 .is_some_and(|panel| panel.catalog.is_some())
         }) {
@@ -191,7 +196,7 @@ fn sample_catalog_matches_are_offered_then_relinked_all_at_once(cx: &mut TestApp
         std::thread::yield_now();
     }
     editor.read_with(&visual, |view, _| {
-        let panel = view.missing_media.as_ref().unwrap();
+        let panel = view.settings.missing_media.as_ref().unwrap();
         assert_eq!(panel.rows.len(), 3);
         // Offered, not applied.
         assert!(
@@ -207,7 +212,7 @@ fn sample_catalog_matches_are_offered_then_relinked_all_at_once(cx: &mut TestApp
         view.missing_media_relink_catalog(cx)
     });
     editor.update(&mut visual, |view, cx| {
-        let panel = view.missing_media.as_ref().unwrap();
+        let panel = view.settings.missing_media.as_ref().unwrap();
         let by_name = |name: &str| {
             &panel
                 .rows
@@ -225,7 +230,7 @@ fn sample_catalog_matches_are_offered_then_relinked_all_at_once(cx: &mut TestApp
         assert_eq!(panel.catalog.as_ref().unwrap().counts(&panel.rows), (0, 0));
         // Not complete: the project still waits for the remaining files.
         view.missing_media_open(cx);
-        assert!(view.missing_media.is_some());
+        assert!(view.settings.missing_media.is_some());
         view.missing_media_dismiss(cx);
     });
 }
@@ -274,14 +279,14 @@ fn missing_media_can_open_offline_and_shows_the_missing_count(cx: &mut TestAppCo
         cx.notify();
     });
     pump(&editor, &mut visual);
-    assert!(editor.read_with(&visual, |view, _| view.missing_media.is_some()));
+    assert!(editor.read_with(&visual, |view, _| view.settings.missing_media.is_some()));
     editor.update(&mut visual, |view, cx| {
         view.missing_media_open_with(true, cx)
     });
     pump(&editor, &mut visual);
     editor.read_with(&visual, |view, _| {
         assert!(view.error.is_none(), "{:?}", view.error);
-        assert!(view.missing_media.is_none() && !view.opening_project);
+        assert!(view.settings.missing_media.is_none() && !view.persistence.opening_project);
         assert_eq!(view.project_generation, generation + 1);
         let project = &view.state.as_ref().unwrap().project;
         assert_eq!(project.offline_assets().count(), 1);
@@ -346,25 +351,29 @@ fn offline_media_relinks_in_place_from_the_indicator_and_undoes(cx: &mut TestApp
     let indicator = visual.debug_bounds("missing-media-indicator").unwrap();
     visual.simulate_click(indicator.center(), gpui::Modifiers::default());
     editor.update(&mut visual, |view, cx| {
-        let panel = view.missing_media.as_mut().expect("relink panel");
+        let panel = view.settings.missing_media.as_mut().expect("relink panel");
         assert!(matches!(panel.target, Target::Relink));
         assert_eq!(panel.rows.len(), 1);
         assert_eq!(panel.rows[0].media.expected_path, kick);
-        assert!(!view.opening_project, "an open project stays editable");
+        assert!(
+            !view.persistence.opening_project,
+            "an open project stays editable"
+        );
         let media = panel.rows[0].media.clone();
         let fit = missing_media::check_candidate(&media, &moved);
         apply_locate(&mut panel.rows, 0, moved.clone(), fit, Vec::new());
-        view.close_prompt_open = true;
+        view.persistence.close_prompt_open = true;
         view.missing_media_relink(cx);
         assert_eq!(view.worker_requests_pending, 0);
         assert!(
-            view.missing_media
+            view.settings
+                .missing_media
                 .as_ref()
                 .is_some_and(|panel| panel.resolved().values().eq([&moved]))
         );
-        view.close_prompt_open = false;
+        view.persistence.close_prompt_open = false;
         view.missing_media_relink(cx);
-        assert!(view.missing_media.is_none());
+        assert!(view.settings.missing_media.is_none());
     });
     pump(&editor, &mut visual);
     editor.read_with(&visual, |view, _| {

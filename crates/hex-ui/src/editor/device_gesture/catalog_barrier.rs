@@ -266,7 +266,7 @@ fn registered(
 
 impl EditorView {
     pub(in crate::editor) fn take_catalog_barrier_error(&mut self) -> Option<&'static str> {
-        self.catalog_barrier.refusal.take()
+        self.device_panel.catalog_barrier.refusal.take()
     }
 
     pub(in crate::editor) fn catalog_custody(
@@ -277,7 +277,8 @@ impl EditorView {
             return Ok(None);
         };
         let snapshot = self
-            .device_gesture
+            .device_panel
+            .gesture
             .snapshot()
             .ok_or("device load lost its device terminal")?;
         let state = self
@@ -300,6 +301,7 @@ impl EditorView {
             adopted_commit: None,
         };
         if self
+            .device_panel
             .catalog_barrier
             .custody
             .is_some_and(|current| current != proof)
@@ -310,22 +312,25 @@ impl EditorView {
     }
 
     pub(in crate::editor) fn refuse_catalog_barriers(&mut self, reason: &'static str) {
-        self.catalog_barrier.custody = None;
-        let before = self.device_gesture_barriers.len();
+        self.device_panel.catalog_barrier.custody = None;
+        let before = self.device_panel.gesture_barriers.len();
         let controls: Vec<_> = self
-            .device_gesture_barriers
+            .device_panel
+            .gesture_barriers
             .iter()
             .filter(|request| stamps(request).is_some())
             .filter_map(super::insertion_control)
             .collect();
         let had_clipboard = self
-            .device_gesture_barriers
+            .device_panel
+            .gesture_barriers
             .iter()
             .any(|request| matches!(request, Request::DeviceClipboard { .. }));
-        self.device_gesture_barriers
+        self.device_panel
+            .gesture_barriers
             .retain(|request| stamps(request).is_none());
-        if self.device_gesture_barriers.len() != before {
-            self.catalog_barrier.refusal = Some(reason);
+        if self.device_panel.gesture_barriers.len() != before {
+            self.device_panel.catalog_barrier.refusal = Some(reason);
             self.error = Some(reason.into());
         }
         if had_clipboard {
@@ -339,7 +344,7 @@ impl EditorView {
     // Called before adopting this exact event. Other canonical transitions cannot
     // become permission to refresh an already stale addition.
     pub(in crate::editor) fn observe_catalog_barrier(&mut self, event: &Event) {
-        let Some(mut proof) = self.catalog_barrier.custody else {
+        let Some(mut proof) = self.device_panel.catalog_barrier.custody else {
             return;
         };
         let lineage = !event.project_replaced
@@ -349,7 +354,8 @@ impl EditorView {
                 .as_ref()
                 .is_some_and(|state| state.revision == proof.revision)
             && self
-                .device_gesture
+                .device_panel
+                .gesture
                 .snapshot()
                 .is_some_and(|snapshot| snapshot.key == proof.key);
         let commit = event.gesture_protocol_ack
@@ -371,14 +377,14 @@ impl EditorView {
             );
         } else if commit {
             proof.adopted_commit = Some(revision);
-            self.catalog_barrier.custody = Some(proof);
+            self.device_panel.catalog_barrier.custody = Some(proof);
         }
     }
 
     // The ordinary GestureClient has already matched the actual key, phase and
     // sequence. The current state is the canonical state adopted from that ACK.
     pub(in crate::editor) fn settle_catalog_barriers(&mut self, ack: &GestureAck) {
-        let Some(proof) = self.catalog_barrier.custody else {
+        let Some(proof) = self.device_panel.catalog_barrier.custody else {
             self.refuse_catalog_barriers("device load canceled · device terminal proof is missing");
             return;
         };
@@ -388,7 +394,7 @@ impl EditorView {
             && self.project_generation == proof.generation
             && self.state.as_ref().is_some_and(|state| {
                 proof.adopted_commit == Some(state.revision)
-                    && self.device_gesture_barriers.iter().all(|request| {
+                    && self.device_panel.gesture_barriers.iter().all(|request| {
                         stamps(request).is_none_or(|context| {
                             context == (proof.generation, proof.revision)
                                 && valid_intent(&state.project, request)
@@ -402,7 +408,7 @@ impl EditorView {
             return;
         }
         if let Some(adopted) = proof.adopted_commit {
-            for request in &mut self.device_gesture_barriers {
+            for request in &mut self.device_panel.gesture_barriers {
                 match request {
                     Request::InsertEffectBusDevice { revision, .. }
                     | Request::LoadTrackCatalogDevice { revision, .. }
@@ -423,7 +429,7 @@ impl EditorView {
             self.device_panel
                 .rebase_pending_duplicate(proof.generation, proof.revision, adopted);
         }
-        self.catalog_barrier.custody = None;
+        self.device_panel.catalog_barrier.custody = None;
     }
 }
 

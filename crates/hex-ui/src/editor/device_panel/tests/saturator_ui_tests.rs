@@ -87,7 +87,7 @@ fn saturator_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut TestA
         assert!(control.origin.x + control.size.width <= body.origin.x + body.size.width);
     }
     editor.update(cx, |view, cx| {
-        view.focused_return = Some(return_track);
+        view.session_grid.focused_return = Some(return_track);
         cx.notify();
     });
     visual.run_until_parked();
@@ -104,7 +104,7 @@ fn saturator_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut TestA
     assert_eq!(return_card.size, card.size);
     assert!(return_graph.size.height >= px(50.0));
     editor.update(cx, |view, cx| {
-        view.focused_return = None;
+        view.session_grid.focused_return = None;
         cx.notify();
     });
     visual.run_until_parked();
@@ -118,7 +118,8 @@ fn saturator_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut TestA
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let gesture = view
-            .device_gesture
+            .device_panel
+            .gesture
             .snapshot()
             .expect("active shared-control gesture");
         let expected = hex_engine::patch_native_device_parameter(
@@ -136,8 +137,8 @@ fn saturator_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut TestA
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture.snapshot().is_none()
-            && view.device_gesture_barriers.is_empty()
+            && view.device_panel.gesture.snapshot().is_none()
+            && view.device_panel.gesture_barriers.is_empty()
     });
     editor.read_with(cx, |view, _| {
         assert_ne!(
@@ -197,8 +198,8 @@ fn saturator_preview_uses_unacknowledged_draft_and_retires_on_owner_change(
     );
     editor.update(cx, |view, cx| {
         view.selected_track = Some(track);
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         cx.notify();
     });
     let visual = VisualTestContext::from_window(handle, cx);
@@ -265,7 +266,7 @@ fn removing_return_saturator_retires_preview_without_changing_owner(cx: &mut Tes
     let state = receive_service_event(&service).state;
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
-        view.focused_return = Some(return_track);
+        view.session_grid.focused_return = Some(return_track);
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -281,7 +282,7 @@ fn removing_return_saturator_retires_preview_without_changing_owner(cx: &mut Tes
     });
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert_eq!(view.focused_return, Some(return_track));
+        assert_eq!(view.session_grid.focused_return, Some(return_track));
         assert!(
             saturator_panel::cached_curve(view, device).is_none(),
             "removed Return preview must retire immediately"

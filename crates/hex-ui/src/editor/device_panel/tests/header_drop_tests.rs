@@ -163,6 +163,7 @@ fn header_effect_drop_appends_to_unselected_track_once_and_keeps_history(cx: &mu
         );
         editor.read_with(cx, |view, _| {
             let request = view
+                .test_probes
                 .last_enqueued_native_device_drop
                 .as_ref()
                 .expect("header dispatch");
@@ -261,7 +262,7 @@ fn header_instrument_drop_inserts_or_replaces_and_preserves_effects_and_history(
                 accepted_feedback = Some(feedback);
             }
             editor.read_with(cx, |view, _| {
-                assert!(view.last_enqueued_native_device_drop.is_some())
+                assert!(view.test_probes.last_enqueued_native_device_drop.is_some())
             });
             pump_until(&editor, cx, idle);
             let changed = editor.read_with(cx, |view, _| {
@@ -286,7 +287,7 @@ fn header_instrument_drop_inserts_or_replaces_and_preserves_effects_and_history(
                 }
                 assert_eq!(view.selected_track, Some(selected));
                 assert!(view.error.is_none(), "{:?}", view.error);
-                assert!(view.active_native_device_drag.is_none());
+                assert!(view.device_panel.active_native_drag.is_none());
                 project.clone()
             });
             editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
@@ -354,7 +355,11 @@ fn header_effect_append_preserves_existing_instrument_effect_order_and_clip_sele
             original.track(target).unwrap().midi_clips()
         );
         assert_eq!(view.selected_clip, Some(clip));
-        assert!(view.last_enqueued_arrangement_device_drop.is_none());
+        assert!(
+            view.test_probes
+                .last_enqueued_arrangement_device_drop
+                .is_none()
+        );
     });
 }
 
@@ -409,10 +414,14 @@ fn header_drop_refuses_busy_stale_and_escape_without_changing_target_or_selectio
             editor.update(cx, |view, _| {
                 assert_eq!(view.state.as_ref().unwrap().project, original);
                 assert_eq!(view.selected_track, Some(selected));
-                assert!(view.last_enqueued_native_device_drop.is_none());
-                assert!(view.last_enqueued_arrangement_device_drop.is_none());
+                assert!(view.test_probes.last_enqueued_native_device_drop.is_none());
+                assert!(
+                    view.test_probes
+                        .last_enqueued_arrangement_device_drop
+                        .is_none()
+                );
                 assert!(view.pending_requests.is_empty());
-                assert!(view.active_native_device_drag.is_none());
+                assert!(view.device_panel.active_native_drag.is_none());
                 if refusal == 0 {
                     view.worker_requests_pending = 0;
                 }
@@ -483,7 +492,11 @@ fn header_effect_drop_on_real_imported_audio_keeps_media_and_clip_state(cx: &mut
         );
         assert_eq!(project.track(selected), original.track(selected));
         assert_eq!(view.selected_track, Some(selected));
-        assert!(view.last_enqueued_arrangement_device_drop.is_none());
+        assert!(
+            view.test_probes
+                .last_enqueued_arrangement_device_drop
+                .is_none()
+        );
     });
     assert_eq!(
         std::fs::read(path).unwrap(),
@@ -538,7 +551,7 @@ fn header_drop_preserves_invalid_track_gain_draft_without_admitting_an_edit(
     );
     editor.read_with(cx, |view, _| {
         assert!(
-            view.last_enqueued_native_device_drop.is_none(),
+            view.test_probes.last_enqueued_native_device_drop.is_none(),
             "invalid gain draft must block header insertion"
         );
         assert!(idle(view));
@@ -589,8 +602,8 @@ fn plain_drag_moves_a_device_to_the_end_of_another_track_header(cx: &mut TestApp
             let first = original.track(target).unwrap().devices()[0].id();
             let (handle, editor) = header_window(cx, service, state, source, mode);
             editor.update(cx, |view, cx| {
-                view.device_panel_active = true;
-                view.clip_view_open = true;
+                view.device_panel.active = true;
+                view.audio_detail.clip_view_open = true;
                 cx.notify();
             });
             let mut visual = VisualTestContext::from_window(handle, cx);
@@ -669,8 +682,8 @@ fn track_drag_moves_noncontiguous_selected_devices_in_chain_order(cx: &mut TestA
         let existing = original.track(target).unwrap().devices()[0].id();
         let (handle, editor) = header_window(cx, service, state, source, mode);
         editor.update(cx, |view, cx| {
-            view.device_panel_active = true;
-            view.clip_view_open = true;
+            view.device_panel.active = true;
+            view.audio_detail.clip_view_open = true;
             cx.notify();
         });
         let mut visual = VisualTestContext::from_window(handle, cx);
@@ -766,8 +779,8 @@ fn arrangement_device_lane_refuses_an_incompatible_instrument_and_a_stale_effect
     let revision = state.revision;
     let (handle, editor) = header_window(cx, service, state, source, EditorMode::Arrangement);
     editor.update(cx, |view, cx| {
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -801,8 +814,8 @@ fn arrangement_device_lane_refuses_an_incompatible_instrument_and_a_stale_effect
         editor.read_with(cx, |view, _| {
             assert_eq!(view.error.as_deref(), Some(expected));
             assert!(idle(view));
-            assert!(view.active_native_device_drag.is_none());
-            assert!(view.arrangement_device_preview.is_none());
+            assert!(view.device_panel.active_native_drag.is_none());
+            assert!(view.device_panel.arrangement_drop_preview.is_none());
             assert_eq!(view.state.as_ref().unwrap().revision, revision);
             assert_eq!(view.state.as_ref().unwrap().project, original);
             assert_eq!(view.selected_track, Some(source));
@@ -913,13 +926,13 @@ fn browser_device_double_click_appends_once_and_preserves_history(cx: &mut TestA
         visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
     }
     editor.read_with(&visual, |view, _| {
-        assert!(view.pending_plugin_effect.is_some());
+        assert!(view.device_panel.pending_plugin_effect.is_some());
         assert_eq!(view.state.as_ref().unwrap().project, original);
     });
     pump_until(&editor, cx, idle);
     let changed = editor.read_with(cx, |view, _| {
         assert!(view.error.is_none(), "{:?}", view.error);
-        assert!(view.pending_plugin_effect.is_none());
+        assert!(view.device_panel.pending_plugin_effect.is_none());
         let project = &view.state.as_ref().unwrap().project;
         assert_eq!(project.track(track).unwrap().devices().len(), 2);
         assert_eq!(

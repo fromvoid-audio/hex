@@ -216,44 +216,46 @@ pub(crate) fn parameter_display_override(
     {
         return Some(value);
     }
-    let gesture_value = view
-        .device_gesture
-        .snapshot()
-        .and_then(|snapshot| match snapshot.target {
-            GestureTarget::DeviceParameterSnapshot { device }
-                if device == key.device && snapshot.key.generation == view.project_generation =>
-            {
-                snapshot.parameters.and_then(|parameters| {
-                    parameters
-                        .entries()
-                        .iter()
-                        .find(|(id, _)| *id == key.parameter)
-                        .map(|(_, value)| *value)
-                })
-            }
-            GestureTarget::DeviceParameter { device, parameter }
-                if device == key.device && parameter == key.parameter =>
-            {
-                Some(snapshot.value)
-            }
-            GestureTarget::DeviceParameterPair { device, first, .. }
-                if device == key.device && first == key.parameter =>
-            {
-                Some(snapshot.value)
-            }
-            GestureTarget::DeviceParameterPair { device, second, .. }
-                if device == key.device && second == key.parameter =>
-            {
-                snapshot.secondary_value
-            }
-            _ => None,
-        });
+    let gesture_value =
+        view.device_panel
+            .gesture
+            .snapshot()
+            .and_then(|snapshot| match snapshot.target {
+                GestureTarget::DeviceParameterSnapshot { device }
+                    if device == key.device
+                        && snapshot.key.generation == view.project_generation =>
+                {
+                    snapshot.parameters.and_then(|parameters| {
+                        parameters
+                            .entries()
+                            .iter()
+                            .find(|(id, _)| *id == key.parameter)
+                            .map(|(_, value)| *value)
+                    })
+                }
+                GestureTarget::DeviceParameter { device, parameter }
+                    if device == key.device && parameter == key.parameter =>
+                {
+                    Some(snapshot.value)
+                }
+                GestureTarget::DeviceParameterPair { device, first, .. }
+                    if device == key.device && first == key.parameter =>
+                {
+                    Some(snapshot.value)
+                }
+                GestureTarget::DeviceParameterPair { device, second, .. }
+                    if device == key.device && second == key.parameter =>
+                {
+                    snapshot.secondary_value
+                }
+                _ => None,
+            });
     let pending_value = view.device_panel.pending_values.get(&key).copied();
     if pending_value.is_some()
         && view.worker_requests_pending == 0
         && view.pending_requests.is_empty()
-        && view.device_gesture_barriers.is_empty()
-        && view.device_gesture.snapshot().is_none()
+        && view.device_panel.gesture_barriers.is_empty()
+        && view.device_panel.gesture.snapshot().is_none()
     {
         view.device_panel.pending_values.remove(&key);
     }
@@ -342,8 +344,8 @@ pub(super) fn render_parameter(
     let generation = view.project_generation;
     let owner = cx.entity().downgrade();
     let pending = view.edit_pending()
-        || view.device_gesture.snapshot().is_some()
-        || !view.device_gesture_barriers.is_empty()
+        || view.device_panel.gesture.snapshot().is_some()
+        || !view.device_panel.gesture_barriers.is_empty()
         || view.device_panel.pending_values.contains_key(&key);
     let guard: std::rc::Rc<dyn Fn(&gpui::App) -> bool> = std::rc::Rc::new(move |app| {
         owner
@@ -354,8 +356,8 @@ pub(super) fn render_parameter(
                         .as_ref()
                         .is_some_and(|state| state.revision == revision)
                     && !view.edit_pending()
-                    && view.device_gesture.snapshot().is_none()
-                    && view.device_gesture_barriers.is_empty()
+                    && view.device_panel.gesture.snapshot().is_none()
+                    && view.device_panel.gesture_barriers.is_empty()
                     && !view.device_panel.pending_values.contains_key(&key)
                     && view.device_panel.controls.contains_key(&key)
             })
@@ -724,7 +726,7 @@ fn create_parameter_control(
                     let value = ParameterValue::Float(event.value as f32);
                     if event.phase == NumericEventPhase::Commit
                         && event_lease.get().is_none()
-                        && view.device_gesture.snapshot().is_none()
+                        && view.device_panel.gesture.snapshot().is_none()
                     {
                         let result = view
                             .begin_device_gesture(target, value)

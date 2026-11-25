@@ -186,7 +186,7 @@ fn fine_invalid_draft_and_stale_owner_cannot_change_the_project(cx: &mut TestApp
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project, original);
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
     });
     editor.update(cx, |view, cx| {
         view.selected_track = Some(track);
@@ -200,7 +200,7 @@ fn fine_invalid_draft_and_stale_owner_cannot_change_the_project(cx: &mut TestApp
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project, original);
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
         assert_eq!(
             view.device_panel.operator_pages[&device].selected_operator,
             0

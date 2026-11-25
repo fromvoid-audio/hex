@@ -342,7 +342,7 @@ fn open_play_menu(visual: &mut VisualTestContext) {
 
 fn wait_for_save(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
     let deadline = crate::test_wait::hang_deadline();
-    while editor.read_with(visual, |view, _| view.playback_settings.saving) {
+    while editor.read_with(visual, |view, _| view.settings.playback.saving) {
         visual.run_until_parked();
         assert!(
             Instant::now() < deadline,
@@ -374,10 +374,10 @@ fn playback_menu_order_session_availability_and_keyboard_save_keep_history_indep
     visual.simulate_keystrokes("down enter");
     wait_for_save(&editor, &mut visual);
     editor.update(&mut visual, |view, cx| {
-        assert!(!view.playback_settings.preferences.note_chase);
+        assert!(!view.settings.playback.preferences.note_chase);
         assert!(
             !hex_preferences::load_playback_preferences(
-                view.playback_settings.path.as_ref().unwrap()
+                view.settings.playback.path.as_ref().unwrap()
             )
             .unwrap()
             .note_chase
@@ -398,7 +398,7 @@ fn playback_menu_order_session_availability_and_keyboard_save_keep_history_indep
     // both the active checkmark and the user's existing malformed bytes.
     editor.update(&mut visual, |view, _| {
         std::fs::write(
-            view.playback_settings.path.as_ref().unwrap(),
+            view.settings.playback.path.as_ref().unwrap(),
             b"original malformed settings",
         )
         .unwrap();
@@ -406,10 +406,10 @@ fn playback_menu_order_session_availability_and_keyboard_save_keep_history_indep
     visual.simulate_keystrokes("enter");
     wait_for_save(&editor, &mut visual);
     editor.read_with(&visual, |view, _| {
-        assert!(!view.playback_settings.preferences.note_chase);
+        assert!(!view.settings.playback.preferences.note_chase);
         assert!(view.error.as_ref().unwrap().contains("could not save"));
         assert_eq!(
-            std::fs::read(view.playback_settings.path.as_ref().unwrap()).unwrap(),
+            std::fs::read(view.settings.playback.path.as_ref().unwrap()).unwrap(),
             b"original malformed settings"
         );
     });
@@ -423,7 +423,7 @@ fn disabled_popup_row_ignores_pointer_enter_and_navigation_skips_it(cx: &mut Tes
         Arc::default(),
     );
     editor.update(cx, |view, cx| {
-        view.playback_settings.saving = true;
+        view.settings.playback.saving = true;
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -445,7 +445,7 @@ fn disabled_popup_row_ignores_pointer_enter_and_navigation_skips_it(cx: &mut Tes
     visual.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
     editor.read_with(&visual, |view, _| {
-        assert!(view.playback_settings.preferences.note_chase);
+        assert!(view.settings.playback.preferences.note_chase);
         assert!(view.context_menu.is_some());
         assert!(view.prepared_seek.is_none());
     });
@@ -466,17 +466,17 @@ fn playback_option_revalidates_stale_and_disabled_actions_and_surfaces_load_erro
             enabled: true,
             checked: true,
         };
-        view.playback_settings.preferences.note_chase = false;
+        view.settings.playback.preferences.note_chase = false;
         view.note_chase_menu_action(action.clone(), cx);
-        assert!(!view.playback_settings.saving);
-        assert!(!view.playback_settings.preferences.note_chase);
+        assert!(!view.settings.playback.saving);
+        assert!(!view.settings.playback.preferences.note_chase);
         assert!(view.error.as_ref().unwrap().contains("settings changed"));
         for state in ["loading", "saving", "unwritable"] {
-            view.playback_settings.preferences.note_chase = true;
-            view.playback_settings.loading = state == "loading";
-            view.playback_settings.saving = state == "saving";
-            view.playback_settings.writable = state != "unwritable";
-            view.playback_settings.error = Some("playback settings could not be read".into());
+            view.settings.playback.preferences.note_chase = true;
+            view.settings.playback.loading = state == "loading";
+            view.settings.playback.saving = state == "saving";
+            view.settings.playback.writable = state != "unwritable";
+            view.settings.playback.error = Some("playback settings could not be read".into());
             view.note_chase_menu_action(
                 NoteChaseAction {
                     enabled: false,
@@ -484,17 +484,17 @@ fn playback_option_revalidates_stale_and_disabled_actions_and_surfaces_load_erro
                 },
                 cx,
             );
-            assert!(view.playback_settings.preferences.note_chase);
-            assert_eq!(view.playback_settings.saving, state == "saving");
+            assert!(view.settings.playback.preferences.note_chase);
+            assert_eq!(view.settings.playback.saving, state == "saving");
             assert!(view.error.as_ref().unwrap().contains("could not be read"));
         }
-        view.playback_settings.loading = false;
-        view.playback_settings.saving = false;
-        view.playback_settings.writable = true;
+        view.settings.playback.loading = false;
+        view.settings.playback.saving = false;
+        view.settings.playback.writable = true;
         view.project_generation += 1;
         view.note_chase_menu_action(action, cx);
-        assert!(!view.playback_settings.saving);
-        assert!(view.playback_settings.preferences.note_chase);
+        assert!(!view.settings.playback.saving);
+        assert!(view.settings.playback.preferences.note_chase);
     });
 }
 
@@ -529,11 +529,11 @@ fn saved_play_menu_toggle_controls_held_midi_on_the_next_arrangement_start(
         wait_for_save(&editor, &mut visual);
         editor.read_with(&visual, |view, _| {
             let saved = hex_preferences::load_playback_preferences(
-                view.playback_settings.path.as_ref().unwrap(),
+                view.settings.playback.path.as_ref().unwrap(),
             )
             .unwrap();
             assert_eq!(saved.note_chase, enabled);
-            assert_eq!(view.playback_settings.preferences.note_chase, enabled);
+            assert_eq!(view.settings.playback.preferences.note_chase, enabled);
             assert!(!view.audio_status().unwrap().playing.load(Acquire));
         });
 

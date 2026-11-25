@@ -79,13 +79,13 @@ fn t_uses_existing_insert_track_and_one_canonical_undo(cx: &mut TestAppContext) 
     visual.simulate_keystrokes("t");
     let command = editor.read_with(&visual, |view, _| {
         assert!(matches!(
-            &view.last_enqueued_edit,
+            &view.test_probes.last_enqueued_edit,
             Some(Command::InsertDefaultTrackWithGain {
                 before_track: None,
                 ..
             })
         ));
-        view.last_enqueued_edit.clone().unwrap()
+        view.test_probes.last_enqueued_edit.clone().unwrap()
     });
     let mut canonical = Editor::new(original.clone(), 8).unwrap();
     let Created::Track(id) = canonical.execute(command).unwrap() else {
@@ -169,7 +169,7 @@ fn t_preserves_browser_and_clip_name_text_focus(cx: &mut TestAppContext) {
         visual.simulate_keystrokes("t");
         visual.update(|window, _| assert!(focus.is_focused(window)));
         editor.read_with(&visual, |view, _| {
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
             assert_eq!(view.worker_requests_pending, 0);
         });
     }
@@ -198,9 +198,9 @@ fn empty_track_fixture_catalog_job_owns_same_root_after_view_and_caller_drop(
         assert_eq!(view.browser.directory, root.join("samples"));
         [
             view.browser.test_preferences_path().to_owned(),
-            view.recent_projects.test_path().to_owned(),
-            view.theme_settings.test_path().to_owned(),
-            view.project_directory.test_path().to_owned(),
+            view.settings.recent_projects.test_path().to_owned(),
+            view.settings.theme.test_path().to_owned(),
+            view.settings.project_directory.test_path().to_owned(),
         ]
     });
     for (path, name) in paths.iter().zip([

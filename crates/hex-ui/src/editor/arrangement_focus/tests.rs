@@ -314,7 +314,7 @@ fn q_filters_tracks_but_keeps_outside_clips_and_hits_without_editing_history(
             v.state.as_ref().unwrap().project.as_ref(),
             f.model.project()
         );
-        assert!(v.last_enqueued_edit.is_none());
+        assert!(v.test_probes.last_enqueued_edit.is_none());
         assert!(!v.state.as_ref().unwrap().can_undo);
         let lane = v.drag_lanes[&f.tracks[1]];
         let x = f32::from(before.center().x);
@@ -425,7 +425,7 @@ fn toggle_tracks_section_selection_and_ignores_loop_changes(cx: &mut TestAppCont
     editor.read_with(&visual, |v, _| {
         assert!(v.arrangement_focus.projection.enabled);
         assert_eq!(v.arrangement_focus.projection.indices, [0, 1, 2, 3, 4]);
-        assert!(v.last_enqueued_edit.is_none());
+        assert!(v.test_probes.last_enqueued_edit.is_none());
     });
     visual.simulate_keystrokes("q");
     visual.run_until_parked();
@@ -523,7 +523,9 @@ fn q_respects_text_repeat_modifiers_and_filtered_drag_geometry(cx: &mut TestAppC
     visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds("track-insertion-line").is_none());
-    editor.read_with(&visual, |v, _| assert!(v.last_enqueued_edit.is_none()));
+    editor.read_with(&visual, |v, _| {
+        assert!(v.test_probes.last_enqueued_edit.is_none())
+    });
 }
 
 #[gpui::test]

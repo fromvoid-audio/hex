@@ -12,11 +12,11 @@ use timing::{arrangement_destination, arrangement_source_beat};
 impl EditorView {
     pub(super) fn midi_editor_cursor_play_start(&self) -> Option<u64> {
         let clip = self.detail_clip_id()?;
-        if self.piano_view_clip != Some((self.project_generation, clip)) {
+        if self.midi_editor.piano_view_clip != Some((self.project_generation, clip)) {
             return None;
         }
         let project = &self.state.as_ref()?.project;
-        arrangement_destination(project, clip, BeatTime::from_raw(self.midi_marker?))
+        arrangement_destination(project, clip, BeatTime::from_raw(self.midi_editor.marker?))
             .ok()
             .flatten()
     }
@@ -55,7 +55,7 @@ impl EditorView {
             )
         });
         let snapshot = self.audio.as_ref().and_then(|audio| {
-            self.session_routes.matching_snapshot(
+            self.session_grid.routes.matching_snapshot(
                 audio.control.output_identity()?,
                 audible,
                 revision,
@@ -66,14 +66,15 @@ impl EditorView {
             self.error = Some("wait for the current clip audio before cueing".into());
             return;
         };
-        let ready = self.session_routes.routes_available(
+        let ready = self.session_grid.routes.routes_available(
             snapshot,
             &state.project,
             revision,
             self.project_generation,
         );
         let route = self
-            .session_routes
+            .session_grid
+            .routes
             .entry_for_track(snapshot, ready, track.value());
         if !route.is_some_and(|route| {
             route.owner
@@ -119,7 +120,7 @@ impl EditorView {
         {
             return None;
         }
-        let snapshot = self.session_routes.matching_snapshot(
+        let snapshot = self.session_grid.routes.matching_snapshot(
             audio.control.output_identity()?,
             Some((
                 audible.audio_revision,
@@ -137,7 +138,7 @@ impl EditorView {
             }
             (placement.source(), placement.playback_offset())
         } else {
-            let (selected_track, scene) = self.selected_cell?;
+            let (selected_track, scene) = self.session_grid.selected_cell?;
             if selected_track != track.id() {
                 return None;
             }
@@ -149,9 +150,10 @@ impl EditorView {
             }
         };
         let phase = if let Some(placement) = placement {
-            let route = self
-                .session_routes
-                .entry_for_track(snapshot, true, track.id().value())?;
+            let route =
+                self.session_grid
+                    .routes
+                    .entry_for_track(snapshot, true, track.id().value())?;
             if route.owner != SessionRouteOwner::Arrangement {
                 return None;
             }
@@ -163,9 +165,10 @@ impl EditorView {
             )?;
             arrangement_source_beat(placement, elapsed)?
         } else {
-            let route = self
-                .session_routes
-                .entry_for_track(snapshot, true, track.id().value())?;
+            let route =
+                self.session_grid
+                    .routes
+                    .entry_for_track(snapshot, true, track.id().value())?;
             if route.owner
                 != (SessionRouteOwner::Session {
                     clip_id: clip.value(),

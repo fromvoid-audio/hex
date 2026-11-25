@@ -25,10 +25,10 @@ impl EditorView {
         drag: &BrowserAudioDrag,
         destination: BrowserDropDestination,
     ) -> bool {
-        if self.pending_sample_drop.is_some() {
+        if self.browser.pending_sample_drop.is_some() {
             return false;
         }
-        self.pending_sample_drop = Some(PendingSampleDrop {
+        self.browser.pending_sample_drop = Some(PendingSampleDrop {
             receipt: Receipt::new(self.project_generation),
             path: drag.path.clone(),
             project_asset: drag.project_asset,
@@ -40,14 +40,14 @@ impl EditorView {
         if self.enqueue(request) {
             true
         } else {
-            self.pending_sample_drop = None;
+            self.browser.pending_sample_drop = None;
             false
         }
     }
 
     pub(super) fn pending_sample_drop_matches(&self, request: &Request) -> bool {
         use hex_session::import_batch::AudioBatchDestination;
-        let Some(drop) = &self.pending_sample_drop else {
+        let Some(drop) = &self.browser.pending_sample_drop else {
             return false;
         };
         drop.receipt.is_queued()
@@ -149,32 +149,34 @@ impl EditorView {
     }
 
     pub(super) fn sample_drop_submitted(&mut self) {
-        if let Some(drop) = &mut self.pending_sample_drop {
+        if let Some(drop) = &mut self.browser.pending_sample_drop {
             drop.receipt.submitted(self.worker_requests_pending);
         }
     }
 
     pub(super) fn sample_drop_complete(&mut self, event: &Event) {
-        if let Some(drop) = &mut self.pending_sample_drop
+        if let Some(drop) = &mut self.browser.pending_sample_drop
             && drop.receipt.observe(
                 self.project_generation,
                 event.project_replaced,
                 event.request_complete,
             ) != Disposition::Waiting
         {
-            self.pending_sample_drop = None;
+            self.browser.pending_sample_drop = None;
         }
     }
 
     pub(super) fn sample_drop_target(&self) -> Option<BrowserDropDestination> {
-        self.pending_sample_drop
+        self.browser
+            .pending_sample_drop
             .as_ref()
             .map(|drop| drop.destination)
             .or_else(|| self.displayed_browser_audio_drag()?.destination.get())
     }
 
     pub(super) fn displayed_browser_audio_drag(&self) -> Option<&BrowserAudioDrag> {
-        self.active_browser_audio_drag
+        self.browser
+            .active_audio_drag
             .as_ref()
             .filter(|drag| self.browser_audio_drag_is_current(drag))
     }

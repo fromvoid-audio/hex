@@ -190,7 +190,7 @@ fn waveform_cycle_updates_from_real_partial_edits_and_undo(cx: &mut TestAppConte
     );
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture.snapshot().is_none()
             && view.state.as_ref().is_some_and(|state| {
                 operator_parameter_value(state, track, device, 57) == ParameterValue::Choice(4)
             })

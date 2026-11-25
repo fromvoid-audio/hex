@@ -4,7 +4,8 @@ use super::*;
 impl EditorView {
     pub(in crate::editor) fn floating_browser_audio_drag_ghost(&self, scale: f32) -> Option<Div> {
         let payload = self
-            .active_browser_audio_drag
+            .browser
+            .active_audio_drag
             .as_ref()
             .filter(|drag| self.browser_audio_drag_is_current(drag))?;
         if let Some(drag::BrowserDropDestination::NewTrack {

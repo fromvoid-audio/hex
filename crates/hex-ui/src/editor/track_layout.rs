@@ -267,39 +267,39 @@ impl EditorView {
             || self.sections.naming()
             || self.sections.held()
             || self.section_install_pending()
-            || self.tuning.open
-            || self.theme_settings.open
-            || self.changelog.is_open()
+            || self.settings.tuning.open
+            || self.settings.theme.open
+            || self.settings.changelog.is_open()
             || self.controller_input_is_open()
             || self.context_menu.is_some()
-            || (self.clip_view_open
-                && self.device_panel_active
+            || (self.audio_detail.clip_view_open
+                && self.device_panel.active
                 && self.device_panel.add_menu_is_open(self.state.as_deref()))
-            || self.send_menu_track.is_some()
+            || self.session_grid.send_menu_track.is_some()
             || self.project_tempo_editing(cx)
             || self.gain_numeric_editing(cx)
-            || self.sampler_parameter.numeric_draft_active()
+            || self.device_panel.sampler_parameter.numeric_draft_active()
             || self.track_gain_controls.has_pending_draft(cx)
             || super::device_panel::pending_send(self, cx).is_some()
             || self.gain_lane.pointer_is_active()
             || self.automation_view.devices.pointer_active()
             || self.clip_numeric_editing(cx)
-            || self.project_open.busy()
-            || self.pending_open_path.is_some()
-            || self.export_dialog_open
-            || self.save_dialog_open
-            || self.preset_dialog_open
+            || self.persistence.project_open.busy()
+            || self.persistence.pending_open_path.is_some()
+            || self.persistence.export_dialog_open
+            || self.persistence.save_dialog_open
+            || self.device_panel.preset_dialog_open
             || self.arrangement_pan.is_some()
             || self.pointer_down.is_some()
-            || self.project_spectrum.resize_is_active()
-            || self.clip_detail_resize.is_active()
+            || self.device_panel.project_spectrum.resize_is_active()
+            || self.audio_detail.detail_resize.is_active()
             || self.device_panel.navigation.is_active()
             || self.clip_paint_gesture.is_some()
             || self.active_clip_drag.is_some()
-            || self.active_browser_audio_drag.is_some()
-            || self.active_native_device_drag.is_some()
+            || self.browser.active_audio_drag.is_some()
+            || self.device_panel.active_native_drag.is_some()
             || self.active_trim_drag.is_some()
-            || self.active_midi_trim_drag.is_some()
+            || self.midi_editor.active_trim_drag.is_some()
             || self.active_fade_drag.is_some()
             || self.time_selection_gesture.is_some()
             || self.time_range_move_gesture.is_some()
@@ -911,12 +911,12 @@ impl EditorView {
             || self.time_range_move_gesture.is_some()
             || self.loop_rail_gesture.is_some()
             || self.locked_play_start_drag_active()
-            || self.active_browser_audio_drag.is_some()
+            || self.browser.active_audio_drag.is_some()
             || self.active_clip_drag.is_some()
             || self.active_trim_drag.is_some()
-            || self.active_midi_trim_drag.is_some()
+            || self.midi_editor.active_trim_drag.is_some()
             || self.active_fade_drag.is_some()
-            || self.active_native_device_drag.is_some()
+            || self.device_panel.active_native_drag.is_some()
         {
             return;
         }
@@ -1203,7 +1203,7 @@ mod tests {
         visual.simulate_input("invalid");
         editor.read_with(&visual, |view, _| {
             assert!(
-                !view.sampler_parameter.numeric_draft_active(),
+                !view.device_panel.sampler_parameter.numeric_draft_active(),
                 "sampler draft began while gain point was held"
             );
         });
@@ -1222,7 +1222,7 @@ mod tests {
         visual.simulate_keystrokes("cmd-a");
         visual.simulate_input("invalid");
         editor.read_with(&visual, |view, _| {
-            assert!(view.sampler_parameter.numeric_draft_active())
+            assert!(view.device_panel.sampler_parameter.numeric_draft_active())
         });
     }
 
@@ -1255,20 +1255,20 @@ mod tests {
         visual.simulate_input("invalid");
         editor.read_with(&visual, |view, _| {
             assert!(
-                view.sampler_parameter.numeric_draft_active(),
+                view.device_panel.sampler_parameter.numeric_draft_active(),
                 "sampler text must be active before the automation press"
             )
         });
         let at = dotted_lane_point(&mut visual, device, target, 0.6);
         editor.read_with(&visual, |view, _| {
             assert!(
-                view.sampler_parameter.numeric_draft_active(),
+                view.device_panel.sampler_parameter.numeric_draft_active(),
                 "sampler text must survive a repaint"
             )
         });
         visual.simulate_mouse_down(at, MouseButton::Left, CMD);
         editor.read_with(&visual, |view, cx| {
-            assert!(view.sampler_parameter.numeric_draft_active());
+            assert!(view.device_panel.sampler_parameter.numeric_draft_active());
             assert_eq!(
                 crate::editor::sampler_parameter::tests::sampler_text(view, cx),
                 "invalid"
@@ -1297,7 +1297,7 @@ mod tests {
         visual.simulate_mouse_down(sampler_at, MouseButton::Left, Modifiers::default());
         editor.read_with(&visual, |view, _| {
             assert!(view.automation_view.devices.point_draft_active());
-            assert!(!view.sampler_parameter.numeric_draft_active());
+            assert!(!view.device_panel.sampler_parameter.numeric_draft_active());
         });
         visual.simulate_mouse_up(next, MouseButton::Left, CMD);
         pump(&mut visual, &editor);

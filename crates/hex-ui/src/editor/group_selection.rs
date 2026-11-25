@@ -7,13 +7,13 @@ impl EditorView {
     pub(super) fn group_selected_clips(&mut self, window: &Window) {
         if self.mode != EditorMode::Arrangement
             || !self.focus.is_focused(window)
-            || self.midi_focus.is_focused(window)
-            || self.audio_event_focus.is_focused(window)
+            || self.midi_editor.focus.is_focused(window)
+            || self.audio_detail.focus.is_focused(window)
             || self.computer_keyboard.accepts_key("g")
         {
             return;
         }
-        if self.close_prompt_open {
+        if self.persistence.close_prompt_open {
             self.error = Some("finish the close action before editing".into());
             return;
         }

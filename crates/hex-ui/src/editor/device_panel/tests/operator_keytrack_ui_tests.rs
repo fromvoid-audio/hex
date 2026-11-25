@@ -69,8 +69,8 @@ fn primary_keytrack_rails_fit_rows_and_commit_independent_canonical_history(
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         pump_until(&editor, cx, |view| {
             view.worker_requests_pending==0
-            && view.pending_requests.is_empty() && view.device_gesture_barriers.is_empty()
-            && view.device_gesture.snapshot().is_none()
+            && view.pending_requests.is_empty() && view.device_panel.gesture_barriers.is_empty()
+            && view.device_panel.gesture.snapshot().is_none()
             && view.state.as_ref().is_some_and(|s|matches!(operator_parameter_value(s,track,device,613+operator as u32),ParameterValue::Float(v) if v<100.0 && v>0.0))
         });
         let accepted = editor.read_with(cx, |view, _| {
@@ -164,8 +164,8 @@ fn released_keytrack_fill_survives_completed_repaints_until_terminal_ack(cx: &mu
     );
     editor.update(cx, |view, cx| {
         view.selected_track = Some(track);
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -194,7 +194,7 @@ fn released_keytrack_fill_survives_completed_repaints_until_terminal_ack(cx: &mu
                 view.device_panel.operator_pages[&device].selected_operator,
                 0
             );
-            assert!(view.device_gesture.has_pending_terminal());
+            assert!(view.device_panel.gesture.has_pending_terminal());
         });
     }
 }
@@ -226,6 +226,6 @@ fn cached_keytrack_focus_cannot_edit_a_stale_or_hidden_owner(cx: &mut TestAppCon
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project, original);
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
     });
 }

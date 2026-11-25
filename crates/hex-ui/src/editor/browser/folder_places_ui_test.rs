@@ -578,12 +578,12 @@ fn existing_audio_device_escape_precede_folder_fallback_and_idle_escape_clears_q
     let row = row_for(&editor, visual, &samples.join("file.wav"));
     begin_folder_drag(visual, row);
     editor.read_with(visual, |view, _| {
-        assert!(view.active_browser_audio_drag.is_some())
+        assert!(view.browser.active_audio_drag.is_some())
     });
     visual.simulate_keystrokes("escape");
     editor.read_with(visual, |view, cx| {
         assert!(
-            view.active_browser_audio_drag.is_none(),
+            view.browser.active_audio_drag.is_none(),
             "existing audio cancellation branch must run"
         );
         assert_eq!(
@@ -608,13 +608,13 @@ fn existing_audio_device_escape_precede_folder_fallback_and_idle_escape_clears_q
         Modifiers::default(),
     );
     editor.read_with(visual, |view, _| {
-        assert!(view.active_native_device_drag.is_some())
+        assert!(view.device_panel.active_native_drag.is_some())
     });
     assert!(visual.update(|_, cx| cx.has_active_drag()));
     visual.simulate_keystrokes("escape");
     editor.read_with(visual, |view, cx| {
         assert!(
-            view.active_native_device_drag.is_none(),
+            view.device_panel.active_native_drag.is_none(),
             "existing device cancellation branch must run"
         );
         assert_eq!(view.browser.search.read(cx).text(), "sine");

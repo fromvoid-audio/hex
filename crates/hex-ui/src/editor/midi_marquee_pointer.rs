@@ -49,23 +49,23 @@ impl Surface {
 impl EditorView {
     fn held_marquee(&self, velocity: bool) -> Option<&Marquee> {
         if velocity {
-            self.midi_velocity.marquee()
+            self.midi_editor.velocity.marquee()
         } else {
-            self.midi_marquee.as_ref()
+            self.midi_editor.marquee.as_ref()
         }
     }
     fn take_held_marquee(&mut self, velocity: bool) -> Option<Marquee> {
         if velocity {
-            self.midi_velocity.take_marquee()
+            self.midi_editor.velocity.take_marquee()
         } else {
-            self.midi_marquee.take()
+            self.midi_editor.marquee.take()
         }
     }
     fn install_held_marquee(&mut self, velocity: bool, marquee: Marquee) {
         if velocity {
-            self.midi_velocity.install_marquee(marquee);
+            self.midi_editor.velocity.install_marquee(marquee);
         } else {
-            self.midi_marquee = Some(marquee);
+            self.midi_editor.marquee = Some(marquee);
         }
     }
     fn owns_marquee_pointer(&self, key: Key) -> bool {
@@ -88,14 +88,14 @@ impl EditorView {
         false
     }
     fn marquee_pointer_visible(&self, velocity: bool, window: &Window) -> bool {
-        self.clip_view_open
-            && !self.device_panel_active
+        self.audio_detail.clip_view_open
+            && !self.device_panel.active
             && self.context_menu.is_none()
-            && self.midi_focus.is_focused(window)
+            && self.midi_editor.focus.is_focused(window)
             && if velocity {
-                self.midi_velocity.is_open()
+                self.midi_editor.velocity.is_open()
             } else {
-                !self.midi_draw_mode
+                !self.midi_editor.draw_mode
             }
     }
     pub(in crate::editor) fn capture_midi_marquee_pointer(
@@ -160,7 +160,9 @@ impl EditorView {
                     ];
                     let result = context
                         .ok_or("midi marquee source changed")
-                        .and_then(|c| surface.update(&mut marquee, c, &view.midi_selection, last))
+                        .and_then(|c| {
+                            surface.update(&mut marquee, c, &view.midi_editor.selection, last)
+                        })
                         .and_then(|_| view.apply_live_midi_marquee(&mut marquee, &previous));
                     match result {
                         Ok(()) if released.is_none() => {
@@ -179,7 +181,7 @@ impl EditorView {
                                     event.modifiers.platform,
                                 )
                             {
-                                view.midi_marker = Some(beat);
+                                view.midi_editor.marker = Some(beat);
                             }
                         }
                         Err(error) => {
@@ -216,18 +218,18 @@ impl EditorView {
         let Some(state) = &self.state else {
             return;
         };
-        let pitch = self.piano_pitch;
+        let pitch = self.midi_editor.piano_pitch;
         let context = MarqueeContext {
             scene: super::super::midi_scene::SceneKey {
                 generation: self.project_generation,
                 revision: state.revision,
                 clip,
-                beat_start: self.piano_beat_start,
-                beat_span: self.piano_beat_span.raw(),
+                beat_start: self.midi_editor.piano_beat_start,
+                beat_span: self.midi_editor.piano_beat_span.raw(),
                 pitch,
             },
             bounds,
-            selection_epoch: self.midi_selection.epoch(),
+            selection_epoch: self.midi_editor.selection.epoch(),
         };
         if self
             .held_marquee(velocity)

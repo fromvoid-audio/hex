@@ -11,7 +11,7 @@ impl EditorView {
         if self.mode != EditorMode::Arrangement
             || self.selected_clip.is_some()
             || self.selected_track.is_some()
-            || self.focused_return.is_some()
+            || self.session_grid.focused_return.is_some()
             || self.device_panel.main_selected != Some(self.project_generation)
         {
             return Ok(None);

@@ -398,8 +398,8 @@ mod owner_reset_tests {
         visual.simulate_resize(size(px(1800.0), px(900.0)));
         editor.update(&mut visual, |view, cx| {
             view.selected_track = Some(tracks[0]);
-            view.device_panel_active = true;
-            view.clip_view_open = true;
+            view.device_panel.active = true;
+            view.audio_detail.clip_view_open = true;
             view.mode = crate::editor::EditorMode::Arrangement;
             cx.notify();
         });
@@ -424,7 +424,7 @@ mod owner_reset_tests {
         // allowed to proceed, and verify owner switch clears caches and cancels the graph capture.
         start_graph_drag(&mut visual, &eq_graph, 1);
         editor.update(&mut visual, |view, cx| {
-            view.device_gesture.reset();
+            view.device_panel.gesture.reset();
             view.selected_track = Some(tracks[1]);
             cx.notify();
         });
@@ -481,8 +481,8 @@ mod owner_reset_tests {
         visual.simulate_resize(size(px(1800.0), px(900.0)));
         editor.update(&mut visual, |view, cx| {
             view.selected_track = Some(tracks[0]);
-            view.device_panel_active = true;
-            view.clip_view_open = true;
+            view.device_panel.active = true;
+            view.audio_detail.clip_view_open = true;
             view.mode = crate::editor::EditorMode::Arrangement;
             cx.notify();
         });

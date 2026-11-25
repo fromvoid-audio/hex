@@ -217,8 +217,8 @@ pub(in crate::editor) fn actor_editor_window(
             editor.update(cx, |view, cx| {
                 view.state = Some(state);
                 view.selected_track = Some(track);
-                view.device_panel_active = true;
-                view.clip_view_open = true;
+                view.device_panel.active = true;
+                view.audio_detail.clip_view_open = true;
                 view.mode = super::super::EditorMode::Session;
                 cx.notify();
             });
@@ -249,8 +249,8 @@ pub(in crate::editor) fn pump_until(
                 "worker={} queued={} gesture={:?} barriers={} error={:?} revision={:?}",
                 view.worker_requests_pending,
                 view.pending_requests.len(),
-                view.device_gesture.snapshot(),
-                view.device_gesture_barriers.len(),
+                view.device_panel.gesture.snapshot(),
+                view.device_panel.gesture_barriers.len(),
                 view.error,
                 view.state.as_ref().map(|state| state.revision)
             ))
@@ -508,7 +508,7 @@ fn main_and_return_device_chains_support_multi_selection(cx: &mut TestAppContext
             ];
             let (handle, editor) = actor_editor_window(cx, service, state, track);
             editor.update(cx, |view, cx| {
-                view.focused_return = Some(return_id);
+                view.session_grid.focused_return = Some(return_id);
                 cx.notify();
             });
             let mut visual = VisualTestContext::from_window(handle, cx);
@@ -538,7 +538,7 @@ fn main_and_return_device_chains_support_multi_selection(cx: &mut TestAppContext
                 assert!(view.device_panel.is_selected(second_return));
             });
             editor.update(cx, |view, cx| {
-                view.focused_return = None;
+                view.session_grid.focused_return = None;
                 view.selected_track = None;
                 view.device_panel.main_selected = Some(view.project_generation);
                 cx.notify();
@@ -685,8 +685,8 @@ fn device_playback_fixture(cx: &mut TestAppContext) -> (WorkerUiFixture, TrackId
         let track = &view.state.as_ref().unwrap().project.tracks()[0];
         let ids = (track.id(), track.devices()[0].id());
         view.selected_track = Some(ids.0);
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         view.mode = crate::editor::EditorMode::Session;
         cx.notify();
         ids
@@ -845,7 +845,7 @@ fn return_device_control_click_selects_without_stealing_its_gesture(cx: &mut Tes
     let (service, state, track, return_track, device, _) = actor_return_utility_fixture();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
-        view.focused_return = Some(return_track);
+        view.session_grid.focused_return = Some(return_track);
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -869,7 +869,7 @@ fn return_device_control_click_selects_without_stealing_its_gesture(cx: &mut Tes
     visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
     editor.read_with(cx, |view, _| {
         assert_eq!(view.device_panel.selected_device, Some(device));
-        assert!(view.device_gesture.snapshot().is_some());
+        assert!(view.device_panel.gesture.snapshot().is_some());
     });
     visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
@@ -888,10 +888,12 @@ fn return_device_control_click_selects_without_stealing_its_gesture(cx: &mut Tes
         assert_eq!(view.device_panel.selected_device, Some(device))
     });
     editor.update(cx, |view, cx| {
-        view.focused_return = None;
+        view.session_grid.focused_return = None;
         cx.notify();
     });
-    pump_until(&editor, cx, |view| view.device_gesture.snapshot().is_none());
+    pump_until(&editor, cx, |view| {
+        view.device_panel.gesture.snapshot().is_none()
+    });
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(view.device_panel.selected_device, None)
@@ -1011,8 +1013,8 @@ fn browser_device_drop_uses_hovered_card_half_and_commits_before_target(cx: &mut
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
         view.browser.section = crate::editor::browser::BrowserSection::Instruments;
-        view.clip_view_open = false;
-        view.device_panel_active = false;
+        view.audio_detail.clip_view_open = false;
+        view.device_panel.active = false;
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -1039,8 +1041,11 @@ fn browser_device_drop_uses_hovered_card_half_and_commits_before_target(cx: &mut
     visual.run_until_parked();
     assert!(visual.debug_bounds("device-panel").is_some());
     editor.read_with(cx, |view, _| {
-        assert!(view.clip_view_open, "browser drag reveals the closed pane");
-        assert!(view.device_panel_active);
+        assert!(
+            view.audio_detail.clip_view_open,
+            "browser drag reveals the closed pane"
+        );
+        assert!(view.device_panel.active);
         assert_eq!(view.selected_track, Some(track));
     });
     let card_selector =
@@ -1056,7 +1061,8 @@ fn browser_device_drop_uses_hovered_card_half_and_commits_before_target(cx: &mut
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let drag = view
-            .active_native_device_drag
+            .device_panel
+            .active_native_drag
             .as_ref()
             .expect("native device drag remains active over rail");
         assert_eq!(
@@ -1080,19 +1086,19 @@ fn browser_device_drop_uses_hovered_card_half_and_commits_before_target(cx: &mut
     });
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(hex_engine::PlaybackCommand::PlayFrom(0)),
             "Space immediately after the device drop must reach transport"
         );
     });
-    editor.update(cx, |view, _| view.last_transport_command = None);
+    editor.update(cx, |view, _| view.test_probes.last_transport_command = None);
     visual.simulate_event(gpui::KeyDownEvent {
         keystroke: gpui::Keystroke::parse("space").unwrap(),
         is_held: true,
     });
     editor.read_with(cx, |view, _| {
         assert!(
-            view.last_transport_command.is_none(),
+            view.test_probes.last_transport_command.is_none(),
             "held Space must not toggle playback repeatedly"
         )
     });
@@ -1117,9 +1123,12 @@ fn browser_device_drop_uses_hovered_card_half_and_commits_before_target(cx: &mut
             .devices();
         assert_eq!(devices[1].id(), existing);
         assert_ne!(devices[0].id(), existing);
-        assert!(view.active_native_device_drag.is_none());
-        assert!(view.clip_view_open, "successful drop keeps the pane open");
-        assert!(view.device_panel_active);
+        assert!(view.device_panel.active_native_drag.is_none());
+        assert!(
+            view.audio_detail.clip_view_open,
+            "successful drop keeps the pane open"
+        );
+        assert!(view.device_panel.active);
     });
 }
 
@@ -1154,10 +1163,9 @@ fn device_drop_then_space_does_not_start_when_worker_refuses_stale_drop(cx: &mut
         view.toggle_play();
     });
     let deadline = crate::test_wait::hang_deadline();
-    while fixture
-        .editor
-        .read_with(cx, |view, _| view.pending_plugin_effect.is_some())
-    {
+    while fixture.editor.read_with(cx, |view, _| {
+        view.device_panel.pending_plugin_effect.is_some()
+    }) {
         pump_device_playback(&mut fixture, cx);
         assert!(
             std::time::Instant::now() < deadline,
@@ -1324,7 +1332,8 @@ fn fm4_browser_drop_admits_builtin_instrument_in_fixed_panel(cx: &mut TestAppCon
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.active_native_device_drag
+            view.device_panel
+                .active_native_drag
                 .as_ref()
                 .and_then(|drag| drag.destination.get())
                 .map(|target| target.before),
@@ -1440,7 +1449,8 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let target = view
-            .active_native_device_drag
+            .device_panel
+            .active_native_drag
             .as_ref()
             .and_then(|drag| drag.destination.get())
             .expect("drop target over effect card");
@@ -1499,7 +1509,8 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let target = view
-            .active_native_device_drag
+            .device_panel
+            .active_native_drag
             .as_ref()
             .and_then(|drag| drag.destination.get())
             .expect("replacement target on right side of wide card");
@@ -1520,6 +1531,7 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let drop = view
+            .test_probes
             .last_enqueued_native_device_drop
             .expect("replacement drop request");
         assert_eq!(drop.project_generation, view.project_generation);
@@ -1765,7 +1777,7 @@ fn eq8_panel_renders_on_regular_and_return_tracks_and_retires_on_owner_switch(
         );
     }
     editor.update(cx, |view, cx| {
-        view.focused_return = Some(return_track);
+        view.session_grid.focused_return = Some(return_track);
         cx.notify();
     });
     visual.run_until_parked();
@@ -1782,7 +1794,7 @@ fn eq8_panel_renders_on_regular_and_return_tracks_and_retires_on_owner_switch(
         assert!(view.device_panel.eq8_panels.contains_key(&return_device));
     });
     editor.update(cx, |view, cx| {
-        view.focused_return = None;
+        view.session_grid.focused_return = None;
         cx.notify();
     });
     visual.run_until_parked();
@@ -2383,7 +2395,7 @@ fn operator_envelope_graph_keyboard_edit_is_canonical_undoable_and_persistent(
     visual.run_until_parked();
     visual.simulate_keystrokes("right");
     pump_until(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none()
+        view.device_panel.gesture.snapshot().is_none()
             && view
                 .state
                 .as_ref()
@@ -2434,8 +2446,8 @@ fn operator_envelope_graph_keyboard_edit_is_canonical_undoable_and_persistent(
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture.snapshot().is_none()
-            && !view.saving_project
+            && view.device_panel.gesture.snapshot().is_none()
+            && !view.persistence.saving_project
             && view.state.as_ref().is_some_and(|state| !state.unsaved)
     });
     let reload = Service::new(48_000, 8, 8_000_000).expect("reload service");
@@ -2474,7 +2486,7 @@ fn operator_envelope_graph_keyboard_edit_is_canonical_undoable_and_persistent(
     visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
         assert!(view.device_panel.pending_values.is_empty());
         assert_eq!(
             get(view.state.as_ref().expect("draft state"), 33),
@@ -2604,7 +2616,11 @@ fn operator_envelope_release_drag_cancels_and_commits_after_outside_release(
 
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        let snapshot = view.device_gesture.snapshot().expect("release drag begins");
+        let snapshot = view
+            .device_panel
+            .gesture
+            .snapshot()
+            .expect("release drag begins");
         assert_eq!(
             snapshot.target,
             GestureTarget::DeviceParameter {
@@ -2624,7 +2640,7 @@ fn operator_envelope_release_drag_cancels_and_commits_after_outside_release(
     visual.simulate_keystrokes("escape");
     visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
     pump_until(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none()
+        view.device_panel.gesture.snapshot().is_none()
             && view
                 .state
                 .as_ref()
@@ -2652,13 +2668,13 @@ fn operator_envelope_release_drag_cancels_and_commits_after_outside_release(
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert!(
-            view.device_gesture.snapshot().is_some(),
+            view.device_panel.gesture.snapshot().is_some(),
             "pointer capture continues past the plot edge"
         );
     });
     visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
     pump_until(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none()
+        view.device_panel.gesture.snapshot().is_none()
             && view
                 .state
                 .as_ref()
@@ -2677,7 +2693,7 @@ fn operator_envelope_release_drag_cancels_and_commits_after_outside_release(
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
-    assert!(editor.read_with(cx, |view, _| view.device_gesture.snapshot().is_some()));
+    assert!(editor.read_with(cx, |view, _| view.device_panel.gesture.snapshot().is_some()));
     // The oscillator page retains the envelope; routing actually hides it.
     editor.update(cx, |view, cx| {
         view.device_panel
@@ -2689,7 +2705,9 @@ fn operator_envelope_release_drag_cancels_and_commits_after_outside_release(
     });
     visual.run_until_parked();
     visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
-    pump_until(&editor, cx, |view| view.device_gesture.snapshot().is_none());
+    pump_until(&editor, cx, |view| {
+        view.device_panel.gesture.snapshot().is_none()
+    });
     editor.read_with(cx, |view, _| {
         assert_eq!(
             float_value(view.state.as_ref().expect("page state"), 38),
@@ -2743,14 +2761,14 @@ fn operator_envelope_release_drag_cancels_and_commits_after_outside_release(
             Some(DevicePanelOwner::Track(track))
         );
         assert!(
-            view.device_gesture.snapshot().is_some(),
+            view.device_panel.gesture.snapshot().is_some(),
             "owner switching keeps the active graph visible until its gesture ends"
         );
     });
     assert!(visual.debug_bounds("operator-envelope-graph").is_some());
     visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
     pump_until(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none()
+        view.device_panel.gesture.snapshot().is_none()
             && view.device_panel.owner == Some(DevicePanelOwner::Track(second_track))
     });
     editor.read_with(cx, |view, _| {
@@ -2950,7 +2968,8 @@ fn operator_shell_controls_preserve_edits_across_explicit_context_selection(
             0
         );
         let gesture = view
-            .device_gesture
+            .device_panel
+            .gesture
             .snapshot()
             .expect("shell drag starts its parameter gesture");
         assert_eq!(
@@ -2965,8 +2984,8 @@ fn operator_shell_controls_preserve_edits_across_explicit_context_selection(
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture_barriers.is_empty()
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture_barriers.is_empty()
+            && view.device_panel.gesture.snapshot().is_none()
     });
     editor.read_with(cx, |view, _| {
         assert_ne!(
@@ -3012,8 +3031,8 @@ fn operator_shell_controls_preserve_edits_across_explicit_context_selection(
             .is_some_and(|state| operator_level(state, 5) != original_b_level)
             && view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture_barriers.is_empty()
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture_barriers.is_empty()
+            && view.device_panel.gesture.snapshot().is_none()
     });
     editor.read_with(cx, |view, _| {
         assert_eq!(
@@ -3061,8 +3080,8 @@ fn operator_shell_controls_preserve_edits_across_explicit_context_selection(
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture_barriers.is_empty()
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture_barriers.is_empty()
+            && view.device_panel.gesture.snapshot().is_none()
     });
     editor.read_with(cx, |view, _| {
         let state = view.state.as_ref().expect("state");
@@ -3872,9 +3891,9 @@ fn return_track_reuses_compact_utility_panel(cx: &mut TestAppContext) {
     let (service, state, track, return_track, device, _) = actor_return_utility_fixture();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
-        view.device_panel_active = true;
-        view.clip_view_open = true;
-        view.focused_return = Some(return_track);
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
+        view.session_grid.focused_return = Some(return_track);
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -4042,7 +4061,8 @@ fn clipped_overflow_card_cannot_restore_a_drop_preview_outside_the_rail(cx: &mut
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert!(
-            view.active_native_device_drag
+            view.device_panel
+                .active_native_drag
                 .as_ref()
                 .is_some_and(|drag| { drag.destination.get().is_none() })
         );
@@ -4104,7 +4124,8 @@ fn existing_device_header_title_reorders_cards_by_stable_identity(cx: &mut TestA
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let drag = view
-            .active_native_device_drag
+            .device_panel
+            .active_native_drag
             .as_ref()
             .expect("existing device drag");
         assert_eq!(
@@ -4144,8 +4165,8 @@ fn device_drag_clears_preview_on_outside_release_and_escape(cx: &mut TestAppCont
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(view.active_native_device_drag.is_none());
-        assert!(view.last_enqueued_native_device_drop.is_none());
+        assert!(view.device_panel.active_native_drag.is_none());
+        assert!(view.test_probes.last_enqueued_native_device_drop.is_none());
     });
 
     let source = visual
@@ -4171,7 +4192,8 @@ fn device_drag_clears_preview_on_outside_release_and_escape(cx: &mut TestAppCont
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert!(
-            view.active_native_device_drag
+            view.device_panel
+                .active_native_drag
                 .as_ref()
                 .and_then(|drag| drag.destination.get())
                 .is_some()
@@ -4183,7 +4205,8 @@ fn device_drag_clears_preview_on_outside_release_and_escape(cx: &mut TestAppCont
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert!(
-            view.active_native_device_drag
+            view.device_panel
+                .active_native_drag
                 .as_ref()
                 .is_some_and(|drag| drag.destination.get().is_none())
         );
@@ -4191,8 +4214,8 @@ fn device_drag_clears_preview_on_outside_release_and_escape(cx: &mut TestAppCont
     visual.simulate_mouse_up(outside_rail, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(view.active_native_device_drag.is_none());
-        assert!(view.last_enqueued_native_device_drop.is_none());
+        assert!(view.device_panel.active_native_drag.is_none());
+        assert!(view.test_probes.last_enqueued_native_device_drop.is_none());
     });
 
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
@@ -4204,13 +4227,13 @@ fn device_drag_clears_preview_on_outside_release_and_escape(cx: &mut TestAppCont
     visual.simulate_mouse_move(card_point, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(view.active_native_device_drag.is_some())
+        assert!(view.device_panel.active_native_drag.is_some())
     });
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(view.active_native_device_drag.is_none());
-        assert!(view.last_enqueued_native_device_drop.is_none());
+        assert!(view.device_panel.active_native_drag.is_none());
+        assert!(view.test_probes.last_enqueued_native_device_drop.is_none());
     });
 }
 
@@ -4405,8 +4428,8 @@ fn same_update_typed_value_finishes_before_save_barrier(cx: &mut TestAppContext)
             document_path: Some(std::path::PathBuf::from("/tmp/hex-device-save.hex")),
         }));
         view.selected_track = Some(track);
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -4414,18 +4437,22 @@ fn same_update_typed_value_finishes_before_save_barrier(cx: &mut TestAppContext)
     enter_typed_value(&mut visual, device, parameter, "250%");
     editor.update(cx, |view, cx| view.save_project(cx));
     editor.read_with(cx, |view, _| {
-        let snapshot = view.device_gesture.snapshot().expect("synchronous begin");
+        let snapshot = view
+            .device_panel
+            .gesture
+            .snapshot()
+            .expect("synchronous begin");
         assert_eq!(
             snapshot.target,
             GestureTarget::DeviceParameter { device, parameter }
         );
         assert_eq!(snapshot.value, ParameterValue::Float(2.5));
-        assert!(view.device_gesture.has_pending_terminal());
+        assert!(view.device_panel.gesture.has_pending_terminal());
         assert!(matches!(
-            view.device_gesture_barriers.front(),
+            view.device_panel.gesture_barriers.front(),
             Some(Request::SaveCurrent)
         ));
-        assert!(view.saving_project);
+        assert!(view.persistence.saving_project);
     });
 }
 
@@ -4467,8 +4494,8 @@ fn typed_numeric_owner_finalization_saves_actor_state_and_undo_restores_it(
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture_barriers.is_empty()
-            && !view.saving_project
+            && view.device_panel.gesture_barriers.is_empty()
+            && !view.persistence.saving_project
             && view.state.as_ref().is_some_and(|state| !state.unsaved)
     });
     visual.run_until_parked();
@@ -4582,7 +4609,8 @@ fn hiding_a_returned_pointer_gesture_finishes_the_overlay_without_history(cx: &m
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let snapshot = view
-            .device_gesture
+            .device_panel
+            .gesture
             .snapshot()
             .expect("active pointer gesture");
         assert_eq!(
@@ -4596,26 +4624,27 @@ fn hiding_a_returned_pointer_gesture_finishes_the_overlay_without_history(cx: &m
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.device_gesture
+            view.device_panel
+                .gesture
                 .snapshot()
                 .expect("returned gesture")
                 .value,
             ParameterValue::Float(initial)
         );
-        assert!(!view.device_gesture.has_pending_terminal());
+        assert!(!view.device_panel.gesture.has_pending_terminal());
     });
 
     editor.update(cx, |view, cx| {
         assert!(finalize_controls(view, cx));
-        view.device_panel_active = false;
+        view.device_panel.active = false;
         cx.notify();
-        assert!(view.device_gesture.has_pending_terminal());
+        assert!(view.device_panel.gesture.has_pending_terminal());
     });
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture_barriers.is_empty()
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture_barriers.is_empty()
+            && view.device_panel.gesture.snapshot().is_none()
     });
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
@@ -4627,7 +4656,7 @@ fn hiding_a_returned_pointer_gesture_finishes_the_overlay_without_history(cx: &m
             parameter_value(current, track, device, parameter),
             ParameterValue::Float(initial)
         );
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
     });
 }
 
@@ -4657,8 +4686,8 @@ fn same_update_typed_value_on_clean_close_opens_prompt_and_cancel_keeps_it(
     let (handle, editor) = actor_editor_window(cx, service, saved.state, track);
     editor.update(cx, |view, cx| {
         view.selected_track = Some(track);
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -4667,10 +4696,14 @@ fn same_update_typed_value_on_clean_close_opens_prompt_and_cancel_keeps_it(
     cx.update_window(handle, |_, window, cx| {
         editor.update(cx, |view, cx| {
             assert!(!view.request_window_close(window, cx));
-            assert!(view.automation_close_preflight.frozen());
-            let snapshot = view.device_gesture.snapshot().expect("synchronous begin");
+            assert!(view.persistence.automation_close_preflight.frozen());
+            let snapshot = view
+                .device_panel
+                .gesture
+                .snapshot()
+                .expect("synchronous begin");
             assert_eq!(snapshot.value, ParameterValue::Float(3.0));
-            assert!(view.device_gesture.has_pending_terminal());
+            assert!(view.device_panel.gesture.has_pending_terminal());
         });
     })
     .expect("request close");
@@ -4684,7 +4717,7 @@ fn same_update_typed_value_on_clean_close_opens_prompt_and_cancel_keeps_it(
             parameter_value(view.state.as_ref().unwrap(), track, device, parameter),
             ParameterValue::Float(3.0)
         );
-        assert!(!view.close_prompt_open);
+        assert!(!view.persistence.close_prompt_open);
         let Some(ParameterControl::Float { entity, .. }) = view
             .device_panel
             .controls
@@ -4743,9 +4776,10 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
             document_path: Some(std::path::PathBuf::from("/tmp/device-retry.hex")),
         }));
         view.selected_track = Some(track);
-        view.device_panel_active = true;
-        view.clip_view_open = true;
-        view.device_gesture
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
+        view.device_panel
+            .gesture
             .begin(
                 view.project_generation,
                 GestureTarget::DeviceParameter {
@@ -4756,7 +4790,7 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
             )
             .expect("hold another control's edit");
         for _ in 0..super::super::UI_REQUEST_CAPACITY {
-            view.device_gesture_barriers.push_back(Request::Undo);
+            view.device_panel.gesture_barriers.push_back(Request::Undo);
         }
         cx.notify();
     });
@@ -4793,20 +4827,30 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
     visual.simulate_mouse_up(toggle, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(view.clip_view_open, "full queue preserves pane and draft")
+        assert!(
+            view.audio_detail.clip_view_open,
+            "full queue preserves pane and draft"
+        )
     });
 
     editor.update(cx, |view, cx| view.save_project(cx));
     editor.read_with(cx, |view, _| {
-        assert!(!view.saving_project, "full barrier queue refuses the save");
+        assert!(
+            !view.persistence.saving_project,
+            "full barrier queue refuses the save"
+        );
         assert_eq!(
-            view.device_gesture.snapshot().expect("other edit").target,
+            view.device_panel
+                .gesture
+                .snapshot()
+                .expect("other edit")
+                .target,
             GestureTarget::DeviceParameter {
                 device: first_device,
                 parameter,
             }
         );
-        assert!(!view.device_gesture.has_pending_terminal());
+        assert!(!view.device_panel.gesture.has_pending_terminal());
         let Some(ParameterControl::Float { entity, .. }) =
             view.device_panel.controls.get(&ParameterKey {
                 device: second_device,
@@ -4821,12 +4865,16 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
     });
 
     editor.update(cx, |view, cx| {
-        view.device_gesture_barriers.clear();
-        view.device_gesture.reset();
+        view.device_panel.gesture_barriers.clear();
+        view.device_panel.gesture.reset();
         view.save_project(cx);
     });
     editor.read_with(cx, |view, _| {
-        let snapshot = view.device_gesture.snapshot().expect("retried gesture");
+        let snapshot = view
+            .device_panel
+            .gesture
+            .snapshot()
+            .expect("retried gesture");
         assert_eq!(
             snapshot.target,
             GestureTarget::DeviceParameter {
@@ -4835,7 +4883,7 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
             }
         );
         assert_eq!(snapshot.value, ParameterValue::Float(2.5));
-        assert!(view.device_gesture.has_pending_terminal());
+        assert!(view.device_panel.gesture.has_pending_terminal());
         assert_eq!(
             view.device_panel.pending_values.get(&ParameterKey {
                 device: second_device,
@@ -4844,10 +4892,10 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
             Some(&ParameterValue::Float(2.5)),
         );
         assert!(matches!(
-            view.device_gesture_barriers.front(),
+            view.device_panel.gesture_barriers.front(),
             Some(Request::SaveCurrent)
         ));
-        assert!(view.saving_project);
+        assert!(view.persistence.saving_project);
     });
 }
 
@@ -4887,7 +4935,7 @@ fn command_f_preserves_invalid_device_draft_then_finalizes_repaired_value(cx: &m
                 "{selector} must retain invalid draft focus"
             );
             editor.read_with(cx, |view, _| {
-                assert!(view.clip_view_open && view.device_panel_active);
+                assert!(view.audio_detail.clip_view_open && view.device_panel.active);
                 assert_eq!(view.state.as_ref().unwrap().revision, initial_revision);
             });
         });
@@ -4945,7 +4993,7 @@ fn command_f_preserves_invalid_return_send_draft(cx: &mut TestAppContext) {
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
         view.mode = super::super::EditorMode::Arrangement;
-        view.send_menu_track = Some(track);
+        view.session_grid.send_menu_track = Some(track);
         view.browser.open = false;
         cx.notify();
     });
@@ -5045,9 +5093,9 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
     old_control.read_with(cx, |control, _| assert!(control.is_editing()));
     editor.update(cx, |view, cx| view.save_project(cx));
     editor.read_with(cx, |view, _| {
-        assert!(!view.saving_project);
+        assert!(!view.persistence.saving_project);
         assert!(
-            !view.save_dialog_open,
+            !view.persistence.save_dialog_open,
             "invalid draft blocks save admission"
         );
     });
@@ -5176,7 +5224,7 @@ fn invalid_return_numeric_draft_is_cancelled_when_its_owner_is_removed(cx: &mut 
     let (service, state, track, return_track, device, parameter) = actor_return_utility_fixture();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
-        view.focused_return = Some(return_track);
+        view.session_grid.focused_return = Some(return_track);
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -5253,7 +5301,7 @@ fn return_send_numeric_entry_uses_one_undoable_canonical_edit(cx: &mut TestAppCo
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
         view.mode = super::super::EditorMode::Arrangement;
-        view.send_menu_track = Some(track);
+        view.session_grid.send_menu_track = Some(track);
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -5292,7 +5340,7 @@ fn return_send_numeric_entry_uses_one_undoable_canonical_edit(cx: &mut TestAppCo
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture.snapshot().is_none()
     });
     editor.read_with(cx, |view, _| {
         let state = view.state.as_ref().expect("state");
@@ -5364,7 +5412,7 @@ fn return_send_popup_fits_minimum_window_and_retires_offscreen_or_removed_owner(
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
         view.mode = super::super::EditorMode::Arrangement;
-        view.send_menu_track = Some(track);
+        view.session_grid.send_menu_track = Some(track);
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -5427,7 +5475,7 @@ fn return_send_popup_fits_minimum_window_and_retires_offscreen_or_removed_owner(
             "the source row must actually be outside the current viewport"
         );
         assert_eq!(
-            view.send_menu_track, None,
+            view.session_grid.send_menu_track, None,
             "popup closes when its source row scrolls out of view"
         );
     });
@@ -5453,7 +5501,7 @@ fn return_send_popup_fits_minimum_window_and_retires_offscreen_or_removed_owner(
     });
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.send_menu_track, None,
+            view.session_grid.send_menu_track, None,
             "removed source closes its send popup"
         );
         assert!(
@@ -5485,7 +5533,7 @@ fn valid_return_send_draft_commits_once_when_owner_scrolls_offscreen(cx: &mut Te
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
         view.mode = super::super::EditorMode::Arrangement;
-        view.send_menu_track = Some(track);
+        view.session_grid.send_menu_track = Some(track);
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -5531,10 +5579,10 @@ fn valid_return_send_draft_commits_once_when_owner_scrolls_offscreen(cx: &mut Te
     });
     visual.run_until_parked();
     pump_until(&editor, cx, |view| {
-        view.send_menu_track.is_none()
+        view.session_grid.send_menu_track.is_none()
             && view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture.snapshot().is_none()
             && view.state.as_ref().is_some_and(|state| {
                 state.revision == initial_revision + 1
                     && state.project.track(track).is_some_and(|track| {
@@ -5577,7 +5625,7 @@ fn invalid_return_send_draft_cancels_and_restores_when_owner_scrolls_offscreen(
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
         view.mode = super::super::EditorMode::Arrangement;
-        view.send_menu_track = Some(track);
+        view.session_grid.send_menu_track = Some(track);
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -5623,8 +5671,8 @@ fn invalid_return_send_draft_cancels_and_restores_when_owner_scrolls_offscreen(
     });
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert_eq!(view.send_menu_track, None);
-        assert!(view.device_gesture.snapshot().is_none());
+        assert_eq!(view.session_grid.send_menu_track, None);
+        assert!(view.device_panel.gesture.snapshot().is_none());
         assert_eq!(view.worker_requests_pending, 0);
         assert!(view.pending_requests.is_empty());
         assert!(view.error.as_deref().is_some_and(|error| {
@@ -5669,7 +5717,7 @@ fn invalid_return_send_draft_blocks_finalize_and_escape_restores_canonical(
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
         view.mode = super::super::EditorMode::Arrangement;
-        view.send_menu_track = Some(track);
+        view.session_grid.send_menu_track = Some(track);
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -5739,7 +5787,7 @@ fn return_send_pointer_drag_previews_then_commits_once(cx: &mut TestAppContext) 
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
         view.mode = super::super::EditorMode::Arrangement;
-        view.send_menu_track = Some(track);
+        view.session_grid.send_menu_track = Some(track);
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -5771,7 +5819,11 @@ fn return_send_pointer_drag_previews_then_commits_once(cx: &mut TestAppContext) 
                 "send slider is in a pointer gesture"
             )
         });
-        let snapshot = view.device_gesture.snapshot().expect("active send gesture");
+        let snapshot = view
+            .device_panel
+            .gesture
+            .snapshot()
+            .expect("active send gesture");
         assert_eq!(
             snapshot.target,
             GestureTarget::ReturnSend {
@@ -5795,7 +5847,7 @@ fn return_send_pointer_drag_previews_then_commits_once(cx: &mut TestAppContext) 
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture.snapshot().is_none()
             && view.state.as_ref().is_some_and(|state| {
                 state.revision == initial_revision + 1
                     && state.project.track(track).is_some_and(|track| {
@@ -6059,8 +6111,8 @@ fn matching_first_ack_does_not_retire_latest_value_while_same_parameter_edits_ar
     let (handle, editor) = actor_editor_window(cx, service, changed_state, track);
     editor.update(cx, |view, cx| {
         view.selected_track = Some(track);
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         let key = ParameterKey { device, parameter };
         view.device_panel
             .pending_values
@@ -6478,8 +6530,8 @@ fn exercise_sampler_modulation_mapper(cx: &mut TestAppContext, host_output: bool
         view.mode = super::super::EditorMode::Session;
         view.selected_track = Some(track);
         view.device_panel.owner = Some(DevicePanelOwner::Track(track));
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         cx.notify();
     });
     visual.run_until_parked();

@@ -16,6 +16,7 @@ impl EditorView {
         accepted: bool,
     ) {
         if !self
+            .settings
             .tuning
             .library_terminal
             .as_ref()
@@ -23,7 +24,7 @@ impl EditorView {
         {
             return;
         }
-        let Some(context) = self.tuning.library_terminal.take() else {
+        let Some(context) = self.settings.tuning.library_terminal.take() else {
             return;
         };
         if !accepted || !context.refresh || key.generation != self.project_generation {
@@ -32,7 +33,7 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        for request in &mut self.device_gesture_barriers {
+        for request in &mut self.device_panel.gesture_barriers {
             if let Request::TuningLibrary {
                 project_generation,
                 revision,
@@ -50,10 +51,10 @@ impl EditorView {
         }
     }
     pub(in crate::editor) fn retire_tuning_library_device_terminal(&mut self) {
-        if let Some(context) = self.tuning.library_terminal.take()
-            && self.tuning.library_pending == Some(context.operation_id)
+        if let Some(context) = self.settings.tuning.library_terminal.take()
+            && self.settings.tuning.library_pending == Some(context.operation_id)
         {
-            self.tuning.library_pending = None;
+            self.settings.tuning.library_pending = None;
         }
     }
 
@@ -65,29 +66,30 @@ impl EditorView {
         operation: Operation,
         owner: Option<(u64, u64)>,
     ) {
-        if self.tuning.client.snapshot().is_some() {
-            if self.tuning.deferred_library.is_some() {
-                self.tuning.error = Some("a library action is already queued".into());
+        if self.settings.tuning.client.snapshot().is_some() {
+            if self.settings.tuning.deferred_library.is_some() {
+                self.settings.tuning.error = Some("a library action is already queued".into());
                 return;
             }
-            let _ = self.tuning.client.cancel();
-            self.tuning.deferred_library = Some((operation, owner));
+            let _ = self.settings.tuning.client.cancel();
+            self.settings.tuning.deferred_library = Some((operation, owner));
             return;
         }
-        if self.tuning.library_pending.is_some() {
-            self.tuning.error = Some("a tuning library operation is still running".into());
+        if self.settings.tuning.library_pending.is_some() {
+            self.settings.tuning.error = Some("a tuning library operation is still running".into());
             return;
         }
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        let Some(id) = self.tuning.library_next.checked_add(1) else {
-            self.tuning.error = Some("tuning operation identity exhausted".into());
+        let Some(id) = self.settings.tuning.library_next.checked_add(1) else {
+            self.settings.tuning.error = Some("tuning operation identity exhausted".into());
             return;
         };
         let (generation, revision) = owner.unwrap_or((self.project_generation, state.revision));
         let device_terminal =
-            self.device_gesture
+            self.device_panel
+                .gesture
                 .snapshot()
                 .map(|snapshot| DeviceTerminalContext {
                     operation_id: id,
@@ -100,21 +102,22 @@ impl EditorView {
             operation_id: id,
             operation,
         }) {
-            self.tuning.library_next = id;
-            self.tuning.library_pending = Some(id);
-            self.tuning.library_terminal = device_terminal;
-            self.tuning.error = None;
+            self.settings.tuning.library_next = id;
+            self.settings.tuning.library_pending = Some(id);
+            self.settings.tuning.library_terminal = device_terminal;
+            self.settings.tuning.error = None;
         } else {
-            self.tuning.error = Some("project worker is busy · retry the library action".into());
+            self.settings.tuning.error =
+                Some("project worker is busy · retry the library action".into());
         }
     }
     pub(in crate::editor) fn tuning_library_complete(&mut self, result: &TuningLibraryResult) {
-        if self.tuning.library_pending != Some(result.operation_id) {
+        if self.settings.tuning.library_pending != Some(result.operation_id) {
             return;
         }
-        self.tuning.library_pending = None;
-        self.tuning.library_terminal = None;
-        self.tuning.slots = result
+        self.settings.tuning.library_pending = None;
+        self.settings.tuning.library_terminal = None;
+        self.settings.tuning.slots = result
             .slots
             .iter()
             .map(|s| SlotView {
@@ -124,34 +127,36 @@ impl EditorView {
             })
             .collect();
         if let Some(slot) = result.selected_slot {
-            self.tuning.slot = slot;
+            self.settings.tuning.slot = slot;
         }
         let active_name = self
+            .settings
             .tuning
             .slots
             .iter()
-            .find(|s| s.number == self.tuning.slot)
+            .find(|s| s.number == self.settings.tuning.slot)
             .and_then(|s| s.name.clone());
-        self.tuning.broadcast.set_scale_name(active_name);
+        self.settings.tuning.broadcast.set_scale_name(active_name);
         if let Some(error) = result.error.as_ref() {
-            self.tuning.error = Some(error.clone());
+            self.settings.tuning.error = Some(error.clone());
         } else {
-            self.tuning.error = None;
+            self.settings.tuning.error = None;
         }
     }
     fn tuning_slot_name(&self) -> String {
-        self.tuning
+        self.settings
+            .tuning
             .slots
             .iter()
-            .find(|s| s.number == self.tuning.slot)
+            .find(|s| s.number == self.settings.tuning.slot)
             .and_then(|s| s.name.clone())
-            .unwrap_or_else(|| format!("preset {:02}", self.tuning.slot))
+            .unwrap_or_else(|| format!("preset {:02}", self.settings.tuning.slot))
     }
     fn begin_tuning_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.tuning_slot_name();
         let input = cx.new(|cx| browser_input::name(name, cx));
         input.read(cx).focus(window);
-        self.tuning.name = Some(input);
+        self.settings.tuning.name = Some(input);
         cx.notify();
     }
     pub(in crate::editor) fn cancel_tuning_name(
@@ -159,8 +164,8 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.tuning.name = None;
-        self.tuning.focus.focus(window);
+        self.settings.tuning.name = None;
+        self.settings.tuning.focus.focus(window);
         cx.notify();
     }
     pub(in crate::editor) fn commit_tuning_name(
@@ -168,55 +173,55 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(input) = self.tuning.name.as_ref() else {
+        let Some(input) = self.settings.tuning.name.as_ref() else {
             return;
         };
         let name = input.read(cx).text().to_owned();
         if let Err(reason) = hex_tuning::preset::validate_name(&name) {
-            self.tuning.error = Some(reason.to_string());
+            self.settings.tuning.error = Some(reason.to_string());
             cx.notify();
             return;
         }
         self.request_tuning_library(
             Operation::Rename {
-                slot: self.tuning.slot,
+                slot: self.settings.tuning.slot,
                 name,
             },
             None,
         );
-        self.tuning.name = None;
-        self.tuning.focus.focus(window);
+        self.settings.tuning.name = None;
+        self.settings.tuning.focus.focus(window);
         cx.notify();
     }
     pub(super) fn tuning_file_dialog(&mut self, save: bool, cx: &mut Context<Self>) {
-        if self.device_gesture.snapshot().is_some() {
-            if self.pending_requests.len() + self.device_gesture_barriers.len()
+        if self.device_panel.gesture.snapshot().is_some() {
+            if self.pending_requests.len() + self.device_panel.gesture_barriers.len()
                 >= super::super::UI_REQUEST_CAPACITY
             {
-                self.tuning.error =
+                self.settings.tuning.error =
                     Some("device edit queue full · retry the library action".into());
                 return;
             }
-            if !self.device_gesture.has_pending_terminal() {
-                if let Err(error) = self.device_gesture.finish_current() {
-                    self.tuning.error = Some(error.into());
+            if !self.device_panel.gesture.has_pending_terminal() {
+                if let Err(error) = self.device_panel.gesture.finish_current() {
+                    self.settings.tuning.error = Some(error.into());
                     return;
                 }
                 self.pump_device_gesture();
             }
-            if self.tuning.client.snapshot().is_some() {
-                let _ = self.tuning.client.cancel();
+            if self.settings.tuning.client.snapshot().is_some() {
+                let _ = self.settings.tuning.client.cancel();
             }
-            self.tuning.deferred_dialog = Some(save);
+            self.settings.tuning.deferred_dialog = Some(save);
             return;
         }
-        if self.tuning.client.snapshot().is_some() {
-            let _ = self.tuning.client.cancel();
-            self.tuning.deferred_dialog = Some(save);
+        if self.settings.tuning.client.snapshot().is_some() {
+            let _ = self.settings.tuning.client.cancel();
+            self.settings.tuning.deferred_dialog = Some(save);
             return;
         }
-        if self.preset_dialog_open || self.tuning.library_pending.is_some() {
-            self.tuning.error = Some("finish the current library operation first".into());
+        if self.device_panel.preset_dialog_open || self.settings.tuning.library_pending.is_some() {
+            self.settings.tuning.error = Some("finish the current library operation first".into());
             return;
         }
         let Some(state) = self.state.as_ref() else {
@@ -224,7 +229,7 @@ impl EditorView {
         };
         let owner = (self.project_generation, state.revision);
         let name = self.tuning_slot_name();
-        self.preset_dialog_open = true;
+        self.device_panel.preset_dialog_open = true;
         if save {
             let directory = state
                 .document_path
@@ -235,12 +240,12 @@ impl EditorView {
             cx.spawn(async move |this, cx| {
                 let picked = response.await;
                 let _ = this.update(cx, |view, cx| {
-                    view.preset_dialog_open = false;
+                    view.device_panel.preset_dialog_open = false;
                     match picked {
                         Ok(Ok(Some(path))) => view
                             .request_tuning_library(Operation::Export { path, name }, Some(owner)),
                         Ok(Err(_)) => {
-                            view.tuning.error = Some("tuning export dialog failed".into())
+                            view.settings.tuning.error = Some("tuning export dialog failed".into())
                         }
                         _ => {}
                     }
@@ -258,7 +263,7 @@ impl EditorView {
             cx.spawn(async move |this, cx| {
                 let picked = response.await;
                 let _ = this.update(cx, |view, cx| {
-                    view.preset_dialog_open = false;
+                    view.device_panel.preset_dialog_open = false;
                     match picked {
                         Ok(Ok(Some(mut paths))) if paths.len() == 1 => {
                             if let Some(path) = paths.pop() {
@@ -269,7 +274,7 @@ impl EditorView {
                             }
                         }
                         Ok(Err(_)) => {
-                            view.tuning.error = Some("tuning import dialog failed".into())
+                            view.settings.tuning.error = Some("tuning import dialog failed".into())
                         }
                         _ => {}
                     }
@@ -284,17 +289,17 @@ impl EditorView {
         let mut tuning_slots = div().flex().gap_1();
         for number in 1..=8 {
             tuning_slots = tuning_slots.child(
-                button(format!("{number}"), self.tuning.slot == number).on_click(cx.listener(
-                    move |view, _, _, cx| {
-                        view.tuning.slot = number;
-                        view.tuning.name = None;
+                button(format!("{number}"), self.settings.tuning.slot == number).on_click(
+                    cx.listener(move |view, _, _, cx| {
+                        view.settings.tuning.slot = number;
+                        view.settings.tuning.name = None;
                         cx.notify();
-                    },
-                )),
+                    }),
+                ),
             );
         }
         panel = panel.child(tuning_slots);
-        if let Some(tuning_name_input) = self.tuning.name.as_ref() {
+        if let Some(tuning_name_input) = self.settings.tuning.name.as_ref() {
             panel = panel.child(
                 div()
                     .id("tuning-preset-name")
@@ -305,10 +310,11 @@ impl EditorView {
             panel = panel.child(theme::text(self.tuning_slot_name()));
         }
         if let Some(error) = self
+            .settings
             .tuning
             .slots
             .iter()
-            .find(|s| s.number == self.tuning.slot)
+            .find(|s| s.number == self.settings.tuning.slot)
             .and_then(|s| s.error.as_ref())
         {
             panel = panel.child(theme::text(error.clone()));
@@ -322,7 +328,7 @@ impl EditorView {
                     button("load", false).on_click(cx.listener(|view, _, _, cx| {
                         view.request_tuning_library(
                             Operation::Load {
-                                slot: view.tuning.slot,
+                                slot: view.settings.tuning.slot,
                             },
                             None,
                         );
@@ -333,7 +339,7 @@ impl EditorView {
                     button("save", false).on_click(cx.listener(|view, _, _, cx| {
                         view.request_tuning_library(
                             Operation::Save {
-                                slot: view.tuning.slot,
+                                slot: view.settings.tuning.slot,
                                 name: view.tuning_slot_name(),
                             },
                             None,
@@ -348,7 +354,7 @@ impl EditorView {
                     button("duplicate", false).on_click(cx.listener(|view, _, _, cx| {
                         view.request_tuning_library(
                             Operation::Duplicate {
-                                slot: view.tuning.slot,
+                                slot: view.settings.tuning.slot,
                             },
                             None,
                         );
@@ -364,7 +370,7 @@ impl EditorView {
                         .on_click(cx.listener(|view, _, _, cx| view.tuning_file_dialog(true, cx))),
                 ),
         );
-        if self.tuning.library_pending.is_some() {
+        if self.settings.tuning.library_pending.is_some() {
             panel = panel.child(theme::text("working…"));
         }
         panel

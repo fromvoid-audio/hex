@@ -15,23 +15,31 @@ fn empty_roll_arrows_move_the_snapped_cursor_without_editing(cx: &mut TestAppCon
     );
     visual.run_until_parked();
     let (cursor, step) = editor.read_with(&visual, |v, _| {
-        (v.midi_marker.unwrap(), v.midi_snap_grid.movement_step())
+        (
+            v.midi_editor.marker.unwrap(),
+            v.midi_editor.snap_grid.movement_step(),
+        )
     });
     assert_eq!(cursor % step, 0);
     visual.simulate_keystrokes("right");
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_marker, Some(cursor + step));
+        assert_eq!(v.midi_editor.marker, Some(cursor + step));
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         assert!(!v.edit_pending());
     });
     visual.simulate_keystrokes("left");
     visual.run_until_parked();
-    editor.read_with(&visual, |v, _| assert_eq!(v.midi_marker, Some(cursor)));
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.midi_editor.marker, Some(cursor))
+    });
     // Clicking again owns the cursor and remains independent of vertical zoom.
     editor.update(&mut visual, |v, cx| {
-        v.piano_pitch =
-            crate::editor::PitchViewport::from_rows(v.piano_pitch.first_test_pitch(), 12).unwrap();
+        v.midi_editor.piano_pitch = crate::editor::PitchViewport::from_rows(
+            v.midi_editor.piano_pitch.first_test_pitch(),
+            12,
+        )
+        .unwrap();
         cx.notify();
     });
     visual.run_until_parked();
@@ -49,7 +57,7 @@ fn empty_roll_arrows_move_the_snapped_cursor_without_editing(cx: &mut TestAppCon
     visual.simulate_keystrokes("left");
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_marker, Some(BeatTime::ZERO.raw()));
+        assert_eq!(v.midi_editor.marker, Some(BeatTime::ZERO.raw()));
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
 }
@@ -70,15 +78,18 @@ fn cursor_navigation_keeps_note_nudging_and_resets_on_a_new_clip(cx: &mut TestAp
     pump(&editor, &mut visual);
     let (cursor, note, step) = editor.read_with(&visual, |v, _| {
         (
-            v.midi_marker,
-            v.midi_selection.primary().unwrap(),
-            v.midi_snap_grid.movement_step(),
+            v.midi_editor.marker,
+            v.midi_editor.selection.primary().unwrap(),
+            v.midi_editor.snap_grid.movement_step(),
         )
     });
     visual.simulate_keystrokes("right");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_marker, cursor, "selected notes retain arrow editing");
+        assert_eq!(
+            v.midi_editor.marker, cursor,
+            "selected notes retain arrow editing"
+        );
         let source = v.state.as_ref().unwrap().project.midi_source(clip).unwrap();
         assert_eq!(
             source
@@ -92,17 +103,20 @@ fn cursor_navigation_keeps_note_nudging_and_resets_on_a_new_clip(cx: &mut TestAp
         );
     });
     editor.update(&mut visual, |v, cx| {
-        v.midi_selection.clear();
-        v.midi_marker = Some(4 * BeatTime::ONE.raw() - step);
+        v.midi_editor.selection.clear();
+        v.midi_editor.marker = Some(4 * BeatTime::ONE.raw() - step);
         cx.notify();
     });
     visual.run_until_parked();
     visual.simulate_keystrokes("right");
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        let cursor = v.midi_marker.unwrap();
-        assert!(i128::from(cursor) >= v.piano_beat_start);
-        assert!(i128::from(cursor) < v.piano_beat_start + i128::from(v.piano_beat_span.raw()));
+        let cursor = v.midi_editor.marker.unwrap();
+        assert!(i128::from(cursor) >= v.midi_editor.piano_beat_start);
+        assert!(
+            i128::from(cursor)
+                < v.midi_editor.piano_beat_start + i128::from(v.midi_editor.piano_beat_span.raw())
+        );
         assert_eq!(
             v.state
                 .as_ref()
@@ -141,5 +155,5 @@ fn cursor_navigation_keeps_note_nudging_and_resets_on_a_new_clip(cx: &mut TestAp
         cx.notify();
     });
     visual.run_until_parked();
-    editor.read_with(&visual, |v, _| assert_eq!(v.midi_marker, Some(0)));
+    editor.read_with(&visual, |v, _| assert_eq!(v.midi_editor.marker, Some(0)));
 }

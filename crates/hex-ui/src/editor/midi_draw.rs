@@ -38,9 +38,9 @@ impl EditorView {
             return false;
         };
         if !same_rendered_frame(context, rendered)
-            || !self.midi_draw_mode
+            || !self.midi_editor.draw_mode
             || self.edit_pending()
-            || self.midi_stroke.is_some()
+            || self.midi_editor.stroke.is_some()
             || self.project_generation != rendered.generation
         {
             return false;
@@ -83,16 +83,16 @@ impl EditorView {
                 if !self.capture_midi_draw_pointer(&stroke, window, cx) {
                     return false;
                 }
-                self.midi_note_gesture = None;
-                self.midi_group_gesture = None;
+                self.midi_editor.note_gesture = None;
+                self.midi_editor.group_gesture = None;
                 self.cancel_all_midi_marquees();
-                self.midi_focus.focus(window);
+                self.midi_editor.focus.focus(window);
                 if let Some(note) = stroke.take_last_inserted()
                     && self.audition_midi_preview_bank(context.clip, &[note])
                 {
                     stroke.mark_auditioned_live();
                 }
-                self.midi_stroke = Some(stroke);
+                self.midi_editor.stroke = Some(stroke);
                 true
             }
             Err(error) => {
@@ -116,7 +116,7 @@ impl EditorView {
         };
         let pending = self.edit_pending();
         let (result, inserted) = {
-            let Some(stroke) = self.midi_stroke.as_mut() else {
+            let Some(stroke) = self.midi_editor.stroke.as_mut() else {
                 return false;
             };
             let result = stroke.update(context, pending, point);
@@ -131,7 +131,7 @@ impl EditorView {
             Ok(changed) => {
                 if let Some(note) = inserted
                     && self.audition_midi_preview_bank(context.clip, &[note])
-                    && let Some(stroke) = self.midi_stroke.as_mut()
+                    && let Some(stroke) = self.midi_editor.stroke.as_mut()
                 {
                     stroke.mark_auditioned_live();
                 }
@@ -141,7 +141,7 @@ impl EditorView {
                 if error != midi_stroke::StrokeError::InvalidContext {
                     self.error = Some(stroke_error(error).into());
                 }
-                self.midi_stroke = None;
+                self.midi_editor.stroke = None;
                 self.cancel_midi_audition();
                 true
             }
@@ -155,7 +155,7 @@ impl EditorView {
         inside: bool,
         modifiers: StrokeModifiers,
     ) -> bool {
-        let Some(mut stroke) = self.midi_stroke.take() else {
+        let Some(mut stroke) = self.midi_editor.stroke.take() else {
             return false;
         };
         if !inside {
@@ -207,7 +207,7 @@ impl EditorView {
     }
 
     pub(super) fn cancel_midi_stroke(&mut self) -> bool {
-        if let Some(mut stroke) = self.midi_stroke.take() {
+        if let Some(mut stroke) = self.midi_editor.stroke.take() {
             stroke.cancel();
             self.cancel_midi_audition();
             true
@@ -230,17 +230,17 @@ impl EditorView {
             clip: clip_id,
             clip_length: clip.source_length().raw(),
             minimum_gate: self.midi_minimum_creation_gate()?,
-            grid: self.midi_snap_grid,
-            effective_grid: midi_drag::effective_grid(self.midi_snap_grid, modifiers.snap),
+            grid: self.midi_editor.snap_grid,
+            effective_grid: midi_drag::effective_grid(self.midi_editor.snap_grid, modifiers.snap),
             grid_origin: clip.source_start().raw(),
             snap_modifier: modifiers.snap,
             pitch_modifier: modifiers.pitch,
-            view_start: self.piano_beat_start,
-            view_span: self.piano_beat_span.raw(),
-            pitch: self.piano_pitch,
+            view_start: self.midi_editor.piano_beat_start,
+            view_span: self.midi_editor.piano_beat_span.raw(),
+            pitch: self.midi_editor.piano_pitch,
             bounds,
-            pitch_locked: self.midi_draw_pitch_locked ^ modifiers.pitch,
-            draw_mode: self.midi_draw_mode,
+            pitch_locked: self.midi_editor.draw_pitch_locked ^ modifiers.pitch,
+            draw_mode: self.midi_editor.draw_mode,
         })
     }
 }

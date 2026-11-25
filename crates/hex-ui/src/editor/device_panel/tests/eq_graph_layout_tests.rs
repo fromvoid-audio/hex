@@ -78,8 +78,8 @@ pub(super) fn bounded_window(
                 assert_eq!(view.browser.directory, root.0.join("samples"));
                 view.state = Some(state);
                 view.selected_track = Some(track);
-                view.device_panel_active = true;
-                view.clip_view_open = true;
+                view.device_panel.active = true;
+                view.audio_detail.clip_view_open = true;
                 view.mode = super::super::super::super::EditorMode::Session;
                 cx.notify();
             });
@@ -971,7 +971,7 @@ fn visible_eq_bus_membership_follows_mounted_cards_and_panel_custody(cx: &mut Te
         editor.update(cx, |v, cx| {
             v.device_panel.eq_spectrum.test_channel = Some(control);
             v.selected_track = None;
-            v.focused_return = (!main).then_some(return_track);
+            v.session_grid.focused_return = (!main).then_some(return_track);
             v.device_panel.main_selected = main.then_some(v.project_generation);
             cx.notify();
         });
@@ -1007,7 +1007,7 @@ fn visible_eq_bus_membership_follows_mounted_cards_and_panel_custody(cx: &mut Te
                 .any(|(_, t)| t.identity.device_id == devices[0].value())
         );
         editor.update(cx, |v, cx| {
-            v.clip_view_open = false;
+            v.audio_detail.clip_view_open = false;
             reconcile_eq_spectrum(v);
             assert!(
                 v.device_panel

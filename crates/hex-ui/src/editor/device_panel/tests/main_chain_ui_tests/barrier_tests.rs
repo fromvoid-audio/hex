@@ -80,9 +80,9 @@ fn effect_bus_cancel_and_actual_refused_terminal_retire_only_dependent_add(
                 (state.can_undo, state.can_redo, state.unsaved),
                 (before.can_undo, before.can_redo, before.unsaved)
             );
-            assert!(v.device_gesture.snapshot().is_none());
-            assert!(v.device_gesture_barriers.is_empty());
-            assert!(v.pending_plugin_effect.is_none());
+            assert!(v.device_panel.gesture.snapshot().is_none());
+            assert!(v.device_panel.gesture_barriers.is_empty());
+            assert!(v.device_panel.pending_plugin_effect.is_none());
         });
         // A retired proof cannot poison a later independent, explicitly selected Add.
         editor.update(&mut visual, |v, _| v.error = None);
@@ -157,9 +157,9 @@ fn effect_bus_old_or_unmatched_ack_cannot_rebind_add_or_consume_generic_fifo(
             // retained untouched and delivered normally after these refusals.
             assert!(!v.acknowledge_device_gesture(&wrong));
             assert!(v.error.is_some());
-            assert_eq!(v.device_gesture_barriers.len(), 1);
+            assert_eq!(v.device_panel.gesture_barriers.len(), 1);
             assert!(matches!(
-                v.device_gesture_barriers.front(),
+                v.device_panel.gesture_barriers.front(),
                 Some(Request::Undo)
             ));
             assert_eq!(v.state.as_ref().unwrap().project, before);
@@ -175,8 +175,8 @@ fn effect_bus_old_or_unmatched_ack_cannot_rebind_add_or_consume_generic_fifo(
             before,
             "the retained generic Undo still follows its actual terminal"
         );
-        assert!(v.device_gesture.snapshot().is_none());
-        assert!(v.device_gesture_barriers.is_empty());
+        assert!(v.device_panel.gesture.snapshot().is_none());
+        assert!(v.device_panel.gesture_barriers.is_empty());
     });
 }
 
@@ -209,13 +209,15 @@ fn effect_bus_interposed_canonical_edit_refuses_add_before_terminal_release(
         assert!(v.error.is_some());
         assert_eq!(v.state.as_ref().unwrap().project.master_gain(), 0.75);
         assert!(
-            !v.device_gesture_barriers
+            !v.device_panel
+                .gesture_barriers
                 .iter()
                 .chain(v.pending_requests.iter())
                 .any(|request| matches!(request, Request::InsertEffectBusDevice { .. }))
         );
         assert_eq!(
-            v.device_gesture_barriers
+            v.device_panel
+                .gesture_barriers
                 .iter()
                 .chain(v.pending_requests.iter())
                 .filter(|request| matches!(request, Request::Undo))
@@ -233,8 +235,8 @@ fn effect_bus_interposed_canonical_edit_refuses_add_before_terminal_release(
             v.state.as_ref().unwrap().project.next_identity(),
             before.next_identity()
         );
-        assert!(v.device_gesture.snapshot().is_none());
-        assert!(v.device_gesture_barriers.is_empty());
+        assert!(v.device_panel.gesture.snapshot().is_none());
+        assert!(v.device_panel.gesture_barriers.is_empty());
     });
 }
 
@@ -272,8 +274,8 @@ fn effect_bus_project_replacement_aba_never_revives_old_destination_identity(
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.project_generation, generation + transition + 1);
             assert!(v.state.as_ref().unwrap().project.main_devices().is_empty());
-            assert!(v.device_gesture_barriers.is_empty());
-            assert!(v.device_gesture.snapshot().is_none());
+            assert!(v.device_panel.gesture_barriers.is_empty());
+            assert!(v.device_panel.gesture.snapshot().is_none());
         });
     }
     focus_bus(&mut visual, EffectBusOwner::Main);
@@ -317,7 +319,7 @@ fn effect_bus_invalid_deferred_intent_cannot_finalize_unrelated_live_control(
     begin(&editor, &mut visual, device);
     editor.update(&mut visual, |v, _| {
         let before = Arc::clone(v.state.as_ref().unwrap());
-        let snapshot = v.device_gesture.snapshot();
+        let snapshot = v.device_panel.gesture.snapshot();
         for case in 0..7 {
             let mut request = addition(v);
             let Request::InsertEffectBusDevice {
@@ -349,9 +351,9 @@ fn effect_bus_invalid_deferred_intent_cannot_finalize_unrelated_live_control(
             }
             assert!(!v.enqueue_device_barrier(request));
             assert!(v.error.is_some());
-            assert_eq!(v.device_gesture.snapshot(), snapshot);
-            assert!(!v.device_gesture.has_pending_terminal());
-            assert!(v.device_gesture_barriers.is_empty());
+            assert_eq!(v.device_panel.gesture.snapshot(), snapshot);
+            assert!(!v.device_panel.gesture.has_pending_terminal());
+            assert!(v.device_panel.gesture_barriers.is_empty());
             assert!(v.pending_requests.is_empty());
             assert_eq!(v.worker_requests_pending, 0);
             let state = v.state.as_ref().unwrap();

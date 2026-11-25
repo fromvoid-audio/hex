@@ -220,7 +220,7 @@ impl EditorView {
         direct: Request,
         cx: &mut Context<Self>,
     ) {
-        self.opening_project = true;
+        self.persistence.opening_project = true;
         let inspect = source.clone();
         let report = cx
             .background_executor()
@@ -230,11 +230,11 @@ impl EditorView {
             let _ = this.update(cx, |view, cx| {
                 match report {
                     Ok(missing) if missing.is_empty() => {
-                        view.opening_project = false;
+                        view.persistence.opening_project = false;
                         view.begin_open_request(direct);
                     }
                     Ok(missing) => {
-                        view.missing_media = Some(Panel {
+                        view.settings.missing_media = Some(Panel {
                             target: Target::Open {
                                 source,
                                 mode,
@@ -258,7 +258,7 @@ impl EditorView {
                         view.missing_media_catalog_lookup(cx);
                     }
                     Err(reason) => {
-                        view.opening_project = false;
+                        view.persistence.opening_project = false;
                         view.error = Some(reason.to_lowercase().into());
                     }
                 }
@@ -271,7 +271,7 @@ impl EditorView {
     /// Ask the browser's sample catalog for candidates on a background worker and
     /// check them with the session matcher. The result is only offered.
     fn missing_media_catalog_lookup(&mut self, cx: &mut Context<Self>) {
-        let Some(panel) = self.missing_media.as_ref() else {
+        let Some(panel) = self.settings.missing_media.as_ref() else {
             return;
         };
         let missing: Vec<_> = panel
@@ -305,7 +305,7 @@ impl EditorView {
         cx.spawn(async move |this, cx| {
             let outcome = lookup.await;
             let _ = this.update(cx, |view, cx| {
-                if let Some(panel) = view.missing_media.as_mut()
+                if let Some(panel) = view.settings.missing_media.as_mut()
                     && outcome.stopped.is_none()
                 {
                     panel.catalog = Some(CatalogOffer { outcome, partial });
@@ -319,7 +319,7 @@ impl EditorView {
     /// Apply the catalog offer: unique matches resolve, several matches become
     /// choices. Rows already resolved are kept.
     pub(super) fn missing_media_relink_catalog(&mut self, cx: &mut Context<Self>) {
-        let Some(panel) = self.missing_media.as_mut() else {
+        let Some(panel) = self.settings.missing_media.as_mut() else {
             return;
         };
         let Some(offer) = panel.catalog.as_ref() else {
@@ -336,7 +336,12 @@ impl EditorView {
     }
 
     fn missing_media_locate(&mut self, index: usize, cx: &mut Context<Self>) {
-        let Some(row) = self.missing_media.as_ref().and_then(|p| p.rows.get(index)) else {
+        let Some(row) = self
+            .settings
+            .missing_media
+            .as_ref()
+            .and_then(|p| p.rows.get(index))
+        else {
             return;
         };
         let prompt = cx.prompt_for_paths(PathPromptOptions {
@@ -356,7 +361,7 @@ impl EditorView {
                 return;
             };
             let Ok(Some((media, all, resolved))) = this.update(cx, |view, _| {
-                let panel = view.missing_media.as_ref()?;
+                let panel = view.settings.missing_media.as_ref()?;
                 let media = panel.rows.get(index)?.media.clone();
                 let all: Vec<_> = panel.rows.iter().map(|row| row.media.clone()).collect();
                 Some((media, all, panel.resolved()))
@@ -376,7 +381,7 @@ impl EditorView {
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
-                let Some(panel) = view.missing_media.as_mut() else {
+                let Some(panel) = view.settings.missing_media.as_mut() else {
                     return;
                 };
                 let mapped = apply_locate(&mut panel.rows, index, path, fit, mapped);
@@ -390,6 +395,7 @@ impl EditorView {
 
     fn missing_media_search(&mut self, cx: &mut Context<Self>) {
         if self
+            .settings
             .missing_media
             .as_ref()
             .is_none_or(|panel| panel.search.is_some())
@@ -409,7 +415,7 @@ impl EditorView {
             let cancel = Arc::new(AtomicBool::new(false));
             let progress = Arc::new(AtomicUsize::new(0));
             let Ok(Some(missing)) = this.update(cx, |view, cx| {
-                let panel = view.missing_media.as_mut()?;
+                let panel = view.settings.missing_media.as_mut()?;
                 if panel.search.is_some() {
                     return None;
                 }
@@ -460,7 +466,7 @@ impl EditorView {
             let outcome = search.await;
             done.store(true, Ordering::Relaxed);
             let _ = this.update(cx, |view, cx| {
-                let Some(panel) = view.missing_media.as_mut() else {
+                let Some(panel) = view.settings.missing_media.as_mut() else {
                     return;
                 };
                 panel.search = None;
@@ -474,6 +480,7 @@ impl EditorView {
 
     fn missing_media_choose(&mut self, index: usize, choice: usize, cx: &mut Context<Self>) {
         if let Some(row) = self
+            .settings
             .missing_media
             .as_mut()
             .and_then(|panel| panel.rows.get_mut(index))
@@ -486,13 +493,13 @@ impl EditorView {
     }
 
     pub(super) fn missing_media_dismiss(&mut self, cx: &mut Context<Self>) {
-        if let Some(panel) = self.missing_media.take() {
+        if let Some(panel) = self.settings.missing_media.take() {
             panel.catalog_cancel.store(true, Ordering::Relaxed);
             if let Some(search) = panel.search {
                 search.cancel.store(true, Ordering::Relaxed);
             }
             if matches!(panel.target, Target::Open { .. }) {
-                self.opening_project = false;
+                self.persistence.opening_project = false;
                 self.status = "open cancelled".into();
             }
             cx.notify();
@@ -503,7 +510,7 @@ impl EditorView {
     /// bar indicator). The browser's sample catalog is checked in the background
     /// and only offered; nothing else is read until the user locates or searches.
     pub(super) fn missing_media_show_offline(&mut self, cx: &mut Context<Self>) {
-        if self.missing_media.is_some() || self.opening_project {
+        if self.settings.missing_media.is_some() || self.persistence.opening_project {
             return;
         }
         let Some(state) = self.state.as_ref() else {
@@ -523,7 +530,7 @@ impl EditorView {
         if rows.is_empty() {
             return;
         }
-        self.missing_media = Some(Panel {
+        self.settings.missing_media = Some(Panel {
             target: Target::Relink,
             generation: self.project_generation,
             revision: state.revision,
@@ -539,7 +546,7 @@ impl EditorView {
 
     /// Relinks the files found so far as one undoable edit; the rest stay offline.
     pub(super) fn missing_media_relink(&mut self, cx: &mut Context<Self>) {
-        let Some(panel) = self.missing_media.as_ref() else {
+        let Some(panel) = self.settings.missing_media.as_ref() else {
             return;
         };
         if !matches!(panel.target, Target::Relink)
@@ -548,7 +555,7 @@ impl EditorView {
         {
             return;
         }
-        let Some(panel) = self.missing_media.take() else {
+        let Some(panel) = self.settings.missing_media.take() else {
             return;
         };
         if panel.generation != self.project_generation
@@ -559,7 +566,7 @@ impl EditorView {
         {
             self.error = Some("project changed · relink cancelled".into());
         } else if !self.enqueue(Request::RelinkMedia(panel.resolved())) {
-            self.missing_media = Some(panel);
+            self.settings.missing_media = Some(panel);
         }
         cx.notify();
     }
@@ -571,7 +578,7 @@ impl EditorView {
     /// Opens with the files found so far; with `offline`, files still missing
     /// open offline (their clips are silent) instead of blocking the open.
     pub(super) fn missing_media_open_with(&mut self, offline: bool, cx: &mut Context<Self>) {
-        let Some(panel) = self.missing_media.as_ref() else {
+        let Some(panel) = self.settings.missing_media.as_ref() else {
             return;
         };
         if (!offline && !panel.complete())
@@ -580,10 +587,10 @@ impl EditorView {
         {
             return;
         }
-        let Some(panel) = self.missing_media.take() else {
+        let Some(panel) = self.settings.missing_media.take() else {
             return;
         };
-        self.opening_project = false;
+        self.persistence.opening_project = false;
         if panel.generation != self.project_generation
             || self
                 .state
@@ -606,7 +613,7 @@ impl EditorView {
     }
 
     pub(super) fn missing_media_overlay(&self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
-        let panel = self.missing_media.as_ref()?;
+        let panel = self.settings.missing_media.as_ref()?;
         let muted = rgb(theme::color(PaletteRole::Muted));
         let mut list = div()
             .id("missing-media-list")
@@ -734,8 +741,11 @@ impl EditorView {
         let search_button = if panel.search.is_some() {
             button("missing-media-cancel-search", "cancel search").on_click(cx.listener(
                 |view, _, _, cx| {
-                    if let Some(search) =
-                        view.missing_media.as_ref().and_then(|p| p.search.as_ref())
+                    if let Some(search) = view
+                        .settings
+                        .missing_media
+                        .as_ref()
+                        .and_then(|p| p.search.as_ref())
                     {
                         search.cancel.store(true, Ordering::Relaxed);
                     }

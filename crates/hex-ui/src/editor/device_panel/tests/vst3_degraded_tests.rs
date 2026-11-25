@@ -64,8 +64,8 @@ fn only_the_current_documents_degraded_vst3_devices_show_the_marker(cx: &mut Tes
             mode: hex_session::DocumentAudioMode::Resident,
         });
         view.selected_track = Some(track);
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         view.mode = super::super::super::EditorMode::Session;
         cx.notify();
     });
@@ -184,7 +184,7 @@ fn only_the_current_documents_degraded_vst3_devices_show_the_marker(cx: &mut Tes
     // Preserves the actual failure reason instead of blaming audio deadlines.
     view.update(&mut visual, |view, _| {
         assert_eq!(
-            view.degraded_plugins.reason(faulted.value()),
+            view.device_panel.degraded_plugins.reason(faulted.value()),
             Some("vst3 helper exited")
         );
     });
@@ -196,7 +196,7 @@ fn only_the_current_documents_degraded_vst3_devices_show_the_marker(cx: &mut Tes
     visual.simulate_click(reload_bounds.center(), gpui::Modifiers::default());
     visual.run_until_parked();
     view.update(&mut visual, |view, _| {
-        assert!(view.reloading_plugins.contains(&faulted));
+        assert!(view.device_panel.reloading_plugins.contains(&faulted));
         assert!(view.recovery.generation().is_none());
     });
     // An empty set clears the degraded marker and per-device reload state.
@@ -212,7 +212,7 @@ fn only_the_current_documents_degraded_vst3_devices_show_the_marker(cx: &mut Tes
     assert!(visual.debug_bounds(selector("reload", faulted)).is_none());
     assert!(visual.debug_bounds(selector("pending", faulted)).is_some());
     view.update(&mut visual, |view, _| {
-        assert!(!view.reloading_plugins.contains(&faulted));
+        assert!(!view.device_panel.reloading_plugins.contains(&faulted));
     });
     drop(backend);
     output.publication.close();

@@ -48,7 +48,7 @@ fn empty_grid_drag_selects_time_and_repeated_copy_retains_ack_destination(cx: &m
     visual.simulate_mouse_move(at(0.125), Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert!(v.midi_marquee.is_none());
+        assert!(v.midi_editor.marquee.is_none());
         assert_eq!(v.midi_time_selection_bounds(), Some((beat / 2, 2 * beat)));
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         assert!(!v.edit_pending());
@@ -68,7 +68,7 @@ fn empty_grid_drag_selects_time_and_repeated_copy_retains_ack_destination(cx: &m
                 v.midi_time_selection_bounds(),
                 Some((beat / 2 + n * 3 * beat / 2, 2 * beat + n * 3 * beat / 2))
             );
-            assert!(v.midi_selection.is_empty());
+            assert!(v.midi_editor.selection.is_empty());
             assert_eq!(
                 v.state
                     .as_ref()
@@ -138,7 +138,7 @@ fn grid_time_capture_cancel_stale_and_stationary_click_keep_defined_owners(
             visual.update(|window, cx| editor.update(cx, |v, _| v.focus.focus(window)));
         } else {
             editor.update(&mut visual, |v, _| {
-                v.piano_beat_span = BeatTime::from_quarters(8).unwrap()
+                v.midi_editor.piano_beat_span = BeatTime::from_quarters(8).unwrap()
             });
         }
         visual.simulate_mouse_up(at(0.5), MouseButton::Left, Modifiers::default());
@@ -150,8 +150,8 @@ fn grid_time_capture_cancel_stale_and_stationary_click_keep_defined_owners(
         });
         visual.update(|window, cx| {
             editor.update(cx, |v, cx| {
-                v.piano_beat_span = BeatTime::from_quarters(4).unwrap();
-                v.midi_focus.focus(window);
+                v.midi_editor.piano_beat_span = BeatTime::from_quarters(4).unwrap();
+                v.midi_editor.focus.focus(window);
                 cx.notify();
             })
         });
@@ -160,7 +160,7 @@ fn grid_time_capture_cancel_stale_and_stationary_click_keep_defined_owners(
     visual.simulate_click(at(0.5), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_marker, Some(2 * beat));
+        assert_eq!(v.midi_editor.marker, Some(2 * beat));
         assert!(v.midi_time_selection_bounds().is_none());
         assert!(
             v.error.is_none(),
@@ -184,9 +184,9 @@ fn creation_floors_onset_and_free_preview_commits_one_pixel_at_both_zooms(cx: &m
         ] {
             let (mut visual, editor, _environment, clip) = fixture(cx);
             editor.update(&mut visual, |v, cx| {
-                v.midi_draw_mode = draw;
-                v.midi_snap_grid = grid;
-                v.piano_beat_span = BeatTime::from_raw(span);
+                v.midi_editor.draw_mode = draw;
+                v.midi_editor.snap_grid = grid;
+                v.midi_editor.piano_beat_span = BeatTime::from_raw(span);
                 cx.notify();
             });
             visual.run_until_parked();
@@ -204,9 +204,14 @@ fn creation_floors_onset_and_free_preview_commits_one_pixel_at_both_zooms(cx: &m
             visual.run_until_parked();
             let preview = editor.read_with(&visual, |v, _| {
                 let note = if draw {
-                    v.midi_stroke.as_ref().unwrap().shared_preview().inserted[0]
+                    v.midi_editor
+                        .stroke
+                        .as_ref()
+                        .unwrap()
+                        .shared_preview()
+                        .inserted[0]
                 } else {
-                    v.midi_creation.as_ref().unwrap().preview
+                    v.midi_editor.creation.as_ref().unwrap().preview
                 };
                 let raw =
                     (f64::from((down.x - roll.origin.x - px(1.0)) / (roll.size.width - px(2.0)))
@@ -310,9 +315,12 @@ fn copy_modifier_cursor_tracks_actual_payload_and_restores_after_cancel(cx: &mut
         roll.origin.y
             + roll.size.height
                 * ((f32::from(
-                    v.piano_pitch.first_test_pitch() + v.piano_pitch.test_row_count() - 1 - 60,
+                    v.midi_editor.piano_pitch.first_test_pitch()
+                        + v.midi_editor.piano_pitch.test_row_count()
+                        - 1
+                        - 60,
                 ) + 0.5)
-                    / f32::from(v.piano_pitch.test_row_count()))
+                    / f32::from(v.midi_editor.piano_pitch.test_row_count()))
     });
     let down = point(roll.origin.x + roll.size.width * 0.375, y);
     let end = point(down.x + roll.size.width * 0.375, y);
@@ -373,7 +381,7 @@ fn copy_modifier_cursor_tracks_actual_payload_and_restores_after_cancel(cx: &mut
                 assert_ne!(notes[1].id(), original.id());
             }
         });
-        visual.update(|window, cx| editor.update(cx, |v, _| v.midi_focus.focus(window)));
+        visual.update(|window, cx| editor.update(cx, |v, _| v.midi_editor.focus.focus(window)));
         visual.run_until_parked();
     }
 }
@@ -397,13 +405,16 @@ fn idle_hover_selected_note_paint_are_distinct_on_completed_frames(cx: &mut Test
         roll.origin.y
             + roll.size.height
                 * ((f32::from(
-                    v.piano_pitch.first_test_pitch() + v.piano_pitch.test_row_count() - 1 - 60,
+                    v.midi_editor.piano_pitch.first_test_pitch()
+                        + v.midi_editor.piano_pitch.test_row_count()
+                        - 1
+                        - 60,
                 ) + 0.5)
-                    / f32::from(v.piano_pitch.test_row_count()))
+                    / f32::from(v.midi_editor.piano_pitch.test_row_count()))
     });
     let at = point(roll.origin.x + roll.size.width * 0.375, y);
     editor.update(&mut visual, |v, cx| {
-        v.midi_selection.clear();
+        v.midi_editor.selection.clear();
         cx.notify();
     });
     visual.simulate_mouse_move(
@@ -457,7 +468,7 @@ fn idle_hover_selected_note_paint_are_distinct_on_completed_frames(cx: &mut Test
 fn free_held_creation_resizes_from_exact_anchor_and_escape_discards_it(cx: &mut TestAppContext) {
     let (mut visual, editor, _environment, clip) = fixture(cx);
     editor.update(&mut visual, |v, cx| {
-        v.midi_snap_grid = super::midi_drag::MidiGrid::Off;
+        v.midi_editor.snap_grid = super::midi_drag::MidiGrid::Off;
         cx.notify();
     });
     visual.run_until_parked();
@@ -466,7 +477,7 @@ fn free_held_creation_resizes_from_exact_anchor_and_escape_discards_it(cx: &mut 
     for cancel in [true, false] {
         double_down(&mut visual, down, Modifiers::default());
         let start = editor.read_with(&visual, |v, _| {
-            v.midi_creation.as_ref().unwrap().preview.start
+            v.midi_editor.creation.as_ref().unwrap().preview.start
         });
         // Free mode responds to even one pixel of motion, then cannot invert
         // the note when dragged left across its fixed onset.
@@ -481,13 +492,15 @@ fn free_held_creation_resizes_from_exact_anchor_and_escape_discards_it(cx: &mut 
             Modifiers::default(),
         );
         editor.read_with(&visual, |v, _| {
-            let note = v.midi_creation.as_ref().unwrap().preview;
+            let note = v.midi_editor.creation.as_ref().unwrap().preview;
             assert_eq!(note.start, start);
             assert_eq!(note.duration.raw(), v.midi_minimum_creation_gate().unwrap());
         });
         let end = down + point(px(83.0), px(0.0));
         visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
-        let preview = editor.read_with(&visual, |v, _| v.midi_creation.as_ref().unwrap().preview);
+        let preview = editor.read_with(&visual, |v, _| {
+            v.midi_editor.creation.as_ref().unwrap().preview
+        });
         assert_eq!(preview.start, start);
         assert!(preview.duration.raw() > BeatTime::ONE.raw() / 4);
         if cancel {

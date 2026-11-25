@@ -74,7 +74,7 @@ fn held_creation_isolates_input_then_keeps_only_accepted_geometry(cx: &mut TestA
     } = open(cx);
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     super::super::creation_tests::double_down(&mut visual, down, Modifiers::default());
-    assert!(editor.read_with(&visual, |v, _| v.midi_creation.is_some()));
+    assert!(editor.read_with(&visual, |v, _| v.midi_editor.creation.is_some()));
     let outside = point(px(640.), px(10.));
     visual.simulate_mouse_down(outside, MouseButton::Right, Modifiers::default());
     visual.simulate_mouse_down(outside, MouseButton::Middle, Modifiers::default());
@@ -108,7 +108,7 @@ fn held_creation_isolates_input_then_keeps_only_accepted_geometry(cx: &mut TestA
         assert_eq!(bodies(&editor, &mut visual), held);
         assert!(!visual.update(|w, _| w.is_pointer_dragging()));
         editor.read_with(&visual, |v, _| {
-            assert!(v.midi_creation.is_none());
+            assert!(v.midi_editor.creation.is_none());
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });
     }
@@ -121,7 +121,9 @@ fn held_creation_isolates_input_then_keeps_only_accepted_geometry(cx: &mut TestA
     });
     repaint(&editor, &mut visual);
     assert_eq!(bodies(&editor, &mut visual), held);
-    editor.read_with(&visual, |v, _| assert!(v.pending_midi_drag.is_none()));
+    editor.read_with(&visual, |v, _| {
+        assert!(v.midi_editor.pending_drag.is_none())
+    });
 }
 #[gpui::test]
 fn creation_loss_never_adds_a_note_or_leaks_release(cx: &mut TestAppContext) {
@@ -161,11 +163,11 @@ fn creation_loss_never_adds_a_note_or_leaks_release(cx: &mut TestAppContext) {
             "source" => editor.update(&mut visual, |v, cx| {
                 v.mode = crate::editor::EditorMode::Session;
                 v.selected_clip = None;
-                v.selected_cell = None;
+                v.session_grid.selected_cell = None;
                 cx.notify();
             }),
             "hidden" => editor.update(&mut visual, |v, cx| {
-                v.clip_view_open = false;
+                v.audio_detail.clip_view_open = false;
                 cx.notify();
             }),
             "bounds" => visual.simulate_resize(gpui::size(px(1000.), px(700.))),
@@ -203,8 +205,8 @@ fn creation_loss_never_adds_a_note_or_leaks_release(cx: &mut TestAppContext) {
         visual.run_until_parked();
         assert_eq!(actions.get(), 0, "{loss}: no trailing release");
         editor.read_with(&visual, |v, _| {
-            assert!(v.midi_creation.is_none(), "{loss}");
-            assert!(v.pending_midi_drag.is_none());
+            assert!(v.midi_editor.creation.is_none(), "{loss}");
+            assert!(v.midi_editor.pending_drag.is_none());
             assert!(!v.edit_pending(), "{loss}");
             assert_eq!(
                 v.state.as_ref().unwrap().project.snapshot(),
@@ -245,8 +247,8 @@ fn linked_alias_creation_keeps_receipt_geometry_and_shared_one_step_history(
     visual.update(|w, cx| {
         editor.update(cx, |v, cx| {
             v.selected_clip = Some(alias);
-            v.piano_view_clip = None;
-            v.midi_focus.focus(w);
+            v.midi_editor.piano_view_clip = None;
+            v.midi_editor.focus.focus(w);
             cx.notify();
         })
     });
@@ -277,7 +279,7 @@ fn linked_alias_creation_keeps_receipt_geometry_and_shared_one_step_history(
     repaint(&editor, &mut visual);
     assert_eq!(bodies(&editor, &mut visual), held);
     let after = editor.read_with(&visual, |v, _| {
-        assert!(v.pending_midi_drag.is_none());
+        assert!(v.midi_editor.pending_drag.is_none());
         let p = &v.state.as_ref().unwrap().project;
         assert_eq!(p.midi_source(alias).unwrap().notes().len(), 1);
         assert_eq!(

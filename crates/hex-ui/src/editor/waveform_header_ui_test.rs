@@ -680,9 +680,9 @@ fn clip_waveform_palette_uses_a_contrasting_hue(cx: &mut TestAppContext) {
         editor.update(&mut visual, |view, cx| {
             view.selected_track = Some(track);
             view.selected_clip = Some(clip);
-            view.clip_view_open = true;
-            view.device_panel_active = false;
-            view.audio_event_editor.source_view = source;
+            view.audio_detail.clip_view_open = true;
+            view.device_panel.active = false;
+            view.audio_detail.event.source_view = source;
             view.waveform_geometry_cache
                 .borrow_mut()
                 .clear_paint_samples();

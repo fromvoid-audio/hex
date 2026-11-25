@@ -48,12 +48,12 @@ impl EditorView {
         };
         if self.mode != super::EditorMode::Arrangement
             || self.context_menu.is_some()
-            || self.theme_settings.open
-            || self.tuning.open
+            || self.settings.theme.open
+            || self.settings.tuning.open
             || super::device_panel::picker_is_open(self)
             || self.active_clip_drag.is_some()
-            || self.active_browser_audio_drag.is_some()
-            || self.active_native_device_drag.is_some()
+            || self.browser.active_audio_drag.is_some()
+            || self.device_panel.active_native_drag.is_some()
             || self.loop_rail_gesture.is_some()
             || self.locked_play_start_drag_active()
             || self.track_resize_active()
@@ -500,8 +500,8 @@ impl EditorView {
                             return;
                         }
                         let view = zoom_entity.read(cx);
-                        if view.theme_settings.open
-                            || view.tuning.open
+                        if view.settings.theme.open
+                            || view.settings.tuning.open
                             || super::device_panel::picker_is_open(view)
                         {
                             return;
@@ -509,8 +509,8 @@ impl EditorView {
                         cx.stop_propagation();
                         zoom_entity.update(cx, |view, cx| {
                             if view.context_menu.is_some()
-                                || view.theme_settings.open
-                                || view.tuning.open
+                                || view.settings.theme.open
+                                || view.settings.tuning.open
                                 || super::device_panel::picker_is_open(view)
                             {
                                 return;
@@ -604,8 +604,8 @@ impl EditorView {
                         let started = cursor_down_entity.update(cx, |view, cx| {
                             // Foreground controls own the press while open.
                             if view.context_menu.is_some()
-                                || view.theme_settings.open
-                                || view.tuning.open
+                                || view.settings.theme.open
+                                || view.settings.tuning.open
                                 || super::device_panel::picker_is_open(view)
                                 || view.pointer_hits_bottom_play_start_marker(
                                     event.position,
@@ -859,9 +859,9 @@ impl EditorView {
             );
         }
         body = body.children(self.arrangement_device_drop_preview());
-        if let Some(drag) = self.active_browser_audio_drag.as_ref()
+        if let Some(drag) = self.browser.active_audio_drag.as_ref()
             && self.browser_sampler_drop_ready(drag, cx).is_ok()
-            && let Some(line_y) = self.sampler_load.header_insertion_line_y
+            && let Some(line_y) = self.device_panel.sampler_load.header_insertion_line_y
             && let Some(bounds) = self.arrangement_bounds
             && line_y >= bounds.top
             && line_y < bounds.top + bounds.height
@@ -884,7 +884,8 @@ impl EditorView {
         {
             None
         } else {
-            self.pending_sample_drop
+            self.browser
+                .pending_sample_drop
                 .as_ref()
                 .and_then(|drop| drop.insertion_line_y)
                 .or_else(|| self.displayed_browser_audio_drag()?.insertion_line_y.get())
@@ -1140,7 +1141,8 @@ impl EditorView {
                 clip_entity.update(cx, |view, cx| {
                     #[cfg(test)]
                     {
-                        view.drag_move_event_count = view.drag_move_event_count.saturating_add(1);
+                        view.test_probes.drag_move_event_count =
+                            view.test_probes.drag_move_event_count.saturating_add(1);
                     }
                     view.sync_held_clip_move_audition();
                     cx.notify();
@@ -1537,8 +1539,8 @@ impl EditorView {
                             return;
                         }
                         let view = wheel_entity.read(cx);
-                        if view.theme_settings.open
-                            || view.tuning.open
+                        if view.settings.theme.open
+                            || view.settings.tuning.open
                             || super::device_panel::picker_is_open(view)
                         {
                             return;
@@ -1546,8 +1548,8 @@ impl EditorView {
                         cx.stop_propagation();
                         wheel_entity.update(cx, |view, cx| {
                             if view.context_menu.is_some()
-                                || view.theme_settings.open
-                                || view.tuning.open
+                                || view.settings.theme.open
+                                || view.settings.tuning.open
                                 || super::device_panel::picker_is_open(view)
                             {
                                 return;

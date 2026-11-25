@@ -105,8 +105,8 @@ impl EditorView {
     }
 
     pub(super) fn sample_arm_button(&self, arm: Arm, cx: &mut Context<Self>) -> Stateful<Div> {
-        let armed = self.sample_recorder.generation == Some(self.project_generation)
-            && self.sample_recorder.armed.contains(&arm);
+        let armed = self.device_panel.sample_recorder.generation == Some(self.project_generation)
+            && self.device_panel.sample_recorder.armed.contains(&arm);
         let (background, text) = if armed {
             let background = theme::color(theme::PaletteRole::Recording);
             (background, theme::color(theme::PaletteRole::Background))
@@ -133,19 +133,20 @@ impl EditorView {
         .flex_shrink_0()
         .on_click(cx.listener(move |view, _, _, cx| {
             cx.stop_propagation();
-            if view.opening_project || view.sample_source_name(arm.source()).is_none() {
+            if view.persistence.opening_project || view.sample_source_name(arm.source()).is_none() {
                 return;
             }
             view.sync_sample_arm_context();
             if let Some(index) = view
+                .device_panel
                 .sample_recorder
                 .armed
                 .iter()
                 .position(|entry| *entry == arm)
             {
-                view.sample_recorder.armed.remove(index);
+                view.device_panel.sample_recorder.armed.remove(index);
             } else {
-                view.sample_recorder.armed.push(arm);
+                view.device_panel.sample_recorder.armed.push(arm);
             }
             cx.notify();
         }))
@@ -153,32 +154,35 @@ impl EditorView {
 
     fn sync_sample_arm_context(&mut self) -> bool {
         let generation = Some(self.project_generation);
-        if self.sample_recorder.generation != generation {
-            self.sample_recorder.generation = generation;
-            self.sample_recorder.revision = None;
-            self.sample_recorder.armed.clear();
+        if self.device_panel.sample_recorder.generation != generation {
+            self.device_panel.sample_recorder.generation = generation;
+            self.device_panel.sample_recorder.revision = None;
+            self.device_panel.sample_recorder.armed.clear();
             return true;
         }
         let Some(state) = &self.state else {
             return false;
         };
-        if self.sample_recorder.revision == Some(state.revision) {
+        if self.device_panel.sample_recorder.revision == Some(state.revision) {
             return false;
         }
-        self.sample_recorder.revision = Some(state.revision);
-        let before = self.sample_recorder.armed.len();
-        self.sample_recorder.armed.retain(|arm| match arm {
-            Arm::Main => true,
-            Arm::Output(OutputCaptureId::Track(id)) => state.project.track(*id).is_some(),
-            Arm::Output(OutputCaptureId::Return(id)) => {
-                state.project.return_tracks().iter().any(|r| r.id() == *id)
-            }
-        });
-        self.sample_recorder.armed.len() != before
+        self.device_panel.sample_recorder.revision = Some(state.revision);
+        let before = self.device_panel.sample_recorder.armed.len();
+        self.device_panel
+            .sample_recorder
+            .armed
+            .retain(|arm| match arm {
+                Arm::Main => true,
+                Arm::Output(OutputCaptureId::Track(id)) => state.project.track(*id).is_some(),
+                Arm::Output(OutputCaptureId::Return(id)) => {
+                    state.project.return_tracks().iter().any(|r| r.id() == *id)
+                }
+            });
+        self.device_panel.sample_recorder.armed.len() != before
     }
 
     pub(super) fn sample_recorder_mode_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        let label = if self.sample_recorder.visible {
+        let label = if self.device_panel.sample_recorder.visible {
             "spectrum"
         } else {
             "recorder"
@@ -189,7 +193,7 @@ impl EditorView {
             ("sample-recorder-mode", 0),
         )
         .on_click(cx.listener(|view, _, _, cx| {
-            view.sample_recorder.visible = !view.sample_recorder.visible;
+            view.device_panel.sample_recorder.visible = !view.device_panel.sample_recorder.visible;
             view.tick_project_spectrum(cx);
             cx.notify();
         }))
@@ -197,13 +201,13 @@ impl EditorView {
 
     fn start_sample_take(&mut self) -> Result<Job, String> {
         self.sync_sample_arm_context();
-        if self.opening_project {
+        if self.persistence.opening_project {
             return Err("wait for the project to finish opening".into());
         }
         let mut names = Vec::new();
         let mut outputs = Vec::new();
         let mut main = false;
-        for arm in self.sample_recorder.armed.iter().copied() {
+        for arm in self.device_panel.sample_recorder.armed.iter().copied() {
             let source = arm.source();
             let Some(name) = self.sample_source_name(source) else {
                 continue;
@@ -255,7 +259,7 @@ impl EditorView {
     }
 
     fn sample_record_or_stop(&mut self) {
-        if let Some(job) = &self.sample_recorder.job {
+        if let Some(job) = &self.device_panel.sample_recorder.job {
             if let Some(audio) = self
                 .audio
                 .as_ref()
@@ -265,20 +269,20 @@ impl EditorView {
             }
             return;
         }
-        self.sample_recorder.error = None;
+        self.device_panel.sample_recorder.error = None;
         match self.start_sample_take() {
             Ok(job) => {
-                self.sample_recorder.job = Some(job);
-                self.sample_recorder.phase = Some(Phase::Preparing);
+                self.device_panel.sample_recorder.job = Some(job);
+                self.device_panel.sample_recorder.phase = Some(Phase::Preparing);
             }
-            Err(error) => self.sample_recorder.error = Some(error),
+            Err(error) => self.device_panel.sample_recorder.error = Some(error),
         }
     }
 
     pub(super) fn tick_sample_recorder(&mut self) -> bool {
         let arms_changed = self.sync_sample_arm_context();
         let preview_changed = self.tick_take_preview();
-        let Some(job) = &self.sample_recorder.job else {
+        let Some(job) = &self.device_panel.sample_recorder.job else {
             return arms_changed || preview_changed;
         };
         let phase = self
@@ -287,7 +291,7 @@ impl EditorView {
             .filter(|audio| audio.control.output_identity() == Some(job.output))
             .and_then(|audio| audio.control.sample_recording_phase())
             .unwrap_or(Phase::Finishing);
-        let phase_changed = self.sample_recorder.phase.replace(phase) != Some(phase);
+        let phase_changed = self.device_panel.sample_recorder.phase.replace(phase) != Some(phase);
         let result = match job.result.try_recv() {
             Ok(result) => result,
             Err(TryRecvError::Disconnected) => Err("sample take writer exited".into()),
@@ -296,10 +300,10 @@ impl EditorView {
         if let Some(audio) = self.audio.as_mut() {
             audio.control.reclaim_sample_recording();
         }
-        let Some(job) = self.sample_recorder.job.take() else {
+        let Some(job) = self.device_panel.sample_recorder.job.take() else {
             return true;
         };
-        self.sample_recorder.phase = None;
+        self.device_panel.sample_recorder.phase = None;
         match result {
             Ok(batch) => {
                 for take in batch.takes {
@@ -308,10 +312,16 @@ impl EditorView {
                         .iter()
                         .find(|(source, _)| *source == take.source)
                         .map_or_else(|| "sample".into(), |(_, name)| name.clone());
-                    self.sample_recorder.recent.insert(0, Row { name, take });
+                    self.device_panel
+                        .sample_recorder
+                        .recent
+                        .insert(0, Row { name, take });
                 }
-                self.sample_recorder.recent.truncate(RECENT_LIMIT);
-                self.sample_recorder.error = match batch.write_error {
+                self.device_panel
+                    .sample_recorder
+                    .recent
+                    .truncate(RECENT_LIMIT);
+                self.device_panel.sample_recorder.error = match batch.write_error {
                     Some(error) => Some(format!("sample take interrupted · {error}")),
                     None if batch.end == End::Stopped => None,
                     None => Some(format!(
@@ -321,7 +331,8 @@ impl EditorView {
                 };
             }
             Err(error) => {
-                self.sample_recorder.error = Some(format!("sample take writer · {error}"))
+                self.device_panel.sample_recorder.error =
+                    Some(format!("sample take writer · {error}"))
             }
         }
         true
@@ -334,7 +345,7 @@ impl EditorView {
     ) -> Stateful<Div> {
         let waveform = self.take_waveform_panel(cx);
         let waveform_open = waveform.is_some();
-        let phase = self.sample_recorder.phase;
+        let phase = self.device_panel.sample_recorder.phase;
         let label = match phase {
             Some(Phase::Preparing) => "preparing",
             Some(Phase::Capturing) => "recording",
@@ -381,7 +392,7 @@ impl EditorView {
                     )
                     .child(div().min_w_0().truncate().child(theme::text(format!(
                         "{label} · {} armed",
-                        self.sample_recorder.armed.len()
+                        self.device_panel.sample_recorder.armed.len()
                     )))),
             )
             .child(
@@ -400,31 +411,39 @@ impl EditorView {
                             .overflow_y_scroll()
                             .px_1()
                             .children(
-                                self.sample_recorder
+                                self.device_panel
+                                    .sample_recorder
                                     .error
                                     .as_ref()
                                     .map(|error| div().child(theme::text(error))),
                             )
-                            .children(self.sample_recorder.recent.iter().enumerate().map(
-                                |(index, row)| {
-                                    let seconds =
-                                        row.take.frames as f64 / f64::from(row.take.sample_rate);
-                                    let open = row.clone();
-                                    div()
-                                        .id(gpui::SharedString::from(
-                                            row.take.path.to_string_lossy().into_owned(),
-                                        ))
-                                        .debug_selector(move || format!("recorded-take-{index}"))
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(move |view, _, _, cx| {
-                                            view.open_recorded_take(open.clone(), cx)
-                                        }))
-                                        .child(theme::text(format!(
-                                            "{} · {seconds:.2} s",
-                                            hex_session::service::text::verbatim(&row.name)
-                                        )))
-                                },
-                            )),
+                            .children(
+                                self.device_panel
+                                    .sample_recorder
+                                    .recent
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(index, row)| {
+                                        let seconds = row.take.frames as f64
+                                            / f64::from(row.take.sample_rate);
+                                        let open = row.clone();
+                                        div()
+                                            .id(gpui::SharedString::from(
+                                                row.take.path.to_string_lossy().into_owned(),
+                                            ))
+                                            .debug_selector(move || {
+                                                format!("recorded-take-{index}")
+                                            })
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(move |view, _, _, cx| {
+                                                view.open_recorded_take(open.clone(), cx)
+                                            }))
+                                            .child(theme::text(format!(
+                                                "{} · {seconds:.2} s",
+                                                hex_session::service::text::verbatim(&row.name)
+                                            )))
+                                    }),
+                            ),
                     ),
             )
     }
@@ -433,8 +452,8 @@ impl EditorView {
 #[cfg(all(test, feature = "ui-test-support"))]
 impl EditorView {
     pub(super) fn show_take_fixture(&mut self, take: Take) {
-        self.sample_recorder.visible = true;
-        self.sample_recorder.recent.push(Row {
+        self.device_panel.sample_recorder.visible = true;
+        self.device_panel.sample_recorder.recent.push(Row {
             name: "captured audio".into(),
             take,
         });
@@ -507,13 +526,13 @@ mod tests {
         let (sender, receiver) = mpsc::sync_channel(1);
         sender.send(result).unwrap();
         editor.update(&mut visual, |view, _| {
-            view.sample_recorder.job = Some(Job {
+            view.device_panel.sample_recorder.job = Some(Job {
                 result: receiver,
                 names: Vec::new(),
                 output: 0,
             });
             assert!(view.tick_sample_recorder());
-            let message = theme::text(view.sample_recorder.error.as_deref().unwrap());
+            let message = theme::text(view.device_panel.sample_recorder.error.as_deref().unwrap());
             assert_eq!(
                 message.as_ref(),
                 format!(
@@ -531,14 +550,14 @@ mod tests {
             ))
             .unwrap();
         editor.update(&mut visual, |view, _| {
-            view.sample_recorder.job = Some(Job {
+            view.device_panel.sample_recorder.job = Some(Job {
                 result: receiver,
                 names: Vec::new(),
                 output: 0,
             });
             assert!(view.tick_sample_recorder());
             assert_eq!(
-                view.sample_recorder.error.as_deref(),
+                view.device_panel.sample_recorder.error.as_deref(),
                 Some("sample take writer · sample take storage is unavailable")
             );
         });
@@ -557,16 +576,16 @@ mod tests {
             }))
             .unwrap();
         editor.update(&mut visual, |view, _| {
-            view.sample_recorder.job = Some(Job {
+            view.device_panel.sample_recorder.job = Some(Job {
                 result: receiver,
                 names: vec![(Source::Main, "main".into())],
                 output: 0,
             });
             assert!(view.tick_sample_recorder());
-            assert!(view.sample_recorder.error.is_none());
-            assert_eq!(view.sample_recorder.recent.len(), 1);
+            assert!(view.device_panel.sample_recorder.error.is_none());
+            assert_eq!(view.device_panel.sample_recorder.recent.len(), 1);
             assert_eq!(
-                view.sample_recorder.recent[0].take.path,
+                view.device_panel.sample_recorder.recent[0].take.path,
                 directory.join("main.wav")
             );
         });
@@ -577,14 +596,14 @@ mod tests {
         let (sender, receiver) = mpsc::sync_channel(1);
         drop(sender);
         editor.update(&mut visual, |view, _| {
-            view.sample_recorder.job = Some(Job {
+            view.device_panel.sample_recorder.job = Some(Job {
                 result: receiver,
                 names: Vec::new(),
                 output: 0,
             });
             assert!(view.tick_sample_recorder());
             assert_eq!(
-                view.sample_recorder.error.as_deref(),
+                view.device_panel.sample_recorder.error.as_deref(),
                 Some("sample take writer · sample take writer exited")
             );
         });
@@ -643,9 +662,10 @@ mod tests {
         visual.simulate_click(arm.center(), Modifiers::default());
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            assert!(!view.sample_recorder.armed.contains(&Arm::Main));
+            assert!(!view.device_panel.sample_recorder.armed.contains(&Arm::Main));
             assert!(
-                view.sample_recorder
+                view.device_panel
+                    .sample_recorder
                     .armed
                     .contains(&Arm::Output(OutputCaptureId::Track(track)))
             );
@@ -653,11 +673,12 @@ mod tests {
         visual.simulate_click(arm.center(), Modifiers::default());
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
-            assert!(!view.sample_recorder.visible);
-            assert_eq!(view.sample_recorder.armed.len(), 2);
-            assert!(view.sample_recorder.armed.contains(&Arm::Main));
+            assert!(!view.device_panel.sample_recorder.visible);
+            assert_eq!(view.device_panel.sample_recorder.armed.len(), 2);
+            assert!(view.device_panel.sample_recorder.armed.contains(&Arm::Main));
             assert!(
-                view.sample_recorder
+                view.device_panel
+                    .sample_recorder
                     .armed
                     .contains(&Arm::Output(OutputCaptureId::Track(track)))
             );

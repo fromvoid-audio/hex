@@ -232,7 +232,7 @@ pub(in crate::editor) fn reconcile(view: &mut EditorView) -> bool {
         .spectrum_results
         .retain(|_, result| valid.iter().any(|target| matches(result, *target, now)));
     changed |= count != view.device_panel.spectrum_results.len();
-    if !view.clip_view_open || !view.device_panel_active {
+    if !view.audio_detail.clip_view_open || !view.device_panel.active {
         changed |= clear_status(view);
     }
     changed

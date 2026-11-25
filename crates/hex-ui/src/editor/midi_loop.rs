@@ -74,7 +74,8 @@ impl EditorView {
         };
         let rendered = self.midi_ruler_context(placeholder);
         let values = self
-            .midi_ruler
+            .midi_editor
+            .ruler
             .gesture
             .map(|gesture| gesture.preview)
             .or_else(|| {
@@ -89,10 +90,11 @@ impl EditorView {
         let Some(values) = values else {
             return div();
         };
-        let start = self.piano_beat_start;
-        let span = self.piano_beat_span.raw();
+        let start = self.midi_editor.piano_beat_start;
+        let span = self.midi_editor.piano_beat_span.raw();
         let active = self
-            .midi_ruler
+            .midi_editor
+            .ruler
             .gesture
             .filter(|gesture| gesture.handle != Handle::Start);
         let label = format!(
@@ -137,7 +139,7 @@ impl EditorView {
                 values.looping,
                 ["midi-loop-start-marker", "midi-loop-end-marker"],
             ))
-            .track_focus(&self.midi_focus)
+            .track_focus(&self.midi_editor.focus)
             .key_context("hex_midi")
             .child(
                 div()
@@ -215,7 +217,7 @@ impl EditorView {
                                         cx,
                                     )
                                 {
-                                    view.midi_focus.focus(window);
+                                    view.midi_editor.focus.focus(window);
                                     cx.notify();
                                     cx.stop_propagation();
                                 }
@@ -277,7 +279,7 @@ impl EditorView {
                                 midi_source_controls::SourceField::Looping,
                                 1,
                             );
-                            view.midi_focus.focus(window);
+                            view.midi_editor.focus.focus(window);
                             cx.notify();
                         }
                     })),

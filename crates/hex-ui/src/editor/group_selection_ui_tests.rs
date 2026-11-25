@@ -234,17 +234,17 @@ fn g_respects_text_midi_and_computer_keyboard_focus(cx: &mut TestAppContext) {
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
         assert!(!matches!(
-            view.last_enqueued_edit,
+            view.test_probes.last_enqueued_edit,
             Some(Command::GroupClips(_))
         ));
     });
 
-    visual.update(|window, cx| editor.update(cx, |view, _| view.midi_focus.focus(window)));
+    visual.update(|window, cx| editor.update(cx, |view, _| view.midi_editor.focus.focus(window)));
     visual.simulate_keystrokes("g");
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
         assert!(!matches!(
-            view.last_enqueued_edit,
+            view.test_probes.last_enqueued_edit,
             Some(Command::GroupClips(_))
         ));
     });
@@ -484,7 +484,7 @@ fn g_retains_a_repeated_audio_group_and_selects_its_one_result(cx: &mut TestAppC
                 .any(|root| root.clip.has_retained_audio_roots())
         );
         assert!(!project.clip(selected).unwrap().looping());
-        assert!(view.bounce_control.is_none());
+        assert!(view.persistence.bounce_control.is_none());
     });
     editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
     pump(&editor, &mut visual);

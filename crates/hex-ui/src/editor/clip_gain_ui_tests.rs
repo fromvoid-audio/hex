@@ -127,12 +127,12 @@ fn plain_audio_top_edge_drag_moves_the_clip_without_changing_gain(cx: &mut TestA
     editor.read_with(&visual, |view, _| {
         assert!(
             matches!(
-                view.last_enqueued_edit,
+                view.test_probes.last_enqueued_edit,
                 Some(Command::MoveClipWithOverwrite { clip: moved, track: target, start })
                     if moved == clip && target == track && start > 0
             ),
             "unexpected release: {:?}, {:?}",
-            view.last_enqueued_edit,
+            view.test_probes.last_enqueued_edit,
             view.error
         );
         assert!(view.displayed_clip_gain(clip).is_none());
@@ -169,11 +169,13 @@ fn audio_top_edge_gain_changes_only_gain_and_releases_one_command(cx: &mut TestA
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert!(v.clip_gain.held(), "gain pointer survives repaint");
-        assert!(v.last_enqueued_edit.is_none());
+        assert!(v.test_probes.last_enqueued_edit.is_none());
         assert!(v.active_clip_drag.is_none() && v.active_trim_drag.is_none());
     });
     visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
-    let command = editor.read_with(&visual, |v, _| v.last_enqueued_edit.clone().unwrap());
+    let command = editor.read_with(&visual, |v, _| {
+        v.test_probes.last_enqueued_edit.clone().unwrap()
+    });
     assert!(
         matches!(command, Command::SetAudioClipGain { clip: id, millidb: -6_000 } if id == clip)
     );
@@ -419,7 +421,7 @@ fn audio_gain_shift_segments_bounds_and_noop_use_the_actual_handle(cx: &mut Test
         }
         visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
         editor.read_with(&visual, |v, _| {
-            let got = v.last_enqueued_edit.as_ref().map(|c| match c {
+            let got = v.test_probes.last_enqueued_edit.as_ref().map(|c| match c {
                 Command::SetAudioClipGain { clip: id, millidb } if *id == clip => *millidb,
                 _ => panic!("unexpected command {c:?}"),
             });
@@ -465,9 +467,9 @@ fn audio_gain_cancellation_and_existing_tools_keep_their_input_priority(cx: &mut
         visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         match context {
-            "focus" => {
-                visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_focus.focus(window)))
-            }
+            "focus" => visual.update(|window, cx| {
+                editor.read_with(cx, |v, _| v.midi_editor.focus.focus(window))
+            }),
             "source" => editor.update(&mut visual, |v, cx| {
                 v.project_generation += 1;
                 cx.notify();
@@ -481,7 +483,10 @@ fn audio_gain_cancellation_and_existing_tools_keep_their_input_priority(cx: &mut
             assert!(!v.clip_gain.held(), "{context}");
             assert!(v.displayed_clip_gain(clip).is_none(), "{context}");
             assert!(
-                !matches!(v.last_enqueued_edit, Some(Command::SetAudioClipGain { .. })),
+                !matches!(
+                    v.test_probes.last_enqueued_edit,
+                    Some(Command::SetAudioClipGain { .. })
+                ),
                 "{context}"
             );
         });
@@ -554,7 +559,7 @@ fn momentary_tools_preserve_a_gain_drag_already_in_custody(cx: &mut TestAppConte
         let up = point(up.x, up.y + px(10.0));
         visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
-        editor.read_with(&visual, |v, _| assert!(matches!(v.last_enqueued_edit, Some(Command::SetAudioClipGain { clip: id, millidb: -3_000 }) if id == clip)));
+        editor.read_with(&visual, |v, _| assert!(matches!(v.test_probes.last_enqueued_edit, Some(Command::SetAudioClipGain { clip: id, millidb: -3_000 }) if id == clip)));
     }
 }
 
@@ -622,7 +627,7 @@ fn selected_audio_gain_preserves_offsets_and_owns_the_expanded_command_receipt(
     visual.run_until_parked();
     let held = visual.debug_bounds(label).unwrap();
     visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
-    editor.read_with(&visual, |v, _| assert!(matches!(&v.last_enqueued_edit,
+    editor.read_with(&visual, |v, _| assert!(matches!(&v.test_probes.last_enqueued_edit,
         Some(Command::EditClips { clips, edit: hex_project::ClipEdit::GainBy { millidb: -6_000 } }) if clips == &[first, second])));
     let event = terminal(&editor, &mut visual);
     assert!(event.error.is_none(), "{:?}", event.error);

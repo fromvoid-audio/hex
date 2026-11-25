@@ -51,14 +51,17 @@ fn clip_paint_double_click_hold_previews_then_commits_once(cx: &mut TestAppConte
             assert!(view.clip_paint_gesture.is_some());
             assert!(view.time_selection_gesture.is_none());
             assert!(
-                view.last_enqueued_edit.is_none(),
+                view.test_probes.last_enqueued_edit.is_none(),
                 "preview must not edit history"
             );
         });
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         let command = editor.read_with(cx, |view, _| {
             assert!(!view.clip_paint_held());
-            view.last_enqueued_edit.clone().expect("release edit")
+            view.test_probes
+                .last_enqueued_edit
+                .clone()
+                .expect("release edit")
         });
         assert!(
             matches!(command, Command::PlaceMidiClipWithOverwrite { track: id, start, length }
@@ -102,14 +105,14 @@ fn clip_paint_cancels_and_rejects_explicit_handles_and_stale_state(cx: &mut Test
     editor.update(cx, |view, _| {
         assert!(view.clip_paint_gesture.is_none());
         assert!(!view.finish_clip_paint(end.0, end.1, false));
-        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.test_probes.last_enqueued_edit.is_none());
         assert!(view.begin_clip_paint(start.0, start.1, false));
         view.project_generation += 1;
         assert!(view.finish_clip_paint(end.0, end.1, false));
-        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.test_probes.last_enqueued_edit.is_none());
         assert!(view.begin_clip_paint(start.0, start.1, false));
         assert!(view.finish_clip_paint(end.0, -10.0, false));
-        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.test_probes.last_enqueued_edit.is_none());
     });
 }
 
@@ -126,7 +129,7 @@ fn clip_paint_minimum_length(cx: &mut TestAppContext) {
         let y = lane.top + 22.0;
         assert!(view.begin_clip_paint(x, y, false));
         assert!(view.finish_clip_paint(x, y, false));
-        assert!(matches!(view.last_enqueued_edit, Some(Command::PlaceMidiClipWithOverwrite { length, .. }) if length == BeatTime::ONE));
+        assert!(matches!(view.test_probes.last_enqueued_edit, Some(Command::PlaceMidiClipWithOverwrite { length, .. }) if length == BeatTime::ONE));
     });
 }
 
@@ -149,7 +152,7 @@ fn clip_paint_free_drag_uses_pointer_beats(cx: &mut TestAppContext) {
             let end = state.project.tempo_map().frame_to_beat(super::seek::pointer_to_frame(end_x, lane.left, lane.width, viewport).unwrap()).unwrap();
             assert!(view.begin_clip_paint(x, y, false));
             assert!(view.finish_clip_paint(end_x, y, false));
-            assert!(matches!(view.last_enqueued_edit, Some(Command::PlaceMidiClipWithOverwrite { start: actual, length, .. }) if actual == start.min(end) && length.raw() == end.raw().abs_diff(start.raw())));
+            assert!(matches!(view.test_probes.last_enqueued_edit, Some(Command::PlaceMidiClipWithOverwrite { start: actual, length, .. }) if actual == start.min(end) && length.raw() == end.raw().abs_diff(start.raw())));
         });
     }
 }
@@ -215,7 +218,7 @@ fn clip_headers_grab_and_double_clicking_audio_or_midi_selects(cx: &mut TestAppC
             assert!(view.normalized_time_selection().is_some());
             assert!(view.active_clip_drag.is_none());
             assert!(view.selected_clip().is_none());
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
         });
         visual.run_until_parked();
         visual.simulate_event(MouseDownEvent {
@@ -233,7 +236,7 @@ fn clip_headers_grab_and_double_clicking_audio_or_midi_selects(cx: &mut TestAppC
             assert_eq!(view.selected_clip(), Some(clip));
             assert!(view.clip_paint_gesture.is_none());
             assert!(view.active_clip_drag.is_none());
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
             assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
         });
     }
@@ -291,7 +294,7 @@ fn clip_review_header_selects_while_pending_and_when_leaving_rename(cx: &mut Tes
             assert!(view.active_clip_drag.is_none());
             if renaming {
                 assert!(view.clip_name_edit.is_none());
-                assert!(matches!(view.last_enqueued_edit, Some(Command::RenameClip { clip: id, .. }) if id == clip));
+                assert!(matches!(view.test_probes.last_enqueued_edit, Some(Command::RenameClip { clip: id, .. }) if id == clip));
             }
         });
     }
@@ -379,7 +382,7 @@ fn clip_review_visible_body_wins_over_occluded_edges(cx: &mut TestAppContext) {
                 "the topmost painted clip is selected"
             );
             assert!(view.clip_paint_gesture.is_none());
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
         });
     }
 }

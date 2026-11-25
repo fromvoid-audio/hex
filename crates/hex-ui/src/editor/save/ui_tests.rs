@@ -42,7 +42,7 @@ fn settled(view: &EditorView) -> bool {
     view.state.is_some()
         && view.worker_requests_pending == 0
         && view.pending_requests.is_empty()
-        && !view.saving_project
+        && !view.persistence.saving_project
 }
 fn fixture(
     cx: &mut TestAppContext,
@@ -179,7 +179,7 @@ fn fixture(
         .unwrap();
     let mut visual = VisualTestContext::from_window(handle, cx);
     pump(&editor, &mut visual, |view| {
-        settled(view) && view.document_format_upgrade_required
+        settled(view) && view.persistence.document_format_upgrade_required
     });
     assert!(!cx.has_pending_prompt(), "opening never asks to overwrite");
     (Files(root), path, original, visual, editor)
@@ -217,8 +217,10 @@ fn older_format_save_cancel_picker_cancel_and_failed_save_as_preserve_original(
     visual.simulate_prompt_answer("cancel");
     visual.run_until_parked();
     assert_eq!(fs::read(&path).unwrap(), original);
-    assert!(!editor.read_with(&visual, |view, _| view.save_dialog_open
-        || view.saving_project));
+    assert!(
+        !editor.read_with(&visual, |view, _| view.persistence.save_dialog_open
+            || view.persistence.saving_project)
+    );
 
     save(&editor, &mut visual);
     visual.simulate_prompt_answer("save as…");
@@ -230,7 +232,7 @@ fn older_format_save_cancel_picker_cancel_and_failed_save_as_preserve_original(
     visual.simulate_new_path_selection(|_| None);
     visual.run_until_parked();
     assert_eq!(fs::read(&path).unwrap(), original);
-    assert!(!editor.read_with(&visual, |view, _| view.save_dialog_open));
+    assert!(!editor.read_with(&visual, |view, _| view.persistence.save_dialog_open));
 
     save(&editor, &mut visual);
     visual.simulate_prompt_answer("save as…");
@@ -240,7 +242,9 @@ fn older_format_save_cancel_picker_cancel_and_failed_save_as_preserve_original(
         settled(view) && view.error.is_some()
     });
     assert_eq!(fs::read(&path).unwrap(), original);
-    assert!(editor.read_with(&visual, |view, _| view.document_format_upgrade_required));
+    assert!(editor.read_with(&visual, |view, _| {
+        view.persistence.document_format_upgrade_required
+    }));
     visual.update(|window, _| window.remove_window());
 }
 
@@ -253,7 +257,7 @@ fn older_format_explicit_overwrite_warns_once_and_save_as_keeps_original(cx: &mu
     let copy = files.0.join("My Original-v2/My Original-v2.hex");
     visual.simulate_new_path_selection(|_| Some(files.0.join("My Original-v2.hex")));
     pump(&editor, &mut visual, |view| {
-        settled(view) && !view.document_format_upgrade_required
+        settled(view) && !view.persistence.document_format_upgrade_required
     });
     assert_eq!(fs::read(&path).unwrap(), original);
     assert_eq!(
@@ -270,12 +274,12 @@ fn older_format_explicit_overwrite_warns_once_and_save_as_keeps_original(cx: &mu
         assert!(view.enqueue(Request::Open(path.clone())));
     });
     pump(&editor, &mut visual, |view| {
-        settled(view) && view.document_format_upgrade_required
+        settled(view) && view.persistence.document_format_upgrade_required
     });
     save(&editor, &mut visual);
     visual.simulate_prompt_answer("overwrite original");
     pump(&editor, &mut visual, |view| {
-        settled(view) && !view.document_format_upgrade_required
+        settled(view) && !view.persistence.document_format_upgrade_required
     });
     assert_ne!(fs::read(&path).unwrap(), original);
     editor.update(&mut visual, |view, cx| view.save_project(cx));
@@ -299,7 +303,7 @@ fn older_format_cancel_during_save_before_open_clears_the_open_intent(cx: &mut T
     let next = files.0.join("next.hex");
     fs::write(&next, &original).unwrap();
     editor.update(&mut visual, |view, cx| {
-        view.pending_open_path = Some(next);
+        view.persistence.pending_open_path = Some(next);
         cx.notify();
     });
     visual.run_until_parked();
@@ -307,10 +311,12 @@ fn older_format_cancel_during_save_before_open_clears_the_open_intent(cx: &mut T
     visual.simulate_prompt_answer("save");
     visual.run_until_parked();
     assert!(visual.has_pending_prompt());
-    assert!(editor.read_with(&visual, |view, _| view.project_open.permits_save()));
+    assert!(editor.read_with(&visual, |view, _| {
+        view.persistence.project_open.permits_save()
+    }));
     visual.simulate_prompt_answer("cancel");
     visual.run_until_parked();
-    assert!(!editor.read_with(&visual, |view, _| view.project_open.busy()));
+    assert!(!editor.read_with(&visual, |view, _| view.persistence.project_open.busy()));
     assert_eq!(fs::read(&path).unwrap(), original);
     assert_eq!(
         editor.read_with(&visual, |view, _| view
@@ -335,11 +341,11 @@ fn worker_discovered_reader_warning_opens_prompt_and_can_cancel_or_overwrite(
     // the Service test separately crosses the actual size threshold.
     for answer in ["cancel", "save as…", "overwrite original"] {
         editor.update(&mut visual, |view, cx| {
-            view.document_format_upgrade_required = false;
+            view.persistence.document_format_upgrade_required = false;
             view.save_project(cx);
         });
         pump(&editor, &mut visual, |view| {
-            settled(view) && view.save_dialog_open
+            settled(view) && view.persistence.save_dialog_open
         });
         assert!(visual.has_pending_prompt());
         assert_eq!(fs::read(&path).unwrap(), original);
@@ -351,7 +357,7 @@ fn worker_discovered_reader_warning_opens_prompt_and_can_cancel_or_overwrite(
             visual.run_until_parked();
         }
         pump(&editor, &mut visual, settled);
-        assert!(!editor.read_with(&visual, |view, _| view.save_dialog_open));
+        assert!(!editor.read_with(&visual, |view, _| view.persistence.save_dialog_open));
     }
     assert_ne!(fs::read(&path).unwrap(), original);
     assert!(!visual.has_pending_prompt());
@@ -362,11 +368,11 @@ fn worker_discovered_reader_warning_opens_prompt_and_can_cancel_or_overwrite(
 fn worker_discovered_warning_cannot_overwrite_a_replaced_document(cx: &mut TestAppContext) {
     let (files, path, original, mut visual, editor) = fixture(cx);
     editor.update(&mut visual, |view, cx| {
-        view.document_format_upgrade_required = false;
+        view.persistence.document_format_upgrade_required = false;
         view.save_project(cx);
     });
     pump(&editor, &mut visual, |view| {
-        settled(view) && view.save_dialog_open
+        settled(view) && view.persistence.save_dialog_open
     });
     assert!(visual.has_pending_prompt());
     let other = files.0.join("other.hex");
@@ -381,7 +387,9 @@ fn worker_discovered_warning_cannot_overwrite_a_replaced_document(cx: &mut TestA
     visual.run_until_parked();
     assert_eq!(fs::read(&path).unwrap(), original);
     assert_eq!(fs::read(&other).unwrap(), original);
-    assert!(!editor.read_with(&visual, |view, _| view.saving_project
-        || view.save_dialog_open));
+    assert!(
+        !editor.read_with(&visual, |view, _| view.persistence.saving_project
+            || view.persistence.save_dialog_open)
+    );
     visual.update(|window, _| window.remove_window());
 }

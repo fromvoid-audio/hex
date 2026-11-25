@@ -26,15 +26,15 @@ fn late_numeric_phases_cannot_change_finish_or_cancel_another_parameter_gesture(
     editor.update(cx, |view, _| {
         let revision = view.state.as_ref().unwrap().revision;
         view.begin_device_gesture(current, initial).unwrap();
-        let before = view.device_gesture.snapshot().unwrap();
+        let before = view.device_panel.gesture.snapshot().unwrap();
         for phase in [
             NumericEventPhase::Change,
             NumericEventPhase::Commit,
             NumericEventPhase::Cancel,
         ] {
             dispatch_numeric_gesture(view, stale, phase, late).unwrap();
-            assert_eq!(view.device_gesture.snapshot(), Some(before));
-            assert!(!view.device_gesture.has_pending_terminal());
+            assert_eq!(view.device_panel.gesture.snapshot(), Some(before));
+            assert!(!view.device_panel.gesture.has_pending_terminal());
         }
         assert_eq!(view.state.as_ref().unwrap().revision, revision);
     });
@@ -80,10 +80,10 @@ fn retiring_numeric_control_does_not_cancel_an_unowned_same_parameter_gesture(
             parameter.value,
         )
         .unwrap();
-        let current = view.device_gesture.snapshot().unwrap();
+        let current = view.device_panel.gesture.snapshot().unwrap();
         cancel_control(view, cx, key, &mut old);
-        assert_eq!(view.device_gesture.snapshot(), Some(current));
-        assert!(!view.device_gesture.has_pending_terminal());
+        assert_eq!(view.device_panel.gesture.snapshot(), Some(current));
+        assert!(!view.device_panel.gesture.has_pending_terminal());
     });
 }
 
@@ -116,21 +116,21 @@ fn numeric_binding_lease_cannot_adopt_a_newer_same_parameter_gesture(cx: &mut Te
         let old_key = lease.get().unwrap();
         // Simulate the acknowledged retirement of this edit followed by a new
         // control beginning the same parameter in the same project generation.
-        view.device_gesture.reset();
+        view.device_panel.gesture.reset();
         view.begin_device_gesture(target, parameter.value).unwrap();
         assert_ne!(
-            NumericGestureKey::Canonical(view.device_gesture.snapshot().unwrap().key),
+            NumericGestureKey::Canonical(view.device_panel.gesture.snapshot().unwrap().key),
             old_key
         );
-        let before = view.device_gesture.snapshot();
+        let before = view.device_panel.gesture.snapshot();
         for phase in [
             NumericEventPhase::Change,
             NumericEventPhase::Commit,
             NumericEventPhase::Cancel,
         ] {
             dispatch_bound_numeric_gesture(view, target, &lease, phase, parameter.value).unwrap();
-            assert_eq!(view.device_gesture.snapshot(), before);
-            assert!(!view.device_gesture.has_pending_terminal());
+            assert_eq!(view.device_panel.gesture.snapshot(), before);
+            assert!(!view.device_panel.gesture.has_pending_terminal());
         }
     });
 }
@@ -195,7 +195,7 @@ fn retired_numeric_emitter_cannot_address_a_replacement_binding(cx: &mut TestApp
             gesture: None,
         })
     });
-    let before = editor.read_with(cx, |view, _| view.device_gesture.snapshot().unwrap());
+    let before = editor.read_with(cx, |view, _| view.device_panel.gesture.snapshot().unwrap());
     for phase in [
         NumericEventPhase::Begin,
         NumericEventPhase::Change,
@@ -210,8 +210,8 @@ fn retired_numeric_emitter_cannot_address_a_replacement_binding(cx: &mut TestApp
             })
         });
         editor.read_with(cx, |view, _| {
-            assert_eq!(view.device_gesture.snapshot(), Some(before));
-            assert!(!view.device_gesture.has_pending_terminal());
+            assert_eq!(view.device_panel.gesture.snapshot(), Some(before));
+            assert!(!view.device_panel.gesture.has_pending_terminal());
         });
     }
     drop(retired);
@@ -242,17 +242,17 @@ fn synchronous_numeric_owner_finish_does_not_reopen_queued_noop_drag(cx: &mut Te
             cx,
         );
         editor.update(cx, |view, cx| {
-            assert!(view.device_gesture.snapshot().is_none());
+            assert!(view.device_panel.gesture.snapshot().is_none());
             assert!(finalize_controls(view, cx));
         });
     });
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert!(
-            view.device_gesture.snapshot().is_none(),
+            view.device_panel.gesture.snapshot().is_none(),
             "queued Begin reopened the finalized drag"
         );
-        assert!(!view.device_gesture.has_pending_terminal());
+        assert!(!view.device_panel.gesture.has_pending_terminal());
     });
     // The fence is one delivery cycle, not a permanently disabled binding.
     visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
@@ -264,7 +264,7 @@ fn synchronous_numeric_owner_finish_does_not_reopen_queued_noop_drag(cx: &mut Te
     );
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(view.device_gesture.snapshot().is_some())
+        assert!(view.device_panel.gesture.snapshot().is_some())
     });
 }
 
@@ -284,8 +284,8 @@ fn owner_finalization_retires_a_draft_from_an_old_project_generation(cx: &mut Te
         view.project_generation += 1;
         assert!(finalize_controls(view, cx));
         assert!(!view.device_panel.controls.contains_key(&key));
-        assert!(view.device_gesture.snapshot().is_none());
-        assert!(view.device_gesture_barriers.is_empty());
+        assert!(view.device_panel.gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture_barriers.is_empty());
         assert!(view.device_panel.pending_values.is_empty());
         assert_eq!(view.state.as_ref().unwrap().revision, revision);
     });

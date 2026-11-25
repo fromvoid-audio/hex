@@ -90,16 +90,17 @@ impl EditorView {
 
     pub(super) fn midi_step_preview(&self) -> [Option<MidiNoteInsert>; 128] {
         let cursor = self
-            .midi_marker
-            .unwrap_or(self.piano_beat_start.max(0) as u64);
-        let duration = self.midi_snap_grid.movement_step();
+            .midi_editor
+            .marker
+            .unwrap_or(self.midi_editor.piano_beat_start.max(0) as u64);
+        let duration = self.midi_editor.snap_grid.movement_step();
         if !self.live_midi_context()
-            || !self.midi_step.enabled
+            || !self.midi_editor.step.enabled
             || self.edit_pending()
-            || self.midi_step.pending.is_some()
-            || self.tuning.client.snapshot().is_some()
-            || self.tuning.client.has_pending_requests()
-            || self.tuning.client.is_recovery_pending()
+            || self.midi_editor.step.pending.is_some()
+            || self.settings.tuning.client.snapshot().is_some()
+            || self.settings.tuning.client.has_pending_requests()
+            || self.settings.tuning.client.is_recovery_pending()
             || cursor
                 .checked_add(duration)
                 .is_none_or(|next| next == u64::MAX)
@@ -111,12 +112,12 @@ impl EditorView {
     }
 
     pub(super) fn enter_midi_step(&mut self) {
-        if !self.midi_step.enabled
+        if !self.midi_editor.step.enabled
             || self.edit_pending()
-            || self.midi_step.pending.is_some()
-            || self.tuning.client.snapshot().is_some()
-            || self.tuning.client.has_pending_requests()
-            || self.tuning.client.is_recovery_pending()
+            || self.midi_editor.step.pending.is_some()
+            || self.settings.tuning.client.snapshot().is_some()
+            || self.settings.tuning.client.has_pending_requests()
+            || self.settings.tuning.client.is_recovery_pending()
         {
             return;
         }
@@ -127,9 +128,10 @@ impl EditorView {
             return;
         };
         let cursor = self
-            .midi_marker
-            .unwrap_or(self.piano_beat_start.max(0) as u64);
-        let duration = self.midi_snap_grid.movement_step();
+            .midi_editor
+            .marker
+            .unwrap_or(self.midi_editor.piano_beat_start.max(0) as u64);
+        let duration = self.midi_editor.snap_grid.movement_step();
         let Some(next) = cursor.checked_add(duration).filter(|next| *next < u64::MAX) else {
             self.error = Some("step entry exceeds the musical time range".into());
             return;
@@ -148,7 +150,7 @@ impl EditorView {
         }
         insert.extend(held.into_iter().flatten());
         if insert.is_empty() {
-            self.midi_marker = Some(next);
+            self.midi_editor.marker = Some(next);
             self.reveal_piano_cursor(next);
             return;
         }
@@ -158,7 +160,7 @@ impl EditorView {
             clip,
             cursor,
             next,
-            selection_epoch: self.midi_selection.epoch(),
+            selection_epoch: self.midi_editor.selection.epoch(),
         };
         // edit_pending forbids earlier queued/worker/gesture requests. Service's
         // next ordinary terminal is this accepted edit, even if submission queues.
@@ -167,27 +169,27 @@ impl EditorView {
             remove: Vec::new(),
             insert,
         })) {
-            self.midi_step.pending = Some(pending);
+            self.midi_editor.step.pending = Some(pending);
         }
     }
 
     pub(super) fn take_completed_midi_step(&mut self, event: &Event) -> Option<Pending> {
         if event.project_replaced {
-            self.midi_step.cancel_pending();
+            self.midi_editor.step.cancel_pending();
             return None;
         }
         if !event.request_complete || event.gesture_request || event.tuning_gesture_request {
             return None;
         }
-        let pending = self.midi_step.pending.take()?;
+        let pending = self.midi_editor.step.pending.take()?;
         (event.error.is_none()
             && matches!(event.created, Some(Created::Notes { clip, .. }) if clip == pending.clip)
             && pending.revision.checked_add(1) == Some(event.state.revision)
             && pending.generation == self.project_generation
             && self.detail_clip_id() == Some(pending.clip)
-            && self.midi_marker == Some(pending.cursor)
-            && self.midi_selection.epoch() == pending.selection_epoch
-            && self.midi_step.enabled)
+            && self.midi_editor.marker == Some(pending.cursor)
+            && self.midi_editor.selection.epoch() == pending.selection_epoch
+            && self.midi_editor.step.enabled)
             .then_some(pending)
     }
 
@@ -195,10 +197,10 @@ impl EditorView {
         if let Some(pending) = pending
             && self.project_generation == pending.generation
             && self.detail_clip_id() == Some(pending.clip)
-            && self.midi_step.enabled
-            && self.midi_marker == Some(pending.cursor)
+            && self.midi_editor.step.enabled
+            && self.midi_editor.marker == Some(pending.cursor)
         {
-            self.midi_marker = Some(pending.next);
+            self.midi_editor.marker = Some(pending.next);
             self.reveal_piano_cursor(pending.next);
         }
     }

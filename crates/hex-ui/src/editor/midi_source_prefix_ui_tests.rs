@@ -83,7 +83,8 @@ fn negative_moves_keep_released_geometry_and_translate_origin_only_on_success(
             let held = notes.iter().find(|n| n.pitch() == 64).unwrap().id();
             let before = project.as_ref().clone();
             if group {
-                v.midi_selection
+                v.midi_editor
+                    .selection
                     .select_all(
                         notes
                             .iter()
@@ -92,10 +93,10 @@ fn negative_moves_keep_released_geometry_and_translate_origin_only_on_success(
                     )
                     .unwrap();
             } else {
-                v.midi_selection.set_single(moved);
+                v.midi_editor.selection.set_single(moved);
             }
-            v.piano_beat_start = -i128::from(beat(1, 1).raw());
-            v.midi_marker = Some(beat(1, 1).raw());
+            v.midi_editor.piano_beat_start = -i128::from(beat(1, 1).raw());
+            v.midi_editor.marker = Some(beat(1, 1).raw());
             cx.notify();
             (before, moved, held)
         });
@@ -109,11 +110,11 @@ fn negative_moves_keep_released_geometry_and_translate_origin_only_on_success(
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
             if group {
-                let g = v.midi_group_gesture.as_ref().unwrap();
+                let g = v.midi_editor.group_gesture.as_ref().unwrap();
                 assert_eq!(g.source_prefix(), beat(4, 1).raw());
                 assert_eq!(g.preview(moved).unwrap().start, beat(7, 2).raw());
             } else {
-                let g = v.midi_note_gesture.unwrap();
+                let g = v.midi_editor.note_gesture.unwrap();
                 assert_eq!(g.source_prefix, beat(4, 1).raw());
                 assert_eq!(g.preview.start, beat(7, 2).raw());
             }
@@ -126,8 +127,11 @@ fn negative_moves_keep_released_geometry_and_translate_origin_only_on_success(
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().project.as_ref(), &before);
             assert!(!v.edit_pending());
-            assert!(v.pending_midi_drag.is_none());
-            assert_eq!(v.piano_beat_start, -i128::from(beat(1, 1).raw()));
+            assert!(v.midi_editor.pending_drag.is_none());
+            assert_eq!(
+                v.midi_editor.piano_beat_start,
+                -i128::from(beat(1, 1).raw())
+            );
         });
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
@@ -136,9 +140,17 @@ fn negative_moves_keep_released_geometry_and_translate_origin_only_on_success(
         let held_grid = grid_lines(&mut visual);
         editor.update(&mut visual, |v, _| {
             let tuning = v.state.as_ref().unwrap().project.tuning();
-            v.tuning.client.begin(v.project_generation, tuning).unwrap();
-            v.tuning.client.change(tuning.with_enabled(true)).unwrap();
-            v.tuning.client.finish(tuning).unwrap();
+            v.settings
+                .tuning
+                .client
+                .begin(v.project_generation, tuning)
+                .unwrap();
+            v.settings
+                .tuning
+                .client
+                .change(tuning.with_enabled(true))
+                .unwrap();
+            v.settings.tuning.client.finish(tuning).unwrap();
         });
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         for _ in 0..3 {
@@ -146,9 +158,9 @@ fn negative_moves_keep_released_geometry_and_translate_origin_only_on_success(
             assert_eq!(bodies(&editor, &mut visual), held_bodies);
         }
         editor.read_with(&visual, |v, _| {
-            assert!(v.midi_note_gesture.is_none() && v.midi_group_gesture.is_none());
-            assert!(v.pending_midi_drag.is_some());
-            let command = v.last_enqueued_edit.clone().unwrap();
+            assert!(v.midi_editor.note_gesture.is_none() && v.midi_editor.group_gesture.is_none());
+            assert!(v.midi_editor.pending_drag.is_some());
+            let command = v.test_probes.last_enqueued_edit.clone().unwrap();
             assert!(v.pending_midi_drag_matches(&Request::Edit(command.clone())));
             let Command::UpdateMidiNotesWithSourcePrefix {
                 clip,
@@ -165,7 +177,10 @@ fn negative_moves_keep_released_geometry_and_translate_origin_only_on_success(
                     notes
                 }
             )));
-            assert_eq!(v.piano_beat_start, -i128::from(beat(1, 1).raw()));
+            assert_eq!(
+                v.midi_editor.piano_beat_start,
+                -i128::from(beat(1, 1).raw())
+            );
         });
         let deadline = crate::test_wait::hang_deadline();
         while editor.read_with(&visual, |v, _| !v.pending_requests.is_empty()) {
@@ -225,9 +240,9 @@ fn negative_moves_keep_released_geometry_and_translate_origin_only_on_success(
                 3,
                 "negative crossing author wins against its positive victim"
             );
-            assert_eq!(v.piano_beat_start, i128::from(beat(3, 1).raw()));
-            assert_eq!(v.midi_marker, Some(beat(5, 1).raw()));
-            assert!(v.pending_midi_drag.is_none());
+            assert_eq!(v.midi_editor.piano_beat_start, i128::from(beat(3, 1).raw()));
+            assert_eq!(v.midi_editor.marker, Some(beat(5, 1).raw()));
+            assert!(v.midi_editor.pending_drag.is_none());
             project.clone()
         });
         editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
@@ -235,22 +250,22 @@ fn negative_moves_keep_released_geometry_and_translate_origin_only_on_success(
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().project.as_ref(), &before);
             assert_eq!(
-                v.piano_beat_start,
+                v.midi_editor.piano_beat_start,
                 -i128::from(beat(1, 1).raw()),
                 "undo restores the source origin in the same receive"
             );
-            assert_eq!(v.midi_marker, Some(beat(1, 1).raw()));
+            assert_eq!(v.midi_editor.marker, Some(beat(1, 1).raw()));
         });
         editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().project.as_ref(), &after);
             assert_eq!(
-                v.piano_beat_start,
+                v.midi_editor.piano_beat_start,
                 i128::from(beat(3, 1).raw()),
                 "redo restores the rebased source origin"
             );
-            assert_eq!(v.midi_marker, Some(beat(5, 1).raw()));
+            assert_eq!(v.midi_editor.marker, Some(beat(5, 1).raw()));
         });
         let baseline = bodies(&editor, &mut visual);
         let down = position(&editor, &mut visual, 3.75, 60);
@@ -265,7 +280,7 @@ fn negative_moves_keep_released_geometry_and_translate_origin_only_on_success(
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().project.as_ref(), &after);
             assert!(!v.edit_pending());
-            assert!(v.pending_midi_drag.is_none());
+            assert!(v.midi_editor.pending_drag.is_none());
         });
     }
 }
@@ -298,24 +313,28 @@ fn negative_keyboard_nudge_uses_one_history_edit_and_exact_origin_ack(cx: &mut T
             let project = v.state.as_ref().unwrap().project.as_ref();
             let notes = project.midi_source(clip).unwrap().notes();
             if group {
-                v.midi_selection
+                v.midi_editor
+                    .selection
                     .select_all(notes.iter().map(|n| n.id()))
                     .unwrap();
             } else {
-                v.midi_selection.set_single(notes[0].id());
+                v.midi_editor.selection.set_single(notes[0].id());
             }
             let project = project.clone();
-            v.piano_beat_start = -i128::from(beat(1, 1).raw());
-            v.midi_marker = Some(beat(1, 1).raw());
+            v.midi_editor.piano_beat_start = -i128::from(beat(1, 1).raw());
+            v.midi_editor.marker = Some(beat(1, 1).raw());
             cx.notify();
             project
         });
         visual.run_until_parked();
         visual.simulate_keystrokes("left");
         editor.read_with(&visual, |v, _| {
-            assert!(v.pending_midi_drag.is_some());
+            assert!(v.midi_editor.pending_drag.is_some());
             assert_eq!(v.state.as_ref().unwrap().project.as_ref(), &before);
-            assert_eq!(v.piano_beat_start, -i128::from(beat(1, 1).raw()));
+            assert_eq!(
+                v.midi_editor.piano_beat_start,
+                -i128::from(beat(1, 1).raw())
+            );
         });
         let event = terminal(&editor, &mut visual);
         assert!(event.error.is_none(), "{:?}", event.error);
@@ -346,9 +365,9 @@ fn negative_keyboard_nudge_uses_one_history_edit_and_exact_origin_ack(cx: &mut T
                     (old.duration(), old.velocity(), old.channel())
                 );
             }
-            assert_eq!(v.piano_beat_start, i128::from(beat(3, 1).raw()));
-            assert_eq!(v.midi_marker, Some(beat(5, 1).raw()));
-            assert!(v.pending_midi_drag.is_none());
+            assert_eq!(v.midi_editor.piano_beat_start, i128::from(beat(3, 1).raw()));
+            assert_eq!(v.midi_editor.marker, Some(beat(5, 1).raw()));
+            assert!(v.midi_editor.pending_drag.is_none());
             project.clone()
         });
         editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));

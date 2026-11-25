@@ -907,12 +907,12 @@ impl EditorView {
     /// scene caches active without `window.refreshing`.
     pub(super) fn has_active_nested_cache_gesture(&self) -> bool {
         self.active_clip_drag.is_some()
-            || self.active_browser_audio_drag.is_some()
+            || self.browser.active_audio_drag.is_some()
             || self.active_trim_drag.is_some()
-            || self.active_midi_trim_drag.is_some()
+            || self.midi_editor.active_trim_drag.is_some()
             || self.active_fade_drag.is_some()
             || self.arrangement_pan.is_some()
-            || self.active_native_device_drag.is_some()
+            || self.device_panel.active_native_drag.is_some()
             || self.time_range_move_gesture.is_some()
             || self.time_selection_gesture.is_some()
             || self.clip_paint_gesture.is_some()
@@ -921,18 +921,18 @@ impl EditorView {
     /// True while a modal, popover, or floating drag ghost paints above the
     /// workspace so live playback subviews yield to inline z-order underneath it.
     pub(super) fn has_foreground_overlay(&self) -> bool {
-        self.send_menu_track.is_some()
+        self.session_grid.send_menu_track.is_some()
             || self.context_menu.is_some()
             || self.controller_input_is_open()
-            || self.theme_settings.open
-            || self.tuning.open
-            || self.changelog.is_open()
-            || self.missing_media.is_some()
+            || self.settings.theme.open
+            || self.settings.tuning.open
+            || self.settings.changelog.is_open()
+            || self.settings.missing_media.is_some()
             || super::device_panel::picker_is_open(self)
             || super::device_panel::source_naming(self)
-            || self.device_insert_confirmation.is_some()
+            || self.device_panel.insert_confirmation.is_some()
             || self.update_preparing()
-            || self.active_browser_audio_drag.is_some()
+            || self.browser.active_audio_drag.is_some()
             || self.displayed_clip_drag().is_some()
     }
 
@@ -951,10 +951,10 @@ impl EditorView {
     /// Panels that still draw a live playhead inline rather than via the
     /// isolated Arrangement/Piano Roll playhead entities.
     pub(super) fn has_inline_playhead_panel(&self) -> bool {
-        if !self.clip_view_open {
+        if !self.audio_detail.clip_view_open {
             return false;
         }
-        if self.device_panel_active {
+        if self.device_panel.active {
             // Rattle draws a playhead indicator on its lane when visible.
             return super::device_panel::has_rattle_preview(self);
         }

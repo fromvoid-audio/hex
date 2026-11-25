@@ -300,43 +300,44 @@ impl Field {
 impl EditorView {
     pub(super) fn open_tuning(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pointer_down = None;
-        self.tuning.open = true;
-        self.tuning.midi_last_query = None;
-        self.tuning
+        self.settings.tuning.open = true;
+        self.settings.tuning.midi_last_query = None;
+        self.settings
+            .tuning
             .midi_spans
             .get_or_insert_with(|| Box::new(hex_engine::MidiSpanBuffer::default()));
         self.cancel_computer_keyboard();
-        self.tuning.audition_keyboard.enabled = true;
-        self.tuning.shift = window.modifiers().shift;
+        self.settings.tuning.audition_keyboard.enabled = true;
+        self.settings.tuning.shift = window.modifiers().shift;
         self.refresh_tuning_variations(cx);
-        self.tuning.focus.focus(window);
+        self.settings.tuning.focus.focus(window);
         self.sync_tuning(cx);
         self.request_tuning_library_list();
         cx.notify();
     }
     pub(super) fn close_tuning(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_tuning_audition();
-        let _ = self.tuning.client.cancel();
-        self.tuning.drag = None;
-        self.tuning.palette_hover = None;
-        self.tuning.context = None;
-        self.tuning.open = false;
+        let _ = self.settings.tuning.client.cancel();
+        self.settings.tuning.drag = None;
+        self.settings.tuning.palette_hover = None;
+        self.settings.tuning.context = None;
+        self.settings.tuning.open = false;
         self.reset_tuning_controls(cx);
-        self.tuning.analysis_queued = None;
-        self.tuning.deferred_library = None;
-        self.tuning.deferred_dialog = None;
+        self.settings.tuning.analysis_queued = None;
+        self.settings.tuning.deferred_library = None;
+        self.settings.tuning.deferred_dialog = None;
         self.focus.focus(window);
         cx.notify();
     }
     fn reset_tuning_controls(&mut self, cx: &mut Context<Self>) {
-        self.tuning.control_epoch = std::rc::Rc::new(());
+        self.settings.tuning.control_epoch = std::rc::Rc::new(());
         for (
             _,
             Control {
                 entity,
                 _subscription,
             },
-        ) in std::mem::take(&mut self.tuning.controls)
+        ) in std::mem::take(&mut self.settings.tuning.controls)
         {
             drop(_subscription);
             entity.update(cx, |input, cx| input.cancel(cx));
@@ -346,39 +347,42 @@ impl EditorView {
         let Some(canonical) = self.state.as_ref().map(|state| state.project.tuning()) else {
             return;
         };
-        if self.tuning.generation != self.project_generation {
+        if self.settings.tuning.generation != self.project_generation {
             self.cancel_tuning_audition();
             self.reset_tuning_controls(cx);
-            self.tuning.client.reset();
-            self.tuning.drag = None;
-            self.tuning.palette_hover = None;
-            self.tuning.name = None;
-            self.tuning.library_pending = None;
-            self.tuning.library_terminal = None;
-            self.tuning.deferred_library = None;
-            self.tuning.deferred_dialog = None;
-            self.tuning.generation = self.project_generation;
+            self.settings.tuning.client.reset();
+            self.settings.tuning.drag = None;
+            self.settings.tuning.palette_hover = None;
+            self.settings.tuning.name = None;
+            self.settings.tuning.library_pending = None;
+            self.settings.tuning.library_terminal = None;
+            self.settings.tuning.deferred_library = None;
+            self.settings.tuning.deferred_dialog = None;
+            self.settings.tuning.generation = self.project_generation;
         }
         let value = self
+            .settings
             .tuning
             .client
             .snapshot()
             .map(|s| s.tuning)
             .unwrap_or(canonical);
-        if self.tuning.value != value {
-            if self.tuning.client.snapshot().is_none() {
+        if self.settings.tuning.value != value {
+            if self.settings.tuning.client.snapshot().is_none() {
                 self.reset_tuning_controls(cx);
             }
-            let scale_changed = self.tuning.value.scale() != value.scale();
-            self.tuning.value = value;
-            self.tuning.selected = self.tuning.selected.min(value.scale().count() - 1);
+            let scale_changed = self.settings.tuning.value.scale() != value.scale();
+            self.settings.tuning.value = value;
+            self.settings.tuning.selected =
+                self.settings.tuning.selected.min(value.scale().count() - 1);
             if scale_changed {
                 self.refresh_tuning_variations(cx);
             }
         }
-        self.tuning.selected = self.tuning.selected.min(value.scale().count() - 1);
-        self.tuning.pair = self.tuning.pair.min(value.scale().count() - 1);
-        if !self.tuning.open {
+        self.settings.tuning.selected =
+            self.settings.tuning.selected.min(value.scale().count() - 1);
+        self.settings.tuning.pair = self.settings.tuning.pair.min(value.scale().count() - 1);
+        if !self.settings.tuning.open {
             return;
         }
         let mut fields = vec![
@@ -397,10 +401,10 @@ impl EditorView {
             fields.push(Field::Cents(i));
         }
         for field in fields {
-            let Ok((spec, value, label)) = field.spec(value, self.tuning.reach) else {
+            let Ok((spec, value, label)) = field.spec(value, self.settings.tuning.reach) else {
                 continue;
             };
-            if let Some(control) = self.tuning.controls.get(&field) {
+            if let Some(control) = self.settings.tuning.controls.get(&field) {
                 control.entity.update(cx, |input, cx| {
                     let _ = input.set_external_value(value, cx);
                     let _ = input.set_external_style(theme::control_style(), cx);
@@ -428,18 +432,18 @@ impl EditorView {
                 cx.new(|cx| NumericControl::from_config(cx, config.with_presentation(appearance)));
             entity.update(cx, |input, cx| input.set_tab_navigation(true, cx));
             let generation = self.project_generation;
-            let epoch = self.tuning.control_epoch.clone();
+            let epoch = self.settings.tuning.control_epoch.clone();
             let subscription =
                 cx.subscribe(&entity, move |view, _, event: &NumericControlEvent, cx| {
-                    if view.tuning.open
+                    if view.settings.tuning.open
                         && view.project_generation == generation
-                        && std::rc::Rc::ptr_eq(&view.tuning.control_epoch, &epoch)
-                        && !matches!(field, Field::Hz(i) | Field::Cents(i) if i >= view.tuning.value.scale().count())
+                        && std::rc::Rc::ptr_eq(&view.settings.tuning.control_epoch, &epoch)
+                        && !matches!(field, Field::Hz(i) | Field::Cents(i) if i >= view.settings.tuning.value.scale().count())
                     {
                         view.tuning_numeric(field, event.clone(), cx);
                     }
                 });
-            self.tuning.controls.insert(
+            self.settings.tuning.controls.insert(
                 field,
                 Control {
                     entity,
@@ -448,11 +452,13 @@ impl EditorView {
             );
         }
         self.bind_tuning_accessibility(cx);
-        if self.tuning.client.snapshot().is_none() && self.device_gesture.snapshot().is_none() {
-            if let Some((operation, owner)) = self.tuning.deferred_library.take() {
+        if self.settings.tuning.client.snapshot().is_none()
+            && self.device_panel.gesture.snapshot().is_none()
+        {
+            if let Some((operation, owner)) = self.settings.tuning.deferred_library.take() {
                 self.request_tuning_library(operation, owner);
             }
-            if let Some(save) = self.tuning.deferred_dialog.take() {
+            if let Some(save) = self.settings.tuning.deferred_dialog.take() {
                 self.tuning_file_dialog(save, cx);
             }
         }
@@ -468,21 +474,21 @@ impl EditorView {
         let guard: std::rc::Rc<dyn Fn(&gpui::App) -> bool> = std::rc::Rc::new(move |cx| {
             owner
                 .read_with(cx, |view, _| {
-                    view.tuning.open
+                    view.settings.tuning.open
                         && view.project_generation == generation
                         && view.state.as_ref().is_some_and(|s| s.revision == revision)
                         && !view.edit_pending()
-                        && view.tuning.client.snapshot().is_none()
+                        && view.settings.tuning.client.snapshot().is_none()
                 })
                 .unwrap_or(false)
         });
-        for (field, control) in &self.tuning.controls {
-            let Ok((_, value, label)) = field.spec(acknowledged, self.tuning.reach) else {
+        for (field, control) in &self.settings.tuning.controls {
+            let Ok((_, value, label)) = field.spec(acknowledged, self.settings.tuning.reach) else {
                 continue;
             };
-            let pending = self.tuning.client.snapshot().is_some()
+            let pending = self.settings.tuning.client.snapshot().is_some()
                 || self.edit_pending()
-                || !self.tuning.open
+                || !self.settings.tuning.open
                 || matches!(field,Field::Hz(i)|Field::Cents(i) if *i>=acknowledged.scale().count());
             let guard = guard.clone();
             control.entity.update(cx, |input, cx| {
@@ -502,12 +508,12 @@ impl EditorView {
         }
     }
     pub(in crate::editor) fn finalize_tuning_gesture(&mut self) -> Result<(), &'static str> {
-        self.tuning.drag = None;
-        if self.tuning.client.has_pending_terminal() {
+        self.settings.tuning.drag = None;
+        if self.settings.tuning.client.has_pending_terminal() {
             return Ok(());
         }
-        if let Some(snapshot) = self.tuning.client.snapshot() {
-            self.tuning.client.finish(snapshot.tuning)?;
+        if let Some(snapshot) = self.settings.tuning.client.snapshot() {
+            self.settings.tuning.client.finish(snapshot.tuning)?;
         }
         Ok(())
     }
@@ -516,19 +522,19 @@ impl EditorView {
         let effects =
             super::device_gesture::retire_failed_finalize_barriers(&mut self.pending_requests);
         if effects.save_refused {
-            self.saving_project = false;
+            self.persistence.saving_project = false;
             self.cancel_open_after_save();
         }
         if effects.export_refused {
-            self.export_pending = false;
-            if let Some(control) = self.export_control.take() {
+            self.persistence.export_pending = false;
+            if let Some(control) = self.persistence.export_control.take() {
                 control.cancel();
             }
-            self.export_window = None;
+            self.persistence.export_window = None;
         }
         if effects.tuning_library_refused {
-            self.tuning.library_pending = None;
-            self.tuning.library_terminal = None;
+            self.settings.tuning.library_pending = None;
+            self.settings.tuning.library_terminal = None;
         }
         self.refuse_deferred_tuning_writes();
     }
@@ -536,107 +542,111 @@ impl EditorView {
     pub(in crate::editor) fn refuse_deferred_tuning_writes(&mut self) {
         use hex_session::tuning_gesture::TuningLibraryOperation as Operation;
         if matches!(
-            self.tuning.deferred_library.as_ref(),
+            self.settings.tuning.deferred_library.as_ref(),
             Some((Operation::Save { .. } | Operation::Export { .. }, _))
         ) {
-            self.tuning.deferred_library = None;
+            self.settings.tuning.deferred_library = None;
         }
-        if self.tuning.deferred_dialog == Some(true) {
-            self.tuning.deferred_dialog = None;
+        if self.settings.tuning.deferred_dialog == Some(true) {
+            self.settings.tuning.deferred_dialog = None;
         }
     }
 
     pub(super) fn pump_tuning_gesture(&mut self) -> bool {
-        let Some(request) = self.tuning.client.next_request() else {
+        let Some(request) = self.settings.tuning.client.next_request() else {
             return false;
         };
         match self.service.submit(Request::TuningGesture(request)) {
             Ok(()) => {
-                self.tuning.client.mark_submitted();
+                self.settings.tuning.client.mark_submitted();
                 self.worker_submitted();
                 true
             }
             Err(SubmitError::Full(_)) => false,
             Err(_) => {
                 self.refuse_tuning_barriers();
-                self.tuning.client.reset();
+                self.settings.tuning.client.reset();
                 self.error = Some("project worker cannot accept tuning edit".into());
-                self.tuning.error = Some("project worker cannot accept tuning edit".into());
+                self.settings.tuning.error =
+                    Some("project worker cannot accept tuning edit".into());
                 true
             }
         }
     }
     fn tuning_change(&mut self, next: ProjectTuning, phase: NumericEventPhase) {
         if phase == NumericEventPhase::Cancel {
-            let _ = self.tuning.client.cancel();
-            self.tuning.drag = None;
+            let _ = self.settings.tuning.client.cancel();
+            self.settings.tuning.drag = None;
             return;
         }
-        if self.tuning.client.snapshot().is_none() {
+        if self.settings.tuning.client.snapshot().is_none() {
             if self.edit_pending() {
-                self.tuning.error = Some("wait for pending project changes".into());
+                self.settings.tuning.error = Some("wait for pending project changes".into());
                 return;
             }
             if let Err(reason) = self
+                .settings
                 .tuning
                 .client
-                .begin(self.project_generation, self.tuning.value)
+                .begin(self.project_generation, self.settings.tuning.value)
             {
-                self.tuning.error = Some(reason.into());
+                self.settings.tuning.error = Some(reason.into());
                 return;
             }
         }
         let result = match phase {
             NumericEventPhase::Begin => Ok(0),
-            NumericEventPhase::Change => self.tuning.client.change(next),
-            NumericEventPhase::Commit => self.tuning.client.finish(next),
+            NumericEventPhase::Change => self.settings.tuning.client.change(next),
+            NumericEventPhase::Commit => self.settings.tuning.client.finish(next),
             NumericEventPhase::Cancel => Ok(0),
         };
         if let Err(reason) = result {
-            self.tuning.error = Some(reason.into());
+            self.settings.tuning.error = Some(reason.into());
         } else {
-            self.tuning.value = next;
-            self.tuning.selected = self.tuning.selected.min(next.scale().count() - 1);
-            self.tuning.pair = self.tuning.pair.min(next.scale().count() - 1);
-            self.tuning.error = None;
+            self.settings.tuning.value = next;
+            self.settings.tuning.selected =
+                self.settings.tuning.selected.min(next.scale().count() - 1);
+            self.settings.tuning.pair = self.settings.tuning.pair.min(next.scale().count() - 1);
+            self.settings.tuning.error = None;
         }
     }
     fn tuning_numeric(&mut self, field: Field, event: NumericControlEvent, cx: &mut Context<Self>) {
         if field == Field::Reach {
-            self.tuning.reach = event.value as f32;
+            self.settings.tuning.reach = event.value as f32;
             self.refresh_tuning_variations(cx);
             cx.notify();
             return;
         }
         if event.phase == NumericEventPhase::Begin {
-            self.tuning.numeric_begin_refused = false;
-            if self.tuning.client.is_recovery_pending() {
-                self.tuning.numeric_begin_refused = true;
-                self.tuning.error = self
+            self.settings.tuning.numeric_begin_refused = false;
+            if self.settings.tuning.client.is_recovery_pending() {
+                self.settings.tuning.numeric_begin_refused = true;
+                self.settings.tuning.error = self
+                    .settings
                     .tuning
                     .client
-                    .begin(self.project_generation, self.tuning.value)
+                    .begin(self.project_generation, self.settings.tuning.value)
                     .err()
                     .map(str::to_owned);
                 cx.notify();
                 return;
             }
-        } else if self.tuning.numeric_begin_refused {
+        } else if self.settings.tuning.numeric_begin_refused {
             return;
         }
         if event.phase == NumericEventPhase::Cancel {
-            self.tuning_change(self.tuning.value, event.phase);
+            self.tuning_change(self.settings.tuning.value, event.phase);
             cx.notify();
             return;
         }
-        let current = self.tuning.value;
+        let current = self.settings.tuning.value;
         let mut scale = current.scale();
         let a = current.audition();
         let mut audition = a;
         if matches!(field, Field::Count | Field::RootKey | Field::RootDegree)
             && event.value.fract() != 0.0
         {
-            self.tuning.error = Some("enter a whole number".into());
+            self.settings.tuning.error = Some("enter a whole number".into());
             cx.notify();
             return;
         }
@@ -657,7 +667,7 @@ impl EditorView {
                 (event.value as usize).saturating_sub(1),
             ),
             Field::Period => {
-                let cents = if self.tuning.shift {
+                let cents = if self.settings.tuning.shift {
                     snap_period(event.value as f32)
                 } else {
                     event.value as f32
@@ -676,23 +686,23 @@ impl EditorView {
                     Err(hex_tuning::Invalid("root frequency must be 10 to 20000 hz"))
                 } else {
                     scale.set_degree_frequency(i, event.value);
-                    if self.tuning.snap {
+                    if self.settings.tuning.snap {
                         let cents =
                             snap_node_cents(scale.cents()[i], scale.cents()[scale.root_degree()]);
                         scale.move_degree(i, cents);
                     }
-                    self.tuning.selected = i;
+                    self.settings.tuning.selected = i;
                     Ok(())
                 }
             }
             Field::Cents(i) => {
-                let cents = if self.tuning.snap {
+                let cents = if self.settings.tuning.snap {
                     snap_node_cents(event.value as f32, scale.cents()[scale.root_degree()])
                 } else {
                     event.value as f32
                 };
                 scale.move_degree(i, cents);
-                self.tuning.selected = i;
+                self.settings.tuning.selected = i;
                 Ok(())
             }
             Field::Level | Field::Attack | Field::Release => Audition::new(
@@ -723,70 +733,74 @@ impl EditorView {
                     self.refresh_tuning_variations(cx);
                 }
             }
-            Err(reason) => self.tuning.error = Some(reason.to_string()),
+            Err(reason) => self.settings.tuning.error = Some(reason.to_string()),
         }
         cx.notify();
     }
     fn tuning_scale_action(&mut self, action: usize, cx: &mut Context<Self>) {
-        let mut s = self.tuning.value.scale();
+        let mut s = self.settings.tuning.value.scale();
         match action {
             0 => s.set_equal(s.count()),
             1 => s.set_just_major(),
             2 => {
-                let i = self.tuning.selected;
+                let i = self.settings.tuning.selected;
                 let cents = snap_node_cents(s.cents()[i], s.cents()[s.root_degree()]);
                 s.move_degree(i, cents);
             }
             3 => {
-                if let Some(i) = s.insert_degree_after(self.tuning.selected) {
-                    self.tuning.selected = i;
+                if let Some(i) = s.insert_degree_after(self.settings.tuning.selected) {
+                    self.settings.tuning.selected = i;
                 } else {
-                    self.tuning.error = Some("no room for another node".into());
+                    self.settings.tuning.error = Some("no room for another node".into());
                     return;
                 }
             }
             4 => {
-                if !s.remove_degree(self.tuning.selected) {
-                    self.tuning.error = Some("keep the root and at least three nodes".into());
+                if !s.remove_degree(self.settings.tuning.selected) {
+                    self.settings.tuning.error =
+                        Some("keep the root and at least three nodes".into());
                     return;
                 }
-                self.tuning.selected = self.tuning.selected.min(s.count() - 1);
+                self.settings.tuning.selected = self.settings.tuning.selected.min(s.count() - 1);
             }
             _ => return,
         }
-        if let Ok(next) =
-            ProjectTuning::new(self.tuning.value.enabled(), s, self.tuning.value.audition())
-        {
+        if let Ok(next) = ProjectTuning::new(
+            self.settings.tuning.value.enabled(),
+            s,
+            self.settings.tuning.value.audition(),
+        ) {
             self.tuning_change(next, NumericEventPhase::Commit);
             self.refresh_tuning_variations(cx);
         }
-        self.tuning.context = None;
+        self.settings.tuning.context = None;
         cx.notify();
     }
     fn regenerate_tuning_variations(&mut self, cx: &mut Context<Self>) {
-        self.tuning.variation_seed = self.tuning.variation_seed.wrapping_add(1);
+        self.settings.tuning.variation_seed = self.settings.tuning.variation_seed.wrapping_add(1);
         self.refresh_tuning_variations(cx);
     }
     fn refresh_tuning_variations(&mut self, cx: &mut Context<Self>) {
-        self.tuning.palette_hover = None;
-        self.tuning.analysis_serial = self.tuning.analysis_serial.saturating_add(1);
-        self.tuning.analysis_queued = Some((
-            self.tuning.analysis_serial,
-            self.tuning.value.scale(),
-            self.tuning.reach,
-            self.tuning.variation_seed,
+        self.settings.tuning.palette_hover = None;
+        self.settings.tuning.analysis_serial =
+            self.settings.tuning.analysis_serial.saturating_add(1);
+        self.settings.tuning.analysis_queued = Some((
+            self.settings.tuning.analysis_serial,
+            self.settings.tuning.value.scale(),
+            self.settings.tuning.reach,
+            self.settings.tuning.variation_seed,
         ));
-        self.tuning.last_variations = Instant::now();
+        self.settings.tuning.last_variations = Instant::now();
         self.start_tuning_analysis(cx);
     }
     fn start_tuning_analysis(&mut self, cx: &mut Context<Self>) {
-        if self.tuning.analysis_pending {
+        if self.settings.tuning.analysis_pending {
             return;
         }
-        let Some((serial, scale, reach, seed)) = self.tuning.analysis_queued.take() else {
+        let Some((serial, scale, reach, seed)) = self.settings.tuning.analysis_queued.take() else {
             return;
         };
-        self.tuning.analysis_pending = true;
+        self.settings.tuning.analysis_pending = true;
         let generation = self.project_generation;
         let task = cx.background_executor().spawn(async move {
             let choices = plots::variations(scale, reach, seed);
@@ -798,16 +812,16 @@ impl EditorView {
         cx.spawn(async move |this, cx| {
             let (choices, positions, analysis, root_shapes) = task.await;
             let _ = this.update(cx, |view, cx| {
-                view.tuning.analysis_pending = false;
-                if view.tuning.open
+                view.settings.tuning.analysis_pending = false;
+                if view.settings.tuning.open
                     && view.project_generation == generation
-                    && view.tuning.analysis_serial == serial
+                    && view.settings.tuning.analysis_serial == serial
                 {
-                    view.tuning.choices = choices.into();
-                    view.tuning.positions = positions.into();
-                    view.tuning.palette_hover = None;
-                    view.tuning.analysis = analysis;
-                    view.tuning.root_shapes = root_shapes;
+                    view.settings.tuning.choices = choices.into();
+                    view.settings.tuning.positions = positions.into();
+                    view.settings.tuning.palette_hover = None;
+                    view.settings.tuning.analysis = analysis;
+                    view.settings.tuning.root_shapes = root_shapes;
                 }
                 view.start_tuning_analysis(cx);
                 cx.notify();
@@ -825,13 +839,15 @@ impl EditorView {
             gpui::CursorStyle::ResizeLeftRight,
             move |event, window, cx| {
                 let _ = owner.update(cx, |view, cx| {
-                    if view.project_generation != generation || view.tuning.drag.is_none() {
+                    if view.project_generation != generation || view.settings.tuning.drag.is_none()
+                    {
                         return;
                     }
                     // Focus may change before the next completed paint/blur.
                     // Do not let that press finish a now-unfocused edit.
-                    if !view.tuning.open || !view.tuning.focus.is_focused(window) {
-                        view.tuning_change(view.tuning.value, NumericEventPhase::Cancel);
+                    if !view.settings.tuning.open || !view.settings.tuning.focus.is_focused(window)
+                    {
+                        view.tuning_change(view.settings.tuning.value, NumericEventPhase::Cancel);
                         cx.notify();
                         return;
                     }
@@ -846,8 +862,9 @@ impl EditorView {
             },
             move |_, cx| {
                 let _ = cancelled.update(cx, |view, cx| {
-                    if view.project_generation == generation && view.tuning.drag.is_some() {
-                        view.tuning_change(view.tuning.value, NumericEventPhase::Cancel);
+                    if view.project_generation == generation && view.settings.tuning.drag.is_some()
+                    {
+                        view.tuning_change(view.settings.tuning.value, NumericEventPhase::Cancel);
                         cx.notify();
                     }
                 });
@@ -861,10 +878,10 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(bounds) = self.tuning.pitch_bounds else {
+        let Some(bounds) = self.settings.tuning.pitch_bounds else {
             return;
         };
-        let s = self.tuning.value.scale();
+        let s = self.settings.tuning.value.scale();
         let x = f32::from(event.position.x);
         let left = f32::from(bounds.left());
         let width = f32::from(bounds.size.width).max(1.0);
@@ -878,52 +895,53 @@ impl EditorView {
             closest.filter(|i| (s.cents()[*i] - cents).abs() / s.period_cents() * width < 10.0);
         if event.button == MouseButton::Right {
             if let Some(index) = hit {
-                self.tuning.selected = index;
+                self.settings.tuning.selected = index;
             }
-            self.tuning.context = hit;
+            self.settings.tuning.context = hit;
             cx.notify();
             return;
         }
-        if self.tuning.client.is_recovery_pending() {
-            self.tuning.error = self
+        if self.settings.tuning.client.is_recovery_pending() {
+            self.settings.tuning.error = self
+                .settings
                 .tuning
                 .client
-                .begin(self.project_generation, self.tuning.value)
+                .begin(self.project_generation, self.settings.tuning.value)
                 .err()
                 .map(str::to_owned);
-            self.tuning.drag = None;
+            self.settings.tuning.drag = None;
             cx.notify();
             return;
         }
-        if self.tuning.client.snapshot().is_none() && self.edit_pending() {
-            self.tuning.error = Some("wait for pending project changes".into());
+        if self.settings.tuning.client.snapshot().is_none() && self.edit_pending() {
+            self.settings.tuning.error = Some("wait for pending project changes".into());
             cx.notify();
             return;
         }
-        if self.tuning.client.has_pending_terminal() {
+        if self.settings.tuning.client.has_pending_terminal() {
             // The admitted terminal keeps canonical custody, but no pointer.
             return;
         }
-        self.tuning.focus.focus(window);
+        self.settings.tuning.focus.focus(window);
         if event.click_count >= 2 {
             if let Some(i) = hit {
-                self.tuning.selected = i;
+                self.settings.tuning.selected = i;
                 self.tuning_scale_action(4, cx);
                 return;
             }
             let mut next = s;
             if let Some(i) = next.insert_degree(cents) {
-                self.tuning.selected = i;
+                self.settings.tuning.selected = i;
                 if let Ok(tuning) = ProjectTuning::new(
-                    self.tuning.value.enabled(),
+                    self.settings.tuning.value.enabled(),
                     next,
-                    self.tuning.value.audition(),
+                    self.settings.tuning.value.audition(),
                 ) {
                     if !self.capture_tuning_pointer(window, cx) {
                         return;
                     }
                     self.tuning_change(tuning, NumericEventPhase::Change);
-                    self.tuning.drag = Some(Drag {
+                    self.settings.tuning.drag = Some(Drag {
                         degree: i,
                         anchor_x: x,
                         anchor_cents: cents,
@@ -934,10 +952,10 @@ impl EditorView {
             if !self.capture_tuning_pointer(window, cx) {
                 return;
             }
-            self.tuning.selected = i;
-            self.tuning.pair = s.root_degree();
-            self.tuning_change(self.tuning.value, NumericEventPhase::Begin);
-            self.tuning.drag = Some(Drag {
+            self.settings.tuning.selected = i;
+            self.settings.tuning.pair = s.root_degree();
+            self.tuning_change(self.settings.tuning.value, NumericEventPhase::Begin);
+            self.settings.tuning.drag = Some(Drag {
                 degree: i,
                 anchor_x: x,
                 anchor_cents: s.cents()[i],
@@ -947,41 +965,45 @@ impl EditorView {
         cx.notify();
     }
     fn tuning_pointer_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
-        let (Some(drag), Some(bounds)) = (self.tuning.drag, self.tuning.pitch_bounds) else {
+        let (Some(drag), Some(bounds)) =
+            (self.settings.tuning.drag, self.settings.tuning.pitch_bounds)
+        else {
             return;
         };
-        let mut s = self.tuning.value.scale();
+        let mut s = self.settings.tuning.value.scale();
         let speed = if event.modifiers.shift { 0.1 } else { 1.0 };
         let cents = drag.anchor_cents
             + (f32::from(event.position.x) - drag.anchor_x) / f32::from(bounds.size.width).max(1.0)
                 * s.period_cents()
                 * speed;
-        let cents = if self.tuning.snap {
+        let cents = if self.settings.tuning.snap {
             snap_node_cents(cents, s.cents()[s.root_degree()])
         } else {
             cents
         };
         s.move_degree(drag.degree, cents);
-        if let Ok(next) =
-            ProjectTuning::new(self.tuning.value.enabled(), s, self.tuning.value.audition())
-        {
+        if let Ok(next) = ProjectTuning::new(
+            self.settings.tuning.value.enabled(),
+            s,
+            self.settings.tuning.value.audition(),
+        ) {
             self.tuning_change(next, NumericEventPhase::Change);
         }
-        if self.tuning.last_variations.elapsed() > Duration::from_millis(80) {
+        if self.settings.tuning.last_variations.elapsed() > Duration::from_millis(80) {
             self.refresh_tuning_variations(cx);
         }
         cx.notify();
     }
     fn tuning_pointer_up(&mut self, _: &MouseUpEvent, cx: &mut Context<Self>) {
-        if self.tuning.drag.take().is_some() {
-            self.tuning_change(self.tuning.value, NumericEventPhase::Commit);
+        if self.settings.tuning.drag.take().is_some() {
+            self.tuning_change(self.settings.tuning.value, NumericEventPhase::Commit);
             self.refresh_tuning_variations(cx);
             cx.notify();
         }
     }
     fn tuning_control(&self, field: Field) -> Div {
         let label = field
-            .spec(self.tuning.value, self.tuning.reach)
+            .spec(self.settings.tuning.value, self.settings.tuning.reach)
             .ok()
             .map(|(_, _, label)| label)
             .unwrap_or_default();
@@ -991,17 +1013,17 @@ impl EditorView {
             .gap_2()
             .h(px(25.0))
             .child(div().w(px(92.0)).child(theme::text(label)));
-        if let Some(control) = self.tuning.controls.get(&field) {
+        if let Some(control) = self.settings.tuning.controls.get(&field) {
             row = row.child(div().flex_1().min_w_0().child(control.entity.clone()));
         }
         row
     }
     pub(super) fn tuning_overlay(&mut self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
-        if !self.tuning.open {
+        if !self.settings.tuning.open {
             return None;
         }
-        let s = self.tuning.value.scale();
-        let selected = self.tuning.selected;
+        let s = self.settings.tuning.value.scale();
+        let selected = self.settings.tuning.selected;
         let mut tuning_nodes = div()
             .id("tuning-nodes")
             .flex()
@@ -1026,22 +1048,22 @@ impl EditorView {
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |view, _, _, cx| {
-                        view.tuning.selected = i;
-                        view.tuning.context = Some(i);
+                        view.settings.tuning.selected = i;
+                        view.settings.tuning.context = Some(i);
                         cx.notify();
                     }),
                 )
                 .child(
                     button(format!("{:02}", i + 1), i == selected).on_click(cx.listener(
                         move |view, _, _, cx| {
-                            view.tuning.pair = view.tuning.selected;
-                            view.tuning.selected = i;
+                            view.settings.tuning.pair = view.settings.tuning.selected;
+                            view.settings.tuning.selected = i;
                             cx.notify();
                         },
                     )),
                 );
             for field in [Field::Hz(i), Field::Cents(i)] {
-                if let Some(control) = self.tuning.controls.get(&field) {
+                if let Some(control) = self.settings.tuning.controls.get(&field) {
                     row = row.child(div().w(px(82.0)).child(control.entity.clone()));
                 }
             }
@@ -1056,12 +1078,13 @@ impl EditorView {
         ] {
             tuning_reference = tuning_reference.child(self.tuning_control(field));
         }
-        tuning_reference = tuning_reference.child(
-            button("snap ratios", self.tuning.snap).on_click(cx.listener(|view, _, _, cx| {
-                view.tuning.snap = !view.tuning.snap;
-                cx.notify();
-            })),
-        );
+        tuning_reference =
+            tuning_reference.child(button("snap ratios", self.settings.tuning.snap).on_click(
+                cx.listener(|view, _, _, cx| {
+                    view.settings.tuning.snap = !view.settings.tuning.snap;
+                    cx.notify();
+                }),
+            ));
         let mut audition = tuning_section("audition");
         for (label, wave) in [
             ("triangle", Waveform::Triangle),
@@ -1069,21 +1092,23 @@ impl EditorView {
             ("saw", Waveform::Saw),
         ] {
             audition = audition.child(
-                button(label, self.tuning.value.audition().waveform() == wave).on_click(
-                    cx.listener(move |view, _, _, cx| {
-                        let a = view.tuning.value.audition();
-                        if let Ok(a) = Audition::new(wave, a.level(), a.attack_ms(), a.release_ms())
-                            && let Ok(next) = ProjectTuning::new(
-                                view.tuning.value.enabled(),
-                                view.tuning.value.scale(),
-                                a,
-                            )
-                        {
-                            view.tuning_change(next, NumericEventPhase::Commit);
-                        }
-                        cx.notify();
-                    }),
-                ),
+                button(
+                    label,
+                    self.settings.tuning.value.audition().waveform() == wave,
+                )
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    let a = view.settings.tuning.value.audition();
+                    if let Ok(a) = Audition::new(wave, a.level(), a.attack_ms(), a.release_ms())
+                        && let Ok(next) = ProjectTuning::new(
+                            view.settings.tuning.value.enabled(),
+                            view.settings.tuning.value.scale(),
+                            a,
+                        )
+                    {
+                        view.tuning_change(next, NumericEventPhase::Commit);
+                    }
+                    cx.notify();
+                })),
             );
         }
         for field in [Field::Level, Field::Attack, Field::Release] {
@@ -1102,18 +1127,21 @@ impl EditorView {
                     {
                         let owner = cx.entity();
                         move |bounds, _, cx| {
-                            owner.update(cx, |view, _| view.tuning.pitch_bounds = Some(bounds));
+                            owner.update(cx, |view, _| {
+                                view.settings.tuning.pitch_bounds = Some(bounds)
+                            });
                         }
                     },
                     {
-                        let activity =
-                            std::array::from_fn(|degree| self.tuning.degree_activity(degree));
+                        let activity = std::array::from_fn(|degree| {
+                            self.settings.tuning.degree_activity(degree)
+                        });
                         let owner = cx.entity();
                         move |bounds, _, window, cx| {
                             let view = owner.read(cx);
-                            if view.tuning.drag.is_some()
-                                && view.tuning.open
-                                && view.tuning.focus.is_focused(window)
+                            if view.settings.tuning.drag.is_some()
+                                && view.settings.tuning.open
+                                && view.settings.tuning.focus.is_focused(window)
                             {
                                 window.renew_pointer_capture(
                                     owner.entity_id(),
@@ -1127,11 +1155,11 @@ impl EditorView {
                 .size_full(),
             );
         let palette = plots::palette(self, cx);
-        let coordinates = self.tuning.analysis.coordinates;
-        let root_shapes = if self.tuning.analysis_pending {
+        let coordinates = self.settings.tuning.analysis.coordinates;
+        let root_shapes = if self.settings.tuning.analysis_pending {
             String::new()
         } else {
-            format_root_shapes(s.root_degree(), &self.tuning.root_shapes)
+            format_root_shapes(s.root_degree(), &self.settings.tuning.root_shapes)
         };
         let main = div()
             .id("tuning-plots-scroll")
@@ -1156,7 +1184,7 @@ impl EditorView {
             .child(
                 tuning_section("relationships")
                     .child(plots::lattice(self, cx))
-                    .child(theme::text(if self.tuning.analysis_pending {
+                    .child(theme::text(if self.settings.tuning.analysis_pending {
                         "updating relationships…".to_owned()
                     } else {
                         format!(
@@ -1181,7 +1209,7 @@ impl EditorView {
             .w(px(230.0))
             .h_full()
             .child(tuning_nodes);
-        if self.tuning.context.is_some() {
+        if self.settings.tuning.context.is_some() {
             left = left
                 .child(
                     button("add node after", false)
@@ -1222,7 +1250,7 @@ impl EditorView {
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .text_size(px(11.0))
             .font_family(theme::FONT_FAMILY)
-            .track_focus(&self.tuning.focus)
+            .track_focus(&self.settings.tuning.focus)
             .child(
                 div()
                     .flex()
@@ -1231,17 +1259,20 @@ impl EditorView {
                     .child(theme::text("project tuning · freqs"))
                     .child(
                         button(
-                            if self.tuning.value.enabled() {
+                            if self.settings.tuning.value.enabled() {
                                 "enabled"
                             } else {
                                 "enable tuning"
                             },
-                            self.tuning.value.enabled(),
+                            self.settings.tuning.value.enabled(),
                         )
                         .debug_selector(|| "tuning-enable".into())
                         .on_click(cx.listener(|view, _, _, cx| {
                             view.tuning_change(
-                                view.tuning.value.with_enabled(!view.tuning.value.enabled()),
+                                view.settings
+                                    .tuning
+                                    .value
+                                    .with_enabled(!view.settings.tuning.value.enabled()),
                                 NumericEventPhase::Commit,
                             );
                             cx.notify();
@@ -1274,7 +1305,7 @@ impl EditorView {
                     .child(main)
                     .child(right),
             );
-        if let Some(error) = self.tuning.error.as_ref() {
+        if let Some(error) = self.settings.tuning.error.as_ref() {
             content = content.child(theme::text(error.clone()));
         }
         Some(

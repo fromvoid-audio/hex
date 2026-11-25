@@ -87,14 +87,14 @@ impl EditorView {
         }
         if self.gain_lane.draft.is_some()
             || self.gain_lane.numeric_draft_active()
-            || self.sampler_parameter.numeric_draft_active()
+            || self.device_panel.sampler_parameter.numeric_draft_active()
             || self.automation_view.devices.point_draft_active()
         {
             self.error = Some("finish local drafts before arming gain recording".into());
             return;
         }
         if self.edit_pending()
-            || self.device_gesture.snapshot().is_some()
+            || self.device_panel.gesture.snapshot().is_some()
             || self.pending_playback.is_some()
             || !self.playback_candidates.is_empty()
         {
@@ -704,7 +704,7 @@ mod tests {
             gpui::Modifiers::default(),
         );
         editor.read_with(cx, |view, _| {
-            assert!(view.device_gesture.snapshot().is_none());
+            assert!(view.device_panel.gesture.snapshot().is_none());
             assert_eq!(view.worker_requests_pending, 0);
             assert!(view.pending_requests.is_empty());
             assert_eq!(

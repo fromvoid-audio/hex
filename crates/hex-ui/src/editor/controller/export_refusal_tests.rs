@@ -32,13 +32,16 @@ fn a_busy_queued_range_export_reenables_export_and_close(cx: &mut TestAppContext
                 format: hex_session::service::ExportFormat::Pcm16,
                 publication: hex_session::service::ExportPublication::CreateNew,
             });
-            view.export_pending = true;
-            view.export_control = Some(control.clone());
-            view.export_window = Some(window.window_handle());
+            view.persistence.export_pending = true;
+            view.persistence.export_control = Some(control.clone());
+            view.persistence.export_window = Some(window.window_handle());
             view.tick(cx);
-            assert!(!view.export_pending, "refused export must not stay pending");
-            assert!(view.export_control.is_none());
-            assert!(view.export_window.is_none());
+            assert!(
+                !view.persistence.export_pending,
+                "refused export must not stay pending"
+            );
+            assert!(view.persistence.export_control.is_none());
+            assert!(view.persistence.export_window.is_none());
             assert!(control.is_cancelled());
             assert_eq!(
                 view.error.as_ref().map(|error| error.to_string()),
@@ -51,7 +54,7 @@ fn a_busy_queued_range_export_reenables_export_and_close(cx: &mut TestAppContext
                     0,
                     false,
                     false,
-                    view.export_pending,
+                    view.persistence.export_pending,
                     false,
                 ),
                 "close must not warn about the refused export"

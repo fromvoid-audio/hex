@@ -187,7 +187,7 @@ pub(in crate::editor) mod native {
                 unsaved: true,
                 document_path: None,
             }));
-            view.clip_view_open = false;
+            view.audio_detail.clip_view_open = false;
             view.gain_lane.track = Some(track);
             view.gain_lane.selected = Some(BeatTime::from_raw(2));
             cx.notify();
@@ -392,7 +392,7 @@ pub(in crate::editor) mod native {
                 assert!(view.gain_numeric_editing(cx));
                 assert!(!view.track_name.is_editing());
                 assert!(view.clip_name_edit.is_none());
-                assert!(view.last_enqueued_edit.is_none());
+                assert!(view.test_probes.last_enqueued_edit.is_none());
                 assert_eq!(view.worker_requests_pending, 0);
             });
         }
@@ -545,7 +545,7 @@ pub(in crate::editor) mod native {
         );
         let entity = fixture.editor.clone();
         entity.update(cx, |view, cx| {
-            view.clip_view_open = false;
+            view.audio_detail.clip_view_open = false;
             view.gain_lane.track = Some(track);
             view.gain_lane.selected = Some(BeatTime::from_raw(2));
             cx.notify();
@@ -629,8 +629,8 @@ pub(in crate::editor) mod native {
             )
             .unwrap();
             assert!(!view.enqueue_device_barrier(Request::Undo));
-            assert!(view.device_gesture_barriers.is_empty());
-            assert!(!view.device_gesture.has_pending_terminal());
+            assert!(view.device_panel.gesture_barriers.is_empty());
+            assert!(!view.device_panel.gesture.has_pending_terminal());
             assert_eq!(
                 view.worker_requests_pending, 1,
                 "only the gesture Begin was admitted"
@@ -699,7 +699,7 @@ pub(in crate::editor) mod native {
         visual.simulate_resize(size(px(880.0), px(540.0)));
         entity.update(&mut visual, |view, cx| {
             view.gain_lane.track = None;
-            view.clip_view_open = true;
+            view.audio_detail.clip_view_open = true;
             cx.notify();
         });
         visual.run_until_parked();
@@ -719,7 +719,7 @@ pub(in crate::editor) mod native {
         );
         entity.update(&mut visual, |view, _| {
             assert_eq!(view.selected_track, Some(track));
-            assert!(!view.clip_view_open);
+            assert!(!view.audio_detail.clip_view_open);
             assert_eq!(view.gain_lane.selected, Some(BeatTime::from_raw(1)));
         });
     }
@@ -731,7 +731,7 @@ pub(in crate::editor) mod native {
         entity.update(&mut visual, |view, cx| {
             let p = view.gain_point().unwrap();
             assert!(view.begin_gain_draft(Some(p.beat), p));
-            view.clip_view_open = true;
+            view.audio_detail.clip_view_open = true;
             cx.notify();
         });
         visual.run_until_parked();

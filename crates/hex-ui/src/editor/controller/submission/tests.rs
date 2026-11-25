@@ -50,12 +50,12 @@ fn a_non_export_busy_refusal_reports_its_reason_on_both_paths(cx: &mut TestAppCo
                 unreachable!("bounce fixture")
             };
             let control = control.clone();
-            view.bounce_control = Some(control.clone());
+            view.persistence.bounce_control = Some(control.clone());
             view.pending_requests.push_back(request);
             view.tick(cx);
             assert!(view.pending_requests.is_empty());
             assert!(
-                view.bounce_control.is_none(),
+                view.persistence.bounce_control.is_none(),
                 "no worker terminal will arrive"
             );
             assert!(control.is_cancelled());
@@ -103,18 +103,18 @@ fn refused_export_custody(cx: &mut TestAppContext, queued: bool) -> ExportCustod
             } else {
                 assert!(view.enqueue(Request::Export(first.clone())));
             }
-            view.export_pending = true;
-            view.export_control = Some(control.clone());
-            view.export_window = Some(window.window_handle());
+            view.persistence.export_pending = true;
+            view.persistence.export_control = Some(control.clone());
+            view.persistence.export_window = Some(window.window_handle());
             if queued {
                 view.tick(cx);
             } else {
                 assert!(!view.enqueue(Request::Export(second.clone())));
             }
             ExportCustody {
-                export_pending: view.export_pending,
-                control: view.export_control.is_some(),
-                window: view.export_window.is_some(),
+                export_pending: view.persistence.export_pending,
+                control: view.persistence.export_control.is_some(),
+                window: view.persistence.export_window.is_some(),
                 cancelled: control.is_cancelled(),
                 queued: view.pending_requests.len(),
                 worker_requests_pending: view.worker_requests_pending,

@@ -106,7 +106,7 @@ fn main_and_return_catalog_menu_and_browser_drop_reach_worker_with_one_history_s
             );
             assert_eq!(view.selected_track, expected_track, "{owner:?} menu ACK");
             assert_eq!(
-                view.focused_return,
+                view.session_grid.focused_return,
                 if owner == EffectBusOwner::Main {
                     None
                 } else {
@@ -163,7 +163,7 @@ fn main_and_return_catalog_menu_and_browser_drop_reach_worker_with_one_history_s
                 menu_project,
                 "held drop does not author"
             );
-            assert!(view.active_native_device_drag.is_some());
+            assert!(view.device_panel.active_native_drag.is_some());
         });
         visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
@@ -172,12 +172,12 @@ fn main_and_return_catalog_menu_and_browser_drop_reach_worker_with_one_history_s
         assert!(visual.debug_bounds("device-chain-loading-slot").is_none());
         let dropped = editor.read_with(&visual, |view, _| {
             assert!(view.error.is_none(), "{:?}", view.error);
-            assert!(view.active_native_device_drag.is_none());
+            assert!(view.device_panel.active_native_drag.is_none());
             let state = view.state.as_ref().unwrap();
             assert_eq!(owner.devices(&state.project).unwrap().len(), 2);
             assert_eq!(view.selected_track, expected_track, "{owner:?} drop ACK");
             assert_eq!(
-                view.focused_return,
+                view.session_grid.focused_return,
                 if owner == EffectBusOwner::Main {
                     None
                 } else {
@@ -308,7 +308,7 @@ fn main_and_return_add_after_changed_or_noop_gesture_preserves_two_history_steps
             });
             pump_control(&editor, &mut visual);
             editor.read_with(&visual, |v, _| {
-                assert!(v.device_gesture.snapshot().is_some());
+                assert!(v.device_panel.gesture.snapshot().is_some());
                 assert!(v.error.is_none(), "preview refused: {:?}", v.error);
                 assert_eq!(
                     v.state.as_ref().unwrap().project,
@@ -324,8 +324,8 @@ fn main_and_return_add_after_changed_or_noop_gesture_preserves_two_history_steps
                     "{owner:?} changed={changed}: {:?}",
                     v.error
                 );
-                assert!(v.device_gesture.snapshot().is_none());
-                assert!(v.device_gesture_barriers.is_empty());
+                assert!(v.device_panel.gesture.snapshot().is_none());
+                assert!(v.device_panel.gesture_barriers.is_empty());
                 let project = &v.state.as_ref().unwrap().project;
                 assert_eq!(
                     owner.devices(project).unwrap().len(),
@@ -557,7 +557,7 @@ fn main_header_add_effect_uses_actual_main_chain_and_history(cx: &mut TestAppCon
             view.selected_track.is_none(),
             "Main selection must not retain the ordinary track target"
         );
-        assert!(view.focused_return.is_none());
+        assert!(view.session_grid.focused_return.is_none());
     });
     visual.run_until_parked();
     let add = visual
@@ -642,7 +642,7 @@ fn main_header_add_effect_uses_actual_main_chain_and_history(cx: &mut TestAppCon
             vec![second, first]
         );
         assert!(state.project.tracks()[0].devices().is_empty());
-        assert!(view.active_native_device_drag.is_none());
+        assert!(view.device_panel.active_native_drag.is_none());
     });
     editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
     pump(&editor, &mut visual);

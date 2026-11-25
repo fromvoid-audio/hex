@@ -62,7 +62,7 @@ fn open(
     }
     configure(&editor, &mut visual, 4);
     editor.update(&mut visual, |v, cx| {
-        v.midi_draw_pitch_locked = true;
+        v.midi_editor.draw_pitch_locked = true;
         cx.notify();
     });
     let actions = Rc::new(Cell::new(0));
@@ -85,7 +85,7 @@ fn draw_and_erase_own_input_then_handoff_preview_without_holding_capture(cx: &mu
         let end = position(&editor, &mut visual, if erase { 1.11 } else { 1.01 }, 60);
         let outside = point(end.x, px(10.));
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
-        assert!(editor.read_with(&visual, |v, _| v.midi_stroke.is_some()));
+        assert!(editor.read_with(&visual, |v, _| v.midi_editor.stroke.is_some()));
         visual.simulate_mouse_down(outside, MouseButton::Right, Modifiers::default());
         visual.simulate_event(ScrollWheelEvent {
             position: outside,
@@ -108,7 +108,7 @@ fn draw_and_erase_own_input_then_handoff_preview_without_holding_capture(cx: &mu
             assert_eq!(geometry(&editor, &mut visual), held);
             assert!(!visual.update(|w, _| w.is_pointer_dragging()));
             editor.read_with(&visual, |v, _| {
-                assert!(v.midi_stroke.is_none());
+                assert!(v.midi_editor.stroke.is_none());
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             });
         }
@@ -212,7 +212,7 @@ fn draw_input_loss_never_submits_a_partial_or_stale_stroke_or_leaks_release(
                 }),
                 "bounds" => visual.simulate_resize(gpui::size(px(1400.), px(900.))),
                 "hidden" => editor.update(&mut visual, |v, cx| {
-                    v.clip_view_open = false;
+                    v.audio_detail.clip_view_open = false;
                     cx.notify();
                 }),
                 "window" => visual.deactivate_window(),
@@ -236,8 +236,8 @@ fn draw_input_loss_never_submits_a_partial_or_stale_stroke_or_leaks_release(
             }
             assert_eq!(actions.get(), 0, "erase={erase}/{loss}: trailing release");
             editor.read_with(&visual, |v, _| {
-                assert!(v.midi_stroke.is_none(), "erase={erase}/{loss}");
-                assert!(v.pending_midi_drag.is_none());
+                assert!(v.midi_editor.stroke.is_none(), "erase={erase}/{loss}");
+                assert!(v.midi_editor.pending_drag.is_none());
                 assert!(!v.edit_pending());
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             });

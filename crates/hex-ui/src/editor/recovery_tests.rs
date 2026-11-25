@@ -156,7 +156,8 @@ fn stop_renews_current_resident_vst3_playback_before_an_edit(cx: &mut gpui::Test
             "repeat stop leaves the pending restore alone"
         );
 
-        view.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![device.value()]);
+        view.device_panel.degraded_plugins =
+            crate::editor_backend::DegradedDevices::new(vec![device.value()]);
         view.queue_audio_command(PlaybackCommand::PlayFrom(0));
         assert!(view.deferred_play.is_some());
         view.stop();
@@ -513,7 +514,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
                 .unwrap()
                 .render_fault
                 .store(true, std::sync::atomic::Ordering::Release);
-            v.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![2]);
+            v.device_panel.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![2]);
         }
         if let Some((_, path)) = &sample {
             let start = 24_000;
@@ -543,7 +544,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
                     },
                 )
             };
-            v.track_defaults.set_test_state(0.25, false, true);
+            v.settings.track_defaults.set_test_state(0.25, false, true);
             v.set_auto_warp_imports_for_test(edit == EditFixture::NewTrackSample);
             let drag = v
                 .audio_file_drag_payload(
@@ -561,7 +562,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
             );
             assert_eq!(v.sample_drop_target(), Some(destination));
             v.set_auto_warp_imports_for_test(false);
-            v.track_defaults.set_test_state(0.5, false, true);
+            v.settings.track_defaults.set_test_state(0.5, false, true);
         } else if matches!(
             edit,
             EditFixture::TimeDuplicate | EditFixture::InFlightTimeDuplicate
@@ -652,7 +653,11 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
                 },
                 None,
             );
-            assert!(v.pending_plugin_effect.is_some(), "{:?}", v.error);
+            assert!(
+                v.device_panel.pending_plugin_effect.is_some(),
+                "{:?}",
+                v.error
+            );
         }
         let generation = v
             .recovery
@@ -710,10 +715,10 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
             v.fail_audio_recovery("fixture audio recovery failed");
             assert!(v.recovery.deferred_edit.is_none());
             if edit == EditFixture::Effect {
-                assert!(v.pending_plugin_effect.is_none());
-                assert!(v.failed_plugin_proposal.is_some());
+                assert!(v.device_panel.pending_plugin_effect.is_none());
+                assert!(v.device_panel.failed_plugin_proposal.is_some());
             }
-            assert!(v.pending_sample_drop.is_none());
+            assert!(v.browser.pending_sample_drop.is_none());
             assert!(v.pending_time_range_move.is_none());
             assert!(v.pending_loop_region().is_none());
             assert!(v.service.try_event().is_err());
@@ -728,7 +733,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
     editor.update(cx, |v, _| {
         v.audio = Some(fresh_audio);
         // Opening a new output clears observations belonging to the old one.
-        v.degraded_plugins = Default::default();
+        v.device_panel.degraded_plugins = Default::default();
         v.applied_project_revision = v.state.as_ref().map(|s| s.revision);
         assert!(v.recovery.opened(recovery));
         assert!(
@@ -766,10 +771,10 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
         if outcome == EditRecovery::ProjectChanged {
             assert!(v.service.try_event().is_err());
             if edit == EditFixture::Effect {
-                assert!(v.pending_plugin_effect.is_none());
-                assert!(v.failed_plugin_proposal.is_some());
+                assert!(v.device_panel.pending_plugin_effect.is_none());
+                assert!(v.device_panel.failed_plugin_proposal.is_some());
             }
-            assert!(v.pending_sample_drop.is_none());
+            assert!(v.browser.pending_sample_drop.is_none());
             assert!(v.pending_time_range_move.is_none());
             assert!(v.pending_loop_region().is_none());
             assert!(
@@ -781,7 +786,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
             return;
         }
         if outcome == EditRecovery::ProjectEditPending {
-            assert!(v.pending_sample_drop.is_none());
+            assert!(v.browser.pending_sample_drop.is_none());
             assert!(v.pending_time_range_move.is_none());
             assert_eq!(v.worker_requests_pending, 1, "only the intervening edit");
             assert!(v.error.as_deref().unwrap().contains("project work pending"));
@@ -855,12 +860,12 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
         }
         if sample.is_some() {
             assert!(
-                v.pending_sample_drop.is_some(),
+                v.browser.pending_sample_drop.is_some(),
                 "preview waits for its terminal"
             );
         }
         v.receive(added);
-        assert!(v.pending_sample_drop.is_none());
+        assert!(v.browser.pending_sample_drop.is_none());
         assert!(v.pending_loop_region().is_none());
         assert!(v.service.try_event().is_err(), "no repeated insertion");
         if matches!(
@@ -1072,7 +1077,7 @@ fn degraded_worker_recovers(
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
-        view.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![2]);
+        view.device_panel.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![2]);
         if stop_first {
             view.stop();
             assert!(view.deferred_play.is_none());
@@ -1096,9 +1101,9 @@ fn degraded_worker_recovers(
             );
             assert!(!view.tick_deferred_play());
         } else {
-            view.playback_settings.loading = false;
+            view.settings.playback.loading = false;
             view.toggle_play();
-            assert!(view.playback_settings.pending.is_some());
+            assert!(view.settings.playback.pending.is_some());
         }
         assert!(view.audio.is_none());
         assert!(view.pending_restart_request.is_some());
@@ -1113,7 +1118,7 @@ fn degraded_worker_recovers(
         assert_eq!(view.recovery.position(), Some(frame));
         view.stop();
         assert!(view.deferred_play.is_none());
-        assert!(view.playback_settings.pending.is_none());
+        assert!(view.settings.playback.pending.is_none());
     });
     drop(backend);
     output.publication.close();
@@ -1205,8 +1210,8 @@ fn play_on_degraded_output(cx: &mut gpui::TestAppContext, explicit_frame: Option
             device_preview_identity: None,
             tuning_preview_identity: None,
         });
-        view.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![2]);
-        view.playback_settings.loading = false;
+        view.device_panel.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![2]);
+        view.settings.playback.loading = false;
         view.toggle_play();
         backend.render(&mut frames).unwrap();
         backend.render(&mut frames).unwrap();
@@ -1264,13 +1269,13 @@ fn a_changed_output_route_restarts_audio_once_its_guards_allow(cx: &mut gpui::Te
         // An open dialog defers the move without reporting an error.
         let error = view.error.clone();
         view.route_follow = Some(identity);
-        view.save_dialog_open = true;
+        view.persistence.save_dialog_open = true;
         assert!(!view.follow_output_route());
         assert_eq!(view.route_follow, Some(identity));
         assert_eq!(view.error, error);
         assert!(view.pending_recovery_generation.is_none());
         // Once allowed, the move uses the restart-audio recovery exactly once.
-        view.save_dialog_open = false;
+        view.persistence.save_dialog_open = false;
         assert!(view.follow_output_route());
         assert_eq!(view.route_follow, None);
         assert!(view.pending_recovery_generation.is_some());
@@ -2745,7 +2750,7 @@ fn streamed_sampler_edit_while_playing_stops_and_resumes_at_its_frame(
                 cancel: Arc::new(AtomicBool::new(false)),
             }),
         )));
-        assert_eq!(view.sampler_edit_resume, Some(frame));
+        assert_eq!(view.device_panel.sampler_edit_resume, Some(frame));
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         assert!(!transport(view).0, "the edit stops playback first");
         frame
@@ -2765,7 +2770,7 @@ fn streamed_sampler_edit_while_playing_stops_and_resumes_at_its_frame(
         std::thread::yield_now();
     }
     editor.update(cx, |view, _| {
-        assert_eq!(view.sampler_edit_resume, Some(frame));
+        assert_eq!(view.device_panel.sampler_edit_resume, Some(frame));
         assert!(
             !view.tick_sampler_edit_resume(),
             "waits for the stopped restore"
@@ -2773,7 +2778,7 @@ fn streamed_sampler_edit_while_playing_stops_and_resumes_at_its_frame(
         view.stopped_playback_restore = None;
         view.applied_project_revision = view.state.as_ref().map(|state| state.revision);
         assert!(view.tick_sampler_edit_resume());
-        assert!(view.sampler_edit_resume.is_none());
+        assert!(view.device_panel.sampler_edit_resume.is_none());
     });
     backend.render(&mut [[0.0; 2]; 64]).unwrap();
     editor.update(cx, |view, _| {
@@ -2998,7 +3003,8 @@ fn setup_degraded_device_recovery(
             .unwrap()
             .render_fault
             .store(true, std::sync::atomic::Ordering::Release);
-        v.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![device.value()]);
+        v.device_panel.degraded_plugins =
+            crate::editor_backend::DegradedDevices::new(vec![device.value()]);
     });
     (editor, track, device, old_guard, restarted)
 }
@@ -3021,7 +3027,7 @@ fn finish_fresh_recovery_output(
     let (mut fresh_guard, fresh_audio) = FixtureOutputGuard::open();
     editor.update(cx, |v, _| {
         v.audio = Some(fresh_audio);
-        v.degraded_plugins = Default::default();
+        v.device_panel.degraded_plugins = Default::default();
         v.applied_project_revision = v.state.as_ref().map(|s| s.revision);
         assert!(v.recovery.opened(recovery));
         assert!(v.recovery.restored(recovery));
@@ -3185,13 +3191,13 @@ fn degraded_insert_plugin_effect_recovers_audio_and_settles_proposal_on_failure(
             v.insert_plugin_effect(&selection, PluginEffectDestination::Track(track), None, cx);
             assert!(v.recovery.generation().is_some());
             assert!(v.recovery.deferred_edit.is_some());
-            assert!(v.pending_plugin_effect.is_some());
+            assert!(v.device_panel.pending_plugin_effect.is_some());
         });
         let fresh_guard = finish_fresh_recovery_output(&mut app, &editor, &restarted, old_guard);
         editor.update(&mut app, |v, _| {
             assert!(v.recovery.deferred_edit.is_none());
             assert_eq!(v.status.as_str(), "adding plug-in");
-            assert!(v.pending_plugin_effect.is_some());
+            assert!(v.device_panel.pending_plugin_effect.is_some());
             v.audio = None;
         });
         drop(fresh_guard);
@@ -3201,15 +3207,15 @@ fn degraded_insert_plugin_effect_recovers_audio_and_settles_proposal_on_failure(
         let (editor, track, _device, old_guard, _restarted) = setup_degraded_device_recovery(cx);
         editor.update(cx, |v, cx| {
             v.insert_plugin_effect(&selection, PluginEffectDestination::Track(track), None, cx);
-            assert!(v.pending_plugin_effect.is_some());
+            assert!(v.device_panel.pending_plugin_effect.is_some());
             v.fail_audio_recovery("fixture recovery failure");
             assert!(v.recovery.deferred_edit.is_none());
             assert!(
-                v.pending_plugin_effect.is_none(),
+                v.device_panel.pending_plugin_effect.is_none(),
                 "failed recovery must settle pending_plugin_effect"
             );
             assert!(
-                v.failed_plugin_proposal.is_some(),
+                v.device_panel.failed_plugin_proposal.is_some(),
                 "failed recovery must record failed_plugin_proposal"
             );
             v.audio = None;
@@ -3492,7 +3498,7 @@ fn install_eq_node_and_strand_pair_commit(
     editor.update(app, |v, _| {
         // Start and accept a live paired EQ preview on the worker before a
         // different VST3 endpoint faults and strands the released Commit.
-        v.degraded_plugins = Default::default();
+        v.device_panel.degraded_plugins = Default::default();
         v.begin_device_pair_gesture(
             device,
             first,
@@ -3516,23 +3522,29 @@ fn install_eq_node_and_strand_pair_commit(
         let change_ev = next_service_event(&v.service);
         v.receive(change_ev);
         let worker_preview = v
-            .device_gesture
+            .device_panel
+            .gesture
             .snapshot()
             .expect("accepted worker preview");
 
         // A different VST3 endpoint faults before the user releases the drag.
         // Stage Commit locally without submitting so this test can inject the
         // exact degraded-source refusal ACK against the held commit request.
-        v.degraded_plugins =
+        v.device_panel.degraded_plugins =
             crate::editor_backend::DegradedDevices::new(vec![other_faulted_device_id]);
-        v.device_gesture
+        v.device_panel
+            .gesture
             .finish_pair(ParameterPairValue {
                 first: ParameterValue::Float(released_pair.0),
                 second: ParameterValue::Float(released_pair.1),
             })
             .unwrap();
-        let commit_req = v.device_gesture.next_request().expect("commit request");
-        v.device_gesture.mark_submitted();
+        let commit_req = v
+            .device_panel
+            .gesture
+            .next_request()
+            .expect("commit request");
+        v.device_panel.gesture.mark_submitted();
         let refused_ack = GestureAck {
             preview_retained: true,
             source_lost: false,
@@ -3543,9 +3555,9 @@ fn install_eq_node_and_strand_pair_commit(
             reason: Some("resident audio source is degraded".into()),
         };
         assert!(v.acknowledge_device_gesture_with_snapshot(&refused_ack, Some(worker_preview)));
-        assert!(v.device_gesture.is_recovery_pending());
-        assert!(v.device_gesture.has_stranded_commit());
-        assert!(!v.device_gesture.has_pending_requests());
+        assert!(v.device_panel.gesture.is_recovery_pending());
+        assert!(v.device_panel.gesture.has_stranded_commit());
+        assert!(!v.device_panel.gesture.has_pending_requests());
     });
     node_id
 }
@@ -3595,7 +3607,7 @@ fn stranded_released_pair_drag_recovers_solo_and_mute_while_playing_and_paused(
         editor.update(&mut app, |v, _| {
             assert_eq!(v.status.as_str(), "updating solo");
             assert!(
-                v.device_gesture.snapshot().is_none(),
+                v.device_panel.gesture.snapshot().is_none(),
                 "restart retirement must clear stranded gesture"
             );
             // Event 1: reconciled EQ pair edit; Event 2: Solo toggle applied once.
@@ -3746,7 +3758,7 @@ fn stranded_released_pair_drag_recovers_solo_and_mute_while_playing_and_paused(
                 .unwrap()
                 .render_fault
                 .store(false, std::sync::atomic::Ordering::Release);
-            v.degraded_plugins = Default::default();
+            v.device_panel.degraded_plugins = Default::default();
             v.toggle_solo(track, false);
             assert!(v.recovery.generation().is_none());
             assert!(v.recovery.deferred_edit.is_none());
@@ -3762,7 +3774,7 @@ fn stranded_released_pair_drag_recovers_solo_and_mute_while_playing_and_paused(
                     .soloed()
             );
             // Restore degraded state so ToggleSolo starts recovery.
-            v.degraded_plugins =
+            v.device_panel.degraded_plugins =
                 crate::editor_backend::DegradedDevices::new(vec![other_faulted_id]);
             v.toggle_solo(track, false);
             assert!(v.recovery.generation().is_some());
@@ -3812,7 +3824,7 @@ fn stranded_released_pair_drag_recovers_solo_and_mute_while_playing_and_paused(
                 },
             )
             .unwrap();
-            assert!(!v.device_gesture.is_recovery_pending());
+            assert!(!v.device_panel.gesture.is_recovery_pending());
             v.toggle_solo(track, false);
             assert!(v.recovery.generation().is_none());
             assert!(v.recovery.deferred_edit.is_none());
@@ -3929,7 +3941,7 @@ fn save_offers_a_committed_copy_without_retrying_a_stranded_pair(app: &mut gpui:
     );
     let committed = editor.read_with(app, |v, _| v.state.as_ref().unwrap().project.clone());
     let released = editor.read_with(app, |v, _| {
-        v.device_gesture.reconcilable_snapshot().unwrap()
+        v.device_panel.gesture.reconcilable_snapshot().unwrap()
     });
     for answer in ["cancel", "save committed copy…"] {
         editor.update(app, |v, cx| {
@@ -3941,7 +3953,7 @@ fn save_offers_a_committed_copy_without_retrying_a_stranded_pair(app: &mut gpui:
             app.has_pending_prompt(),
             "a refused release must offer a committed copy"
         );
-        assert!(editor.read_with(app, |v, _| !v.device_gesture.has_pending_requests()));
+        assert!(editor.read_with(app, |v, _| !v.device_panel.gesture.has_pending_requests()));
         app.simulate_prompt_answer(answer);
         app.run_until_parked();
         if answer == "save committed copy…" {
@@ -3985,9 +3997,12 @@ fn save_offers_a_committed_copy_without_retrying_a_stranded_pair(app: &mut gpui:
         }
         assert_eq!(std::fs::read(&path).unwrap(), original);
         editor.read_with(app, |v, _| {
-            assert_eq!(v.device_gesture.reconcilable_snapshot(), Some(released));
+            assert_eq!(
+                v.device_panel.gesture.reconcilable_snapshot(),
+                Some(released)
+            );
             assert_eq!(v.state.as_ref().unwrap().project, committed);
-            assert!(!v.saving_project);
+            assert!(!v.persistence.saving_project);
         });
     }
 }
@@ -4012,8 +4027,8 @@ fn single_degraded_vst3_isolates_unrelated_edits_and_stop_from_teardown(
         status
             .playing
             .store(true, std::sync::atomic::Ordering::Release);
-        v.plugin_editor_windows = vec![healthy_vst3_id];
-        v.degraded_plugins = crate::editor_backend::DegradedDevices::with_reasons(
+        v.device_panel.plugin_editor_windows = vec![healthy_vst3_id];
+        v.device_panel.degraded_plugins = crate::editor_backend::DegradedDevices::with_reasons(
             vec![faulted_vst3_id],
             vec![(faulted_vst3_id, "vst3 helper exited".into())],
         );
@@ -4091,7 +4106,7 @@ fn single_degraded_vst3_isolates_unrelated_edits_and_stop_from_teardown(
             identity
         );
         assert!(v.audio_status().unwrap().playing.load(Acquire));
-        assert_eq!(v.plugin_editor_windows, vec![healthy_vst3_id]);
+        assert_eq!(v.device_panel.plugin_editor_windows, vec![healthy_vst3_id]);
         assert!(
             restarted.try_recv().is_err(),
             "no audio restart must be requested for unrelated edits"

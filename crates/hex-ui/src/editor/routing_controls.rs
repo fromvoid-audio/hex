@@ -7,7 +7,7 @@ use hex_project::{Command, RoutingOwner};
 impl EditorView {
     pub(super) fn routing_controls(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         let mut panel = div().id("routing-controls").flex_shrink_0();
-        if !self.routing_open {
+        if !self.session_grid.routing_open {
             return panel;
         }
         let Some(state) = self.state.as_ref() else {
@@ -25,7 +25,7 @@ impl EditorView {
             .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .border_t_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)));
-        if let Some(destination) = self.focused_return {
+        if let Some(destination) = self.session_grid.focused_return {
             if let Some(bus) = state
                 .project
                 .return_tracks()
@@ -71,7 +71,7 @@ impl EditorView {
         let count =
             state.project.tracks().len().saturating_sub(1) + state.project.return_tracks().len();
         let last_page = count.saturating_sub(1) / 16;
-        let page = self.routing_page.min(last_page);
+        let page = self.session_grid.routing_page.min(last_page);
         if last_page != 0 {
             panel = panel.child(
                 div()
@@ -81,7 +81,7 @@ impl EditorView {
                     .child(
                         button("◀", "previous routing sources", "routing-previous".into())
                             .on_click(cx.listener(move |view, _, _, cx| {
-                                view.routing_page = page.saturating_sub(1);
+                                view.session_grid.routing_page = page.saturating_sub(1);
                                 cx.notify();
                             })),
                     )
@@ -93,7 +93,7 @@ impl EditorView {
                     .child(
                         button("▶", "next routing sources", "routing-next".into()).on_click(
                             cx.listener(move |view, _, _, cx| {
-                                view.routing_page = (page + 1).min(last_page);
+                                view.session_grid.routing_page = (page + 1).min(last_page);
                                 cx.notify();
                             }),
                         ),
@@ -313,9 +313,9 @@ mod tests {
             Arc::default(),
         );
         entity.update(cx, |view, cx| {
-            view.routing_open = true;
+            view.session_grid.routing_open = true;
             view.selected_track = Some(destination);
-            view.clip_view_open = false;
+            view.audio_detail.clip_view_open = false;
             cx.notify();
         });
         (handle, entity, source, destination)
@@ -340,7 +340,7 @@ mod tests {
             .unwrap();
         visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
-        entity.update(&mut visual, |view, _| { assert!(matches!(view.last_enqueued_edit, Some(Command::SetAudioFeed { source: RoutingOwner::Track(actual), destination: target, gain }) if actual == source && target == destination && (gain - 0.6).abs() < 0.00001)); });
+        entity.update(&mut visual, |view, _| { assert!(matches!(view.test_probes.last_enqueued_edit, Some(Command::SetAudioFeed { source: RoutingOwner::Track(actual), destination: target, gain }) if actual == source && target == destination && (gain - 0.6).abs() < 0.00001)); });
     }
     #[gpui::test]
     fn selecting_local_midi_restores_the_destination_authored_source(cx: &mut TestAppContext) {
@@ -350,6 +350,6 @@ mod tests {
         let bounds = visual.debug_bounds("midi-route-0").unwrap();
         visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
-        entity.update(&mut visual, |view, _| { assert!(matches!(view.last_enqueued_edit, Some(Command::SetMidiSource { destination: target, source: None }) if target == destination)); });
+        entity.update(&mut visual, |view, _| { assert!(matches!(view.test_probes.last_enqueued_edit, Some(Command::SetMidiSource { destination: target, source: None }) if target == destination)); });
     }
 }

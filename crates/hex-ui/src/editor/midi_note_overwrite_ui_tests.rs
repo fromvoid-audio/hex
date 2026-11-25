@@ -28,7 +28,8 @@ struct Seed {
 fn seed(cx: &mut TestAppContext, vertical: bool) -> Seed {
     let (mut visual, editor, environment, clip) = fixture(cx);
     let pitch = editor.read_with(&visual, |v, _| {
-        v.piano_pitch.first_test_pitch() + (v.piano_pitch.test_row_count() - 1) / 2
+        v.midi_editor.piano_pitch.first_test_pitch()
+            + (v.midi_editor.piano_pitch.test_row_count() - 1) / 2
     });
     editor.update(&mut visual, |v, _| {
         assert!(v.enqueue(Request::Edit(Command::AddMidiNotes {
@@ -63,7 +64,7 @@ fn seed(cx: &mut TestAppContext, vertical: bool) -> Seed {
     });
     pump(&editor, &mut visual);
     let (old, incoming) = editor.update(&mut visual, |v, cx| {
-        v.midi_selection.clear();
+        v.midi_editor.selection.clear();
         cx.notify();
         let notes = v
             .state
@@ -125,8 +126,8 @@ fn pitch_y(visual: &mut VisualTestContext, editor: &Entity<EditorView>, pitch: u
     let roll = visual.debug_bounds("midi-note-roll").unwrap();
     let (low, rows) = editor.read_with(&*visual, |v, _| {
         (
-            v.piano_pitch.first_test_pitch(),
-            v.piano_pitch.test_row_count(),
+            v.midi_editor.piano_pitch.first_test_pitch(),
+            v.midi_editor.piano_pitch.test_row_count(),
         )
     });
     roll.origin.y
@@ -156,7 +157,9 @@ fn held_move_and_leading_resize_paint_exact_prefix_then_real_ack_and_history(
         let roll = visual.debug_bounds("midi-note-roll").unwrap();
         let old_y = pitch_y(&mut visual, &editor, pitch);
         let row = roll.size.height
-            / f32::from(editor.read_with(&visual, |v, _| v.piano_pitch.test_row_count()));
+            / f32::from(
+                editor.read_with(&visual, |v, _| v.midi_editor.piano_pitch.test_row_count()),
+            );
         let baseline = bodies(&mut visual, old_y);
         assert_eq!(baseline.len(), if vertical { 1 } else { 2 });
         let old_rect = baseline[0];
@@ -179,7 +182,11 @@ fn held_move_and_leading_resize_paint_exact_prefix_then_real_ack_and_history(
         editor.read_with(&visual, |v, _| {
             assert_eq!(&v.state.as_ref().unwrap().project, &before);
             assert!(!v.edit_pending());
-            let gesture = v.midi_note_gesture.as_ref().expect("actual note gesture");
+            let gesture = v
+                .midi_editor
+                .note_gesture
+                .as_ref()
+                .expect("actual note gesture");
             assert_eq!(gesture.preview.start, BeatTime::ONE.raw());
             assert_eq!(gesture.preview.pitch, pitch);
         });
@@ -263,7 +270,7 @@ fn escape_and_real_stale_revision_restore_unclipped_canonical_notes(cx: &mut Tes
         pump(&editor, &mut visual);
         assert_eq!(bodies(&mut visual, y), before_bodies);
         editor.read_with(&visual, |v, _| {
-            assert!(v.midi_note_gesture.is_none());
+            assert!(v.midi_editor.note_gesture.is_none());
             assert_eq!(
                 v.state.as_ref().unwrap().project.midi_source(clip),
                 before.midi_source(clip)
@@ -339,9 +346,12 @@ fn trailing_resize_and_group_move_paint_retirement_before_atomic_worker_commit(
             None
         };
         editor.update(&mut visual, |v, cx| {
-            v.midi_selection.clear();
+            v.midi_editor.selection.clear();
             if let Some(companion) = companion {
-                v.midi_selection.select_all([incoming, companion]).unwrap();
+                v.midi_editor
+                    .selection
+                    .select_all([incoming, companion])
+                    .unwrap();
             }
             cx.notify();
         });
@@ -378,7 +388,7 @@ fn trailing_resize_and_group_move_paint_retirement_before_atomic_worker_commit(
             assert_eq!(&v.state.as_ref().unwrap().project, &before);
             assert!(!v.edit_pending());
             if group {
-                assert!(v.midi_group_gesture.is_some());
+                assert!(v.midi_editor.group_gesture.is_some());
             }
         });
         let held = bodies(&mut visual, y);
@@ -489,8 +499,8 @@ fn normal_and_draw_creation_paint_whole_old_tail_retirement_then_real_ack(cx: &m
         });
         pump(&editor, &mut visual);
         editor.update(&mut visual, |v, cx| {
-            v.midi_selection.clear();
-            v.midi_draw_mode = draw;
+            v.midi_editor.selection.clear();
+            v.midi_editor.draw_mode = draw;
             cx.notify();
         });
         visual.run_until_parked();

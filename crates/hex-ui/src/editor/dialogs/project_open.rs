@@ -67,7 +67,7 @@ impl State {
 
 impl EditorView {
     fn next_open_serial(&mut self) -> Option<u64> {
-        let serial = self.project_open.next();
+        let serial = self.persistence.project_open.next();
         if serial.is_none() {
             self.cancel_open_after_save();
             self.error = Some("project request identity limit reached".into());
@@ -76,13 +76,13 @@ impl EditorView {
     }
 
     pub(in crate::editor) fn start_open_picker(&mut self) -> Option<(u64, u64)> {
-        if self.opening_project
-            || self.close_prompt_open
-            || self.saving_project
-            || self.save_dialog_open
+        if self.persistence.opening_project
+            || self.persistence.close_prompt_open
+            || self.persistence.saving_project
+            || self.persistence.save_dialog_open
             || self.gain_recorder.blocks_edits()
-            || self.project_open.busy()
-            || self.pending_open_path.is_some()
+            || self.persistence.project_open.busy()
+            || self.persistence.pending_open_path.is_some()
         {
             self.error =
                 Some("finish the current project action before opening another project".into());
@@ -90,23 +90,23 @@ impl EditorView {
         }
         let serial = self.next_open_serial()?;
         let generation = self.project_generation;
-        self.project_open.phase = Phase::Picker { generation, serial };
+        self.persistence.project_open.phase = Phase::Picker { generation, serial };
         Some((generation, serial))
     }
 
     pub(in crate::editor) fn open_picker_is_current(&self, generation: u64, serial: u64) -> bool {
         self.project_generation == generation
-            && matches!(self.project_open.phase,
+            && matches!(self.persistence.project_open.phase,
             Phase::Picker { generation: active_generation, serial: active_serial }
                 if active_generation == generation && active_serial == serial)
     }
 
     pub(in crate::editor) fn finish_open_picker(&mut self, generation: u64, serial: u64) -> bool {
-        let matches = matches!(self.project_open.phase, Phase::Picker { generation: active_generation, serial: active_serial } if active_generation == generation && active_serial == serial);
+        let matches = matches!(self.persistence.project_open.phase, Phase::Picker { generation: active_generation, serial: active_serial } if active_generation == generation && active_serial == serial);
         if !matches {
             return false;
         }
-        self.project_open.phase = Phase::Idle;
+        self.persistence.project_open.phase = Phase::Idle;
         if self.project_generation != generation {
             self.status = "open cancelled because project changed".into();
             return false;
@@ -119,7 +119,7 @@ impl EditorView {
             return;
         };
         self.cancel_duplicate_chain();
-        self.project_open.phase = Phase::PreparingNew {
+        self.persistence.project_open.phase = Phase::PreparingNew {
             mode,
             generation: self.project_generation,
             serial,
@@ -131,7 +131,10 @@ impl EditorView {
     /// A refused admitted edit/finalization cannot be followed by a new-document
     /// prompt that would silently leave that work behind.
     pub(in crate::editor) fn cancel_new_preparation(&mut self) -> bool {
-        if !matches!(self.project_open.phase, Phase::PreparingNew { .. }) {
+        if !matches!(
+            self.persistence.project_open.phase,
+            Phase::PreparingNew { .. }
+        ) {
             return false;
         }
         self.cancel_open_after_save();
@@ -144,7 +147,7 @@ impl EditorView {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
-        let queued_new = match self.project_open.phase {
+        let queued_new = match self.persistence.project_open.phase {
             Phase::PreparingNew {
                 mode,
                 generation,
@@ -152,15 +155,15 @@ impl EditorView {
             } => Some((mode, generation, serial)),
             _ => None,
         };
-        if (self.project_open.busy() && queued_new.is_none())
-            || (queued_new.is_none() && self.pending_open_path.is_none())
+        if (self.persistence.project_open.busy() && queued_new.is_none())
+            || (queued_new.is_none() && self.persistence.pending_open_path.is_none())
             || self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()
             || self.device_gesture_pending()
-            || self.tuning.client.has_pending_requests()
-            || self.saving_project
-            || self.save_dialog_open
-            || self.close_prompt_open
+            || self.settings.tuning.client.has_pending_requests()
+            || self.persistence.saving_project
+            || self.persistence.save_dialog_open
+            || self.persistence.close_prompt_open
         {
             return;
         }
@@ -181,7 +184,7 @@ impl EditorView {
                 serial,
             }
         } else {
-            let Some(path) = self.pending_open_path.take() else {
+            let Some(path) = self.persistence.pending_open_path.take() else {
                 return;
             };
             let Some(serial) = self.next_open_serial() else {
@@ -191,6 +194,7 @@ impl EditorView {
             Intent {
                 destination: Destination::Open(path),
                 mode: self
+                    .persistence
                     .pending_open_mode
                     .take()
                     .unwrap_or(DocumentAudioMode::Resident),
@@ -199,7 +203,7 @@ impl EditorView {
                 serial,
             }
         };
-        self.project_open.phase = Phase::Confirming(intent.clone());
+        self.persistence.project_open.phase = Phase::Confirming(intent.clone());
         cx.defer_in(window, move |view, window, cx| {
             view.confirm_selected_open(intent, window, cx)
         });
@@ -214,7 +218,7 @@ impl EditorView {
 
     fn current_open_intent(&self, intent: &Intent) -> bool {
         self.project_generation == intent.generation
-            && matches!(&self.project_open.phase,
+            && matches!(&self.persistence.project_open.phase,
             Phase::Confirming(active) | Phase::Saving(active) if active.serial == intent.serial)
     }
 
@@ -239,9 +243,9 @@ impl EditorView {
             return;
         }
         let dirty = self.state.as_ref().is_some_and(|state| state.unsaved)
-            || self.tuning.client.snapshot().is_some();
+            || self.settings.tuning.client.snapshot().is_some();
         if !dirty {
-            self.project_open.phase = Phase::Idle;
+            self.persistence.project_open.phase = Phase::Idle;
             self.begin_selected_project(intent, cx);
             cx.notify();
             return;
@@ -290,14 +294,16 @@ impl EditorView {
                     } else {
                         match answer {
                             Some(0) => {
-                                view.project_open.phase = Phase::Saving(intent);
+                                view.persistence.project_open.phase = Phase::Saving(intent);
                                 view.save_project(cx);
-                                if !view.saving_project && !view.save_dialog_open {
+                                if !view.persistence.saving_project
+                                    && !view.persistence.save_dialog_open
+                                {
                                     view.cancel_open_after_save();
                                 }
                             }
                             Some(1) => {
-                                view.project_open.phase = Phase::Idle;
+                                view.persistence.project_open.phase = Phase::Idle;
                                 view.begin_selected_project(intent, cx);
                             }
                             _ => {
@@ -314,9 +320,9 @@ impl EditorView {
     }
 
     pub(in crate::editor) fn cancel_open_after_save(&mut self) {
-        self.project_open.phase = Phase::Idle;
-        self.pending_open_path = None;
-        self.pending_open_mode = None;
+        self.persistence.project_open.phase = Phase::Idle;
+        self.persistence.pending_open_path = None;
+        self.persistence.pending_open_mode = None;
     }
 
     pub(in crate::editor) fn complete_open_save(
@@ -325,7 +331,7 @@ impl EditorView {
         revision: u64,
         cx: &mut Context<Self>,
     ) {
-        let Phase::Saving(intent) = &self.project_open.phase else {
+        let Phase::Saving(intent) = &self.persistence.project_open.phase else {
             return;
         };
         let current = succeeded
@@ -396,7 +402,7 @@ mod tests {
                 unsaved: true,
                 document_path: Some(PathBuf::from("original.hex")),
             }));
-            view.project_open.phase = Phase::Saving(Intent {
+            view.persistence.project_open.phase = Phase::Saving(Intent {
                 destination: Destination::Open(PathBuf::from("selected-next.hex")),
                 mode: DocumentAudioMode::Resident,
                 generation: view.project_generation,
@@ -404,7 +410,8 @@ mod tests {
                 serial: 1,
             });
             let key = view
-                .device_gesture
+                .device_panel
+                .gesture
                 .begin(
                     view.project_generation,
                     GestureTarget::TrackGain { track },
@@ -421,20 +428,20 @@ mod tests {
                 source_lost: false,
                 reason: None,
             }));
-            let accepted = view.device_gesture.snapshot().unwrap();
+            let accepted = view.device_panel.gesture.snapshot().unwrap();
             assert!(
                 view.enqueue_device_barrier(Request::SaveCurrentWithFormatUpgrade {
                     project_generation: view.project_generation,
                     path: PathBuf::from("original.hex"),
                 })
             );
-            view.saving_project = true;
-            assert!(view.device_gesture.next_request().is_none());
-            let (phase, sequence) = view.device_gesture.terminal().unwrap();
+            view.persistence.saving_project = true;
+            assert!(view.device_panel.gesture.next_request().is_none());
+            let (phase, sequence) = view.device_panel.gesture.terminal().unwrap();
             assert_eq!(phase, GesturePhase::Commit);
-            assert!(view.project_open.permits_save());
+            assert!(view.persistence.project_open.permits_save());
             assert!(matches!(
-                view.device_gesture_barriers.front(),
+                view.device_panel.gesture_barriers.front(),
                 Some(Request::SaveCurrentWithFormatUpgrade { .. })
             ));
             assert!(view.acknowledge_device_gesture_with_snapshot(
@@ -449,12 +456,12 @@ mod tests {
                 },
                 Some(accepted)
             ));
-            assert!(!view.saving_project);
+            assert!(!view.persistence.saving_project);
             assert!(
-                !view.project_open.busy(),
+                !view.persistence.project_open.busy(),
                 "a later save must not open the abandoned selection"
             );
-            assert!(view.device_gesture_barriers.is_empty());
+            assert!(view.device_panel.gesture_barriers.is_empty());
             assert!(view.pending_requests.is_empty());
             assert!(view.state.as_ref().unwrap().unsaved);
         });

@@ -436,7 +436,7 @@ fn compact_audio_and_midi_trim_edges_keep_title_and_exact_preview_until_cancel(
                 assert_eq!(drag.clip.id(), clip);
                 assert!(drag.preview.borrow().as_ref().unwrap().clip.duration() < 96_000);
             } else {
-                let drag = view.active_midi_trim_drag.as_ref().unwrap();
+                let drag = view.midi_editor.active_trim_drag.as_ref().unwrap();
                 assert_eq!(drag.clip.id(), clip);
                 assert!(
                     drag.preview.borrow().unwrap().length() < BeatTime::from_quarters(4).unwrap()
@@ -512,7 +512,7 @@ fn compact_audio_and_midi_trim_edges_keep_title_and_exact_preview_until_cancel(
         });
         f.visual.run_until_parked();
         f.editor.read_with(&f.visual, |view, _| {
-            assert!(view.active_trim_drag.is_none() && view.active_midi_trim_drag.is_none());
+            assert!(view.active_trim_drag.is_none() && view.midi_editor.active_trim_drag.is_none());
             assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
             assert!(view.pending_requests.is_empty() && view.worker_requests_pending == 0);
         });
