@@ -123,14 +123,14 @@ struct GeometryLru {
     stretch_slot: Option<usize>,
 }
 
-#[cfg(all(test, any(feature = "ui-unit-tier", feature = "ui-test-support")))]
+#[cfg(test)]
 struct GeometryLruIter<'a> {
     nodes: &'a [Option<GeometryLruNode>],
     current: Option<usize>,
     remaining: usize,
 }
 
-#[cfg(all(test, any(feature = "ui-unit-tier", feature = "ui-test-support")))]
+#[cfg(test)]
 impl<'a> Iterator for GeometryLruIter<'a> {
     type Item = &'a WaveformGeometryEntry;
 
@@ -151,12 +151,12 @@ impl GeometryLru {
         self.len
     }
 
-    #[cfg(all(test, not(feature = "ui-test-support")))]
+    #[cfg(test)]
     fn is_empty(&self) -> bool {
         self.len == 0
     }
 
-    #[cfg(all(test, any(feature = "ui-unit-tier", feature = "ui-test-support")))]
+    #[cfg(test)]
     fn iter(&self) -> GeometryLruIter<'_> {
         GeometryLruIter {
             nodes: &self.nodes,
@@ -2702,7 +2702,6 @@ mod tests {
         assert!(faded_bottom[99].y < neutral_bottom[99].y);
     }
 
-    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn key(origin: u64, bounds: Bounds<Pixels>) -> WaveformGeometryKey {
         waveform_geometry_key(
             &WaveformMapping::Source {
@@ -2715,7 +2714,6 @@ mod tests {
         )
     }
 
-    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn coarse_key(clip_id: u64, first_frame: u64) -> WaveformGeometryKey {
         WaveformGeometryKey {
             reference_stereo: reference_stereo(),
@@ -2764,7 +2762,6 @@ mod tests {
         assert_eq!(current, key(0, bounds()));
     }
 
-    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn geometry(
         source: &CachedWaveform,
         origin: u64,
@@ -4000,7 +3997,6 @@ mod tests {
         assert!(column_bounded.get(&key(0, extent), &source).is_none());
     }
 
-    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     fn indexed_lru_matches_reference_eviction_order_invalidation_and_column_budget() {
         let source = waveform();
@@ -4130,7 +4126,6 @@ mod tests {
         assert!(cache.get(&key(10_003, extent), &source).is_none());
     }
 
-    #[cfg(all(test, feature = "ui-unit-tier"))]
     #[test]
     fn indexed_lru_handles_hash_collisions_and_dense_512_entry_lookups() {
         let source = waveform();

@@ -219,7 +219,7 @@ class Host final : public IHostApplication, public IComponentHandler, public ICo
     // retains its separate fence for the last meaningful value transition.
     std::atomic<uint64> editor_admission_sequence{0};
     const bool advertises_editor_groups;
-    const bool instrument_midi;
+    int16 midi_mapping_channels;
     bool controller_maps_midi=false;
     uint64 cohort=0;
     bool refused_cohort=false;
@@ -290,7 +290,7 @@ public:
     static constexpr int32 supported_restarts=kParamValuesChanged|kParamTitlesChanged;
     explicit Host(bool trace_messages=false,bool editor_groups=false,bool instrument=false)
         : messages(new(std::nothrow) std::array<HostMessage,HOST_MESSAGE_COUNT>{}),
-          advertises_editor_groups(editor_groups),instrument_midi(instrument) {
+          advertises_editor_groups(editor_groups),midi_mapping_channels(instrument?16:0) {
         if (messages) for (auto& message:*messages)
             message.bind(static_cast<IHostApplication*>(this),trace_messages?&message_trace:nullptr);
     }
@@ -845,6 +845,8 @@ public:
         }
         return result;
     }
+    // Only the control lane configures the admitted effect bus, before processing starts.
+    void set_effect_midi_channels_on_control(int16 channels) { midi_mapping_channels=channels; }
     // Startup restoration must rescan actual controller values without
     // fabricating a plug-in restart request or IComponentHandler edit.
     HostDispatch refresh_on_control(IEditController* controller) {
@@ -967,11 +969,11 @@ private:
             }
         }
         if (!valid) { refuse(InvalidMetadata); result.disposition=HostDisposition::InvalidMetadata; return result; }
-        if(instrument_midi) {
+        if(midi_mapping_channels) {
             IMidiMapping* mapping=nullptr;
             const auto found=controller->queryInterface(INLINE_UID_OF(IMidiMapping),reinterpret_cast<void**>(&mapping));
             if(found==kResultOk && mapping) {
-                for(int16 channel=0;channel<16;++channel) {
+                for(int16 channel=0;channel<midi_mapping_channels;++channel) {
                     auto& assignments=staged.assignments[channel];
                     for(CtrlNumber cc=0;cc<kCountCtrlNumber;++cc) {
                         ParamID id=kNoParamId;

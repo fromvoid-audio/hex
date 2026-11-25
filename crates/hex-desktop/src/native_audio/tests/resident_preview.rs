@@ -5413,8 +5413,88 @@ fn confirmed_limiter_resumes_file_backed_audio_on_the_same_output() {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
-fn removing_longer_main_limiter_requires_consent_and_keeps_the_same_output() {
-    confirmed_limiter_keeps_the_same_output(262_144, false, LimiterEdit::RemoveDevice);
+fn removing_longer_main_limiter_retains_the_running_pass_delay_without_consent() {
+    use hex_project::Command;
+    const MARKER_START: u64 = 8192;
+    const LOOKAHEAD_FRAMES: u64 = 144; // 3 ms at 48 kHz
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let mut applied = h.applied(0).0;
+    h.run(Request::Import(files.wav(48_000, 16_384)));
+    applied = h.applied(applied).0;
+    h.run(Request::ImportToNewTrack {
+        path: files.constant_wav("marker.wav", 48_000, 4096, &[4096]),
+        before_track: None,
+        start: MARKER_START,
+    });
+    applied = h.applied(applied).0;
+    let limiter = hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+        "hex.limiter",
+    ))
+    .unwrap();
+    let lookahead = hex_engine::native_device_descriptors(limiter.type_id())
+        .unwrap()
+        .iter()
+        .find(|descriptor| descriptor.label == "lookahead")
+        .unwrap()
+        .id;
+    let limiter = hex_engine::patch_native_device_parameter(
+        &limiter,
+        lookahead,
+        hex_session::device_gesture::ParameterValue::Choice(1),
+    )
+    .unwrap();
+    let inserted = h.run(Request::Edit(Command::InsertMainDevice {
+        before: None,
+        state: limiter,
+    }));
+    h.applied(applied);
+    let device = inserted.state.project.main_devices()[0].id();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..4 {
+        h.render();
+    }
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+    h.enable_confirmed_device_inserts();
+    let installed = install_running_device_edit(
+        &mut h,
+        "remove main limiter",
+        Request::Edit(Command::RemoveDevice(device)),
+        &inserted.state,
+    );
+    assert!(installed.state.project.main_devices().is_empty());
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(status.playing.load(Acquire));
+    let expected_edge = MARKER_START + LOOKAHEAD_FRAMES;
+    let mut frame = status.position.load(Acquire);
+    assert!(
+        frame < MARKER_START,
+        "fixture marker played before the edit"
+    );
+    while frame <= expected_edge {
+        let block = h.render();
+        for (offset, sample) in block.into_iter().enumerate() {
+            let expected = if frame + (offset as u64) < expected_edge {
+                0.25
+            } else {
+                0.375
+            };
+            assert_eq!(
+                sample,
+                [expected; 2],
+                "output frame {}",
+                frame + offset as u64
+            );
+        }
+        frame += 64;
+    }
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -5430,7 +5510,7 @@ fn removing_track_with_limiter_requires_consent_and_keeps_the_same_output() {
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn install_running_device_move_for_history(
+fn install_running_device_edit(
     harness: &mut ResidentHarness,
     action: &str,
     request: Request,
@@ -5620,7 +5700,7 @@ fn assert_held_instrument_move_history(instrument: HeldMoveInstrument) {
             .any(|lane| lane.abs() > 1e-4)
     );
 
-    let moved = install_running_device_move_for_history(
+    let moved = install_running_device_edit(
         &mut h,
         "move",
         Request::MoveTrackDevices {
@@ -5653,11 +5733,9 @@ fn assert_held_instrument_move_history(instrument: HeldMoveInstrument) {
         device
     );
 
-    let undone =
-        install_running_device_move_for_history(&mut h, "undo", Request::Undo, &moved.state);
+    let undone = install_running_device_edit(&mut h, "undo", Request::Undo, &moved.state);
     assert_eq!(undone.state.project, original.state.project);
-    let redone =
-        install_running_device_move_for_history(&mut h, "redo", Request::Redo, &undone.state);
+    let redone = install_running_device_edit(&mut h, "redo", Request::Redo, &undone.state);
     assert_eq!(redone.state.project, moved.state.project);
 }
 
@@ -5710,7 +5788,7 @@ fn utility_prefix_move_undo_and_redo_wait_for_the_running_audio_cut() {
     for _ in 0..8 {
         h.render();
     }
-    let moved = install_running_device_move_for_history(
+    let moved = install_running_device_edit(
         &mut h,
         "move",
         Request::MoveTrackDevices {
@@ -5732,11 +5810,9 @@ fn utility_prefix_move_undo_and_redo_wait_for_the_running_audio_cut() {
             .len(),
         2
     );
-    let undone =
-        install_running_device_move_for_history(&mut h, "undo", Request::Undo, &moved.state);
+    let undone = install_running_device_edit(&mut h, "undo", Request::Undo, &moved.state);
     assert_eq!(undone.state.project, original.state.project);
-    let redone =
-        install_running_device_move_for_history(&mut h, "redo", Request::Redo, &undone.state);
+    let redone = install_running_device_edit(&mut h, "redo", Request::Redo, &undone.state);
     assert_eq!(redone.state.project, moved.state.project);
 }
 
@@ -5784,7 +5860,7 @@ fn resident_discontiguous_reorder_history_restores_exact_order_at_each_audio_cut
     }
     assert!(h.render().iter().flatten().any(|sample| *sample != 0.0));
 
-    let reordered = install_running_device_move_for_history(
+    let reordered = install_running_device_edit(
         &mut h,
         "reorder",
         Request::ReorderDevices {
@@ -5800,19 +5876,10 @@ fn resident_discontiguous_reorder_history_restores_exact_order_at_each_audio_cut
     let order: Vec<_> = devices.iter().map(hex_project::Device::id).collect();
     assert_eq!(order, [second, fourth, first, third]);
     // This order cannot restore the original interleaving with a single reorder.
-    let undone = install_running_device_move_for_history(
-        &mut h,
-        "undo reorder",
-        Request::Undo,
-        &reordered.state,
-    );
+    let undone =
+        install_running_device_edit(&mut h, "undo reorder", Request::Undo, &reordered.state);
     assert_eq!(undone.state.project, original.state.project);
-    let redone = install_running_device_move_for_history(
-        &mut h,
-        "redo reorder",
-        Request::Redo,
-        &undone.state,
-    );
+    let redone = install_running_device_edit(&mut h, "redo reorder", Request::Redo, &undone.state);
     assert_eq!(redone.state.project, reordered.state.project);
 }
 
@@ -5822,12 +5889,26 @@ fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_runnin
     use hex_project::{Command, Created};
     use hex_session::service::{DeviceInsertOutcome, ViewState};
 
+    const REFERENCE_FRAMES: u32 = 16_384;
     let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(262_144);
     assert!(h.next().error.is_none());
     let (mut applied, _) = h.applied(0);
-    h.run(Request::Import(files.wav(48_000, 16_384)));
+    // Independent channels distinguish a fade on the moved route from an output cut.
+    let imported = h.run(Request::Import(files.constant_wav(
+        "destination.wav",
+        48_000,
+        32_768,
+        &[8192, 0],
+    )));
+    let destination = imported.state.project.tracks()[0].id();
+    applied = h.applied(applied).0;
+    h.run(Request::ImportToNewTrack {
+        path: files.constant_wav("unaffected.wav", 48_000, REFERENCE_FRAMES, &[0, 4096]),
+        before_track: None,
+        start: 0,
+    });
     applied = h.applied(applied).0;
     let state = |id| {
         hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(id)).unwrap()
@@ -5843,27 +5924,41 @@ fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_runnin
         .control
         .command(PlaybackCommand::Play)
         .unwrap();
-    assert_ne!(h.render(), [[0.25; 2]; 64], "limiter must introduce delay");
+    assert_ne!(
+        h.render(),
+        [[0.25, 0.125]; 64],
+        "limiter must introduce delay"
+    );
     let deadline = Instant::now() + Duration::from_secs(1);
-    while h.render() != [[0.25; 2]; 64] {
+    while h.render() != [[0.25, 0.125]; 64] {
         assert!(Instant::now() < deadline, "compensated source never played");
     }
     h.enable_confirmed_device_inserts();
     let added = h.run(Request::Edit(Command::AddTrack {
         name: "empty".into(),
     }));
-    assert_eq!(h.render(), [[0.25; 2]; 64]);
+    assert_eq!(h.render(), [[0.25, 0.125]; 64]);
     let Some(Created::Track(track)) = added.created else {
         panic!("empty track not created");
     };
     let apply = |h: &mut ResidentHarness, previous: &ViewState, command| {
+        let moving = matches!(command, Command::MoveDevice { .. });
+        let previous_source = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .recording_source()
+            .unwrap();
+        let mut rendered = Vec::new();
         h.service.submit(Request::Edit(command)).unwrap();
         let staged = h.next();
         assert!(!staged.request_complete);
         assert_eq!(staged.state.project, previous.project);
         let deadline = Instant::now() + Duration::from_secs(1);
         let installed = loop {
-            assert_eq!(h.render(), [[0.25; 2]; 64]);
+            rendered.extend(h.render());
             h.pump();
             if let Ok(event) = h.service.try_event() {
                 break event;
@@ -5875,12 +5970,47 @@ fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_runnin
             std::thread::sleep(Duration::from_millis(1));
         };
         assert!(installed.device_insert_confirmation.is_none());
-        assert_eq!(
-            installed.device_insert_complete.unwrap().outcome,
-            DeviceInsertOutcome::Installed
-        );
+        let receipt = installed.device_insert_complete.unwrap();
+        assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        let active = status.recording_source().unwrap();
+        assert!(status.playing.load(Acquire));
+        assert_eq!(active.output_identity, previous_source.output_identity);
+        assert_eq!(active.output_identity, receipt.submission.output_identity);
+        assert_eq!(active.audio_revision, receipt.submission.audio_revision);
+        assert_eq!(active.context, receipt.submission.context);
         assert_eq!(installed.state.revision, previous.revision + 1);
-        assert_eq!(h.render(), [[0.25; 2]; 64]);
+        // Render past the Main limiter lookahead and the 240-frame route fade-in.
+        for _ in 0..8 {
+            rendered.extend(h.render());
+        }
+        assert!(
+            rendered.iter().all(|frame| frame[1] == 0.125),
+            "unaffected route interrupted"
+        );
+        if moving {
+            assert!(
+                rendered.iter().any(|frame| frame[0] == 0.0),
+                "moved route missed the cut"
+            );
+            assert!(
+                rendered
+                    .iter()
+                    .all(|frame| (0.0..=0.25).contains(&frame[0]))
+            );
+            assert!(
+                rendered
+                    .windows(2)
+                    .all(|pair| (pair[1][0] - pair[0][0]).abs() <= 0.25 / 240.0 + f32::EPSILON),
+                "moved route stepped across the cut"
+            );
+        } else {
+            assert!(
+                rendered.iter().all(|frame| frame[0] == 0.25),
+                "sounding route interrupted"
+            );
+        }
+        assert_eq!(h.render(), [[0.25, 0.125]; 64]);
         installed
     };
     let inserted = apply(
@@ -5895,7 +6025,6 @@ fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_runnin
     let Some(Created::Device(device)) = inserted.created else {
         panic!("utility not created");
     };
-    let destination = inserted.state.project.tracks()[0].id();
     let moved = apply(
         &mut h,
         &inserted.state,
@@ -5909,10 +6038,34 @@ fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_runnin
         moved.state.project.track(destination).unwrap().devices()[0].id(),
         device
     );
+    assert_eq!(
+        moved.state.project.device(device).unwrap().state(),
+        inserted.state.project.device(device).unwrap().state()
+    );
     let removed = apply(&mut h, &moved.state, Command::RemoveDevice(device));
     assert!(removed.state.project.device(device).is_none());
     let removed = apply(&mut h, &removed.state, Command::RemoveTrack(track));
     assert!(removed.state.project.track(track).is_none());
+
+    // The right-only clip ends at its authored frame plus the default limiter's
+    // 1.5 ms lookahead. A shifted or restarted output moves this edge.
+    let right_end = u64::from(REFERENCE_FRAMES) + 72;
+    let mut frame = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .position
+        .load(Acquire);
+    assert!(frame < right_end);
+    while frame <= right_end {
+        for sample in h.render() {
+            let right = if frame < right_end { 0.125 } else { 0.0 };
+            assert_eq!(sample, [0.25, right], "route timing at frame {frame}");
+            frame += 1;
+        }
+    }
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -6108,7 +6261,6 @@ fn verified_file_native_removal(stop_during_fade: bool) {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LimiterEdit {
     Insert,
-    RemoveDevice,
     CutDevice,
     RemoveTrack,
 }
@@ -6143,26 +6295,9 @@ fn confirmed_limiter_keeps_the_same_output(frame_limit: u64, streamed: bool, edi
     );
     let (mut applied, _) = h.applied(applied);
     let limiter = || {
-        let default = hex_engine::default_native_device_state_for_class(
+        hex_engine::default_native_device_state_for_class(
             hex_engine::NativeDeviceClass::Effect,
             hex_engine::DeviceTypeId::from_static("hex.limiter"),
-        )
-        .unwrap();
-        if edit != LimiterEdit::RemoveDevice {
-            return default;
-        }
-        // The default 72-frame Main reduction fits the retained pass delay.
-        // At 48 kHz the 3 ms lookahead needs 144 frames and requires consent.
-        let lookahead = hex_engine::native_device_descriptors(default.type_id())
-            .unwrap()
-            .iter()
-            .find(|descriptor| descriptor.label == "lookahead")
-            .unwrap()
-            .id;
-        hex_engine::patch_native_device_parameter(
-            &default,
-            lookahead,
-            hex_session::device_gesture::ParameterValue::Choice(1),
         )
         .unwrap()
     };
@@ -6219,9 +6354,6 @@ fn confirmed_limiter_keeps_the_same_output(frame_limit: u64, streamed: bool, edi
     for proceed in [false, true] {
         let request = match edit {
             LimiterEdit::Insert => Request::Edit(insert()),
-            LimiterEdit::RemoveDevice => {
-                Request::Edit(Command::RemoveDevice(before.project.main_devices()[0].id()))
-            }
             LimiterEdit::CutDevice => Request::DeviceClipboard {
                 project_generation: predecessor.context.project_generation,
                 revision: before.revision,
@@ -6246,8 +6378,7 @@ fn confirmed_limiter_keeps_the_same_output(frame_limit: u64, streamed: bool, edi
             offer.operation(),
             match edit {
                 LimiterEdit::Insert => GraphEditOperation::InsertDevice,
-                LimiterEdit::RemoveDevice | LimiterEdit::CutDevice =>
-                    GraphEditOperation::RemoveDevice,
+                LimiterEdit::CutDevice => GraphEditOperation::RemoveDevice,
                 LimiterEdit::RemoveTrack => GraphEditOperation::RemoveTrack,
             }
         );

@@ -1265,7 +1265,7 @@ int main(int argc,char** argv) {
                         const auto event_channels=instance.event_input_channels();
                         // The wire has already validated the notes. A generator
                         // with no event bus still renders with inputEvents=null.
-                        if(config->inputs && !event_channels && packet.note_count) valid=false;
+                        if(config->inputs && !event_channels && (packet.note_count || packet.controller_count)) valid=false;
                         if(event_channels) {
                             for (size_t n=0;n<packet.note_count;++n)
                                 valid=valid && packet.notes[n].channel<event_channels;

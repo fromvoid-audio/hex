@@ -1,7 +1,10 @@
 #[path = "../../src/editor/track_meters/selection.rs"]
 mod selection;
 
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "the track collection owns seeded and unobserved meters"
+)]
 #[path = "../../src/editor/track_meters/decay.rs"]
 mod decay;
 #[allow(dead_code)]

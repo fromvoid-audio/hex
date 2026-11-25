@@ -700,7 +700,7 @@ fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
 }
 
 #[test]
-fn instrument_expression_preserves_message_width_and_note_identity_on_the_wire() {
+fn effect_and_instrument_expression_preserve_message_width_and_note_identity_on_the_wire() {
     let effect = config();
     let mut instrument = effect.clone();
     instrument.input_channels = 0;
@@ -749,8 +749,9 @@ fn instrument_expression_preserves_message_width_and_note_identity_on_the_wire()
     };
     block.events.push(cc).unwrap();
     block.events.push(sequenced_cc).unwrap();
-    assert!(effect.validate_block(&block, 0).is_err());
     instrument.validate_block(&block, 0).unwrap();
+    block.pcm[0] = [0.25, -0.125];
+    effect.validate_block(&block, 0).unwrap();
     let mut wire = Vec::new();
     crate::transport::wire::write(&mut wire, &block).unwrap();
     let decoded = crate::transport::wire::read(&mut wire.as_slice())
