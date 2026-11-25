@@ -827,7 +827,7 @@ fn arrangement_bounce_caps_actual_nonquiescent_tail_and_preserves_destinations()
     })
     .expect("unfinished tail is a successful capped bounce");
     assert_eq!(report.frames, 320 + u64::from(TAIL_RATE) * 30);
-    assert_eq!(report.data_bytes, report.frames as u32 * 8);
+    assert_eq!(report.data_bytes, report.frames * 8);
     let bytes = fs::read(&path).unwrap();
     assert_eq!(
         bytes.len(),

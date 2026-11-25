@@ -466,6 +466,7 @@ pub fn render_prepared_with_options(
             "stem batch export does not support target sample-rate conversion or normalization",
         ));
     }
+    preflight_destination(path, publication)?;
     let target_rate = options.target_sample_rate.unwrap_or(source_rate);
     let source_frame_count = usize::try_from(frames)
         .ok()
@@ -542,10 +543,9 @@ pub fn render_prepared_with_options(
     }
     control.check()?;
 
-    // Perform deterministic windowed-sinc target SRC if requested.
-    let cancel_flag = AtomicBool::new(control.is_cancelled());
+    // Perform deterministic windowed-sinc target SRC if requested, polling live cancellation.
     let mut processed =
-        crate::post::resample_export_frames(source_rate, target_rate, rendered, &cancel_flag)?;
+        crate::post::resample_export_frames(source_rate, target_rate, rendered, control)?;
     control.check()?;
 
     // Apply explicit opt-in peak or LUFS normalization and capture exact applied gain.
@@ -1298,5 +1298,55 @@ mod tests {
                 "export preroll exceeds its frame budget"
             ))
         ));
+    }
+
+    #[test]
+    fn render_prepared_with_options_preflights_collision_before_rendering() {
+        let dir = std::env::temp_dir().join(format!(
+            "hex-export-preflight-collision-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let existing = dir.join("already-here.wav");
+        std::fs::write(&existing, b"existing-user-audio").unwrap();
+
+        let project = hex_project::Project::new(48_000).unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                &project,
+                &std::collections::BTreeMap::new(),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let control = ExportControl::default();
+        let err = render_prepared_with_options(
+            ExportJobSpec {
+                path: &existing,
+                revision,
+                resources: None,
+                start: 0,
+                frames: 48_000,
+                signal: ExportSignal::Main,
+                format: ExportFormat::Pcm16,
+                control: &control,
+                publication: &Publication::CreateNew,
+            },
+            ExportOptions {
+                target_sample_rate: Some(44_100),
+                normalization: ExportNormalization::Peak { target_dbfs: -1.0 },
+            },
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ExportError::Io { ref source, .. } if source.kind() == io::ErrorKind::AlreadyExists
+        ));
+        assert_eq!(control.progress().processed_frames, 0);
+        assert_eq!(std::fs::read(&existing).unwrap(), b"existing-user-audio");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -336,9 +336,9 @@ fn render_stems_with_resources_and_hook(
             })?;
     }
     let report_bytes = if format.is_flac() {
-        u32::try_from(max_flac_bytes).unwrap_or(u32::MAX)
+        max_flac_bytes
     } else {
-        bytes
+        u64::from(bytes)
     };
     #[cfg(unix)]
     File::open(&staging.path)
@@ -515,7 +515,7 @@ mod tests {
                 publication: &Publication::CreateNew,
             })
             .unwrap();
-            assert_eq!(report.data_bytes, 257 * format.frame_bytes());
+            assert_eq!(report.data_bytes, 257 * u64::from(format.frame_bytes()));
             assert_eq!(report.clipped_samples, 0);
             for stem in &stems {
                 let bytes = fs::read(path.join(filename(stem, format))).unwrap();

@@ -90,7 +90,7 @@ pub struct ExportReport {
     pub path: PathBuf,
     pub sample_rate: u32,
     pub frames: u64,
-    pub data_bytes: u32,
+    pub data_bytes: u64,
     /// Individual channel samples outside [-1.0, 1.0] that integer
     /// quantisation clamped to full scale. Float32 output preserves overs
     /// unclamped and always reports zero.
@@ -472,50 +472,16 @@ fn publish_encoded<R: BlockRenderer>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-fn publish_encoded_with_gain<R: BlockRenderer>(
+/// Refuse a known destination collision or invalid overwrite consent before
+/// rendering, resampling, or normalizing. Create-new publication remains the
+/// authoritative race-safe check (see `publication::publish_new`).
+pub(crate) fn preflight_destination(
     path: &Path,
-    sample_rate: u32,
-    start: u64,
-    frames: u64,
     publication: &Publication,
-    encoding: ExportFormat,
-    applied_gain: AppliedGain,
-    prepare_renderer: impl FnOnce() -> Result<R, ExportError>,
-) -> Result<ExportReport, ExportError> {
-    if sample_rate == 0 {
-        return Err(ExportError::Invalid("sample rate is zero"));
-    }
-    start
-        .checked_add(frames)
-        .ok_or(ExportError::Invalid("frame range overflows"))?;
-    let (wav_data_bytes, byte_rate) = if encoding.is_flac() {
-        if !(8_000..=192_000).contains(&sample_rate) {
-            return Err(ExportError::Invalid(
-                "flac sample rate must be within 8000..=192000 Hz",
-            ));
-        }
-        if frames >= (1_u64 << 36) {
-            return Err(ExportError::Invalid("flac exceeds the 36-bit sample limit"));
-        }
-        (0_u32, 0_u32)
-    } else {
-        let data_bytes = frames
-            .checked_mul(u64::from(encoding.frame_bytes()))
-            .and_then(|bytes| u32::try_from(bytes).ok())
-            .filter(|bytes| *bytes <= u32::MAX - encoding.riff_overhead())
-            .ok_or(ExportError::Invalid("wav exceeds the RIFF size limit"))?;
-        let byte_rate = sample_rate
-            .checked_mul(encoding.frame_bytes())
-            .ok_or(ExportError::Invalid("sample rate is too large"))?;
-        (data_bytes, byte_rate)
-    };
+) -> Result<(), ExportError> {
     if path.file_name().is_none() {
         return Err(ExportError::Invalid("destination has no file name"));
     }
-
-    // Refuse a known collision before rendering; create-new publication remains
-    // the authoritative race-safe check (see `publication::publish_new`).
     if let Publication::Replace(consent) = publication {
         consent.validate(path)?;
     } else {
@@ -538,6 +504,48 @@ fn publish_encoded_with_gain<R: BlockRenderer>(
             }
         }
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_encoded_with_gain<R: BlockRenderer>(
+    path: &Path,
+    sample_rate: u32,
+    start: u64,
+    frames: u64,
+    publication: &Publication,
+    encoding: ExportFormat,
+    applied_gain: AppliedGain,
+    prepare_renderer: impl FnOnce() -> Result<R, ExportError>,
+) -> Result<ExportReport, ExportError> {
+    if sample_rate == 0 {
+        return Err(ExportError::Invalid("sample rate is zero"));
+    }
+    start
+        .checked_add(frames)
+        .ok_or(ExportError::Invalid("frame range overflows"))?;
+    let (wav_data_bytes, byte_rate) = if encoding.is_flac() {
+        if !(8_000..=192_000).contains(&sample_rate) {
+            return Err(ExportError::Invalid(
+                "flac sample rate must be within 8000..=192000 hz",
+            ));
+        }
+        if frames >= (1_u64 << 36) {
+            return Err(ExportError::Invalid("flac exceeds the 36-bit sample limit"));
+        }
+        (0_u32, 0_u32)
+    } else {
+        let data_bytes = frames
+            .checked_mul(u64::from(encoding.frame_bytes()))
+            .and_then(|bytes| u32::try_from(bytes).ok())
+            .filter(|bytes| *bytes <= u32::MAX - encoding.riff_overhead())
+            .ok_or(ExportError::Invalid("wav exceeds the RIFF size limit"))?;
+        let byte_rate = sample_rate
+            .checked_mul(encoding.frame_bytes())
+            .ok_or(ExportError::Invalid("sample rate is too large"))?;
+        (data_bytes, byte_rate)
+    };
+    preflight_destination(path, publication)?;
     // A matching name and an available advisory lock do not establish file
     // ownership. Retain unclaimed files, including possible recovery copies.
     let (file, temporary_path) = create_temporary(path)?;
@@ -559,7 +567,7 @@ fn publish_encoded_with_gain<R: BlockRenderer>(
                 },
                 &mut renderer,
             )?;
-            (clipped, wav_data_bytes)
+            (clipped, u64::from(wav_data_bytes))
         };
         renderer.before_publication()?;
         Ok((clipped, actual_data_bytes))
@@ -771,8 +779,7 @@ fn write_wav(
     let mut clipped = 0_u64;
     let quantiser = dither::Pcm16Quantiser::main();
     const FLOAT32_FRAME_BYTES: usize = ExportFormat::Float32.frame_bytes() as usize;
-    let mut encoded_floats = [0_u8; FRAMES_PER_BLOCK * FLOAT32_FRAME_BYTES];
-    let mut sample_bytes = [0_u8; format::MAX_FRAME_BYTES / 2];
+    let mut encoded_block = [0_u8; FRAMES_PER_BLOCK * format::MAX_FRAME_BYTES];
     let mut position = start;
 
     let mut block = [[0.0; 2]; FRAMES_PER_BLOCK];
@@ -783,7 +790,7 @@ fn write_wav(
         if encoding == ExportFormat::Float32 {
             // Encode one block into contiguous bytes, preserving the original
             // IEEE bits and checking finiteness before staging it.
-            let bytes = &mut encoded_floats[..count * FLOAT32_FRAME_BYTES];
+            let bytes = &mut encoded_block[..count * FLOAT32_FRAME_BYTES];
             let (encoded, _) = bytes.as_chunks_mut::<FLOAT32_FRAME_BYTES>();
             for (&[left, right], frame) in block[..count].iter().zip(encoded) {
                 if !left.is_finite() || !right.is_finite() {
@@ -794,18 +801,31 @@ fn write_wav(
             }
             write_all(&mut writer, bytes, "write samples")?;
         } else {
-            for (frame, at) in block[..count].iter().zip(position..) {
+            let sample_bytes = encoding.sample_bytes() as usize;
+            let frame_bytes = encoding.frame_bytes() as usize;
+            let bytes = &mut encoded_block[..count * frame_bytes];
+            for ((frame, at), dst) in block[..count]
+                .iter()
+                .zip(position..)
+                .zip(bytes.chunks_exact_mut(frame_bytes))
+            {
                 for (channel, sample) in frame.iter().enumerate() {
                     if !sample.is_finite() {
                         return Err(ExportError::Invalid("render produced a non-finite sample"));
                     }
-                    let bytes = &mut sample_bytes[..encoding.sample_bytes() as usize];
-                    let over =
-                        format::encode_sample(encoding, quantiser, *sample, at, channel, bytes);
+                    let start_byte = channel * sample_bytes;
+                    let over = format::encode_sample(
+                        encoding,
+                        quantiser,
+                        *sample,
+                        at,
+                        channel,
+                        &mut dst[start_byte..start_byte + sample_bytes],
+                    );
                     clipped += u64::from(over);
-                    write_all(&mut writer, bytes, "write samples")?;
                 }
             }
+            write_all(&mut writer, bytes, "write samples")?;
         }
         remaining -= count as u64;
         position = position.wrapping_add(count as u64);
@@ -834,7 +854,7 @@ fn write_flac(
     frames: u64,
     encoding: ExportFormat,
     renderer: &mut impl BlockRenderer,
-) -> Result<(u64, u32), ExportError> {
+) -> Result<(u64, u64), ExportError> {
     #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
     let file = write_fault::Writer::new(file);
     let writer = BufWriter::with_capacity(IO_BUFFER_BYTES, file);
@@ -887,7 +907,7 @@ fn write_flac(
             operation: "synchronize the temporary flac",
             source,
         })?;
-    Ok((clipped, u32::try_from(bytes_written).unwrap_or(u32::MAX)))
+    Ok((clipped, bytes_written))
 }
 
 fn map_flac_encode_error(error: hex_media::ImportError) -> ExportError {
@@ -1221,7 +1241,7 @@ mod tests {
             || Ok(Constant([1.5, -0.25])),
         )
         .expect("float export");
-        assert_eq!(report.data_bytes, data_bytes);
+        assert_eq!(report.data_bytes, u64::from(data_bytes));
         assert_eq!(report.clipped_samples, 0, "float output does not clip");
         let bytes = fs::read(&path).expect("read float export");
         let mut expected = Vec::new();

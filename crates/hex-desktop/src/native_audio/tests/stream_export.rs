@@ -576,7 +576,7 @@ fn verified_export_writes_the_requested_format_through_streamed_pages() {
             },
         );
         let report = exported(&service).result.unwrap();
-        assert_eq!(report.data_bytes, 2048 * format.frame_bytes());
+        assert_eq!(report.data_bytes, 2048 * u64::from(format.frame_bytes()));
         fs::read(path).unwrap()
     };
     let float = export("float.wav", ExportFormat::Float32);
