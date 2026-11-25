@@ -29,9 +29,6 @@ const MIN_SAMPLE_RATE: u32 = 8_000;
 const MAX_SAMPLE_RATE: u32 = 192_000;
 const GAIN_SMOOTH_MS: f64 = 5.0;
 const RMS_INTEGRATION_SECONDS: f64 = 0.010;
-// Power floor: sqrt(1e-30) is -300 dBFS, far below the useful detector
-// range. Retire silent tails before f64 subnormals can persist in warm history.
-const RMS_ENERGY_FLOOR: f64 = 1e-30;
 const SILENCE_FLOOR_DB: f64 = -120.0;
 
 pub mod parameter {
@@ -527,14 +524,14 @@ impl PreparedNativeProcessor for PreparedCompressor {
             gain_alpha: self.gain_alpha,
             rms_alpha: self.rms_alpha,
             energy: [0.0; 2],
-            detector_mix: f64::from(self.settings.detector == Detector::Rms),
-            detector_remaining: 0,
+            detector_ramp: hex_dsp::LinearRamp::settled(f64::from(
+                self.settings.detector == Detector::Rms,
+            )),
             envelope: 0.0,
             gain_db: f64::from(self.settings.makeup_db),
             reduction_db: 0.0,
             meter: DynamicsMeter::default(),
-            mix: f64::from(self.settings.dry_wet),
-            mix_remaining: 0,
+            mix_ramp: hex_dsp::LinearRamp::settled(f64::from(self.settings.dry_wet)),
         };
         runtime.check_inline_ownership();
         Box::new(runtime)
@@ -558,28 +555,25 @@ pub struct CompressorRuntime {
     gain_alpha: f64,
     rms_alpha: f64,
     energy: [f64; 2],
-    detector_mix: f64,
-    detector_remaining: u32,
+    detector_ramp: hex_dsp::LinearRamp,
     envelope: f64,
     gain_db: f64,
     /// Smoothed attenuation of the wet path, excluding automated makeup gain.
     reduction_db: f64,
     meter: DynamicsMeter,
-    mix: f64,
-    mix_remaining: u32,
+    mix_ramp: hex_dsp::LinearRamp,
 }
 
 impl CompressorRuntime {
     fn reset_history(&mut self) {
         self.energy = [0.0; 2];
-        self.detector_mix = f64::from(self.settings.detector == Detector::Rms);
-        self.detector_remaining = 0;
+        self.detector_ramp
+            .reset(f64::from(self.settings.detector == Detector::Rms));
         self.envelope = 0.0;
         self.gain_db = f64::from(self.settings.makeup_db);
         self.reduction_db = 0.0;
         self.meter = DynamicsMeter::default();
-        self.mix = f64::from(self.settings.dry_wet);
-        self.mix_remaining = 0;
+        self.mix_ramp.reset(f64::from(self.settings.dry_wet));
     }
 
     fn process_frame(&mut self, frame: &mut StereoFrame, key: StereoFrame, bypassed: bool) {
@@ -592,28 +586,21 @@ impl CompressorRuntime {
         let peak = key_left.abs().max(key_right.abs());
         // Independent mean-square histories stay warm even while Peak is selected.
         for (energy, input) in self.energy.iter_mut().zip([key_left, key_right]) {
-            *energy = self.rms_alpha * *energy + (1.0 - self.rms_alpha) * input * input;
-            if *energy < RMS_ENERGY_FLOOR {
-                *energy = 0.0;
-            }
+            *energy = hex_dsp::flush_below(
+                self.rms_alpha * *energy + (1.0 - self.rms_alpha) * input * input,
+                hex_dsp::POWER_FLOOR,
+            );
         }
-        if self.detector_remaining > 0 {
-            let target = f64::from(self.settings.detector == Detector::Rms);
-            self.detector_mix += (target - self.detector_mix) / f64::from(self.detector_remaining);
-            self.detector_remaining -= 1;
-            if self.detector_remaining == 0 {
-                self.detector_mix = target;
-            }
-        }
+        let detector_mix = self.detector_ramp.advance_by_remaining();
         // Exact Peak fast path retains the original amplitude-follower arithmetic.
-        let detector = if self.detector_mix == 0.0 {
+        let detector = if detector_mix == 0.0 {
             peak
         } else {
             let rms = self.energy[0].max(self.energy[1]).sqrt();
-            if self.detector_mix == 1.0 {
+            if detector_mix == 1.0 {
                 rms
             } else {
-                (1.0 - self.detector_mix) * peak + self.detector_mix * rms
+                (1.0 - detector_mix) * peak + detector_mix * rms
             }
         };
         let coefficient = if detector > self.envelope {
@@ -644,25 +631,18 @@ impl CompressorRuntime {
         }
         // A finite 5 ms ramp reaches exact endpoints, independently of block
         // partitions. Detector/gain history advances even at fully dry output.
-        if self.mix_remaining > 0 {
-            self.mix +=
-                (f64::from(self.settings.dry_wet) - self.mix) / f64::from(self.mix_remaining);
-            self.mix_remaining -= 1;
-            if self.mix_remaining == 0 {
-                self.mix = f64::from(self.settings.dry_wet);
-            }
-        }
-        if bypassed || self.mix == 0.0 {
+        let mix = self.mix_ramp.advance_by_remaining();
+        if bypassed || mix == 0.0 {
             return;
         }
         let gain = 10.0_f64.powf(self.gain_db / 20.0);
-        if self.mix == 1.0 {
+        if mix == 1.0 {
             // Preserve the original fully-wet operation order and rounding.
             frame[0] = (left * gain) as f32;
             frame[1] = (right * gain) as f32;
         } else {
-            frame[0] = (left * (1.0 - self.mix) + left * gain * self.mix) as f32;
-            frame[1] = (right * (1.0 - self.mix) + right * gain * self.mix) as f32;
+            frame[0] = (left * (1.0 - mix) + left * gain * mix) as f32;
+            frame[1] = (right * (1.0 - mix) + right * gain * mix) as f32;
         }
     }
 }
@@ -744,30 +724,27 @@ impl NativeProcessorRuntime for CompressorRuntime {
                 self.release_alpha = previous.release_alpha;
             }
             self.energy = previous.energy;
-            self.detector_mix = previous.detector_mix;
-            self.detector_remaining = if self.settings.detector == previous.settings.detector {
-                previous.detector_remaining
-            } else if self.detector_mix != f64::from(self.settings.detector == Detector::Rms) {
-                self.sample_rate.div_ceil(200)
-            } else {
-                0
-            };
+            self.detector_ramp = previous.detector_ramp;
+            if self.settings.detector != previous.settings.detector {
+                self.detector_ramp.retarget(
+                    f64::from(self.settings.detector == Detector::Rms),
+                    self.sample_rate.div_ceil(200),
+                );
+            }
             self.envelope = previous.envelope;
             self.gain_db = previous.gain_db;
             self.reduction_db = previous.reduction_db;
             // A scratch twin starts a new render transaction. Its previous
             // readings may belong to an aborted block.
             self.meter = DynamicsMeter::default();
-            self.mix = previous.mix;
-            self.mix_remaining = if self.settings.dry_wet == previous.settings.dry_wet {
-                // Scratch/rollback twins copy the trajectory without restarting it.
-                previous.mix_remaining
-            } else if self.mix != f64::from(self.settings.dry_wet) {
+            self.mix_ramp = previous.mix_ramp;
+            if self.settings.dry_wet != previous.settings.dry_wet {
                 // Same preparation/history handoff as the existing gain smoother.
-                self.sample_rate.div_ceil(200)
-            } else {
-                0
-            };
+                self.mix_ramp.retarget(
+                    f64::from(self.settings.dry_wet),
+                    self.sample_rate.div_ceil(200),
+                );
+            }
         }
     }
     fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {

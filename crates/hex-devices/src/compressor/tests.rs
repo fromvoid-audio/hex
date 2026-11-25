@@ -614,8 +614,8 @@ fn mix_edits_ramp_to_exact_endpoints_and_twin_copies_do_not_restart_it() {
             }
             // An abandoned candidate must not alter its committed source.
             let source = old.as_any().downcast_ref::<CompressorRuntime>().unwrap();
-            assert_eq!(source.mix, f64::from(from));
-            assert_eq!(source.mix_remaining, 0);
+            assert_eq!(source.mix_ramp.value(), f64::from(from));
+            assert_eq!(source.mix_ramp.remaining(), 0);
             whole.reset();
             let mut reset = [input];
             let mut fresh = reset;
@@ -739,7 +739,7 @@ fn rms_energy_matches_dc_impulse_and_burst_closed_forms_at_six_rates() {
         );
         dc.process_block(&mut vec![[0.0; 2]; n], &hex_lattice::EMPTY_DEVICE_RESOURCES);
         assert!((history(dc.as_ref()).energy[0] - expected * a.powi(n as i32)).abs() < 2e-14);
-        assert_eq!(history(dc.as_ref()).detector_mix, 1.0);
+        assert_eq!(history(dc.as_ref()).detector_ramp.value(), 1.0);
     }
 }
 
@@ -868,8 +868,9 @@ fn rms_mode_history_ramps_survive_partitions_bypass_rapid_retarget_and_reset() {
             twin.copy_history_from(split.as_ref());
             twin.process_block(&mut b[start..end], &hex_lattice::EMPTY_DEVICE_RESOURCES);
             assert!(
-                (history(twin.as_ref()).detector_mix - ((end as f64 / count as f64).min(1.0)))
-                    .abs()
+                (history(twin.as_ref()).detector_ramp.value()
+                    - ((end as f64 / count as f64).min(1.0)))
+                .abs()
                     < 3e-14
             );
             split = twin;
@@ -880,7 +881,7 @@ fn rms_mode_history_ramps_survive_partitions_bypass_rapid_retarget_and_reset() {
             history(whole.as_ref()).energy,
             history(split.as_ref()).energy
         );
-        assert_eq!(history(whole.as_ref()).detector_remaining, 0);
+        assert_eq!(history(whole.as_ref()).detector_ramp.remaining(), 0);
         assert_eq!(
             history(committed.as_ref()).energy,
             energy,
@@ -900,19 +901,22 @@ fn rms_mode_history_ramps_survive_partitions_bypass_rapid_retarget_and_reset() {
         partial.copy_history_from(committed.as_ref());
         partial.process_block(&mut [[0.8, -0.2]], &hex_lattice::EMPTY_DEVICE_RESOURCES);
         let previous = history(partial.as_ref());
-        let fraction = previous.detector_mix;
+        let fraction = previous.detector_ramp.value();
         let mut reverse = runtime(&base, rate);
         reverse.copy_history_from(partial.as_ref());
-        assert_eq!(history(reverse.as_ref()).detector_mix, fraction);
-        assert_eq!(history(reverse.as_ref()).detector_remaining, count as u32);
+        assert_eq!(history(reverse.as_ref()).detector_ramp.value(), fraction);
+        assert_eq!(
+            history(reverse.as_ref()).detector_ramp.remaining(),
+            count as u32
+        );
         reverse.process_block(
             &mut vec![[0.8, -0.2]; count],
             &hex_lattice::EMPTY_DEVICE_RESOURCES,
         );
-        assert_eq!(history(reverse.as_ref()).detector_mix, 0.0);
+        assert_eq!(history(reverse.as_ref()).detector_ramp.value(), 0.0);
         split.reset();
         assert_eq!(history(split.as_ref()).energy, [0.0; 2]);
-        assert_eq!(history(split.as_ref()).detector_mix, 1.0);
+        assert_eq!(history(split.as_ref()).detector_ramp.value(), 1.0);
         let mut reset = [[0.8, -0.2]; 19];
         let mut fresh = reset;
         split.process_block(&mut reset, &hex_lattice::EMPTY_DEVICE_RESOURCES);
@@ -972,8 +976,8 @@ fn rms_state_validation_invalid_frames_and_static_detector_preview_are_truthful(
         before.energy,
         before.envelope,
         before.gain_db,
-        before.detector_mix,
-        before.detector_remaining,
+        before.detector_ramp.value(),
+        before.detector_ramp.remaining(),
     );
     for frame in [[f32::NAN, 1.0], [1.0, f32::INFINITY]] {
         pan.process_block(&mut [frame], &hex_lattice::EMPTY_DEVICE_RESOURCES);
@@ -983,8 +987,8 @@ fn rms_state_validation_invalid_frames_and_static_detector_preview_are_truthful(
                 h.energy,
                 h.envelope,
                 h.gain_db,
-                h.detector_mix,
-                h.detector_remaining
+                h.detector_ramp.value(),
+                h.detector_ramp.remaining()
             ),
             saved
         );

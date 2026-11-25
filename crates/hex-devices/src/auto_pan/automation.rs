@@ -88,17 +88,6 @@ impl AutoPanSettings {
         let _: (&f32, &f32, &f32, &Waveform) = (amount, rate_hz, right_phase_degrees, waveform);
     }
 }
-impl ScalarRamp {
-    fn check_inline(&self) {
-        let Self {
-            current,
-            target,
-            step,
-            remaining,
-        } = self;
-        let _: (&f64, &f64, &f64, &u32) = (current, target, step, remaining);
-    }
-}
 impl AutoPanTargets {
     fn check_inline(&self) {
         let Self {
@@ -123,13 +112,12 @@ impl AutoPanDspState {
             targets,
         } = self;
         let _: (&u32, &u32, &f64) = (sample_rate, ramp_frames, phase_cycles);
-        amount.check_inline();
-        rate_hz.check_inline();
-        right_phase_degrees.check_inline();
-        let _: &[ScalarRamp; 5] = waveform_weights;
-        for ramp in waveform_weights {
-            ramp.check_inline();
-        }
+        let _: (
+            &hex_dsp::LinearRamp,
+            &hex_dsp::LinearRamp,
+            &hex_dsp::LinearRamp,
+            &[hex_dsp::LinearRamp; 5],
+        ) = (amount, rate_hz, right_phase_degrees, waveform_weights);
         targets.check_inline();
     }
 }
