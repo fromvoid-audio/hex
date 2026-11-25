@@ -117,7 +117,7 @@ impl EditorTouchPlanSet {
         &self.targets[..self.len]
     }
 
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(test, unix)))]
     pub(crate) const WIRE_BYTES: usize = 16 + 16 * MAX_PARAMETER_EDITS;
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

@@ -12,6 +12,13 @@ use std::{
 // scheduling may delay them and readiness or signals may wake the poll sooner.
 const CHECK_INTERVAL: Duration = Duration::from_millis(10);
 
+// Dense PCM requests with a grouped editor touch are the largest audio exchange.
+// State replies can be much larger. Reserve their full allowance once, then
+// initialize the extra backing only after validating the control-frame header.
+const PCM_BYTES: usize =
+    crate::transport::wire::MAX_DENSE_PACKET_BYTES + protocol::EditorTouchPlanSet::WIRE_BYTES;
+const _: () = assert!(PCM_BYTES <= protocol::PACKET_LIMIT);
+
 pub(crate) struct Packet {
     bytes: Vec<u8>,
     pub len: usize,
@@ -19,7 +26,7 @@ pub(crate) struct Packet {
 impl Packet {
     pub fn new() -> Result<Self> {
         let mut bytes = protocol::buffer(protocol::PACKET_LIMIT)?;
-        bytes.resize(protocol::PACKET_LIMIT, 0);
+        bytes.resize(PCM_BYTES, 0);
         Ok(Self { bytes, len: 0 })
     }
 
@@ -29,9 +36,9 @@ impl Packet {
     /// Exchange requests and replies use the same fixed storage in sequence.
     /// A request encoder must send only the prefix it wrote.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub fn request_buffer(&mut self, capacity: usize) -> Result<&mut [u8]> {
+    pub fn request_buffer(&mut self) -> Result<&mut [u8]> {
         self.len = 0;
-        self.bytes.get_mut(..capacity).ok_or(Error::Protocol(
+        self.bytes.get_mut(..PCM_BYTES).ok_or(Error::Protocol(
             "instance request extent exceeds packet storage",
         ))
     }
@@ -146,6 +153,14 @@ impl Channel {
                         return Err(Error::Protocol("instance control extent exceeds bound"));
                     }
                     wanted = 12 + n;
+                    if wanted > out.bytes.len() {
+                        if wanted > out.bytes.capacity() {
+                            return Err(Error::Protocol(
+                                "control frame exceeds packet reservation",
+                            ));
+                        }
+                        out.bytes.resize(wanted, 0);
+                    }
                     if wanted == 12 {
                         return Ok(());
                     }
@@ -160,7 +175,11 @@ impl Channel {
                 }
                 return check();
             }
-            match self.stream.read(&mut out.bytes[out.len..wanted]) {
+            let remaining = out
+                .bytes
+                .get_mut(out.len..wanted)
+                .ok_or(Error::Protocol("frame exceeds initialized packet storage"))?;
+            match self.stream.read(remaining) {
                 Ok(0) => {
                     check()?;
                     return Err(Error::Protocol(if out.len == 0 {
@@ -396,16 +415,61 @@ mod tests {
             peer.write_all(&bytes).unwrap();
             drop(peer);
             let mut channel = Channel::new(stream).unwrap();
+            let mut packet = Packet::new().unwrap();
+            let initial = packet.bytes.len();
             let error = channel
                 .read(
-                    &mut Packet::new().unwrap(),
+                    &mut packet,
                     end_after(Duration::from_secs(1)).unwrap(),
                     &mut || Ok(()),
                 )
                 .unwrap_err();
             assert!(matches!(error, Error::Protocol(_)), "{error:?}");
+            assert_eq!(packet.bytes.len(), initial);
         }
     }
+    #[test]
+    fn state_reply_uses_reserved_storage_beyond_the_initial_pcm_extent() {
+        let mut packet = Packet::new().unwrap();
+        let initial = packet.bytes.len();
+        let allocation = packet.bytes.as_ptr();
+        assert_eq!(initial, PCM_BYTES);
+        assert!(initial < protocol::PACKET_LIMIT / 2);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            assert_eq!(packet.request_buffer().unwrap().len(), initial);
+            let mut header = [0_u8; crate::transport::wire::HEADER_BYTES];
+            header[..4].copy_from_slice(b"HXVB");
+            let flags = 2
+                | protocol::EDITOR_PCM_BIT
+                | protocol::EDITOR_GROUP_TOUCH_BIT
+                | protocol::SDK_TIMING_BIT;
+            header[4..6].copy_from_slice(&flags.to_le_bytes());
+            header[6..8].copy_from_slice(&(crate::transport::MAX_FRAMES as u16).to_le_bytes());
+            header[10..12]
+                .copy_from_slice(&(crate::transport::MAX_PARAMETER_POINTS as u16).to_le_bytes());
+            header[12..14].fill(protocol::MAX_PARAMETER_EDITS as u8);
+            assert!(protocol::pcm_packet_extent(&header).unwrap() <= initial);
+        }
+        assert_eq!(packet.storage_bytes(), protocol::PACKET_LIMIT);
+        let body = vec![0x5a; initial + 1];
+        let frame = protocol::control(*b"HXVICS02", &body).unwrap();
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        let writer = std::thread::spawn(move || peer.write_all(&frame).unwrap());
+        Channel::new(stream)
+            .unwrap()
+            .read(
+                &mut packet,
+                end_after(Duration::from_secs(1)).unwrap(),
+                &mut || Ok(()),
+            )
+            .unwrap();
+        writer.join().unwrap();
+        assert_eq!(packet.body().unwrap(), body);
+        assert_eq!(packet.bytes.as_ptr(), allocation);
+        assert_eq!(packet.storage_bytes(), protocol::PACKET_LIMIT);
+    }
+
     #[test]
     fn queued_completed_terminal_is_read_after_peer_exit() {
         let (stream, mut peer) = UnixStream::pair().unwrap();
