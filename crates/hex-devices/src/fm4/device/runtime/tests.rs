@@ -791,3 +791,191 @@ fn an_unmapped_pressure_slot_retains_held_readings_until_its_identity_changes() 
         );
     }
 }
+
+#[test]
+fn pitch_bend_and_mpe_note_pitch_bend_preserve_phase_continuity_across_block_boundaries() {
+    use std::num::NonZeroU64;
+
+    const RATE: u32 = 48_000;
+    let resources = BorrowedDeviceResources(&[]);
+    let tuning = hex_lattice::TuningTable::default();
+    let mut settings = Fm4Settings::defaults();
+    // Pure single-carrier sine with instant attack and full sustain so any
+    // phase jump shows up directly as a large sample-to-sample discontinuity.
+    settings.envelope = [0.0, 0.0, 1.0, 0.02];
+    settings.oscillators = [
+        [1.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+    ];
+    settings.carriers = [1.0, 0.0, 0.0, 0.0];
+    settings.modulation = [[0.0; 4]; 4];
+    let (factory, _) = prepared(RATE, settings, &tuning);
+
+    let timeline: Vec<(usize, NativeInstrumentEvent)> = vec![
+        (0, on(1, 0, 60, 127)),
+        // Step channel pitch bend at a large voice age (~4096 frames) where
+        // un-integrated `step * age` would cause a huge audible phase jump.
+        (
+            4_096,
+            NativeInstrumentEvent::PitchBend {
+                frame_offset: 0,
+                value: 4_096,
+            },
+        ),
+        (
+            4_160,
+            NativeInstrumentEvent::NotePitchBend {
+                frame_offset: 0,
+                occurrence_id: NonZeroU64::new(1).unwrap(),
+                cents: 350,
+            },
+        ),
+        (
+            4_225,
+            NativeInstrumentEvent::Expression {
+                frame_offset: 0,
+                expression: hex_lattice::NativeInstrumentExpression::PitchBend(-4_096),
+            },
+        ),
+        (
+            4_300,
+            NativeInstrumentEvent::ControlChange {
+                frame_offset: 0,
+                cc: 121,
+                value: 0,
+            },
+        ),
+        (
+            4_350,
+            NativeInstrumentEvent::NotePitchBend {
+                frame_offset: 0,
+                occurrence_id: NonZeroU64::new(1).unwrap(),
+                cents: 0,
+            },
+        ),
+    ];
+    let total_frames = 4_480;
+
+    let render = |partition: &[usize]| -> Vec<StereoFrame> {
+        let mut pair = NativeInstrumentRuntimePair::new(factory.as_ref(), LIMITS).unwrap();
+        let mut out = vec![[0.0; 2]; total_frames];
+        let mut cursor = 0;
+        let mut step_index = 0;
+        while cursor < total_frames {
+            let len = partition[step_index % partition.len()].min(total_frames - cursor);
+            let block_events: Vec<_> = timeline
+                .iter()
+                .filter(|(at, _)| *at >= cursor && *at < cursor + len)
+                .map(|(at, event)| {
+                    let offset = at - cursor;
+                    match *event {
+                        NativeInstrumentEvent::NoteOn {
+                            occurrence_id,
+                            pitch,
+                            velocity,
+                            ..
+                        } => NativeInstrumentEvent::NoteOn {
+                            frame_offset: offset,
+                            occurrence_id,
+                            pitch,
+                            velocity,
+                        },
+                        NativeInstrumentEvent::PitchBend { value, .. } => {
+                            NativeInstrumentEvent::PitchBend {
+                                frame_offset: offset,
+                                value,
+                            }
+                        }
+                        NativeInstrumentEvent::NotePitchBend {
+                            occurrence_id,
+                            cents,
+                            ..
+                        } => NativeInstrumentEvent::NotePitchBend {
+                            frame_offset: offset,
+                            occurrence_id,
+                            cents,
+                        },
+                        NativeInstrumentEvent::Expression { expression, .. } => {
+                            NativeInstrumentEvent::Expression {
+                                frame_offset: offset,
+                                expression,
+                            }
+                        }
+                        NativeInstrumentEvent::ControlChange { cc, value, .. } => {
+                            NativeInstrumentEvent::ControlChange {
+                                frame_offset: offset,
+                                cc,
+                                value,
+                            }
+                        }
+                        other => other,
+                    }
+                })
+                .collect();
+            pair.begin_block();
+            pair.process_block(&block_events, &mut out[cursor..cursor + len], &resources)
+                .unwrap();
+            pair.commit_block();
+            cursor += len;
+            step_index += 1;
+        }
+        out
+    };
+
+    let whole = render(&[total_frames]);
+    let partitioned = render(&[64, 17, 128, 31]);
+    assert_eq!(
+        whole, partitioned,
+        "pitch bend phase integration must be partition-independent"
+    );
+
+    // Maximum instantaneous frequency is C4 (~261.6 Hz) bent up +450 cents (~340 Hz).
+    // For a unit sine at <= 400 Hz @ 48 kHz, |y[n] - y[n-1]| <= 2*pi*400/48000 ~= 0.0524.
+    let max_step_delta = 2.0 * std::f32::consts::PI * 400.0 / RATE as f32;
+    let mut worst_delta = 0.0_f32;
+    for (index, pair) in whole.windows(2).enumerate() {
+        let delta = (pair[1][0] - pair[0][0]).abs();
+        worst_delta = worst_delta.max(delta);
+        assert!(
+            delta <= max_step_delta,
+            "phase discontinuity at frame {}: {} -> {} (delta {delta} > {max_step_delta})",
+            index + 1,
+            pair[0][0],
+            pair[1][0]
+        );
+    }
+    assert!(worst_delta > 0.02, "expected audible sine motion");
+
+    // Verify independent incremental phase accumulator oracle matches bit-for-bit.
+    let base_freq = tuning.frequency(60).unwrap();
+    let base_step = ((base_freq / f64::from(RATE)) * (u64::MAX as f64 + 1.0)).round() as u64;
+    let table = crate::shared_sine_table();
+    let mut channel_bend = 0_i16;
+    let mut note_cents = 0_i16;
+    let mut phase = 0_u64;
+    for (frame_idx, actual) in whole.iter().enumerate() {
+        for &(at, event) in &timeline {
+            if at == frame_idx {
+                match event {
+                    NativeInstrumentEvent::PitchBend { value, .. } => channel_bend = value,
+                    NativeInstrumentEvent::NotePitchBend { cents, .. } => note_cents = cents,
+                    NativeInstrumentEvent::Expression {
+                        expression: hex_lattice::NativeInstrumentExpression::PitchBend(value),
+                        ..
+                    } => channel_bend = value,
+                    NativeInstrumentEvent::ControlChange { cc: 121, .. } => channel_bend = 0,
+                    _ => {}
+                }
+            }
+        }
+        let step = Voice::bent_steps([base_step; 4], note_cents, channel_bend)[0];
+        let expected_sample = table.sample_phase(phase);
+        assert_eq!(
+            actual[0], expected_sample,
+            "incremental phase oracle mismatch at frame {frame_idx}"
+        );
+        phase = phase.wrapping_add(step);
+    }
+}
