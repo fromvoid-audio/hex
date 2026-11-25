@@ -116,14 +116,7 @@ fn fixture_with_rate(
         .configure_device_resource_publication_on_control(limits())
         .unwrap();
     control
-        .configure_ordinary_streaming_on_control(
-            crate::AudioCandidateDomainReservation {
-                max_retained_data_bytes: 192 * 1024 * 1024,
-                max_construction_peak_data_bytes: 192 * 1024 * 1024,
-            },
-            3,
-            4096,
-        )
+        .configure_ordinary_streaming_on_control(domain_for_sources(source_capacity), 3, 4096)
         .unwrap();
     control
         .configure_native_source_preparation(source_capacity, source_reservation())

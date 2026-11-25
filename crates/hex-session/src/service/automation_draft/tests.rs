@@ -663,15 +663,25 @@ fn recovery_reuses_source_preparation_without_saved_association_and_save_as_pres
         .events
         .recv_timeout(crate::test_wait::HANG_BOUND)
         .unwrap();
+    let completion = || {
+        let deadline = std::time::Instant::now() + crate::test_wait::HANG_BOUND;
+        loop {
+            let event = service
+                .events
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .unwrap();
+            assert!(event.error.is_none(), "{:?}", event.error);
+            if event.request_complete {
+                return event;
+            }
+        }
+    };
     service
         .submit(Request::Edit(Command::AddTrack {
             name: "later journal".into(),
         }))
         .unwrap();
-    service
-        .events
-        .recv_timeout(crate::test_wait::HANG_BOUND)
-        .unwrap();
+    completion();
     service
         .submit(Request::OpenWith {
             source: ProjectSource::AutomationDraft {
@@ -683,22 +693,15 @@ fn recovery_reuses_source_preparation_without_saved_association_and_save_as_pres
             relinks: Default::default(),
         })
         .unwrap();
-    let recovered = service
-        .events
-        .recv_timeout(crate::test_wait::HANG_BOUND)
-        .unwrap();
-    assert!(recovered.error.is_none(), "{:?}", recovered.error);
+    let recovered = completion();
     assert!(recovered.project_replaced);
     assert_eq!(recovered.state.project.as_ref(), &project);
     assert!(recovered.state.document_path.is_none());
     assert!(recovered.state.unsaved);
     let saved = files.path("recovered-copy.hex");
     service.submit(Request::SaveNew(saved.clone())).unwrap();
-    let saved_event = service
-        .events
-        .recv_timeout(crate::test_wait::HANG_BOUND)
-        .unwrap();
-    assert!(saved_event.error.is_none(), "{:?}", saved_event.error);
+    let saved_event = completion();
+    assert!(saved_event.save_complete);
     assert_eq!(fs::read(&path).unwrap(), original);
     assert_eq!(hex_storage::load(saved).unwrap(), project);
     assert_eq!(reader(&path).outcome(), DraftOutcome::Interrupted);

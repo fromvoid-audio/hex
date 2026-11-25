@@ -124,7 +124,7 @@ fn actual_root_constructs_and_retires_the_original_unsplit_native_effect() {
                 assert!(transport.data_bytes > 0);
                 let source = effect.retained_source_storage_on_control().unwrap();
                 assert_eq!(source.shared_groups, 3);
-                assert_eq!(source.ipc_handle_bound, 2);
+                assert_eq!(source.ipc_handle_bound, 3);
                 assert_eq!(source.native_child_lifetime_bound, 1);
                 let constructor = effect.constructor_storage_on_control().unwrap();
                 assert_eq!(

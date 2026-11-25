@@ -1560,7 +1560,7 @@ fn capture_refusal_binds_exact_operation_and_reports_lowercase_limit() {
     let message = crate::Error::CaptureRefused(refusal).to_string();
     assert_eq!(
         message,
-        "plugin state exceeds the 524192-byte limit · not saved · plugin keeps running"
+        "plugin state exceeds the 16777120-byte limit · not saved · plugin keeps running"
     );
     // Stale operation, PCM prefix, epoch and identity mismatches are malformed.
     assert!(capture_refusal(&body, &config, 3, 1).is_err());
@@ -1650,7 +1650,7 @@ fn refusal_frame_reads_through_the_channel_and_keeps_its_successor() {
     use std::os::unix::net::UnixStream;
     let config = config();
     let (stream, mut peer) = UnixStream::pair().unwrap();
-    let refusal = refusal_body(&config, 9, 2, 524288);
+    let refusal = refusal_body(&config, 9, 2, 16_777_216);
     peer.write_all(&control(CAPTURE_REFUSAL_MAGIC, &refusal).unwrap())
         .unwrap();
     let mut pending = Vec::new();
@@ -1670,7 +1670,7 @@ fn refusal_frame_reads_through_the_channel_and_keeps_its_successor() {
     assert_eq!(
         capture_refusal(packet.body().unwrap(), &config, 9, 2).unwrap(),
         StateCaptureRefusal::ExceedsLimit {
-            observed_bytes: 524288
+            observed_bytes: 16_777_216
         }
     );
     channel.read(&mut packet, until, &mut || Ok(())).unwrap();

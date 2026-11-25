@@ -37,8 +37,7 @@ enum Phase {
     Complete,
 }
 
-// Keep this reservation tied to the native codec, whose wire profile is still
-// narrower than the persisted project envelope.
+// Account for one complete capture response until control consumes it.
 pub(super) const MAX_RETAINED_PAYLOAD_BYTES: usize = hex_plugin_state::MAX_ENVELOPE_BYTES;
 
 pub(super) struct Slot {
