@@ -387,7 +387,7 @@ class ScopeTests(unittest.TestCase):
         root = SCRIPTS.parent
         inventory = [
             {"name": "hex-ui-kit", "manifest": "crates/hex-ui-kit/Cargo.toml",
-             "features": {"ui-test-support": [], "ui-unit-tier": []},
+             "features": {"ui-test-support": []},
              "dependencies": [], "targets": [{"kind": ["lib"]}]},
             {"name": "hex-ui", "manifest": "crates/hex-ui/Cargo.toml",
              "features": {"ui-test-support": [], "ui-unit-tier": []},
@@ -407,7 +407,7 @@ class ScopeTests(unittest.TestCase):
                 self.assertEqual(boundary["module_filters"], {"hex-ui-kit": [kit_filter]})
         full = ci.planned_steps({"scope": "full"})
         full_unit = next(step for step in full if step.step_id == "sandbox-unit-tests")
-        self.assertEqual(full_unit.argv[-1], "theme::")
+        self.assertEqual(full_unit.argv, ("cargo", "test", "-p", "hex-ui-kit", "--locked"))
         self.assertTrue(full_unit.requires_tests)
 
     def test_copied_host_transport_probe_runs_at_its_owning_package(self):
@@ -989,7 +989,7 @@ class ScopeTests(unittest.TestCase):
             for name in live_affected
         }
         reviewed["hex-sandbox"] = reviewed.get("hex-sandbox", set()) | {"ui-test-support", "ui-unit-tier"}
-        reviewed["hex-ui-kit"] = reviewed.get("hex-ui-kit", set()) | {"ui-test-support", "ui-unit-tier"}
+        reviewed["hex-ui-kit"] = reviewed.get("hex-ui-kit", set()) | {"ui-test-support"}
         unreviewed = {p["name"]: set(p["features"]) - reviewed.get(p["name"], set())
                       for p in live_inventory if p["name"] in live_affected}
         if any(unreviewed.values()):

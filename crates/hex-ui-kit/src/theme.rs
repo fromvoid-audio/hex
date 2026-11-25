@@ -10,8 +10,6 @@ use gpui::{App, SharedString};
 
 #[path = "theme/device.rs"]
 mod device;
-// Native review examples include this module and use only a subset of its API.
-#[allow(unused_imports)]
 pub use device::{
     DeviceActionRole, DeviceStyleRole, device_analyzer_style, device_enable_colors,
     device_frame_style, device_header_action_style, device_identity_style, device_segment_style,
@@ -77,7 +75,6 @@ pub fn action_style() -> hex_widgets::ActionStyle {
 }
 
 /// Brighter momentary press fill with foreground resolved against that fill.
-#[allow(dead_code)] // Consumed by the standalone native sandbox example.
 pub fn action_press_style(style: hex_widgets::ActionStyle) -> hex_widgets::ActionPressStyle {
     let background = mix(style.background, 0xffffff, 0.22);
     hex_widgets::ActionPressStyle {
@@ -794,7 +791,7 @@ pub fn section_colors(
     (fill, text, border)
 }
 
-#[cfg(all(test, feature = "ui-unit-tier"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1190,7 +1187,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test, feature = "ui-unit-tier"))]
+#[cfg(test)]
 mod element_palette_tests {
     use super::*;
     #[test]
