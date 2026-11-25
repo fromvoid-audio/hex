@@ -251,6 +251,72 @@ index 0000000..73b793a
 +    /// Typed payload, revalidated against current semantics.
 +    pub action: AccessibilityAction,
 +}
+diff --git a/src/app.rs b/src/app.rs
+index d4bd779..9664246 100644
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -591,0 +592 @@ pub struct App {
++    should_quit_handler: Option<Box<dyn FnMut(&mut App)>>,
+@@ -594,0 +596,8 @@ impl App {
++    /// Install the application asset source in deterministic test contexts.
++    #[cfg(any(test, feature = "test-support"))]
++    pub fn use_test_assets(&mut self, assets: impl AssetSource) {
++        let assets = Arc::new(assets);
++        self.asset_source = assets.clone();
++        self.svg_renderer = SvgRenderer::new(assets);
++    }
++
+@@ -662,0 +672 @@ impl App {
++                should_quit_handler: None,
+@@ -692,0 +703,14 @@ impl App {
++        platform.on_should_quit(Box::new({
++            let cx = app.clone();
++            move || {
++                let mut cx = cx.borrow_mut();
++                let Some(mut handler) = cx.should_quit_handler.take() else {
++                    return false;
++                };
++                cx.update(|cx| handler(cx));
++                // A handler installed while this one ran replaces it.
++                cx.should_quit_handler.get_or_insert(handler);
++                true
++            }
++        }));
++
+@@ -752,0 +777,20 @@ impl App {
++    /// Hex patch: handle the platform's request to terminate (macOS
++    /// `applicationShouldTerminate:` from Dock Quit, logout, restart, shutdown
++    /// or [`App::quit`]). While a handler is installed the platform defers
++    /// termination; the handler, or work it starts, must answer exactly once
++    /// with [`App::reply_to_quit`]. Replaces any previous handler. Without a
++    /// handler the platform terminates immediately, as upstream GPUI does.
++    /// [`App::quit`] also reaches this handler, so a handler should reply
++    /// `true` at once when the user has already confirmed quitting.
++    pub fn on_should_quit(&mut self, handler: impl FnMut(&mut App) + 'static) {
++        self.should_quit_handler = Some(Box::new(handler));
++    }
++
++    /// Hex patch: answer a termination request deferred by [`App::on_should_quit`]:
++    /// `true` terminates, `false` cancels. Ignored when no request is pending.
++    /// On macOS the reply is delivered on a later main run-loop turn, outside any
++    /// App borrow, because terminating runs the quit observers synchronously.
++    pub fn reply_to_quit(&self, terminate: bool) {
++        self.platform.reply_to_quit(terminate);
++    }
++
+@@ -1122,0 +1167,10 @@ impl App {
++    /// Select paths, optionally starting in an exact native directory.
++    /// Platforms without a directory override retain their ordinary picker.
++    pub fn prompt_for_paths_with_directory(
++        &self,
++        options: PathPromptOptions,
++        directory: Option<&Path>,
++    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
++        self.platform.prompt_for_paths_with_directory(options, directory)
++    }
++
+@@ -1374,0 +1429 @@ impl App {
++                window.cancel_pointer_capture(cx);
 diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 index d974823..b90e034 100644
 --- a/src/app/test_context.rs
@@ -560,72 +626,6 @@ index d974823..b90e034 100644
 +        })
 +    }
 +
-diff --git a/src/app.rs b/src/app.rs
-index d4bd779..9664246 100644
---- a/src/app.rs
-+++ b/src/app.rs
-@@ -591,0 +592 @@ pub struct App {
-+    should_quit_handler: Option<Box<dyn FnMut(&mut App)>>,
-@@ -594,0 +596,8 @@ impl App {
-+    /// Install the application asset source in deterministic test contexts.
-+    #[cfg(any(test, feature = "test-support"))]
-+    pub fn use_test_assets(&mut self, assets: impl AssetSource) {
-+        let assets = Arc::new(assets);
-+        self.asset_source = assets.clone();
-+        self.svg_renderer = SvgRenderer::new(assets);
-+    }
-+
-@@ -662,0 +672 @@ impl App {
-+                should_quit_handler: None,
-@@ -692,0 +703,14 @@ impl App {
-+        platform.on_should_quit(Box::new({
-+            let cx = app.clone();
-+            move || {
-+                let mut cx = cx.borrow_mut();
-+                let Some(mut handler) = cx.should_quit_handler.take() else {
-+                    return false;
-+                };
-+                cx.update(|cx| handler(cx));
-+                // A handler installed while this one ran replaces it.
-+                cx.should_quit_handler.get_or_insert(handler);
-+                true
-+            }
-+        }));
-+
-@@ -752,0 +777,20 @@ impl App {
-+    /// Hex patch: handle the platform's request to terminate (macOS
-+    /// `applicationShouldTerminate:` from Dock Quit, logout, restart, shutdown
-+    /// or [`App::quit`]). While a handler is installed the platform defers
-+    /// termination; the handler, or work it starts, must answer exactly once
-+    /// with [`App::reply_to_quit`]. Replaces any previous handler. Without a
-+    /// handler the platform terminates immediately, as upstream GPUI does.
-+    /// [`App::quit`] also reaches this handler, so a handler should reply
-+    /// `true` at once when the user has already confirmed quitting.
-+    pub fn on_should_quit(&mut self, handler: impl FnMut(&mut App) + 'static) {
-+        self.should_quit_handler = Some(Box::new(handler));
-+    }
-+
-+    /// Hex patch: answer a termination request deferred by [`App::on_should_quit`]:
-+    /// `true` terminates, `false` cancels. Ignored when no request is pending.
-+    /// On macOS the reply is delivered on a later main run-loop turn, outside any
-+    /// App borrow, because terminating runs the quit observers synchronously.
-+    pub fn reply_to_quit(&self, terminate: bool) {
-+        self.platform.reply_to_quit(terminate);
-+    }
-+
-@@ -1122,0 +1167,10 @@ impl App {
-+    /// Select paths, optionally starting in an exact native directory.
-+    /// Platforms without a directory override retain their ordinary picker.
-+    pub fn prompt_for_paths_with_directory(
-+        &self,
-+        options: PathPromptOptions,
-+        directory: Option<&Path>,
-+    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
-+        self.platform.prompt_for_paths_with_directory(options, directory)
-+    }
-+
-@@ -1374,0 +1429 @@ impl App {
-+                window.cancel_pointer_capture(cx);
 diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 index a96bfe5..ed38d3e 100644
 --- a/src/bounds_tree.rs
@@ -1707,6 +1707,63 @@ index dafe623..9131ad9 100644
 +    }
 +}
 +
+diff --git a/src/platform.rs b/src/platform.rs
+index 047a005..b9bcb3d 100644
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -0,0 +1,2 @@
++#[cfg(any(target_os = "macos", test))]
++mod accessibility_bridge;
+@@ -221,0 +224,7 @@ pub(crate) trait Platform: 'static {
++    fn prompt_for_paths_with_directory(
++        &self,
++        options: PathPromptOptions,
++        _directory: Option<&Path>,
++    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
++        self.prompt_for_paths(options)
++    }
+@@ -231,0 +241,8 @@ pub(crate) trait Platform: 'static {
++    /// Hex patch: consulted when the OS asks whether the app may terminate.
++    /// The callback returns true when it defers the answer to
++    /// [`Platform::reply_to_quit`]; false terminates immediately. Platforms
++    /// without such a request ignore the callback.
++    fn on_should_quit(&self, _callback: Box<dyn FnMut() -> bool>) {}
++    /// Hex patch: answer a request deferred by the `on_should_quit` callback.
++    /// Ignored when no request is pending.
++    fn reply_to_quit(&self, _terminate: bool) {}
+@@ -491,0 +509,8 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
++    fn publish_accessibility(&self, _nodes: Vec<crate::AccessibilityNode>, _refused: bool) {}
++    /// Revoke before accepted close callbacks or UI-owned resources are released.
++    fn revoke_accessibility(&self) {}
++    fn on_accessibility_action(
++        &self,
++        _callback: Box<dyn FnMut(crate::AccessibilityRequest) -> bool>,
++    ) {
++    }
+@@ -1228,0 +1254 @@ impl Default for WindowOptions {
++                hide_native_window_controls: Default::default(),
+@@ -1257,0 +1284,4 @@ pub struct TitlebarOptions {
++
++    /// Hide the standard macOS close, minimize, and zoom buttons.
++    /// This does not change the native titlebar or window movement/resizing flags.
++    pub hide_native_window_controls: bool,
+@@ -1411,0 +1442,4 @@ pub enum CursorStyle {
++    /// A persistent invisible cursor for a window-scoped pointer adjustment.
++    /// macOS uses a transparent image, without changing NSCursor hide counts.
++    Hidden,
++
+@@ -1439,0 +1474,6 @@ pub enum CursorStyle {
++    /// A bracket cursor for trimming an item from its left edge.
++    ResizeLeftBracket,
++
++    /// A bracket cursor for trimming an item from its right edge.
++    ResizeRightBracket,
++
+@@ -1443,0 +1484,4 @@ pub enum CursorStyle {
++    /// Repeat/loop editing cursor. macOS caches original circular-arrow artwork;
++    /// other platforms retain a horizontal resize fallback.
++    Loop,
++
 diff --git a/src/platform/accessibility_bridge.rs b/src/platform/accessibility_bridge.rs
 new file mode 100644
 index 0000000..cc321d8
@@ -2024,6 +2081,18 @@ index 322f5d7..ba74f97 100644
 +            CursorStyle::ResizeLeftBracket => &["w-resize", "left_side"],
 +            CursorStyle::ResizeRightBracket => &["e-resize", "right_side"],
 +            CursorStyle::ResizeLeftRight | CursorStyle::Loop => &["ew-resize", "sb_h_double_arrow"],
+diff --git a/src/platform/linux/wayland.rs b/src/platform/linux/wayland.rs
+index 487bc9f..504c60c 100644
+--- a/src/platform/linux/wayland.rs
++++ b/src/platform/linux/wayland.rs
+@@ -17 +17 @@ impl CursorStyle {
+-            CursorStyle::Arrow => Shape::Default,
++            CursorStyle::Hidden | CursorStyle::Arrow => Shape::Default,
+@@ -25 +25,3 @@ impl CursorStyle {
+-            CursorStyle::ResizeLeftRight => Shape::EwResize,
++            CursorStyle::ResizeLeftBracket => Shape::WResize,
++            CursorStyle::ResizeRightBracket => Shape::EResize,
++            CursorStyle::ResizeLeftRight | CursorStyle::Loop => Shape::EwResize,
 diff --git a/src/platform/linux/wayland/client.rs b/src/platform/linux/wayland/client.rs
 index 1ebdda3..9bf8b27 100644
 --- a/src/platform/linux/wayland/client.rs
@@ -2722,18 +2791,6 @@ index 1ebdda3..9bf8b27 100644
 +        assert_eq!(finish(&mut f).1, Some(point(0.0, -0.25)));
 +    }
 +}
-diff --git a/src/platform/linux/wayland.rs b/src/platform/linux/wayland.rs
-index 487bc9f..504c60c 100644
---- a/src/platform/linux/wayland.rs
-+++ b/src/platform/linux/wayland.rs
-@@ -17 +17 @@ impl CursorStyle {
--            CursorStyle::Arrow => Shape::Default,
-+            CursorStyle::Hidden | CursorStyle::Arrow => Shape::Default,
-@@ -25 +25,3 @@ impl CursorStyle {
--            CursorStyle::ResizeLeftRight => Shape::EwResize,
-+            CursorStyle::ResizeLeftBracket => Shape::WResize,
-+            CursorStyle::ResizeRightBracket => Shape::EResize,
-+            CursorStyle::ResizeLeftRight | CursorStyle::Loop => Shape::EwResize,
 diff --git a/src/platform/linux/x11/client.rs b/src/platform/linux/x11/client.rs
 index fa9d018..e7252ad 100644
 --- a/src/platform/linux/x11/client.rs
@@ -4368,63 +4425,6 @@ index af71dfe..c741c0d 100644
 +        | CursorStyle::ResizeRightBracket
 @@ -127,0 +130 @@ pub(crate) fn load_cursor(style: CursorStyle) -> Option<HCURSOR> {
 +        | CursorStyle::Loop
-diff --git a/src/platform.rs b/src/platform.rs
-index 047a005..b9bcb3d 100644
---- a/src/platform.rs
-+++ b/src/platform.rs
-@@ -0,0 +1,2 @@
-+#[cfg(any(target_os = "macos", test))]
-+mod accessibility_bridge;
-@@ -221,0 +224,7 @@ pub(crate) trait Platform: 'static {
-+    fn prompt_for_paths_with_directory(
-+        &self,
-+        options: PathPromptOptions,
-+        _directory: Option<&Path>,
-+    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
-+        self.prompt_for_paths(options)
-+    }
-@@ -231,0 +241,8 @@ pub(crate) trait Platform: 'static {
-+    /// Hex patch: consulted when the OS asks whether the app may terminate.
-+    /// The callback returns true when it defers the answer to
-+    /// [`Platform::reply_to_quit`]; false terminates immediately. Platforms
-+    /// without such a request ignore the callback.
-+    fn on_should_quit(&self, _callback: Box<dyn FnMut() -> bool>) {}
-+    /// Hex patch: answer a request deferred by the `on_should_quit` callback.
-+    /// Ignored when no request is pending.
-+    fn reply_to_quit(&self, _terminate: bool) {}
-@@ -491,0 +509,8 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
-+    fn publish_accessibility(&self, _nodes: Vec<crate::AccessibilityNode>, _refused: bool) {}
-+    /// Revoke before accepted close callbacks or UI-owned resources are released.
-+    fn revoke_accessibility(&self) {}
-+    fn on_accessibility_action(
-+        &self,
-+        _callback: Box<dyn FnMut(crate::AccessibilityRequest) -> bool>,
-+    ) {
-+    }
-@@ -1228,0 +1254 @@ impl Default for WindowOptions {
-+                hide_native_window_controls: Default::default(),
-@@ -1257,0 +1284,4 @@ pub struct TitlebarOptions {
-+
-+    /// Hide the standard macOS close, minimize, and zoom buttons.
-+    /// This does not change the native titlebar or window movement/resizing flags.
-+    pub hide_native_window_controls: bool,
-@@ -1411,0 +1442,4 @@ pub enum CursorStyle {
-+    /// A persistent invisible cursor for a window-scoped pointer adjustment.
-+    /// macOS uses a transparent image, without changing NSCursor hide counts.
-+    Hidden,
-+
-@@ -1439,0 +1474,6 @@ pub enum CursorStyle {
-+    /// A bracket cursor for trimming an item from its left edge.
-+    ResizeLeftBracket,
-+
-+    /// A bracket cursor for trimming an item from its right edge.
-+    ResizeRightBracket,
-+
-@@ -1443,0 +1484,4 @@ pub enum CursorStyle {
-+    /// Repeat/loop editing cursor. macOS caches original circular-arrow artwork;
-+    /// other platforms retain a horizontal resize fallback.
-+    Loop,
-+
 diff --git a/src/scene.rs b/src/scene.rs
 index 758d06e..8ab8b76 100644
 --- a/src/scene.rs
@@ -5829,16 +5829,6 @@ index 29b4ce6..edd7848 100644
 @@ -312 +312 @@ impl ToTaffy<taffy::style::Style> for Style {
 -            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0), fr(1.0))])])
 +            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0_f32), fr(1.0_f32))])])
-diff --git a/src/text_system/line.rs b/src/text_system/line.rs
-index 189a3e8..581fcc1 100644
---- a/src/text_system/line.rs
-+++ b/src/text_system/line.rs
-@@ -37 +37 @@ pub struct ShapedLine {
--    pub(crate) decoration_runs: SmallVec<[DecorationRun; 32]>,
-+    pub(crate) decoration_runs: SmallVec<[DecorationRun; 4]>,
-@@ -117 +117 @@ pub struct WrappedLine {
--    pub(crate) decoration_runs: SmallVec<[DecorationRun; 32]>,
-+    pub(crate) decoration_runs: SmallVec<[DecorationRun; 4]>,
 diff --git a/src/text_system.rs b/src/text_system.rs
 index 85a3133..5b9520b 100644
 --- a/src/text_system.rs
@@ -5849,17 +5839,29 @@ index 85a3133..5b9520b 100644
 @@ -429 +429 @@ impl WindowTextSystem {
 -            let mut decoration_runs = SmallVec::<[DecorationRun; 32]>::new();
 +            let mut decoration_runs = SmallVec::<[DecorationRun; 4]>::new();
+diff --git a/src/text_system/line.rs b/src/text_system/line.rs
+index 189a3e8..581fcc1 100644
+--- a/src/text_system/line.rs
++++ b/src/text_system/line.rs
+@@ -37 +37 @@ pub struct ShapedLine {
+-    pub(crate) decoration_runs: SmallVec<[DecorationRun; 32]>,
++    pub(crate) decoration_runs: SmallVec<[DecorationRun; 4]>,
+@@ -117 +117 @@ pub struct WrappedLine {
+-    pub(crate) decoration_runs: SmallVec<[DecorationRun; 32]>,
++    pub(crate) decoration_runs: SmallVec<[DecorationRun; 4]>,
 diff --git a/src/view.rs b/src/view.rs
-index 2179717..873597c 100644
+index 2179717..0b9d92e 100644
 --- a/src/view.rs
 +++ b/src/view.rs
-@@ -25,0 +26 @@ struct ViewCacheKey {
+@@ -16,0 +17 @@ struct AnyViewState {
++    painted_frame: Option<u64>,
+@@ -25,0 +27 @@ struct ViewCacheKey {
 +    epoch: u64,
-@@ -86,0 +88 @@ pub struct AnyView {
+@@ -86,0 +89 @@ pub struct AnyView {
 +    cache_epoch: u64,
-@@ -94,0 +97 @@ impl<V: Render> From<Entity<V>> for AnyView {
+@@ -94,0 +98 @@ impl<V: Render> From<Entity<V>> for AnyView {
 +            cache_epoch: 0,
-@@ -103 +106,8 @@ impl AnyView {
+@@ -103 +107,8 @@ impl AnyView {
 -    pub fn cached(mut self, style: StyleRefinement) -> Self {
 +    pub fn cached(self, style: StyleRefinement) -> Self {
 +        self.cached_with_epoch(style, 0)
@@ -5869,19 +5871,27 @@ index 2179717..873597c 100644
 +    /// The epoch preserves view and element identity, including pending input state.
 +    /// Changing it does not schedule a frame; the caller must notify its owner.
 +    pub fn cached_with_epoch(mut self, style: StyleRefinement, epoch: u64) -> Self {
-@@ -104,0 +115 @@ impl AnyView {
+@@ -104,0 +116 @@ impl AnyView {
 +        self.cache_epoch = epoch;
-@@ -124,0 +136 @@ impl AnyView {
+@@ -124,0 +137 @@ impl AnyView {
 +                cache_epoch: self.cache_epoch,
-@@ -211,0 +224,2 @@ impl Element for AnyView {
+@@ -208,0 +222 @@ impl Element for AnyView {
++                        && element_state.painted_frame == Some(window.rendered_frame.generation)
+@@ -211,0 +226,2 @@ impl Element for AnyView {
 +                        && !window.rendered_frame.accessibility.invalid
 +                        && element_state.cache_key.epoch == self.cache_epoch
-@@ -246,0 +261 @@ impl Element for AnyView {
+@@ -220,0 +237 @@ impl Element for AnyView {
++                        element_state.painted_frame = None;
+@@ -242,0 +260 @@ impl Element for AnyView {
++                            painted_frame: None,
+@@ -246,0 +265 @@ impl Element for AnyView {
 +                                epoch: self.cache_epoch,
-@@ -325,0 +341 @@ impl AnyWeakView {
+@@ -284,0 +304 @@ impl Element for AnyView {
++                        element_state.painted_frame = Some(window.next_frame.generation);
+@@ -325,0 +346 @@ impl AnyWeakView {
 +            cache_epoch: 0,
 diff --git a/src/window.rs b/src/window.rs
-index 6d74a0e..028503b 100644
+index 6d74a0e..cb3939a 100644
 --- a/src/window.rs
 +++ b/src/window.rs
 @@ -55,0 +56,3 @@ use uuid::Uuid;
@@ -5921,17 +5931,18 @@ index 6d74a0e..028503b 100644
 +    capture_owners: Range<usize>,
 +}
 +
-@@ -667,0 +699 @@ pub(crate) struct Frame {
+@@ -667,0 +699,2 @@ pub(crate) struct Frame {
++    pub(crate) generation: u64,
 +    pub(crate) accessibility: crate::accessibility::AccessibilityFrame,
-@@ -672,0 +705 @@ pub(crate) struct Frame {
+@@ -672,0 +706 @@ pub(crate) struct Frame {
 +    modal_mouse_scopes: Vec<ModalMouseScope>,
-@@ -680,0 +714,2 @@ pub(crate) struct Frame {
+@@ -680,0 +715,2 @@ pub(crate) struct Frame {
 +    pointer_hover_observers: Vec<PointerHoverObserver>,
 +    pointer_capture_owners: Vec<EntityId>,
-@@ -682 +717 @@ pub(crate) struct Frame {
+@@ -682 +718 @@ pub(crate) struct Frame {
 -    pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
 +    pub(crate) debug_bounds: DebugBounds,
-@@ -689,0 +725,33 @@ pub(crate) struct Frame {
+@@ -689,0 +726,33 @@ pub(crate) struct Frame {
 +// Test selectors follow paint ordering, including cached and nested view replay.
 +// Retaining only the final map loses each cached view's insertion range and can
 +// incorrectly restore another view's later overwrite of the same selector.
@@ -5965,42 +5976,44 @@ index 6d74a0e..028503b 100644
 +    }
 +}
 +
-@@ -691,0 +760 @@ pub(crate) struct PrepaintStateIndex {
+@@ -691,0 +761 @@ pub(crate) struct PrepaintStateIndex {
 +    accessibility_index: usize,
-@@ -703,0 +773 @@ pub(crate) struct PaintIndex {
+@@ -703,0 +774 @@ pub(crate) struct PaintIndex {
 +    modal_mouse_scopes_index: usize,
-@@ -705,0 +776,2 @@ pub(crate) struct PaintIndex {
+@@ -705,0 +777,2 @@ pub(crate) struct PaintIndex {
 +    pointer_hover_observers_index: usize,
 +    pointer_capture_owners_index: usize,
-@@ -708,0 +781,2 @@ pub(crate) struct PaintIndex {
+@@ -708,0 +782,2 @@ pub(crate) struct PaintIndex {
 +    #[cfg(any(test, feature = "test-support"))]
 +    debug_bounds_index: usize,
-@@ -713,0 +788 @@ impl Frame {
+@@ -713,0 +789,2 @@ impl Frame {
++            generation: 0,
 +            accessibility: Default::default(),
-@@ -718,0 +794 @@ impl Frame {
+@@ -718,0 +796 @@ impl Frame {
 +            modal_mouse_scopes: Vec::new(),
-@@ -726,0 +803,2 @@ impl Frame {
+@@ -726,0 +805,2 @@ impl Frame {
 +            pointer_hover_observers: Vec::new(),
 +            pointer_capture_owners: Vec::new(),
-@@ -729 +807 @@ impl Frame {
+@@ -729 +809 @@ impl Frame {
 -            debug_bounds: FxHashMap::default(),
 +            debug_bounds: DebugBounds::default(),
-@@ -740,0 +819 @@ impl Frame {
+@@ -740,0 +821,2 @@ impl Frame {
++        self.generation = 0;
 +        self.accessibility = Default::default();
-@@ -743,0 +823 @@ impl Frame {
+@@ -743,0 +826 @@ impl Frame {
 +        self.modal_mouse_scopes.clear();
-@@ -748,0 +829,2 @@ impl Frame {
+@@ -748,0 +832,2 @@ impl Frame {
 +        self.pointer_hover_observers.clear();
 +        self.pointer_capture_owners.clear();
-@@ -754,0 +837,3 @@ impl Frame {
+@@ -754,0 +840,3 @@ impl Frame {
 +        #[cfg(any(test, feature = "test-support"))]
 +        self.debug_bounds.clear();
 +
-@@ -762,0 +848,3 @@ impl Frame {
+@@ -762,0 +851,3 @@ impl Frame {
 +        if let Some(capture) = &window.pointer_capture {
 +            return Some(capture.cursor);
 +        }
-@@ -817,0 +906,9 @@ impl Frame {
+@@ -817,0 +909,9 @@ impl Frame {
 +// A frame-owned cursor override must restore even when its window is destroyed.
 +struct HiddenCursorRestore(Rc<dyn crate::Platform>);
 +
@@ -6010,17 +6023,17 @@ index 6d74a0e..028503b 100644
 +    }
 +}
 +
-@@ -822,0 +920 @@ pub struct Window {
+@@ -822,0 +923 @@ pub struct Window {
 +    hidden_cursor_restore: Option<HiddenCursorRestore>,
-@@ -836 +934 @@ pub struct Window {
+@@ -836 +937 @@ pub struct Window {
 -    pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
 +    pub(crate) element_id_stack: SmallVec<[ElementId; 8]>,
-@@ -855,0 +954,4 @@ pub struct Window {
+@@ -855,0 +957,4 @@ pub struct Window {
 +    pointer_press: Option<(MouseButton, Point<Pixels>)>,
 +    pointer_dragging: bool,
 +    pointer_capture: Option<PointerCapture>,
 +    suppressed_pointer_ups: SmallVec<[MouseButton; 5]>,
-@@ -1037,6 +1139,5 @@ impl Window {
+@@ -1037,6 +1142,5 @@ impl Window {
 -                // Keep presenting the current scene for 1 extra second since the
 -                // last input to prevent the display from underclocking the refresh rate.
 -                let needs_present = request_frame_options.require_presentation
@@ -6032,24 +6045,24 @@ index 6d74a0e..028503b 100644
 +                // Keep the display warm for one second after ordinary input.
 +                let keepalive = active.get()
 +                    && last_input_timestamp.get().elapsed() < Duration::from_secs(1);
-@@ -1055 +1156 @@ impl Window {
+@@ -1055 +1159 @@ impl Window {
 -                } else if needs_present {
 +                } else if presentation_required || keepalive {
-@@ -1057 +1158,5 @@ impl Window {
+@@ -1057 +1161,5 @@ impl Window {
 -                        .update(&mut cx, |_, window, _| window.present())
 +                        .update(&mut cx, |_, window, _| {
 +                            if window.should_present_drawn_scene(presentation_required, keepalive) {
 +                                window.present();
 +                            }
 +                        })
-@@ -1097,0 +1203,6 @@ impl Window {
+@@ -1097,0 +1206,6 @@ impl Window {
 +                        if !active {
 +                            window.cancel_pointer_capture(cx);
 +                            window.hidden_cursor_restore.take();
 +                            window.pointer_press = None;
 +                            window.pointer_dragging = false;
 +                        }
-@@ -1123,0 +1235,10 @@ impl Window {
+@@ -1123,0 +1238,10 @@ impl Window {
 +        platform_window.on_accessibility_action({
 +            let mut cx = cx.to_async();
 +            Box::new(move |request: crate::AccessibilityRequest| {
@@ -6060,14 +6073,14 @@ index 6d74a0e..028503b 100644
 +                    .unwrap_or(false)
 +            })
 +        });
-@@ -1210,0 +1332 @@ impl Window {
+@@ -1210,0 +1335 @@ impl Window {
 +            hidden_cursor_restore: None,
-@@ -1238,0 +1361,4 @@ impl Window {
+@@ -1238,0 +1364,4 @@ impl Window {
 +            pointer_press: None,
 +            pointer_dragging: false,
 +            pointer_capture: None,
 +            suppressed_pointer_ups: SmallVec::new(),
-@@ -1373,0 +1500,7 @@ impl Window {
+@@ -1373,0 +1503,7 @@ impl Window {
 +    /// Whether this window currently owns an invisible cursor override.
 +    /// Test support only: this does not establish physical cursor appearance.
 +    #[cfg(any(test, feature = "test-support"))]
@@ -6075,10 +6088,10 @@ index 6d74a0e..028503b 100644
 +        self.hidden_cursor_restore.is_some()
 +    }
 +
-@@ -1375,0 +1509,2 @@ impl Window {
+@@ -1375,0 +1512,2 @@ impl Window {
 +        self.platform_window.revoke_accessibility();
 +        self.hidden_cursor_restore.take();
-@@ -1910,0 +2046,55 @@ impl Window {
+@@ -1910,0 +2049,55 @@ impl Window {
 +    /// Current bounded, actually mounted semantic nodes in rendered order.
 +    pub fn accessibility_nodes(&self) -> impl Iterator<Item = &crate::AccessibilityNode> {
 +        self.rendered_frame
@@ -6134,12 +6147,14 @@ index 6d74a0e..028503b 100644
 +        })
 +    }
 +
-@@ -1943,0 +2134,4 @@ impl Window {
+@@ -1924,0 +2118 @@ impl Window {
++        self.next_frame.generation = self.rendered_frame.generation.wrapping_add(1);
+@@ -1943,0 +2138,4 @@ impl Window {
 +        self.platform_window.publish_accessibility(
 +            self.accessibility_nodes().cloned().collect(),
 +            self.rendered_frame.accessibility.invalid,
 +        );
-@@ -1977,0 +2172,15 @@ impl Window {
+@@ -1977,0 +2176,15 @@ impl Window {
 +        let pointer_owners = &self.rendered_frame.pointer_capture_owners;
 +        let pointer_owners = self.rendered_frame.modal_mouse_scopes.last().map_or(
 +            pointer_owners.as_slice(),
@@ -6155,7 +6170,7 @@ index 6d74a0e..028503b 100644
 +            self.cancel_pointer_capture(cx);
 +            self.reset_cursor_style(cx);
 +        }
-@@ -2005,0 +2215,8 @@ impl Window {
+@@ -2005,0 +2219,8 @@ impl Window {
 +    pub(crate) fn should_present_drawn_scene(&self, required: bool, keepalive: bool) -> bool {
 +        // Snapping and held previews can leave a scene unchanged across many
 +        // display requests. On macOS, skip optional drawable acquisition while
@@ -6164,15 +6179,15 @@ index 6d74a0e..028503b 100644
 +            || (keepalive && (!cfg!(target_os = "macos") || !self.is_pointer_dragging()))
 +    }
 +
-@@ -2088,0 +2306,5 @@ impl Window {
+@@ -2088,0 +2310,5 @@ impl Window {
 +        // Hoverable tooltips may otherwise retain themselves or wait through a
 +        // hide delay even after their source stops being eligible.
 +        if self.is_pointer_dragging() {
 +            return None;
 +        }
-@@ -2222,0 +2445 @@ impl Window {
+@@ -2222,0 +2449 @@ impl Window {
 +            accessibility_index: self.next_frame.accessibility.nodes.len(),
-@@ -2232,0 +2456,8 @@ impl Window {
+@@ -2232,0 +2460,8 @@ impl Window {
 +        for (node, callback) in &self.rendered_frame.accessibility.nodes
 +            [range.start.accessibility_index..range.end.accessibility_index]
 +        {
@@ -6181,15 +6196,15 @@ index 6d74a0e..028503b 100644
 +                .insert(node.clone(), callback.clone());
 +        }
 +        self.next_frame.accessibility.invalid |= self.rendered_frame.accessibility.invalid;
-@@ -2284,0 +2516 @@ impl Window {
+@@ -2284,0 +2520 @@ impl Window {
 +            modal_mouse_scopes_index: self.next_frame.modal_mouse_scopes.len(),
-@@ -2286,0 +2519,2 @@ impl Window {
+@@ -2286,0 +2523,2 @@ impl Window {
 +            pointer_hover_observers_index: self.next_frame.pointer_hover_observers.len(),
 +            pointer_capture_owners_index: self.next_frame.pointer_capture_owners.len(),
-@@ -2289,0 +2524,2 @@ impl Window {
+@@ -2289,0 +2528,2 @@ impl Window {
 +            #[cfg(any(test, feature = "test-support"))]
 +            debug_bounds_index: self.next_frame.debug_bounds.insertion_history.len(),
-@@ -2293,0 +2530,43 @@ impl Window {
+@@ -2293,0 +2534,43 @@ impl Window {
 +        #[cfg(any(test, feature = "test-support"))]
 +        self.next_frame.debug_bounds.replay(
 +            &self.rendered_frame.debug_bounds.insertion_history
@@ -6233,7 +6248,7 @@ index 6d74a0e..028503b 100644
 +                    painted_hover: observer.painted_hover,
 +                }),
 +        );
-@@ -2549,0 +2829,7 @@ impl Window {
+@@ -2549,0 +2833,7 @@ impl Window {
 +    /// Whether the active element and its ancestors apply no opacity attenuation.
 +    /// Call during paint. Individual fills can still have their own transparency.
 +    pub fn is_paint_fully_opaque(&self) -> bool {
@@ -6241,7 +6256,7 @@ index 6d74a0e..028503b 100644
 +        self.element_opacity() == 1.0
 +    }
 +
-@@ -2802,0 +3089,20 @@ impl Window {
+@@ -2802,0 +3093,20 @@ impl Window {
 +    /// Record a test-support debug selector rectangle for a custom-painted
 +    /// surface that does not instantiate a separate `Div` per logical region.
 +    #[cfg(any(test, feature = "test-support"))]
@@ -6262,7 +6277,7 @@ index 6d74a0e..028503b 100644
 +        result
 +    }
 +
-@@ -2954,0 +3261,25 @@ impl Window {
+@@ -2954,0 +3265,25 @@ impl Window {
 +    ) -> Result<()> {
 +        self.paint_oriented_glyph(origin, font_id, glyph_id, font_size, color, false)
 +    }
@@ -6288,7 +6303,7 @@ index 6d74a0e..028503b 100644
 +        font_size: Pixels,
 +        color: Hsla,
 +        vertical: bool,
-@@ -2988,0 +3320,9 @@ impl Window {
+@@ -2988,0 +3324,9 @@ impl Window {
 +            let transformation = if vertical {
 +                let Point { x, y } = glyph_origin;
 +                TransformationMatrix {
@@ -6298,10 +6313,10 @@ index 6d74a0e..028503b 100644
 +            } else {
 +                TransformationMatrix::unit()
 +            };
-@@ -2996 +3336 @@ impl Window {
+@@ -2996 +3340 @@ impl Window {
 -                transformation: TransformationMatrix::unit(),
 +                transformation,
-@@ -3415,0 +3756,14 @@ impl Window {
+@@ -3415,0 +3760,14 @@ impl Window {
 +    pub(crate) fn with_modal_mouse_scope(&mut self, modal: bool, paint: impl FnOnce(&mut Self)) {
 +        if modal {
 +            let first_listener = self.next_frame.mouse_listeners.len();
@@ -6316,7 +6331,7 @@ index 6d74a0e..028503b 100644
 +        }
 +    }
 +
-@@ -3527,7 +3881,11 @@ impl Window {
+@@ -3527,7 +3885,11 @@ impl Window {
 -    fn reset_cursor_style(&self, cx: &mut App) {
 -        // Set the cursor only if we're the active window.
 -        if self.is_window_hovered() {
@@ -6335,7 +6350,7 @@ index 6d74a0e..028503b 100644
 +            if self.hidden_cursor_restore.is_none() {
 +                self.hidden_cursor_restore = Some(HiddenCursorRestore(cx.platform.clone()));
 +            }
-@@ -3534,0 +3893,10 @@ impl Window {
+@@ -3534,0 +3897,10 @@ impl Window {
 +        } else {
 +            self.hidden_cursor_restore.take();
 +            if self.is_window_hovered() {
@@ -6346,7 +6361,7 @@ index 6d74a0e..028503b 100644
 +                        style
 +                    });
 +            }
-@@ -3578,0 +3947,182 @@ impl Window {
+@@ -3578,0 +3951,182 @@ impl Window {
 +    /// Record a paint dependency on pressed-pointer hover state. Entries retain
 +    /// their insertion ranges through cached/deferred paint replay.
 +    pub(crate) fn observe_pointer_hover(
@@ -6529,7 +6544,7 @@ index 6d74a0e..028503b 100644
 +        self.dispatch_event(event, cx);
 +    }
 +
-@@ -3587,0 +4138,57 @@ impl Window {
+@@ -3587,0 +4142,57 @@ impl Window {
 +        let was_dragging = self.is_pointer_dragging();
 +        // Retain isolation for the entire terminal event, even if cancellation
 +        // or the owner clears its lease while handling it.
@@ -6587,7 +6602,7 @@ index 6d74a0e..028503b 100644
 +            }
 +            _ => {}
 +        }
-@@ -3664,0 +4272,7 @@ impl Window {
+@@ -3664,0 +4276,7 @@ impl Window {
 +        let pointer_hover_transition = was_dragging != self.is_pointer_dragging();
 +        let keyboard_hover_transition =
 +            event.keyboard_event().is_some() && pointer_hover_transition;
@@ -6595,7 +6610,7 @@ index 6d74a0e..028503b 100644
 +            self.invalidate_pointer_hover();
 +            self.dispatch_pointer_hover(cx);
 +        }
-@@ -3666 +4280,6 @@ impl Window {
+@@ -3666 +4284,6 @@ impl Window {
 -            self.dispatch_mouse_event(any_mouse_event, cx);
 +            self.dispatch_mouse_event(
 +                any_mouse_event,
@@ -6603,7 +6618,7 @@ index 6d74a0e..028503b 100644
 +                isolated_mouse_event,
 +                cx,
 +            );
-@@ -3670,0 +4290,38 @@ impl Window {
+@@ -3670,0 +4294,38 @@ impl Window {
 +        if keyboard_hover_transition {
 +            self.dispatch_pointer_hover(cx);
 +            self.invalidate_pointer_hover();
@@ -6642,7 +6657,7 @@ index 6d74a0e..028503b 100644
 +            self.reset_cursor_style(cx);
 +        }
 +
-@@ -3677 +4334,7 @@ impl Window {
+@@ -3677 +4338,7 @@ impl Window {
 -    fn dispatch_mouse_event(&mut self, event: &dyn Any, cx: &mut App) {
 +    fn dispatch_mouse_event(
 +        &mut self,
@@ -6651,14 +6666,14 @@ index 6d74a0e..028503b 100644
 +        isolated: bool,
 +        cx: &mut App,
 +    ) {
-@@ -3683,0 +4347,6 @@ impl Window {
+@@ -3683,0 +4351,6 @@ impl Window {
 +        if hover_transition {
 +            // Use the updated hit test: both painted hover and newly eligible
 +            // hover must retire/restore even if capture consumes this event.
 +            self.invalidate_pointer_hover();
 +        }
 +
-@@ -3690,0 +4360,21 @@ impl Window {
+@@ -3690,0 +4364,21 @@ impl Window {
 +        if event.is::<MouseMoveEvent>() {
 +            self.dispatch_pointer_hover(cx);
 +        }
@@ -6680,7 +6695,7 @@ index 6d74a0e..028503b 100644
 +            return;
 +        }
 +
-@@ -3691,0 +4382,7 @@ impl Window {
+@@ -3691,0 +4386,7 @@ impl Window {
 +        let modal_range = self
 +            .rendered_frame
 +            .modal_mouse_scopes
@@ -6688,20 +6703,20 @@ index 6d74a0e..028503b 100644
 +            .map(|scope| scope.listeners.clone())
 +            .unwrap_or(0..mouse_listeners.len());
 +        let listeners = &mut mouse_listeners[modal_range];
-@@ -3695 +4392 @@ impl Window {
+@@ -3695 +4396 @@ impl Window {
 -        for listener in &mut mouse_listeners {
 +        for listener in &mut *listeners {
-@@ -3705 +4402 @@ impl Window {
+@@ -3705 +4406 @@ impl Window {
 -            for listener in mouse_listeners.iter_mut().rev() {
 +            for listener in listeners.iter_mut().rev() {
-@@ -4450,0 +5148,6 @@ impl Window {
+@@ -4450,0 +5152,6 @@ impl Window {
 +    /// Whether an active inspector is attached to this window.
 +    #[cfg(any(feature = "inspector", debug_assertions))]
 +    pub(crate) fn has_active_inspector(&self) -> bool {
 +        self.inspector.is_some()
 +    }
 +
-@@ -5103,0 +5807,42 @@ pub fn outline(
+@@ -5103,0 +5811,42 @@ pub fn outline(
 +
 +impl Window {
 +    /// Paint two retained paths at a logical-pixel offset. Visible paths at least
