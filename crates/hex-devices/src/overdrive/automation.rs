@@ -30,13 +30,14 @@ impl PreparedOverdrive {
             binding.semantics.validate(binding.descriptor)?;
             admitted[index(id)?] = true;
         }
+        hex_dsp::warm_ln_cosh_table();
         let settings = decode(state)?;
         let prepared = Self {
             settings,
             admitted,
             targets: targets(settings, rate),
             rate,
-            kernel: Kernel::new(),
+            kernel: Kernel::shared(),
         };
         prepared.check_inline_ownership();
         Ok(prepared)
@@ -49,7 +50,7 @@ impl PreparedOverdrive {
             rate,
             kernel,
         } = self;
-        let _: (&[f32; 6], &[bool; 6], &[f64; 6], &u32, &Kernel) =
+        let _: (&[f32; 6], &[bool; 6], &[f64; 6], &u32, &&'static Kernel) =
             (values, admitted, targets, rate, kernel);
     }
 
@@ -78,8 +79,13 @@ impl OverdriveRuntime {
         });
         let _: (&[f64; 6], &[hex_dsp::LinearRamp; 6]) = (base_targets, ramps);
         let _: (&u32, &u32, &usize) = (rate, silent_frames, delay_index);
-        let _: (&[f64; 2], &f64, &f64, &Kernel, &[[f64; 3]; LATENCY_FRAMES]) =
-            (envelope, attack, release, kernel, delay);
+        let _: (
+            &[f64; 2],
+            &f64,
+            &f64,
+            &&'static Kernel,
+            &[[f64; 3]; LATENCY_FRAMES],
+        ) = (envelope, attack, release, kernel, delay);
         for Channel {
             high,
             low,
