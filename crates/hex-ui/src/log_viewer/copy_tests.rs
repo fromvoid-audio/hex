@@ -13,6 +13,7 @@ fn filtered_excerpt_reports_empty_limits_and_failed_clipboard_confirmation() {
     )
     .unwrap();
     let request = ViewerFilter::new(
+        None,
         "audio",
         "keep".into(),
         ("last 30 s", Some(30)),

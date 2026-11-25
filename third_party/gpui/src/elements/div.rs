@@ -1434,14 +1434,19 @@ impl Element for Div {
             0
         });
 
-        let mut child_min = point(Pixels::MAX, Pixels::MAX);
-        let mut child_max = Point::default();
         if let Some(handle) = self.interactivity.scroll_anchor.as_ref() {
             *handle.last_origin.borrow_mut() = bounds.origin - window.element_offset();
         }
+        #[cfg(any(feature = "inspector", debug_assertions))]
+        let needs_inspector_content_size = inspector_id.is_some() && window.has_active_inspector();
+        #[cfg(not(any(feature = "inspector", debug_assertions)))]
+        let needs_inspector_content_size = false;
+
         let content_size = if request_layout.child_layout_ids.is_empty() {
             bounds.size
         } else if let Some(scroll_handle) = self.interactivity.tracked_scroll_handle.as_ref() {
+            let mut child_min = point(Pixels::MAX, Pixels::MAX);
+            let mut child_max = Point::default();
             let mut state = scroll_handle.0.borrow_mut();
             state.child_bounds = Vec::with_capacity(request_layout.child_layout_ids.len());
             for child_layout_id in &request_layout.child_layout_ids {
@@ -1451,7 +1456,12 @@ impl Element for Div {
                 state.child_bounds.push(child_bounds);
             }
             (child_max - child_min).into()
-        } else {
+        } else if has_prepaint_listener
+            || self.interactivity.scroll_offset.is_some()
+            || needs_inspector_content_size
+        {
+            let mut child_min = point(Pixels::MAX, Pixels::MAX);
+            let mut child_max = Point::default();
             for child_layout_id in &request_layout.child_layout_ids {
                 let child_bounds = window.layout_bounds(*child_layout_id);
                 child_min = child_min.min(&child_bounds.origin);
@@ -1462,6 +1472,11 @@ impl Element for Div {
                 }
             }
             (child_max - child_min).into()
+        } else {
+            // Passive non-scrolling container with no prepaint listener or active
+            // inspector: skip the unobserved parent extent fold; each child still
+            // resolves its own layout bounds once during its own prepaint.
+            bounds.size
         };
 
         if let Some(scroll_handle) = self.interactivity.tracked_scroll_handle.as_ref() {

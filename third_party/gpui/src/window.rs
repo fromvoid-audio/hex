@@ -5145,6 +5145,12 @@ impl Window {
         false
     }
 
+    /// Whether an active inspector is attached to this window.
+    #[cfg(any(feature = "inspector", debug_assertions))]
+    pub(crate) fn has_active_inspector(&self) -> bool {
+        self.inspector.is_some()
+    }
+
     /// Executes the provided function with mutable access to an inspector state.
     #[cfg(any(feature = "inspector", debug_assertions))]
     pub fn with_inspector_state<T: 'static, R>(
