@@ -487,13 +487,29 @@ impl StreamPlayback<'_> {
         project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), Invalid> {
+        self.render_with_foreign_processors_and_wave(
+            output, pages, observer, project, foreign, None,
+        )
+    }
+    /// Borrow admitted foreign endpoints while dispatching eligible independent
+    /// native waves through `wave`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_foreign_processors_and_wave(
+        &mut self,
+        output: &mut [crate::Frame],
+        pages: Option<&mut dyn crate::MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+        wave: Option<&mut dyn crate::wave_executor::WaveExecutor>,
+    ) -> Result<(), Invalid> {
         match &mut self.runtime {
-            Runtime::Constructor(runtime) => {
-                runtime.render_with_foreign_processors(output, pages, observer, project, foreign)
-            }
-            Runtime::Ordinary(runtime, _) => {
-                runtime.render_with_foreign_processors(output, pages, observer, project, foreign)
-            }
+            Runtime::Constructor(runtime) => runtime.render_with_foreign_processors_and_wave(
+                output, pages, observer, project, foreign, wave,
+            ),
+            Runtime::Ordinary(runtime, _) => runtime.render_with_foreign_processors_and_wave(
+                output, pages, observer, project, foreign, wave,
+            ),
         }
     }
     pub fn render_with_pages_and_signal_observers<P: crate::MediaPages + ?Sized>(
@@ -503,13 +519,24 @@ impl StreamPlayback<'_> {
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
         project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
     ) -> Result<(), Invalid> {
+        self.render_with_pages_and_signal_observers_and_wave(output, pages, observer, project, None)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_pages_and_signal_observers_and_wave<P: crate::MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [crate::Frame],
+        pages: &mut P,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        wave: Option<&mut dyn crate::wave_executor::WaveExecutor>,
+    ) -> Result<(), Invalid> {
         match &mut self.runtime {
-            Runtime::Constructor(r) => {
-                r.render_with_pages_and_signal_observers(output, pages, observer, project)
-            }
-            Runtime::Ordinary(r, _) => {
-                r.render_with_pages_and_signal_observers(output, pages, observer, project)
-            }
+            Runtime::Constructor(r) => r.render_with_pages_and_signal_observers_and_wave(
+                output, pages, observer, project, wave,
+            ),
+            Runtime::Ordinary(r, _) => r.render_with_pages_and_signal_observers_and_wave(
+                output, pages, observer, project, wave,
+            ),
         }
     }
 }

@@ -319,6 +319,13 @@ impl Callback {
         self.wave_pool = Some(pool);
     }
 
+    #[cfg(test)]
+    pub(crate) fn wave_pool_waves_executed(&self) -> usize {
+        self.wave_pool
+            .as_ref()
+            .map_or(0, crate::worker_pool::AudioWorkerPool::waves_executed)
+    }
+
     pub(in crate::prepared) fn reject_paused_monitors(
         &mut self,
         reason: input_monitor::MonitorStatus,

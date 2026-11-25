@@ -142,19 +142,23 @@ impl RuntimeOwner {
         }
         result
     }
-    pub(super) fn render_with_pages_and_signal_observers<P: crate::MediaPages + ?Sized>(
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn render_with_pages_and_signal_observers_and_wave<P: crate::MediaPages + ?Sized>(
         &mut self,
         output: &mut [crate::Frame],
         pages: &mut P,
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
         project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        wave: Option<&mut dyn crate::wave_executor::WaveExecutor>,
     ) -> Result<(), crate::Invalid> {
         if let Some((sources, _)) = self.sampler_sources.as_ref() {
             self.playback
                 .render_current_sampler(output, Some(pages), observer, project, sources)
         } else {
             self.playback
-                .render_with_pages_and_signal_observers(output, pages, observer, project)
+                .render_with_pages_and_signal_observers_and_wave(
+                    output, pages, observer, project, wave,
+                )
         }
     }
 }
