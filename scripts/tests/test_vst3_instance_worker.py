@@ -550,6 +550,68 @@ class NativeInstanceTests(unittest.TestCase):
         session.frames += 8
         self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (1, 8))
 
+    def test_pitch_bend_preserves_center_low_byte_and_channel_assignment(self):
+        session = self.session(variant=145, channels=(0, 2))
+        self.assertEqual(session.message()[0], b"HXVIRD05")
+        notes = [(0, 0x92, 60, 127), (0, 0xe1, 0, 0), (1, 0xe2, 127, 127),
+                 (2, 0xe1, 9, 32), (4, 0xe1, 0, 64), (6, 0xe1, 127, 127),
+                 (7, 0x82, 60, 0)]
+        magic, reply = self.instrument_block(session, notes)
+        self.assertEqual(magic, b"HXVB")
+        low = (32 * 128 + 9) / 8192  # Fixture gain is twice the normalized parameter.
+        curve = [0, low / 2, low, (low + 1) / 2, 1, 1.5, 2, 0]
+        for actual, expected in zip(struct.unpack_from("<16f", reply, 64),
+                                    (v for frame in curve for v in (frame, frame))):
+            self.assertAlmostEqual(actual, expected, places=6)
+        self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (1, 8))
+
+    def test_control_change_uses_number_channel_and_refreshed_assignment(self):
+        release = self.root / "remap-cc"
+        with patch.dict(os.environ, {"HEX_ORIGINAL_INSTANCE_RELEASE": str(release)}):
+            session = self.session(variant=145, channels=(0, 2))
+        self.assertEqual(session.message()[0], b"HXVIRD05")
+        # Only CC74 on channel 2 is assigned. The other two CCs have no effect.
+        magic, reply = self.instrument_block(session, [
+            (0, 0x92, 60, 127), (0, 0xb2, 74, 0), (1, 0xb2, 73, 127),
+            (2, 0xb1, 74, 127), (4, 0xb2, 74, 64), (6, 0xb2, 74, 127),
+        ])
+        self.assertEqual(magic, b"HXVB")
+        curve = [0, 0.25, 0.5, 0.75, 1, 1.5, 2, 2]
+        self.assertEqual(struct.unpack_from("<16f", reply, 64), tuple(v for v in curve for _ in range(2)))
+        magic, reply = self.instrument_block(session, [(0, 0xb2, 74, 0)])
+        self.assertEqual(magic, b"HXVB")
+        self.assertEqual(struct.unpack_from("<16f", reply, 64), (0.,) * 16)
+
+        release.touch()
+        end = time.monotonic() + 3
+        while time.monotonic() < end:
+            magic, reply = self.instrument_block(session, [(0, 0xb1, 1, 127), (0, 0xb2, 74, 0)])
+            self.assertEqual(magic, b"HXVB")
+            # The fixture scales each later block by its sequence. Only the
+            # new assignment can raise the held note from the preceding zero.
+            if all(v > 0 for v in struct.unpack_from("<16f", reply, 64)):
+                break
+        else:
+            self.fail("CC1 on channel 1 did not replace CC74 on channel 2")
+        self.terminal(session, 0, message=session.stop())
+
+    def test_malformed_mapped_controllers_refuse_before_instrument_processing(self):
+        for status, width, low, high, identity in [
+            (0xe1, 2, 9, 64, 0), (0xe1, 3, 9, 128, 0), (0xe1, 3, 9, 64, 41),
+            (0xb2, 2, 74, 0, 0), (0xb2, 3, 128, 64, 0), (0xb2, 3, 74, 128, 0),
+            (0xb2, 3, 74, 64, 41),
+        ]:
+            with self.subTest(event=(status, width, low, high, identity)):
+                session = self.session(variant=145, channels=(0, 2))
+                self.assertEqual(session.message()[0], b"HXVIRD05")
+                header = bytearray(session.packet(8))
+                struct.pack_into("<HHH", header, 4, 3, 8, 1)
+                event = struct.pack("<HBBBB2xI", 0, width, status, low, high, identity)
+                session.socket.sendall(header + bytes(64) + event)
+                self.error(session, 8)
+                self.terminal(session, 8)
+                self.assertEqual(self.observation()[10], 0)
+
     def test_controller_remap_moves_pressure_to_the_new_channel(self):
         release = self.root / "remap-pressure"
         with patch.dict(os.environ, {"HEX_ORIGINAL_INSTANCE_RELEASE": str(release)}):
@@ -783,7 +845,7 @@ class NativeInstanceTests(unittest.TestCase):
         for channels, variant, note in [
             ((0, 2), 115, (0, 0x94, 60, 127)),  # the fixture has four MIDI channels
             ((0, 2), 145, (0, 0xd4, 64, 0)),
-            ((0, 2), 115, (0, 0xb2, 60, 127)),  # controllers are not note events
+            ((0, 2), 145, (0, 0xb4, 74, 127)),  # CC outside the instrument event bus
             ((2, 2), 0, (0, 0x92, 60, 127)),
         ]:
             with self.subTest(channels=channels, note=note):
@@ -1265,6 +1327,19 @@ class NativeInstanceTests(unittest.TestCase):
                 self.assertEqual(observed[:5], (6, 0, 1, 1, 1))
                 self.assertEqual(observed[8:11], (1, 1, 4))
                 self.assertEqual(observed[12:], (0, 0))
+
+    def test_stereo_effect_with_main_or_auxiliary_event_input_preserves_audio(self):
+        # The main-bus effect needs an active SDK event list even for empty blocks.
+        # The auxiliary-only effect expects the existing audio-only profile.
+        for variant in (165, 166):
+            with self.subTest(variant=variant):
+                session = self.session(variant=variant, channels=(2, 2))
+                self.ready(session, controller=True)
+                _, inputs, (magic, output) = session.render(8)
+                self.assertEqual(magic, b"HXVB")
+                self.assertEqual(struct.unpack_from("<16f", output, 64),
+                                 tuple(sample * .5 for sample in inputs))
+                self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (1, 8))
 
     def test_effect_disables_trailing_auxiliary_input_and_renders_only_main(self):
         for variant, channels in ((106, (1, 2)), (153, (2, 2))):

@@ -32,9 +32,10 @@ inline bool supports_authored_parameter_flags(int32 flags) {
     return (bits&ParameterInfo::kCanAutomate) && !(bits&~supported);
 }
 // A disengaged entry means the controller supplies no assignment for bus 0.
-using ChannelPressureAssignments=std::array<std::optional<ParamID>,16>;
+using ChannelAssignments=std::array<std::optional<ParamID>,kCountCtrlNumber>;
+using InstrumentAssignments=std::array<ChannelAssignments,16>;
 struct ParameterSnapshot {
-    ChannelPressureAssignments pressure{};
+    InstrumentAssignments assignments{};
     struct Parameter {
         ParameterInfo info{};
         ParamValue value=0;
@@ -95,7 +96,7 @@ inline std::array<unsigned char,32> parameter_descriptor_signature(const Paramet
 // Copied DSP-facing facts contain no controller pointers or strings. Main owns
 // the rich snapshot; its one processing reader uses these published copies.
 struct ProcessingParameterSnapshot {
-    ChannelPressureAssignments pressure{};
+    InstrumentAssignments assignments{};
     struct Parameter {
         ParamID id=0;
         int32 flags=0;
@@ -120,7 +121,7 @@ struct ProcessingParameterSnapshot {
     void copy_from(const ProcessingParameterSnapshot& source) {
         const auto bounded=std::min<uint32>(source.count,static_cast<uint32>(parameters.size()));
         if(bounded) std::copy_n(source.parameters.data(),bounded,parameters.data());
-        pressure=source.pressure;
+        assignments=source.assignments;
         count=bounded;
         revision=source.revision;
     }
@@ -218,7 +219,7 @@ class Host final : public IHostApplication, public IComponentHandler, public ICo
     // retains its separate fence for the last meaningful value transition.
     std::atomic<uint64> editor_admission_sequence{0};
     const bool advertises_editor_groups;
-    const bool instrument_pressure;
+    const bool instrument_midi;
     bool controller_maps_midi=false;
     uint64 cohort=0;
     bool refused_cohort=false;
@@ -254,7 +255,7 @@ class Host final : public IHostApplication, public IComponentHandler, public ICo
         ParameterFeedback snapshot{};
     } feedback;
     static void compact_into(const ParameterSnapshot& source,ProcessingParameterSnapshot& result) {
-        result.pressure=source.pressure;
+        result.assignments=source.assignments;
         result.count=source.count;result.revision=source.revision;
         for(uint32 n=0;n<source.count;++n) {
             const auto& parameter=source.parameters[source.by_id[n]];
@@ -289,7 +290,7 @@ public:
     static constexpr int32 supported_restarts=kParamValuesChanged|kParamTitlesChanged;
     explicit Host(bool trace_messages=false,bool editor_groups=false,bool instrument=false)
         : messages(new(std::nothrow) std::array<HostMessage,HOST_MESSAGE_COUNT>{}),
-          advertises_editor_groups(editor_groups),instrument_pressure(instrument) {
+          advertises_editor_groups(editor_groups),instrument_midi(instrument) {
         if (messages) for (auto& message:*messages)
             message.bind(static_cast<IHostApplication*>(this),trace_messages?&message_trace:nullptr);
     }
@@ -966,14 +967,17 @@ private:
             }
         }
         if (!valid) { refuse(InvalidMetadata); result.disposition=HostDisposition::InvalidMetadata; return result; }
-        if(instrument_pressure) {
+        if(instrument_midi) {
             IMidiMapping* mapping=nullptr;
             const auto found=controller->queryInterface(INLINE_UID_OF(IMidiMapping),reinterpret_cast<void**>(&mapping));
             if(found==kResultOk && mapping) {
                 for(int16 channel=0;channel<16;++channel) {
-                    ParamID id=kNoParamId;
-                    if(mapping->getMidiControllerAssignment(0,channel,kAfterTouch,id)==kResultOk &&
-                            staged.index_for_id(id)) staged.pressure[channel]=id;
+                    auto& assignments=staged.assignments[channel];
+                    for(CtrlNumber cc=0;cc<kCountCtrlNumber;++cc) {
+                        ParamID id=kNoParamId;
+                        if(mapping->getMidiControllerAssignment(0,channel,cc,id)==kResultOk &&
+                                staged.index_for_id(id)) assignments[cc]=id;
+                    }
                 }
                 mapping->release();
                 controller_maps_midi=true;

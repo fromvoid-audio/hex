@@ -3454,12 +3454,13 @@ fn cancelling_a_native_removal_restores_the_wet_predecessor() {
         runtime.apply(SessionPlaybackCommand::Play).unwrap();
         runtime.render(&mut vec![[0.0; 2]; 6_000]).unwrap();
     }
-    let mut different_clock = Editor::new(editor.project().clone(), 8).unwrap();
-    let limiter = different_clock.project().main_devices()[0].id();
-    different_clock
-        .execute(Command::RemoveDevice(limiter))
-        .unwrap();
-    let mut ineligible = SessionPlayback::new(prepare(different_clock.project())).unwrap();
+    // Either removal fits the running pass on its own. Removing both stages
+    // crosses owners and must leave the predecessor untouched.
+    let mut compound = Editor::new(editor.project().clone(), 8).unwrap();
+    let limiter = compound.project().main_devices()[0].id();
+    compound.execute(Command::RemoveDevice(limiter)).unwrap();
+    compound.execute(Command::RemoveDevice(reverb)).unwrap();
+    let mut ineligible = SessionPlayback::new(prepare(compound.project())).unwrap();
     ineligible.require_continuous_insert = true;
     assert_eq!(
         ineligible.advance_native_removal_from(&mut old),

@@ -261,6 +261,7 @@ fn unsupported_fixture_transforms_refuse_without_losing_complete_lane() {
         },
     ] {
         let mut editor = Editor::new(project.clone(), 16).unwrap();
+        assert!(editor.stage_preview(cmd.clone()).is_err());
         assert!(editor.execute(cmd).is_err());
         assert_eq!(editor.project().snapshot(), snapshot);
     }

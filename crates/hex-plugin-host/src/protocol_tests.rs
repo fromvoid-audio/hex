@@ -682,8 +682,8 @@ fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
         .events
         .push(MidiEvent {
             frame: 0,
-            bytes: [0xb0, 64, 127],
-            len: 3,
+            bytes: [0xc0, 64, 0], // Program changes require a separate host contract.
+            len: 2,
             note_id: None,
             is_live: false,
         })
@@ -699,7 +699,7 @@ fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
 }
 
 #[test]
-fn instrument_pressure_preserves_message_width_and_note_identity_on_the_wire() {
+fn instrument_expression_preserves_message_width_and_note_identity_on_the_wire() {
     let effect = config();
     let mut instrument = effect.clone();
     instrument.input_channels = 0;
@@ -729,6 +729,24 @@ fn instrument_pressure_preserves_message_width_and_note_identity_on_the_wire() {
     };
     block.events.push(pressure).unwrap();
     block.events.push(channel_pressure).unwrap();
+    let bend = MidiEvent {
+        bytes: [0xe1, 9, 64],
+        len: 3,
+        ..channel_pressure
+    };
+    block.events.push(bend).unwrap();
+    let cc = MidiEvent {
+        frame: 4,
+        bytes: [0xb2, 74, 64],
+        ..bend
+    };
+    let sequenced_cc = MidiEvent {
+        frame: 7,
+        is_live: false,
+        ..cc
+    };
+    block.events.push(cc).unwrap();
+    block.events.push(sequenced_cc).unwrap();
     assert!(effect.validate_block(&block, 0).is_err());
     instrument.validate_block(&block, 0).unwrap();
     let mut wire = Vec::new();
@@ -736,9 +754,29 @@ fn instrument_pressure_preserves_message_width_and_note_identity_on_the_wire() {
     let decoded = crate::transport::wire::read(&mut wire.as_slice())
         .unwrap()
         .unwrap();
-    assert_eq!(decoded.events.as_slice(), &[pressure, channel_pressure]);
+    assert_eq!(
+        decoded.events.as_slice(),
+        &[pressure, channel_pressure, bend, cc, sequenced_cc]
+    );
 
     for invalid in [
+        MidiEvent {
+            bytes: [0xb2, 128, 64],
+            ..cc
+        },
+        MidiEvent {
+            note_id: pressure.note_id,
+            ..cc
+        },
+        MidiEvent { len: 2, ..bend },
+        MidiEvent {
+            bytes: [0xe1, 9, 128],
+            ..bend
+        },
+        MidiEvent {
+            note_id: pressure.note_id,
+            ..bend
+        },
         MidiEvent {
             note_id: std::num::NonZeroU32::new(1),
             ..channel_pressure

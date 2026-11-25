@@ -220,14 +220,19 @@ public:
                 : !audio_buses(component,kOutput,output_count,request.output_channels,false)))
             return ConfigurationResult::UnsupportedTopology;
         int32 event_channels=0;
-        if (!request.input_channels) {
-            const auto event_count=component->getBusCount(kEvent,kInput);
+        const auto event_count=component->getBusCount(kEvent,kInput);
+        // Instruments require a supported layout. Effects may keep processing
+        // audio when bus zero is absent or cannot supply main MIDI events.
+        if (!request.input_channels && (event_count<0 || event_count>1))
+            return ConfigurationResult::UnsupportedTopology;
+        if (event_count>0) {
             BusInfo event{};
-            if (event_count!=0) {
-                if (event_count!=1 || component->getBusInfo(kEvent,kInput,0,event)!=kResultOk ||
-                    event.mediaType!=kEvent || event.direction!=kInput || event.busType!=kMain ||
-                    event.channelCount<1 || event.channelCount>16) return ConfigurationResult::UnsupportedTopology;
+            if (component->getBusInfo(kEvent,kInput,0,event)==kResultOk &&
+                event.mediaType==kEvent && event.direction==kInput && event.busType==kMain &&
+                event.channelCount>=1 && event.channelCount<=16) {
                 event_channels=event.channelCount;
+            } else if (!request.input_channels) {
+                return ConfigurationResult::UnsupportedTopology;
             }
         }
         if (silent_input && !event_channels) return ConfigurationResult::UnsupportedTopology;

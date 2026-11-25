@@ -3,7 +3,7 @@ use hex_devices::{
     utility::{UTILITY_DEFINITION, parameter as utility_parameter},
 };
 use hex_engine::{
-    Audio, Invalid, PreparedSessionInventory, Renderer, compile,
+    Audio, Invalid, PreparedRevision, PreparedSessionInventory, Renderer, compile,
     midi_compile::{MAX_MIDI_EVENT_EDGES, MidiEventKind, midi_events},
     playback::{Playback, PlaybackCommand},
 };
@@ -427,6 +427,10 @@ fn source_offset_local_loop_projects_tempo_edges_gates_and_finite_tail() {
 fn looping_preview_is_evenly_sampled_and_includes_empty_clips() {
     let (mut editor, track) = setup();
     let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(1, 1));
+    let source = editor.project_arc();
+    let previous =
+        PreparedRevision::prepare(&source, &BTreeMap::new(), Arc::new(SineTable::new()), None)
+            .unwrap();
     editor
         .execute(Command::SetMidiClipSource {
             clip,
@@ -452,6 +456,11 @@ fn looping_preview_is_evenly_sampled_and_includes_empty_clips() {
 
     let (_, preview) =
         compile::project_with_midi_preview(editor.project(), &BTreeMap::new()).unwrap();
+    let incremental =
+        PreparedRevision::try_prepare_incremental(&source, editor.project(), &previous)
+            .unwrap()
+            .expect("bounded MIDI clip edit");
+    assert_eq!(incremental.midi_preview().as_ref(), &preview);
     let loop_summary = preview.get(clip).expect("loop summary");
     assert_eq!(loop_summary.occurrence_count, 100);
     assert_eq!(loop_summary.samples.len(), 32);
@@ -490,6 +499,27 @@ fn looping_preview_is_evenly_sampled_and_includes_empty_clips() {
 fn project_wide_occurrence_budget_rejects_before_edges_or_spans_are_emitted() {
     let (mut editor, track) = setup();
     let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(4, 1));
+    let Created::Track(destination) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "routed instrument".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("expected destination track")
+    };
+    editor
+        .execute(Command::SetMidiSource {
+            destination,
+            source: Some(track),
+        })
+        .unwrap();
+    let source = editor.project_arc();
+    let previous =
+        PreparedRevision::prepare(&source, &BTreeMap::new(), Arc::new(SineTable::new()), None)
+            .unwrap();
     editor
         .execute(Command::AddMidiNote {
             clip,
@@ -500,25 +530,32 @@ fn project_wide_occurrence_budget_rejects_before_edges_or_spans_are_emitted() {
             velocity: 100,
         })
         .unwrap();
-    editor
-        .execute(Command::SetMidiClipSource {
-            clip,
-            source_length: BeatTime::from_raw(2),
-            source_start: BeatTime::ZERO,
-            loop_start: BeatTime::ZERO,
-            loop_end: BeatTime::from_raw(1),
-            looping: true,
-            length: BeatTime::from_raw(65_538),
-        })
-        .unwrap();
-
+    let expand = |length| Command::SetMidiClipSource {
+        clip,
+        source_length: BeatTime::from_raw(2),
+        source_start: BeatTime::ZERO,
+        loop_start: BeatTime::ZERO,
+        loop_end: BeatTime::from_raw(1),
+        looping: true,
+        length: BeatTime::from_raw(length),
+    };
+    for (length, expected) in [
+        (32_769, "routed midi occurrence limit reached"),
+        (65_538, "compiled midi occurrence limit reached"),
+    ] {
+        editor.execute(expand(length)).unwrap();
+        assert_eq!(
+            compile::project(editor.project(), &BTreeMap::new()).unwrap_err(),
+            Invalid(expected)
+        );
+        assert_eq!(
+            PreparedRevision::try_prepare_incremental(&source, editor.project(), &previous).err(),
+            Some(Invalid(expected))
+        );
+    }
     assert_eq!(
         midi_events(editor.project()),
         Err(Invalid("compiled midi occurrence limit reached"))
-    );
-    assert_eq!(
-        compile::project(editor.project(), &BTreeMap::new()).unwrap_err(),
-        Invalid("compiled midi occurrence limit reached")
     );
 }
 

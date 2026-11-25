@@ -438,6 +438,7 @@ fn prepare_arrangement_midi(
     previous_revision: &PreparedRevision,
     changed_tracks: &[usize],
 ) -> Result<Option<PreparedRevision>, Invalid> {
+    crate::midi_compile::validate_arrangement_occurrences(project)?;
     let mut arrangement = previous_revision.arrangement().as_ref().clone();
     let shared_contexts = Arc::clone(arrangement.shared_contexts());
     let session = previous_revision.session();

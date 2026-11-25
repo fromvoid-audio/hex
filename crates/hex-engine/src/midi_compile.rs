@@ -150,6 +150,40 @@ pub(crate) fn count_project_occurrences(project: &Project) -> Result<usize, Inva
     Ok(total)
 }
 
+/// Admit authored and routed occurrences before full or incremental Arrangement preparation
+/// allocates clip spans or previews. Each destination consumes its source's occurrences.
+pub(crate) fn validate_arrangement_occurrences(project: &Project) -> Result<(), Invalid> {
+    count_project_occurrences(project)?;
+    if project.midi_routes().is_empty() {
+        return Ok(());
+    }
+    // Fanout is real work: bound expanded destination occurrences before note-bank allocation.
+    let mut routed_occurrences = 0usize;
+    for track in project.tracks() {
+        let root = project.midi_source_track(track.id());
+        let source = project
+            .track(root)
+            .ok_or(Invalid("midi source root is missing"))?;
+        for clip in source.midi_clips().iter().filter(|clip| clip.active()) {
+            let playback = clip.source_playback().map_err(|error| Invalid(error.0))?;
+            for note in clip.notes().iter().filter(|note| note.active()) {
+                let n = playback
+                    .note_occurrences(note.start(), note.duration())
+                    .map_err(|error| Invalid(error.0))?
+                    .count();
+                routed_occurrences = routed_occurrences
+                    .checked_add(
+                        usize::try_from(n)
+                            .map_err(|_| Invalid("routed midi occurrence overflow"))?,
+                    )
+                    .filter(|n| *n <= MAX_COMPILED_MIDI_OCCURRENCES)
+                    .ok_or(Invalid("routed midi occurrence limit reached"))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn append_clip(
     project: &Project,
     track_index: usize,
