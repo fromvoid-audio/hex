@@ -1,6 +1,6 @@
 //! # Purpose
-//! Own bounded control-side WAV decoding, verified source readers, sample-rate conversion and
-//! waveform summaries.
+//! Own bounded control-side WAV, RF64/BW64, AIFF/AIFC, and FLAC decoding, verified source
+//! readers, sample-rate conversion and waveform summaries.
 //!
 //! # Dependencies
 //! Uses hex-engine/hex-project data contracts and sha2 for source verification.
@@ -18,8 +18,12 @@ use std::{
 };
 
 mod adpcm;
+mod aiff;
 mod file_identity;
+mod flac;
+mod media;
 pub use file_identity::SourceFileIdentity;
+pub use media::{MediaFormat, detect_format};
 mod native_source;
 pub use native_source::{NativeDecodedAudio, NativeSourceRefusal};
 mod resample;
@@ -27,6 +31,9 @@ mod resample_kernel;
 mod stream;
 mod verified_stream;
 mod wav;
+
+#[cfg(test)]
+mod codec_tests;
 
 #[cfg(test)]
 mod resample_stream_tests;
@@ -221,7 +228,7 @@ pub fn decode_wav_file_cancellable(
     let bytes = read_bounded(&mut file, limits.max_file_bytes, cancel)?;
     let after = file_identity::Observation::of(&file.metadata()?);
     let file_identity = file_identity::stable_identity(before, after, bytes.len())?;
-    let (audio, sample_rate, frames) = wav::decode(&bytes, limits.max_frames, cancel)?;
+    let (audio, sample_rate, frames) = media::decode(&bytes, limits.max_frames, cancel)?;
     Ok(DecodedAudio {
         path,
         audio,
@@ -231,7 +238,24 @@ pub fn decode_wav_file_cancellable(
     })
 }
 
-/// Read and decode a WAV file, explicitly recovering the readable whole frames of
+/// Format-neutral alias for [`decode_wav_file`], supporting WAV, RF64/BW64, AIFF/AIFC, and FLAC.
+pub fn decode_audio_file(
+    path: impl AsRef<Path>,
+    limits: Limits,
+) -> Result<DecodedAudio, ImportError> {
+    decode_wav_file(path, limits)
+}
+
+/// Format-neutral alias for [`decode_wav_file_cancellable`].
+pub fn decode_audio_file_cancellable(
+    path: impl AsRef<Path>,
+    limits: Limits,
+    cancel: &AtomicBool,
+) -> Result<DecodedAudio, ImportError> {
+    decode_wav_file_cancellable(path, limits, cancel)
+}
+
+/// Read and decode a WAV/RF64/AIFF/FLAC file, explicitly recovering the readable whole frames of
 /// truncated or partial-frame audio data. Returns the truncation report when
 /// frames were dropped so the caller can tell the user about the fidelity loss.
 /// Malformed headers and block-compressed (ADPCM) truncation are still refused,
@@ -247,7 +271,7 @@ pub fn recover_wav_file(
     let after = file_identity::Observation::of(&file.metadata()?);
     let file_identity = file_identity::stable_identity(before, after, bytes.len())?;
     let ((audio, sample_rate, frames), truncation) =
-        wav::decode_recoverable(&bytes, limits.max_frames, &NOT_CANCELLED)?;
+        media::decode_recoverable(&bytes, limits.max_frames, &NOT_CANCELLED)?;
     Ok((
         DecodedAudio {
             path,
@@ -260,12 +284,17 @@ pub fn recover_wav_file(
     ))
 }
 
-/// Decode an in-memory RIFF/WAVE file under caller-provided byte and frame limits.
+/// Decode an in-memory RIFF/WAVE, RF64/BW64, AIFF/AIFC, or FLAC file under caller-provided byte and frame limits.
 pub fn decode_wav(bytes: &[u8], limits: Limits) -> Result<Audio, ImportError> {
     if bytes.len() > limits.max_file_bytes {
         return Err(ImportError::LimitExceeded("input bytes"));
     }
-    wav::decode(bytes, limits.max_frames, &NOT_CANCELLED).map(|(audio, _, _)| audio)
+    media::decode(bytes, limits.max_frames, &NOT_CANCELLED).map(|(audio, _, _)| audio)
+}
+
+/// Format-neutral alias for [`decode_wav`].
+pub fn decode_audio(bytes: &[u8], limits: Limits) -> Result<Audio, ImportError> {
+    decode_wav(bytes, limits)
 }
 
 fn read_bounded(

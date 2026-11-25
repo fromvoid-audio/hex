@@ -104,7 +104,9 @@ impl ScanError {
     }
 }
 
-/// Enumerates one folder without recursing and returns directories, WAVs and Hex projects.
+/// Enumerates one folder without recursing and returns directories, supported
+/// audio files (`.wav`, `.rf64`, `.bw64`, `.aif`, `.aiff`, `.aifc`, `.flac`),
+/// and Hex projects (`.hex`).
 ///
 /// Hidden entries are excluded. Enumeration stops after [`MAX_ENUMERATED_ENTRIES`];
 /// retained entries are sorted case-insensitively with directories first, then
@@ -179,8 +181,22 @@ fn is_hidden(name: &OsStr) -> bool {
     name.to_string_lossy().starts_with('.')
 }
 
+/// Supported audio file extensions recognized by folder scans and the sample catalog.
+pub fn is_supported_audio_extension(extension: Option<&OsStr>) -> bool {
+    extension.is_some_and(|extension| {
+        let ext = extension.to_string_lossy();
+        ext.eq_ignore_ascii_case("wav")
+            || ext.eq_ignore_ascii_case("rf64")
+            || ext.eq_ignore_ascii_case("bw64")
+            || ext.eq_ignore_ascii_case("aif")
+            || ext.eq_ignore_ascii_case("aiff")
+            || ext.eq_ignore_ascii_case("aifc")
+            || ext.eq_ignore_ascii_case("flac")
+    })
+}
+
 fn is_wav(extension: Option<&OsStr>) -> bool {
-    extension.is_some_and(|extension| extension.to_string_lossy().eq_ignore_ascii_case("wav"))
+    is_supported_audio_extension(extension)
 }
 
 fn is_project(extension: Option<&OsStr>) -> bool {
@@ -312,5 +328,32 @@ mod tests {
         assert_eq!(listing.enumerated_entries, MAX_ENUMERATED_ENTRIES);
         assert!(listing.truncated);
         assert!(listing.entries.len() <= MAX_RETAINED_ENTRIES);
+    }
+
+    #[test]
+    fn discovers_rf64_bw64_aiff_aifc_and_flac_alongside_wav_and_hex() {
+        let fixture = Fixture::new();
+        fixture.file("a.wav");
+        fixture.file("b.RF64");
+        fixture.file("c.bw64");
+        fixture.file("d.aif");
+        fixture.file("e.AIFF");
+        fixture.file("f.aifc");
+        fixture.file("g.FLAC");
+        fixture.file("h.hex");
+        fixture.file("ignore.txt");
+
+        let listing = scan_directory(&fixture.0).expect("scan");
+        let names: Vec<&str> = listing.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "a.wav", "b.RF64", "c.bw64", "d.aif", "e.AIFF", "f.aifc", "g.FLAC", "h.hex"
+            ]
+        );
+        for entry in &listing.entries[..7] {
+            assert_eq!(entry.kind, EntryKind::WaveAudio);
+        }
+        assert_eq!(listing.entries[7].kind, EntryKind::Project);
     }
 }
