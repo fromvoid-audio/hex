@@ -1,18 +1,23 @@
 //! Versioned, bounded, native-path derived cache, atomically replaced on success.
 //!
-//! Version 2 adds an optional [`SampleRecord`] (size, mtime, fingerprint) after
-//! each path. Version 1 caches still load, as entries without records, and are
-//! rewritten as version 2 after the next scan. Unknown versions are refused and
-//! rebuilt; [`SampleCatalog::preserve_corrupt`] keeps the refused bytes aside.
+//! Version 3 (`hexsmp3`) adds lightweight [`AudioHeaderMetadata`] inside each
+//! [`SampleRecord`] plus persistent user tags and named collections. Version 1
+//! (`hexsmp1`) and version 2 (`hexsmp2`) caches migrate cleanly on load and are
+//! rewritten as version 3 on save. Newer or malformed formats are strictly
+//! refused without clobbering disk bytes; [`SampleCatalog::preserve_corrupt`]
+//! moves refused bytes aside for diagnosis.
 use super::{
-    Fingerprint, MAX_CATALOG_BYTES, MAX_PATH_BYTES, MAX_SAMPLES, SampleCatalog, SampleRecord,
+    AudioCodec, AudioHeaderMetadata, Fingerprint, MAX_CATALOG_BYTES, MAX_COLLECTIONS,
+    MAX_PATH_BYTES, MAX_SAMPLES, MAX_TAG_BYTES, MAX_TAGS_PER_SAMPLE, SampleCatalog, SampleRecord,
+    normalize_label,
 };
 use crate::{EntryKind, LibraryEntry, is_wav};
 use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
     ffi::OsString,
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -24,9 +29,11 @@ const PLATFORM: u8 = b'w';
 const PLATFORM: u8 = b't';
 const MAGIC_V1: [u8; 8] = *b"hexsmp1\0";
 const MAGIC_V2: [u8; 8] = *b"hexsmp2\0";
+const MAGIC_V3: [u8; 8] = *b"hexsmp3\0";
 const NO_RECORD: u8 = 0;
 const RECORD_UNREADABLE: u8 = 1;
 const RECORD_FINGERPRINTED: u8 = 2;
+const RECORD_FINGERPRINTED_WITH_AUDIO: u8 = 3;
 const TEMPORARY_ATTEMPTS: usize = 32;
 
 fn magic(base: [u8; 8]) -> [u8; 8] {
@@ -61,7 +68,9 @@ impl SampleCatalog {
         let mut reader = bytes.as_slice();
         let mut found = [0; 8];
         reader.read_exact(&mut found)?;
-        let version = if found == magic(MAGIC_V2) {
+        let version = if found == magic(MAGIC_V3) {
+            3
+        } else if found == magic(MAGIC_V2) {
             2
         } else if found == magic(MAGIC_V1) {
             1
@@ -73,16 +82,10 @@ impl SampleCatalog {
             return Err(invalid());
         }
         let mut entries = Vec::with_capacity(count);
-        let mut records = std::collections::HashMap::new();
-        let mut seen = std::collections::BTreeSet::new();
+        let mut records = HashMap::new();
+        let mut seen = BTreeSet::new();
         for _ in 0..count {
-            let length = read_u32(&mut reader)? as usize;
-            if length == 0 || length > MAX_PATH_BYTES || length > reader.len() {
-                return Err(invalid());
-            }
-            let (path, remaining) = reader.split_at(length);
-            reader = remaining;
-            let path = decode_path(path)?;
+            let path = read_path(&mut reader)?;
             if !path.is_absolute() || !is_wav(path.extension()) || !seen.insert(path.clone()) {
                 return Err(invalid());
             }
@@ -92,7 +95,7 @@ impl SampleCatalog {
                 .to_string_lossy()
                 .into_owned();
             if version >= 2
-                && let Some(record) = read_record(&mut reader)?
+                && let Some(record) = read_record(&mut reader, version)?
             {
                 records.insert(path.clone(), record);
             }
@@ -102,10 +105,63 @@ impl SampleCatalog {
                 kind: EntryKind::WaveAudio,
             });
         }
+        let mut tags: HashMap<PathBuf, BTreeSet<String>> = HashMap::new();
+        let mut collections: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
+        if version >= 3 {
+            let tag_paths = read_u32(&mut reader)? as usize;
+            if tag_paths > MAX_SAMPLES {
+                return Err(invalid());
+            }
+            for _ in 0..tag_paths {
+                let path = read_path(&mut reader)?;
+                if !path.is_absolute() || tags.contains_key(&path) {
+                    return Err(invalid());
+                }
+                let tag_count = usize::from(read_u16(&mut reader)?);
+                if tag_count == 0 || tag_count > MAX_TAGS_PER_SAMPLE {
+                    return Err(invalid());
+                }
+                let mut set = BTreeSet::new();
+                for _ in 0..tag_count {
+                    let label = read_label(&mut reader)?;
+                    if !set.insert(label) {
+                        return Err(invalid());
+                    }
+                }
+                tags.insert(path, set);
+            }
+            let collection_count = read_u32(&mut reader)? as usize;
+            if collection_count > MAX_COLLECTIONS {
+                return Err(invalid());
+            }
+            for _ in 0..collection_count {
+                let name = read_label(&mut reader)?;
+                if collections.contains_key(&name) {
+                    return Err(invalid());
+                }
+                let member_count = read_u32(&mut reader)? as usize;
+                if member_count > MAX_SAMPLES {
+                    return Err(invalid());
+                }
+                let mut members = BTreeSet::new();
+                for _ in 0..member_count {
+                    let path = read_path(&mut reader)?;
+                    if !path.is_absolute() || !members.insert(path) {
+                        return Err(invalid());
+                    }
+                }
+                collections.insert(name, members);
+            }
+        }
         if !reader.is_empty() {
             return Err(invalid());
         }
-        Ok(Self { entries, records })
+        Ok(Self {
+            entries,
+            records,
+            tags,
+            collections,
+        })
     }
 
     /// This is a disposable index, never a project or user preferences file.
@@ -115,22 +171,58 @@ impl SampleCatalog {
     /// modification time when `path` already holds exactly these encoded bytes,
     /// so periodic rescans of an unchanged library cost no durable writes.
     pub fn save(&self, path: &Path) -> io::Result<bool> {
-        if self.entries.len() > MAX_SAMPLES {
+        if self.entries.len() > MAX_SAMPLES
+            || self.tags.len() > MAX_SAMPLES
+            || self.collections.len() > MAX_COLLECTIONS
+        {
             return Err(invalid());
         }
-        let mut bytes = Vec::from(magic(MAGIC_V2).as_slice());
+        let mut bytes = Vec::from(magic(MAGIC_V3).as_slice());
         bytes.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
         for entry in &self.entries {
-            let raw = encode_path(&entry.path);
-            if raw.is_empty()
-                || raw.len() > MAX_PATH_BYTES
-                || bytes.len() + raw.len() + 4 > MAX_CATALOG_BYTES
+            write_path(&mut bytes, &entry.path)?;
+            write_record(&mut bytes, self.records.get(&entry.path));
+            if bytes.len() > MAX_CATALOG_BYTES {
+                return Err(invalid());
+            }
+        }
+        // Write user tags in deterministic path order so identical state produces identical bytes.
+        let mut sorted_tags: Vec<(Vec<u8>, &BTreeSet<String>)> = self
+            .tags
+            .iter()
+            .filter(|(_, set)| !set.is_empty())
+            .map(|(path, set)| (encode_path(path), set))
+            .collect();
+        sorted_tags.sort_by(|a, b| a.0.cmp(&b.0));
+        bytes.extend_from_slice(&(sorted_tags.len() as u32).to_le_bytes());
+        for (raw_path, set) in sorted_tags {
+            if raw_path.is_empty()
+                || raw_path.len() > MAX_PATH_BYTES
+                || set.len() > MAX_TAGS_PER_SAMPLE
             {
                 return Err(invalid());
             }
-            bytes.extend_from_slice(&(raw.len() as u32).to_le_bytes());
-            bytes.extend_from_slice(&raw);
-            write_record(&mut bytes, self.records.get(&entry.path));
+            bytes.extend_from_slice(&(raw_path.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&raw_path);
+            bytes.extend_from_slice(&(set.len() as u16).to_le_bytes());
+            for tag in set {
+                write_label(&mut bytes, tag)?;
+            }
+            if bytes.len() > MAX_CATALOG_BYTES {
+                return Err(invalid());
+            }
+        }
+        // Write user collections (BTreeMap + BTreeSet are already deterministically sorted).
+        bytes.extend_from_slice(&(self.collections.len() as u32).to_le_bytes());
+        for (name, members) in &self.collections {
+            if members.len() > MAX_SAMPLES {
+                return Err(invalid());
+            }
+            write_label(&mut bytes, name)?;
+            bytes.extend_from_slice(&(members.len() as u32).to_le_bytes());
+            for member in members {
+                write_path(&mut bytes, member)?;
+            }
             if bytes.len() > MAX_CATALOG_BYTES {
                 return Err(invalid());
             }
@@ -235,31 +327,66 @@ fn write_record(bytes: &mut Vec<u8>, record: Option<&SampleRecord>) {
         bytes.push(NO_RECORD);
         return;
     };
-    bytes.push(if record.fingerprint.is_some() {
-        RECORD_FINGERPRINTED
-    } else {
-        RECORD_UNREADABLE
-    });
+    let tag = match (record.fingerprint, record.audio) {
+        (Some(_), Some(_)) => RECORD_FINGERPRINTED_WITH_AUDIO,
+        (Some(_), None) => RECORD_FINGERPRINTED,
+        (None, _) => RECORD_UNREADABLE,
+    };
+    bytes.push(tag);
     bytes.extend_from_slice(&record.size.to_le_bytes());
     bytes.extend_from_slice(&record.modified_ns.to_le_bytes());
     if let Some(fingerprint) = record.fingerprint {
         bytes.extend_from_slice(&fingerprint.value().to_le_bytes());
+        if let Some(audio) = record.audio {
+            bytes.extend_from_slice(&audio.sample_rate.to_le_bytes());
+            bytes.extend_from_slice(&audio.channels.to_le_bytes());
+            bytes.extend_from_slice(&audio.bit_depth.to_le_bytes());
+            bytes.extend_from_slice(&audio.frame_count.to_le_bytes());
+            bytes.push(audio.codec as u8);
+        }
     }
 }
 
-fn read_record(reader: &mut &[u8]) -> io::Result<Option<SampleRecord>> {
+fn read_record(reader: &mut &[u8], version: u8) -> io::Result<Option<SampleRecord>> {
     let mut tag = [0];
     reader.read_exact(&mut tag)?;
     if tag[0] == NO_RECORD {
         return Ok(None);
     }
-    if tag[0] != RECORD_UNREADABLE && tag[0] != RECORD_FINGERPRINTED {
+    let valid_tag = match tag[0] {
+        RECORD_UNREADABLE | RECORD_FINGERPRINTED => true,
+        RECORD_FINGERPRINTED_WITH_AUDIO => version >= 3,
+        _ => false,
+    };
+    if !valid_tag {
         return Err(invalid());
     }
     let size = read_u64(reader)?;
     let modified_ns = read_u64(reader)?;
-    let fingerprint = if tag[0] == RECORD_FINGERPRINTED {
+    let fingerprint = if tag[0] == RECORD_FINGERPRINTED || tag[0] == RECORD_FINGERPRINTED_WITH_AUDIO
+    {
         Some(Fingerprint::from_value(read_u64(reader)?))
+    } else {
+        None
+    };
+    let audio = if tag[0] == RECORD_FINGERPRINTED_WITH_AUDIO {
+        let sample_rate = read_u32(reader)?;
+        let channels = read_u16(reader)?;
+        let bit_depth = read_u16(reader)?;
+        let frame_count = read_u64(reader)?;
+        let mut codec_byte = [0];
+        reader.read_exact(&mut codec_byte)?;
+        let codec = AudioCodec::from_u8(codec_byte[0]).ok_or_else(invalid)?;
+        if sample_rate == 0 || channels == 0 || bit_depth == 0 {
+            return Err(invalid());
+        }
+        Some(AudioHeaderMetadata {
+            sample_rate,
+            channels,
+            bit_depth,
+            frame_count,
+            codec,
+        })
     } else {
         None
     };
@@ -267,7 +394,59 @@ fn read_record(reader: &mut &[u8]) -> io::Result<Option<SampleRecord>> {
         size,
         modified_ns,
         fingerprint,
+        audio,
     }))
+}
+
+fn write_path(bytes: &mut Vec<u8>, path: &Path) -> io::Result<()> {
+    let raw = encode_path(path);
+    if raw.is_empty()
+        || raw.len() > MAX_PATH_BYTES
+        || bytes.len().saturating_add(raw.len()).saturating_add(4) > MAX_CATALOG_BYTES
+    {
+        return Err(invalid());
+    }
+    bytes.extend_from_slice(&(raw.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&raw);
+    Ok(())
+}
+
+fn read_path(reader: &mut &[u8]) -> io::Result<PathBuf> {
+    let length = read_u32(reader)? as usize;
+    if length == 0 || length > MAX_PATH_BYTES || length > reader.len() {
+        return Err(invalid());
+    }
+    let (raw, remaining) = reader.split_at(length);
+    *reader = remaining;
+    decode_path(raw)
+}
+
+fn write_label(bytes: &mut Vec<u8>, label: &str) -> io::Result<()> {
+    let raw = label.as_bytes();
+    if raw.is_empty()
+        || raw.len() > MAX_TAG_BYTES
+        || bytes.len().saturating_add(raw.len()).saturating_add(2) > MAX_CATALOG_BYTES
+    {
+        return Err(invalid());
+    }
+    bytes.extend_from_slice(&(raw.len() as u16).to_le_bytes());
+    bytes.extend_from_slice(raw);
+    Ok(())
+}
+
+fn read_label(reader: &mut &[u8]) -> io::Result<String> {
+    let length = usize::from(read_u16(reader)?);
+    if length == 0 || length > MAX_TAG_BYTES || length > reader.len() {
+        return Err(invalid());
+    }
+    let (raw, remaining) = reader.split_at(length);
+    *reader = remaining;
+    let text = std::str::from_utf8(raw).map_err(|_| invalid())?;
+    let normalized = normalize_label(text).map_err(|_| invalid())?;
+    if normalized != text {
+        return Err(invalid());
+    }
+    Ok(normalized)
 }
 
 fn read_u64(reader: &mut &[u8]) -> io::Result<u64> {
@@ -280,6 +459,12 @@ fn read_u32(reader: &mut &[u8]) -> io::Result<u32> {
     let mut bytes = [0; 4];
     reader.read_exact(&mut bytes)?;
     Ok(u32::from_le_bytes(bytes))
+}
+
+fn read_u16(reader: &mut &[u8]) -> io::Result<u16> {
+    let mut bytes = [0; 2];
+    reader.read_exact(&mut bytes)?;
+    Ok(u16::from_le_bytes(bytes))
 }
 
 fn encode_path(path: &Path) -> Vec<u8> {

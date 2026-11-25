@@ -6,6 +6,7 @@
 //! key, not proof of identity: two files that differ only in their middle bytes
 //! share a fingerprint. Relinking therefore keeps its decoded frame/rate check as
 //! confirmation; no full-content hash is computed or stored.
+use super::header::{AudioHeaderMetadata, parse_audio_header};
 use std::{
     fs::File,
     io::{self, Read, Seek, SeekFrom},
@@ -31,22 +32,39 @@ impl Fingerprint {
         self.0
     }
 
-    /// Read-only: opens the file, never writes, moves or locks it.
-    pub fn of_file(path: &Path) -> io::Result<Self> {
+    /// Read-only: opens the file once, computes its content fingerprint, and parses
+    /// lightweight audio header metadata from the already-read head bytes with zero
+    /// extra disk opens or reads.
+    pub fn inspect_file(path: &Path) -> io::Result<(Self, Option<AudioHeaderMetadata>)> {
         let mut file = File::open(path)?;
         let size = file.metadata()?.len();
-        Self::of_reader(&mut file, size)
+        Self::inspect_reader(&mut file, size)
+    }
+
+    /// Read-only: opens the file, never writes, moves or locks it.
+    pub fn of_file(path: &Path) -> io::Result<Self> {
+        Self::inspect_file(path).map(|(fp, _)| fp)
     }
 
     /// `size` must be the reader's length; a shorter reader is an error, so a file
     /// truncated during the scan is reported instead of fingerprinted wrongly.
     pub fn of_reader(reader: &mut (impl Read + Seek), size: u64) -> io::Result<Self> {
+        Self::inspect_reader(reader, size).map(|(fp, _)| fp)
+    }
+
+    /// Compute the fingerprint and extract optional audio header metadata from
+    /// the single head read already performed for fingerprinting.
+    pub fn inspect_reader(
+        reader: &mut (impl Read + Seek),
+        size: u64,
+    ) -> io::Result<(Self, Option<AudioHeaderMetadata>)> {
         let mut hash = fnv(FNV_OFFSET, VERSION_TAG);
         hash = fnv(hash, &size.to_le_bytes());
         let mut block = vec![0; FINGERPRINT_BLOCK.min(size) as usize];
         reader.seek(SeekFrom::Start(0))?;
         reader.read_exact(&mut block)?;
         hash = fnv(hash, &block);
+        let audio = parse_audio_header(&block);
         let tail = size
             .saturating_sub(FINGERPRINT_BLOCK)
             .min(FINGERPRINT_BLOCK);
@@ -56,7 +74,7 @@ impl Fingerprint {
             reader.read_exact(&mut block)?;
             hash = fnv(hash, &block);
         }
-        Ok(Self(hash))
+        Ok((Self(hash), audio))
     }
 }
 

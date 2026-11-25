@@ -603,3 +603,235 @@ fn catalog_indexes_persists_and_finds_rf64_aiff_and_flac_relink_candidates() {
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].path, flac);
 }
+
+fn minimal_wav(sample_rate: u32, channels: u16, bit_depth: u16, frames: u32) -> Vec<u8> {
+    let block_align = channels * (bit_depth / 8);
+    let data_bytes = frames * u32::from(block_align);
+    let byte_rate = sample_rate * u32::from(block_align);
+    let mut out = Vec::new();
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+    out.extend_from_slice(b"WAVE");
+    out.extend_from_slice(b"fmt ");
+    out.extend_from_slice(&16_u32.to_le_bytes());
+    out.extend_from_slice(&1_u16.to_le_bytes());
+    out.extend_from_slice(&channels.to_le_bytes());
+    out.extend_from_slice(&sample_rate.to_le_bytes());
+    out.extend_from_slice(&byte_rate.to_le_bytes());
+    out.extend_from_slice(&block_align.to_le_bytes());
+    out.extend_from_slice(&bit_depth.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_bytes.to_le_bytes());
+    out
+}
+
+fn minimal_flac(sample_rate: u32, channels: u16, bit_depth: u16, frames: u64) -> Vec<u8> {
+    let mut flac = vec![0_u8; 42];
+    flac[0..4].copy_from_slice(b"fLaC");
+    flac[4] = 0x80;
+    flac[7] = 34;
+    let ch_m1 = u32::from(channels - 1);
+    let bps_m1 = u32::from(bit_depth - 1);
+    flac[18] = (sample_rate >> 12) as u8;
+    flac[19] = (sample_rate >> 4) as u8;
+    flac[20] = (((sample_rate & 0x0f) << 4) | (ch_m1 << 1) | (bps_m1 >> 4)) as u8;
+    flac[21] = (((bps_m1 & 0x0f) << 4) | ((frames >> 32) as u32 & 0x0f)) as u8;
+    flac[22..26].copy_from_slice(&(frames as u32).to_be_bytes());
+    flac
+}
+
+#[test]
+fn hexsmp2_migrates_to_hexsmp3_and_preserves_audio_headers_tags_and_collections() {
+    let fixture = Fixture::new();
+    let kick = fixture.0.join("drums/kick.wav");
+    let pad = fixture.0.join("synths/pad.flac");
+    write(&kick, &minimal_wav(48_000, 2, 24, 24_000));
+    write(&pad, &minimal_flac(96_000, 2, 24, 192_000));
+
+    let roots = [fixture.0.clone()];
+    let mut scan = scan_samples(&roots);
+    assert_eq!((scan.fingerprinted, scan.reused), (2, 0));
+
+    let kick_meta = scan.catalog.audio_metadata(&kick).unwrap();
+    assert_eq!(kick_meta.sample_rate, 48_000);
+    assert_eq!(kick_meta.channels, 2);
+    assert_eq!(kick_meta.bit_depth, 24);
+    assert_eq!(kick_meta.frame_count, 24_000);
+    assert_eq!(kick_meta.duration_ms(), 500);
+    assert_eq!(kick_meta.codec, AudioCodec::WavPcm);
+
+    let pad_meta = scan.catalog.audio_metadata(&pad).unwrap();
+    assert_eq!(pad_meta.sample_rate, 96_000);
+    assert_eq!(pad_meta.duration_ms(), 2_000);
+    assert_eq!(pad_meta.codec, AudioCodec::Flac);
+
+    // Attach persistent tags and collections, validate bounds/normalization
+    assert!(scan.catalog.add_tag(&kick, "  Punchy ").unwrap());
+    assert!(!scan.catalog.add_tag(&kick, "punchy").unwrap());
+    assert!(scan.catalog.add_tag(&kick, "drums").unwrap());
+    assert!(scan.catalog.add_tag(&pad, "ambient").unwrap());
+    assert!(scan.catalog.add_tag(&pad, "").is_err());
+    assert!(scan.catalog.create_collection("Favorites").unwrap());
+    assert!(scan.catalog.add_to_collection("favorites", &kick).unwrap());
+    assert!(scan.catalog.add_to_collection("favorites", &pad).unwrap());
+
+    let db = fixture.0.join("catalog.db");
+    assert!(scan.catalog.save(&db).unwrap());
+    let raw = fs::read(&db).unwrap();
+    assert_eq!(&raw[..7], b"hexsmp3");
+    assert!(
+        !scan.catalog.save(&db).unwrap(),
+        "identical bytes skip write"
+    );
+
+    let loaded = SampleCatalog::load(&db).unwrap();
+    assert_eq!(loaded, scan.catalog);
+    assert_eq!(loaded.all_tags(), vec!["ambient", "drums", "punchy"]);
+    assert_eq!(loaded.collections(), vec!["favorites"]);
+    assert_eq!(loaded.collections_for(&kick), vec!["favorites"]);
+
+    // Incremental rescan reuses records with zero extra fingerprints and preserves tags/collections
+    let rescan = scan_samples_with(
+        &roots,
+        ScanControl {
+            previous: Some(&loaded),
+            ..ScanControl::default()
+        },
+    );
+    assert_eq!((rescan.reused, rescan.fingerprinted), (2, 0));
+    assert_eq!(rescan.catalog, loaded);
+
+    // Relocate root remaps both records and persistent tags/collections
+    let mut relocated = loaded.clone();
+    let moved_root = fixture.0.join("moved-root");
+    relocated.relocate_root(&fixture.0, &moved_root);
+    let moved_kick = moved_root.join("drums/kick.wav");
+    assert!(relocated.tags_for(&moved_kick).unwrap().contains("punchy"));
+    assert!(
+        relocated
+            .collection_members("favorites")
+            .unwrap()
+            .contains(&moved_kick)
+    );
+
+    // Genuine hexsmp2 file loads cleanly and upgrades to hexsmp3 on save
+    let kick_rec = loaded.record(&kick).unwrap();
+    #[cfg(windows)]
+    let raw_kick_path: Vec<u8> = {
+        use std::os::windows::ffi::OsStrExt;
+        kick.as_os_str()
+            .encode_wide()
+            .flat_map(u16::to_le_bytes)
+            .collect()
+    };
+    #[cfg(not(windows))]
+    let raw_kick_path = kick.as_os_str().as_encoded_bytes().to_vec();
+    let mut v2 = b"hexsmp2".to_vec();
+    v2.push(raw[7]);
+    v2.extend_from_slice(&1_u32.to_le_bytes());
+    v2.extend_from_slice(&(raw_kick_path.len() as u32).to_le_bytes());
+    v2.extend_from_slice(&raw_kick_path);
+    v2.push(2); // RECORD_FINGERPRINTED
+    v2.extend_from_slice(&kick_rec.size.to_le_bytes());
+    v2.extend_from_slice(&kick_rec.modified_ns.to_le_bytes());
+    v2.extend_from_slice(&kick_rec.fingerprint.unwrap().value().to_le_bytes());
+    let v2_db = fixture.0.join("legacy-v2.db");
+    fs::write(&v2_db, &v2).unwrap();
+    let migrated = SampleCatalog::load(&v2_db).unwrap();
+    assert_eq!(migrated.entries().len(), 1);
+    assert_eq!(
+        migrated.record(&kick).unwrap().fingerprint,
+        kick_rec.fingerprint
+    );
+    assert_eq!(migrated.audio_metadata(&kick), None);
+    assert!(migrated.save(&v2_db).unwrap());
+    assert_eq!(&fs::read(&v2_db).unwrap()[..7], b"hexsmp3");
+
+    // Newer/corrupt hexsmp4 catalog is refused without modifying disk bytes
+    let mut future = raw.clone();
+    future[6] = b'4';
+    let future_db = fixture.0.join("future-v4.db");
+    fs::write(&future_db, &future).unwrap();
+    assert!(SampleCatalog::load(&future_db).is_err());
+    assert_eq!(fs::read(&future_db).unwrap(), future);
+}
+
+#[test]
+fn metadata_query_tags_collections_and_sorting_accurate_across_10k_entries() {
+    let count = 12_000_usize;
+    let mut catalog = SampleCatalog::default();
+    let root = PathBuf::from("/synthetic-library");
+    for i in 0..count {
+        let codec = match i % 3 {
+            0 => AudioCodec::WavPcm,
+            1 => AudioCodec::Flac,
+            _ => AudioCodec::AiffPcm,
+        };
+        let ext = match codec {
+            AudioCodec::WavPcm => "wav",
+            AudioCodec::Flac => "flac",
+            _ => "aiff",
+        };
+        let sample_rate = if i % 4 == 0 { 96_000 } else { 48_000 };
+        let channels = if i % 2 == 0 { 2 } else { 1 };
+        let bit_depth = if i % 5 == 0 { 24 } else { 16 };
+        let frame_count = u64::from(sample_rate) * ((i as u64 % 10) + 1);
+        let name = format!("sample_{i:05}.{ext}");
+        let path = root.join(format!("pack_{}/{}", i % 16, name));
+        catalog.records.insert(
+            path.clone(),
+            SampleRecord {
+                size: 4096 + i as u64,
+                modified_ns: 1_000_000,
+                fingerprint: Some(Fingerprint::from_value(i as u64 + 1)),
+                audio: Some(AudioHeaderMetadata {
+                    sample_rate,
+                    channels,
+                    bit_depth,
+                    frame_count,
+                    codec,
+                }),
+            },
+        );
+        if i % 100 == 0 {
+            catalog.add_tag(&path, "featured").unwrap();
+        }
+        if i % 200 == 0 {
+            catalog.add_to_collection("live-set", &path).unwrap();
+        }
+        catalog.entries.push(LibraryEntry {
+            name,
+            path,
+            kind: EntryKind::WaveAudio,
+        });
+    }
+    sort_entries(&mut catalog.entries, true);
+
+    // Structured query across 12,000 entries: tag + codec + sample_rate + duration sort
+    let matches = catalog.query(&CatalogQuery {
+        tag: Some("featured"),
+        codec: Some(AudioCodec::Flac),
+        sample_rate: Some(96_000),
+        channels: Some(2),
+        sort: CatalogSort::DurationDesc,
+        ..CatalogQuery::default()
+    });
+    // i % 100 == 0 (already implies i % 4 == 0 and i % 2 == 0) AND i % 3 == 1 => i ≡ 100 (mod 300)
+    let expected = (0..count).filter(|i| i % 100 == 0 && i % 3 == 1).count();
+    assert_eq!(matches.len(), expected);
+    assert!(matches.windows(2).all(|w| {
+        catalog.audio_metadata(&w[0].path).unwrap().duration_ms()
+            >= catalog.audio_metadata(&w[1].path).unwrap().duration_ms()
+    }));
+
+    // Inline query tokens work identically through `filtered()`
+    let inline = catalog.filtered("tag:featured col:live-set codec:wav rate:96000 ch:2", None);
+    let expected_inline = (0..count).filter(|i| i % 200 == 0 && i % 3 == 0).count();
+    assert_eq!(inline.len(), expected_inline);
+    assert!(inline.iter().all(|e| {
+        catalog
+            .collection_members("live-set")
+            .unwrap()
+            .contains(&e.path)
+    }));
+}
