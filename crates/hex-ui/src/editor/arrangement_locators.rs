@@ -1223,6 +1223,12 @@ mod tests {
             .unwrap()
             .id();
         let revision = committed.revision;
+        // Hold delivery of the real completion to exercise actions on the
+        // committed view before the UI installs its canonical revision.
+        let terminal = editor.read_with(&visual, |view, _| next_terminal(view));
+        assert!(
+            matches!(terminal.created, Some(hex_project::Created::ArrangementLocator(created)) if created == id)
+        );
         editor.update(&mut visual, |view, cx| {
             assert!(view.observe_locator_add_view(observation));
             assert!(view.service.try_event().is_err());
@@ -1390,7 +1396,6 @@ mod tests {
             assert!(view.service.try_event().is_err());
         });
         gate.release().unwrap();
-        let terminal = editor.read_with(&visual, |view, _| next_terminal(view));
         editor.update(&mut visual, |view, cx| {
             view.receive(terminal);
             cx.notify();
@@ -1457,6 +1462,12 @@ mod tests {
         let locator = committed.project.arrangement_locators().first().unwrap();
         let id = locator.id();
         let revision = committed.revision;
+        // Hold delivery of the real completion to exercise actions on the
+        // committed view before the UI installs its canonical revision.
+        let terminal = editor.read_with(&visual, |view, _| next_terminal(view));
+        assert!(
+            matches!(terminal.created, Some(hex_project::Created::ArrangementLocator(created)) if created == id)
+        );
         editor.update(&mut visual, |view, cx| {
             assert!(view.observe_locator_add_view(observation));
             assert!(view.service.try_event().is_err());
@@ -1650,10 +1661,6 @@ mod tests {
         });
         assert!(editor.read_with(&visual, |view, _| view.service.try_event().is_err()));
         gate.release().unwrap();
-        let terminal = editor.read_with(&visual, |view, _| next_terminal(view));
-        assert!(
-            matches!(terminal.created, Some(hex_project::Created::ArrangementLocator(created)) if created == id)
-        );
         editor.update(&mut visual, |view, cx| {
             view.receive(terminal);
             cx.notify();
@@ -1751,6 +1758,12 @@ mod tests {
         let locator = committed.project.arrangement_locators().first().unwrap();
         let id = locator.id();
         let revision = committed.revision;
+        // Hold delivery of the real completion to exercise actions on the
+        // committed view before the UI installs its canonical revision.
+        let terminal = editor.read_with(&visual, |view, _| next_terminal(view));
+        assert!(
+            matches!(terminal.created, Some(hex_project::Created::ArrangementLocator(created)) if created == id)
+        );
         editor.update(&mut visual, |view, cx| {
             assert!(view.observe_locator_add_view(observation));
             cx.notify();
@@ -1838,10 +1851,6 @@ mod tests {
             assert!(view.service.try_event().is_err());
         });
         gate.release().unwrap();
-        let terminal = editor.read_with(&visual, |view, _| next_terminal(view));
-        assert!(
-            matches!(terminal.created, Some(hex_project::Created::ArrangementLocator(created)) if created == id)
-        );
         editor.update(&mut visual, |view, cx| {
             view.receive(terminal);
             cx.notify();
