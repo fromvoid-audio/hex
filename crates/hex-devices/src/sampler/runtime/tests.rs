@@ -1737,3 +1737,289 @@ fn event_spans_match_frame_major_pcm_and_voice_state() {
         }
     }
 }
+
+#[test]
+fn modulated_transpose_down_release_bound_fading_cursor_and_partial_region_targets() {
+    struct ConstParam {
+        ids: [ParameterId; 1],
+        value: f32,
+    }
+    impl NativeParameterAutomation for ConstParam {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &self.ids
+        }
+        fn value_at(&self, id: ParameterId, _: usize) -> Option<ParameterValue> {
+            (id == self.ids[0]).then_some(ParameterValue::Float(self.value))
+        }
+        fn has_sample_rate_modulation(&self, id: ParameterId) -> bool {
+            id == self.ids[0]
+        }
+    }
+
+    // 1. copy_targets / base_targets normalizes partial region against expected_frames,
+    //    not base_region.end (e.g., 2..6 of 8 => 0.25 and 0.75).
+    let pcm = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
+    let views = [view(&pcm)];
+    let mut partial = Settings::new(Region { start: 2, end: 6 });
+    partial.mode = Mode::Classic { loop_region: None };
+    let prepared_partial = prepare_retarget_settings(views[0], partial, 2, 259, &ratio_tuning(1.0))
+        .with_sample_rate_gain();
+    let rt_partial = pair(&prepared_partial);
+    let ids = super::super::catalog::DESCRIPTORS.map(|d| d.id);
+    let mut targets = [None; PARAMETER_COUNT];
+    rt_partial
+        .copy_committed_parameter_targets(&ids, &mut targets)
+        .unwrap();
+    assert_eq!(targets[4], Some(ParameterValue::Float(0.25)));
+    assert_eq!(targets[5], Some(ParameterValue::Float(0.75)));
+
+    // 2. Modulated transpose-down at full polyphony (voices = 1):
+    //    Note 1 would end at frame 8 unmodulated, but -12 st halves speed so
+    //    it is still held at frame 10 when Note 2 arrives. Dynamic preflight
+    //    refuses atomically with EventCapacityExceeded instead of dropping mid-block,
+    //    and direct modulated processing never abandons NoteOffs or `self.active`.
+    let one_shot_views = [view(&pcm)];
+    let one_shot_res = BorrowedDeviceResources(&one_shot_views);
+    let mut mono_settings = Settings::new(Region { start: 0, end: 8 });
+    mono_settings.mode = Mode::OneShot {
+        gate: GateMode::Gate,
+    };
+    let mono_prepared =
+        prepare_retarget_settings(one_shot_views[0], mono_settings, 1, 259, &ratio_tuning(1.0))
+            .with_sample_rate_gain();
+    let mut mono_pair = pair(&mono_prepared);
+    let transpose_down = ConstParam {
+        ids: [TRANSPOSE],
+        value: -12.0,
+    };
+    let events = [on(0, 1, 60), on(10, 2, 60), off(12, 1)];
+    let mut out = [[0.0; 2]; 16];
+    mono_pair.begin_block();
+    assert_eq!(
+        mono_pair.process_block_with_clock_and_automation(
+            &events,
+            &mut out,
+            None,
+            &[],
+            &transpose_down,
+            &one_shot_res,
+        ),
+        Err(Error::EventCapacityExceeded)
+    );
+    mono_pair.rollback_block();
+    assert!(mono_pair.committed_is_quiescent());
+
+    // Direct modulated call (defensive non-preflighted path): drops only the
+    // overflowing NoteOn(2), still applies NoteOff(1) at frame 12, renders
+    // frames 10..14 (before source exhaustion at frame 16), and commits `self.active`.
+    let mut direct = SamplerRuntime {
+        prepared: mono_prepared.clone(),
+        active: [None; MAX_SAMPLER_RUNTIME_VOICES],
+        fading: [None; MAX_SAMPLER_RUNTIME_VOICES],
+        last_targets: mono_prepared.base_targets(),
+    };
+    let mut direct_out = [[0.0; 2]; 14];
+    direct.process_with_gains::<true>(
+        &events,
+        &mut direct_out,
+        &[],
+        &one_shot_res,
+        Some(&transpose_down),
+        1 << 2,
+    );
+    assert!(direct_out[10..14].iter().any(|f| f[0] > 0.0));
+    assert_eq!(
+        direct.active[0].and_then(|v| v.gate),
+        Some(12),
+        "NoteOff after overflowing NoteOn must still be applied and committed"
+    );
+
+    // 3. Modulated RELEASE is included in dynamic_cursor and bounded by
+    //    `max_release_tail_frames()`.
+    let long_pcm = vec![0.5_f32; 400];
+    let long_views = [view(&long_pcm)];
+    let long_res = BorrowedDeviceResources(&long_views);
+    let mut rel_settings = Settings::new(Region {
+        start: 0,
+        end: long_pcm.len(),
+    });
+    rel_settings.mode = Mode::Classic {
+        loop_region: Some(Region {
+            start: 0,
+            end: long_pcm.len(),
+        }),
+    };
+    rel_settings.envelope = Envelope {
+        attack_seconds: 0.0,
+        decay_seconds: 0.0,
+        sustain: 1.0,
+        release_seconds: 0.01, // 80 frames at 8 kHz
+    };
+    let rel_prepared =
+        prepare_retarget_settings(long_views[0], rel_settings, 2, 259, &ratio_tuning(1.0))
+            .with_sample_rate_gain();
+    let max_tail = rel_prepared.max_release_tail_frames() as usize;
+    assert_eq!(max_tail, 80);
+    // Modulate RELEASE to 10.0s (far above 0.01s authored tail): voice must
+    // still retire within `max_release_tail_frames()`.
+    let long_rel = ConstParam {
+        ids: [RELEASE],
+        value: 10.0,
+    };
+    let mut rel_pair = pair(&rel_prepared);
+    let mut buf = vec![[0.0; 2]; max_tail + 16];
+    rel_pair.begin_block();
+    rel_pair
+        .process_block_with_clock_and_automation(
+            &[on(0, 1, 60), off(4, 1)],
+            &mut buf,
+            None,
+            &[],
+            &long_rel,
+            &long_res,
+        )
+        .unwrap();
+    rel_pair.commit_block();
+    assert!(
+        rel_pair.committed_is_quiescent(),
+        "modulated RELEASE must be bounded by max_release_tail_frames()"
+    );
+    // Modulate RELEASE shorter (0.002s = 16 frames at 8 kHz): retires early!
+    let short_rel = ConstParam {
+        ids: [RELEASE],
+        value: 0.002,
+    };
+    let mut short_pair = pair(&rel_prepared);
+    let mut short_buf = [[0.0; 2]; 24];
+    short_pair.begin_block();
+    short_pair
+        .process_block_with_clock_and_automation(
+            &[on(0, 1, 60), off(4, 1)],
+            &mut short_buf,
+            None,
+            &[],
+            &short_rel,
+            &long_res,
+        )
+        .unwrap();
+    short_pair.commit_block();
+    assert!(
+        short_pair.committed_is_quiescent(),
+        "shortened modulated RELEASE must retire voice in dynamic_cursor"
+    );
+
+    // 4. Steal-fading cursor continuity under modulated TRANSPOSE across
+    //    block boundaries (whole-block vs partitioned blocks must be bit-exact).
+    let mut fade_settings = Settings::new(Region {
+        start: 0,
+        end: long_pcm.len(),
+    });
+    fade_settings.mode = Mode::Classic {
+        loop_region: Some(Region {
+            start: 0,
+            end: long_pcm.len(),
+        }),
+    };
+    fade_settings.envelope.release_seconds = 0.05;
+    let fade_prepared =
+        prepare_retarget_settings(long_views[0], fade_settings, 1, 259, &ratio_tuning(1.0))
+            .with_sample_rate_gain();
+    // Use 48 kHz so steal_fade_frames() == 48 (spans multiple blocks!).
+    let pcm_48k: Vec<f32> = (0..512).map(|i| (i as f32 / 512.0).sin()).collect();
+    let view_48k = DeviceResourceView {
+        slot: DeviceAssetSlot::new(1).unwrap(),
+        identity: DeviceResourceIdentity {
+            asset: DeviceAssetKey::new(2).unwrap(),
+            content: [4; 32],
+            derivation_version: 1,
+            derivation: [5; 32],
+        },
+        sample_rate: 48_000,
+        pcm: DeviceResourcePcm::Mono(&pcm_48k),
+    };
+    let views_48k = [view_48k];
+    let res_48k = BorrowedDeviceResources(&views_48k);
+    let mut s48 = Settings::new(Region {
+        start: 0,
+        end: pcm_48k.len(),
+    });
+    s48.mode = Mode::Classic {
+        loop_region: Some(Region {
+            start: 0,
+            end: pcm_48k.len(),
+        }),
+    };
+    s48.envelope.release_seconds = 0.05;
+    let p48 = PreparedSamplerPlan::new(
+        SampleShape::new(pcm_48k.len(), 48_000, SampleChannels::Mono).unwrap(),
+        48_000,
+        s48,
+    )
+    .unwrap()
+    .bind_source_on_control(view_48k)
+    .unwrap()
+    .prepare_runtime_on_control(1, 259, &ratio_tuning(1.0))
+    .unwrap()
+    .with_sample_rate_gain();
+    let _ = fade_prepared;
+    let bend = ConstParam {
+        ids: [TRANSPOSE],
+        value: -7.0,
+    };
+    let fade_events = [on(0, 1, 60), off(4, 1), on(8, 2, 64)];
+    let render_fading = |splits: &[usize]| -> Vec<StereoFrame> {
+        let mut rt = pair(&p48);
+        let total = 80;
+        let mut out = vec![[0.0; 2]; total];
+        let mut pos = 0;
+        let mut idx = 0;
+        while pos < total {
+            let len = splits[idx % splits.len()].min(total - pos);
+            let evs: Vec<_> = fade_events
+                .iter()
+                .filter(|e| e.frame_offset() >= pos && e.frame_offset() < pos + len)
+                .map(|e| match *e {
+                    NativeInstrumentEvent::NoteOn {
+                        frame_offset,
+                        occurrence_id,
+                        pitch,
+                        velocity,
+                    } => NativeInstrumentEvent::NoteOn {
+                        frame_offset: frame_offset - pos,
+                        occurrence_id,
+                        pitch,
+                        velocity,
+                    },
+                    NativeInstrumentEvent::NoteOff {
+                        frame_offset,
+                        occurrence_id,
+                    } => NativeInstrumentEvent::NoteOff {
+                        frame_offset: frame_offset - pos,
+                        occurrence_id,
+                    },
+                    other => other,
+                })
+                .collect();
+            rt.begin_block();
+            rt.process_block_with_clock_and_automation(
+                &evs,
+                &mut out[pos..pos + len],
+                None,
+                &[],
+                &bend,
+                &res_48k,
+            )
+            .unwrap();
+            rt.commit_block();
+            pos += len;
+            idx += 1;
+        }
+        out
+    };
+    let whole_fade = render_fading(&[80]);
+    let split_fade = render_fading(&[13, 19, 11, 23]);
+    assert_eq!(
+        whole_fade, split_fade,
+        "steal-fading voices must preserve modulated cursor continuity across block boundaries"
+    );
+}
