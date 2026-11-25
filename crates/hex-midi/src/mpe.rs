@@ -221,10 +221,51 @@ impl MpeDecoder {
         true
     }
 
+    /// Reconfigure the MPE zone without losing note-release semantics.
+    ///
+    /// Returns `None` on invalid configuration without mutating active notes or
+    /// sustain state. On valid reconfiguration, clears tracked state and emits
+    /// `MpeExpressionEvent::AllNotesOff` into `out` whenever any note or sustain
+    /// pedal was active.
+    pub fn reconfigure_into(
+        &mut self,
+        config: MpeConfig,
+        out: &mut [MpeExpressionEvent; 16],
+    ) -> Option<usize> {
+        if !config.zone.is_valid()
+            || config.pitch_bend_range_semitones == 0
+            || config.pitch_bend_range_semitones > MAX_MPE_PITCH_BEND_SEMITONES
+        {
+            return None;
+        }
+        let had_state = self.has_active_notes() || self.sustain_down.iter().any(|&down| down);
+        self.config = config;
+        self.reset();
+        if had_state {
+            out[0] = MpeExpressionEvent::AllNotesOff;
+            Some(1)
+        } else {
+            Some(0)
+        }
+    }
+
     /// Clear tracked active notes and sustain state on all channels.
     pub fn reset(&mut self) {
         self.active = [None; 16];
         self.sustain_down = [false; 16];
+    }
+
+    /// True when any member channel currently owns an active or sustained note.
+    pub fn has_active_notes(&self) -> bool {
+        self.active.iter().any(Option::is_some)
+    }
+
+    /// True when CC64 sustain is currently held on `channel` (`0..=15`).
+    pub fn is_sustain_down(&self, channel: u8) -> bool {
+        self.sustain_down
+            .get(usize::from(channel))
+            .copied()
+            .unwrap_or(false)
     }
 
     /// Active pitch currently tracked on `channel` (`0..=15`), if any.
@@ -399,8 +440,6 @@ impl MpeDecoder {
                                 pitch: note.pitch,
                                 velocity: 0,
                             });
-                        } else {
-                            push(MpeExpressionEvent::AllNotesOff);
                         }
                     }
                     return count;
@@ -796,5 +835,122 @@ mod tests {
         // Zone reconfiguration resets active notes cleanly.
         assert!(mpe.set_config(MpeConfig::new(MpeZone::Upper { member_channels: 3 }, 24).unwrap()));
         assert_eq!(mpe.active_pitch(2), None);
+    }
+
+    #[test]
+    fn member_channel_all_notes_off_and_overlapping_master_member_sustain_preserve_unrelated_notes()
+    {
+        let config = MpeConfig::new(
+            MpeZone::Lower {
+                member_channels: 15,
+            },
+            48,
+        )
+        .unwrap();
+        let mut mpe = MpeDecoder::new(config);
+        let mut out = [MpeExpressionEvent::AllNotesOff; 16];
+
+        // Start two notes on ch 1 (60) and ch 2 (64).
+        assert_eq!(mpe.decode_message_into(&[0x91, 60, 100], &mut out), 1);
+        assert_eq!(mpe.decode_message_into(&[0x92, 64, 95], &mut out), 1);
+
+        // Idle member ch 3 CC123 (All Notes Off) must NOT kill ch 1 or ch 2!
+        assert_eq!(mpe.decode_message_into(&[0xb3, 123, 0], &mut out), 0);
+        assert_eq!(mpe.active_pitch(1), Some(60));
+        assert_eq!(mpe.active_pitch(2), Some(64));
+
+        // Occupied member ch 2 CC123 releases ONLY ch 2, leaving ch 1 owned.
+        assert_eq!(mpe.decode_message_into(&[0xb2, 123, 0], &mut out), 1);
+        assert_eq!(
+            out[0],
+            MpeExpressionEvent::NoteOff {
+                channel: 2,
+                pitch: 64,
+                velocity: 0,
+            }
+        );
+        assert_eq!(mpe.active_pitch(1), Some(60));
+        assert_eq!(mpe.active_pitch(2), None);
+
+        // Overlapping master + member CC64 sustain on ch 1:
+        assert_eq!(mpe.decode_message_into(&[0xb0, 64, 127], &mut out), 1);
+        assert_eq!(mpe.decode_message_into(&[0xb1, 64, 127], &mut out), 0);
+        assert!(mpe.is_sustain_down(0));
+        assert!(mpe.is_sustain_down(1));
+        // Wrong-pitch NoteOff is ignored; matching NoteOff sustains ch 1.
+        assert_eq!(mpe.decode_message_into(&[0x81, 62, 0], &mut out), 0);
+        assert_eq!(mpe.decode_message_into(&[0x81, 60, 0], &mut out), 0);
+        assert!(mpe.active_note(1).unwrap().sustained);
+        // Lifting member CC64 while master CC64 stays down keeps ch 1 sustained!
+        assert_eq!(mpe.decode_message_into(&[0xb1, 64, 0], &mut out), 0);
+        assert!(mpe.active_note(1).unwrap().sustained);
+        // Same-channel reuse while sustained releases old pitch 60 before triggering pitch 67.
+        assert_eq!(mpe.decode_message_into(&[0x91, 67, 90], &mut out), 2);
+        assert_eq!(
+            out[0],
+            MpeExpressionEvent::NoteOff {
+                channel: 1,
+                pitch: 60,
+                velocity: 0,
+            }
+        );
+        assert_eq!(
+            out[1],
+            MpeExpressionEvent::NoteOn {
+                channel: 1,
+                pitch: 67,
+                velocity: 90,
+            }
+        );
+
+        // Sustain all 15 member channels simultaneously and release master CC64 -> all 15 release deterministically!
+        for ch in 1_u8..=15 {
+            if ch != 1 {
+                let _ = mpe.decode_message_into(&[0x90 | ch, 48 + ch, 100], &mut out);
+            }
+            let pitch = mpe.active_pitch(ch).unwrap();
+            assert_eq!(mpe.decode_message_into(&[0x80 | ch, pitch, 0], &mut out), 0);
+        }
+        let released = mpe.decode_message_into(&[0xb0, 64, 0], &mut out);
+        assert_eq!(released, 16);
+        for ch in 1_u8..=15 {
+            assert!(matches!(
+                out[usize::from(ch - 1)],
+                MpeExpressionEvent::NoteOff { channel, .. } if channel == ch
+            ));
+        }
+        assert_eq!(
+            out[15],
+            MpeExpressionEvent::MasterControlChange {
+                channel: 0,
+                cc: 64,
+                value: 0,
+            }
+        );
+        assert!(!mpe.has_active_notes());
+
+        // reconfigure_into refuses invalid config without disturbing an active note,
+        // and emits AllNotesOff on valid zone switch.
+        assert_eq!(mpe.decode_message_into(&[0x91, 60, 100], &mut out), 1);
+        assert_eq!(
+            mpe.reconfigure_into(
+                MpeConfig {
+                    zone: MpeZone::Lower { member_channels: 0 },
+                    pitch_bend_range_semitones: 48,
+                },
+                &mut out,
+            ),
+            None
+        );
+        assert_eq!(mpe.active_pitch(1), Some(60));
+        assert_eq!(
+            mpe.reconfigure_into(
+                MpeConfig::new(MpeZone::Upper { member_channels: 4 }, 48).unwrap(),
+                &mut out,
+            ),
+            Some(1)
+        );
+        assert_eq!(out[0], MpeExpressionEvent::AllNotesOff);
+        assert!(!mpe.has_active_notes());
     }
 }
