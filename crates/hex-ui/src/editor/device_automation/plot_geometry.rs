@@ -27,7 +27,7 @@ use hex_project::{
 /// Uses an integer dash index over the visible lane width so out-of-viewport sections or
 /// overflowing `viewport.end() == None` (`u64::MAX`) projections cannot loop unboundedly or
 /// stall at `f32` precision saturation.
-pub(super) fn dashed_baseline_segments(
+pub(in crate::editor) fn dashed_baseline_segments(
     section_start_x: f32,
     section_end_x: f32,
     lane_left: f32,

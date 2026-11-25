@@ -150,6 +150,9 @@ impl EditorView {
         self.device_panel
             .gesture
             .begin(self.project_generation, target, initial)?;
+        if let GestureTarget::TrackGain { track } = target {
+            self.select_touched_track_gain_lane(track);
+        }
         self.pump_device_gesture();
         Ok(())
     }
@@ -207,9 +210,11 @@ impl EditorView {
         group: hex_project::RelativeTrackGains,
     ) -> Result<(), &'static str> {
         self.check_device_gesture_admission()?;
+        let anchor = group.anchor();
         self.device_panel
             .gesture
             .begin_track_gains(self.project_generation, group)?;
+        self.select_touched_track_gain_lane(anchor);
         self.pump_device_gesture();
         Ok(())
     }
