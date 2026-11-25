@@ -16,7 +16,8 @@ pub use held_notes::{
     HELD_NOTE_COUNT, HeldNote, HeldNoteFault, HeldNoteInput, HeldNotes, HeldNotesRead,
 };
 pub use mpe::{
-    DEFAULT_MPE_PITCH_BEND_SEMITONES, MAX_MPE_PITCH_BEND_SEMITONES, MpeActiveNote, MpeConfig,
+    DEFAULT_MPE_MASTER_PITCH_BEND_SEMITONES, DEFAULT_MPE_PITCH_BEND_SEMITONES,
+    MAX_MPE_MASTER_PITCH_BEND_SEMITONES, MAX_MPE_PITCH_BEND_SEMITONES, MpeActiveNote, MpeConfig,
     MpeDecoder, MpeExpressionEvent, MpeZone,
 };
 pub use note_events::{ControlChange, NoteEvent};
@@ -347,6 +348,12 @@ impl Decoder {
             }
             emit(*event);
         }
+        // In MPE mode, master pitch bend is combined directly into per-note
+        // `NotePitchBend` cents via `MpeDecoder`, so exclude `0xe0` from the
+        // global `Controllers.bend` snapshot to prevent double-applying bend.
+        if (self.status & 0xf0) == 0xe0 {
+            return None;
+        }
         let master = ChannelFilter::Single(mpe.config().zone.master_channel());
         parse_filtered(slice, master, current)
     }
@@ -650,10 +657,7 @@ impl MultiPortAggregator {
         if port_count == 0 || port_count > MAX_AGGREGATED_PORTS {
             return Err("controller port count must be between 1 and 16");
         }
-        if !config.zone.is_valid()
-            || config.pitch_bend_range_semitones == 0
-            || config.pitch_bend_range_semitones > MAX_MPE_PITCH_BEND_SEMITONES
-        {
+        if !config.is_valid() {
             return Err("controller mpe zone configuration is invalid");
         }
         let mut decoders = Vec::new();
@@ -849,6 +853,32 @@ impl MultiPortAggregator {
             .map(|state| state.current)
             .unwrap_or_default()
     }
+
+    /// Update member (`1..=96` st) and master (`1..=48` st) MPE pitch-bend ranges
+    /// live across every aggregated port without resetting or retuning active notes.
+    pub fn set_mpe_pitch_bend_ranges(
+        &self,
+        member_semitones: u8,
+        master_semitones: u8,
+    ) -> Result<(), &'static str> {
+        if self.mpe.is_none() {
+            return Err("controller input is not in mpe mode");
+        }
+        if member_semitones == 0
+            || member_semitones > MAX_MPE_PITCH_BEND_SEMITONES
+            || master_semitones == 0
+            || master_semitones > MAX_MPE_MASTER_PITCH_BEND_SEMITONES
+        {
+            return Err("controller mpe pitch bend range is invalid");
+        }
+        let Ok(mut state) = self.state.lock() else {
+            return Err("controller aggregator state is unavailable");
+        };
+        for decoder in &mut state.mpe_decoders {
+            let _ = decoder.set_pitch_bend_ranges(member_semitones, master_semitones);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -900,6 +930,14 @@ pub enum Command {
         ports: Vec<Port>,
         config: MpeConfig,
         sink: Sink,
+    },
+    /// Update member (`1..=96` st) and master (`1..=48` st) MPE pitch-bend ranges
+    /// on the matching active MPE connection without disconnecting or resetting
+    /// held voices. Stale activations are ignored cleanly.
+    SetMpePitchBendRanges {
+        activation: u64,
+        member_semitones: u8,
+        master_semitones: u8,
     },
     Disconnect {
         activation: u64,
@@ -1108,6 +1146,7 @@ mod native {
         activation: u64,
         _ports: Vec<InputPort>,
         _client: Client,
+        aggregator: Arc<MultiPortAggregator>,
         sources: Vec<Source>,
         cancel: Box<dyn Fn() + Send>,
         is_cancelled: Box<dyn Fn() -> bool + Send>,
@@ -1174,10 +1213,7 @@ mod native {
                     }
                 }
                 ConnectMode::Mpe(config) => {
-                    if !config.zone.is_valid()
-                        || config.pitch_bend_range_semitones == 0
-                        || config.pitch_bend_range_semitones > MAX_MPE_PITCH_BEND_SEMITONES
-                    {
+                    if !config.is_valid() {
                         return Err("controller mpe zone configuration is invalid".into());
                     }
                 }
@@ -1233,13 +1269,14 @@ mod native {
                     .map_err(|status| format!("controller connection failed: {status}"))?;
                 inputs.push(input);
             }
-            Ok((inputs, client, sources))
+            Ok((inputs, client, aggregator, sources))
         })();
         match result {
-            Ok((inputs, client, sources)) => Ok(Active {
+            Ok((inputs, client, aggregator, sources)) => Ok(Active {
                 activation,
                 _ports: inputs,
                 _client: client,
+                aggregator,
                 sources,
                 cancel: sink.cancel,
                 is_cancelled: sink.is_cancelled,
@@ -1356,6 +1393,20 @@ mod native {
                         };
                     outbox.send(&events, Event::Connection { activation, result });
                 }
+                Ok(Request::Command(Command::SetMpePitchBendRanges {
+                    activation,
+                    member_semitones,
+                    master_semitones,
+                })) => {
+                    if let Some(connection) = active
+                        .as_ref()
+                        .filter(|active| active.activation == activation)
+                    {
+                        let _ = connection
+                            .aggregator
+                            .set_mpe_pitch_bend_ranges(member_semitones, master_semitones);
+                    }
+                }
                 Ok(Request::Command(Command::Disconnect { activation })) => {
                     if active
                         .as_ref()
@@ -1465,7 +1516,9 @@ mod native {
                         },
                     );
                 }
-                Ok(Request::Command(Command::Disconnect { .. })) => {}
+                Ok(Request::Command(
+                    Command::Disconnect { .. } | Command::SetMpePitchBendRanges { .. },
+                )) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
@@ -2193,16 +2246,24 @@ mod tests {
             MpeConfig {
                 zone: MpeZone::Lower { member_channels: 0 },
                 pitch_bend_range_semitones: 48,
+                master_pitch_bend_range_semitones: 2,
             },
             MpeConfig {
                 zone: MpeZone::Upper {
                     member_channels: 16,
                 },
                 pitch_bend_range_semitones: 48,
+                master_pitch_bend_range_semitones: 2,
             },
             MpeConfig {
                 zone: MpeZone::Lower { member_channels: 7 },
                 pitch_bend_range_semitones: 0,
+                master_pitch_bend_range_semitones: 2,
+            },
+            MpeConfig {
+                zone: MpeZone::Lower { member_channels: 7 },
+                pitch_bend_range_semitones: 48,
+                master_pitch_bend_range_semitones: 0,
             },
         ] {
             assert!(
@@ -2348,6 +2409,7 @@ mod tests {
                 config: MpeConfig {
                     zone: MpeZone::Lower { member_channels: 0 },
                     pitch_bend_range_semitones: 48,
+                    master_pitch_bend_range_semitones: 2,
                 },
                 sink,
             })
@@ -2376,5 +2438,98 @@ mod tests {
         }
         assert!(held.is_cancelled());
         assert!(cancelled.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn mpe_aggregator_updates_bend_ranges_live_without_retuning_held_notes_or_double_applying_master_bend()
+     {
+        let held = Arc::new(HeldNoteInput::default());
+        let delivered = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let delivered_sink = Arc::clone(&delivered);
+        let config = MpeConfig::with_ranges(MpeZone::Lower { member_channels: 4 }, 48, 12).unwrap();
+        let agg = MultiPortAggregator::new_mpe(
+            1,
+            config,
+            MachTimebase::NANOSECONDS,
+            Arc::clone(&held),
+            Box::new(|_| {}),
+            Box::new(move |ev| {
+                delivered_sink.lock().unwrap().push(ev);
+            }),
+        )
+        .unwrap();
+
+        // Trigger ch 1 pitch 60 at 48 st range, apply live range update to (12 st member, 2 st master),
+        // trigger ch 2 pitch 64 at new 12 st range, then bend both full up + apply master bend full up (+200c).
+        agg.deliver_timed_packets(
+            0,
+            [TimedPacket {
+                timestamp_ticks: 100,
+                data: &[0x91, 60, 100],
+            }],
+        );
+        assert!(agg.set_mpe_pitch_bend_ranges(0, 2).is_err());
+        assert!(agg.set_mpe_pitch_bend_ranges(12, 49).is_err());
+        agg.set_mpe_pitch_bend_ranges(12, 2).unwrap();
+        // Held note on ch 1 stays intact (no reset!).
+        let HeldNotesRead::Snapshot(still_held) = held.read() else {
+            panic!("expected held snapshot");
+        };
+        assert_eq!(
+            still_held.after(0).map(|n| n.pitch).collect::<Vec<_>>(),
+            vec![60]
+        );
+
+        agg.deliver_timed_packets(
+            0,
+            [TimedPacket {
+                timestamp_ticks: 200,
+                data: &[
+                    0x92, 64, 100, // ch 2 captures 12 st range
+                    0xe1, 0x00, 0x50, // ch 1 (+2048 at 48 st = +1200c)
+                    0xe2, 0x7f, 0x7f, // ch 2 (+8191 at 12 st = +1200c)
+                    0xe0, 0x7f,
+                    0x7f, // master (+8191 at 2 st = +200c) -> ch 1 & ch 2 become +1400c
+                ],
+            }],
+        );
+        // Controllers.bend stays 0 in MPE mode so FM4 never double-applies master bend.
+        assert_eq!(agg.controllers().bend, 0);
+        let events: Vec<_> = delivered.lock().unwrap().iter().map(|e| e.event).collect();
+        assert_eq!(
+            events,
+            vec![
+                NoteEvent::On {
+                    channel: 1,
+                    pitch: 60,
+                    velocity: 100,
+                },
+                NoteEvent::On {
+                    channel: 2,
+                    pitch: 64,
+                    velocity: 100,
+                },
+                NoteEvent::NotePitchBend {
+                    channel: 1,
+                    pitch: 60,
+                    cents: 1200,
+                },
+                NoteEvent::NotePitchBend {
+                    channel: 2,
+                    pitch: 64,
+                    cents: 1200,
+                },
+                NoteEvent::NotePitchBend {
+                    channel: 1,
+                    pitch: 60,
+                    cents: 1400,
+                },
+                NoteEvent::NotePitchBend {
+                    channel: 2,
+                    pitch: 64,
+                    cents: 1400,
+                },
+            ]
+        );
     }
 }

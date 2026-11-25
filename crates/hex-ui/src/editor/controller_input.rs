@@ -91,6 +91,9 @@ fn settings_uses_stable_port_identity_preserves_missing_choice_and_saves_explici
     });
 }
 
+const MPE_MEMBER_BEND_CHOICES: [u8; 6] = [1, 2, 12, 24, 48, 96];
+const MPE_MASTER_BEND_CHOICES: [u8; 5] = [1, 2, 12, 24, 48];
+
 #[derive(Default)]
 pub(super) struct ControllerInput {
     preferences: preferences::Preferences,
@@ -100,6 +103,8 @@ pub(super) struct ControllerInput {
     channel_selector: Option<Entity<Selector>>,
     mpe_zone_selector: Option<Entity<Selector>>,
     mpe_members_selector: Option<Entity<Selector>>,
+    mpe_member_bend_selector: Option<Entity<Selector>>,
+    mpe_master_bend_selector: Option<Entity<Selector>>,
     subscriptions: Vec<gpui::Subscription>,
     selected_port: Option<hex_midi::Port>,
     all_ports: bool,
@@ -107,6 +112,8 @@ pub(super) struct ControllerInput {
     omni: bool,
     mpe_zone: Option<hex_preferences::MidiInputMpeZone>,
     mpe_member_channels: u8,
+    mpe_member_bend_semitones: u8,
+    mpe_master_bend_semitones: u8,
     target: Option<(u64, hex_project::TrackId, hex_project::DeviceId)>,
     input: Option<Arc<LiveExpressionInput>>,
     held_notes: Option<Arc<hex_midi::HeldNoteInput>>,
@@ -140,6 +147,22 @@ impl ControllerInput {
             15
         }
     }
+    fn effective_mpe_member_bend(&self) -> u8 {
+        if (1..=hex_midi::MAX_MPE_PITCH_BEND_SEMITONES).contains(&self.mpe_member_bend_semitones) {
+            self.mpe_member_bend_semitones
+        } else {
+            hex_midi::DEFAULT_MPE_PITCH_BEND_SEMITONES
+        }
+    }
+    fn effective_mpe_master_bend(&self) -> u8 {
+        if (1..=hex_midi::MAX_MPE_MASTER_PITCH_BEND_SEMITONES)
+            .contains(&self.mpe_master_bend_semitones)
+        {
+            self.mpe_master_bend_semitones
+        } else {
+            hex_midi::DEFAULT_MPE_MASTER_PITCH_BEND_SEMITONES
+        }
+    }
     fn mpe_config(&self) -> Result<Option<hex_midi::MpeConfig>, &'static str> {
         let Some(zone) = self.mpe_zone else {
             return Ok(None);
@@ -152,9 +175,13 @@ impl ControllerInput {
                 member_channels: zone.member_channels,
             },
         };
-        hex_midi::MpeConfig::new(mpe_zone, hex_midi::DEFAULT_MPE_PITCH_BEND_SEMITONES)
-            .map(Some)
-            .ok_or("mpe member channels must be between 1 and 15")
+        hex_midi::MpeConfig::with_ranges(
+            mpe_zone,
+            zone.member_pitch_bend_semitones,
+            zone.master_pitch_bend_semitones,
+        )
+        .map(Some)
+        .ok_or("mpe zone or pitch bend range is invalid")
     }
     fn mpe_zone_selector_index(&self) -> usize {
         match self.mpe_zone.map(|zone| zone.kind) {
@@ -171,10 +198,30 @@ impl ControllerInput {
             .clamp(1, 15);
         usize::from(count - 1)
     }
+    fn mpe_member_bend_selector_index(&self) -> usize {
+        let st = self
+            .mpe_zone
+            .map(|zone| zone.member_pitch_bend_semitones)
+            .unwrap_or_else(|| self.effective_mpe_member_bend());
+        MPE_MEMBER_BEND_CHOICES
+            .iter()
+            .position(|&choice| choice == st)
+            .unwrap_or(4)
+    }
+    fn mpe_master_bend_selector_index(&self) -> usize {
+        let st = self
+            .mpe_zone
+            .map(|zone| zone.master_pitch_bend_semitones)
+            .unwrap_or_else(|| self.effective_mpe_master_bend());
+        MPE_MASTER_BEND_CHOICES
+            .iter()
+            .position(|&choice| choice == st)
+            .unwrap_or(1)
+    }
     fn mpe_zone_summary(&self) -> Option<String> {
         let zone = self.mpe_zone?;
-        if !(1..=15).contains(&zone.member_channels) {
-            return Some("mpe zone invalid · member channels must be 1–15".into());
+        if self.mpe_config().is_err() {
+            return Some("mpe zone invalid · check member count and bend ranges".into());
         }
         let n = zone.member_channels;
         match zone.kind {
@@ -401,6 +448,15 @@ impl EditorView {
             .zip(self.state.as_ref())
             .and_then(|(track, state)| state.project.track(track)?.instrument())
             .is_some_and(|instrument| instrument.state().type_id().as_str() == Ok("hex.vst3"))
+    }
+    fn controller_target_supports_mpe_pitch(&self) -> bool {
+        self.selected_track
+            .zip(self.state.as_ref())
+            .and_then(|(track, state)| state.project.track(track)?.instrument())
+            .filter(|instrument| !instrument.bypassed())
+            .is_some_and(|instrument| {
+                instrument.state().type_id().as_str() == Ok("hex.instrument.fm4")
+            })
     }
     /// Called for every rendered focus/clip context. Both leaving and entering
     /// establish a floor, excluding keys pressed while the editor was unfocused.
@@ -657,12 +713,34 @@ impl EditorView {
             self.controller_input.mpe_members_selector_index(),
             theme::control_style(),
         );
-        let (Ok(port_config), Ok(channel_config), Ok(mpe_zone_config), Ok(mpe_members_config)) = (
+        let mpe_member_bend_config = SelectorConfig::new(
+            "controller-input-mpe-member-bend",
+            MPE_MEMBER_BEND_CHOICES.map(|st| theme::text(format!("member bend ±{st} st"))),
+            self.controller_input.mpe_member_bend_selector_index(),
+            theme::control_style(),
+        );
+        let mpe_master_bend_config = SelectorConfig::new(
+            "controller-input-mpe-master-bend",
+            MPE_MASTER_BEND_CHOICES.map(|st| theme::text(format!("master bend ±{st} st"))),
+            self.controller_input.mpe_master_bend_selector_index(),
+            theme::control_style(),
+        );
+        let (
+            Ok(port_config),
+            Ok(channel_config),
+            Ok(mpe_zone_config),
+            Ok(mpe_members_config),
+            Ok(mpe_member_bend_config),
+            Ok(mpe_master_bend_config),
+        ) = (
             port_config,
             channel_config,
             mpe_zone_config,
             mpe_members_config,
-        ) else {
+            mpe_member_bend_config,
+            mpe_master_bend_config,
+        )
+        else {
             self.error = Some("controller input options exceed supported limits".into());
             return;
         };
@@ -670,6 +748,8 @@ impl EditorView {
         let channel = cx.new(|cx| Selector::from_config(cx, channel_config));
         let mpe_zone = cx.new(|cx| Selector::from_config(cx, mpe_zone_config));
         let mpe_members = cx.new(|cx| Selector::from_config(cx, mpe_members_config));
+        let mpe_member_bend = cx.new(|cx| Selector::from_config(cx, mpe_member_bend_config));
+        let mpe_master_bend = cx.new(|cx| Selector::from_config(cx, mpe_master_bend_config));
         let port_subscription = cx.subscribe(&port, |view, _, event: &SelectorChanged, cx| {
             view.select_controller_port(event.index, cx)
         });
@@ -702,16 +782,28 @@ impl EditorView {
             cx.subscribe(&mpe_members, |view, _, event: &SelectorChanged, cx| {
                 view.select_controller_mpe_members(event.index, cx)
             });
+        let mpe_member_bend_subscription =
+            cx.subscribe(&mpe_member_bend, |view, _, event: &SelectorChanged, cx| {
+                view.select_controller_mpe_member_bend(event.index, cx)
+            });
+        let mpe_master_bend_subscription =
+            cx.subscribe(&mpe_master_bend, |view, _, event: &SelectorChanged, cx| {
+                view.select_controller_mpe_master_bend(event.index, cx)
+            });
         self.controller_input.subscriptions.extend([
             port_subscription,
             channel_subscription,
             mpe_zone_subscription,
             mpe_members_subscription,
+            mpe_member_bend_subscription,
+            mpe_master_bend_subscription,
         ]);
         self.controller_input.port_selector = Some(port);
         self.controller_input.channel_selector = Some(channel);
         self.controller_input.mpe_zone_selector = Some(mpe_zone);
         self.controller_input.mpe_members_selector = Some(mpe_members);
+        self.controller_input.mpe_member_bend_selector = Some(mpe_member_bend);
+        self.controller_input.mpe_master_bend_selector = Some(mpe_master_bend);
     }
     fn select_controller_mpe_zone(&mut self, index: usize, cx: &mut Context<Self>) {
         if !self.controller_preferences_editable() || index > 2 {
@@ -721,15 +813,21 @@ impl EditorView {
         self.controller_input.cancel();
         self.controller_input.step_faulted = false;
         let members = self.controller_input.effective_mpe_member_channels();
+        let member_bend = self.controller_input.effective_mpe_member_bend();
+        let master_bend = self.controller_input.effective_mpe_master_bend();
         let next = match index {
             0 => None,
             1 => Some(hex_preferences::MidiInputMpeZone {
                 kind: hex_preferences::MidiInputMpeZoneKind::Lower,
                 member_channels: members,
+                member_pitch_bend_semitones: member_bend,
+                master_pitch_bend_semitones: master_bend,
             }),
             2 => Some(hex_preferences::MidiInputMpeZone {
                 kind: hex_preferences::MidiInputMpeZoneKind::Upper,
                 member_channels: members,
+                member_pitch_bend_semitones: member_bend,
+                master_pitch_bend_semitones: master_bend,
             }),
             _ => return,
         };
@@ -758,6 +856,62 @@ impl EditorView {
         self.tick_controller_input(cx);
         cx.notify();
     }
+    fn apply_live_mpe_bend_range_update(&mut self) {
+        let Some(zone) = self.controller_input.mpe_zone else {
+            return;
+        };
+        if self.controller_input.connected
+            && let Some(handle) = &self.controller_input.handle
+        {
+            // Live configuration transition: update member/master bend ranges on the
+            // active worker without disconnecting or resetting sounding notes.
+            if let Err(error) = handle.send(hex_midi::Command::SetMpePitchBendRanges {
+                activation: self.controller_input.activation,
+                member_semitones: zone.member_pitch_bend_semitones,
+                master_semitones: zone.master_pitch_bend_semitones,
+            }) {
+                self.error = Some(error.into());
+            }
+        }
+    }
+    fn select_controller_mpe_member_bend(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(&semitones) = MPE_MEMBER_BEND_CHOICES.get(index) else {
+            self.sync_controller_selectors(cx);
+            return;
+        };
+        if !self.controller_preferences_editable() {
+            self.sync_controller_selectors(cx);
+            return;
+        }
+        self.controller_input.mpe_member_bend_semitones = semitones;
+        if let Some(zone) = &mut self.controller_input.mpe_zone {
+            zone.member_pitch_bend_semitones = semitones;
+            self.controller_input.preferences.value.mpe_zone = Some(*zone);
+            self.save_controller_preferences(cx);
+            self.apply_live_mpe_bend_range_update();
+        }
+        self.sync_controller_selectors(cx);
+        cx.notify();
+    }
+    fn select_controller_mpe_master_bend(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(&semitones) = MPE_MASTER_BEND_CHOICES.get(index) else {
+            self.sync_controller_selectors(cx);
+            return;
+        };
+        if !self.controller_preferences_editable() {
+            self.sync_controller_selectors(cx);
+            return;
+        }
+        self.controller_input.mpe_master_bend_semitones = semitones;
+        if let Some(zone) = &mut self.controller_input.mpe_zone {
+            zone.master_pitch_bend_semitones = semitones;
+            self.controller_input.preferences.value.mpe_zone = Some(*zone);
+            self.save_controller_preferences(cx);
+            self.apply_live_mpe_bend_range_update();
+        }
+        self.sync_controller_selectors(cx);
+        cx.notify();
+    }
     fn sync_controller_selectors(&mut self, cx: &mut Context<Self>) {
         let index = self.controller_input.port_selector_index();
         if let Some(selector) = &self.controller_input.port_selector {
@@ -781,6 +935,18 @@ impl EditorView {
             let members_index = self.controller_input.mpe_members_selector_index();
             selector.update(cx, |selector, cx| {
                 let _ = selector.set_selected(members_index, cx);
+            });
+        }
+        if let Some(selector) = &self.controller_input.mpe_member_bend_selector {
+            let bend_index = self.controller_input.mpe_member_bend_selector_index();
+            selector.update(cx, |selector, cx| {
+                let _ = selector.set_selected(bend_index, cx);
+            });
+        }
+        if let Some(selector) = &self.controller_input.mpe_master_bend_selector {
+            let bend_index = self.controller_input.mpe_master_bend_selector_index();
+            selector.update(cx, |selector, cx| {
+                let _ = selector.set_selected(bend_index, cx);
             });
         }
     }
@@ -983,6 +1149,12 @@ impl EditorView {
                 return;
             }
         };
+        if mpe_config.is_some() && !self.controller_target_supports_mpe_pitch() {
+            self.controller_input.cancel();
+            self.error =
+                Some("mpe per-note pitch is unsupported on the selected instrument".into());
+            return;
+        }
         let activation = match note_input.begin_live_notes_activation_on_control() {
             Ok(activation) => activation,
             Err(error) => {
@@ -1114,6 +1286,11 @@ impl EditorView {
             "settings unavailable"
         } else if self.controller_input.mpe_config().is_err() {
             "invalid mpe zone"
+        } else if self.controller_input.mpe_zone.is_some()
+            && self.controller_target().is_some()
+            && !self.controller_target_supports_mpe_pitch()
+        {
+            "mpe unsupported on target"
         } else if !self.controller_input.has_selected_ports()
             && (self.controller_input.preferences.value.all_ports
                 || !self
@@ -1180,13 +1357,34 @@ impl EditorView {
                     .then(|| self.controller_input.mpe_members_selector.clone())
                     .flatten(),
             )
+            .children(
+                self.controller_input
+                    .mpe_zone
+                    .is_some()
+                    .then(|| self.controller_input.mpe_member_bend_selector.clone())
+                    .flatten(),
+            )
+            .children(
+                self.controller_input
+                    .mpe_zone
+                    .is_some()
+                    .then(|| self.controller_input.mpe_master_bend_selector.clone())
+                    .flatten(),
+            )
             .children(mpe_summary.map(|summary| {
+                let text = if self.controller_target().is_some()
+                    && !self.controller_target_supports_mpe_pitch()
+                {
+                    format!("{summary} · unsupported on selected instrument")
+                } else {
+                    summary
+                };
                 div()
                     .id("controller-input-mpe-summary")
                     .debug_selector(|| "controller-input-mpe-summary".into())
                     .text_xs()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text(summary))
+                    .child(theme::text(text))
             }))
             .children(
                 self.controller_input
@@ -1242,6 +1440,8 @@ impl EditorView {
                         &view.controller_input.channel_selector,
                         &view.controller_input.mpe_zone_selector,
                         &view.controller_input.mpe_members_selector,
+                        &view.controller_input.mpe_member_bend_selector,
+                        &view.controller_input.mpe_master_bend_selector,
                     ]
                     .into_iter()
                     .flatten()
@@ -1994,6 +2194,7 @@ fn mpe_settings_to_worker_activation_persists_valid_zone_rejects_invalid_and_ret
     use gpui::{Modifiers, point};
 
     let (mut visual, editor, _environment, _) = fixture(cx);
+    // Start with an unsupported target (Sine) to verify visible MPE refusal before switching to FM4.
     editor.update(&mut visual, |view, _| {
         assert!(view.enqueue(hex_session::service::Request::Edit(
             hex_project::Command::InsertInstrument {
@@ -2008,6 +2209,7 @@ fn mpe_settings_to_worker_activation_persists_valid_zone_rejects_invalid_and_ret
     let handle = worker.handle();
 
     editor.update(&mut visual, |view, cx| {
+        assert!(!view.controller_target_supports_mpe_pitch());
         view.controller_input.handle = Some(handle.clone());
         view.install_controller_selectors(
             vec![
@@ -2062,10 +2264,75 @@ fn mpe_settings_to_worker_activation_persists_valid_zone_rejects_invalid_and_ret
     visual.simulate_mouse_up(lower_click, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
 
-    // Member selector and zone summary now render cleanly; select 7 member channels (index 6).
+    // Verify unsupported Sine target refuses MPE visibly before switching track to FM4.
+    editor.update(&mut visual, |view, cx| {
+        let live_root = Arc::new(
+            hex_engine::computer_keyboard::ComputerKeyboardInput::default()
+                .with_live_notes()
+                .unwrap(),
+        );
+        view.computer_keyboard.input = Some(Arc::clone(&live_root));
+        view.computer_keyboard.prepared = true;
+        view.computer_keyboard.target = view
+            .controller_target()
+            .map(|(generation, track, _)| (generation, 0, track));
+        view.select_controller_port(1, cx);
+        view.controller_expression_prepared();
+        assert!(!view.controller_input.connecting);
+        assert!(
+            view.error
+                .as_deref()
+                .is_some_and(|e| e.contains("unsupported")),
+            "unsupported Sine target must visibly refuse MPE: {:?}",
+            view.error
+        );
+        view.error = None;
+    });
+    pump(&editor, &mut visual);
+    visual.run_until_parked();
+
+    // Replace Sine with FM4 (which supports per-note MPE pitch) and verify full activation + live range updates.
+    editor.update(&mut visual, |view, _| {
+        let existing = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(view.selected_track.unwrap())
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        let fm4 = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Instrument,
+            hex_engine::DeviceTypeId::from_static("hex.instrument.fm4"),
+        )
+        .unwrap();
+        assert!(view.enqueue(hex_session::service::Request::Edit(
+            hex_project::Command::LoadInstrument {
+                track: view.selected_track.unwrap(),
+                replacing: Some(existing),
+                state: fm4,
+                device_name: "fm4".into(),
+            }
+        )));
+    });
+    pump(&editor, &mut visual);
+
+    // Member selector, bend-range selectors, and zone summary now render cleanly; select 7 member channels (index 6).
     let members_bounds = visual
         .debug_bounds("controller-input-mpe-members")
         .expect("member selector visible when Lower Zone active");
+    assert!(
+        visual
+            .debug_bounds("controller-input-mpe-member-bend")
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds("controller-input-mpe-master-bend")
+            .is_some()
+    );
     assert!(
         visual
             .debug_bounds("controller-input-mpe-summary")
@@ -2089,13 +2356,24 @@ fn mpe_settings_to_worker_activation_persists_valid_zone_rejects_invalid_and_ret
     visual.simulate_mouse_up(seven_click, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
 
-    // Preferences persisted Lower Zone with 7 members on disk.
+    // Preferences persisted Lower Zone with 7 members (48 st member / 2 st master defaults) on disk.
     editor.read_with(&visual, |view, _| {
+        let inst = view
+            .selected_track
+            .and_then(|track| view.state.as_ref()?.project.track(track)?.instrument())
+            .map(|instrument| (instrument.state().type_id(), instrument.bypassed()));
+        assert!(
+            view.controller_target_supports_mpe_pitch(),
+            "expected FM4 target, got inst={inst:?} error={:?}",
+            view.error
+        );
         assert_eq!(
             view.controller_input.mpe_zone,
             Some(hex_preferences::MidiInputMpeZone {
                 kind: hex_preferences::MidiInputMpeZoneKind::Lower,
                 member_channels: 7,
+                member_pitch_bend_semitones: 48,
+                master_pitch_bend_semitones: 2,
             })
         );
         let persisted = hex_preferences::load_midi_input_preferences(
@@ -2107,6 +2385,8 @@ fn mpe_settings_to_worker_activation_persists_valid_zone_rejects_invalid_and_ret
             Some(hex_preferences::MidiInputMpeZone {
                 kind: hex_preferences::MidiInputMpeZoneKind::Lower,
                 member_channels: 7,
+                member_pitch_bend_semitones: 48,
+                master_pitch_bend_semitones: 2,
             })
         );
     });
@@ -2190,6 +2470,52 @@ fn mpe_settings_to_worker_activation_persists_valid_zone_rejects_invalid_and_ret
         );
     });
 
+    // Live member (24 st -> index 3) & master (12 st -> index 2) pitch-bend range updates
+    // must NOT cancel active held notes or live activation!
+    editor.update(&mut visual, |view, cx| {
+        view.select_controller_mpe_member_bend(3, cx);
+    });
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        view.select_controller_mpe_master_bend(2, cx);
+    });
+    visual.run_until_parked();
+    assert!(
+        !first_held.is_cancelled(),
+        "live pitch-bend range change must not cancel active held notes"
+    );
+    assert!(
+        first_input
+            .live_notes()
+            .unwrap()
+            .same_current_activation(first_token),
+        "live pitch-bend range change must keep current live activation intact"
+    );
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.controller_input.mpe_zone,
+            Some(hex_preferences::MidiInputMpeZone {
+                kind: hex_preferences::MidiInputMpeZoneKind::Lower,
+                member_channels: 7,
+                member_pitch_bend_semitones: 24,
+                master_pitch_bend_semitones: 12,
+            })
+        );
+        let persisted = hex_preferences::load_midi_input_preferences(
+            view.controller_input.preferences.path.as_ref().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            persisted.mpe_zone,
+            Some(hex_preferences::MidiInputMpeZone {
+                kind: hex_preferences::MidiInputMpeZoneKind::Lower,
+                member_channels: 7,
+                member_pitch_bend_semitones: 24,
+                master_pitch_bend_semitones: 12,
+            })
+        );
+    });
+
     // Switching zone to Upper (index 2) cancels the previous activation and retires all held notes safely.
     editor.update(&mut visual, |view, cx| {
         view.select_controller_mpe_zone(2, cx);
@@ -2208,6 +2534,8 @@ fn mpe_settings_to_worker_activation_persists_valid_zone_rejects_invalid_and_ret
             Some(hex_preferences::MidiInputMpeZone {
                 kind: hex_preferences::MidiInputMpeZoneKind::Upper,
                 member_channels: 7,
+                member_pitch_bend_semitones: 24,
+                master_pitch_bend_semitones: 12,
             })
         );
         assert_eq!(
@@ -2240,6 +2568,8 @@ fn mpe_settings_to_worker_activation_persists_valid_zone_rejects_invalid_and_ret
         view.controller_input.mpe_zone = Some(hex_preferences::MidiInputMpeZone {
             kind: hex_preferences::MidiInputMpeZoneKind::Lower,
             member_channels: 0,
+            member_pitch_bend_semitones: 48,
+            master_pitch_bend_semitones: 2,
         });
         assert!(view.controller_input.mpe_config().is_err());
         view.controller_expression_prepared();
