@@ -80,6 +80,7 @@ fn inclusive_absolute_window_and_empty_event_result_keep_original_context() {
     let result = read_session_filtered(
         &path,
         &LogFilter {
+            level: None,
             category: Some("audio"),
             text: Some("take"),
             since_unix_nanos: Some(20),
@@ -212,5 +213,78 @@ fn unreadable_segments_and_invalid_filters_refuse_without_claiming_complete_expo
             io::ErrorKind::InvalidInput
         );
     }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn severity_level_filter_selects_at_or_above_threshold_while_retaining_context() {
+    let dir = crate::tests::fixture();
+    let path = dir.join("session.log");
+    let mut text = "session_started log_schema=3 segment=0\n".to_owned();
+    for (seq, level, msg) in [
+        (1, "error", "audio failed"),
+        (2, "warn", "plugin slow"),
+        (3, "info", "opened project"),
+        (4, "debug", "cache hit"),
+        (5, "trace", "tick"),
+    ] {
+        text.push_str(&format!(
+            "event level={level} category=audio unix_nanos={seq} elapsed_nanos={seq} sequence={seq} truncated=false message=\"{msg}\"\n"
+        ));
+    }
+    text.push_str("diagnostics_loss queue_full=1\n");
+    fs::write(&path, &text).unwrap();
+
+    let errors = read_session_filtered(
+        &path,
+        &LogFilter {
+            level: Some(Level::Error),
+            ..LogFilter::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(errors.matching_events, 1);
+    assert!(
+        errors
+            .snapshot
+            .lines
+            .iter()
+            .any(|l| l.text.contains("audio failed"))
+    );
+    assert!(
+        errors
+            .snapshot
+            .lines
+            .iter()
+            .any(|l| l.text.starts_with("diagnostics_loss"))
+    );
+
+    let warn_plus = read_session_filtered(
+        &path,
+        &LogFilter {
+            level: Some(Level::Warn),
+            ..LogFilter::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(warn_plus.matching_events, 2);
+    let levels: Vec<&str> = warn_plus
+        .snapshot
+        .lines
+        .iter()
+        .filter_map(|l| l.event.as_ref().map(|e| e.level.as_str()))
+        .collect();
+    assert_eq!(levels, ["error", "warn"]);
+
+    let info_plus = read_session_filtered(
+        &path,
+        &LogFilter {
+            level: Some(Level::Info),
+            ..LogFilter::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(info_plus.matching_events, 3);
+
     fs::remove_dir_all(dir).unwrap();
 }

@@ -63,7 +63,7 @@ struct Document {
 }
 
 pub fn track_defaults_path(home: &Path) -> PathBuf {
-    home.join("Library/Application Support/hex/track-defaults.json")
+    crate::app_support_dir_from(home).join("track-defaults.json")
 }
 
 /// Missing documents and missing gain fields use the −12 dB default.

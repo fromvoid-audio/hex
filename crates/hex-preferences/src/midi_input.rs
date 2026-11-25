@@ -98,7 +98,7 @@ struct DocumentV2 {
 
 /// Stable app-support path for selected MIDI input preferences.
 pub fn midi_input_preferences_path(home: &Path) -> PathBuf {
-    home.join("Library/Application Support/hex/midi-input.json")
+    crate::app_support_dir_from(home).join("midi-input.json")
 }
 
 /// Missing preferences leave hardware input disabled and select channel zero.

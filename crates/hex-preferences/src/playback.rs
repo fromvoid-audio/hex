@@ -32,7 +32,7 @@ struct Document {
 
 /// Stable app-support location shared by development and review bundles.
 pub fn playback_preferences_path(home: &Path) -> PathBuf {
-    home.join("Library/Application Support/hex/playback.json")
+    crate::app_support_dir_from(home).join("playback.json")
 }
 
 /// Missing files and omitted flags enable note chase without writing defaults.

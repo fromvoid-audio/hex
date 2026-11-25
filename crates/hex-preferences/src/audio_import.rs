@@ -18,7 +18,7 @@ struct Document {
 }
 
 pub fn audio_import_preferences_path(home: &Path) -> PathBuf {
-    home.join("Library/Application Support/hex/audio-import.json")
+    crate::app_support_dir_from(home).join("audio-import.json")
 }
 
 /// Missing preferences explicitly select unwarped imports.

@@ -25,7 +25,7 @@ struct Document {
 }
 
 pub fn vst3_editor_preferences_path(home: &Path) -> PathBuf {
-    home.join("Library/Application Support/hex/vst3-editor.json")
+    crate::app_support_dir_from(home).join("vst3-editor.json")
 }
 
 /// Missing files and omitted flags reserve plain Space for Hex transport.

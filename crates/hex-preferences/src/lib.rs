@@ -66,36 +66,77 @@ pub const MAX_RECENT_PROJECTS: usize = 10;
 const TEMPORARY_ATTEMPTS: usize = 8;
 static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
 
+/// Centralized application support directory derived from an explicit home path.
+///
+/// Matches `hex-diagnostics` platform conventions:
+/// - macOS: `<home>/Library/Application Support/hex`
+/// - Windows: `<home>/AppData/Roaming/hex`
+/// - Linux / other Unix: `<home>/.local/share/hex`
+pub fn app_support_dir_from(home: &Path) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        home.join("Library").join("Application Support").join("hex")
+    } else if cfg!(windows) {
+        home.join("AppData").join("Roaming").join("hex")
+    } else {
+        home.join(".local").join("share").join("hex")
+    }
+}
+
+/// Resolve the application support directory from standard platform environment variables.
+pub fn app_support_dir() -> Result<PathBuf, String> {
+    app_support_dir_with_env(
+        std::env::var_os("HOME"),
+        std::env::var_os("USERPROFILE"),
+        std::env::var_os("APPDATA"),
+        std::env::var_os("XDG_DATA_HOME"),
+    )
+}
+
+fn app_support_dir_with_env(
+    home: Option<OsString>,
+    user_profile: Option<OsString>,
+    app_data: Option<OsString>,
+    xdg_data_home: Option<OsString>,
+) -> Result<PathBuf, String> {
+    if cfg!(windows) {
+        if let Some(appdata) = app_data.filter(|v| !v.is_empty()) {
+            return Ok(PathBuf::from(appdata).join("hex"));
+        }
+        if let Some(profile) = user_profile.filter(|v| !v.is_empty()) {
+            return Ok(app_support_dir_from(Path::new(&profile)));
+        }
+    } else if !cfg!(target_os = "macos")
+        && let Some(xdg) = xdg_data_home
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+    {
+        return Ok(xdg.join("hex"));
+    }
+    let home = home
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "home directory is unavailable".to_owned())?;
+    Ok(app_support_dir_from(Path::new(&home)))
+}
+
 /// Stable app-support location shared by development and review bundles.
 pub fn browser_places_path(home: &Path) -> PathBuf {
-    home.join("Library")
-        .join("Application Support")
-        .join("hex")
-        .join("browser.json")
+    app_support_dir_from(home).join("browser.json")
 }
 
 /// Stable app-support location for the independent recent-project history.
 pub fn recent_projects_path(home: &Path) -> PathBuf {
-    home.join("Library")
-        .join("Application Support")
-        .join("hex")
-        .join("recent-projects.json")
+    app_support_dir_from(home).join("recent-projects.json")
 }
 
 /// Stable location for the last successfully used project folder.
 pub fn project_directory_preferences_path(home: &Path) -> PathBuf {
-    home.join("Library")
-        .join("Application Support")
-        .join("hex")
-        .join("project-directory.json")
+    app_support_dir_from(home).join("project-directory.json")
 }
 
 /// Stable app-support location for the independent four-color theme.
 pub fn theme_preferences_path(home: &Path) -> PathBuf {
-    home.join("Library")
-        .join("Application Support")
-        .join("hex")
-        .join("theme.json")
+    app_support_dir_from(home).join("theme.json")
 }
 
 /// The four editable colors of the application palette.
@@ -1495,5 +1536,54 @@ mod tests {
             assert!(save(&config, &places).is_err());
             assert_eq!(fs::read(&config).unwrap(), bytes);
         }
+    }
+
+    #[test]
+    fn app_support_dir_centralizes_all_preference_paths_and_env_fallbacks() {
+        let home = Path::new("/tmp/hex-home");
+        let base = app_support_dir_from(home);
+        #[cfg(target_os = "macos")]
+        assert_eq!(base, home.join("Library/Application Support/hex"));
+        #[cfg(all(not(target_os = "macos"), not(windows)))]
+        assert_eq!(base, home.join(".local/share/hex"));
+        #[cfg(windows)]
+        assert_eq!(base, home.join("AppData/Roaming/hex"));
+
+        assert_eq!(browser_places_path(home), base.join("browser.json"));
+        assert_eq!(
+            recent_projects_path(home),
+            base.join("recent-projects.json")
+        );
+        assert_eq!(
+            project_directory_preferences_path(home),
+            base.join("project-directory.json")
+        );
+        assert_eq!(theme_preferences_path(home), base.join("theme.json"));
+        assert_eq!(track_defaults_path(home), base.join("track-defaults.json"));
+        assert_eq!(
+            audio_device_preferences_path(home),
+            base.join("audio-device.json")
+        );
+        assert_eq!(
+            audio_import_preferences_path(home),
+            base.join("audio-import.json")
+        );
+        assert_eq!(
+            midi_input_preferences_path(home),
+            base.join("midi-input.json")
+        );
+        assert_eq!(playback_preferences_path(home), base.join("playback.json"));
+        assert_eq!(
+            vst3_editor_preferences_path(home),
+            base.join("vst3-editor.json")
+        );
+
+        assert!(app_support_dir_with_env(None, None, None, None).is_err());
+        assert!(app_support_dir_with_env(Some(OsString::new()), None, None, None).is_err());
+        assert_eq!(
+            app_support_dir_with_env(Some(OsString::from("/tmp/hex-home")), None, None, None)
+                .unwrap(),
+            base
+        );
     }
 }

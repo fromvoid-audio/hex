@@ -6,7 +6,7 @@ use std::{
     path::Path,
 };
 
-use crate::{MAX_EVENT_BYTES, MAX_SEGMENT_BYTES, RETAINED_SEGMENTS};
+use crate::{Level, MAX_EVENT_BYTES, MAX_SEGMENT_BYTES, RETAINED_SEGMENTS};
 
 // A writer may put one bounded rollover header before a full segment. Older
 // unbounded files are clipped rather than causing unbounded viewer allocation.
@@ -44,6 +44,9 @@ pub struct LogSnapshot {
 /// Composable event filters. Non-event context and loss lines are retained.
 #[derive(Debug, Default)]
 pub struct LogFilter<'a> {
+    /// Minimum severity threshold (`Some(Level::Error)` matches errors only;
+    /// `Some(Level::Warn)` matches errors and warnings; `None` matches all levels).
+    pub level: Option<Level>,
     pub category: Option<&'a str>,
     pub text: Option<&'a str>,
     pub since_unix_nanos: Option<u128>,
@@ -58,9 +61,13 @@ impl LogFilter<'_> {
         let mut scratch = String::new();
         self.matches_record(
             &line.text,
-            line.event
-                .as_ref()
-                .map(|event| (event.category.as_str(), event.unix_nanos)),
+            line.event.as_ref().map(|event| {
+                (
+                    event.level.as_str(),
+                    event.category.as_str(),
+                    event.unix_nanos,
+                )
+            }),
             query.as_deref(),
             &mut scratch,
         )
@@ -69,14 +76,16 @@ impl LogFilter<'_> {
     fn matches_record(
         &self,
         text: &str,
-        event: Option<(&str, u128)>,
+        event: Option<(&str, &str, u128)>,
         query: Option<&str>,
         scratch: &mut String,
     ) -> bool {
-        let Some((category, unix_nanos)) = event else {
+        let Some((level, category, unix_nanos)) = event else {
             return true;
         };
-        self.category.is_none_or(|expected| category == expected)
+        self.level.is_none_or(|minimum| {
+            Level::parse(level).is_some_and(|actual| actual.meets_minimum(minimum))
+        }) && self.category.is_none_or(|expected| category == expected)
             && self
                 .since_unix_nanos
                 .is_none_or(|since| unix_nanos >= since)
@@ -317,7 +326,7 @@ fn read_selected(
                     line,
                     event
                         .as_ref()
-                        .map(|event| (event.category, event.unix_nanos)),
+                        .map(|event| (event.level, event.category, event.unix_nanos)),
                     query.as_deref(),
                     &mut scratch,
                 )
@@ -442,6 +451,7 @@ mod tests {
         );
         assert_eq!(events[0].category, "uncategorised");
         let filter = LogFilter {
+            level: None,
             category: Some("audio"),
             text: Some("device"),
             since_unix_nanos: Some(150),
@@ -579,6 +589,7 @@ mod tests {
     #[test]
     fn case_insensitive_filter_reuses_ascii_scratch_and_handles_unicode() {
         let filter = LogFilter {
+            level: None,
             category: Some("audio"),
             since_unix_nanos: None,
             until_unix_nanos: None,
@@ -591,13 +602,13 @@ mod tests {
         // ASCII fast path matches case-insensitively and reuses scratch allocation.
         assert!(filter.matches_record(
             "event seq=1 AudioCallback Underrun",
-            Some(("audio", 10)),
+            Some(("info", "audio", 10)),
             Some("underrun"),
             &mut scratch,
         ));
         assert!(!filter.matches_record(
             "event seq=2 AudioCallback Healthy",
-            Some(("audio", 11)),
+            Some(("info", "audio", 11)),
             Some("underrun"),
             &mut scratch,
         ));
@@ -607,13 +618,13 @@ mod tests {
         // Non-ASCII Unicode fallback preserves full case-folding semantics.
         assert!(filter.matches_record(
             "event seq=3 Loaded ÜBER_Synth.vst3",
-            Some(("audio", 12)),
+            Some(("info", "audio", 12)),
             Some("über_synth"),
             &mut scratch,
         ));
         assert!(!filter.matches_record(
             "event seq=4 Loaded Straße.vst3",
-            Some(("audio", 13)),
+            Some(("info", "audio", 13)),
             Some("über_synth"),
             &mut scratch,
         ));

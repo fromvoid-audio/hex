@@ -20,7 +20,7 @@
 //! for new-format files, plus a bounded rollover header per session); older
 //! unbounded logs expire through normal retention.
 //! Startup and shutdown use two-second writer waits. Shutdown closes admission,
-//! observes the last enqueue, then drains at most 64 accepted records. Stalled
+//! observes the last enqueue, then drains at most `EVENT_CAPACITY` accepted records. Stalled
 //! OS I/O may outlive a reported timeout
 //! on its detached worker; it never blocks audio or owns project/media files.
 
@@ -41,14 +41,14 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-pub const EVENT_CAPACITY: usize = 64;
+pub const EVENT_CAPACITY: usize = 512;
 pub const MAX_EVENT_BYTES: usize = 4096;
 pub const RETAINED_SESSIONS: usize = 10;
 pub const MAX_SEGMENT_BYTES: u64 = 8 * 1024 * 1024;
 pub const RETAINED_SEGMENTS: usize = 4;
 
 /// Severity of a control-side diagnostic event.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Level {
     Error,
     Warn,
@@ -57,7 +57,7 @@ pub enum Level {
     Trace,
 }
 impl Level {
-    fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Error => "error",
             Self::Warn => "warn",
@@ -65,6 +65,23 @@ impl Level {
             Self::Debug => "debug",
             Self::Trace => "trace",
         }
+    }
+
+    /// Parse a recorded lowercase diagnostic severity token.
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "error" => Some(Self::Error),
+            "warn" => Some(Self::Warn),
+            "info" => Some(Self::Info),
+            "debug" => Some(Self::Debug),
+            "trace" => Some(Self::Trace),
+            _ => None,
+        }
+    }
+
+    /// Whether `self` is at least as severe as `minimum` (`Error` most severe, `Trace` least).
+    pub const fn meets_minimum(self, minimum: Self) -> bool {
+        (self as u8) <= (minimum as u8)
     }
 }
 
@@ -208,8 +225,8 @@ impl Shared {
     }
 }
 
-/// Control-only producer: at most 4096 UTF-8 message bytes, a 64-record queue
-/// and explicit rejection when it is full. Concurrent producers wait for the
+/// Control-only producer: at most 4096 UTF-8 message bytes, a bounded queue of
+/// `EVENT_CAPACITY` records and explicit rejection when it is full. Concurrent producers wait for the
 /// enqueue gate instead of dropping records; its critical section performs no
 /// allocation, formatting or I/O and never blocks on the queue. Never format or
 /// call on a realtime/audio thread.

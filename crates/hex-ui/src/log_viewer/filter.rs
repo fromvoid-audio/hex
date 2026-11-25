@@ -1,10 +1,11 @@
 //! Fixed, owned diagnostic filters for a single viewer action.
-use hex_diagnostics::reader::LogFilter;
+use hex_diagnostics::{Level, reader::LogFilter};
 use std::time::Duration;
 
 /// One action's owned filters, with a fixed inclusive relative-time window.
 /// Moving between pages never reanchors a range to that page's last event.
 pub(super) struct ViewerFilter {
+    pub(super) level: Option<Level>,
     pub(super) category: &'static str,
     pub(super) query: String,
     pub(super) window: &'static str,
@@ -13,12 +14,14 @@ pub(super) struct ViewerFilter {
 }
 impl ViewerFilter {
     pub(super) fn new(
+        level: Option<Level>,
         category: &'static str,
         query: String,
         window: (&'static str, Option<u64>),
         now: u128,
     ) -> Self {
         Self {
+            level,
             category,
             query,
             window: window.0,
@@ -30,6 +33,7 @@ impl ViewerFilter {
     }
     pub(super) fn borrowed(&self) -> LogFilter<'_> {
         LogFilter {
+            level: self.level,
             category: (self.category != "all").then_some(self.category),
             text: (!self.query.is_empty()).then_some(self.query.as_str()),
             since_unix_nanos: self.since,
@@ -40,12 +44,12 @@ impl ViewerFilter {
 
 #[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
-    use super::ViewerFilter;
+    use super::{Level, ViewerFilter};
 
     #[test]
     fn relative_window_is_fixed_inclusive_and_does_not_follow_page_timestamps() {
         let now = 40_000_000_000;
-        let request = ViewerFilter::new("audio", "keep".into(), ("last 30 s", Some(30)), now);
+        let request = ViewerFilter::new(None, "audio", "keep".into(), ("last 30 s", Some(30)), now);
         assert_eq!(request.window, "last 30 s");
         let filter = request.borrowed();
         for (time, expected) in [
@@ -66,12 +70,23 @@ mod tests {
             };
             assert_eq!(filter.matches(&line), expected, "{time}");
             assert!(
-                ViewerFilter::new("all", "".into(), ("entire session", None), now)
+                ViewerFilter::new(None, "all", "".into(), ("entire session", None), now)
                     .borrowed()
                     .matches(&line)
             );
+            assert!(
+                !ViewerFilter::new(
+                    Some(Level::Warn),
+                    "all",
+                    "".into(),
+                    ("entire session", None),
+                    now,
+                )
+                .borrowed()
+                .matches(&line)
+            );
         }
-        let early = ViewerFilter::new("all", "".into(), ("last 30 s", Some(30)), 1);
+        let early = ViewerFilter::new(None, "all", "".into(), ("last 30 s", Some(30)), 1);
         assert_eq!((early.since, early.until), (Some(0), Some(1)));
     }
 }
