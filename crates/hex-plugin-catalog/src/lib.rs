@@ -74,14 +74,15 @@
 //! Cache data never authorizes future plugin instance admission; the processing host
 //! must verify current source and resources.
 //!
-//! Catalog version 4 records the verified discovery tools alongside the bundle
-//! identity for a failed scan. An incremental folder scan skips a failure only
-//! when both identities match. A full folder or single-bundle scan always
-//! retries. Versions 2 and 3 migrate in memory and retain last-good reports
-//! and failure diagnostics;
-//! their failures lack tool provenance and are eligible for retry. Only a
-//! catalog update publishes version 4. Version 1 and newer unsupported files
-//! remain intact. A binary change with an unchanged Info.plist still requires
+//! Catalog version 5 adds bounded CLAP bundle entries (`clap_entries`) alongside
+//! VST3 entries. Catalog version 4 recorded the verified discovery tools
+//! alongside the bundle identity for a failed scan. An incremental folder scan
+//! skips a failure only when both identities match. A full folder or
+//! single-bundle scan always retries. Versions 2, 3, and 4 migrate in memory to
+//! version 5 and retain last-good reports and failure diagnostics (rejecting
+//! `clap_entries` on versions 2, 3, and 4); versions 2 and 3 failures lack tool
+//! provenance and are eligible for retry. Only a catalog update publishes
+//! version 5. Version 1 and newer unsupported files (version 6+) remain intact. A binary change with an unchanged Info.plist still requires
 //! an explicit retry while the discovery tools remain identical.
 //! The native integration tests require an explicit signed original package through
 //! `HEX_VST3_CATALOG_TEST_APP` and original fixture directory through
@@ -117,9 +118,10 @@ pub const MAX_MODULES: usize = 512;
 pub const MAX_CLASSES: usize = 2048;
 pub const MAX_CATALOG_BYTES: usize = 4 * 1024 * 1024;
 /// Current saved catalog format; see the crate documentation for migration.
-pub const CATALOG_VERSION: u32 = 4;
+pub const CATALOG_VERSION: u32 = 5;
 const CATALOG_VERSION_2: u32 = 2;
 const CATALOG_VERSION_3: u32 = 3;
+const CATALOG_VERSION_4: u32 = 4;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -176,6 +178,18 @@ impl Default for Catalog {
 
 fn bounded(value: &str, maximum: usize) -> bool {
     value.len() <= maximum && !value.contains('\0')
+}
+pub(crate) fn sanitize_failure(error: &str) -> String {
+    let cleaned: String = error
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(128)
+        .collect();
+    if cleaned.is_empty() {
+        "scan failed".into()
+    } else {
+        cleaned
+    }
 }
 fn digest(value: &str, size: usize) -> bool {
     value.len() == size
@@ -274,10 +288,13 @@ pub fn validate_report(report: &Report) -> Result<(), String> {
 impl Catalog {
     /// Upgrade supported older formats in memory, retaining their diagnostics.
     pub(crate) fn migrate(&mut self) -> Result<(), String> {
-        if matches!(self.version, CATALOG_VERSION_2 | CATALOG_VERSION_3) {
+        if matches!(
+            self.version,
+            CATALOG_VERSION_2 | CATALOG_VERSION_3 | CATALOG_VERSION_4
+        ) {
             if !self.clap_entries.is_empty()
                 || self.entries.iter().any(|entry| {
-                    entry.failed_tools_sha256.is_some()
+                    (self.version != CATALOG_VERSION_4 && entry.failed_tools_sha256.is_some())
                         || (self.version == CATALOG_VERSION_2 && entry.failed_bundle.is_some())
                 })
             {
@@ -367,7 +384,12 @@ impl Catalog {
                         .is_some_and(|s| !digest(s, 64))
                     || !digest(&identity.executable_sha256, 64)
                     || identity.executable_relative_path.is_empty()
-                    || identity.executable_relative_path.len() > 4096
+                    || !bounded(&identity.executable_relative_path, 4096)
+                    || identity
+                        .executable_relative_path
+                        .split('/')
+                        .any(|s| s.is_empty() || s == "." || s == "..")
+                    || identity.executable_relative_path.contains('\\')
                     || Path::new(&identity.executable_relative_path).is_absolute()
                 {
                     return Err("invalid retained clap plugin snapshot".into());
@@ -435,7 +457,7 @@ impl Catalog {
                 next.source_errors.remove(&path);
             }
             Err(error) => {
-                entry.failure = Some(error.chars().take(128).collect());
+                entry.failure = Some(sanitize_failure(&error));
             }
         }
         next.clap_entries.sort_by(|a, b| a.path.cmp(&b.path));
@@ -509,7 +531,7 @@ impl Catalog {
                 next.source_errors.remove(&path);
             }
             Err(error) => {
-                entry.failure = Some(error.chars().take(128).collect());
+                entry.failure = Some(sanitize_failure(&error));
                 let (bundle, tools) = failed_scan.map_or((None, None), |scan| {
                     (Some(scan.bundle), Some(scan.tools_sha256))
                 });
@@ -521,6 +543,125 @@ impl Catalog {
         next.validate()?;
         *self = next;
         Ok(())
+    }
+
+    /// Incremental in-place VST3 record update for `scan_batch`, avoiding
+    /// per-bundle full-catalog clones while preserving atomic entry validation
+    /// and returning `(previous_entry_json_bytes, new_entry_json_bytes)`.
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+    pub(crate) fn record_outcome_incremental(
+        &mut self,
+        path: PathBuf,
+        result: Result<(Report, String), String>,
+        failed_scan: Option<FailedScan>,
+    ) -> Result<(usize, usize), String> {
+        if !path_valid(&path) || path.extension().and_then(|s| s.to_str()) != Some("vst3") {
+            return Err("absolute bounded plugin path required".into());
+        }
+        let existing_index = self.entries.iter().position(|e| e.path == path);
+        if existing_index.is_none()
+            && self.entries.len().saturating_add(self.clap_entries.len()) >= MAX_MODULES
+        {
+            return Err("plugin catalog module capacity reached".into());
+        }
+        let prev_entry = existing_index.map(|i| &self.entries[i]);
+        let prev_classes = prev_entry
+            .and_then(|e| e.last_good.as_ref())
+            .and_then(|r| r.discovery.as_ref())
+            .map_or(0, |d| d.classes.len());
+        let prev_bytes = match prev_entry {
+            Some(entry) => {
+                serde_json::to_vec(entry)
+                    .map_err(|e| format!("catalog staging failed: {e}"))?
+                    .len()
+                    + 1
+            }
+            None => 0,
+        };
+        let mut candidate = prev_entry.cloned().unwrap_or(Entry {
+            path: path.clone(),
+            last_good: None,
+            source: None,
+            failure: None,
+            failed_bundle: None,
+            failed_tools_sha256: None,
+        });
+        match result {
+            Ok((mut report, source)) => {
+                validate_report(&report)?;
+                if report.bundle.supplied_path != path || !digest(&source, 40) {
+                    return Err("plugin result source/path mismatch".into());
+                }
+                report.stdout.clear();
+                report.stderr.clear();
+                candidate.last_good = Some(report);
+                candidate.source = Some(source);
+                candidate.failure = None;
+                candidate.failed_bundle = None;
+                candidate.failed_tools_sha256 = None;
+            }
+            Err(error) => {
+                candidate.failure = Some(sanitize_failure(&error));
+                let (bundle, tools) = failed_scan.map_or((None, None), |scan| {
+                    (Some(scan.bundle), Some(scan.tools_sha256))
+                });
+                if let Some(ref b) = bundle
+                    && (b.supplied_path != path
+                        || !path_valid(&b.canonical_path)
+                        || !digest(&b.info_sha256, 64))
+                {
+                    return Err("invalid plugin catalog entry".into());
+                }
+                if let Some(ref t) = tools
+                    && (bundle.is_none() || !digest(t, 64))
+                {
+                    return Err("invalid plugin catalog entry".into());
+                }
+                candidate.failed_bundle = bundle;
+                candidate.failed_tools_sha256 = tools;
+            }
+        }
+        let new_classes = candidate
+            .last_good
+            .as_ref()
+            .and_then(|r| r.discovery.as_ref())
+            .map_or(0, |d| d.classes.len());
+        let current_classes: usize = self
+            .entries
+            .iter()
+            .filter_map(|e| e.last_good.as_ref()?.discovery.as_ref())
+            .map(|d| d.classes.len())
+            .sum::<usize>()
+            + self
+                .clap_entries
+                .iter()
+                .filter(|e| e.last_good.is_some())
+                .map(|e| e.descriptors.len().max(1))
+                .sum::<usize>();
+        let next_classes = current_classes
+            .saturating_sub(prev_classes)
+            .checked_add(new_classes)
+            .ok_or("catalog count overflow")?;
+        if next_classes > MAX_CLASSES {
+            return Err("plugin catalog class bound exceeded".into());
+        }
+        let new_bytes = serde_json::to_vec(&candidate)
+            .map_err(|e| format!("catalog staging failed: {e}"))?
+            .len()
+            + 1;
+        if candidate.failure.is_none() {
+            self.source_errors.remove(&path);
+        }
+        match existing_index {
+            Some(index) => self.entries[index] = candidate,
+            None => {
+                let insert_at = self
+                    .entries
+                    .partition_point(|entry| entry.path < candidate.path);
+                self.entries.insert(insert_at, candidate);
+            }
+        }
+        Ok((prev_bytes, new_bytes))
     }
 }
 
@@ -1626,8 +1767,8 @@ mod tests {
         let reopened = Catalog::load(&fixture.catalog()).unwrap();
         assert_eq!(reopened.entries.len(), 2);
 
-        // A version 2 file cannot carry the version 3 field; newer formats are refused.
-        for (version, failed) in [(2, true), (5, false)] {
+        // A version 2 file cannot carry the version 3 field; newer formats (v6+) are refused.
+        for (version, failed) in [(2, true), (6, false)] {
             let mut entry = serde_json::json!(
                 {"path": bad, "last_good": null, "source": null, "failure": "scan failed"}
             );
@@ -1795,6 +1936,117 @@ mod tests {
                 refreshed[0].status.contains("source unavailable"),
                 "{}",
                 refreshed[0].status
+            );
+        }
+    }
+
+    #[test]
+    fn version_4_catalog_migrates_to_v5_and_historical_versions_reject_clap_entries() {
+        let fixture = Fixture::new();
+        let bad = fixture.0.join("Bad.vst3");
+        let clap = fixture.0.join("Lead.clap");
+        let v4 = serde_json::json!({
+            "version": 4,
+            "entries": [{
+                "path": bad,
+                "last_good": null,
+                "source": null,
+                "failure": "scan failed",
+                "failed_bundle": failed_identity(&bad, 'c'),
+                "failed_tools_sha256": "a".repeat(64),
+            }],
+        });
+        let bytes = serde_json::to_vec(&v4).unwrap();
+        fs::write(fixture.catalog(), &bytes).unwrap();
+
+        let loaded = Catalog::load(&fixture.catalog()).expect("v4 migrates to v5");
+        assert_eq!(loaded.version, CATALOG_VERSION);
+        assert_eq!(loaded.entries.len(), 1);
+        assert_eq!(
+            loaded.entries[0].failed_tools_sha256.as_deref(),
+            Some("a".repeat(64).as_str())
+        );
+        assert_eq!(
+            fs::read(fixture.catalog()).unwrap(),
+            bytes,
+            "load preserves file"
+        );
+
+        storage::update(&fixture.catalog(), |_| Ok(())).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(fixture.catalog()).unwrap()).unwrap();
+        assert_eq!(saved["version"], CATALOG_VERSION);
+
+        // Historical v2, v3, v4 catalogs carrying `clap_entries` must be rejected without modifying the file.
+        for version in [2_u32, 3, 4] {
+            let malformed = serde_json::json!({
+                "version": version,
+                "entries": [],
+                "clap_entries": [{
+                    "path": clap,
+                    "last_good": null,
+                    "failure": "boom",
+                }],
+            });
+            let raw = serde_json::to_vec(&malformed).unwrap();
+            fs::write(fixture.catalog(), &raw).unwrap();
+            assert!(
+                Catalog::load(&fixture.catalog()).is_err(),
+                "version {version} must reject clap_entries"
+            );
+            assert_eq!(fs::read(fixture.catalog()).unwrap(), raw, "file preserved");
+        }
+    }
+
+    #[test]
+    fn clap_validation_rejects_traversal_and_nul_and_failure_strings_sanitize_controls() {
+        let fixture = Fixture::new();
+        let clap = fixture.0.join("Synth.clap");
+        let vst3 = fixture.module();
+
+        // NUL and control characters in failure strings are stripped cleanly and keep catalog valid.
+        let mut catalog = Catalog::default();
+        catalog
+            .record(vst3, Err("bad\0error\nwith\x1bcontrols".into()))
+            .expect("vst3 failure with NUL sanitized");
+        assert_eq!(
+            catalog.entries[0].failure.as_deref(),
+            Some("baderrorwithcontrols")
+        );
+        catalog
+            .record_clap(clap.clone(), Err("clap\0fail\r\n".into()))
+            .expect("clap failure with NUL sanitized");
+        assert_eq!(catalog.clap_entries[0].failure.as_deref(), Some("clapfail"));
+        catalog.validate().expect("sanitized catalog remains valid");
+
+        // Relative path traversal, `.`, empty segments, NUL, and backslash are rejected on CLAP entries.
+        for bad_rel in [
+            "Contents/../MacOS/Synth",
+            "Contents/./MacOS/Synth",
+            "Contents//MacOS/Synth",
+            "Contents/MacOS/Synth\0bad",
+            "Contents\\MacOS\\Synth",
+            "/Contents/MacOS/Synth",
+        ] {
+            let mut bad_cat = Catalog::default();
+            bad_cat.clap_entries.push(ClapEntry {
+                path: clap.clone(),
+                last_good: Some(ClapBundleIdentity {
+                    supplied_path: clap.clone(),
+                    canonical_path: clap.clone(),
+                    bundle_name: "Synth".into(),
+                    bundle_identifier: Some("org.hex.synth".into()),
+                    info_plist_sha256: Some("a".repeat(64)),
+                    executable_relative_path: bad_rel.into(),
+                    executable_sha256: "b".repeat(64),
+                    thin_arm64_module: true,
+                }),
+                descriptors: Vec::new(),
+                failure: None,
+            });
+            assert!(
+                bad_cat.validate().is_err(),
+                "bad CLAP executable_relative_path `{bad_rel}` must be rejected"
             );
         }
     }
