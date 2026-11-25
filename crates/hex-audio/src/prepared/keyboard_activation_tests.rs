@@ -481,7 +481,7 @@ mod vst_audition_probe {
             )
             .unwrap(),
         );
-        let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
+        let mut playback = Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
         let audition = Arc::new(
             ComputerKeyboardInput::default()
                 .with_note_audition(&[(60, 37), (64, 93)], 8)
@@ -515,6 +515,7 @@ mod vst_audition_probe {
         assert!(audition.note_audition_finished());
 
         use hex_engine::computer_keyboard::LiveNoteEvent;
+        let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
         let input = Arc::new(ComputerKeyboardInput::default().with_live_notes().unwrap());
         playback
             .prepare_computer_keyboard(editor.project(), track, Arc::clone(&input))
