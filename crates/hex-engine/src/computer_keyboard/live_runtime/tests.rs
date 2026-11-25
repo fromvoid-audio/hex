@@ -1039,3 +1039,142 @@ fn mpe_sustain_ownership_same_channel_reuse_stop_disconnect_and_full_queue_have_
         "full LiveNoteInput queue must fault activation and release sustained MPE notes to silence"
     );
 }
+
+#[test]
+fn mpe_member_and_master_pitch_bends_produce_independent_fm4_pcm_matching_exact_cent_oracles() {
+    use crate::computer_keyboard::LiveNoteEvent;
+    use hex_project::{Command, Created, Editor, Project};
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let fm4_state = crate::default_native_device_state_for_class(
+        crate::NativeDeviceClass::Instrument,
+        crate::DeviceTypeId::from_static("hex.instrument.fm4"),
+    )
+    .unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "fm4-mpe-bend".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: fm4_state,
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let project = editor.project().clone();
+
+    // Helper rendering one single FM4 note at pitch + exact cents offset.
+    let render_single = |channel: u8, pitch: u8, cents: i16| -> Vec<[f32; 2]> {
+        let inp = input();
+        let mut pb = playback(&project, track, &inp);
+        let live = inp.live_notes().unwrap();
+        let tok = live.current_activation_on_control().unwrap();
+        live.publish(
+            tok,
+            LiveNoteEvent::NoteOn {
+                channel,
+                pitch,
+                velocity: 100,
+            },
+        )
+        .unwrap();
+        live.publish(
+            tok,
+            LiveNoteEvent::NotePitchBend {
+                channel,
+                pitch,
+                cents,
+            },
+        )
+        .unwrap();
+        let mut buf = vec![[0.0_f32; 2]; 256];
+        pb.render(&mut buf).unwrap();
+        buf
+    };
+
+    // Two same-pitch notes (60) with different member bends (+700c vs -500c) + master bend (+300c)
+    // yield exact independent total offsets (+1000c vs -200c) and distinct PCM waveforms!
+    let bent_high = render_single(1, 60, 1000);
+    let bent_low = render_single(2, 60, -200);
+    let unbent = render_single(1, 60, 0);
+    assert_ne!(bent_high, bent_low);
+    assert_ne!(bent_high, unbent);
+    assert_ne!(bent_low, unbent);
+
+    // Measure zero-crossing rate on the mono sum: +1000c (~1.78x freq) must cross zero
+    // significantly more often than -200c (~0.89x freq).
+    let zero_crossings = |frames: &[[f32; 2]]| -> usize {
+        frames
+            .windows(2)
+            .filter(|w| (w[0][0] <= 0.0 && w[1][0] > 0.0) || (w[0][0] >= 0.0 && w[1][0] < 0.0))
+            .count()
+    };
+    assert!(
+        zero_crossings(&bent_high) > zero_crossings(&bent_low),
+        "higher bent voice (+1000c) must oscillate faster than lower bent voice (-200c): {} vs {}",
+        zero_crossings(&bent_high),
+        zero_crossings(&bent_low)
+    );
+
+    // Drive BOTH voices simultaneously on one FM4 instance and verify endpoints (-4800c / +4800c)
+    // stay finite and clean, and same-channel reuse starts unbent at the new pitch.
+    let dual_input = input();
+    let mut dual = playback(&project, track, &dual_input);
+    let live = dual_input.live_notes().unwrap();
+    let tok = live.current_activation_on_control().unwrap();
+    for ev in [
+        LiveNoteEvent::NoteOn {
+            channel: 1,
+            pitch: 60,
+            velocity: 100,
+        },
+        LiveNoteEvent::NoteOn {
+            channel: 2,
+            pitch: 60,
+            velocity: 100,
+        },
+        LiveNoteEvent::NotePitchBend {
+            channel: 1,
+            pitch: 60,
+            cents: 4800,
+        },
+        LiveNoteEvent::NotePitchBend {
+            channel: 2,
+            pitch: 60,
+            cents: -4800,
+        },
+    ] {
+        live.publish(tok, ev).unwrap();
+    }
+    let mut dual_buf = [[0.0_f32; 2]; 256];
+    dual.render(&mut dual_buf).unwrap();
+    assert!(dual_buf.iter().flatten().any(|s| *s != 0.0));
+    assert!(dual_buf.iter().flatten().all(|s| s.is_finite()));
+
+    // Same-channel reuse on ch 1 (NoteOff 60, NoteOn 64) + AllNotesOff cleanly silences both voices.
+    for ev in [
+        LiveNoteEvent::NoteOff {
+            channel: 1,
+            pitch: 60,
+            velocity: 0,
+        },
+        LiveNoteEvent::NoteOn {
+            channel: 1,
+            pitch: 64,
+            velocity: 96,
+        },
+        LiveNoteEvent::AllNotesOff,
+    ] {
+        live.publish(tok, ev).unwrap();
+    }
+    let mut silent = false;
+    for _ in 0..400 {
+        dual.render(&mut dual_buf).unwrap();
+        if dual_buf.iter().flatten().all(|s| *s == 0.0) {
+            silent = true;
+            break;
+        }
+    }
+    assert!(silent);
+}

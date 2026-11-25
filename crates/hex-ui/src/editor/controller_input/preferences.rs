@@ -57,6 +57,10 @@ impl EditorView {
                         view.controller_input.mpe_zone = value.mpe_zone;
                         if let Some(zone) = value.mpe_zone {
                             view.controller_input.mpe_member_channels = zone.member_channels;
+                            view.controller_input.mpe_member_bend_semitones =
+                                zone.member_pitch_bend_semitones;
+                            view.controller_input.mpe_master_bend_semitones =
+                                zone.master_pitch_bend_semitones;
                         }
                         let restore = value.all_ports || !value.selected_ports().is_empty();
                         view.controller_input.preferences.value = value;

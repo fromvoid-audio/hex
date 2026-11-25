@@ -200,11 +200,10 @@ fn double_click_hold_resizes_one_snapped_note_and_one_history_step(cx: &mut Test
     editor.read_with(&visual, |v, _| {
         assert!(!v.edit_pending(), "held preview must not submit an edit")
     });
-    let snap = Modifiers::command();
-    visual.simulate_mouse_move(at(0.875), Some(MouseButton::Left), snap);
-    visual.simulate_mouse_move(at(0.625), Some(MouseButton::Left), snap);
+    visual.simulate_mouse_move(at(0.875), Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_move(at(0.625), Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
-    visual.simulate_mouse_up(at(0.625), MouseButton::Left, snap);
+    visual.simulate_mouse_up(at(0.625), MouseButton::Left, Modifiers::default());
     pump(&editor, &mut visual);
     let after = editor.read_with(&visual, |v, _| {
         let source = v.state.as_ref().unwrap().project.midi_source(clip).unwrap();
@@ -239,14 +238,26 @@ fn double_click_hold_resizes_one_snapped_note_and_one_history_step(cx: &mut Test
 }
 
 #[gpui::test]
-fn held_creation_end_is_free_by_default_and_snaps_while_cmd_is_held(cx: &mut TestAppContext) {
-    for (grid, override_snap, motion, expected) in [
-        (MidiGrid::Quarter, false, true, 1.56),
-        (MidiGrid::Quarter, true, true, 2.0),
-        (MidiGrid::Off, false, true, 1.56),
-        (MidiGrid::Off, true, true, 1.5),
-        (MidiGrid::Sixteenth, false, false, 0.25),
-        (MidiGrid::Off, false, false, 0.0),
+fn held_creation_moves_free_between_grid_lines_latches_on_grid_hit_and_unsnaps_with_cmd(
+    cx: &mut TestAppContext,
+) {
+    for (grid, override_snap, steps, expected) in [
+        // Inside initial Quarter cell (1.0..2.0) without hitting 2.0: unsnapped.
+        (MidiGrid::Quarter, false, &[0.39_f32][..], 0.56),
+        // Crosses grid line 2.0 on Quarter grid: latches snapped to 3.0 (gate 2.0).
+        (MidiGrid::Quarter, false, &[0.64_f32][..], 2.0),
+        // Holding Cmd unsnaps even after crossing grid line 2.0.
+        (MidiGrid::Quarter, true, &[0.64_f32][..], 1.56),
+        // Once latched on grid hit, dragging back into (1.0..2.0) stays snapped at 2.0 (gate 1.0).
+        (MidiGrid::Quarter, false, &[0.64_f32, 0.39_f32][..], 1.0),
+        // Holding Cmd after latching unsnaps back to 0.56.
+        (MidiGrid::Quarter, true, &[0.64_f32, 0.39_f32][..], 0.56),
+        // Grid Off stays free by default, Cmd snaps to 1/16.
+        (MidiGrid::Off, false, &[0.64_f32][..], 1.56),
+        (MidiGrid::Off, true, &[0.64_f32][..], 1.5),
+        // Click without drag keeps default grid / pixel gate.
+        (MidiGrid::Sixteenth, false, &[][..], 0.25),
+        (MidiGrid::Off, false, &[][..], 0.0),
     ] {
         let (mut visual, editor, _environment, clip) = fixture(cx);
         editor.update(&mut visual, |v, cx| {
@@ -269,9 +280,9 @@ fn held_creation_end_is_free_by_default_and_snaps_while_cmd_is_held(cx: &mut Tes
             platform: override_snap,
             ..Modifiers::default()
         };
-        let end = at(if motion { 0.64 } else { 0.25 });
-        if motion {
-            visual.simulate_mouse_move(end, Some(MouseButton::Left), modifiers);
+        let end = at(*steps.last().unwrap_or(&0.25));
+        for &fraction in steps {
+            visual.simulate_mouse_move(at(fraction), Some(MouseButton::Left), modifiers);
         }
         visual.simulate_mouse_up(end, MouseButton::Left, modifiers);
         pump(&editor, &mut visual);
@@ -286,7 +297,7 @@ fn held_creation_end_is_free_by_default_and_snaps_while_cmd_is_held(cx: &mut Tes
                 .notes();
             assert_eq!(notes.len(), 1);
             assert_eq!(notes[0].start(), start, "drag must not move the anchor");
-            let expected = if grid == MidiGrid::Off && !motion {
+            let expected = if grid == MidiGrid::Off && steps.is_empty() {
                 4.0 / f64::from(f32::from(roll.size.width - gpui::px(2.0)))
             } else {
                 expected
@@ -294,14 +305,14 @@ fn held_creation_end_is_free_by_default_and_snaps_while_cmd_is_held(cx: &mut Tes
             let gate = notes[0].duration().raw() as f64 / BeatTime::ONE.raw() as f64;
             assert!(
                 (gate - expected).abs() < 0.01,
-                "grid={grid:?} override={override_snap}: {gate} != {expected}"
+                "grid={grid:?} override={override_snap} steps={steps:?}: {gate} != {expected}"
             );
         });
     }
 }
 
 #[gpui::test]
-fn releasing_cmd_mid_creation_returns_end_to_free_motion(cx: &mut TestAppContext) {
+fn holding_and_releasing_cmd_after_grid_hit_toggles_unsnapped_and_snapped(cx: &mut TestAppContext) {
     let (mut visual, editor, _environment, clip) = fixture(cx);
     let roll = visual.debug_bounds("midi-note-roll").unwrap();
     let at = |fraction| {
@@ -323,11 +334,20 @@ fn releasing_cmd_mid_creation_returns_end_to_free_motion(cx: &mut TestAppContext
                 / BeatTime::ONE.raw() as f64
         })
     };
-    visual.simulate_mouse_move(at(0.64), Some(MouseButton::Left), Modifiers::command());
-    assert_eq!(gate(&mut visual), 1.5, "cmd snaps the held end");
     visual.simulate_mouse_move(at(0.64), Some(MouseButton::Left), Modifiers::default());
+    assert_eq!(gate(&mut visual), 1.5, "hitting grid lines latches snapped");
+    visual.simulate_mouse_move(at(0.64), Some(MouseButton::Left), Modifiers::command());
     let free = gate(&mut visual);
-    assert!((free - 1.56).abs() < 0.01, "released cmd is free: {free}");
+    assert!(
+        (free - 1.56).abs() < 0.01,
+        "holding cmd unsnaps after latching: {free}"
+    );
+    visual.simulate_mouse_move(at(0.64), Some(MouseButton::Left), Modifiers::default());
+    assert_eq!(
+        gate(&mut visual),
+        1.5,
+        "releasing cmd returns to snapped motion"
+    );
     let preview = editor.read_with(&visual, |v, _| {
         v.midi_editor.creation.as_ref().unwrap().preview
     });
@@ -524,16 +544,16 @@ fn held_creation_clamps_to_clip_end_and_positive_minimum(cx: &mut TestAppContext
     for (grid, snap, from, to, expected) in [
         (
             MidiGrid::Sixteenth,
-            true,
+            false,
             0.25,
             0.01,
             BeatTime::ONE.raw() / 4,
         ),
-        (MidiGrid::Sixteenth, false, 0.25, 0.01, 0),
+        (MidiGrid::Sixteenth, true, 0.25, 0.01, 0),
         (MidiGrid::Off, false, 0.25, 0.01, 0),
         (
             MidiGrid::Sixteenth,
-            true,
+            false,
             0.875,
             0.98,
             BeatTime::ONE.raw() / 2,
