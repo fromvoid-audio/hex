@@ -1328,6 +1328,19 @@ class NativeInstanceTests(unittest.TestCase):
                 self.assertEqual(observed[8:11], (1, 1, 4))
                 self.assertEqual(observed[12:], (0, 0))
 
+    def test_stereo_effect_with_main_or_auxiliary_event_input_preserves_audio(self):
+        # The main-bus effect needs an active SDK event list even for empty blocks.
+        # The auxiliary-only effect expects the existing audio-only profile.
+        for variant in (165, 166):
+            with self.subTest(variant=variant):
+                session = self.session(variant=variant, channels=(2, 2))
+                self.ready(session, controller=True)
+                _, inputs, (magic, output) = session.render(8)
+                self.assertEqual(magic, b"HXVB")
+                self.assertEqual(struct.unpack_from("<16f", output, 64),
+                                 tuple(sample * .5 for sample in inputs))
+                self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (1, 8))
+
     def test_effect_disables_trailing_auxiliary_input_and_renders_only_main(self):
         for variant, channels in ((106, (1, 2)), (153, (2, 2))):
             with self.subTest(variant=variant):
