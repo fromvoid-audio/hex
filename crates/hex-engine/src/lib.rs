@@ -37,6 +37,26 @@ pub use hex_devices::saturator::{
 pub use hex_lattice::ProcessorAuditionSelection;
 pub use hex_lattice::ProcessorChainOwner;
 pub use hex_lattice_contract::DeviceTypeId;
+
+/// Whether a track's input monitoring mode passes live input given record arm
+/// and active clip playback (Ableton Live 12 §17.1 semantics).
+pub fn monitoring_passes_input(
+    mode: hex_project::InputMonitoring,
+    armed: bool,
+    clip_playing: bool,
+) -> bool {
+    match mode {
+        hex_project::InputMonitoring::In => true,
+        hex_project::InputMonitoring::Auto => armed && !clip_playing,
+        hex_project::InputMonitoring::Off => false,
+    }
+}
+
+/// Whether a track's input monitoring mode plays the track's own authored clips.
+/// `InputMonitoring::In` suppresses clip playback; `Auto` and `Off` play clips.
+pub fn monitoring_plays_clips(mode: hex_project::InputMonitoring) -> bool {
+    mode != hex_project::InputMonitoring::In
+}
 pub use hex_warp::{Error as TransientDetectionError, detect_transients};
 pub mod compensation;
 pub mod foreign_automation;

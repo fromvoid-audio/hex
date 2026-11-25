@@ -373,9 +373,10 @@ impl SessionPlayback {
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                 }
                 track.apply_instrument_output_gain(frames);
-                if let Some(input) =
-                    live_audio.filter(|input| input.track == self.route_scratch[index].id)
-                {
+                if let Some(input) = live_audio.filter(|input| {
+                    input.track == self.route_scratch[index].id
+                        && self.track_monitors_live_audio(index, self.arrangement_frame, false)
+                }) {
                     for (frame, source) in frames.iter_mut().zip(&input.frames[offset..end]) {
                         frame[0] += source[0];
                         frame[1] += source[1];

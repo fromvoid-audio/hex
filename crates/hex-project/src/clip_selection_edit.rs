@@ -617,6 +617,9 @@ impl Command {
             | Self::SetAudioFeed { .. }
             | Self::SetSidechain { .. }
             | Self::SetMidiSource { .. }
+            | Self::AssignTrackAudioInput { .. }
+            | Self::SetTrackOutput { .. }
+            | Self::SetTrackInputMonitoring { .. }
             | Self::SetReturnFeed { .. }
             | Self::InsertMainDevice { .. }
             | Self::ReplaceMainDevice { .. }

@@ -39,7 +39,10 @@ impl SignalGraph {
                 let enclosing_id =
                     |graph: &Self, parent: usize| match graph.tracks.get(parent)?.output {
                         TrackOutput::Group { target, .. } => graph.tracks.get(target)?.id,
-                        TrackOutput::Main { .. } => None,
+                        TrackOutput::Main { .. }
+                        | TrackOutput::Track { .. }
+                        | TrackOutput::Return { .. }
+                        | TrackOutput::SendsOnly => None,
                     };
                 let old_parent_id = previous.tracks.get(old_parent)?.id?;
                 let next_parent_id = self.tracks.get(next_parent)?.id?;

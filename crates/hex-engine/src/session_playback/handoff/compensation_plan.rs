@@ -783,6 +783,9 @@ pub(super) fn single_track_latency_edit(
             || matches!(
                 old_graph.tracks.get(index)?.output,
                 TrackOutput::Group { .. }
+                    | TrackOutput::Track { .. }
+                    | TrackOutput::Return { .. }
+                    | TrackOutput::SendsOnly
             );
         if changed.is_some()
             || before.sends() != after.sends()

@@ -285,7 +285,13 @@ impl Project {
                 "bounce in place requires a complete track · use grouping for clips or time selections",
             ));
         }
-        if !self.audio_feeds.is_empty() || !self.midi_routes.is_empty() || !self.routing.is_empty()
+        if !self.audio_feeds.is_empty()
+            || !self.midi_routes.is_empty()
+            || !self.routing.is_empty()
+            || self
+                .tracks
+                .iter()
+                .any(|track| track.output_destination() != crate::TrackOutputDestination::Default)
         {
             return Err(Invalid(
                 "bounce does not support external audio or midi routing",

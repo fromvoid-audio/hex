@@ -19,6 +19,16 @@ impl Project {
                 destination,
                 source,
             } => self.set_midi_source(destination, source),
+            Command::AssignTrackAudioInput {
+                destination,
+                source,
+            } => self.assign_track_audio_input(destination, source),
+            Command::SetTrackOutput { track, destination } => {
+                self.set_track_output(track, destination)
+            }
+            Command::SetTrackInputMonitoring { track, mode } => {
+                self.set_track_input_monitoring(track, mode)
+            }
             Command::SetReturnFeed {
                 source,
                 destination,

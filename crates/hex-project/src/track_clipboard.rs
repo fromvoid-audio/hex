@@ -173,6 +173,21 @@ pub(crate) fn paste(
             .parent_group
             .and_then(|parent| remap.get(&parent).copied())
             .or(destination.parent_group);
+        track.output_destination = match track.output_destination {
+            crate::TrackOutputDestination::Track(target) => remap
+                .get(&target)
+                .copied()
+                .map(crate::TrackOutputDestination::Track)
+                .unwrap_or(crate::TrackOutputDestination::Default),
+            crate::TrackOutputDestination::Return(bus) => {
+                if project.return_tracks().iter().any(|r| r.id() == bus) {
+                    crate::TrackOutputDestination::Return(bus)
+                } else {
+                    crate::TrackOutputDestination::Default
+                }
+            }
+            other => other,
+        };
         let mut device_ids = Vec::new();
         device_ids
             .try_reserve_exact(track.devices.len())

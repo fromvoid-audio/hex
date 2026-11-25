@@ -297,6 +297,90 @@ pub(super) struct FrozenTrackDto {
     source_frames: u64,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum TrackOutputDestinationDto {
+    Default,
+    Track { id: u64 },
+    Return { id: u64 },
+    Main,
+    SendsOnly,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum InputMonitoringDto {
+    In,
+    Auto,
+    Off,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TrackIoDto {
+    pub(super) track: u64,
+    output: TrackOutputDestinationDto,
+    monitoring: InputMonitoringDto,
+}
+
+impl TrackIoDto {
+    pub(super) fn from_model(track: &Track) -> Option<Self> {
+        track.has_custom_io().then(|| Self {
+            track: track.id().value(),
+            output: match track.output_destination() {
+                hex_project::TrackOutputDestination::Default => TrackOutputDestinationDto::Default,
+                hex_project::TrackOutputDestination::Track(id) => {
+                    TrackOutputDestinationDto::Track { id: id.value() }
+                }
+                hex_project::TrackOutputDestination::Return(id) => {
+                    TrackOutputDestinationDto::Return { id: id.value() }
+                }
+                hex_project::TrackOutputDestination::Main => TrackOutputDestinationDto::Main,
+                hex_project::TrackOutputDestination::SendsOnly => {
+                    TrackOutputDestinationDto::SendsOnly
+                }
+            },
+            monitoring: match track.input_monitoring() {
+                hex_project::InputMonitoring::In => InputMonitoringDto::In,
+                hex_project::InputMonitoring::Auto => InputMonitoringDto::Auto,
+                hex_project::InputMonitoring::Off => InputMonitoringDto::Off,
+            },
+        })
+    }
+}
+
+impl From<TrackIoDto> for hex_project::TrackIoSnapshot {
+    fn from(dto: TrackIoDto) -> Self {
+        Self {
+            track: dto.track,
+            output: match dto.output {
+                TrackOutputDestinationDto::Default => hex_project::TrackOutputDestination::Default,
+                TrackOutputDestinationDto::Track { id } => {
+                    hex_project::TrackOutputDestination::track_from_raw(id)
+                }
+                TrackOutputDestinationDto::Return { id } => {
+                    hex_project::TrackOutputDestination::return_from_raw(id)
+                }
+                TrackOutputDestinationDto::Main => hex_project::TrackOutputDestination::Main,
+                TrackOutputDestinationDto::SendsOnly => {
+                    hex_project::TrackOutputDestination::SendsOnly
+                }
+            },
+            monitoring: match dto.monitoring {
+                InputMonitoringDto::In => hex_project::InputMonitoring::In,
+                InputMonitoringDto::Auto => hex_project::InputMonitoring::Auto,
+                InputMonitoringDto::Off => hex_project::InputMonitoring::Off,
+            },
+        }
+    }
+}
+
+pub(super) fn read_track_io<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<TrackIoDto>, D::Error> {
+    bounded(d, hex_project::MAX_TRACKS)
+}
+
 fn read_mixer_points<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> Result<Vec<MixerPointDto>, D::Error> {

@@ -64,15 +64,19 @@ impl SignalGraph {
             Some(index) => self.plan.nodes().get(index)?.latency_frames,
             None => 0,
         };
-        let edge = match track.output {
-            TrackOutput::Main { edge } | TrackOutput::Group { edge, .. } => edge,
+        let default_route_delay_frames = match track.output {
+            TrackOutput::Main { edge }
+            | TrackOutput::Group { edge, .. }
+            | TrackOutput::Track { edge, .. }
+            | TrackOutput::Return { edge, .. } => self.route_delay(edge)?,
+            TrackOutput::SendsOnly => 0,
         };
         Some(OutputLatency {
             local_frames: prefix
                 .max(source)
                 .checked_add(self.chain_latency(suffix)?)?,
             arrival_frames: self.plan.nodes().get(track.fader)?.output_arrival_frames,
-            default_route_delay_frames: self.route_delay(edge)?,
+            default_route_delay_frames,
         })
     }
 

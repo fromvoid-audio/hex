@@ -12,6 +12,7 @@
 use crate::{
     AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION, CAPABILITY_MANIFEST_SCHEMA_VERSION,
     MAX_PROJECT_DOCUMENT_BYTES, MIDI_EXPRESSION_SCHEMA_VERSION, Project, StorageError,
+    TRACK_IO_ROUTING_SCHEMA_VERSION,
 };
 use hex_project::{
     MAX_ASSETS, MAX_METER_POINTS, MAX_NATIVE_SOURCES, MAX_RETURN_TRACKS, MAX_TEMPO_POINTS,
@@ -30,9 +31,10 @@ use devices::{
     AssetDe, AssetSer, AudioFeedDto, DeviceDe, DeviceSer, FrozenTrackDto, LocatorDe, LocatorSer,
     LoopRegionDto, MeterPointDto, MidiRouteDto, NativeSourceDe, NativeSourceSer, ProvenanceDe,
     ProvenanceSer, ReturnFeedDto, ReturnTrackDe, ReturnTrackSer, SampleRateModeDto, SectionDe,
-    SectionSer, SidechainDto, TempoPointDto, TrackDe, TrackMixerAutomationDto, TrackSer, TuningDto,
-    read_audio_feeds, read_frozen_tracks, read_locators, read_main_devices, read_midi_routes,
-    read_mixer_automation, read_return_feeds, read_sections, read_sidechains,
+    SectionSer, SidechainDto, TempoPointDto, TrackDe, TrackIoDto, TrackMixerAutomationDto,
+    TrackSer, TuningDto, read_audio_feeds, read_frozen_tracks, read_locators, read_main_devices,
+    read_midi_routes, read_mixer_automation, read_return_feeds, read_sections, read_sidechains,
+    read_track_io,
 };
 
 /// Sorted canonical list of all capabilities recognized by this build.
@@ -89,6 +91,7 @@ pub(crate) const SUPPORTED_CAPABILITIES: &[&str] = &[
     "sinc_v2",
     "steps_modulator",
     "tempo_lfo_rate_route",
+    "track_io_routing",
     "track_tags",
     "vst3_automation",
     "vst3_automation_touch",
@@ -152,11 +155,18 @@ pub(crate) fn contains_automation_curves_and_freeze(project: &Project) -> bool {
         || project.has_frozen_tracks()
 }
 
-/// True when `project` should be saved directly as unified schema 126/127/128
+/// True when `project` carries non-default per-track exclusive output routing or
+/// input monitoring, requiring schema 129 (`track_io_routing`).
+pub(crate) fn contains_track_io_routing(project: &Project) -> bool {
+    project.has_custom_track_io()
+}
+
+/// True when `project` should be saved directly as unified schema 126..=129
 /// rather than stacking four or more historical post-112 `RawValue` wrappers.
 /// Projects with 0..=3 post-112 features retain their oldest compatible format.
 pub(crate) fn requires_manifest_schema(project: &Project) -> bool {
-    contains_automation_curves_and_freeze(project)
+    contains_track_io_routing(project)
+        || contains_automation_curves_and_freeze(project)
         || contains_midi_expression(project)
         || post_112_feature_count(project) >= 4
 }
@@ -352,6 +362,7 @@ pub(crate) fn capabilities_for(project: &Project) -> Vec<&'static str> {
         lfo_route == Some(crate::TEMPO_LFO_RATE_ROUTE_SCHEMA_VERSION),
         "tempo_lfo_rate_route",
     );
+    push(contains_track_io_routing(project), "track_io_routing");
     push(super::track_tags::contains(project), "track_tags");
     push(super::vst3_automation::contains(project), "vst3_automation");
     push(
@@ -475,6 +486,8 @@ struct ProjectSer<'a> {
     mixer_automation: Vec<TrackMixerAutomationDto>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     frozen_tracks: Vec<FrozenTrackDto>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    track_io: Vec<TrackIoDto>,
 }
 
 #[derive(Serialize)]
@@ -529,6 +542,8 @@ struct ProjectDe<'a> {
     mixer_automation: Vec<TrackMixerAutomationDto>,
     #[serde(default, deserialize_with = "read_frozen_tracks")]
     frozen_tracks: Vec<FrozenTrackDto>,
+    #[serde(default, deserialize_with = "read_track_io")]
+    track_io: Vec<TrackIoDto>,
 }
 
 #[derive(Deserialize)]
@@ -620,8 +635,19 @@ pub(crate) fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
             entries.sort_by_key(|entry| entry.track);
             entries
         },
+        track_io: {
+            let mut entries: Vec<_> = project
+                .tracks()
+                .iter()
+                .filter_map(TrackIoDto::from_model)
+                .collect();
+            entries.sort_by_key(|entry| entry.track);
+            entries
+        },
     };
-    let version = if contains_automation_curves_and_freeze(project) {
+    let version = if contains_track_io_routing(project) {
+        TRACK_IO_ROUTING_SCHEMA_VERSION
+    } else if contains_automation_curves_and_freeze(project) {
         AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION
     } else if contains_midi_expression(project) {
         MIDI_EXPRESSION_SCHEMA_VERSION
@@ -653,6 +679,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             CAPABILITY_MANIFEST_SCHEMA_VERSION
                 | MIDI_EXPRESSION_SCHEMA_VERSION
                 | AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION
+                | TRACK_IO_ROUTING_SCHEMA_VERSION
         )
     {
         return Err(StorageError::Invalid(
@@ -678,6 +705,17 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     {
         return Err(StorageError::Invalid(
             "schemas before 128 cannot declare automation_curves_and_freeze capability",
+        ));
+    }
+    if document.version < TRACK_IO_ROUTING_SCHEMA_VERSION
+        && (document
+            .capabilities
+            .iter()
+            .any(|cap| cap == "track_io_routing")
+            || !document.project.track_io.is_empty())
+    {
+        return Err(StorageError::Invalid(
+            "schemas before 129 cannot carry track_io_routing",
         ));
     }
 
@@ -742,6 +780,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             .map(TrackMixerAutomationDto::into_snapshot)
             .collect::<Result<Vec<_>, _>>()?,
         frozen_tracks: body.frozen_tracks.into_iter().map(Into::into).collect(),
+        track_io: body.track_io.into_iter().map(Into::into).collect(),
         audio_feeds: body.audio_feeds.into_iter().map(Into::into).collect(),
         midi_routes: body.midi_routes.into_iter().map(Into::into).collect(),
         sidechains: body.sidechains.into_iter().map(Into::into).collect(),

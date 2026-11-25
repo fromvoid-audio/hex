@@ -38,6 +38,7 @@ struct HeaderKey {
     resident_layout: bool,
     show_track_latency: bool,
     send_menu_open: bool,
+    io_menu_open: Option<super::track_io::TrackIoMenuKind>,
     displayed_gain_bits: Option<u32>,
 }
 
@@ -275,6 +276,11 @@ impl EditorView {
             resident_layout: self.document_audio_mode == hex_session::DocumentAudioMode::Resident,
             show_track_latency: self.show_track_latency,
             send_menu_open: self.session_grid.send_menu_track == Some(track_id),
+            io_menu_open: self
+                .track_io
+                .menu
+                .filter(|menu| menu.track == track_id && menu.generation == self.project_generation)
+                .map(|menu| menu.kind),
             displayed_gain_bits: self
                 .track_gain_controls
                 .displayed_track_gain(self.project_generation, track_id)

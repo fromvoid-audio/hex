@@ -98,7 +98,13 @@ impl RendererRuntime {
                                 &mut None,
                             )?;
                             let mixed = compensation.fader(track, index, None, processed)?;
-                            compensation.route_track_output(index, mixed)?;
+                            let routed = compensation.route_track_output(index, mixed)?;
+                            if let TrackOutput::Return { target, .. } =
+                                compensation.graph.tracks[index].output
+                            {
+                                self.return_scratch[target][0][0] += routed[0];
+                                self.return_scratch[target][0][1] += routed[1];
+                            }
                             for feed_index in 0..compensation.graph.tracks[index].audio_feeds.len()
                             {
                                 let feed =

@@ -2856,3 +2856,237 @@ fn vst3_sidechain_delivers_latency_compensated_key_and_main_to_foreign_endpoint(
     assert!((key_late_out[DELAY + BRIDGE][0] - 0.1_f32).abs() < 1e-5);
     assert!((key_late_out[DELAY + BRIDGE][1] - 0.65_f32).abs() < 1e-5);
 }
+
+#[test]
+fn track_exclusive_output_routing_no_doubled_dry_and_sends_only_pcm_oracle() {
+    let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Asset(asset) = editor
+        .execute(Command::AddAsset {
+            path: "src.wav".into(),
+            sample_rate: 48_000,
+            frames: 256,
+        })
+        .unwrap()
+    else {
+        panic!("asset");
+    };
+    let Created::Track(src) = editor
+        .execute(Command::AddTrack { name: "src".into() })
+        .unwrap()
+    else {
+        panic!("src");
+    };
+    let Created::Track(bus) = editor
+        .execute(Command::AddTrack { name: "bus".into() })
+        .unwrap()
+    else {
+        panic!("bus");
+    };
+    let Created::ReturnTrack(ret) = editor
+        .execute(Command::AddReturnTrack { name: "ret".into() })
+        .unwrap()
+    else {
+        panic!("ret");
+    };
+    editor
+        .execute(Command::PlaceClip {
+            track: src,
+            asset,
+            start: 0,
+            duration: 256,
+            source_offset: 0,
+            source_length: 256,
+            looping: false,
+        })
+        .unwrap();
+    editor
+        .execute(Command::Gain {
+            track: bus,
+            gain: 0.5,
+        })
+        .unwrap();
+    editor
+        .execute(Command::ReturnGain {
+            return_track: ret,
+            gain: 0.25,
+        })
+        .unwrap();
+    let mut media = BTreeMap::new();
+    media.insert(asset, Audio::new(48_000, vec![[0.4, -0.2]; 256]).unwrap());
+
+    let render_both = |project: &hex_project::Project| {
+        let revision = Arc::new(
+            PreparedRevision::prepare(project, &media, Arc::new(SineTable::new()), None).unwrap(),
+        );
+        let live = session(Arc::clone(&revision), 64, 32);
+        let mut offline = vec![[0.0; 2]; 64];
+        let mut renderer = Renderer::new(revision.arrangement());
+        renderer.play();
+        renderer.render(&mut offline).unwrap();
+        assert_eq!(live, offline, "offline and session playback must match");
+        live
+    };
+
+    // 1. Exclusive Track(bus) output: A(0.4, -0.2) * bus(0.5) = (0.2, -0.1), NO doubled Main path.
+    editor
+        .execute(Command::SetTrackOutput {
+            track: src,
+            destination: hex_project::TrackOutputDestination::Track(bus),
+        })
+        .unwrap();
+    let to_bus = render_both(editor.project());
+    for frame in &to_bus {
+        assert!((frame[0] - 0.2).abs() < 1e-5, "got {:?}", frame);
+        assert!((frame[1] + 0.1).abs() < 1e-5, "got {:?}", frame);
+    }
+
+    // 2. Exclusive Return(ret) output: A(0.4, -0.2) * ret(0.25) = (0.1, -0.05), NO Main dry path.
+    editor
+        .execute(Command::SetTrackOutput {
+            track: src,
+            destination: hex_project::TrackOutputDestination::Return(ret),
+        })
+        .unwrap();
+    let to_ret = render_both(editor.project());
+    for frame in &to_ret {
+        assert!((frame[0] - 0.1).abs() < 1e-5, "got {:?}", frame);
+        assert!((frame[1] + 0.05).abs() < 1e-5, "got {:?}", frame);
+    }
+
+    // 3. SendsOnly with no sends: completely silent at Main.
+    editor
+        .execute(Command::SetTrackOutput {
+            track: src,
+            destination: hex_project::TrackOutputDestination::SendsOnly,
+        })
+        .unwrap();
+    let silent = render_both(editor.project());
+    assert_eq!(silent, vec![[0.0; 2]; 64]);
+
+    // 4. SendsOnly with send(0.5) -> ret(0.25): (0.05, -0.025) at Main.
+    editor
+        .execute(Command::SetReturnSend {
+            track: src,
+            return_track: ret,
+            gain: 0.5,
+        })
+        .unwrap();
+    let sends_only = render_both(editor.project());
+    for frame in &sends_only {
+        assert!((frame[0] - 0.05).abs() < 1e-5, "got {:?}", frame);
+        assert!((frame[1] + 0.025).abs() < 1e-5, "got {:?}", frame);
+    }
+}
+
+#[test]
+fn input_monitoring_in_auto_off_transition_matrix_pcm_oracle() {
+    use hex_project::InputMonitoring;
+
+    // Pure Live 12 §17.1 truth table across all 12 combinations.
+    for armed in [false, true] {
+        for clip_playing in [false, true] {
+            assert!(crate::monitoring_passes_input(
+                InputMonitoring::In,
+                armed,
+                clip_playing
+            ));
+            assert!(!crate::monitoring_plays_clips(InputMonitoring::In));
+
+            assert_eq!(
+                crate::monitoring_passes_input(InputMonitoring::Auto, armed, clip_playing),
+                armed && !clip_playing
+            );
+            assert!(crate::monitoring_plays_clips(InputMonitoring::Auto));
+
+            assert!(!crate::monitoring_passes_input(
+                InputMonitoring::Off,
+                armed,
+                clip_playing
+            ));
+            assert!(crate::monitoring_plays_clips(InputMonitoring::Off));
+        }
+    }
+
+    let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Asset(asset) = editor
+        .execute(Command::AddAsset {
+            path: "clip.wav".into(),
+            sample_rate: 48_000,
+            frames: 64,
+        })
+        .unwrap()
+    else {
+        panic!("asset");
+    };
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack { name: "vox".into() })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    editor
+        .execute(Command::PlaceClip {
+            track,
+            asset,
+            start: 64,
+            duration: 64,
+            source_offset: 0,
+            source_length: 64,
+            looping: false,
+        })
+        .unwrap();
+    let mut media = BTreeMap::new();
+    media.insert(asset, Audio::new(48_000, vec![[0.3, -0.3]; 64]).unwrap());
+    let live_in = [[0.5_f32, 0.5_f32]; 128];
+
+    let render_mode = |editor: &mut Editor, mode: InputMonitoring| {
+        editor
+            .execute(Command::SetTrackInputMonitoring { track, mode })
+            .unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
+                .unwrap(),
+        );
+        let mut playback = SessionPlayback::new(revision).unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut out = [[0.0_f32; 2]; 128];
+        playback
+            .render_with_live_track_audio(
+                &mut out,
+                crate::session_playback::LiveTrackAudio {
+                    track,
+                    frames: &live_in,
+                },
+                None,
+                None,
+                None,
+                &mut hex_lattice::RefuseForeign,
+            )
+            .unwrap();
+        out
+    };
+
+    // In: suppresses clip at 64..128 and passes live input everywhere.
+    let mode_in = render_mode(&mut editor, InputMonitoring::In);
+    for frame in &mode_in {
+        assert!((frame[0] - 0.5).abs() < 1e-5 && (frame[1] - 0.5).abs() < 1e-5);
+    }
+
+    // Auto: passes live input in empty gap 0..64, inhibits live input while clip plays 64..128.
+    let mode_auto = render_mode(&mut editor, InputMonitoring::Auto);
+    for frame in &mode_auto[..64] {
+        assert!((frame[0] - 0.5).abs() < 1e-5 && (frame[1] - 0.5).abs() < 1e-5);
+    }
+    for frame in &mode_auto[64..128] {
+        assert!((frame[0] - 0.3).abs() < 1e-5 && (frame[1] + 0.3).abs() < 1e-5);
+    }
+
+    // Off: silences live input in gap 0..64 while preserving clip playback 64..128.
+    let mode_off = render_mode(&mut editor, InputMonitoring::Off);
+    for frame in &mode_off[..64] {
+        assert_eq!(*frame, [0.0, 0.0]);
+    }
+    for frame in &mode_off[64..128] {
+        assert!((frame[0] - 0.3).abs() < 1e-5 && (frame[1] + 0.3).abs() < 1e-5);
+    }
+}

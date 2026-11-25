@@ -30,6 +30,8 @@ pub struct Snapshot {
     pub mixer_automation: Vec<crate::TrackMixerAutomationSnapshot>,
     /// Strictly ascending ordinary track IDs carrying a persisted reversible freeze render.
     pub frozen_tracks: Vec<crate::FrozenTrackSnapshot>,
+    /// Strictly ascending track IDs carrying non-default output routing or input monitoring.
+    pub track_io: Vec<crate::TrackIoSnapshot>,
     pub audio_feeds: Vec<crate::AudioFeedSnapshot>,
     pub midi_routes: Vec<crate::MidiRouteSnapshot>,
     pub sidechains: Vec<crate::SidechainRouteSnapshot>,
@@ -361,6 +363,20 @@ impl Project {
                             duration: freeze.duration,
                             source_frames: freeze.source_frames,
                         })
+                    })
+                    .collect();
+                entries.sort_by_key(|entry| entry.track);
+                entries
+            },
+            track_io: {
+                let mut entries: Vec<_> = self
+                    .tracks
+                    .iter()
+                    .filter(|track| track.has_custom_io())
+                    .map(|track| crate::TrackIoSnapshot {
+                        track: track.id.0,
+                        output: track.output_destination,
+                        monitoring: track.input_monitoring,
                     })
                     .collect();
                 entries.sort_by_key(|entry| entry.track);
@@ -800,6 +816,7 @@ impl Project {
         let retained_source_paths = std::mem::take(&mut snapshot.retained_source_paths);
         let mixer_automation_entries = std::mem::take(&mut snapshot.mixer_automation);
         let frozen_track_entries = std::mem::take(&mut snapshot.frozen_tracks);
+        let track_io_entries = std::mem::take(&mut snapshot.track_io);
         if mixer_automation_entries.len() > MAX_TRACKS
             || mixer_automation_entries
                 .windows(2)
@@ -824,6 +841,19 @@ impl Project {
             ));
         }
         let mut frozen_tracks_map: BTreeMap<u64, crate::FrozenTrackSnapshot> = frozen_track_entries
+            .into_iter()
+            .map(|entry| (entry.track, entry))
+            .collect();
+        if track_io_entries.len() > MAX_TRACKS
+            || track_io_entries
+                .windows(2)
+                .any(|pair| pair[0].track >= pair[1].track)
+        {
+            return Err(Invalid(
+                "track io entries must have unique ascending track ids",
+            ));
+        }
+        let mut track_io_map: BTreeMap<u64, crate::TrackIoSnapshot> = track_io_entries
             .into_iter()
             .map(|entry| (entry.track, entry))
             .collect();
@@ -1325,6 +1355,20 @@ impl Project {
             } else {
                 None
             };
+            let (output_destination, input_monitoring) =
+                if let Some(entry) = track_io_map.remove(&track.id) {
+                    if track.kind == crate::TrackKind::Group
+                        && entry.monitoring != crate::InputMonitoring::Auto
+                    {
+                        return Err(Invalid("group tracks do not support input monitoring"));
+                    }
+                    (entry.output, entry.monitoring)
+                } else {
+                    (
+                        crate::TrackOutputDestination::Default,
+                        crate::InputMonitoring::Auto,
+                    )
+                };
             tracks.push(Track {
                 group_output_mutes: crate::group_output_mute::snapshot_ranges(
                     track.kind,
@@ -1343,6 +1387,8 @@ impl Project {
                 mute_lane,
                 send_lanes,
                 frozen,
+                output_destination,
+                input_monitoring,
                 id: TrackId(track.id),
                 name: track.name,
                 automatic_name: automatic_track_names.remove(&track.id),
@@ -1370,6 +1416,9 @@ impl Project {
         }
         if !frozen_tracks_map.is_empty() {
             return Err(Invalid("frozen track owner is missing"));
+        }
+        if !track_io_map.is_empty() {
+            return Err(Invalid("track io owner is missing"));
         }
         let mut total_mixer_points = 0_usize;
         for track in &tracks {
