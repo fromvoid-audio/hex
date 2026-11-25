@@ -9,6 +9,7 @@ mod device_composition;
 #[path = "layout_review/gallery.rs"]
 mod gallery;
 #[path = "../src/output_meter.rs"]
+#[allow(dead_code)] // The editor also consumes unified peak-hold/latched-clip rendering.
 mod output_meter;
 #[path = "../src/theme.rs"]
 #[allow(dead_code)]

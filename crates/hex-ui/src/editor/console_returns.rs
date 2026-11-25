@@ -361,7 +361,7 @@ impl EditorView {
                 .child(controls)
                 .child(super::track_meters::render_return(
                     id,
-                    self.track_meters.return_level(id),
+                    self.track_meters.return_reading(id),
                     50.0,
                 ));
             bank = bank.child(

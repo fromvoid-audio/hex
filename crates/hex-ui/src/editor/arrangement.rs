@@ -1319,7 +1319,7 @@ impl EditorView {
                     )
                     .child(div().flex_1())
                     .children([super::track_meters::render_main(
-                        self.track_meters.main_level(),
+                        self.track_meters.main_reading(),
                         self.main_track_height(),
                     )])
                     .children(self.track_latency_indicator(super::track_latency::Owner::Main))

@@ -1304,3 +1304,295 @@ fn bottom_scroll_keeps_empty_track_space_without_synthetic_tracks(cx: &mut TestA
         }
     }
 }
+
+#[gpui::test]
+fn playback_meter_ticks_update_bars_with_zero_track_header_rebuilds(cx: &mut TestAppContext) {
+    use std::collections::BTreeMap;
+    use std::sync::atomic::Ordering::Acquire;
+    use std::time::{Duration, Instant};
+
+    let (mut visual, editor, tracks) = fixture(cx, 4);
+    let project = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.clone()
+    });
+    let prepared = Arc::new(
+        hex_engine::PreparedRevision::prepare(
+            &project,
+            &BTreeMap::new(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let observation =
+        Arc::new(hex_engine::PreparedPlaybackObservation::prepare_on_control(&prepared).unwrap());
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let client = output.take_client().unwrap();
+    let applied = client.status().unwrap().applied_revision.load(Acquire);
+    let now = Instant::now();
+
+    editor.update(&mut visual, |view, cx| {
+        view.audio = Some(crate::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "meter cache fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.audible_playback = Some(super::PlaybackCandidate {
+            clip_preview_identity: None,
+            worker_requires_preroll: None,
+            observation: Some(Arc::clone(&observation)),
+            audio_revision: applied,
+            project_generation: view.project_generation,
+            state: Arc::clone(view.state.as_ref().unwrap()),
+            prepared_revision: Some(prepared),
+            seek_request_id: None,
+            device_preview_identity: None,
+            tuning_preview_identity: None,
+        });
+        // Prime initial visible meter slots so subsequent ticks observe live peaks.
+        view.tick_track_meters(now);
+        cx.notify();
+    });
+    visual.run_until_parked();
+
+    let baseline_counts: Vec<usize> = editor.read_with(&visual, |view, cx| {
+        tracks
+            .iter()
+            .map(|&id| view.track_header_render_count(id, cx))
+            .collect()
+    });
+    let baseline_epochs: Vec<Option<u64>> = editor.read_with(&visual, |view, cx| {
+        tracks
+            .iter()
+            .map(|&id| view.track_header_epoch(id, cx))
+            .collect()
+    });
+    assert!(
+        baseline_counts.iter().all(|&count| count >= 1),
+        "all visible track headers must have painted initially: {baseline_counts:?}"
+    );
+
+    let fill_selector = |track: TrackId| -> &'static str {
+        Box::leak(format!("track-output-meter-{}-left-fill", track.value()).into_boxed_str())
+    };
+    let hold_selector = |track: TrackId| -> &'static str {
+        Box::leak(format!("track-output-meter-{}-left-peak-hold", track.value()).into_boxed_str())
+    };
+    let clip_selector = |track: TrackId| -> &'static str {
+        Box::leak(format!("track-output-meter-{}-left-above", track.value()).into_boxed_str())
+    };
+
+    let mut saw_peak_height = px(0.0);
+    let mut saw_decayed_height = false;
+    let mut saw_clip_cap = false;
+    let mut saw_peak_hold = false;
+
+    for tick in 1_u64..=60 {
+        let sample = match tick {
+            1..=10 => 0.1 + 0.08 * tick as f32,
+            11 => 1.5,      // clipping transient
+            12..=35 => 0.0, // smooth decay + peak hold
+            36..=45 => 0.25 + 0.04 * (tick - 35) as f32,
+            _ => 0.0,
+        };
+        if sample > 0.0 {
+            observation
+                .track_output_meter(tracks[0])
+                .unwrap()
+                .observe_track_output(&[[sample, sample * 0.5]]);
+            observation
+                .track_output_meter(tracks[1])
+                .unwrap()
+                .observe_track_output(&[[sample * 0.6, sample * 0.3]]);
+        }
+        let at = now + Duration::from_millis(16 * tick);
+        editor.update(&mut visual, |view, cx| {
+            view.tick_track_meters(at);
+            cx.notify();
+        });
+        visual.run_until_parked();
+
+        let height = visual
+            .debug_bounds(fill_selector(tracks[0]))
+            .unwrap()
+            .size
+            .height;
+        if height > saw_peak_height {
+            saw_peak_height = height;
+        }
+        if tick == 35 && height < saw_peak_height {
+            saw_decayed_height = true;
+        }
+        if visual.debug_bounds(clip_selector(tracks[0])).is_some() {
+            saw_clip_cap = true;
+        }
+        if visual.debug_bounds(hold_selector(tracks[0])).is_some() {
+            saw_peak_hold = true;
+        }
+    }
+
+    assert!(
+        saw_peak_height > px(10.0),
+        "meter fill must visibly rise during playback"
+    );
+    assert!(
+        saw_decayed_height,
+        "meter fill must visibly decay on quiet ticks"
+    );
+    assert!(saw_clip_cap, "clipping peak must light the clip cap");
+    assert!(
+        saw_peak_hold,
+        "active peak must render the peak-hold hairline"
+    );
+
+    let after_counts: Vec<usize> = editor.read_with(&visual, |view, cx| {
+        tracks
+            .iter()
+            .map(|&id| view.track_header_render_count(id, cx))
+            .collect()
+    });
+    let after_epochs: Vec<Option<u64>> = editor.read_with(&visual, |view, cx| {
+        tracks
+            .iter()
+            .map(|&id| view.track_header_epoch(id, cx))
+            .collect()
+    });
+    assert_eq!(
+        after_counts, baseline_counts,
+        "TrackHeaderView must incur 0 rebuilds across 60 consecutive playback meter ticks"
+    );
+    assert_eq!(
+        after_epochs, baseline_epochs,
+        "TrackHeaderView epochs must stay unchanged across 60 consecutive playback meter ticks"
+    );
+
+    editor.update(&mut visual, |view, _| {
+        view.audio.take().unwrap().control.close();
+    });
+    backend.close();
+    drop(output);
+}
+
+#[gpui::test]
+fn per_track_resize_draft_and_rename_do_not_invalidate_unrelated_track_headers(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, tracks) = fixture(cx, 3);
+    let counts = |visual: &VisualTestContext| -> Vec<usize> {
+        editor.read_with(visual, |view, cx| {
+            tracks
+                .iter()
+                .map(|&id| view.track_header_render_count(id, cx))
+                .collect()
+        })
+    };
+    let epochs = |visual: &VisualTestContext| -> Vec<Option<u64>> {
+        editor.read_with(visual, |view, cx| {
+            tracks
+                .iter()
+                .map(|&id| view.track_header_epoch(id, cx))
+                .collect()
+        })
+    };
+
+    // 1. Single-row height resize on Track 0 only invalidates Track 0's cache epoch
+    // (Tracks 1..2 shift vertically in ListState, but TrackHeaderCache does not bust them).
+    let before_resize_epochs = epochs(&visual);
+    let handle = bounds(&mut visual, "track-height-resize", tracks[0]).center();
+    visual.simulate_mouse_down(handle, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(handle.x, handle.y + px(44.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let during_resize_epochs = epochs(&visual);
+    assert!(
+        during_resize_epochs[0] > before_resize_epochs[0],
+        "resized track header must bump its cache epoch"
+    );
+    assert_eq!(
+        during_resize_epochs[1..],
+        before_resize_epochs[1..],
+        "unrelated track headers must not have their cache epoch invalidated during single-row height resize"
+    );
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(handle, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+
+    // 2. Track 0 inline rename must not invalidate or rebuild Tracks 1..2.
+    let name_center = bounds(&mut visual, "track-name", tracks[0]).center();
+    visual.simulate_click(name_center, Modifiers::default());
+    visual.run_until_parked();
+    let before_rename_epochs = epochs(&visual);
+    visual.simulate_keystrokes("cmd-r");
+    visual.run_until_parked();
+    assert!(
+        editor.read_with(&visual, |view, _| view.track_name.is_editing()),
+        "cmd-r on focused track header must enter inline rename mode"
+    );
+    let after_open_rename_counts = counts(&visual);
+    for key in ["a", "b", "c"] {
+        visual.simulate_keystrokes(key);
+        visual.run_until_parked();
+    }
+    let during_rename = counts(&visual);
+    let during_rename_epochs = epochs(&visual);
+    assert!(
+        during_rename[0] > after_open_rename_counts[0],
+        "track being renamed must rebuild while typing"
+    );
+    assert_eq!(
+        during_rename_epochs[1..],
+        before_rename_epochs[1..],
+        "unrelated track header epochs must stay unchanged while renaming Track 0"
+    );
+    assert_eq!(
+        during_rename[1..],
+        after_open_rename_counts[1..],
+        "unrelated track headers must incur 0 rebuilds while typing Track 0's new name"
+    );
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+
+    // 3. Track 0 gain drag (active pending draft) must not invalidate or rebuild Tracks 1..2.
+    let before_gain_epochs = epochs(&visual);
+    let volume = bounds(&mut visual, "track-volume", tracks[0]).center();
+    visual.simulate_mouse_down(volume, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let after_down_counts = counts(&visual);
+    for step in 1..=5 {
+        visual.simulate_mouse_move(
+            point(volume.x, volume.y - px(4.0 * step as f32)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+    }
+    let during_gain_counts = counts(&visual);
+    let during_gain_epochs = epochs(&visual);
+    assert!(
+        during_gain_epochs[0] > before_gain_epochs[0],
+        "track with active volume draft must bypass cache"
+    );
+    assert!(
+        during_gain_counts[0] > after_down_counts[0],
+        "track with active volume draft must rebuild across drag ticks"
+    );
+    assert_eq!(
+        during_gain_epochs[1..],
+        before_gain_epochs[1..],
+        "unrelated track header epochs must stay unchanged during Track 0 volume drag"
+    );
+    assert_eq!(
+        during_gain_counts[1..],
+        after_down_counts[1..],
+        "unrelated track headers must incur 0 rebuilds across Track 0 volume drag ticks"
+    );
+    visual.simulate_mouse_up(volume, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+}

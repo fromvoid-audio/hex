@@ -86,6 +86,16 @@ impl TrackNameState {
     pub(super) fn is_editing(&self) -> bool {
         self.edit.is_some()
     }
+    pub(super) fn editing_track(&self, generation: u64) -> Option<TrackId> {
+        let edit = self
+            .edit
+            .as_ref()
+            .filter(|edit| edit.generation == generation)?;
+        match edit.target {
+            Target::Track(id) => Some(id),
+            Target::Return(_) => None,
+        }
+    }
     pub(super) fn pending_return(&self, generation: u64) -> Option<ReturnId> {
         let edit = self
             .edit

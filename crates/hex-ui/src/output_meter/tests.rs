@@ -60,7 +60,7 @@ mod unit_tests {
                         theme::PaletteRole::Surface
                     ))))
                 );
-                let mut label = field(input);
+                let mut label = field(input, false);
                 let foreground = label.text_style().as_ref().unwrap().color.unwrap().to_rgb();
                 assert!(
                     contrast(foreground, rgb(theme::color(theme::PaletteRole::Surface))) >= 4.5

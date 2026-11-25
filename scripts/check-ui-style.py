@@ -73,6 +73,7 @@ widgets = (
     'hex_widgets::curve_plot(',
     # Output meter labels are routed through theme::text in the component.
     'crate::output_meter::render(',
+    'crate::output_meter::render_unified(',
     # Generic device layout components accept already-themed child elements.
     'hex_widgets::device_display(', 'hex_widgets::device_body(',
     'hex_widgets::device_section(', 'hex_widgets::device_layout(',

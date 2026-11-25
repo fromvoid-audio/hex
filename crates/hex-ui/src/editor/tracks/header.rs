@@ -1198,6 +1198,17 @@ impl EditorView {
         track_index: usize,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        self.build_track_header_with_meter(state, track, track_index, true, cx)
+    }
+
+    pub(in crate::editor) fn build_track_header_with_meter(
+        &mut self,
+        state: &ViewState,
+        track: &Track,
+        track_index: usize,
+        include_meter: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let track_id = track.id();
         let selected = self.selected_track() == Some(track_id);
         let track_selected = self.track_selection.contains(track_id);
@@ -1530,11 +1541,20 @@ impl EditorView {
                         track_id,
                     )),
                 )
-                .children([crate::editor::track_meters::render_arrangement(
-                    track_id,
-                    self.track_meters.level(track_id),
-                    header_height,
-                )]),
+                .children([if include_meter {
+                    crate::editor::track_meters::render_arrangement(
+                        track_id,
+                        self.track_meters.reading(track_id),
+                        header_height,
+                    )
+                } else {
+                    div()
+                        .w(px(2.0 * hex_widgets::STEREO_PEAK_BAR_WIDTH
+                            + hex_widgets::STEREO_PEAK_BAR_GAP))
+                        .h(px(header_height - 6.0))
+                        .mt(px(2.0))
+                        .flex_shrink_0()
+                }]),
         )
         .children(self.track_resize_handles(track_id, cx))
         .relative()

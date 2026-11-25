@@ -1,10 +1,11 @@
 //! Bounded per-track cached Arrangement header views.
 //!
 //! Track headers (~35-45 GPUI widgets each) do not depend on horizontal timeline
-//! viewport or grid changes. Caching each track's header with
-//! `AnyView::cached_with_epoch` keeps all 32+ track headers 100% cache-hit
-//! across horizontal pan, zoom, and idle frames, eliminating ~1,200+ widget
-//! builds, CoreText track-name shapings, and Taffy flex layouts per frame.
+//! viewport, grid changes, or 60 Hz meter levels. Caching each track's header
+//! with `AnyView::cached_with_epoch` while overlaying its lightweight stereo
+//! meter keeps all 32+ track headers 100% cache-hit across playback meter ticks,
+//! horizontal pan, zoom, and idle frames, eliminating ~1,200+ widget builds,
+//! CoreText track-name shapings, and Taffy flex layouts per frame.
 use super::{EditorView, ViewState};
 use crate::theme;
 use gpui::{
@@ -35,7 +36,6 @@ struct HeaderKey {
     audio_armed: bool,
     sample_armed: bool,
     resident_layout: bool,
-    meter_level: [u32; 2],
     show_track_latency: bool,
     send_menu_open: bool,
 }
@@ -95,10 +95,16 @@ struct TrackHeaderView {
     key: HeaderKey,
     epoch: u64,
     fresh_last: bool,
+    #[cfg(all(test, feature = "ui-test-support"))]
+    render_count: usize,
 }
 
 impl Render for TrackHeaderView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(all(test, feature = "ui-test-support"))]
+        {
+            self.render_count = self.render_count.saturating_add(1);
+        }
         self.parent
             .update(cx, |view, cx| {
                 if view.project_generation != self.key.generation
@@ -118,30 +124,66 @@ impl Render for TrackHeaderView {
                 else {
                     return div().size_full().into_any_element();
                 };
-                view.build_track_header(&self.snapshot, track, self.key.track_index, cx)
-                    .into_any_element()
+                view.build_track_header_with_meter(
+                    &self.snapshot,
+                    track,
+                    self.key.track_index,
+                    false,
+                    cx,
+                )
+                .into_any_element()
             })
             .unwrap_or_else(|_| div().size_full().into_any_element())
     }
 }
 
 impl EditorView {
-    fn track_header_cache_allowed(&self) -> bool {
-        !self.track_name.is_editing()
-            && !self.track_resize_active()
+    fn arrangement_device_preview_affects(&self, track_id: TrackId) -> bool {
+        self.arrangement_device_preview
+            .is_some_and(|preview| match preview.target {
+                super::arrangement_device_drop::ArrangementDropTarget::ExistingTrack {
+                    track,
+                    ..
+                } => track == track_id,
+                super::arrangement_device_drop::ArrangementDropTarget::NewTrack {
+                    before_track,
+                    ..
+                } => before_track == Some(track_id),
+            })
+    }
+
+    fn track_header_cache_allowed_for(&self, track_id: TrackId, cx: &gpui::App) -> bool {
+        self.track_name.editing_track(self.project_generation) != Some(track_id)
+            && !self.track_resize_affects(track_id)
             && !self.track_reorder_active()
-            && !self.edit_pending()
+            && !self.track_gain_controls.has_pending_draft_for(track_id, cx)
             && !self.opening_project
             && !self.close_prompt_open
             && !self.save_dialog_open
             && !self.export_dialog_open
             && self.context_menu.is_none()
             && self.active_native_device_drag.is_none()
-            && self.arrangement_device_preview.is_none()
-            && self.pending_plugin_effect.is_none()
+            && self.active_browser_audio_drag.is_none()
+            && !self.arrangement_device_preview_affects(track_id)
             && !self.theme_settings.open
             && !self.track_performance.enabled
             && !self.show_track_latency
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn track_header_render_count(&self, track_id: TrackId, cx: &gpui::App) -> usize {
+        self.track_header_cache
+            .entries
+            .get(&track_id)
+            .map_or(0, |entity| entity.read(cx).render_count)
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn track_header_epoch(&self, track_id: TrackId, cx: &gpui::App) -> Option<u64> {
+        self.track_header_cache
+            .entries
+            .get(&track_id)
+            .map(|entity| entity.read(cx).epoch)
     }
 
     pub(super) fn track_header_element(
@@ -199,7 +241,6 @@ impl EditorView {
         }
         let sample_source =
             super::sample_recorder::Arm::Output(hex_engine::OutputCaptureId::Track(track_id));
-        let level = self.track_meters.level(track_id);
         let key = HeaderKey {
             generation: self.project_generation,
             revision: state.revision,
@@ -224,14 +265,11 @@ impl EditorView {
                 .sample_recorder
                 .is_armed(self.project_generation, sample_source),
             resident_layout: self.document_audio_mode == hex_session::DocumentAudioMode::Resident,
-            meter_level: [level[0].to_bits(), level[1].to_bits()],
             show_track_latency: self.show_track_latency,
             send_menu_open: self.send_menu_track == Some(track_id),
         };
         let parent = cx.weak_entity();
-        let fresh = !self.track_header_cache_allowed()
-            || cx.has_active_drag()
-            || self.track_gain_controls.has_pending_draft(cx);
+        let fresh = !self.track_header_cache_allowed_for(track_id, cx);
         let entity = if let Some(entity) = self.track_header_cache.entries.get(&track_id).cloned() {
             entity.update(cx, |header, _| {
                 if header.key != key || fresh || header.fresh_last {
@@ -248,6 +286,8 @@ impl EditorView {
                 key,
                 epoch: 0,
                 fresh_last: fresh,
+                #[cfg(all(test, feature = "ui-test-support"))]
+                render_count: 0,
             });
             self.track_header_cache
                 .entries
@@ -259,8 +299,24 @@ impl EditorView {
             .w(px(header_width))
             .h(px(header_height))
             .flex_shrink_0();
-        AnyView::from(entity)
-            .cached_with_epoch(layout.style().clone(), epoch)
+        let meter_overlay = div().absolute().top_0().right(px(4.0)).children([
+            super::track_meters::render_arrangement(
+                track_id,
+                self.track_meters.reading(track_id),
+                header_height,
+            ),
+        ]);
+        div()
+            .relative()
+            .w(px(header_width))
+            .h(px(header_height))
+            .flex_shrink_0()
+            .children([
+                AnyView::from(entity)
+                    .cached_with_epoch(layout.style().clone(), epoch)
+                    .into_any_element(),
+                meter_overlay.into_any_element(),
+            ])
             .into_any_element()
     }
 }

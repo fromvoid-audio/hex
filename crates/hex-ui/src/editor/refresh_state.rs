@@ -14,6 +14,11 @@ pub(super) struct AudioFrame {
     pub position: u64,
     pub peak_left: u32,
     pub peak_right: u32,
+    /// Callback-latched maximum peak bits drained since the previous poll.
+    pub latched_peak_left: u32,
+    pub latched_peak_right: u32,
+    /// Callback-latched between-poll clip flags (`peak > 1.0`) drained since the previous poll.
+    pub latched_clip: [bool; 2],
     pub applied_revision: u64,
     pub deadline_misses: u64,
     /// Callbacks that held streamed playback silent mid-play (disk overload).
@@ -26,8 +31,10 @@ pub(super) struct AudioFrame {
 
 impl AudioFrame {
     /// One control-side observation of the actual callback status. Channel peaks
-    /// remain independent relaxed loads, with no age or coherent-pair guarantee.
+    /// remain independent relaxed loads, paired with callback-latched between-poll
+    /// peak maxima and clip flags drained atomically from `Status`.
     pub(super) fn capture(status: &Status) -> Self {
+        let (latched_peaks, latched_clip) = status.take_latched_output_peaks();
         Self {
             source: 0,
             cpu: status.cpu_meter.snapshot(),
@@ -35,6 +42,9 @@ impl AudioFrame {
             position: status.position.load(Relaxed),
             peak_left: status.peak_left.load(Relaxed),
             peak_right: status.peak_right.load(Relaxed),
+            latched_peak_left: latched_peaks[0].to_bits(),
+            latched_peak_right: latched_peaks[1].to_bits(),
+            latched_clip,
             applied_revision: status.applied_revision.load(Relaxed),
             deadline_misses: status.deadline_misses.load(Relaxed),
             stream_starved: status.stream_starved_callbacks.load(Relaxed),
@@ -89,7 +99,10 @@ impl RedrawGate {
             changed |= current.position != previous.position;
             if current.playing {
                 changed |= current.peak_left != previous.peak_left
-                    || current.peak_right != previous.peak_right;
+                    || current.peak_right != previous.peak_right
+                    || current.latched_peak_left != previous.latched_peak_left
+                    || current.latched_peak_right != previous.latched_peak_right
+                    || current.latched_clip != previous.latched_clip;
             }
             let diagnostic_due = self
                 .last_redraw
@@ -121,6 +134,9 @@ mod tests {
             position: 0,
             peak_left: 0,
             peak_right: 0,
+            latched_peak_left: 0,
+            latched_peak_right: 0,
+            latched_clip: [false; 2],
             applied_revision: 1,
             deadline_misses: 0,
             stream_starved: 0,

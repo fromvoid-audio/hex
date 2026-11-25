@@ -499,13 +499,14 @@ impl EditorView {
             super::refresh::AudioFrame::meter_input,
         );
         bar = bar.child(
-            crate::output_meter::render(meter_input).tooltip(move |_, cx| {
-                cx.new(|_| super::transport::MiniTooltip {
-                    kind: crate::tooltips::Kind::Identification,
-                    description: crate::output_meter::description(meter_input).into(),
-                })
-                .into()
-            }),
+            crate::output_meter::render_unified(meter_input, self.track_meters.main_reading())
+                .tooltip(move |_, cx| {
+                    cx.new(|_| super::transport::MiniTooltip {
+                        kind: crate::tooltips::Kind::Identification,
+                        description: crate::output_meter::description(meter_input).into(),
+                    })
+                    .into()
+                }),
         );
         bar = bar.child(disk_overload_slot(&self.disk_overload));
         if let Some(status) = self.audio_status() {

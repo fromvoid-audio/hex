@@ -460,6 +460,17 @@ impl EditorView {
     pub(super) fn track_resize_active(&self) -> bool {
         self.track_layout.drag.is_some()
     }
+    /// True when a global header-width resize drag or a row-height drag on
+    /// `track_id` specifically is active; avoids busting unrelated track headers.
+    pub(super) fn track_resize_affects(&self, track_id: TrackId) -> bool {
+        match self.track_layout.drag.as_ref() {
+            None => false,
+            Some(drag) => match drag.track {
+                None => true, // global header width resize affects every header
+                Some(row) => row.track() == Some(track_id),
+            },
+        }
+    }
     /// Option-only wheel is local sizing; ordinary scrolling keeps its platform delta.
     pub(super) fn row_size_wheel(event: &ScrollWheelEvent) -> bool {
         event.modifiers.alt
