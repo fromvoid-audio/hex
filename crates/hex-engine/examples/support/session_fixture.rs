@@ -24,6 +24,8 @@ fn notes(next: &mut u64, track: usize, transposition: u8) -> Vec<MidiNoteSnapsho
                 pitch: 36 + ((track + voice) % 24) as u8 + transposition,
                 channel: 0,
                 velocity: 80 + (track % 21) as u8,
+                expression: Default::default(),
+                expression_points: Vec::new(),
             }
         })
         .collect()
@@ -91,6 +93,7 @@ pub fn project_with_tracks(
                 loop_end_raw: 4 << 32,
                 looping: true,
                 notes: arrangement_notes,
+                expression_lanes: Vec::new(),
             }]),
             sends: Vec::new(),
         });
@@ -115,6 +118,7 @@ pub fn project_with_tracks(
                         loop_end_raw: 4 << 32,
                         looping: true,
                         notes: notes(&mut next, index, 12),
+                        expression_lanes: Vec::new(),
                     },
                 }),
             });
@@ -206,6 +210,7 @@ pub fn finite_oracle(
                 loop_end_raw: clip.source.loop_end_raw,
                 looping: clip.source.looping,
                 notes: clip.source.notes.clone(),
+                expression_lanes: Vec::new(),
             }]);
         } else if let TrackContentSnapshot::Instrument(clips)
         | TrackContentSnapshot::Hybrid {

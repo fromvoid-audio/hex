@@ -33,6 +33,11 @@
 //! Does not render DSP, access audio devices or maintain a parallel UI editing model. Audio
 //! placement uses project-rate frames; MIDI uses checked Q32.32 quarter-note beats. Failed
 //! preparation must preserve project, IDs and history.
+pub use midi::{
+    MAX_MIDI_CC_LANES, MAX_MIDI_EXPRESSION_POINTS, MAX_NOTE_EXPRESSION_POINTS,
+    MAX_NOTE_PITCH_OFFSET_CENTS, MIN_NOTE_PITCH_OFFSET_CENTS, MidiExpressionLane, MidiLaneKind,
+    MidiLanePoint, NoteExpression, NoteExpressionPoint,
+};
 mod sidechain;
 pub use sidechain::{MAX_SIDECHAIN_ROUTES, SidechainRoute, SidechainRouteSnapshot};
 mod arrangement_locators;

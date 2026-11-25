@@ -507,6 +507,106 @@ fn stacked_legacy_and_schema126_decode_to_identical_project() {
 }
 
 #[test]
+fn schema127_round_trips_clip_cc_pitch_bend_and_per_note_mpe_expression() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "mpe synth".into(),
+        })
+        .unwrap()
+    else {
+        panic!("expected midi track");
+    };
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(4).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("expected midi clip");
+    };
+    let Created::Note(note) = editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_quarters(2).unwrap(),
+            pitch: 64,
+            channel: 2,
+            velocity: 110,
+        })
+        .unwrap()
+    else {
+        panic!("expected midi note");
+    };
+    editor
+        .execute(Command::SetMidiExpressionLane {
+            clip,
+            kind: hex_project::MidiLaneKind::ControlChange(74),
+            points: vec![hex_project::MidiLanePoint {
+                beat: BeatTime::ONE,
+                channel: 0,
+                value: 96,
+            }],
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetMidiExpressionLane {
+            clip,
+            kind: hex_project::MidiLaneKind::PitchBend,
+            points: vec![hex_project::MidiLanePoint {
+                beat: BeatTime::ZERO,
+                channel: 0,
+                value: -2048,
+            }],
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetMidiNoteExpression {
+            clip,
+            note,
+            expression: hex_project::NoteExpression {
+                pitch_offset_cents: -150,
+                timbre: 80,
+                pressure: 64,
+            },
+            points: vec![hex_project::NoteExpressionPoint {
+                offset: BeatTime::ONE,
+                pitch_offset_cents: 120,
+                timbre: 112,
+                pressure: 90,
+            }],
+        })
+        .unwrap();
+
+    let project = editor.project();
+    assert_eq!(
+        crate::schema_version_for(project),
+        crate::MIDI_EXPRESSION_SCHEMA_VERSION
+    );
+    let bytes = crate::encode(project).unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["version"], crate::MIDI_EXPRESSION_SCHEMA_VERSION);
+    assert!(
+        json["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "midi_expression")
+    );
+
+    let decoded = crate::decode(&bytes).unwrap();
+    assert_eq!(decoded, *project);
+
+    // Downgrading the version header to 126 must be refused cleanly.
+    let mut downgraded = json;
+    downgraded["version"] = serde_json::json!(CAPABILITY_MANIFEST_SCHEMA_VERSION);
+    let downgraded_bytes = serde_json::to_vec(&downgraded).unwrap();
+    assert!(crate::decode(&downgraded_bytes).is_err());
+}
+
+#[test]
 #[ignore = "release benchmark comparing schema 126 vs stacked schemas 113..=125"]
 fn benchmark_schema126_vs_stacked_legacy() {
     let project = build_rich_multi_feature_project();

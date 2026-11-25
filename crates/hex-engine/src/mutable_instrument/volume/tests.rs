@@ -85,6 +85,7 @@ fn onsets() -> (TrackId, MutableOnsetBuffer) {
                 channel: 0,
                 velocity: 127,
                 contributor_fade_in: false,
+                expression: Default::default(),
             })
             .unwrap();
     }

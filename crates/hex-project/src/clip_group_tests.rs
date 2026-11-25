@@ -1509,6 +1509,7 @@ fn group_bounds_occurrence_enumeration_separately_from_tiny_retained_tail() {
             content: std::sync::Arc::new(crate::MidiContent {
                 source_length: length,
                 notes: vec![note],
+                expression_lanes: Vec::new(),
             }),
             one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
             source_start: BeatTime::ZERO,

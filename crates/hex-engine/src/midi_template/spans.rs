@@ -62,6 +62,7 @@ struct VoiceSpan {
     pitch: u8,
     channel: u8,
     velocity: u8,
+    expression: hex_project::NoteExpression,
     sampler_index: u16,
 }
 
@@ -144,6 +145,7 @@ pub struct MidiRenderSpan {
     pub pitch: u8,
     pub channel: u8,
     pub velocity: u8,
+    pub expression: hex_project::NoteExpression,
     pub track: hex_project::TrackId,
     pub clip: hex_project::ClipId,
     pub note: hex_project::NoteId,
@@ -1478,6 +1480,7 @@ fn prepare_spans(
             pitch: span.pitch,
             channel: span.channel,
             velocity: span.velocity,
+            expression: span.expression,
             sampler_index,
         });
     }

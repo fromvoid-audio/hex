@@ -586,6 +586,10 @@ impl SamplerRuntime {
             NativeInstrumentEvent::NotePressure { .. } => {
                 return Err(Error::UnsupportedNotePressure);
             }
+            NativeInstrumentEvent::ControlChange { .. }
+            | NativeInstrumentEvent::PitchBend { .. }
+            | NativeInstrumentEvent::NotePitchBend { .. }
+            | NativeInstrumentEvent::NoteTimbre { .. } => {}
             NativeInstrumentEvent::Expression { expression, .. } => {
                 if !expression.is_valid() {
                     return Err(Error::InvalidEventBatch);

@@ -2,6 +2,7 @@ mod fm4_native_admission;
 mod midi_activity;
 mod midi_clip_preview;
 mod midi_compile;
+mod midi_expression;
 mod midi_source_prefix;
 mod midi_template;
 mod native_tuning_coverage;

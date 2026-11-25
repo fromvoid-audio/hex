@@ -102,15 +102,36 @@ impl NativeInstrumentExpression {
 }
 
 /// Sample-offset note/controller event in caller-owned bounded block storage.
-/// Equal offsets retain the caller's order. Note pressure addresses a held
-/// occurrence, including an onset earlier at the same offset.
+/// Equal offsets retain the caller's order. Per-note expression (`NotePressure`,
+/// `NotePitchBend`, `NoteTimbre`) addresses a held occurrence, including an
+/// onset earlier at the same offset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeInstrumentEvent {
     Expression {
         frame_offset: usize,
         expression: NativeInstrumentExpression,
     },
+    /// Channel-wide MIDI Control Change (`cc` 0..=127, `value` 0..=127).
+    ControlChange {
+        frame_offset: usize,
+        cc: u8,
+        value: u8,
+    },
+    /// Channel-wide 14-bit MIDI Pitch Bend (`-8192..=8191`, 0 = center).
+    PitchBend { frame_offset: usize, value: i16 },
     NotePressure {
+        frame_offset: usize,
+        occurrence_id: NonZeroU64,
+        value: u8,
+    },
+    /// Per-note MPE pitch offset in cents (`-4800..=4800`, 0 = unbent).
+    NotePitchBend {
+        frame_offset: usize,
+        occurrence_id: NonZeroU64,
+        cents: i16,
+    },
+    /// Per-note MPE slide / timbre (`0..=127`, CC74).
+    NoteTimbre {
         frame_offset: usize,
         occurrence_id: NonZeroU64,
         value: u8,
@@ -133,6 +154,10 @@ impl NativeInstrumentEvent {
             Self::NoteOn { frame_offset, .. }
             | Self::NoteOff { frame_offset, .. }
             | Self::NotePressure { frame_offset, .. }
+            | Self::NotePitchBend { frame_offset, .. }
+            | Self::NoteTimbre { frame_offset, .. }
+            | Self::ControlChange { frame_offset, .. }
+            | Self::PitchBend { frame_offset, .. }
             | Self::Expression { frame_offset, .. } => frame_offset,
         }
     }
@@ -142,8 +167,10 @@ impl NativeInstrumentEvent {
             Self::NoteOn { occurrence_id, .. } | Self::NoteOff { occurrence_id, .. } => {
                 Some(occurrence_id)
             }
-            Self::NotePressure { occurrence_id, .. } => Some(occurrence_id.get()),
-            Self::Expression { .. } => None,
+            Self::NotePressure { occurrence_id, .. }
+            | Self::NotePitchBend { occurrence_id, .. }
+            | Self::NoteTimbre { occurrence_id, .. } => Some(occurrence_id.get()),
+            Self::Expression { .. } | Self::ControlChange { .. } | Self::PitchBend { .. } => None,
         }
     }
 }
@@ -1032,6 +1059,26 @@ pub(super) fn validate_event_batch(
                 return Err(NativeInstrumentRuntimeError::UnsupportedNotePressure);
             }
         }
+        if let NativeInstrumentEvent::NotePitchBend { cents, .. } = event
+            && !(-4_800..=4_800).contains(&cents)
+        {
+            return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+        }
+        if let NativeInstrumentEvent::NoteTimbre { value, .. } = event
+            && value > 127
+        {
+            return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+        }
+        if let NativeInstrumentEvent::ControlChange { cc, value, .. } = event
+            && (cc > 127 || value > 127)
+        {
+            return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+        }
+        if let NativeInstrumentEvent::PitchBend { value, .. } = event
+            && !(-8192..=8191).contains(&value)
+        {
+            return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+        }
         if let NativeInstrumentEvent::NoteOn {
             occurrence_id,
             pitch,
@@ -1112,7 +1159,11 @@ mod tests {
         fn apply_event(&mut self, event: NativeInstrumentEvent) {
             match event {
                 NativeInstrumentEvent::Expression { .. }
-                | NativeInstrumentEvent::NotePressure { .. } => {}
+                | NativeInstrumentEvent::ControlChange { .. }
+                | NativeInstrumentEvent::PitchBend { .. }
+                | NativeInstrumentEvent::NotePressure { .. }
+                | NativeInstrumentEvent::NotePitchBend { .. }
+                | NativeInstrumentEvent::NoteTimbre { .. } => {}
                 NativeInstrumentEvent::NoteOn {
                     occurrence_id,
                     pitch,
@@ -1244,7 +1295,11 @@ mod tests {
                     NativeInstrumentEvent::NotePressure { .. } => {
                         return Err(NativeInstrumentRuntimeError::UnsupportedNotePressure);
                     }
-                    NativeInstrumentEvent::Expression { .. } => {
+                    NativeInstrumentEvent::Expression { .. }
+                    | NativeInstrumentEvent::ControlChange { .. }
+                    | NativeInstrumentEvent::PitchBend { .. }
+                    | NativeInstrumentEvent::NotePitchBend { .. }
+                    | NativeInstrumentEvent::NoteTimbre { .. } => {
                         return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
                     }
                     NativeInstrumentEvent::NoteOn { occurrence_id, .. } => {

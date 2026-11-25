@@ -1068,6 +1068,26 @@ impl Track {
         Ok(())
     }
 
+    pub(crate) fn expression_events_in_range(
+        &self,
+        start: u64,
+        end: u64,
+    ) -> &[midi_compile::CompiledExpressionEvent] {
+        let Some(instrument) = self.instrument.as_ref() else {
+            return &[];
+        };
+        if instrument.expression_events.is_empty() || start >= end {
+            return &[];
+        }
+        let lo = instrument
+            .expression_events
+            .partition_point(|event| event.frame < start);
+        let hi = instrument
+            .expression_events
+            .partition_point(|event| event.frame < end);
+        &instrument.expression_events[lo..hi]
+    }
+
     pub(crate) fn render_unmuted_range(
         &self,
         start_frame: u64,
@@ -1566,6 +1586,7 @@ pub(crate) struct InstrumentTrack {
     pub(crate) shared_contexts: Arc<shared_analytic::SharedAnalyticContextTable>,
     pub(crate) mutable: bool,
     pub(crate) volumes: Option<midi_clip_volume::arrangement::PreparedArrangementVolumes>,
+    pub(crate) expression_events: Vec<midi_compile::CompiledExpressionEvent>,
 }
 
 impl InstrumentTrack {

@@ -311,7 +311,57 @@ impl MutableInstrumentTrackRuntime {
         live.expire();
         for &event in transitions {
             match event {
-                NativeInstrumentEvent::Expression { .. } => live.push(event)?,
+                NativeInstrumentEvent::Expression { .. }
+                | NativeInstrumentEvent::ControlChange { .. }
+                | NativeInstrumentEvent::PitchBend { .. } => live.push(event)?,
+                NativeInstrumentEvent::NotePitchBend {
+                    frame_offset,
+                    occurrence_id: token,
+                    cents,
+                } => {
+                    if let Some(occurrence_id) = live
+                        .scratch
+                        .iter()
+                        .flatten()
+                        .find(|voice| {
+                            voice.input == input
+                                && voice.token == token.get()
+                                && voice.quiet_age.is_none()
+                                && !voice.release_requested
+                        })
+                        .and_then(|voice| std::num::NonZeroU64::new(voice.id))
+                    {
+                        live.push(NativeInstrumentEvent::NotePitchBend {
+                            frame_offset,
+                            occurrence_id,
+                            cents,
+                        })?;
+                    }
+                }
+                NativeInstrumentEvent::NoteTimbre {
+                    frame_offset,
+                    occurrence_id: token,
+                    value,
+                } => {
+                    if let Some(occurrence_id) = live
+                        .scratch
+                        .iter()
+                        .flatten()
+                        .find(|voice| {
+                            voice.input == input
+                                && voice.token == token.get()
+                                && voice.quiet_age.is_none()
+                                && !voice.release_requested
+                        })
+                        .and_then(|voice| std::num::NonZeroU64::new(voice.id))
+                    {
+                        live.push(NativeInstrumentEvent::NoteTimbre {
+                            frame_offset,
+                            occurrence_id,
+                            value,
+                        })?;
+                    }
+                }
                 NativeInstrumentEvent::NotePressure {
                     frame_offset,
                     occurrence_id: token,

@@ -252,7 +252,11 @@ impl MutableInstrumentRuntime for Runtime {
                 match event {
                     // Unsupported by this fixture's read-only preflight.
                     NativeInstrumentEvent::Expression { .. }
-                    | NativeInstrumentEvent::NotePressure { .. } => {}
+                    | NativeInstrumentEvent::NotePressure { .. }
+                    | NativeInstrumentEvent::ControlChange { .. }
+                    | NativeInstrumentEvent::PitchBend { .. }
+                    | NativeInstrumentEvent::NotePitchBend { .. }
+                    | NativeInstrumentEvent::NoteTimbre { .. } => {}
                     NativeInstrumentEvent::NoteOn { occurrence_id, .. } => {
                         if let Some(voice) = self.voices.iter_mut().find(|voice| !voice.active) {
                             *voice = Voice {

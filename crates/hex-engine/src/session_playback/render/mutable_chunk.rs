@@ -72,6 +72,7 @@ pub(in crate::session_playback) fn collect_console_midi_onsets<T: MidiTiming + ?
                 pitch: span.pitch,
                 channel: span.channel,
                 velocity: span.velocity,
+                expression: span.expression,
                 contributor_fade_in: false,
             })
             .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
@@ -168,71 +169,72 @@ pub(super) fn render_mutable_instrument_inner<
     match midi_route.owner {
         RouteOwner::Arrangement => {
             let mut event_error = false;
-            track
-                .for_each_mutable_midi_span(
-                    arrangement_frame,
-                    arrangement_frame
-                        .checked_add(
-                            u64::try_from(output.len())
-                                .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?,
-                        )
-                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?,
-                    |span| {
-                        if !span.admitted_at_interactive_start(interactive_onset_floor) {
-                            return;
-                        }
-                        let key = crate::mutable_instrument::MutableOccurrenceKey::new(
-                            track_id,
-                            span.clip,
-                            span.note,
-                            span.iteration,
-                            arrangement_loop_pass,
-                        );
-                        // A forward loop edit on pass > 0 can reach `region.start()`
-                        // linearly while an already-started span from this pass is
-                        // active; skip wrap-chase for any key already owned on this pass.
-                        let is_wrap_chase = arrangement_loop_pass > 0
-                            && loop_region.is_some_and(|region| {
-                                arrangement_frame == region.start()
-                                    && span.start < region.start()
-                                    && span.gate_end > region.start()
-                            })
-                            && !runtime.proofs().any(|proof| proof.signature.key() == key);
-                        let is_start_chase = chase_at_start
-                            && span.start < arrangement_frame
-                            && span.gate_end > arrangement_frame;
-                        let source_start = if is_wrap_chase || is_start_chase {
-                            arrangement_frame
-                        } else {
-                            span.start
-                        };
-                        let source_gate_end = if is_wrap_chase {
-                            loop_region
-                                .map(|region| span.gate_end.min(region.end()))
-                                .ok_or(())
-                        } else {
-                            Ok(loop_region
-                                .map_or(span.gate_end, |region| span.gate_end.min(region.end())))
-                        };
-                        let Ok(source_gate_end) = source_gate_end else {
-                            event_error = true;
-                            return;
-                        };
-                        event_error |= onsets
-                            .push(crate::mutable_instrument::MutableNoteOnset {
-                                key,
-                                onset_beat: span.onset_beat,
-                                gate_end_beat: span.gate_end_beat,
-                                source_start,
-                                source_gate_end,
-                                pitch: span.pitch,
-                                channel: span.channel,
-                                velocity: span.velocity,
-                                contributor_fade_in: false,
-                            })
-                            .is_err();
-                    },
+            let arrangement_end = arrangement_frame
+                .checked_add(
+                    u64::try_from(output.len())
+                        .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?,
                 )
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+            for expr in track.expression_events_in_range(arrangement_frame, arrangement_end) {
+                event_error |= onsets.push_expression(*expr).is_err();
+            }
+            track
+                .for_each_mutable_midi_span(arrangement_frame, arrangement_end, |span| {
+                    if !span.admitted_at_interactive_start(interactive_onset_floor) {
+                        return;
+                    }
+                    let key = crate::mutable_instrument::MutableOccurrenceKey::new(
+                        track_id,
+                        span.clip,
+                        span.note,
+                        span.iteration,
+                        arrangement_loop_pass,
+                    );
+                    // A forward loop edit on pass > 0 can reach `region.start()`
+                    // linearly while an already-started span from this pass is
+                    // active; skip wrap-chase for any key already owned on this pass.
+                    let is_wrap_chase = arrangement_loop_pass > 0
+                        && loop_region.is_some_and(|region| {
+                            arrangement_frame == region.start()
+                                && span.start < region.start()
+                                && span.gate_end > region.start()
+                        })
+                        && !runtime.proofs().any(|proof| proof.signature.key() == key);
+                    let is_start_chase = chase_at_start
+                        && span.start < arrangement_frame
+                        && span.gate_end > arrangement_frame;
+                    let source_start = if is_wrap_chase || is_start_chase {
+                        arrangement_frame
+                    } else {
+                        span.start
+                    };
+                    let source_gate_end = if is_wrap_chase {
+                        loop_region
+                            .map(|region| span.gate_end.min(region.end()))
+                            .ok_or(())
+                    } else {
+                        Ok(loop_region
+                            .map_or(span.gate_end, |region| span.gate_end.min(region.end())))
+                    };
+                    let Ok(source_gate_end) = source_gate_end else {
+                        event_error = true;
+                        return;
+                    };
+                    event_error |= onsets
+                        .push(crate::mutable_instrument::MutableNoteOnset {
+                            key,
+                            onset_beat: span.onset_beat,
+                            gate_end_beat: span.gate_end_beat,
+                            source_start,
+                            source_gate_end,
+                            pitch: span.pitch,
+                            channel: span.channel,
+                            velocity: span.velocity,
+                            expression: span.expression,
+                            contributor_fade_in: false,
+                        })
+                        .is_err();
+                })
                 .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
             if event_error {
                 return Err(SessionPlaybackError::MutableInstrumentEvents);

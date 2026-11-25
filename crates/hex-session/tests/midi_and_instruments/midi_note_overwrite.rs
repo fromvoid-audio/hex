@@ -512,6 +512,8 @@ fn source_range_worker_prepares_literal_pcm_history_and_saved_extent_in_both_con
                 pitch: old[index].pitch,
                 channel: old[index].channel,
                 velocity: old[index].velocity,
+                expression: Default::default(),
+                expression_points: Vec::new(),
             });
         }
         if console {

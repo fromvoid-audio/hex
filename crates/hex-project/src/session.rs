@@ -735,6 +735,7 @@ fn duplicate_scene(project: &mut crate::Project, scene: SceneId) -> Result<Creat
                         content: std::sync::Arc::new(crate::MidiContent {
                             source_length: source.source_length,
                             notes,
+                            expression_lanes: source.expression_lanes.clone(),
                         }),
                         one_shot_boundary: source.one_shot_boundary,
                         source_start: source.source_start,

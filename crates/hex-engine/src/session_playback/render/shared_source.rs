@@ -293,11 +293,27 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
                                 pitch: span.pitch,
                                 channel: span.channel,
                                 velocity: span.velocity,
+                                expression: span.expression,
                                 contributor_fade_in: pending && start_chase,
                             })
                             .is_err();
                     })
                     .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
+                for expr in track.expression_events_in_range(arrangement_frame, arrangement_end) {
+                    if let Some(frame) = expr
+                        .frame
+                        .checked_sub(arrangement_frame)
+                        .and_then(|offset| performance_frame.checked_add(offset))
+                    {
+                        failed |= onsets
+                            .push_expression(crate::midi_compile::CompiledExpressionEvent {
+                                frame,
+                                channel: expr.channel,
+                                kind: expr.kind,
+                            })
+                            .is_err();
+                    }
+                }
                 if failed {
                     return Err(SessionPlaybackError::MutableInstrumentEvents);
                 }
@@ -338,6 +354,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
                                 pitch: span.pitch,
                                 channel: span.channel,
                                 velocity: span.velocity,
+                                expression: span.expression,
                                 contributor_fade_in: false,
                             })
                             .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;

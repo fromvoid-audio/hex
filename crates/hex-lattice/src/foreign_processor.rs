@@ -652,12 +652,18 @@ pub struct ForeignProcessorNode<'a> {
     pub output_gain: f32,
 }
 
-/// The MIDI message carried by a foreign instrument note event.
+/// The MIDI message carried by a foreign instrument note or expression event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ForeignNoteKind {
     On,
     Off,
     PolyPressure,
+    /// Channel Control Change (`pitch` = cc 0..=127, `value` = data 0..=127).
+    ControlChange,
+    /// Channel 14-bit Pitch Bend (`pitch` = 7-bit LSB, `value` = 7-bit MSB).
+    PitchBend,
+    /// Channel Pressure / Aftertouch (`value` = pressure 0..=127, 2-byte MIDI).
+    ChannelPressure,
 }
 
 impl ForeignNoteKind {
@@ -666,7 +672,7 @@ impl ForeignNoteKind {
     }
 }
 
-/// One MIDI 1.0 note event at an offset within the supplied render segment.
+/// One MIDI 1.0 note or expression event at an offset within the supplied render segment.
 /// The caller owns note scheduling and sends release events through the same
 /// endpoint as the matching note-on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -675,13 +681,75 @@ pub struct ForeignNote {
     pub channel: u8,
     pub pitch: u8,
     pub kind: ForeignNoteKind,
-    /// Seven-bit note velocity or polyphonic pressure.
+    /// Seven-bit note velocity, polyphonic/channel pressure, CC value, or pitch-bend MSB.
     pub value: u8,
     /// Graph-assigned identity shared by the onset, its pressure and its release.
     pub note_id: Option<std::num::NonZeroU32>,
     /// True for live monitored hardware or computer-keyboard input; false for
     /// sequenced clip playback.
     pub is_live: bool,
+}
+
+impl ForeignNote {
+    /// Construct a MIDI 1.0 Control Change event (`0xBn cc value`).
+    pub const fn control_change(
+        frame: u16,
+        channel: u8,
+        cc: u8,
+        value: u8,
+        note_id: Option<std::num::NonZeroU32>,
+        is_live: bool,
+    ) -> Self {
+        Self {
+            frame,
+            channel,
+            pitch: cc,
+            kind: ForeignNoteKind::ControlChange,
+            value,
+            note_id,
+            is_live,
+        }
+    }
+
+    /// Construct a MIDI 1.0 14-bit Pitch Bend event (`0xEn lsb msb`) from signed
+    /// `-8192..=8191` (`0` = center `0x2000`).
+    pub fn pitch_bend(
+        frame: u16,
+        channel: u8,
+        bend: i16,
+        note_id: Option<std::num::NonZeroU32>,
+        is_live: bool,
+    ) -> Self {
+        let raw = (i32::from(bend).clamp(-8192, 8191) + 8192) as u16;
+        Self {
+            frame,
+            channel,
+            pitch: (raw & 0x7f) as u8,
+            kind: ForeignNoteKind::PitchBend,
+            value: ((raw >> 7) & 0x7f) as u8,
+            note_id,
+            is_live,
+        }
+    }
+
+    /// Construct a MIDI 1.0 Channel Pressure event (`0xDn pressure`).
+    pub const fn channel_pressure(
+        frame: u16,
+        channel: u8,
+        value: u8,
+        note_id: Option<std::num::NonZeroU32>,
+        is_live: bool,
+    ) -> Self {
+        Self {
+            frame,
+            channel,
+            pitch: 0,
+            kind: ForeignNoteKind::ChannelPressure,
+            value,
+            note_id,
+            is_live,
+        }
+    }
 }
 
 /// Unique borrowed view of the host's already retained foreign endpoints.

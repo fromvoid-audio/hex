@@ -1251,7 +1251,10 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
                 pitch: 69,
                 velocity: 127,
                 channel: 0,
+                expression: Default::default(),
+                expression_points: Vec::new(),
             }],
+            expression_lanes: Vec::new(),
         }],
     };
     routed_midi_fixture::separate_midi(&mut snapshot, 0);

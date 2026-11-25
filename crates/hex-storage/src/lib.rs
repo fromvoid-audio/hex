@@ -83,7 +83,11 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = CAPABILITY_MANIFEST_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = MIDI_EXPRESSION_SCHEMA_VERSION;
+/// Schema127 adds bounded clip MIDI CC/pitch-bend lanes and per-note MPE
+/// expression (`midi_expression` capability) on top of the unified capability
+/// manifest layout. Older schema126 readers refuse schema127 cleanly.
+pub const MIDI_EXPRESSION_SCHEMA_VERSION: u32 = 127;
 /// Schema126 consolidates multi-feature projects into a single-pass canonical
 /// layout with an explicit sorted capability manifest header. Schema125 is
 /// already frozen as [`LARGE_VST3_STATE_SCHEMA_VERSION`].
@@ -288,6 +292,9 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// lane has two points at one beat. Projects with unique beats retain their format.
 pub fn schema_version_for(project: &Project) -> u32 {
     use schema::long_granular::{self, LongWarpSchema};
+    if schema::manifest::contains_midi_expression(project) {
+        return MIDI_EXPRESSION_SCHEMA_VERSION;
+    }
     if schema::manifest::requires_manifest_schema(project) {
         return CAPABILITY_MANIFEST_SCHEMA_VERSION;
     }
@@ -1023,7 +1030,11 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
     if header.format != "hex-project" {
         return Err(StorageError::Invalid("unsupported project format"));
     }
-    if header.version == CAPABILITY_MANIFEST_SCHEMA_VERSION && !inside_envelope {
+    if matches!(
+        header.version,
+        CAPABILITY_MANIFEST_SCHEMA_VERSION | MIDI_EXPRESSION_SCHEMA_VERSION
+    ) && !inside_envelope
+    {
         return schema::manifest::decode(bytes);
     }
     if header.version == LARGE_VST3_STATE_SCHEMA_VERSION && !inside_envelope {

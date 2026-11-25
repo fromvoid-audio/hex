@@ -312,6 +312,8 @@ struct Voice {
     phase_offsets: [u64; 4],
     release_ceiling: u64,
     pressure: u8,
+    pitch_offset_cents: i16,
+    timbre: u8,
 }
 impl Voice {
     fn advance(&mut self, frames: u64) {
@@ -362,6 +364,8 @@ struct Runtime {
     edge_values_selected: bool,
     effective: PreparedFmConfiguration,
     unclamped_pressure_target: Option<(ParameterId, f64)>,
+    channel_pitch_bend: i16,
+    cc_timbre: u8,
     cold: bool,
 }
 impl Runtime {
@@ -379,12 +383,16 @@ impl Runtime {
             edge_values_selected: false,
             effective: config.base,
             unclamped_pressure_target: None,
+            channel_pitch_bend: 0,
+            cc_timbre: 0,
             cold: true,
         }
     }
     fn apply(
         config: &Config,
         voices: &mut [Voice; VOICES],
+        channel_pitch_bend: &mut i16,
+        cc_timbre: &mut u8,
         event: NativeInstrumentEvent,
     ) -> Result<(), Error> {
         match event {
@@ -417,6 +425,8 @@ impl Runtime {
                     phase_offsets: [0; 4],
                     release_ceiling: config.envelope.release,
                     pressure: 0,
+                    pitch_offset_cents: 0,
+                    timbre: 0,
                 };
             }
             NativeInstrumentEvent::NoteOff { occurrence_id, .. } => {
@@ -441,7 +451,62 @@ impl Runtime {
                     .ok_or(Error::InvalidEventBatch)?;
                 voice.pressure = value;
             }
-            NativeInstrumentEvent::Expression { .. } => {}
+            NativeInstrumentEvent::NotePitchBend {
+                occurrence_id,
+                cents,
+                ..
+            } => {
+                if !(-4_800..=4_800).contains(&cents) {
+                    return Err(Error::InvalidEventBatch);
+                }
+                if let Some(voice) = voices
+                    .iter_mut()
+                    .find(|voice| voice.id == occurrence_id.get())
+                {
+                    voice.pitch_offset_cents = cents;
+                }
+            }
+            NativeInstrumentEvent::NoteTimbre {
+                occurrence_id,
+                value,
+                ..
+            } => {
+                if value > 127 {
+                    return Err(Error::InvalidEventBatch);
+                }
+                if let Some(voice) = voices
+                    .iter_mut()
+                    .find(|voice| voice.id == occurrence_id.get())
+                {
+                    voice.timbre = value;
+                }
+            }
+            NativeInstrumentEvent::ControlChange { cc, value, .. } => {
+                if cc > 127 || value > 127 {
+                    return Err(Error::InvalidEventBatch);
+                }
+                if cc == 1 || cc == 74 {
+                    *cc_timbre = value;
+                } else if cc == 121 {
+                    *cc_timbre = 0;
+                    *channel_pitch_bend = 0;
+                }
+            }
+            NativeInstrumentEvent::PitchBend { value, .. } => {
+                if !(-8192..=8191).contains(&value) {
+                    return Err(Error::InvalidEventBatch);
+                }
+                *channel_pitch_bend = value;
+            }
+            NativeInstrumentEvent::Expression { expression, .. } => match expression {
+                hex_lattice::NativeInstrumentExpression::PitchBend(value) => {
+                    *channel_pitch_bend = value;
+                }
+                hex_lattice::NativeInstrumentExpression::ModWheel(value) => {
+                    *cc_timbre = value;
+                }
+                hex_lattice::NativeInstrumentExpression::ChannelPressure(_) => {}
+            },
         }
         Ok(())
     }
@@ -615,7 +680,13 @@ impl Runtime {
                 .filter(|event| event.frame_offset() == offset)
             {
                 // Complete preflight proved this infallible for this exact batch.
-                let _ = Self::apply(&self.config, &mut self.voices, *event);
+                let _ = Self::apply(
+                    &self.config,
+                    &mut self.voices,
+                    &mut self.channel_pitch_bend,
+                    &mut self.cc_timbre,
+                    *event,
+                );
                 next_event += 1;
             }
             if next_event != first_event {
@@ -640,9 +711,24 @@ impl Runtime {
                 if voice.id == 0 {
                     continue;
                 }
-                let Some(steps) = self.config.steps[usize::from(voice.pitch)] else {
+                let Some(base_steps) = self.config.steps[usize::from(voice.pitch)] else {
                     continue;
                 };
+                let steps = if voice.pitch_offset_cents != 0 || self.channel_pitch_bend != 0 {
+                    let channel_cents = f64::from(self.channel_pitch_bend)
+                        / if self.channel_pitch_bend < 0 {
+                            8192.0
+                        } else {
+                            8191.0
+                        }
+                        * 200.0;
+                    let total_cents = f64::from(voice.pitch_offset_cents) + channel_cents;
+                    let ratio = 2.0_f64.powf(total_cents / 1200.0);
+                    base_steps.map(|step| ((step as f64) * ratio).round().max(1.0) as u64)
+                } else {
+                    base_steps
+                };
+                let timbre_amount = voice.timbre.max(self.cc_timbre);
                 let mut envelope = self.config.envelope;
                 envelope.release = voice.release_ceiling;
                 let amplitude = envelope.level(voice.age, voice.gate.unwrap_or(u64::MAX))
@@ -660,7 +746,10 @@ impl Runtime {
                             _ => None,
                         }
                     });
-                    let output = if voice.phase_offsets == [0; 4] && override_carrier.is_none() {
+                    let output = if voice.phase_offsets == [0; 4]
+                        && override_carrier.is_none()
+                        && timbre_amount == 0
+                    {
                         self.effective.routed_output::<false>(
                             self.config.table,
                             voice.age,
@@ -679,6 +768,18 @@ impl Runtime {
                                 }
                             }
                             configuration.routing.carriers[pressure.index] = value;
+                        }
+                        if timbre_amount != 0 {
+                            let boost = 1.0 + 0.5 * (f64::from(timbre_amount) / 127.0);
+                            for (level, carrier) in configuration
+                                .levels
+                                .iter_mut()
+                                .zip(configuration.routing.carriers)
+                            {
+                                if carrier == 0.0 {
+                                    *level *= boost;
+                                }
+                            }
                         }
                         for (phase, offset) in
                             configuration.phases.iter_mut().zip(voice.phase_offsets)
@@ -808,6 +909,8 @@ impl MutableInstrumentRuntime for Runtime {
             return Err(Error::EventCapacityExceeded);
         }
         let mut voices = self.voices;
+        let mut channel_pitch_bend = self.channel_pitch_bend;
+        let mut cc_timbre = self.cc_timbre;
         let mut previous = 0;
         for event in events {
             let offset = event.frame_offset();
@@ -817,7 +920,13 @@ impl MutableInstrumentRuntime for Runtime {
             for voice in &mut voices {
                 voice.advance((offset - previous) as u64);
             }
-            Self::apply(&self.config, &mut voices, *event)?;
+            Self::apply(
+                &self.config,
+                &mut voices,
+                &mut channel_pitch_bend,
+                &mut cc_timbre,
+                *event,
+            )?;
             previous = offset;
         }
         Ok(())

@@ -78,7 +78,10 @@ impl FileToken {
         if version < crate::schema_version_for(project) {
             return true;
         }
-        if version == crate::CAPABILITY_MANIFEST_SCHEMA_VERSION {
+        if matches!(
+            version,
+            crate::CAPABILITY_MANIFEST_SCHEMA_VERSION | crate::MIDI_EXPRESSION_SCHEMA_VERSION
+        ) {
             let Some(existing) = self.2.as_deref() else {
                 return true;
             };

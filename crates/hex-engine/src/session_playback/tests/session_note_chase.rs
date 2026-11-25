@@ -25,6 +25,8 @@ pub(crate) fn fixture(oracle: bool) -> Project {
                 pitch: 60,
                 channel: 0,
                 velocity: 100,
+                expression: Default::default(),
+                expression_points: Vec::new(),
             },
             MidiNoteSnapshot {
                 active: true,
@@ -34,8 +36,11 @@ pub(crate) fn fixture(oracle: bool) -> Project {
                 pitch: 64,
                 channel: 0,
                 velocity: 100,
+                expression: Default::default(),
+                expression_points: Vec::new(),
             },
         ],
+        expression_lanes: Vec::new(),
     };
     snapshot.next_id = 1_000_003;
     legacy_project_from_snapshot(snapshot).unwrap()

@@ -186,6 +186,13 @@ impl Gates {
                     batch.consumed += 1;
                     return Ok(());
                 }
+                if self.remaining == 0 {
+                    return Ok(());
+                }
+                events.push(ForeignNote::control_change(
+                    0, channel, cc, value, None, true,
+                ));
+                self.remaining -= 1;
                 batch.consumed += 1;
                 return Ok(());
             }

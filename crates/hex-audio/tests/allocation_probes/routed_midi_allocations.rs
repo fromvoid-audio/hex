@@ -1076,6 +1076,8 @@ fn selected_session_note_chase_off_handoff_and_pause_allocate_nothing() {
             pitch: 60,
             channel: 0,
             velocity: 100,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         },
         hex_project::MidiNoteSnapshot {
             active: true,
@@ -1085,6 +1087,8 @@ fn selected_session_note_chase_off_handoff_and_pause_allocate_nothing() {
             pitch: 64,
             channel: 0,
             velocity: 100,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         },
     ];
     snapshot.next_id = 1_000_003;

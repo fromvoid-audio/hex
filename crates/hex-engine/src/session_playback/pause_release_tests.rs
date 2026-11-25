@@ -51,6 +51,8 @@ fn held_note_project(looped: bool, instrument: Instrument) -> Project {
         pitch: 60,
         channel: 0,
         velocity: 100,
+        expression: Default::default(),
+        expression_points: Vec::new(),
     };
     if looped {
         clip.looping = true;
@@ -210,6 +212,8 @@ fn operator_project(
         pitch: 64,
         channel: 0,
         velocity: 100,
+        expression: Default::default(),
+        expression_points: Vec::new(),
     };
     clip.notes.push(second(next_id));
     let Some(SessionCellContentSnapshot::Midi(cell)) = snapshot

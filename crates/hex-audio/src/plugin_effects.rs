@@ -1014,17 +1014,26 @@ impl NativeEffectCallback {
         } else {
             events = InputEvents::default();
             for note in notes {
-                let status = match note.kind {
-                    ForeignNoteKind::On => 0x90,
-                    ForeignNoteKind::Off => 0x80,
-                    ForeignNoteKind::PolyPressure => 0xa0,
+                let (bytes, len) = match note.kind {
+                    ForeignNoteKind::On => ([0x90 | note.channel, note.pitch, note.value], 3),
+                    ForeignNoteKind::Off => ([0x80 | note.channel, note.pitch, note.value], 3),
+                    ForeignNoteKind::PolyPressure => {
+                        ([0xa0 | note.channel, note.pitch, note.value], 3)
+                    }
+                    ForeignNoteKind::ControlChange => {
+                        ([0xb0 | note.channel, note.pitch, note.value], 3)
+                    }
+                    ForeignNoteKind::PitchBend => {
+                        ([0xe0 | note.channel, note.pitch, note.value], 3)
+                    }
+                    ForeignNoteKind::ChannelPressure => ([0xd0 | note.channel, note.value, 0], 2),
                 };
                 if note.channel >= 16
                     || events
                         .push(MidiEvent {
                             frame: note.frame,
-                            bytes: [status | note.channel, note.pitch, note.value],
-                            len: 3,
+                            bytes,
+                            len,
                             note_id: note.note_id,
                             is_live: note.is_live,
                         })

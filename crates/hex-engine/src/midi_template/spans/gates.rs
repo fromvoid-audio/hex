@@ -462,6 +462,7 @@ impl SpanQueryView<'_> {
             pitch: span.pitch,
             channel: span.channel,
             velocity: span.velocity,
+            expression: span.expression,
             track: self.track,
             clip: self.clip,
             note: span.note,

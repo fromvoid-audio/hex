@@ -23,6 +23,7 @@ use std::sync::Arc;
 pub(super) struct State {
     open: bool,
     height: f32,
+    pub(super) mode: super::midi_expression_ui::ExpressionLaneMode,
     scene: Option<Arc<Scene>>,
     pub(super) gesture: Option<Gesture>,
     marquee: Option<super::midi_selection::Marquee>,
@@ -35,6 +36,7 @@ impl Default for State {
         Self {
             open: true,
             height: 64.0,
+            mode: super::midi_expression_ui::ExpressionLaneMode::Velocity,
             scene: None,
             gesture: None,
             marquee: None,
@@ -153,27 +155,39 @@ impl EditorView {
             }
         }
         let scene = Arc::clone(self.midi_editor.velocity.scene.as_ref()?);
-        let label = self
+        let mode = self.midi_editor.velocity.mode;
+        let is_velocity = mode == super::midi_expression_ui::ExpressionLaneMode::Velocity;
+        let label = if !is_velocity {
+            mode.label().to_string()
+        } else {
+            self.midi_editor
+                .velocity
+                .hover
+                .and_then(|id| scene.points().iter().find(|p| p.note.id == id))
+                .map_or_else(
+                    || "velocity".to_string(),
+                    |point| {
+                        format!(
+                            "p{} · v{} · ch{}",
+                            point.note.pitch,
+                            self.midi_editor
+                                .velocity
+                                .gesture
+                                .as_ref()
+                                .and_then(|g| g.preview(point.note.id))
+                                .unwrap_or(point.note.velocity),
+                            point.note.channel + 1
+                        )
+                    },
+                )
+        };
+        let mode_tabs = self
             .midi_editor
             .velocity
-            .hover
-            .and_then(|id| scene.points().iter().find(|p| p.note.id == id))
-            .map_or_else(
-                || "velocity".to_string(),
-                |point| {
-                    format!(
-                        "p{} · v{} · ch{}",
-                        point.note.pitch,
-                        self.midi_editor
-                            .velocity
-                            .gesture
-                            .as_ref()
-                            .and_then(|g| g.preview(point.note.id))
-                            .unwrap_or(point.note.velocity),
-                        point.note.channel + 1
-                    )
-                },
-            );
+            .open
+            .then(|| self.expression_mode_tabs(cx));
+        let expression_controls = (self.midi_editor.velocity.open && !is_velocity)
+            .then(|| self.expression_mode_controls(clip, cx));
         let left = div()
             .w(px(228.0))
             .flex_shrink_0()
@@ -190,7 +204,7 @@ impl EditorView {
                     .child(theme::text(if self.midi_editor.velocity.open {
                         format!("▾ {label}")
                     } else {
-                        "▸ velocity".to_string()
+                        format!("▸ {}", mode.label())
                     }))
                     .on_mouse_down(
                         MouseButton::Left,
@@ -202,7 +216,9 @@ impl EditorView {
                         }),
                     ),
             )
-            .when(self.midi_editor.velocity.open, |left| {
+            .children(mode_tabs)
+            .children(expression_controls)
+            .when(self.midi_editor.velocity.open && is_velocity, |left| {
                 let captured = self.velocity_random_context();
                 let enabled = !self.edit_pending() && !self.midi_editor.selection.is_empty();
                 left.child(
@@ -317,6 +333,27 @@ impl EditorView {
             .child(left);
         if !self.midi_editor.velocity.open {
             return Some(row);
+        }
+        if !is_velocity {
+            row = row.children(self.expression_lane_canvas(clip, cx));
+            let splitter = self.velocity_size_input(cx);
+            let pointer_layer = splitter.pointer_layer();
+            let handle = hex_widgets::SplitterHandleConfig::new(
+                hex_widgets::SplitterAxis::Vertical,
+                3.0,
+                theme::color(theme::PaletteRole::Border),
+            )
+            .map(|config| splitter.handle("midi-velocity-resize".into(), config));
+            return Some(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .flex_shrink_0()
+                    .children([pointer_layer])
+                    .children(handle)
+                    .child(row),
+            );
         }
         let gesture = self.midi_editor.velocity.gesture.clone();
         let pending = self.pending_midi_velocity(clip).cloned();

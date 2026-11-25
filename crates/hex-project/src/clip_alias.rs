@@ -46,6 +46,7 @@ pub enum AliasContentSnapshot {
     Midi {
         source_length_raw: u64,
         notes: Vec<MidiNoteSnapshot>,
+        expression_lanes: Vec<crate::MidiExpressionLane>,
     },
     ConsoleAudio {
         asset: u64,
@@ -97,8 +98,11 @@ impl ClipAliases {
                                     pitch: note.pitch,
                                     channel: note.channel,
                                     velocity: note.velocity,
+                                    expression: note.expression,
+                                    expression_points: note.expression_points.clone(),
                                 })
                                 .collect(),
+                            expression_lanes: content.expression_lanes.clone(),
                         },
                         Content::ConsoleAudio(asset) => AliasContentSnapshot::ConsoleAudio {
                             asset: asset.value(),
@@ -148,6 +152,7 @@ impl ClipAliases {
                 AliasContentSnapshot::Midi {
                     source_length_raw,
                     notes,
+                    expression_lanes,
                 } => {
                     let length = BeatTime::from_raw(source_length_raw);
                     if length == BeatTime::ZERO {
@@ -173,6 +178,11 @@ impl ClipAliases {
                             note.channel,
                             note.velocity,
                         )?;
+                        note.expression.validate()?;
+                        crate::midi::validate_note_expression_points(
+                            &note.expression_points,
+                            duration,
+                        )?;
                         compiled.push(MidiNote {
                             id: NoteId(note.id),
                             active: note.active,
@@ -181,12 +191,16 @@ impl ClipAliases {
                             pitch: note.pitch,
                             channel: note.channel,
                             velocity: note.velocity,
+                            expression: note.expression,
+                            expression_points: note.expression_points,
                         });
                     }
                     crate::midi_note_overwrite::validate_occupancy(&compiled)?;
+                    crate::midi::validate_expression_lanes(&expression_lanes, length)?;
                     Content::Midi(Arc::new(MidiContent {
                         source_length: length,
                         notes: compiled,
+                        expression_lanes,
                     }))
                 }
             };

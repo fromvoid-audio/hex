@@ -10,7 +10,8 @@
 //! per the saved-project compatibility policy this unified layout uses fresh
 //! schema identifier `126`.
 use crate::{
-    CAPABILITY_MANIFEST_SCHEMA_VERSION, MAX_PROJECT_DOCUMENT_BYTES, Project, StorageError,
+    CAPABILITY_MANIFEST_SCHEMA_VERSION, MAX_PROJECT_DOCUMENT_BYTES, MIDI_EXPRESSION_SCHEMA_VERSION,
+    Project, StorageError,
 };
 use hex_project::{
     MAX_ASSETS, MAX_METER_POINTS, MAX_NATIVE_SOURCES, MAX_RETURN_TRACKS, MAX_TEMPO_POINTS,
@@ -64,6 +65,7 @@ pub(crate) const SUPPORTED_CAPABILITIES: &[&str] = &[
     "long_reverse",
     "macro_four_modulator",
     "math_modulator",
+    "midi_expression",
     "mix_modulator",
     "modulation_slot_color",
     "musical_event_source",
@@ -115,11 +117,35 @@ pub(crate) fn post_112_feature_count(project: &Project) -> usize {
     .count()
 }
 
-/// True when `project` should be saved directly as unified schema 126 rather
+/// True when `project` carries any clip MIDI CC/pitch-bend lanes or non-default
+/// per-note MPE expression, requiring schema 127 (`midi_expression`).
+pub(crate) fn contains_midi_expression(project: &Project) -> bool {
+    let source_has_expr = |source: &hex_project::MidiSource| {
+        !source.expression_lanes().is_empty()
+            || source
+                .notes()
+                .iter()
+                .any(|n| !n.expression().is_default() || !n.expression_points().is_empty())
+    };
+    project
+        .tracks()
+        .iter()
+        .flat_map(|track| track.midi_clips())
+        .any(|clip| source_has_expr(clip.source()))
+        || project
+            .session_cells()
+            .iter()
+            .any(|cell| match cell.content() {
+                hex_project::SessionCellContent::Midi(clip) => source_has_expr(clip.source()),
+                _ => false,
+            })
+}
+
+/// True when `project` should be saved directly as unified schema 126/127 rather
 /// than stacking four or more historical post-112 `RawValue` wrappers.
 /// Projects with 0..=3 post-112 features retain their oldest compatible format.
 pub(crate) fn requires_manifest_schema(project: &Project) -> bool {
-    post_112_feature_count(project) >= 4
+    contains_midi_expression(project) || post_112_feature_count(project) >= 4
 }
 
 /// Deterministic, strictly sorted capability manifest for `project`.
@@ -239,6 +265,7 @@ pub(crate) fn capabilities_for(project: &Project) -> Vec<&'static str> {
         super::device_modulation::contains_math(project),
         "math_modulator",
     );
+    push(contains_midi_expression(project), "midi_expression");
     push(
         super::device_modulation::contains_mix(project),
         "mix_modulator",
@@ -550,10 +577,15 @@ pub(crate) fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
         arrangement_sections: SliceSeq(project.arrangement_sections(), SectionSer::from),
         arrangement_locators: SliceSeq(project.arrangement_locators(), LocatorSer::from),
     };
+    let version = if contains_midi_expression(project) {
+        MIDI_EXPRESSION_SCHEMA_VERSION
+    } else {
+        CAPABILITY_MANIFEST_SCHEMA_VERSION
+    };
     crate::encode_document_with_capacity(
         &DocumentSer {
             format: "hex-project",
-            version: CAPABILITY_MANIFEST_SCHEMA_VERSION,
+            version,
             capabilities,
             project: body,
         },
@@ -561,7 +593,7 @@ pub(crate) fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
     )
 }
 
-/// Decode a unified schema 126 document in a single parse + validation pass.
+/// Decode a unified schema 126 or 127 document in a single parse + validation pass.
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     if bytes.len() > MAX_PROJECT_DOCUMENT_BYTES {
         return Err(StorageError::Invalid(
@@ -569,12 +601,27 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         ));
     }
     let document: DocumentDe<'_> = serde_json::from_slice(bytes)?;
-    if document.format != "hex-project" || document.version != CAPABILITY_MANIFEST_SCHEMA_VERSION {
+    if document.format != "hex-project"
+        || !matches!(
+            document.version,
+            CAPABILITY_MANIFEST_SCHEMA_VERSION | MIDI_EXPRESSION_SCHEMA_VERSION
+        )
+    {
         return Err(StorageError::Invalid(
             "invalid capability manifest project header",
         ));
     }
     validate_declared_capabilities(&document.capabilities)?;
+    if document.version == CAPABILITY_MANIFEST_SCHEMA_VERSION
+        && document
+            .capabilities
+            .iter()
+            .any(|cap| cap == "midi_expression")
+    {
+        return Err(StorageError::Invalid(
+            "schema 126 cannot declare midi_expression capability",
+        ));
+    }
 
     let body = document.project;
     let native_sources = body

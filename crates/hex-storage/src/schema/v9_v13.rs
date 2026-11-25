@@ -292,8 +292,11 @@ impl DocumentV12 {
                                             pitch: note.pitch,
                                             channel: note.channel,
                                             velocity: note.velocity,
+                                            expression: hex_project::NoteExpression::default(),
+                                            expression_points: Vec::new(),
                                         })
                                         .collect(),
+                                    expression_lanes: Vec::new(),
                                 },
                             })
                         }
@@ -700,8 +703,11 @@ impl DocumentV11 {
                                             pitch: note.pitch,
                                             channel: note.channel,
                                             velocity: note.velocity,
+                                            expression: hex_project::NoteExpression::default(),
+                                            expression_points: Vec::new(),
                                         })
                                         .collect(),
+                                    expression_lanes: Vec::new(),
                                 },
                             })
                         }
@@ -800,8 +806,11 @@ impl DocumentV10 {
                                         pitch: n.pitch,
                                         channel: n.channel,
                                         velocity: n.velocity,
+                                        expression: hex_project::NoteExpression::default(),
+                                        expression_points: Vec::new(),
                                     })
                                     .collect(),
+                                expression_lanes: Vec::new(),
                             })
                             .collect(),
                     ),
@@ -953,8 +962,11 @@ impl DocumentV9 {
                                             pitch: n.pitch,
                                             channel: n.channel,
                                             velocity: n.velocity,
+                                            expression: hex_project::NoteExpression::default(),
+                                            expression_points: Vec::new(),
                                         })
                                         .collect(),
+                                    expression_lanes: Vec::new(),
                                 })
                                 .collect(),
                         )
@@ -1078,8 +1090,11 @@ pub(super) fn midi_v10_into_snapshot(clip: MidiClipDtoV10) -> MidiClipSnapshot {
                 pitch: note.pitch,
                 channel: note.channel,
                 velocity: note.velocity,
+                expression: hex_project::NoteExpression::default(),
+                expression_points: Vec::new(),
             })
             .collect(),
+        expression_lanes: Vec::new(),
     }
 }
 
@@ -1200,8 +1215,11 @@ pub(super) fn session_v12_into_snapshot(session: SessionDtoV12) -> SessionSnapsh
                                         pitch: note.pitch,
                                         channel: note.channel,
                                         velocity: note.velocity,
+                                        expression: hex_project::NoteExpression::default(),
+                                        expression_points: Vec::new(),
                                     })
                                     .collect(),
+                                expression_lanes: Vec::new(),
                             },
                         })
                     }

@@ -434,6 +434,7 @@ mod tests {
             pitch: 60,
             channel: 0,
             velocity: 100,
+            expression: hex_project::NoteExpression::default(),
             sampler_index: 0,
         }
     }

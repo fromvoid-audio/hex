@@ -91,6 +91,8 @@ fn runtime(settings: OperatorSettings) -> Runtime {
         local_frame: 0,
         ledger: Ledger::default(),
         expression: [0.0; 3],
+        channel_pitch_bend: 0,
+        cc_timbre: 0,
     }
 }
 fn on(id: u64, pitch: u8) -> NativeInstrumentEvent {
@@ -758,8 +760,12 @@ fn global_pcm_and_expression_are_partition_independent() {
                             occurrence_id,
                         }
                     }
-                    NativeInstrumentEvent::NotePressure { .. } => {
-                        panic!("unexpected test note pressure")
+                    NativeInstrumentEvent::NotePressure { .. }
+                    | NativeInstrumentEvent::NotePitchBend { .. }
+                    | NativeInstrumentEvent::NoteTimbre { .. }
+                    | NativeInstrumentEvent::ControlChange { .. }
+                    | NativeInstrumentEvent::PitchBend { .. } => {
+                        panic!("unexpected test note expression")
                     }
                     NativeInstrumentEvent::Expression { expression, .. } => {
                         NativeInstrumentEvent::Expression {

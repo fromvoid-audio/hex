@@ -196,6 +196,7 @@ fn isolated_source(
             // The finite bounce length remains one original first-pass width.
             // Retain repeat law so elapsed windows project the same source phase.
             looping: source.looping(),
+            expression_lanes: source.expression_lanes().to_vec(),
             notes: source
                 .notes()
                 .iter()
@@ -207,6 +208,8 @@ fn isolated_source(
                     pitch: note.pitch(),
                     velocity: note.velocity(),
                     channel: note.channel(),
+                    expression: note.expression(),
+                    expression_points: note.expression_points().to_vec(),
                 })
                 .collect(),
         }

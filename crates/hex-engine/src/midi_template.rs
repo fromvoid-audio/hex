@@ -125,6 +125,7 @@ pub(super) struct SourceSpan {
     pub(super) pitch: u8,
     pub(super) channel: u8,
     pub(super) velocity: u8,
+    pub(super) expression: hex_project::NoteExpression,
 }
 
 pub(crate) fn session_source_note_has_occurrence(
@@ -853,6 +854,7 @@ impl SourceSpan {
             pitch: note.pitch(),
             channel: note.channel(),
             velocity: note.velocity(),
+            expression: note.expression(),
         }
     }
 }

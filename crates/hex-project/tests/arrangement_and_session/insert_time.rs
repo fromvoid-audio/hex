@@ -423,6 +423,7 @@ fn clip_limit_refuses_split_insert_without_mutating_project() {
         loop_end_raw: quarter(4).raw(),
         looping: false,
         notes: Vec::new(),
+        expression_lanes: Vec::new(),
     });
     for id in 6..(MAX_CLIPS as u64 + 5) {
         clips.push(MidiClipSnapshot {
@@ -442,6 +443,7 @@ fn clip_limit_refuses_split_insert_without_mutating_project() {
             loop_end_raw: quarter(1).raw(),
             looping: false,
             notes: Vec::new(),
+            expression_lanes: Vec::new(),
         });
     }
     snapshot.next_id = MAX_CLIPS as u64 + 5;

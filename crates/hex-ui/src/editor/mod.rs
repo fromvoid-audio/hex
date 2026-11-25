@@ -191,6 +191,7 @@ mod midi_scene;
 mod track_header_cache;
 mod track_lane_canvas;
 use midi_pitch_viewport::PitchViewport;
+mod midi_expression_ui;
 mod midi_selection;
 mod midi_source_controls;
 mod midi_step;

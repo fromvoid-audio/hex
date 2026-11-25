@@ -1289,6 +1289,21 @@ pub enum Command {
         clip: ClipId,
         gain: crate::ClipGain,
     },
+    /// Replace, add, or clear (when `points` is empty) one clip-local MIDI CC
+    /// or Pitch Bend expression lane in source-local beat coordinates.
+    SetMidiExpressionLane {
+        clip: ClipId,
+        kind: crate::MidiLaneKind,
+        points: Vec<crate::MidiLanePoint>,
+    },
+    /// Set static and/or time-varying per-note MPE expression (pitch offset in
+    /// cents, timbre/CC74, pressure) for one note inside a MIDI clip.
+    SetMidiNoteExpression {
+        clip: ClipId,
+        note: NoteId,
+        expression: crate::NoteExpression,
+        points: Vec<crate::NoteExpressionPoint>,
+    },
     /// Author one note using the same source/pitch overwrite rule as `AddMidiNotes`.
     AddMidiNote {
         clip: ClipId,

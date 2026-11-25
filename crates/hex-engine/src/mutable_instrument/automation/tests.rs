@@ -101,6 +101,7 @@ fn onsets() -> MutableOnsetBuffer {
                 channel: 0,
                 velocity: 100,
                 contributor_fade_in: false,
+                expression: Default::default(),
             })
             .unwrap();
     }

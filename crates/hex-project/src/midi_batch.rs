@@ -146,6 +146,8 @@ fn edit_bounded(
                 pitch: note.pitch,
                 channel: note.channel,
                 velocity: note.velocity,
+                expression: crate::NoteExpression::default(),
+                expression_points: Vec::new(),
             });
         }
         Ok(Created::Notes {

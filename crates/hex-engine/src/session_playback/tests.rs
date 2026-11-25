@@ -466,7 +466,11 @@ impl hex_lattice::MutableInstrumentRuntime for ZeroTailMutableRuntime {
         for event in events.iter().copied() {
             let (offset, is_on) = match event {
                 hex_lattice::NativeInstrumentEvent::NotePressure { .. }
-                | hex_lattice::NativeInstrumentEvent::Expression { .. } => {
+                | hex_lattice::NativeInstrumentEvent::Expression { .. }
+                | hex_lattice::NativeInstrumentEvent::ControlChange { .. }
+                | hex_lattice::NativeInstrumentEvent::PitchBend { .. }
+                | hex_lattice::NativeInstrumentEvent::NotePitchBend { .. }
+                | hex_lattice::NativeInstrumentEvent::NoteTimbre { .. } => {
                     return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
                 }
                 hex_lattice::NativeInstrumentEvent::NoteOn { frame_offset, .. } => {
@@ -499,7 +503,11 @@ impl hex_lattice::MutableInstrumentRuntime for ZeroTailMutableRuntime {
             while let Some(event) = events.get(event_index).copied() {
                 let (offset, is_on) = match event {
                     hex_lattice::NativeInstrumentEvent::NotePressure { .. }
-                    | hex_lattice::NativeInstrumentEvent::Expression { .. } => return,
+                    | hex_lattice::NativeInstrumentEvent::Expression { .. }
+                    | hex_lattice::NativeInstrumentEvent::ControlChange { .. }
+                    | hex_lattice::NativeInstrumentEvent::PitchBend { .. }
+                    | hex_lattice::NativeInstrumentEvent::NotePitchBend { .. }
+                    | hex_lattice::NativeInstrumentEvent::NoteTimbre { .. } => return,
                     hex_lattice::NativeInstrumentEvent::NoteOn { frame_offset, .. } => {
                         (frame_offset, true)
                     }
@@ -563,7 +571,11 @@ impl MutableFeedbackRuntime {
     ) {
         match event {
             hex_lattice::NativeInstrumentEvent::NotePressure { .. }
-            | hex_lattice::NativeInstrumentEvent::Expression { .. } => {}
+            | hex_lattice::NativeInstrumentEvent::Expression { .. }
+            | hex_lattice::NativeInstrumentEvent::ControlChange { .. }
+            | hex_lattice::NativeInstrumentEvent::PitchBend { .. }
+            | hex_lattice::NativeInstrumentEvent::NotePitchBend { .. }
+            | hex_lattice::NativeInstrumentEvent::NoteTimbre { .. } => {}
             hex_lattice::NativeInstrumentEvent::NoteOn {
                 occurrence_id,
                 pitch,
@@ -761,21 +773,18 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFeedbackRuntime {
         let mut voices = self.voices;
         let mut previous_offset = 0;
         for event in events.iter().copied() {
-            let offset = match event {
-                hex_lattice::NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                | hex_lattice::NativeInstrumentEvent::NoteOff { frame_offset, .. }
-                | hex_lattice::NativeInstrumentEvent::NotePressure { frame_offset, .. }
-                | hex_lattice::NativeInstrumentEvent::Expression { frame_offset, .. } => {
-                    frame_offset
-                }
-            };
+            let offset = event.frame_offset();
             if offset < previous_offset || offset >= frame_count {
                 return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
             }
             Self::advance(&mut voices, offset - previous_offset);
             match event {
                 hex_lattice::NativeInstrumentEvent::NotePressure { .. }
-                | hex_lattice::NativeInstrumentEvent::Expression { .. } => {
+                | hex_lattice::NativeInstrumentEvent::Expression { .. }
+                | hex_lattice::NativeInstrumentEvent::ControlChange { .. }
+                | hex_lattice::NativeInstrumentEvent::PitchBend { .. }
+                | hex_lattice::NativeInstrumentEvent::NotePitchBend { .. }
+                | hex_lattice::NativeInstrumentEvent::NoteTimbre { .. } => {
                     return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
                 }
                 hex_lattice::NativeInstrumentEvent::NoteOn { occurrence_id, .. } => {
@@ -812,14 +821,10 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFeedbackRuntime {
     ) {
         let mut event_index = 0;
         for (frame_index, frame) in frames.iter_mut().enumerate() {
-            while events.get(event_index).is_some_and(|event| match *event {
-                hex_lattice::NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                | hex_lattice::NativeInstrumentEvent::NoteOff { frame_offset, .. }
-                | hex_lattice::NativeInstrumentEvent::NotePressure { frame_offset, .. }
-                | hex_lattice::NativeInstrumentEvent::Expression { frame_offset, .. } => {
-                    frame_offset == frame_index
-                }
-            }) {
+            while events
+                .get(event_index)
+                .is_some_and(|event| event.frame_offset() == frame_index)
+            {
                 Self::apply(&mut self.voices, events[event_index], self.release_frames);
                 event_index += 1;
             }
@@ -1140,7 +1145,10 @@ fn mixed_audio_midi_project(source_start: u64, source_end: u64) -> Project {
                 pitch: 69,
                 channel: 0,
                 velocity: 100,
+                expression: Default::default(),
+                expression_points: Vec::new(),
             }],
+            expression_lanes: Vec::new(),
         }]),
         sends: Vec::new(),
     });
@@ -1163,6 +1171,7 @@ fn mixed_audio_midi_project(source_start: u64, source_end: u64) -> Project {
                 loop_end_raw: 4 << 32,
                 looping: false,
                 notes: Vec::new(),
+                expression_lanes: Vec::new(),
             },
         }),
     });
@@ -1198,6 +1207,8 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
         pitch: 69,
         channel: 0,
         velocity: 100,
+        expression: Default::default(),
+        expression_points: Vec::new(),
     });
     snapshot.tracks.push(TrackSnapshot {
         group_output_mutes: Vec::new(),
@@ -1300,7 +1311,10 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
                     pitch: 60,
                     channel: 0,
                     velocity: 100,
+                    expression: Default::default(),
+                    expression_points: Vec::new(),
                 }],
+                expression_lanes: Vec::new(),
             }]),
             sends: Vec::new(),
         }],
@@ -1334,7 +1348,10 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
                             pitch: 60,
                             channel: 0,
                             velocity: 100,
+                            expression: Default::default(),
+                            expression_points: Vec::new(),
                         }],
+                        expression_lanes: Vec::new(),
                     },
                 }),
             }],
@@ -3053,6 +3070,8 @@ fn with_second_session_note(project: &Project) -> Project {
         pitch: 64,
         channel: 0,
         velocity: 100,
+        expression: Default::default(),
+        expression_points: Vec::new(),
     });
     legacy_project_from_snapshot(snapshot).unwrap()
 }
@@ -3076,6 +3095,8 @@ fn with_second_arrangement_note(project: &Project) -> Project {
         pitch: 64,
         channel: 0,
         velocity: 100,
+        expression: Default::default(),
+        expression_points: Vec::new(),
     });
     Project::from_legacy_snapshot(snapshot).unwrap()
 }
@@ -3100,6 +3121,8 @@ fn with_session_note_at(project: &Project, start_raw: u64) -> Project {
         pitch: 64,
         channel: 0,
         velocity: 100,
+        expression: Default::default(),
+        expression_points: Vec::new(),
     });
     legacy_project_from_snapshot(snapshot).unwrap()
 }
@@ -4804,6 +4827,7 @@ fn mutable_coincident_release_and_attack_keep_order_across_segment_boundaries() 
                     channel: 0,
                     velocity,
                     contributor_fade_in: false,
+                    expression: Default::default(),
                 })
                 .unwrap();
         }
@@ -4835,7 +4859,11 @@ fn mutable_coincident_release_and_attack_keep_order_across_segment_boundaries() 
                     occurrence_id,
                 } => (start + frame_offset, false, occurrence_id),
                 NativeInstrumentEvent::NotePressure { .. }
-                | NativeInstrumentEvent::Expression { .. } => panic!("unexpected expression"),
+                | NativeInstrumentEvent::Expression { .. }
+                | NativeInstrumentEvent::ControlChange { .. }
+                | NativeInstrumentEvent::PitchBend { .. }
+                | NativeInstrumentEvent::NotePitchBend { .. }
+                | NativeInstrumentEvent::NoteTimbre { .. } => panic!("unexpected expression"),
             }));
             runtime.commit_block();
             start = end;
@@ -4909,6 +4937,7 @@ fn mutable_event_order_is_canonical_for_same_frame_notes_and_partitions() {
                 channel: 0,
                 velocity,
                 contributor_fade_in: false,
+                expression: Default::default(),
             })
             .unwrap();
     }
@@ -4941,7 +4970,11 @@ fn mutable_event_order_is_canonical_for_same_frame_notes_and_partitions() {
             } => Some((frame_offset, occurrence_id, pitch, velocity)),
             hex_lattice::NativeInstrumentEvent::NoteOff { .. }
             | hex_lattice::NativeInstrumentEvent::NotePressure { .. }
-            | hex_lattice::NativeInstrumentEvent::Expression { .. } => None,
+            | hex_lattice::NativeInstrumentEvent::Expression { .. }
+            | hex_lattice::NativeInstrumentEvent::ControlChange { .. }
+            | hex_lattice::NativeInstrumentEvent::PitchBend { .. }
+            | hex_lattice::NativeInstrumentEvent::NotePitchBend { .. }
+            | hex_lattice::NativeInstrumentEvent::NoteTimbre { .. } => None,
         })
         .collect();
     assert_eq!(
@@ -5014,6 +5047,7 @@ fn mutable_occurrence_proof_survives_gateoff_and_suppression_matches_full_signat
         channel: 4,
         velocity: 91,
         contributor_fade_in: false,
+        expression: Default::default(),
     };
 
     let mut old =
@@ -5121,6 +5155,7 @@ fn mutable_zero_tail_emits_exclusive_boundary_noteoff_once_across_partitions() {
         channel: 0,
         velocity: 100,
         contributor_fade_in: false,
+        expression: Default::default(),
     };
     let mut onsets = crate::mutable_instrument::MutableOnsetBuffer::default();
     onsets.push(onset).unwrap();
@@ -5228,6 +5263,7 @@ fn mutable_query_accepts_full_bounded_sequential_onset_and_edge_budget() {
                 channel: 0,
                 velocity: 100,
                 contributor_fade_in: false,
+                expression: Default::default(),
             })
             .unwrap();
     }
@@ -5763,6 +5799,8 @@ fn profile_mutable_occurrence_suppression_handoff() {
             pitch: u8::try_from(40 + index).unwrap(),
             channel: 0,
             velocity: 100,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         });
     }
     let dense_source = legacy_project_from_snapshot(dense_snapshot).unwrap();
@@ -7158,6 +7196,8 @@ fn reenabled_loop_source_skips_old_occurrences_and_plays_future_iteration() {
         pitch: 60,
         channel: 0,
         velocity: 100,
+        expression: Default::default(),
+        expression_points: Vec::new(),
     }];
     let looping = legacy_project_from_snapshot(snapshot).unwrap();
     let disabled = with_instrument_bypassed(&looping, true);
@@ -8007,7 +8047,10 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
                     pitch: 64,
                     channel: 0,
                     velocity: 100,
+                    expression: Default::default(),
+                    expression_points: Vec::new(),
                 }],
+                expression_lanes: Vec::new(),
             }]),
             sends: Vec::new(),
         });
@@ -8036,7 +8079,10 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
                         pitch: 64,
                         channel: 0,
                         velocity: 100,
+                        expression: Default::default(),
+                        expression_points: Vec::new(),
                     }],
+                    expression_lanes: Vec::new(),
                 },
             }),
         });
@@ -8954,6 +9000,8 @@ fn repeated_loop_occurrence_descriptor_and_pcm_survive_tempo_handoff() {
             pitch: 67,
             channel: 0,
             velocity: 90,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         }];
     }
     let original = legacy_project_from_snapshot(snapshot).unwrap();
@@ -9803,6 +9851,8 @@ fn later_chunk_capacity_refusal_rolls_back_carried_voice_and_retries_against_twi
             pitch: 67,
             channel: 0,
             velocity: 90,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         });
     }
     // Keep the Arrangement-only note outside the handoff window so launching
@@ -9922,6 +9972,8 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
         pitch: 60,
         channel: 0,
         velocity: 100,
+        expression: Default::default(),
+        expression_points: Vec::new(),
     });
     original_snapshot.next_id += 1;
     if let TrackContentSnapshot::Hybrid {
@@ -10022,6 +10074,8 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
         pitch: 67,
         channel: 0,
         velocity: 90,
+        expression: Default::default(),
+        expression_points: Vec::new(),
     });
     changed_snapshot.next_id += 1;
     if let TrackContentSnapshot::Hybrid {
@@ -10192,7 +10246,10 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
                     pitch: 60 + track_id as u8,
                     channel: 0,
                     velocity: 90,
+                    expression: Default::default(),
+                    expression_points: Vec::new(),
                 }],
+                expression_lanes: Vec::new(),
             }]),
             sends: Vec::new(),
         });
@@ -10266,6 +10323,8 @@ fn source_start_and_loop_edit_releases_active_intro_occurrence_without_reusing_p
                 pitch: 60,
                 channel: 0,
                 velocity: 100,
+                expression: Default::default(),
+                expression_points: Vec::new(),
             },
             MidiNoteSnapshot {
                 active: true,
@@ -10275,6 +10334,8 @@ fn source_start_and_loop_edit_releases_active_intro_occurrence_without_reusing_p
                 pitch: 67,
                 channel: 0,
                 velocity: 90,
+                expression: Default::default(),
+                expression_points: Vec::new(),
             },
         ];
     }
@@ -10292,6 +10353,8 @@ fn source_start_and_loop_edit_releases_active_intro_occurrence_without_reusing_p
                 pitch: 60,
                 channel: 0,
                 velocity: 100,
+                expression: Default::default(),
+                expression_points: Vec::new(),
             },
             MidiNoteSnapshot {
                 active: true,
@@ -10301,6 +10364,8 @@ fn source_start_and_loop_edit_releases_active_intro_occurrence_without_reusing_p
                 pitch: 67,
                 channel: 0,
                 velocity: 90,
+                expression: Default::default(),
+                expression_points: Vec::new(),
             },
         ];
     }
@@ -11892,6 +11957,8 @@ fn operator_supported_state_edit_retargets_live_history_and_joins_later_notes() 
             pitch: 67,
             channel: 0,
             velocity: 88,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         });
         let Some(session_cell) = snapshot.session.cells.first_mut() else {
             panic!("fixture has Session MIDI content");
@@ -11907,6 +11974,8 @@ fn operator_supported_state_edit_retargets_live_history_and_joins_later_notes() 
             pitch: 67,
             channel: 0,
             velocity: 88,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         });
         snapshot.next_id += 1;
         let source_project = Project::from_legacy_snapshot(snapshot).unwrap();
@@ -12066,6 +12135,8 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
                 pitch: 61,
                 channel: 0,
                 velocity: 100,
+                expression: Default::default(),
+                expression_points: Vec::new(),
             });
             snapshot.next_id += 1;
         }
@@ -12083,6 +12154,8 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
             pitch: 61,
             channel: 0,
             velocity: 100,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         });
         snapshot.next_id += 1;
         Project::from_legacy_snapshot(snapshot).unwrap()
@@ -12229,6 +12302,8 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
             pitch: 61,
             channel: 0,
             velocity: 100,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         });
         snapshot.next_id += 1;
         let SessionCellContentSnapshot::Midi(session_clip) = &mut snapshot.session.cells[0].content
@@ -12243,6 +12318,8 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
             pitch: 61,
             channel: 0,
             velocity: 100,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         });
         snapshot.next_id += 1;
         Project::from_legacy_snapshot(snapshot).unwrap()

@@ -299,6 +299,8 @@ pub(super) struct Voice {
     pub lfo_fraction: f64,
     pub lfo_cycle: u64,
     pub machines: [Option<companion::Machine>; 4],
+    pub pitch_offset_cents: i16,
+    pub timbre: u8,
 }
 #[derive(Clone, Copy)]
 pub(super) struct ParameterRamp {
@@ -330,6 +332,8 @@ pub(super) struct Runtime {
     local_frame: u64,
     ledger: Ledger,
     expression: [f32; 3],
+    channel_pitch_bend: i16,
+    cc_timbre: u8,
     last_targets: [f32; automation::TARGET_COUNT],
 }
 // Admission needs identity, age and completion bounds, not oscillator/filter history.
@@ -458,6 +462,26 @@ impl EventProof {
         match event {
             NativeInstrumentEvent::NotePressure { .. } => {
                 return Err(Error::UnsupportedNotePressure);
+            }
+            NativeInstrumentEvent::NotePitchBend { cents, .. } => {
+                if !(-4_800..=4_800).contains(&cents) {
+                    return Err(Error::InvalidEventBatch);
+                }
+            }
+            NativeInstrumentEvent::NoteTimbre { value, .. } => {
+                if value > 127 {
+                    return Err(Error::InvalidEventBatch);
+                }
+            }
+            NativeInstrumentEvent::ControlChange { cc, value, .. } => {
+                if cc > 127 || value > 127 {
+                    return Err(Error::InvalidEventBatch);
+                }
+            }
+            NativeInstrumentEvent::PitchBend { value, .. } => {
+                if !(-8192..=8191).contains(&value) {
+                    return Err(Error::InvalidEventBatch);
+                }
             }
             NativeInstrumentEvent::Expression { .. } => return Err(Error::InvalidEventBatch),
             NativeInstrumentEvent::NoteOn {
@@ -596,6 +620,8 @@ impl PreparedMutableInstrumentRuntime for Factory {
             local_frame: 0,
             ledger: Ledger::default(),
             expression: [0.0; 3],
+            channel_pitch_bend: 0,
+            cc_timbre: 0,
             last_targets: automation::base_target_values(&self.settings),
         })
     }
@@ -661,6 +687,47 @@ impl Runtime {
         match event {
             NativeInstrumentEvent::NotePressure { .. } => {
                 return Err(Error::UnsupportedNotePressure);
+            }
+            NativeInstrumentEvent::NotePitchBend {
+                occurrence_id,
+                cents,
+                ..
+            } => {
+                if !(-4_800..=4_800).contains(&cents) {
+                    return Err(Error::InvalidEventBatch);
+                }
+                if let Some(voice) = self.voices.iter_mut().find(|v| v.id == occurrence_id.get()) {
+                    voice.pitch_offset_cents = cents;
+                }
+            }
+            NativeInstrumentEvent::NoteTimbre {
+                occurrence_id,
+                value,
+                ..
+            } => {
+                if value > 127 {
+                    return Err(Error::InvalidEventBatch);
+                }
+                if let Some(voice) = self.voices.iter_mut().find(|v| v.id == occurrence_id.get()) {
+                    voice.timbre = value;
+                }
+            }
+            NativeInstrumentEvent::ControlChange { cc, value, .. } => {
+                if cc > 127 || value > 127 {
+                    return Err(Error::InvalidEventBatch);
+                }
+                if cc == 1 || cc == 74 {
+                    self.cc_timbre = value;
+                } else if cc == 121 {
+                    self.cc_timbre = 0;
+                    self.channel_pitch_bend = 0;
+                }
+            }
+            NativeInstrumentEvent::PitchBend { value, .. } => {
+                if !(-8192..=8191).contains(&value) {
+                    return Err(Error::InvalidEventBatch);
+                }
+                self.channel_pitch_bend = value;
             }
             NativeInstrumentEvent::Expression { .. } => return Err(Error::InvalidEventBatch),
             NativeInstrumentEvent::NoteOn {
@@ -1095,6 +1162,8 @@ impl MutableInstrumentRuntime for Runtime {
         self.local_frame = 0;
         self.ledger = Ledger::default();
         self.expression = [0.0; 3];
+        self.channel_pitch_bend = 0;
+        self.cc_timbre = 0;
         self.last_targets = automation::base_target_values(&self.factory.settings);
     }
     fn is_quiescent(&self) -> bool {
@@ -1573,6 +1642,28 @@ impl Runtime {
                 } else {
                     base_steps
                 };
+                let steps = if voice.pitch_offset_cents != 0
+                    || (!quality && self.channel_pitch_bend != 0)
+                {
+                    let channel_cents = if quality {
+                        0.0
+                    } else {
+                        f64::from(self.channel_pitch_bend)
+                            / if self.channel_pitch_bend < 0 {
+                                8192.0
+                            } else {
+                                8191.0
+                            }
+                            * 200.0
+                    };
+                    let ratio = 2.0_f64
+                        .powf((f64::from(voice.pitch_offset_cents) + channel_cents) / 1200.0);
+                    steps.map(|step| {
+                        (((step as f64) * ratio).round() as u64).clamp(1, (1_u64 << 63) - 1)
+                    })
+                } else {
+                    steps
+                };
                 let age = if quality {
                     voice.envelope_frame()
                 } else {
@@ -1583,7 +1674,7 @@ impl Runtime {
                 } else {
                     voice.gate.unwrap_or(u64::MAX)
                 };
-                let amplitudes = if self.factory.companion_active {
+                let mut amplitudes = if self.factory.companion_active {
                     if self.factory.uniform_companion {
                         [voice.machines[0]
                             .as_ref()
@@ -1612,6 +1703,13 @@ impl Runtime {
                 } else {
                     self.factory.configuration.envelope_levels(age, gate)
                 };
+                let voice_timbre = voice.timbre.max(self.cc_timbre);
+                if voice_timbre != 0 {
+                    let boost = 1.0 + 0.5 * (f64::from(voice_timbre) / 127.0);
+                    for amp in &mut amplitudes {
+                        *amp *= boost;
+                    }
+                }
                 let voice_filter_frame = if let Some(auto_frame) = automated_filter_frame {
                     Some(auto_frame)
                 } else if quality {

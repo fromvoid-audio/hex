@@ -93,6 +93,38 @@ impl EventProof {
             NativeInstrumentEvent::NotePressure { .. } => {
                 return Err(Error::UnsupportedNotePressure);
             }
+            NativeInstrumentEvent::NotePitchBend { cents, .. } => {
+                if !(-4_800..=4_800).contains(&cents) {
+                    return Err(Error::InvalidEventBatch);
+                }
+            }
+            NativeInstrumentEvent::NoteTimbre { value, .. } => {
+                if value > 127 {
+                    return Err(Error::InvalidEventBatch);
+                }
+            }
+            NativeInstrumentEvent::ControlChange { cc, value, .. } => {
+                if cc > 127 || value > 127 {
+                    return Err(Error::InvalidEventBatch);
+                }
+                if cc == 1 {
+                    let next = modulation::expression_after(
+                        self.expression,
+                        hex_lattice::NativeInstrumentExpression::ModWheel(value),
+                    )?;
+                    self.expression = next;
+                }
+            }
+            NativeInstrumentEvent::PitchBend { value, .. } => {
+                if !(-8192..=8191).contains(&value) {
+                    return Err(Error::InvalidEventBatch);
+                }
+                let next = modulation::expression_after(
+                    self.expression,
+                    hex_lattice::NativeInstrumentExpression::PitchBend(value),
+                )?;
+                self.expression = next;
+            }
             NativeInstrumentEvent::Expression { expression, .. } => {
                 let next = modulation::expression_after(self.expression, expression)?;
                 if next == self.expression {
@@ -198,6 +230,56 @@ impl Runtime {
         match event {
             NativeInstrumentEvent::NotePressure { .. } => {
                 return Err(Error::UnsupportedNotePressure);
+            }
+            NativeInstrumentEvent::NotePitchBend {
+                occurrence_id,
+                cents,
+                ..
+            } => {
+                if !(-4_800..=4_800).contains(&cents) {
+                    return Err(Error::InvalidEventBatch);
+                }
+                if let Some(voice) = self.voices.iter_mut().find(|v| v.id == occurrence_id.get()) {
+                    voice.pitch_offset_cents = cents;
+                }
+                return Ok(());
+            }
+            NativeInstrumentEvent::NoteTimbre {
+                occurrence_id,
+                value,
+                ..
+            } => {
+                if value > 127 {
+                    return Err(Error::InvalidEventBatch);
+                }
+                if let Some(voice) = self.voices.iter_mut().find(|v| v.id == occurrence_id.get()) {
+                    voice.timbre = value;
+                }
+                return Ok(());
+            }
+            NativeInstrumentEvent::ControlChange { cc, value, .. } => {
+                if cc > 127 || value > 127 {
+                    return Err(Error::InvalidEventBatch);
+                }
+                if cc == 1 {
+                    self.cc_timbre = value;
+                    return self
+                        .expression(hex_lattice::NativeInstrumentExpression::ModWheel(value));
+                }
+                if cc == 74 {
+                    self.cc_timbre = value;
+                } else if cc == 121 {
+                    self.cc_timbre = 0;
+                    self.channel_pitch_bend = 0;
+                }
+                return Ok(());
+            }
+            NativeInstrumentEvent::PitchBend { value, .. } => {
+                if !(-8192..=8191).contains(&value) {
+                    return Err(Error::InvalidEventBatch);
+                }
+                self.channel_pitch_bend = value;
+                return self.expression(hex_lattice::NativeInstrumentExpression::PitchBend(value));
             }
             NativeInstrumentEvent::Expression { expression, .. } => {
                 return self.expression(expression);

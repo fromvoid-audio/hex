@@ -91,6 +91,8 @@ impl From<Note> for MidiNoteSnapshot {
             pitch: note.pitch,
             channel: note.channel,
             velocity: note.velocity,
+            expression: hex_project::NoteExpression::default(),
+            expression_points: Vec::new(),
         }
     }
 }
@@ -230,6 +232,7 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
             AliasContentSnapshot::Midi {
                 source_length_raw,
                 notes,
+                ..
             } => Content::Midi {
                 source_length_raw,
                 notes: notes.into_iter().map(Into::into).collect(),
@@ -332,6 +335,7 @@ pub(crate) fn decode_value(mut value: Value) -> Result<Project, StorageError> {
             } => AliasContentSnapshot::Midi {
                 source_length_raw,
                 notes: notes.into_iter().map(Into::into).collect(),
+                expression_lanes: Vec::new(),
             },
             Content::Audio { asset, .. } => {
                 let clip = *first

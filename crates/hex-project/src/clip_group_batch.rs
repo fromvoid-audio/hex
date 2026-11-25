@@ -114,6 +114,7 @@ fn private_copy_source(clip: &mut MidiClip) -> Result<(), Invalid> {
         content: std::sync::Arc::new(crate::MidiContent {
             source_length: old.source_length,
             notes,
+            expression_lanes: old.expression_lanes.clone(),
         }),
         one_shot_boundary: old.one_shot_boundary,
         source_start: old.source_start,

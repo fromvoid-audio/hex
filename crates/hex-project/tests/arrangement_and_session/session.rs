@@ -812,6 +812,8 @@ fn arrangement_to_session_copy_respects_combined_note_limit_atomically() {
             pitch: 60,
             channel: 0,
             velocity: 100,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         });
         id += 1;
     }
@@ -829,6 +831,8 @@ fn arrangement_to_session_copy_respects_combined_note_limit_atomically() {
             pitch: 61,
             channel: 0,
             velocity: 100,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         });
         id += 1;
     }

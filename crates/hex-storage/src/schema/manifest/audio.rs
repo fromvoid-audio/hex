@@ -1172,6 +1172,175 @@ impl MidiVolumeDto {
     }
 }
 
+#[derive(Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NoteExpressionDto {
+    #[serde(default)]
+    pitch_offset_cents: i16,
+    #[serde(default)]
+    timbre: u8,
+    #[serde(default)]
+    pressure: u8,
+}
+
+impl NoteExpressionDto {
+    fn is_default(&self) -> bool {
+        self.pitch_offset_cents == 0 && self.timbre == 0 && self.pressure == 0
+    }
+}
+
+impl From<hex_project::NoteExpression> for NoteExpressionDto {
+    fn from(expr: hex_project::NoteExpression) -> Self {
+        Self {
+            pitch_offset_cents: expr.pitch_offset_cents,
+            timbre: expr.timbre,
+            pressure: expr.pressure,
+        }
+    }
+}
+
+impl From<NoteExpressionDto> for hex_project::NoteExpression {
+    fn from(dto: NoteExpressionDto) -> Self {
+        Self {
+            pitch_offset_cents: dto.pitch_offset_cents,
+            timbre: dto.timbre,
+            pressure: dto.pressure,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NoteExpressionPointDto {
+    offset_raw: u64,
+    pitch_offset_cents: i16,
+    timbre: u8,
+    pressure: u8,
+}
+
+impl From<&hex_project::NoteExpressionPoint> for NoteExpressionPointDto {
+    fn from(p: &hex_project::NoteExpressionPoint) -> Self {
+        Self {
+            offset_raw: p.offset.raw(),
+            pitch_offset_cents: p.pitch_offset_cents,
+            timbre: p.timbre,
+            pressure: p.pressure,
+        }
+    }
+}
+
+impl From<NoteExpressionPointDto> for hex_project::NoteExpressionPoint {
+    fn from(p: NoteExpressionPointDto) -> Self {
+        Self {
+            offset: BeatTime::from_raw(p.offset_raw),
+            pitch_offset_cents: p.pitch_offset_cents,
+            timbre: p.timbre,
+            pressure: p.pressure,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum MidiLaneKindDto {
+    ControlChange { cc: u8 },
+    PitchBend,
+}
+
+impl From<hex_project::MidiLaneKind> for MidiLaneKindDto {
+    fn from(kind: hex_project::MidiLaneKind) -> Self {
+        match kind {
+            hex_project::MidiLaneKind::ControlChange(cc) => Self::ControlChange { cc },
+            hex_project::MidiLaneKind::PitchBend => Self::PitchBend,
+        }
+    }
+}
+
+impl From<MidiLaneKindDto> for hex_project::MidiLaneKind {
+    fn from(dto: MidiLaneKindDto) -> Self {
+        match dto {
+            MidiLaneKindDto::ControlChange { cc } => Self::ControlChange(cc),
+            MidiLaneKindDto::PitchBend => Self::PitchBend,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MidiLanePointDto {
+    beat_raw: u64,
+    channel: u8,
+    value: i16,
+}
+
+impl From<&hex_project::MidiLanePoint> for MidiLanePointDto {
+    fn from(p: &hex_project::MidiLanePoint) -> Self {
+        Self {
+            beat_raw: p.beat.raw(),
+            channel: p.channel,
+            value: p.value,
+        }
+    }
+}
+
+impl From<MidiLanePointDto> for hex_project::MidiLanePoint {
+    fn from(p: MidiLanePointDto) -> Self {
+        Self {
+            beat: BeatTime::from_raw(p.beat_raw),
+            channel: p.channel,
+            value: p.value,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MidiExpressionLaneDto {
+    kind: MidiLaneKindDto,
+    #[serde(deserialize_with = "read_expression_points")]
+    points: Vec<MidiLanePointDto>,
+}
+
+impl From<&hex_project::MidiExpressionLane> for MidiExpressionLaneDto {
+    fn from(lane: &hex_project::MidiExpressionLane) -> Self {
+        Self {
+            kind: lane.kind.into(),
+            points: lane.points.iter().map(MidiLanePointDto::from).collect(),
+        }
+    }
+}
+
+impl From<MidiExpressionLaneDto> for hex_project::MidiExpressionLane {
+    fn from(dto: MidiExpressionLaneDto) -> Self {
+        Self {
+            kind: dto.kind.into(),
+            points: dto
+                .points
+                .into_iter()
+                .map(hex_project::MidiLanePoint::from)
+                .collect(),
+        }
+    }
+}
+
+fn read_note_expression_points<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<NoteExpressionPointDto>, D::Error> {
+    bounded(d, hex_project::MAX_NOTE_EXPRESSION_POINTS)
+}
+
+fn read_expression_points<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<MidiLanePointDto>, D::Error> {
+    bounded(d, hex_project::MAX_MIDI_EXPRESSION_POINTS)
+}
+
+fn read_expression_lanes<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<MidiExpressionLaneDto>, D::Error> {
+    bounded(d, hex_project::MAX_MIDI_CC_LANES)
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct MidiNoteDto {
@@ -1182,6 +1351,14 @@ pub(super) struct MidiNoteDto {
     pitch: u8,
     channel: u8,
     velocity: u8,
+    #[serde(default, skip_serializing_if = "NoteExpressionDto::is_default")]
+    expression: NoteExpressionDto,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "read_note_expression_points"
+    )]
+    expression_points: Vec<NoteExpressionPointDto>,
 }
 
 fn read_notes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<MidiNoteDto>, D::Error> {
@@ -1198,6 +1375,12 @@ impl From<&MidiNote> for MidiNoteDto {
             pitch: n.pitch(),
             channel: n.channel(),
             velocity: n.velocity(),
+            expression: n.expression().into(),
+            expression_points: n
+                .expression_points()
+                .iter()
+                .map(NoteExpressionPointDto::from)
+                .collect(),
         }
     }
 }
@@ -1212,6 +1395,12 @@ impl From<&MidiNoteSnapshot> for MidiNoteDto {
             pitch: n.pitch,
             channel: n.channel,
             velocity: n.velocity,
+            expression: n.expression.into(),
+            expression_points: n
+                .expression_points
+                .iter()
+                .map(NoteExpressionPointDto::from)
+                .collect(),
         }
     }
 }
@@ -1226,6 +1415,12 @@ impl From<MidiNoteDto> for MidiNoteSnapshot {
             pitch: n.pitch,
             channel: n.channel,
             velocity: n.velocity,
+            expression: n.expression.into(),
+            expression_points: n
+                .expression_points
+                .into_iter()
+                .map(hex_project::NoteExpressionPoint::from)
+                .collect(),
         }
     }
 }
@@ -1248,6 +1443,8 @@ pub(super) struct MidiClipDtoSer<'a> {
     loop_end_raw: u64,
     looping: bool,
     notes: super::SliceSeq<'a, MidiNote, MidiNoteDto>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    expression_lanes: Vec<MidiExpressionLaneDto>,
 }
 
 #[derive(Deserialize)]
@@ -1271,6 +1468,8 @@ pub(super) struct MidiClipDtoDe {
     looping: bool,
     #[serde(deserialize_with = "read_notes")]
     notes: Vec<MidiNoteDto>,
+    #[serde(default, deserialize_with = "read_expression_lanes")]
+    expression_lanes: Vec<MidiExpressionLaneDto>,
 }
 
 impl<'a> MidiClipDtoSer<'a> {
@@ -1299,6 +1498,15 @@ impl<'a> MidiClipDtoSer<'a> {
                 if aliased { &[] } else { source.notes() },
                 MidiNoteDto::from,
             ),
+            expression_lanes: if aliased {
+                Vec::new()
+            } else {
+                source
+                    .expression_lanes()
+                    .iter()
+                    .map(MidiExpressionLaneDto::from)
+                    .collect()
+            },
         }
     }
 }
@@ -1326,6 +1534,11 @@ impl MidiClipDtoDe {
             loop_end_raw: self.loop_end_raw,
             looping: self.looping,
             notes: self.notes.into_iter().map(MidiNoteSnapshot::from).collect(),
+            expression_lanes: self
+                .expression_lanes
+                .into_iter()
+                .map(hex_project::MidiExpressionLane::from)
+                .collect(),
         })
     }
 }
@@ -1391,6 +1604,8 @@ struct MidiSourceSer<'a> {
     loop_end_raw: u64,
     looping: bool,
     notes: super::SliceSeq<'a, MidiNote, MidiNoteDto>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    expression_lanes: Vec<MidiExpressionLaneDto>,
 }
 
 #[derive(Deserialize)]
@@ -1404,6 +1619,8 @@ struct MidiSourceDe {
     looping: bool,
     #[serde(deserialize_with = "read_notes")]
     notes: Vec<MidiNoteDto>,
+    #[serde(default, deserialize_with = "read_expression_lanes")]
+    expression_lanes: Vec<MidiExpressionLaneDto>,
 }
 
 impl<'a> MidiSourceSer<'a> {
@@ -1422,6 +1639,15 @@ impl<'a> MidiSourceSer<'a> {
                 if aliased { &[] } else { source.notes() },
                 MidiNoteDto::from,
             ),
+            expression_lanes: if aliased {
+                Vec::new()
+            } else {
+                source
+                    .expression_lanes()
+                    .iter()
+                    .map(MidiExpressionLaneDto::from)
+                    .collect()
+            },
         }
     }
 }
@@ -1598,6 +1824,12 @@ impl SessionDe {
                                     .into_iter()
                                     .map(MidiNoteSnapshot::from)
                                     .collect(),
+                                expression_lanes: clip
+                                    .source
+                                    .expression_lanes
+                                    .into_iter()
+                                    .map(hex_project::MidiExpressionLane::from)
+                                    .collect(),
                             },
                         })
                     }
@@ -1643,6 +1875,8 @@ enum AliasContentSer<'a> {
     Midi {
         source_length_raw: u64,
         notes: Vec<MidiNoteDto>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        expression_lanes: Vec<MidiExpressionLaneDto>,
     },
     ConsoleAudio {
         asset: u64,
@@ -1660,6 +1894,8 @@ enum AliasContentDe {
         source_length_raw: u64,
         #[serde(deserialize_with = "read_notes")]
         notes: Vec<MidiNoteDto>,
+        #[serde(default, deserialize_with = "read_expression_lanes")]
+        expression_lanes: Vec<MidiExpressionLaneDto>,
     },
     ConsoleAudio {
         asset: u64,
@@ -1727,9 +1963,14 @@ impl<'a> AliasesSer<'a> {
                     AliasContentSnapshot::Midi {
                         source_length_raw,
                         notes,
+                        expression_lanes,
                     } => AliasContentSer::Midi {
                         source_length_raw: *source_length_raw,
                         notes: notes.iter().map(MidiNoteDto::from).collect(),
+                        expression_lanes: expression_lanes
+                            .iter()
+                            .map(MidiExpressionLaneDto::from)
+                            .collect(),
                     },
                     AliasContentSnapshot::ConsoleAudio { asset } => {
                         AliasContentSer::ConsoleAudio { asset: *asset }
@@ -1764,9 +2005,14 @@ impl AliasesDe {
                     AliasContentDe::Midi {
                         source_length_raw,
                         notes,
+                        expression_lanes,
                     } => AliasContentSnapshot::Midi {
                         source_length_raw,
                         notes: notes.into_iter().map(MidiNoteSnapshot::from).collect(),
+                        expression_lanes: expression_lanes
+                            .into_iter()
+                            .map(hex_project::MidiExpressionLane::from)
+                            .collect(),
                     },
                     AliasContentDe::ConsoleAudio { asset } => {
                         AliasContentSnapshot::ConsoleAudio { asset }

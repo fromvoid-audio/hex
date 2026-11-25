@@ -14,6 +14,8 @@ impl ControlChange {
     pub const MOD_WHEEL: u8 = 1;
     pub const EXPRESSION: u8 = 11;
     pub const SUSTAIN: u8 = 64;
+    /// MPE per-note Slide / Timbre (CC74, brightness/filter cutoff).
+    pub const TIMBRE: u8 = 74;
     pub const RESET_ALL_CONTROLLERS: u8 = 121;
 
     pub fn new(channel: u8, cc: u8, value: u8) -> Option<Self> {
